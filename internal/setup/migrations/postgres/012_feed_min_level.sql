@@ -1,0 +1,1 @@
+ALTER TABLE alert_feeds ADD COLUMN IF NOT EXISTS min_level VARCHAR(50) DEFAULT '';
