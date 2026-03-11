@@ -1,0 +1,558 @@
+// State
+let currentResults = [];
+let timelineData = [];
+let statusCheckInterval;
+
+// DOM elements
+const queryInput = document.getElementById('queryInput');
+const searchBtn = document.getElementById('searchBtn');
+const timeRangeSelect = document.getElementById('timeRange');
+const customRangeInputs = document.getElementById('customRangeInputs');
+const startTimeInput = document.getElementById('startTime');
+const endTimeInput = document.getElementById('endTime');
+const resultsContainer = document.getElementById('resultsContainer');
+const errorMessage = document.getElementById('errorMessage');
+const sqlPreview = document.getElementById('sqlPreview');
+const sqlCode = document.getElementById('sqlCode');
+const resultCount = document.getElementById('resultCount');
+const exportBtn = document.getElementById('exportBtn');
+const timelineSection = document.getElementById('timelineSection');
+const timelineCanvas = document.getElementById('timeline');
+const timelineStats = document.getElementById('timelineStats');
+const statusIndicator = document.getElementById('statusIndicator');
+const statusBtn = document.getElementById('statusBtn');
+const statusModal = document.getElementById('statusModal');
+const closeModal = document.getElementById('closeModal');
+const clearLogsBtn = document.getElementById('clearLogsBtn');
+const toggleSqlBtn = document.getElementById('toggleSqlBtn');
+const sqlToggleText = document.getElementById('sqlToggleText');
+
+// Event listeners
+searchBtn.addEventListener('click', executeQuery);
+queryInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        executeQuery();
+    }
+    // Shift+Enter allows newline naturally in textarea
+});
+
+// Auto-resize textarea as user types
+queryInput.addEventListener('input', () => {
+    autoResizeTextarea(queryInput);
+});
+
+function autoResizeTextarea(textarea) {
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+}
+
+timeRangeSelect.addEventListener('change', () => {
+    if (timeRangeSelect.value === 'custom') {
+        customRangeInputs.style.display = 'flex';
+    } else {
+        customRangeInputs.style.display = 'none';
+    }
+});
+
+exportBtn.addEventListener('click', exportToCSV);
+
+statusBtn.addEventListener('click', openStatusModal);
+closeModal.addEventListener('click', closeStatusModal);
+statusModal.addEventListener('click', (e) => {
+    if (e.target === statusModal) {
+        closeStatusModal();
+    }
+});
+
+clearLogsBtn.addEventListener('click', confirmClearLogs);
+
+toggleSqlBtn.addEventListener('click', () => {
+    const sqlCodeElement = document.getElementById('sqlCode');
+    if (sqlCodeElement.style.display === 'none') {
+        sqlCodeElement.style.display = 'block';
+        sqlToggleText.textContent = 'Hide SQL';
+    } else {
+        sqlCodeElement.style.display = 'none';
+        sqlToggleText.textContent = 'Show SQL';
+    }
+});
+
+// Initialize
+function init() {
+    // Set default end time to now
+    const now = new Date();
+    endTimeInput.value = formatDateTimeLocal(now);
+
+    // Set default start time to 24 hours ago
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    startTimeInput.value = formatDateTimeLocal(yesterday);
+
+    // Check status immediately and then every 10 seconds
+    checkStatus();
+    statusCheckInterval = setInterval(checkStatus, 10000);
+}
+
+function formatDateTimeLocal(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function getTimeRange() {
+    const selectedRange = timeRangeSelect.value;
+    const now = new Date();
+    let start, end;
+
+    if (selectedRange === 'custom') {
+        start = new Date(startTimeInput.value);
+        end = new Date(endTimeInput.value);
+    } else {
+        end = now;
+        const hours = {
+            '1h': 1,
+            '24h': 24,
+            '7d': 24 * 7,
+            '30d': 24 * 30
+        }[selectedRange];
+        start = new Date(now.getTime() - hours * 60 * 60 * 1000);
+    }
+
+    return {
+        start: start.toISOString(),
+        end: end.toISOString()
+    };
+}
+
+async function executeQuery() {
+    const query = queryInput.value.trim();
+
+    if (!query) {
+        showError('Please enter a query');
+        return;
+    }
+
+    // Show loading state
+    setLoading(true);
+    hideError();
+    sqlPreview.style.display = 'none';
+
+    const timeRange = getTimeRange();
+
+    try {
+        const response = await fetch('/api/v1/query', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                query: query,
+                start: timeRange.start,
+                end: timeRange.end
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+            showError(data.error || 'Query failed');
+            return;
+        }
+
+        // Show SQL if available (but keep code hidden by default)
+        if (data.sql) {
+            sqlCode.textContent = data.sql;
+            sqlCode.style.display = 'none';
+            sqlToggleText.textContent = 'Show SQL';
+            sqlPreview.style.display = 'block';
+        }
+
+        currentResults = data.results || [];
+        displayResults(currentResults);
+        updateResultCount(currentResults.length);
+
+        // Fetch and display timeline
+        await fetchTimeline(timeRange);
+
+    } catch (error) {
+        showError(`Network error: ${error.message}`);
+    } finally {
+        setLoading(false);
+    }
+}
+
+async function fetchTimeline(timeRange) {
+    try {
+        // Get base query without aggregations
+        let baseQuery = queryInput.value.trim();
+
+        // Remove groupBy and other aggregation commands from query
+        baseQuery = baseQuery.split('|')[0].trim();
+
+        // Query with time bucketing - group by hour
+        const response = await fetch('/api/v1/query', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                query: baseQuery,
+                start: timeRange.start,
+                end: timeRange.end
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.success && data.results) {
+            renderTimeline(data.results, timeRange);
+        }
+    } catch (error) {
+        console.error('Failed to fetch timeline:', error);
+    }
+}
+
+function renderTimeline(results, timeRange) {
+    if (!results || results.length === 0) {
+        timelineSection.style.display = 'none';
+        return;
+    }
+
+    timelineSection.style.display = 'block';
+
+    // Calculate time buckets
+    const start = new Date(timeRange.start);
+    const end = new Date(timeRange.end);
+    const duration = end - start;
+
+    // Determine bucket size based on time range
+    let bucketSize;
+    let bucketCount;
+    if (duration <= 3600000) { // 1 hour
+        bucketSize = 60000; // 1 minute
+        bucketCount = 60;
+    } else if (duration <= 86400000) { // 24 hours
+        bucketSize = 3600000; // 1 hour
+        bucketCount = 24;
+    } else if (duration <= 604800000) { // 7 days
+        bucketSize = 3600000 * 4; // 4 hours
+        bucketCount = 42;
+    } else {
+        bucketSize = 86400000; // 1 day
+        bucketCount = Math.ceil(duration / bucketSize);
+    }
+
+    // Create buckets
+    const buckets = new Array(bucketCount).fill(0);
+
+    // Fill buckets
+    results.forEach(result => {
+        if (result.timestamp) {
+            const ts = new Date(result.timestamp);
+            const bucketIndex = Math.floor((ts - start) / bucketSize);
+            if (bucketIndex >= 0 && bucketIndex < bucketCount) {
+                buckets[bucketIndex]++;
+            }
+        }
+    });
+
+    // Draw timeline
+    const canvas = timelineCanvas;
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+
+    canvas.width = canvas.offsetWidth * dpr;
+    canvas.height = canvas.offsetHeight * dpr;
+    ctx.scale(dpr, dpr);
+
+    const width = canvas.offsetWidth;
+    const height = canvas.offsetHeight;
+    const barWidth = width / bucketCount;
+    const maxCount = Math.max(...buckets, 1);
+
+    // Clear canvas
+    ctx.clearRect(0, 0, width, height);
+
+    // Draw bars
+    buckets.forEach((count, i) => {
+        const barHeight = (count / maxCount) * (height - 10);
+        const x = i * barWidth;
+        const y = height - barHeight;
+
+        // Purple gradient
+        const gradient = ctx.createLinearGradient(0, y, 0, height);
+        gradient.addColorStop(0, '#b794f6');
+        gradient.addColorStop(1, '#9c6ade');
+
+        ctx.fillStyle = gradient;
+        ctx.fillRect(x, y, barWidth - 1, barHeight);
+    });
+
+    // Update stats
+    const total = buckets.reduce((a, b) => a + b, 0);
+    const avg = (total / bucketCount).toFixed(1);
+    const max = Math.max(...buckets);
+    timelineStats.textContent = `Total: ${total} | Avg: ${avg}/bucket | Peak: ${max}`;
+}
+
+function displayResults(results) {
+    if (!results || results.length === 0) {
+        resultsContainer.innerHTML = `
+            <div class="empty-state">
+                <svg width="48" height="48" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="32" cy="32" r="24" stroke="currentColor" stroke-width="2" opacity="0.3"/>
+                    <path d="M32 20v24M20 32h24" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.3"/>
+                </svg>
+                <p>No results found</p>
+            </div>
+        `;
+        exportBtn.disabled = true;
+        timelineSection.style.display = 'none';
+        return;
+    }
+
+    exportBtn.disabled = false;
+
+    // Create table
+    const table = document.createElement('table');
+    table.className = 'results-table';
+
+    // Table header
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+
+    const columns = Object.keys(results[0]);
+    columns.forEach(col => {
+        const th = document.createElement('th');
+        th.textContent = col;
+        headerRow.appendChild(th);
+    });
+
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    // Table body
+    const tbody = document.createElement('tbody');
+
+    results.forEach(row => {
+        const tr = document.createElement('tr');
+
+        columns.forEach(col => {
+            const td = document.createElement('td');
+            const value = row[col];
+
+            // Format the value based on type
+            if (col === 'timestamp' && value) {
+                td.textContent = formatTimestamp(value);
+                td.className = 'timestamp-cell';
+            } else if (typeof value === 'object' && value !== null) {
+                // For complex objects (like Map fields), show as JSON
+                const pre = document.createElement('pre');
+                pre.className = 'json-value';
+                pre.textContent = JSON.stringify(value, null, 2);
+                td.appendChild(pre);
+                td.className = 'json-cell';
+            } else if (value === null || value === undefined) {
+                td.textContent = '-';
+                td.className = 'null-cell';
+            } else {
+                td.textContent = String(value);
+
+                // Highlight error/warning levels
+                if (col.toLowerCase().includes('level') || col.toLowerCase().includes('severity')) {
+                    const level = String(value).toLowerCase();
+                    if (level.includes('error') || level.includes('fatal')) {
+                        td.classList.add('level-error');
+                    } else if (level.includes('warn')) {
+                        td.classList.add('level-warn');
+                    } else if (level.includes('info')) {
+                        td.classList.add('level-info');
+                    }
+                }
+            }
+
+            tr.appendChild(td);
+        });
+
+        tbody.appendChild(tr);
+    });
+
+    table.appendChild(tbody);
+
+    // Clear and show results
+    resultsContainer.innerHTML = '';
+    resultsContainer.appendChild(table);
+}
+
+function formatTimestamp(ts) {
+    if (!ts) return '-';
+
+    try {
+        const date = new Date(ts);
+        return date.toISOString().replace('T', ' ').substring(0, 19);
+    } catch (e) {
+        return String(ts);
+    }
+}
+
+function setLoading(loading) {
+    const btnText = searchBtn.querySelector('.btn-text');
+    const btnLoader = searchBtn.querySelector('.btn-loader');
+
+    if (loading) {
+        btnText.style.display = 'none';
+        btnLoader.style.display = 'flex';
+        searchBtn.disabled = true;
+        queryInput.disabled = true;
+    } else {
+        btnText.style.display = 'block';
+        btnLoader.style.display = 'none';
+        searchBtn.disabled = false;
+        queryInput.disabled = false;
+    }
+}
+
+function showError(message) {
+    errorMessage.textContent = message;
+    errorMessage.style.display = 'block';
+    timelineSection.style.display = 'none';
+}
+
+function hideError() {
+    errorMessage.style.display = 'none';
+}
+
+function updateResultCount(count) {
+    resultCount.textContent = `${count} ${count === 1 ? 'result' : 'results'}`;
+}
+
+function exportToCSV() {
+    if (!currentResults || currentResults.length === 0) {
+        return;
+    }
+
+    const columns = Object.keys(currentResults[0]);
+
+    // Create CSV content
+    let csv = columns.join(',') + '\n';
+
+    currentResults.forEach(row => {
+        const values = columns.map(col => {
+            const value = row[col];
+            if (value === null || value === undefined) {
+                return '';
+            }
+            if (typeof value === 'object') {
+                return '"' + JSON.stringify(value).replace(/"/g, '""') + '"';
+            }
+            const str = String(value);
+            if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+                return '"' + str.replace(/"/g, '""') + '"';
+            }
+            return str;
+        });
+        csv += values.join(',') + '\n';
+    });
+
+    // Download
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `bifract-export-${Date.now()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// Status functions
+async function checkStatus() {
+    try {
+        const response = await fetch('/api/v1/status');
+        const data = await response.json();
+
+        if (data.success && data.clickhouse.connected) {
+            statusIndicator.className = 'status-indicator connected';
+            statusIndicator.querySelector('.status-text').textContent = 'Connected';
+        } else {
+            statusIndicator.className = 'status-indicator disconnected';
+            statusIndicator.querySelector('.status-text').textContent = 'Disconnected';
+        }
+    } catch (error) {
+        statusIndicator.className = 'status-indicator disconnected';
+        statusIndicator.querySelector('.status-text').textContent = 'Error';
+    }
+}
+
+async function openStatusModal() {
+    statusModal.classList.add('active');
+
+    // Fetch fresh status
+    try {
+        const response = await fetch('/api/v1/status');
+        const data = await response.json();
+
+        if (data.success && data.clickhouse.connected) {
+            document.getElementById('chStatus').textContent = '✓ Connected';
+            document.getElementById('chStatus').style.color = 'var(--success)';
+
+            document.getElementById('totalLogs').textContent = data.clickhouse.total_logs.toLocaleString();
+            document.getElementById('storageUsed').textContent = data.clickhouse.table_size || '-';
+            document.getElementById('oldestLog').textContent = formatTimestamp(data.clickhouse.oldest_log) || '-';
+            document.getElementById('newestLog').textContent = formatTimestamp(data.clickhouse.newest_log) || '-';
+        } else {
+            document.getElementById('chStatus').textContent = '✗ Disconnected';
+            document.getElementById('chStatus').style.color = 'var(--error)';
+            document.getElementById('totalLogs').textContent = '-';
+            document.getElementById('storageUsed').textContent = '-';
+            document.getElementById('oldestLog').textContent = '-';
+            document.getElementById('newestLog').textContent = '-';
+        }
+    } catch (error) {
+        document.getElementById('chStatus').textContent = '✗ Error';
+        document.getElementById('chStatus').style.color = 'var(--error)';
+    }
+}
+
+function closeStatusModal() {
+    statusModal.classList.remove('active');
+}
+
+async function confirmClearLogs() {
+    const confirmed = confirm(
+        'Are you sure you want to delete ALL logs?\n\n' +
+        'This action cannot be undone. All log data will be permanently deleted.'
+    );
+
+    if (!confirmed) return;
+
+    try {
+        const response = await fetch('/api/v1/logs', {
+            method: 'DELETE'
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            alert('All logs have been cleared successfully!');
+            closeStatusModal();
+            // Refresh status
+            await checkStatus();
+            // Clear current results
+            currentResults = [];
+            displayResults([]);
+            updateResultCount(0);
+        } else {
+            alert('Failed to clear logs: ' + (data.error || 'Unknown error'));
+        }
+    } catch (error) {
+        alert('Failed to clear logs: ' + error.message);
+    }
+}
+
+// Initialize on load
+init();

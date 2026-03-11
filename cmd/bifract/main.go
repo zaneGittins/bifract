@@ -1,0 +1,238 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+
+	"bifract/internal/ingestcli"
+	"bifract/internal/setup"
+)
+
+func init() {
+	// Sync version info so ingestcli uses the same build metadata.
+	ingestcli.Version = setup.Version
+	ingestcli.Commit = setup.Commit
+	ingestcli.BuildDate = setup.BuildDate
+}
+
+func main() {
+	args := os.Args[1:]
+
+	// --ingest is handled separately: all args after it belong to the ingest subsystem.
+	for i, arg := range args {
+		if arg == "--ingest" {
+			if err := ingestcli.RunIngest(args[i+1:]); err != nil {
+				fmt.Fprintf(os.Stderr, "\n%s %v\n", ingestcli.ErrorStyle.Render("Error:"), err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
+	var installMode, upgradeMode, reconfigureMode, showVersion, skipSelfUpdate bool
+	var backupMode, restoreMode, listBackupsMode, nonInteractive, genClientCertMode bool
+	var startMode, stopMode, statusMode bool
+	var restoreFile, certName, certPassword string
+	dir := "/opt/bifract"
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--install":
+			installMode = true
+		case "--upgrade":
+			upgradeMode = true
+		case "--backup":
+			backupMode = true
+		case "--restore":
+			restoreMode = true
+		case "--list-backups":
+			listBackupsMode = true
+		case "--reconfigure":
+			reconfigureMode = true
+		case "--gen-client-cert":
+			genClientCertMode = true
+		case "--start":
+			startMode = true
+		case "--stop":
+			stopMode = true
+		case "--status":
+			statusMode = true
+		case "--name":
+			if i+1 < len(args) {
+				i++
+				certName = args[i]
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --name requires a value")
+				os.Exit(1)
+			}
+		case "--password":
+			if i+1 < len(args) {
+				i++
+				certPassword = args[i]
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --password requires a value")
+				os.Exit(1)
+			}
+		case "--non-interactive":
+			nonInteractive = true
+		case "--restore-file":
+			if i+1 < len(args) {
+				i++
+				restoreFile = args[i]
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --restore-file requires a path argument")
+				os.Exit(1)
+			}
+		case "--dir":
+			if i+1 < len(args) {
+				i++
+				dir = args[i]
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --dir requires a path argument")
+				os.Exit(1)
+			}
+		case "--version":
+			showVersion = true
+		case "--skip-self-update":
+			skipSelfUpdate = true
+		case "--help", "-h":
+			printUsage()
+			os.Exit(0)
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown flag: %s\n\n", args[i])
+			printUsage()
+			os.Exit(1)
+		}
+	}
+
+	if showVersion {
+		fmt.Printf("bifract %s (commit: %s, built: %s)\n", setup.Version, setup.Commit, setup.BuildDate)
+		os.Exit(0)
+	}
+
+	// Count mutually exclusive modes
+	modeCount := 0
+	if installMode {
+		modeCount++
+	}
+	if upgradeMode {
+		modeCount++
+	}
+	if backupMode {
+		modeCount++
+	}
+	if restoreMode {
+		modeCount++
+	}
+	if listBackupsMode {
+		modeCount++
+	}
+	if reconfigureMode {
+		modeCount++
+	}
+	if genClientCertMode {
+		modeCount++
+	}
+	if startMode {
+		modeCount++
+	}
+	if stopMode {
+		modeCount++
+	}
+	if statusMode {
+		modeCount++
+	}
+
+	if modeCount == 0 {
+		printUsage()
+		os.Exit(1)
+	}
+	if modeCount > 1 {
+		fmt.Fprintln(os.Stderr, "Error: only one mode flag can be used at a time")
+		os.Exit(1)
+	}
+
+	if restoreMode && restoreFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --restore requires --restore-file")
+		os.Exit(1)
+	}
+	if genClientCertMode && (certName == "" || certPassword == "") {
+		fmt.Fprintln(os.Stderr, "Error: --gen-client-cert requires --name and --password")
+		os.Exit(1)
+	}
+
+	// Self-update: check for newer bifract before upgrading
+	if upgradeMode && !skipSelfUpdate {
+		setup.SelfUpdate(os.Args)
+	}
+
+	// Preflight: check Docker is installed and running
+	if _, err := exec.LookPath("docker"); err != nil {
+		fmt.Fprintf(os.Stderr, "%s Docker is not installed or not in PATH.\n  Install it from https://docs.docker.com/get-docker/\n", setup.ErrorStyle.Render("Error:"))
+		os.Exit(1)
+	}
+	if out, err := exec.Command("docker", "compose", "version").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s Docker Compose is not available.\n  %s\n  Install it from https://docs.docker.com/compose/install/\n", setup.ErrorStyle.Render("Error:"), string(out))
+		os.Exit(1)
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s Docker daemon is not running.\n  Start Docker and try again.\n", setup.ErrorStyle.Render("Error:"))
+		os.Exit(1)
+	}
+
+	var err error
+	switch {
+	case installMode:
+		err = setup.RunInstall()
+	case upgradeMode:
+		err = setup.RunUpgrade(dir)
+	case backupMode:
+		err = setup.RunBackup(dir, nonInteractive)
+	case restoreMode:
+		err = setup.RunRestore(dir, restoreFile, nonInteractive)
+	case listBackupsMode:
+		err = setup.RunListBackups(dir)
+	case reconfigureMode:
+		err = setup.RunReconfigure(dir)
+	case genClientCertMode:
+		err = setup.RunGenClientCert(dir, certName, certPassword)
+	case startMode:
+		err = setup.RunStart(dir)
+	case stopMode:
+		err = setup.RunStop(dir)
+	case statusMode:
+		err = setup.RunStatus(dir)
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\n%s %v\n", setup.ErrorStyle.Render("Error:"), err)
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Println("Usage: bifract <mode> [options]")
+	fmt.Println()
+	fmt.Println("Modes:")
+	fmt.Println("  --install          Run fresh installation wizard")
+	fmt.Println("  --upgrade          Upgrade an existing installation")
+	fmt.Println("  --reconfigure      Regenerate config files from .env (no version change)")
+	fmt.Println("  --start            Start Bifract")
+	fmt.Println("  --stop             Stop Bifract")
+	fmt.Println("  --status           Show deployment status and health")
+	fmt.Println("  --backup           Back up PostgreSQL database (encrypted)")
+	fmt.Println("  --restore          Restore PostgreSQL from backup")
+	fmt.Println("  --list-backups     List available backups")
+	fmt.Println("  --gen-client-cert  Generate a client certificate for mTLS")
+	fmt.Println("  --ingest           Bulk log ingestion (see --ingest --help)")
+	fmt.Println()
+	fmt.Println("Options:")
+	fmt.Println("  --dir PATH         Installation directory (default: /opt/bifract)")
+	fmt.Println("  --restore-file F   Backup file to restore from (required with --restore)")
+	fmt.Println("  --name NAME        Client certificate common name (required with --gen-client-cert)")
+	fmt.Println("  --password PASS    Password for .p12 bundle (required with --gen-client-cert)")
+	fmt.Println("  --non-interactive  Skip confirmation prompts (for cron/scripts)")
+	fmt.Println("  --version          Show version and exit")
+	fmt.Println("  --help             Show this help")
+}
