@@ -31,14 +31,24 @@ const FieldStats = {
         }
     },
 
+    // Always compute stats for autocomplete, only render when sidebar is open
+    refreshStats() {
+        const results = QueryExecutor.currentResults;
+        if (!results || results.length === 0) {
+            this.stats = {};
+            return;
+        }
+        this.compute(results);
+    },
+
     refresh() {
+        this.refreshStats();
         if (!this.isOpen) return;
         const results = QueryExecutor.currentResults;
         if (!results || results.length === 0) {
             this.renderEmpty();
             return;
         }
-        this.compute(results);
         // Auto-expand all fields in drawer mode
         for (const field of Object.keys(this.stats)) {
             this.expandedFields.add(field);
@@ -249,3 +259,6 @@ const FieldStats = {
         return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 };
+
+// Make globally available
+window.FieldStats = FieldStats;

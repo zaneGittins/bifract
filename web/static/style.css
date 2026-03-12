@@ -11,7 +11,7 @@
 
     --accent-primary: #9c6ade;
     --accent-secondary: #b794f6;
-    --accent-tertiary: #f97066;
+    --accent-tertiary: #d4556b;
     --accent-glow: rgba(156, 106, 222, 0.25);
 
     --error: #f87171;
@@ -58,14 +58,14 @@
 
     /* Network graph */
     --graph-node-parent: #6366f1;
-    --graph-node-child: #f97066;
+    --graph-node-child: #d4556b;
     --graph-node-parent-hover: #818cf8;
-    --graph-node-child-hover: #fb8f87;
+    --graph-node-child-hover: #e06b80;
     --graph-edge: #9c6ade;
     --graph-label: #ffffff;
     --graph-label-stroke: #000000;
     --graph-edge-1: #9c6ade;
-    --graph-edge-2: #f97066;
+    --graph-edge-2: #d4556b;
     --graph-edge-3: #22d3ee;
     --graph-edge-4: #f59e0b;
     --graph-edge-5: #ef4444;
@@ -239,7 +239,7 @@ body {
 .logo h1 {
     font-size: 1.5rem;
     font-weight: 600;
-    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -951,6 +951,7 @@ body {
     display: flex;
     align-items: center;
     gap: 0.75rem;
+    position: relative;
 }
 
 /* Drag handle to resize query input */
@@ -1083,9 +1084,9 @@ body {
     width: 32px;
     height: 32px;
     background: transparent;
-    border: 1.5px solid var(--accent-primary);
+    border: 1.5px solid var(--border-color);
     border-radius: 6px;
-    color: var(--accent-primary);
+    color: var(--text-secondary);
     cursor: pointer;
     transition: var(--transition);
     flex-shrink: 0;
@@ -1391,7 +1392,7 @@ body.search-active {
     margin: 8px 0;
     border-radius: 4px;
     background: var(--bg-tertiary);
-    border-left: 3px solid var(--accent-primary);
+    border-left: 3px solid var(--accent-tertiary);
     color: var(--text-secondary);
     font-size: 0.8125rem;
 }
@@ -2068,6 +2069,16 @@ body.search-active {
     margin-left: 0.5rem;
 }
 
+.autocomplete-item .syntax-field {
+    color: var(--accent-color, #9c6ade);
+    font-weight: 500;
+}
+
+.autocomplete-item .syntax-value {
+    color: var(--text-primary);
+    font-weight: 400;
+}
+
 /* Function hint popup (? key) */
 .function-hint {
     display: none;
@@ -2369,6 +2380,47 @@ body.search-active {
     word-break: break-all;
 }
 
+.log-field-actions {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    opacity: 0;
+    flex-shrink: 0;
+    transition: opacity 0.15s;
+}
+
+.log-field:hover .log-field-actions {
+    opacity: 1;
+}
+
+.log-field-actions .fs-action-btn {
+    width: 16px;
+    height: 16px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.65rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    line-height: 1;
+    transition: var(--transition);
+}
+
+.log-field-actions .fs-filter-in:hover {
+    color: var(--success);
+    border-color: var(--success);
+}
+
+.log-field-actions .fs-filter-out:hover {
+    color: var(--error);
+    border-color: var(--error);
+}
+
 .log-field-copy-btn {
     opacity: 0;
     background: none;
@@ -2382,6 +2434,10 @@ body.search-active {
 }
 
 .log-field:hover .log-field-copy-btn {
+    opacity: 1;
+}
+
+.log-field-actions .log-field-copy-btn {
     opacity: 1;
 }
 
@@ -3380,7 +3436,7 @@ body {
 }
 
 .badge {
-    background: var(--accent-primary);
+    background: var(--accent-tertiary);
     color: white;
     padding: 0.0625rem 0.375rem;
     border-radius: 10px;
@@ -3490,7 +3546,7 @@ body {
 }
 
 .tag-important {
-    background: #ff6b6b;
+    background: var(--accent-tertiary);
     color: white;
 }
 
@@ -5713,7 +5769,7 @@ tr.perf-danger td {
 }
 
 .label {
-    background: var(--accent-primary);
+    background: var(--accent-tertiary);
     color: white;
     padding: 0.25rem 0.5rem;
     border-radius: 12px;
@@ -9729,7 +9785,7 @@ div.vis-tooltip {
 }
 
 .widget-resize-handle:hover {
-    background: linear-gradient(135deg, transparent 50%, var(--accent-primary) 50%);
+    background: linear-gradient(135deg, transparent 50%, var(--accent-tertiary) 50%);
 }
 
 /* ============================
@@ -11235,5 +11291,98 @@ div.vis-tooltip {
     color: var(--text-muted);
     padding: 0.25rem 0.375rem;
     font-style: italic;
+}
+
+/* API Key Permissions - Create Form */
+.api-key-permissions-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.api-key-perm-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    transition: background 0.15s ease;
+}
+
+.api-key-perm-row:last-child {
+    border-bottom: none;
+}
+
+.api-key-perm-row:hover {
+    background: var(--bg-hover);
+}
+
+.api-key-perm-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.api-key-perm-name {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.api-key-perm-desc {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* API Key Permissions - Overview Table Badges */
+.perm-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.perm-badge {
+    font-size: 0.65rem;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+
+.perm-badge.perm-on {
+    background: rgba(74, 222, 128, 0.12);
+    color: var(--success);
+    border: 1px solid rgba(74, 222, 128, 0.25);
+}
+
+.perm-badge.perm-off {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    opacity: 0.6;
+}
+
+.perm-badge.perm-all {
+    background: rgba(156, 106, 222, 0.12);
+    color: var(--accent-primary);
+    border: 1px solid rgba(156, 106, 222, 0.3);
+}
+
+/* "All Permissions" row separator */
+.api-key-perm-all {
+    border-bottom: 2px solid var(--accent-primary);
+}
+
+.api-key-perm-all .api-key-perm-name {
+    color: var(--accent-primary);
+}
+
+.permissions-cell {
+    min-width: 140px;
 }
 

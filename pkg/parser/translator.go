@@ -352,8 +352,8 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentF
 			continue
 		}
 
-		// Check registry for per-row transforms registered during Execute
-		if entry := ctx.Registry.Get(gf); entry != nil && entry.Kind == FieldKindPerRow {
+		// Check registry for per-row transforms or assignments registered during Execute
+		if entry := ctx.Registry.Get(gf); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
 			safeName, _ := sanitizeIdentifier(gf)
 			resolveExpr := ctx.Registry.Resolve(gf)
 			selects = append(selects, fmt.Sprintf("%s AS %s", resolveExpr, safeName))

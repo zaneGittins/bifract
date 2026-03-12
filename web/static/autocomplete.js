@@ -833,67 +833,130 @@ const Autocomplete = {
         return div.innerHTML;
     },
 
-    show() {
-        const input = document.getElementById('queryInput');
-        const autocompleteDiv = document.getElementById('autocomplete');
+    // Get field names from current results via FieldStats
+    _getFieldNames() {
+        if (window.FieldStats && FieldStats.stats) {
+            return Object.keys(FieldStats.stats);
+        }
+        return [];
+    },
 
-        if (!input || !autocompleteDiv) return;
+    // Get top values for a field from FieldStats
+    _getFieldValues(fieldName) {
+        if (window.FieldStats && FieldStats.stats && FieldStats.stats[fieldName]) {
+            return FieldStats.stats[fieldName].topValues.map(([val, count]) => ({
+                value: val,
+                count: count
+            }));
+        }
+        return [];
+    },
+
+    // Detect if cursor is right after field= or field!= and return the field name and partial value
+    _getFieldValueContext(textBeforeCursor) {
+        // Match quoted partial: fieldName="partial (no closing quote yet)
+        const quotedMatch = textBeforeCursor.match(/([a-zA-Z_][\w.]*)(!?=)"([^"]*)$/);
+        if (quotedMatch) {
+            return { field: quotedMatch[1], partial: quotedMatch[3], quoted: true };
+        }
+        // Match unquoted: fieldName=partial
+        const match = textBeforeCursor.match(/([a-zA-Z_][\w.]*)(!?=)([^"\s]*)$/);
+        if (match) {
+            return { field: match[1], partial: match[3], quoted: false };
+        }
+        return null;
+    },
+
+    // Detect if cursor is inside function parens and return the partial token being typed
+    _getFunctionArgContext(textBeforeCursor) {
+        // Check if we're inside function parens by looking for unmatched (
+        let depth = 0;
+        let parenPos = -1;
+        for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
+            const ch = textBeforeCursor[i];
+            if (ch === ')') depth++;
+            else if (ch === '(') {
+                if (depth === 0) { parenPos = i; break; }
+                depth--;
+            }
+        }
+        if (parenPos < 0) return null;
+
+        // Extract the token being typed (after last separator: comma, [, space, =)
+        const afterParen = textBeforeCursor.substring(parenPos + 1);
+        const tokenMatch = afterParen.match(/(?:.*[\[,\s=])?\s*([a-zA-Z_][\w.]*)$/);
+        if (tokenMatch && tokenMatch[1]) {
+            return { partial: tokenMatch[1] };
+        }
+        return null;
+    },
+
+    // Compute the best Tab-completion match based on current cursor context.
+    // Returns { keyword, mode } or null if no match.
+    _getBestMatch() {
+        const input = document.getElementById('queryInput');
+        if (!input) return null;
 
         const value = input.value;
         const cursorPos = input.selectionStart;
         const textBeforeCursor = value.substring(0, cursorPos);
-        const lastWord = textBeforeCursor.split(/\s/).pop();
 
-        if (lastWord.length < 1) {
-            this.hide();
-            return;
+        // Priority 1: Field value after = operator
+        const valueCtx = this._getFieldValueContext(textBeforeCursor);
+        if (valueCtx) {
+            const topValues = this._getFieldValues(valueCtx.field);
+            if (topValues.length > 0) {
+                const partial = valueCtx.partial.toLowerCase();
+                const filtered = partial.length > 0
+                    ? topValues.filter(v => v.value.toLowerCase().includes(partial))
+                    : topValues;
+                if (filtered.length > 0) {
+                    return { keyword: filtered[0].value, mode: 'value' };
+                }
+            }
         }
 
-        const matches = this.suggestions.filter(s =>
+        // Priority 2: Field name inside function args (3+ chars)
+        const argCtx = this._getFunctionArgContext(textBeforeCursor);
+        if (argCtx && argCtx.partial.length >= 3) {
+            const fieldNames = this._getFieldNames();
+            const partial = argCtx.partial.toLowerCase();
+            const match = fieldNames.find(f => f.toLowerCase().includes(partial));
+            if (match) {
+                return { keyword: match, mode: 'field' };
+            }
+        }
+
+        // Priority 3: Bare field name (3+ chars, not after = operator)
+        const lastWord = textBeforeCursor.split(/\s/).pop();
+        if (lastWord && lastWord.length >= 3 && !lastWord.includes('=')) {
+            const fieldNames = this._getFieldNames();
+            const partial = lastWord.toLowerCase();
+            const fieldMatch = fieldNames.find(f => f.toLowerCase().startsWith(partial));
+            if (fieldMatch) {
+                return { keyword: fieldMatch, mode: 'field' };
+            }
+        }
+
+        // Priority 4: Keyword (3+ chars)
+        if (!lastWord || lastWord.length < 3 || lastWord.includes('=')) return null;
+
+        const match = this.suggestions.find(s =>
             s.keyword.toLowerCase().startsWith(lastWord.toLowerCase())
         );
-
-        if (matches.length === 0) {
-            this.hide();
-            return;
+        if (match) {
+            return { keyword: match.keyword, mode: 'keyword' };
         }
 
-        autocompleteDiv.innerHTML = '';
-        this.selectedIndex = -1;
+        return null;
+    },
 
-        matches.forEach((match, index) => {
-            const item = document.createElement('div');
-            item.className = 'autocomplete-item';
-
-            const keyword = document.createElement('span');
-            keyword.className = 'syntax-keyword';
-            keyword.textContent = match.keyword;
-
-            const desc = document.createElement('span');
-            desc.className = 'syntax-desc';
-            desc.textContent = match.desc;
-
-            item.appendChild(keyword);
-            item.appendChild(desc);
-
-            item.addEventListener('click', () => this.selectItem(match.keyword));
-            item.addEventListener('mouseenter', () => {
-                this.selectedIndex = index;
-                this.updateSelection();
-            });
-
-            autocompleteDiv.appendChild(item);
-        });
-
-        autocompleteDiv.style.display = 'block';
+    show() {
+        // No dropdown -- Tab completion only
     },
 
     hide() {
-        const autocompleteDiv = document.getElementById('autocomplete');
-        if (autocompleteDiv) {
-            autocompleteDiv.style.display = 'none';
-            this.selectedIndex = -1;
-        }
+        // No dropdown to hide
     },
 
     handleKeyDown(e) {
@@ -902,43 +965,17 @@ const Autocomplete = {
             this.hideHint();
         }
 
-        const autocompleteDiv = document.getElementById('autocomplete');
-        if (!autocompleteDiv || autocompleteDiv.style.display === 'none') return;
-
-        const items = autocompleteDiv.querySelectorAll('.autocomplete-item');
-
-        if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            this.selectedIndex = Math.min(this.selectedIndex + 1, items.length - 1);
-            this.updateSelection();
-        } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            this.selectedIndex = Math.max(this.selectedIndex - 1, 0);
-            this.updateSelection();
-        } else if (e.key === 'Tab' || e.key === 'Enter') {
-            if (this.selectedIndex >= 0 && this.selectedIndex < items.length) {
+        if (e.key === 'Tab') {
+            const best = this._getBestMatch();
+            if (best) {
                 e.preventDefault();
-                const keyword = items[this.selectedIndex].querySelector('.syntax-keyword').textContent;
-                this.selectItem(keyword);
+                e._autocompleteHandled = true;
+                this._applyCompletion(best.keyword, best.mode);
             }
-        } else if (e.key === 'Escape') {
-            this.hide();
         }
     },
 
-    updateSelection() {
-        const items = document.querySelectorAll('.autocomplete-item');
-        items.forEach((item, index) => {
-            if (index === this.selectedIndex) {
-                item.classList.add('selected');
-                item.scrollIntoView({ block: 'nearest' });
-            } else {
-                item.classList.remove('selected');
-            }
-        });
-    },
-
-    selectItem(keyword) {
+    _applyCompletion(keyword, mode) {
         const input = document.getElementById('queryInput');
         if (!input) return;
 
@@ -947,23 +984,31 @@ const Autocomplete = {
         const textBeforeCursor = value.substring(0, cursorPos);
         const textAfterCursor = value.substring(cursorPos);
 
-        const words = textBeforeCursor.split(/\s/);
-        words.pop();
-        words.push(keyword);
+        let newBefore;
 
-        const newValue = words.join(' ') + textAfterCursor;
+        if (mode === 'value') {
+            const escaped = keyword.replace(/"/g, '\\"');
+            const quotedCtx = textBeforeCursor.match(/([a-zA-Z_][\w.]*!?=)"[^"]*$/);
+            if (quotedCtx) {
+                newBefore = textBeforeCursor.replace(/"[^"]*$/, '"' + escaped + '"');
+            } else {
+                newBefore = textBeforeCursor.replace(/([!=]=?)[^"\s]*$/, '$1"' + escaped + '"');
+            }
+        } else if (mode === 'field') {
+            newBefore = textBeforeCursor.replace(/[a-zA-Z_][\w.]*$/, keyword);
+        } else {
+            // Keyword mode: replace the partial word in-place, no extra space
+            newBefore = textBeforeCursor.replace(/[a-zA-Z_][\w.]*$/, keyword);
+        }
+
+        const newValue = newBefore + textAfterCursor;
         input.value = newValue;
+        input.setSelectionRange(newBefore.length, newBefore.length);
+        input.focus();
 
-        const newCursorPos = words.join(' ').length;
-        input.setSelectionRange(newCursorPos, newCursorPos);
-
-        // Trigger syntax highlighting update
         if (window.SyntaxHighlight) {
             SyntaxHighlight.update();
         }
-
-        this.hide();
-        input.focus();
     }
 };
 

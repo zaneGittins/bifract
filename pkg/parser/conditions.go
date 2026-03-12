@@ -137,7 +137,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 	entry := registry.Get(cond.Field)
 	if entry != nil {
 		switch entry.Kind {
-		case FieldKindPerRow:
+		case FieldKindPerRow, FieldKindAssignment:
 			fieldRef = registry.Resolve(cond.Field)
 		case FieldKindBase:
 			fieldRef = entry.Expr

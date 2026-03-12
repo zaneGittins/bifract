@@ -55,7 +55,10 @@ func (s *Storage) HashKey(key string) string {
 // CreateAPIKey stores a new API key in the database
 func (s *Storage) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest, fractalID, username, fullKey, keyID string) (*APIKey, error) {
 	keyHash := s.HashKey(fullKey)
-	permissions := DefaultPermissions()
+	permissions, err := ValidatePermissions(req.Permissions)
+	if err != nil {
+		return nil, fmt.Errorf("invalid permissions: %w", err)
+	}
 
 	// Convert permissions to JSON
 	permissionsJSON, err := json.Marshal(permissions)
@@ -250,6 +253,20 @@ func (s *Storage) UpdateAPIKey(ctx context.Context, keyID, fractalID string, req
 	if req.IsActive != nil {
 		setParts = append(setParts, fmt.Sprintf("is_active = $%d", argIndex))
 		args = append(args, *req.IsActive)
+		argIndex++
+	}
+
+	if req.Permissions != nil {
+		validated, err := ValidatePermissions(req.Permissions)
+		if err != nil {
+			return nil, fmt.Errorf("invalid permissions: %w", err)
+		}
+		permJSON, err := json.Marshal(validated)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal permissions: %w", err)
+		}
+		setParts = append(setParts, fmt.Sprintf("permissions = $%d", argIndex))
+		args = append(args, string(permJSON))
 		argIndex++
 	}
 

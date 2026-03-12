@@ -1478,8 +1478,9 @@ func TestLenFunction(t *testing.T) {
 		if strings.Contains(result.SQL, "fields.`_len`") {
 			t.Errorf("_len should be a computed field reference, not a JSON field: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "_len > 20") {
-			t.Errorf("Expected _len > 20 condition, got: %s", result.SQL)
+		// The condition should inline the expression (consistent with FieldKindPerRow behavior)
+		if !strings.Contains(result.SQL, "length(") || !strings.Contains(result.SQL, "> 20") {
+			t.Errorf("Expected inlined length() > 20 condition, got: %s", result.SQL)
 		}
 	})
 }
@@ -1503,8 +1504,9 @@ func TestComputedFieldPipedConditions(t *testing.T) {
 		if strings.Contains(result.SQL, "fields.`_distance`") {
 			t.Errorf("_distance should be a computed field, not JSON field: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "_distance < 3") {
-			t.Errorf("Expected _distance < 3 condition, got: %s", result.SQL)
+		// The condition should inline the expression (consistent with FieldKindPerRow behavior)
+		if !strings.Contains(result.SQL, "damerauLevenshteinDistance(") || !strings.Contains(result.SQL, "< 3") {
+			t.Errorf("Expected inlined damerauLevenshteinDistance() < 3 condition, got: %s", result.SQL)
 		}
 	})
 

@@ -58,15 +58,27 @@ const SyntaxHighlight = {
 
         if (!queryInput || !queryHighlight) return;
 
-        const height = Math.max(38, Math.min(queryInput.scrollHeight, 200));
+        const lineCount = (queryInput.value.match(/\n/g) || []).length + 1;
+        const computedStyle = window.getComputedStyle(queryInput);
+        const lineHeight = parseFloat(computedStyle.lineHeight);
+        const paddingTop = parseFloat(computedStyle.paddingTop);
+        const paddingBottom = parseFloat(computedStyle.paddingBottom);
+        const borderTop = parseFloat(computedStyle.borderTopWidth);
+        const borderBottom = parseFloat(computedStyle.borderBottomWidth);
 
-        // Set height on both elements and the container
-        queryInput.style.height = height + 'px';
-        queryHighlight.style.height = height + 'px';
+        const contentHeight = lineCount * lineHeight + paddingTop + paddingBottom + borderTop + borderBottom;
+        const height = Math.max(38, Math.min(contentHeight, 400));
+
+        // Respect manually dragged height (stored as minHeight by resize handle)
+        const manualMin = parseFloat(queryInput.style.minHeight) || 0;
+        const finalHeight = Math.max(height, manualMin);
+
+        queryInput.style.height = finalHeight + 'px';
+        queryHighlight.style.height = finalHeight + 'px';
 
         const wrapper = queryInput.parentElement;
         if (wrapper && wrapper.classList.contains('query-input-wrapper')) {
-            wrapper.style.height = height + 'px';
+            wrapper.style.height = finalHeight + 'px';
         }
     },
 

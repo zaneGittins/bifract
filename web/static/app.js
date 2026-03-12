@@ -224,7 +224,7 @@ const App = {
                     }
                 } else if (e.key === 'Enter' && e.shiftKey) {
                     // Allow new line (default behavior)
-                } else if (e.key === 'Tab') {
+                } else if (e.key === 'Tab' && !e._autocompleteHandled) {
                     e.preventDefault();
                     const start = queryInput.selectionStart;
                     const end = queryInput.selectionEnd;

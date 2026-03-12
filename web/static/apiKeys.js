@@ -52,6 +52,25 @@ const APIKeys = {
                     }
                 }
             }
+
+            // "All Permissions" toggle
+            if (e.target.id === 'apiKeyPermAll') {
+                const checked = e.target.checked;
+                const permIds = ['apiKeyPermQuery', 'apiKeyPermComment', 'apiKeyPermAlertManage', 'apiKeyPermNotebook', 'apiKeyPermDashboard'];
+                permIds.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.checked = checked;
+                });
+            }
+
+            // Sync "All" toggle when individual permissions change
+            const permIds = ['apiKeyPermQuery', 'apiKeyPermComment', 'apiKeyPermAlertManage', 'apiKeyPermNotebook', 'apiKeyPermDashboard'];
+            if (permIds.includes(e.target.id)) {
+                const allToggle = document.getElementById('apiKeyPermAll');
+                if (allToggle) {
+                    allToggle.checked = permIds.every(id => document.getElementById(id)?.checked);
+                }
+            }
         });
 
         // Close modal handlers - scoped to the API keys modal only
@@ -143,6 +162,20 @@ const APIKeys = {
         if (neverExpiresCheckbox) {
             neverExpiresCheckbox.checked = false;
         }
+
+        // Reset permissions to defaults
+        const permDefaults = {
+            apiKeyPermAll: false,
+            apiKeyPermQuery: true,
+            apiKeyPermComment: true,
+            apiKeyPermAlertManage: false,
+            apiKeyPermNotebook: false,
+            apiKeyPermDashboard: false
+        };
+        Object.entries(permDefaults).forEach(([id, val]) => {
+            const el = document.getElementById(id);
+            if (el) el.checked = val;
+        });
     },
 
     async showAPIKeysModal() {
@@ -244,6 +277,7 @@ const APIKeys = {
                         <tr>
                             <th>Name</th>
                             <th>Key ID</th>
+                            <th>Permissions</th>
                             <th>Status</th>
                             <th>Expires</th>
                             <th>Usage</th>
@@ -273,6 +307,11 @@ const APIKeys = {
                     </td>
                     <td class="key-id-cell">
                         <code class="key-id">${key.key_id}</code>
+                    </td>
+                    <td class="permissions-cell">
+                        <div class="perm-badges">
+                            ${this.renderPermBadges(key.permissions)}
+                        </div>
                     </td>
                     <td class="status-cell">
                         <span class="api-key-status status-${statusClass}">
@@ -341,6 +380,22 @@ const APIKeys = {
         container.innerHTML = html;
     },
 
+    renderPermBadges(perms) {
+        if (!perms) return '<span class="perm-badge perm-off">None</span>';
+        const allPerms = [
+            { key: 'query', label: 'Query' },
+            { key: 'comment', label: 'Comments' },
+            { key: 'alert_manage', label: 'Alerts' },
+            { key: 'notebook', label: 'Notes' },
+            { key: 'dashboard', label: 'Dash' }
+        ];
+        const allEnabled = allPerms.every(p => perms[p.key]);
+        if (allEnabled) return '<span class="perm-badge perm-all">All</span>';
+        const enabled = allPerms.filter(p => perms[p.key]);
+        if (enabled.length === 0) return '<span class="perm-badge perm-off">None</span>';
+        return enabled.map(p => `<span class="perm-badge perm-on">${p.label}</span>`).join('');
+    },
+
     goToPage(page) {
         this.currentPage = page;
         this.renderAPIKeys();
@@ -360,7 +415,14 @@ const APIKeys = {
         const request = {
             name: formData.get('name'),
             description: formData.get('description') || '',
-            expires_at: expiresAt ? new Date(expiresAt).toISOString() : null
+            expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+            permissions: {
+                query: document.getElementById('apiKeyPermQuery')?.checked ?? true,
+                comment: document.getElementById('apiKeyPermComment')?.checked ?? true,
+                alert_manage: document.getElementById('apiKeyPermAlertManage')?.checked ?? false,
+                notebook: document.getElementById('apiKeyPermNotebook')?.checked ?? false,
+                dashboard: document.getElementById('apiKeyPermDashboard')?.checked ?? false
+            }
         };
 
         // Validate required fields

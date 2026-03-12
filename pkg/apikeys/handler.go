@@ -132,6 +132,14 @@ func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate permissions upfront so we return 400 for bad input
+	if req.Permissions != nil {
+		if _, err := ValidatePermissions(req.Permissions); err != nil {
+			h.sendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	// Generate API key
 	fullKey, keyID, err := h.storage.GenerateAPIKey(r.Context(), fractal.Name)
 	if err != nil {
@@ -222,6 +230,14 @@ func (h *Handler) HandleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, http.StatusBadRequest, "Invalid request body")
 		return
+	}
+
+	// Validate permissions if provided
+	if req.Permissions != nil {
+		if _, err := ValidatePermissions(req.Permissions); err != nil {
+			h.sendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	// Update API key

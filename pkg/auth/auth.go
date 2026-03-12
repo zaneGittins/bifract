@@ -1092,18 +1092,36 @@ func resolveAPIKeyRole(perms map[string]interface{}) string {
 	if perms == nil {
 		return ""
 	}
-	// alert_manage or comment require analyst level
-	if v, ok := perms["alert_manage"].(bool); ok && v {
-		return "analyst"
-	}
-	if v, ok := perms["comment"].(bool); ok && v {
-		return "analyst"
+	// Any write permission requires analyst level
+	for _, key := range []string{"alert_manage", "comment", "notebook", "dashboard"} {
+		if v, ok := perms[key].(bool); ok && v {
+			return "analyst"
+		}
 	}
 	// query-only maps to viewer
 	if v, ok := perms["query"].(bool); ok && v {
 		return "viewer"
 	}
 	return ""
+}
+
+// RequireAPIKeyPermission returns middleware that blocks API key requests
+// lacking the specified permission. Session-authenticated requests pass through.
+func RequireAPIKeyPermission(permission string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
+				perms, _ := r.Context().Value("api_key_permissions").(map[string]interface{})
+				if allowed, ok := perms[permission].(bool); !ok || !allowed {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprintf(w, `{"success":false,"error":"API key does not have %s permission"}`, permission)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // HandleListUsers lists all users (admin only)

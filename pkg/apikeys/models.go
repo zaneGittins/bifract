@@ -1,6 +1,7 @@
 package apikeys
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -24,9 +25,10 @@ type APIKey struct {
 
 // CreateAPIKeyRequest represents a request to create a new API key
 type CreateAPIKeyRequest struct {
-	Name        string     `json:"name" validate:"required,max=255"`
-	Description string     `json:"description,omitempty"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	Name        string                 `json:"name" validate:"required,max=255"`
+	Description string                 `json:"description,omitempty"`
+	ExpiresAt   *time.Time             `json:"expires_at,omitempty"`
+	Permissions map[string]interface{} `json:"permissions,omitempty"`
 }
 
 // CreateAPIKeyResponse represents the response after creating an API key
@@ -39,10 +41,11 @@ type CreateAPIKeyResponse struct {
 
 // UpdateAPIKeyRequest represents a request to update an existing API key
 type UpdateAPIKeyRequest struct {
-	Name        *string    `json:"name,omitempty"`
-	Description *string    `json:"description,omitempty"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	IsActive    *bool      `json:"is_active,omitempty"`
+	Name        *string                `json:"name,omitempty"`
+	Description *string                `json:"description,omitempty"`
+	ExpiresAt   *time.Time             `json:"expires_at,omitempty"`
+	IsActive    *bool                  `json:"is_active,omitempty"`
+	Permissions map[string]interface{} `json:"permissions,omitempty"`
 }
 
 // APIKeyListResponse represents a response containing multiple API keys
@@ -73,7 +76,38 @@ func DefaultPermissions() map[string]interface{} {
 		"query":        true,
 		"comment":      true,
 		"alert_manage": false,
+		"notebook":     false,
+		"dashboard":    false,
 	}
+}
+
+// validPermissionKeys defines the only permission keys allowed on API keys.
+var validPermissionKeys = map[string]bool{
+	"query":        true,
+	"comment":      true,
+	"alert_manage": true,
+	"notebook":     true,
+	"dashboard":    true,
+}
+
+// ValidatePermissions checks that a permissions map contains only known keys
+// with boolean values. Returns a sanitized copy merged over defaults.
+func ValidatePermissions(perms map[string]interface{}) (map[string]interface{}, error) {
+	result := DefaultPermissions()
+	if perms == nil {
+		return result, nil
+	}
+	for k, v := range perms {
+		if !validPermissionKeys[k] {
+			return nil, fmt.Errorf("unknown permission: %s", k)
+		}
+		boolVal, ok := v.(bool)
+		if !ok {
+			return nil, fmt.Errorf("permission %s must be a boolean", k)
+		}
+		result[k] = boolVal
+	}
+	return result, nil
 }
 
 // IsExpired checks if the API key has expired
@@ -114,4 +148,22 @@ func (k *APIKey) CanManageAlerts() bool {
 	}
 	alertManage, ok := k.Permissions["alert_manage"].(bool)
 	return ok && alertManage
+}
+
+// CanAccessNotebooks checks if the API key has notebook permissions
+func (k *APIKey) CanAccessNotebooks() bool {
+	if k.Permissions == nil {
+		return false
+	}
+	v, ok := k.Permissions["notebook"].(bool)
+	return ok && v
+}
+
+// CanAccessDashboards checks if the API key has dashboard permissions
+func (k *APIKey) CanAccessDashboards() bool {
+	if k.Permissions == nil {
+		return false
+	}
+	v, ok := k.Permissions["dashboard"].(bool)
+	return ok && v
 }

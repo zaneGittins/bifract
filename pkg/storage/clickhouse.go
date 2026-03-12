@@ -362,8 +362,8 @@ func decodeJSONFieldKeys(m map[string]interface{}) map[string]interface{} {
 func (c *ClickHouseClient) CountLogs(ctx context.Context, startTime, endTime time.Time) (uint64, error) {
 	var count uint64
 	err := c.conn.QueryRow(ctx,
-		"SELECT count() as count FROM logs WHERE timestamp >= ? AND timestamp <= ?",
-		startTime, endTime,
+		"SELECT count() as count FROM logs WHERE toUnixTimestamp64Milli(timestamp) >= ? AND toUnixTimestamp64Milli(timestamp) <= ?",
+		startTime.UnixMilli(), endTime.UnixMilli(),
 	).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count logs: %w", err)

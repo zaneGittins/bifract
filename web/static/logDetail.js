@@ -247,6 +247,31 @@ const LogDetail = {
                 textSpan.className = 'log-field-value-text';
                 textSpan.textContent = String(value || '-');
 
+                const actions = document.createElement('span');
+                actions.className = 'log-field-actions';
+
+                const filterInBtn = document.createElement('button');
+                filterInBtn.className = 'fs-action-btn fs-filter-in';
+                filterInBtn.title = 'Filter in';
+                filterInBtn.textContent = '+';
+                filterInBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (window.FieldStats) {
+                        FieldStats.addFilter(key, String(value), false);
+                    }
+                });
+
+                const filterOutBtn = document.createElement('button');
+                filterOutBtn.className = 'fs-action-btn fs-filter-out';
+                filterOutBtn.title = 'Filter out';
+                filterOutBtn.innerHTML = '&minus;';
+                filterOutBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (window.FieldStats) {
+                        FieldStats.addFilter(key, String(value), true);
+                    }
+                });
+
                 const copyBtn = document.createElement('button');
                 copyBtn.className = 'log-field-copy-btn';
                 copyBtn.title = 'Copy value';
@@ -256,8 +281,12 @@ const LogDetail = {
                     this.copyToClipboard(copyText, copyBtn);
                 });
 
+                actions.appendChild(filterInBtn);
+                actions.appendChild(filterOutBtn);
+                actions.appendChild(copyBtn);
+
                 row.appendChild(textSpan);
-                row.appendChild(copyBtn);
+                row.appendChild(actions);
                 valueDiv.appendChild(row);
             }
 

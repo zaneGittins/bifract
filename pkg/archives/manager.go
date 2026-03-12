@@ -317,18 +317,22 @@ func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentio
 // to reconstruct JSON objects in memory, which was the root cause of ~20GB memory
 // spikes on large fractals.
 func (m *Manager) queryArchiveChunk(ctx context.Context, fractalID string, retentionDays *int, firstChunk bool, cursorTS time.Time, cursorID string, archiveEndTS time.Time) (driver.Rows, error) {
+	// Use toUnixTimestamp64Milli for cursor comparisons to avoid a precision
+	// mismatch: the clickhouse-go driver may serialize time.Time as DateTime
+	// (second precision) while the column is DateTime64(3) (milliseconds).
+	// Comparing epoch-millis integers sidesteps the issue entirely.
 	query := `SELECT timestamp, raw_log, log_id, fractal_id, ingest_timestamp
 	          FROM logs WHERE fractal_id = ?`
 	args := []interface{}{fractalID}
 
 	if !firstChunk {
-		query += ` AND (timestamp, log_id) > (?, ?)`
-		args = append(args, cursorTS, cursorID)
+		query += ` AND (toUnixTimestamp64Milli(timestamp), log_id) > (?, ?)`
+		args = append(args, cursorTS.UnixMilli(), cursorID)
 	}
 
 	// Pin upper time bound so newly arriving logs are excluded.
-	query += ` AND timestamp <= ?`
-	args = append(args, archiveEndTS)
+	query += ` AND toUnixTimestamp64Milli(timestamp) <= ?`
+	args = append(args, archiveEndTS.UnixMilli())
 
 	if retentionDays != nil && *retentionDays > 0 {
 		query += ` AND timestamp >= now() - toIntervalDay(?)`

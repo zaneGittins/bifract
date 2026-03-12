@@ -839,6 +839,24 @@ func TestFieldAssignment(t *testing.T) {
 					containsSubstr([]string{sql}, `GROUP BY`)
 			},
 		},
+		{
+			name:    "groupBy on assignment field",
+			query:   `* | test := "test" | groupby(test)`,
+			wantErr: false,
+			checkSQL: func(sql string) bool {
+				return containsSubstr([]string{sql}, `'test'`) &&
+					containsSubstr([]string{sql}, `GROUP BY`)
+			},
+		},
+		{
+			name:    "assignment field with condition after groupBy",
+			query:   `category := "web" | groupby(category) | count > 5`,
+			wantErr: false,
+			checkSQL: func(sql string) bool {
+				return containsSubstr([]string{sql}, `'web'`) &&
+					containsSubstr([]string{sql}, `GROUP BY`)
+			},
+		},
 	}
 
 	opts := QueryOptions{

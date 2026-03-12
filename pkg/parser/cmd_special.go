@@ -129,7 +129,7 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				SelectExpr{Expr: fmt.Sprintf("quantile(0.75)(toFloat64OrNull(%s)) - quantile(0.25)(toFloat64OrNull(%s)) AS _iqr", ref, ref)},
 			)
 			ctx.Plan.IsAggregated = true
-		} else if ctx.Registry.Has(field) && ctx.Registry.IsPerRow(field) {
+		} else if entry := ctx.Registry.Get(field); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
 			safeAlias, err := sanitizeIdentifier(field)
 			if err != nil {
 				return fmt.Errorf("table(): %w", err)

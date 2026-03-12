@@ -2269,6 +2269,73 @@ throttleTimeSeconds: 3600"></textarea>
                             <div class="form-help">API keys that never expire pose a security risk. Consider setting an expiration date.</div>
                         </div>
 
+                        <div class="form-group">
+                            <label>Permissions</label>
+                            <div class="form-help" style="margin-bottom: 10px;">Control what this API key can access. Follow the principle of least privilege.</div>
+                            <div class="api-key-permissions-grid">
+                                <div class="api-key-perm-row api-key-perm-all">
+                                    <div class="api-key-perm-info">
+                                        <span class="api-key-perm-name">All Permissions</span>
+                                        <span class="api-key-perm-desc">Grant full access to all operations</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="apiKeyPermAll" name="perm_all">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="api-key-perm-row">
+                                    <div class="api-key-perm-info">
+                                        <span class="api-key-perm-name">Query</span>
+                                        <span class="api-key-perm-desc">Execute BQL queries against logs</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="apiKeyPermQuery" name="perm_query" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="api-key-perm-row">
+                                    <div class="api-key-perm-info">
+                                        <span class="api-key-perm-name">Comments</span>
+                                        <span class="api-key-perm-desc">Create and manage comments on logs</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="apiKeyPermComment" name="perm_comment" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="api-key-perm-row">
+                                    <div class="api-key-perm-info">
+                                        <span class="api-key-perm-name">Alerts</span>
+                                        <span class="api-key-perm-desc">Create, update, and delete alerts</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="apiKeyPermAlertManage" name="perm_alert_manage">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="api-key-perm-row">
+                                    <div class="api-key-perm-info">
+                                        <span class="api-key-perm-name">Notebooks</span>
+                                        <span class="api-key-perm-desc">Create, edit, and manage notebooks</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="apiKeyPermNotebook" name="perm_notebook">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="api-key-perm-row">
+                                    <div class="api-key-perm-info">
+                                        <span class="api-key-perm-name">Dashboards</span>
+                                        <span class="api-key-perm-desc">Create, edit, and manage dashboards</span>
+                                    </div>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="apiKeyPermDashboard" name="perm_dashboard">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="form-actions">
                             <button type="button" id="cancelCreateBtn" class="btn-secondary">Cancel</button>
                             <button type="button" id="saveAPIKeyBtn" class="btn-primary">Create API Key</button>
