@@ -172,9 +172,16 @@ func main() {
 		setup.SelfUpdate(os.Args)
 	}
 
-	// K8s install does not require Docker
+	// K8s install and client cert generation do not require Docker
 	if installK8sMode {
 		if err := setup.RunInstallK8s(); err != nil {
+			fmt.Fprintf(os.Stderr, "\n%s %v\n", setup.ErrorStyle.Render("Error:"), err)
+			os.Exit(1)
+		}
+		return
+	}
+	if genClientCertMode {
+		if err := setup.RunGenClientCert(dir, certName, certPassword); err != nil {
 			fmt.Fprintf(os.Stderr, "\n%s %v\n", setup.ErrorStyle.Render("Error:"), err)
 			os.Exit(1)
 		}

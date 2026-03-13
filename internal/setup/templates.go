@@ -22,7 +22,7 @@ func RenderCaddyfile(cfg *SetupConfig) (string, error) {
 // defaultAdminHash is the hardcoded default admin password hash in db/init-postgres.sql.
 // RenderInitPostgres replaces it with the setup-generated hash so there is a single
 // source of truth for the Postgres schema (db/init-postgres.sql).
-const defaultAdminHash = "$2a$10$r0TpEb0RiqoaP2HuhvDzaONZe0jaTpjlqzGY3.xY8ZqrvjZNNyOBC"
+const defaultAdminHash = "$2a$10$6qlugatnTUiTnVhThGK.l.g241wHWktjOAPykPJpHOh8RbxkApQvG"
 
 func RenderInitPostgres(cfg *SetupConfig) (string, error) {
 	sql := strings.Replace(dbsql.PostgresSQL, defaultAdminHash, cfg.AdminPasswordHash, 1)

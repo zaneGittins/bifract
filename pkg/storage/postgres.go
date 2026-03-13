@@ -46,10 +46,25 @@ type Comment struct {
 	FractalID             string    `json:"fractal_id"` // Fractal UUID for multi-tenant isolation
 }
 
-func (c *PostgresClient) Initialize(ctx context.Context, sql string) error {
+func (c *PostgresClient) Initialize(ctx context.Context, initSQL string) error {
+	// Use an advisory lock so that when multiple replicas start simultaneously,
+	// only one runs the schema initialization at a time. This prevents race
+	// conditions on CREATE TYPE and other non-idempotent DDL.
+	const schemaLockID int64 = 0x6269667261637400 // "bifract\0"
+	conn, err := c.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get connection for schema lock: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", schemaLockID); err != nil {
+		return fmt.Errorf("failed to acquire schema lock: %w", err)
+	}
+	defer conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", schemaLockID)
+
 	// Always run the full SQL - all statements use IF NOT EXISTS / CREATE OR REPLACE,
 	// so this is safe to run on an existing database and picks up new tables/triggers.
-	if _, err := c.db.ExecContext(ctx, sql); err != nil {
+	if _, err := conn.ExecContext(ctx, initSQL); err != nil {
 		return fmt.Errorf("failed to initialize postgres schema: %w", err)
 	}
 	return nil

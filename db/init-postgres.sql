@@ -97,7 +97,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS force_password_change BOOLEAN NOT NUL
 INSERT INTO users (username, password_hash, display_name, gravatar_color, gravatar_initial, is_admin, force_password_change)
 VALUES (
     'admin',
-    '$2a$10$r0TpEb0RiqoaP2HuhvDzaONZe0jaTpjlqzGY3.xY8ZqrvjZNNyOBC',
+    '$2a$10$6qlugatnTUiTnVhThGK.l.g241wHWktjOAPykPJpHOh8RbxkApQvG',
     'Administrator',
     '#9c6ade',
     'A',

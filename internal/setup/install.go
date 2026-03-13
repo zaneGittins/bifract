@@ -160,9 +160,14 @@ func RunInstall() error {
 func RunGenClientCert(dir, name, password string) error {
 	PrintBanner()
 
+	// Look for CA in Docker layout (caddy/client-ca/) or K8s layout (client-ca/)
 	caDir := filepath.Join(dir, "caddy", "client-ca")
 	if !fileExists(filepath.Join(caDir, "ca.pem")) || !fileExists(filepath.Join(caDir, "ca-key.pem")) {
-		return fmt.Errorf("client CA not found at %s\n  mTLS must be enabled first (set BIFRACT_IP_ACCESS=mtls-app and run --reconfigure)", caDir)
+		caDir = filepath.Join(dir, "client-ca")
+	}
+	if !fileExists(filepath.Join(caDir, "ca.pem")) || !fileExists(filepath.Join(caDir, "ca-key.pem")) {
+		return fmt.Errorf("client CA not found\n  Searched: %s and %s\n  mTLS must be enabled first (set BIFRACT_IP_ACCESS=mtls-app and run --reconfigure, or use --install-k8s with mTLS)",
+			filepath.Join(dir, "caddy", "client-ca"), filepath.Join(dir, "client-ca"))
 	}
 
 	outputPath := filepath.Join(caDir, name+".p12")

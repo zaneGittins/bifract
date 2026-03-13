@@ -510,7 +510,7 @@ func RunInstallK8s() error {
 		fmt.Println()
 		fmt.Println(WarningStyle.Render("  mTLS is enabled. CA files are in " + filepath.Join(cfg.OutputDir, "client-ca") + "/"))
 		fmt.Println(DimStyle.Render("  Generate a client certificate with:"))
-		fmt.Println(DimStyle.Render("    bifract --generate-client-cert --ca-dir " + filepath.Join(cfg.OutputDir, "client-ca") + " --name \"user@example.com\" --password changeme"))
+		fmt.Println(DimStyle.Render("    bifract --gen-client-cert --dir " + cfg.OutputDir + " --name \"user@example.com\" --password changeme"))
 	}
 	fmt.Println()
 	fmt.Println(DimStyle.Render("  Deploy with:"))

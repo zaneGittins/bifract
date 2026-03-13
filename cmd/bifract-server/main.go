@@ -101,7 +101,16 @@ func main() {
 	log.Println("Successfully connected to PostgreSQL")
 
 	log.Println("Initializing PostgreSQL schema...")
-	if err := pg.Initialize(context.Background(), dbsql.PostgresSQL); err != nil {
+	pgInitSQL := dbsql.PostgresSQL
+	// If a pre-computed admin hash is provided (K8s/production), replace the default
+	// hash in the init SQL so the admin user is created with the correct password
+	// from the very first boot. No migration step needed.
+	if adminHash := os.Getenv("BIFRACT_ADMIN_PASSWORD_HASH"); adminHash != "" {
+		const defaultHash = "$2a$10$6qlugatnTUiTnVhThGK.l.g241wHWktjOAPykPJpHOh8RbxkApQvG"
+		pgInitSQL = strings.Replace(pgInitSQL, defaultHash, adminHash, 1)
+		pgInitSQL = strings.Replace(pgInitSQL, "TRUE,\n    TRUE\n)\nON CONFLICT", "TRUE,\n    FALSE\n)\nON CONFLICT", 1)
+	}
+	if err := pg.Initialize(context.Background(), pgInitSQL); err != nil {
 		log.Fatalf("Failed to initialize PostgreSQL schema: %v", err)
 	}
 	log.Println("PostgreSQL schema ready")

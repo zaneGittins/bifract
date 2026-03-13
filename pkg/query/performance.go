@@ -7,33 +7,29 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"bifract/pkg/storage"
-
-	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
-// cpuSample holds a single CPU measurement for one node.
+// cpuSample holds a single CPU measurement.
 type cpuSample struct {
 	Time  time.Time
 	Value float64 // CPU% (0-100)
 }
 
-// MetricsCollector polls system.asynchronous_metrics on each ClickHouse node
-// and stores CPU history in a ring buffer. This works on both Docker (single
-// node) and Kubernetes (multiple nodes) without requiring
-// system.asynchronous_metric_log.
+// MetricsCollector polls system.asynchronous_metrics via the existing
+// ClickHouse connection and stores CPU history in a ring buffer.
 type MetricsCollector struct {
 	mu      sync.RWMutex
-	history map[string][]cpuSample // node hostname -> samples
-	maxAge  time.Duration
-	addrs   []string
-	user    string
-	pass    string
-	stop    chan struct{}
+	history []cpuSample
+	// Previous jiffy snapshot for delta-based CPU%.
+	prevBusy  float64
+	prevTotal float64
+	maxAge    time.Duration
+	db        *storage.ClickHouseClient
+	stop      chan struct{}
 }
 
 const (
@@ -44,12 +40,9 @@ const (
 // NewMetricsCollector creates and starts a background collector.
 func NewMetricsCollector(db *storage.ClickHouseClient) *MetricsCollector {
 	mc := &MetricsCollector{
-		history: make(map[string][]cpuSample),
-		maxAge:  maxHistoryAge,
-		addrs:   db.Addrs(),
-		user:    db.User,
-		pass:    db.Password,
-		stop:    make(chan struct{}),
+		maxAge: maxHistoryAge,
+		db:     db,
+		stop:   make(chan struct{}),
 	}
 	go mc.run()
 	return mc
@@ -75,68 +68,24 @@ func (mc *MetricsCollector) run() {
 }
 
 func (mc *MetricsCollector) collect() {
-	now := time.Now()
-	for _, addr := range mc.addrs {
-		pct, err := mc.queryCPU(addr)
-		if err != nil {
-			continue
-		}
-		hostname := addr
-		if idx := strings.Index(addr, "."); idx > 0 {
-			hostname = addr[:idx]
-		}
-		mc.mu.Lock()
-		samples := mc.history[hostname]
-		samples = append(samples, cpuSample{Time: now, Value: pct})
-		// Trim old samples
-		cutoff := now.Add(-mc.maxAge)
-		start := 0
-		for start < len(samples) && samples[start].Time.Before(cutoff) {
-			start++
-		}
-		mc.history[hostname] = samples[start:]
-		mc.mu.Unlock()
-	}
-}
-
-func (mc *MetricsCollector) queryCPU(addr string) (float64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{addr},
-		Auth: clickhouse.Auth{
-			Database: "default",
-			Username: mc.user,
-			Password: mc.pass,
-		},
-		DialTimeout:  3 * time.Second,
-		MaxOpenConns: 1,
-		MaxIdleConns: 0,
-	})
-	if err != nil {
-		return 0, err
-	}
-	defer conn.Close()
-
-	rows, err := conn.Query(ctx, `SELECT metric, value FROM system.asynchronous_metrics
+	rows, err := mc.db.Query(ctx, `SELECT metric, value FROM system.asynchronous_metrics
 		WHERE metric IN (
 			'OSUserTime', 'OSNiceTime', 'OSSystemTime',
 			'OSIdleTime', 'OSIOWaitTime',
 			'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
 		)`)
 	if err != nil {
-		return 0, err
+		log.Printf("[MetricsCollector] failed to query CPU metrics: %v", err)
+		return
 	}
-	defer rows.Close()
 
 	var user, nice, sys, idle, iowait, irq, softirq, steal float64
-	for rows.Next() {
-		var metric string
-		var value float64
-		if err := rows.Scan(&metric, &value); err != nil {
-			continue
-		}
+	for _, row := range rows {
+		metric, _ := row["metric"].(string)
+		value := toFloat64(row["value"])
 		switch metric {
 		case "OSUserTime":
 			user = value
@@ -160,57 +109,77 @@ func (mc *MetricsCollector) queryCPU(addr string) (float64, error) {
 	busy := user + nice + sys + irq + softirq + steal
 	total := busy + idle + iowait
 	if total <= 0 {
-		return 0, nil
+		log.Printf("[MetricsCollector] OS CPU metrics not available (all zero)")
+		return
 	}
-	return math.Round(busy/total*1000) / 10, nil
+
+	now := time.Now()
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	// Compute delta-based CPU% using the difference from the previous snapshot.
+	// The OS*Time metrics are cumulative jiffies, so we need two samples.
+	if mc.prevTotal > 0 {
+		dBusy := busy - mc.prevBusy
+		dTotal := total - mc.prevTotal
+		var pct float64
+		if dTotal > 0 {
+			pct = math.Round(dBusy/dTotal*1000) / 10
+		}
+		mc.history = append(mc.history, cpuSample{Time: now, Value: pct})
+		// Trim old samples
+		cutoff := now.Add(-mc.maxAge)
+		start := 0
+		for start < len(mc.history) && mc.history[start].Time.Before(cutoff) {
+			start++
+		}
+		mc.history = mc.history[start:]
+	}
+	mc.prevBusy = busy
+	mc.prevTotal = total
 }
 
-// CPUHistory returns collected CPU samples for the given time range, per node.
-func (mc *MetricsCollector) CPUHistory(since time.Duration, bucketSize time.Duration) map[string][]map[string]interface{} {
+// CPUHistory returns collected CPU samples for the given time range.
+func (mc *MetricsCollector) CPUHistory(since time.Duration, bucketSize time.Duration) []map[string]interface{} {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 
 	cutoff := time.Now().Add(-since)
-	result := make(map[string][]map[string]interface{})
 
-	for node, samples := range mc.history {
-		// Bucket the samples
-		type bucket struct {
-			sum   float64
-			count int
-		}
-		buckets := map[int64]*bucket{}
-		var bucketKeys []int64
-
-		for _, s := range samples {
-			if s.Time.Before(cutoff) {
-				continue
-			}
-			key := s.Time.Truncate(bucketSize).Unix()
-			b, ok := buckets[key]
-			if !ok {
-				b = &bucket{}
-				buckets[key] = b
-				bucketKeys = append(bucketKeys, key)
-			}
-			b.sum += s.Value
-			b.count++
-		}
-
-		sort.Slice(bucketKeys, func(i, j int) bool { return bucketKeys[i] < bucketKeys[j] })
-
-		var points []map[string]interface{}
-		for _, key := range bucketKeys {
-			b := buckets[key]
-			t := time.Unix(key, 0).UTC()
-			points = append(points, map[string]interface{}{
-				"time":  t.Format("2006-01-02 15:04:05"),
-				"value": math.Round(b.sum/float64(b.count)*10) / 10,
-			})
-		}
-		result[node] = points
+	type bucket struct {
+		sum   float64
+		count int
 	}
-	return result
+	buckets := map[int64]*bucket{}
+	var bucketKeys []int64
+
+	for _, s := range mc.history {
+		if s.Time.Before(cutoff) {
+			continue
+		}
+		key := s.Time.Truncate(bucketSize).Unix()
+		b, ok := buckets[key]
+		if !ok {
+			b = &bucket{}
+			buckets[key] = b
+			bucketKeys = append(bucketKeys, key)
+		}
+		b.sum += s.Value
+		b.count++
+	}
+
+	sort.Slice(bucketKeys, func(i, j int) bool { return bucketKeys[i] < bucketKeys[j] })
+
+	var points []map[string]interface{}
+	for _, key := range bucketKeys {
+		b := buckets[key]
+		t := time.Unix(key, 0).UTC()
+		points = append(points, map[string]interface{}{
+			"time":  t.Format("2006-01-02 15:04:05"),
+			"value": math.Round(b.sum/float64(b.count)*10) / 10,
+		})
+	}
+	return points
 }
 
 type PerformanceHandler struct {
@@ -422,16 +391,8 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 	}
 
 	// CPU history from collector (works on both Docker and K8s).
-	cpuHistory := h.collector.CPUHistory(since, bucketSize)
-	if len(cpuHistory) == 1 {
-		// Single node: return flat array for backwards compatibility.
-		for _, points := range cpuHistory {
-			result["cpu_history"] = points
-		}
-	} else if len(cpuHistory) > 1 {
-		// Multi-node: return per-node data so the frontend can draw
-		// one line per ClickHouse node.
-		result["cpu_history_nodes"] = cpuHistory
+	if cpuHistory := h.collector.CPUHistory(since, bucketSize); len(cpuHistory) > 0 {
+		result["cpu_history"] = cpuHistory
 	}
 
 	respondJSON(w, http.StatusOK, result)
