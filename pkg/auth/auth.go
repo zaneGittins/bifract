@@ -33,7 +33,12 @@ const (
 	loginMaxFailures    = 5               // failures before blocking
 	loginBlockDuration  = 15 * time.Minute
 	loginWindowDuration = 15 * time.Minute
+
+	// Default admin password used in init-postgres.sql (hashed without pepper)
+	defaultAdminPassword = "bifract"
 )
+
+var errSessionNotFound = fmt.Errorf("session not found")
 
 // loginAttempt tracks failed login attempts for an IP
 type loginAttempt struct {
@@ -201,8 +206,7 @@ type APIKeyValidator interface {
 type AuthHandler struct {
 	pg              *storage.PostgresClient
 	ch              *storage.ClickHouseClient
-	sessions        map[string]*Session
-	mu              sync.RWMutex
+	store           SessionStore
 	fractalManager  *fractals.Manager
 	apiKeyValidator APIKeyValidator
 	secureCookies   bool
@@ -242,7 +246,7 @@ type Response struct {
 func NewAuthHandler(pg *storage.PostgresClient) *AuthHandler {
 	handler := &AuthHandler{
 		pg:            pg,
-		sessions:      make(map[string]*Session),
+		store:         newMemorySessionStore(),
 		secureCookies: os.Getenv("BIFRACT_SECURE_COOKIES") == "true",
 		loginLimiter:  newLoginRateLimiter(),
 	}
@@ -256,7 +260,7 @@ func NewAuthHandler(pg *storage.PostgresClient) *AuthHandler {
 func NewAuthHandlerWithFractals(pg *storage.PostgresClient, fractalManager *fractals.Manager) *AuthHandler {
 	handler := &AuthHandler{
 		pg:             pg,
-		sessions:       make(map[string]*Session),
+		store:          newMemorySessionStore(),
 		fractalManager: fractalManager,
 		secureCookies:  os.Getenv("BIFRACT_SECURE_COOKIES") == "true",
 		loginLimiter:   newLoginRateLimiter(),
@@ -269,10 +273,17 @@ func NewAuthHandlerWithFractals(pg *storage.PostgresClient, fractalManager *frac
 }
 
 func NewAuthHandlerWithAPIKeys(pg *storage.PostgresClient, ch *storage.ClickHouseClient, fractalManager *fractals.Manager, apiKeyValidator APIKeyValidator) *AuthHandler {
+	var store SessionStore
+	if os.Getenv("CLICKHOUSE_CLUSTER") != "" {
+		store = newPgSessionStore(pg.DB())
+		log.Println("[Auth] Using Postgres-backed session store (cluster mode)")
+	} else {
+		store = newMemorySessionStore()
+	}
 	handler := &AuthHandler{
 		pg:              pg,
 		ch:              ch,
-		sessions:        make(map[string]*Session),
+		store:           store,
 		fractalManager:  fractalManager,
 		apiKeyValidator: apiKeyValidator,
 		secureCookies:   os.Getenv("BIFRACT_SECURE_COOKIES") == "true",
@@ -289,10 +300,67 @@ func NewAuthHandlerWithAPIKeys(pg *storage.PostgresClient, ch *storage.ClickHous
 		log.Printf("[Auth] Warning: could not resolve system fractal: %v", err)
 	}
 
+	// Migrate the default admin hash if a pepper is now configured
+	handler.migrateDefaultAdminHash()
+
 	// Start cleanup goroutine for expired sessions
 	go handler.cleanupExpiredSessions()
 
 	return handler
+}
+
+// migrateDefaultAdminHash replaces the default admin password hash from
+// init-postgres.sql with the deployment-generated hash. This handles two cases:
+//   - BIFRACT_ADMIN_PASSWORD_HASH is set (K8s/production): use the provided hash
+//     directly (already peppered by the setup wizard)
+//   - Only BIFRACT_PASSWORD_PEPPER is set: re-hash the default password with the
+//     pepper so login works
+//
+// This is a no-op if the admin password has already been changed from the default.
+func (h *AuthHandler) migrateDefaultAdminHash() {
+	adminHash := os.Getenv("BIFRACT_ADMIN_PASSWORD_HASH")
+	pepper := os.Getenv("BIFRACT_PASSWORD_PEPPER")
+	if adminHash == "" && pepper == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var storedHash string
+	err := h.pg.DB().QueryRowContext(ctx,
+		"SELECT password_hash FROM users WHERE username = 'admin'").Scan(&storedHash)
+	if err != nil {
+		return
+	}
+
+	// Only migrate if the stored hash still matches the default unpeppered password.
+	if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(defaultAdminPassword)) != nil {
+		return
+	}
+
+	var newHash string
+	if adminHash != "" {
+		// Use the pre-computed hash from the setup wizard
+		newHash = adminHash
+	} else {
+		// Re-hash the default password with the pepper
+		h, err := hashPassword(defaultAdminPassword)
+		if err != nil {
+			log.Printf("[Auth] Warning: failed to re-hash default admin password: %v", err)
+			return
+		}
+		newHash = string(h)
+	}
+
+	_, err = h.pg.DB().ExecContext(ctx,
+		"UPDATE users SET password_hash = $1, force_password_change = FALSE WHERE username = 'admin' AND password_hash = $2",
+		newHash, storedHash)
+	if err != nil {
+		log.Printf("[Auth] Warning: failed to update default admin hash: %v", err)
+		return
+	}
+	log.Printf("[Auth] Migrated default admin password hash for deployment")
 }
 
 func (h *AuthHandler) cleanupExpiredSessions() {
@@ -300,14 +368,7 @@ func (h *AuthHandler) cleanupExpiredSessions() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		h.mu.Lock()
-		now := time.Now()
-		for sessionID, session := range h.sessions {
-			if now.After(session.ExpiresAt) {
-				delete(h.sessions, sessionID)
-			}
-		}
-		h.mu.Unlock()
+		h.store.Cleanup()
 	}
 }
 
@@ -347,13 +408,7 @@ func (h *AuthHandler) logAuthEvent(event, user, ip, detail string) {
 
 // invalidateUserSessions removes all sessions for a given username
 func (h *AuthHandler) invalidateUserSessions(username string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for sessionID, session := range h.sessions {
-		if session.Username == username {
-			delete(h.sessions, sessionID)
-		}
-	}
+	h.store.DeleteByUsername(username)
 }
 
 func (h *AuthHandler) generateSessionID() (string, error) {
@@ -403,9 +458,7 @@ func (h *AuthHandler) createSession(username string) (string, error) {
 		SelectedFractal: selectedFractal,
 	}
 
-	h.mu.Lock()
-	h.sessions[sessionID] = session
-	h.mu.Unlock()
+	h.store.Set(sessionID, session)
 
 	return sessionID, nil
 }
@@ -431,25 +484,11 @@ func (h *AuthHandler) LogAuthEvent(event, user, ip, detail string) {
 }
 
 func (h *AuthHandler) getSession(sessionID string) (*Session, bool) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	session, exists := h.sessions[sessionID]
-	if !exists {
-		return nil, false
-	}
-
-	if time.Now().After(session.ExpiresAt) {
-		return nil, false
-	}
-
-	return session, true
+	return h.store.Get(sessionID)
 }
 
 func (h *AuthHandler) deleteSession(sessionID string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.sessions, sessionID)
+	h.store.Delete(sessionID)
 }
 
 // clientIP extracts the real client IP, accounting for reverse proxy headers.
@@ -1311,17 +1350,7 @@ func (h *AuthHandler) GetSelectedFractalFromSession(r *http.Request) (string, er
 
 // SetSelectedFractalInSession updates the selected fractal for a user's session, clearing any selected prism.
 func (h *AuthHandler) SetSelectedFractalInSession(sessionID, fractalID string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	session, exists := h.sessions[sessionID]
-	if !exists {
-		return fmt.Errorf("session not found")
-	}
-
-	session.SelectedFractal = fractalID
-	session.SelectedPrism = ""
-	return nil
+	return h.store.UpdateFractal(sessionID, fractalID)
 }
 
 // SetSelectedFractalInSessionFromRequest updates the selected fractal using the session cookie from the request.
@@ -1336,17 +1365,7 @@ func (h *AuthHandler) SetSelectedFractalInSessionFromRequest(r *http.Request, fr
 
 // SetSelectedPrismInSession updates the selected prism for a user's session, clearing any selected fractal.
 func (h *AuthHandler) SetSelectedPrismInSession(sessionID, prismID string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	session, exists := h.sessions[sessionID]
-	if !exists {
-		return fmt.Errorf("session not found")
-	}
-
-	session.SelectedPrism = prismID
-	session.SelectedFractal = ""
-	return nil
+	return h.store.UpdatePrism(sessionID, prismID)
 }
 
 // SetSelectedPrismInSessionFromRequest updates the selected prism using the session cookie from the request.

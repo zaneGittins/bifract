@@ -46,7 +46,7 @@ spec:
                   name: bifract-secrets
                   key: CLICKHOUSE_PASSWORD
             - name: CLICKHOUSE_CLUSTER
-              value: bifract
+              value: default
             - name: BIFRACT_PORT
               value: "8080"
             - name: BIFRACT_SECURE_COOKIES
@@ -66,6 +66,11 @@ spec:
                 secretKeyRef:
                   name: bifract-secrets
                   key: BACKUP_ENCRYPTION_KEY
+            - name: BIFRACT_ADMIN_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ADMIN_PASSWORD_HASH
             - name: BIFRACT_CORS_ORIGINS
               valueFrom:
                 configMapKeyRef:

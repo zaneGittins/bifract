@@ -35,7 +35,7 @@ spec:
                   key: POSTGRES_PASSWORD
             # ClickHouse cluster
             - name: CLICKHOUSE_HOSTS
-              value: "chi-bifract-bifract-0-0,chi-bifract-bifract-0-1"
+              value: "bifract-ch-clickhouse-0-0-0.bifract-ch-clickhouse-headless,bifract-ch-clickhouse-0-1-0.bifract-ch-clickhouse-headless"
             - name: CLICKHOUSE_PORT
               value: "9000"
             - name: CLICKHOUSE_DB
@@ -48,7 +48,7 @@ spec:
                   name: bifract-secrets
                   key: CLICKHOUSE_PASSWORD
             - name: CLICKHOUSE_CLUSTER
-              value: bifract
+              value: default
             # Application config
             - name: BIFRACT_PORT
               value: "8080"
@@ -69,6 +69,11 @@ spec:
                 secretKeyRef:
                   name: bifract-secrets
                   key: BACKUP_ENCRYPTION_KEY
+            - name: BIFRACT_ADMIN_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ADMIN_PASSWORD_HASH
             - name: BIFRACT_CORS_ORIGINS
               valueFrom:
                 configMapKeyRef:

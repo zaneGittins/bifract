@@ -64,16 +64,3 @@ spec:
       secret:
         name: bifract-secrets
         key: CLICKHOUSE_PASSWORD_HASH
-    extraConfig:
-      default_database: logs
-    extraUsersConfig:
-      users:
-        default:
-          access_management: 1
-          networks:
-            ip:
-              - "::/0"
-      profiles:
-        default:
-          max_execution_time: 60
-          use_uncompressed_cache: 1
