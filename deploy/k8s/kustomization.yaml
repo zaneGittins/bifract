@@ -12,4 +12,7 @@ resources:
   - bifract/secrets.yaml
   - caddy/deployment.yaml
   - caddy/configmap.yaml
+  - caddy/log-shipper.yaml
+  - litellm/deployment.yaml
+  - litellm/configmap.yaml
   - network-policies.yaml

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: caddy-mtls-ca
+  namespace: bifract
+type: Opaque
+stringData:
+  ca.pem: |
+{{.MTLSCACert}}

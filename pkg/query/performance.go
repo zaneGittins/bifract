@@ -1,20 +1,234 @@
 package query
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"sort"
+	"strings"
+	"sync"
+	"time"
 
 	"bifract/pkg/storage"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
+// cpuSample holds a single CPU measurement for one node.
+type cpuSample struct {
+	Time  time.Time
+	Value float64 // CPU% (0-100)
+}
+
+// MetricsCollector polls system.asynchronous_metrics on each ClickHouse node
+// and stores CPU history in a ring buffer. This works on both Docker (single
+// node) and Kubernetes (multiple nodes) without requiring
+// system.asynchronous_metric_log.
+type MetricsCollector struct {
+	mu      sync.RWMutex
+	history map[string][]cpuSample // node hostname -> samples
+	maxAge  time.Duration
+	addrs   []string
+	user    string
+	pass    string
+	stop    chan struct{}
+}
+
+const (
+	collectInterval = 30 * time.Second
+	maxHistoryAge   = 25 * time.Hour // keep slightly more than 24h
+)
+
+// NewMetricsCollector creates and starts a background collector.
+func NewMetricsCollector(db *storage.ClickHouseClient) *MetricsCollector {
+	mc := &MetricsCollector{
+		history: make(map[string][]cpuSample),
+		maxAge:  maxHistoryAge,
+		addrs:   db.Addrs(),
+		user:    db.User,
+		pass:    db.Password,
+		stop:    make(chan struct{}),
+	}
+	go mc.run()
+	return mc
+}
+
+func (mc *MetricsCollector) Stop() {
+	close(mc.stop)
+}
+
+func (mc *MetricsCollector) run() {
+	// Collect immediately on start, then on interval.
+	mc.collect()
+	ticker := time.NewTicker(collectInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-mc.stop:
+			return
+		case <-ticker.C:
+			mc.collect()
+		}
+	}
+}
+
+func (mc *MetricsCollector) collect() {
+	now := time.Now()
+	for _, addr := range mc.addrs {
+		pct, err := mc.queryCPU(addr)
+		if err != nil {
+			continue
+		}
+		hostname := addr
+		if idx := strings.Index(addr, "."); idx > 0 {
+			hostname = addr[:idx]
+		}
+		mc.mu.Lock()
+		samples := mc.history[hostname]
+		samples = append(samples, cpuSample{Time: now, Value: pct})
+		// Trim old samples
+		cutoff := now.Add(-mc.maxAge)
+		start := 0
+		for start < len(samples) && samples[start].Time.Before(cutoff) {
+			start++
+		}
+		mc.history[hostname] = samples[start:]
+		mc.mu.Unlock()
+	}
+}
+
+func (mc *MetricsCollector) queryCPU(addr string) (float64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := clickhouse.Open(&clickhouse.Options{
+		Addr: []string{addr},
+		Auth: clickhouse.Auth{
+			Database: "default",
+			Username: mc.user,
+			Password: mc.pass,
+		},
+		DialTimeout:  3 * time.Second,
+		MaxOpenConns: 1,
+		MaxIdleConns: 0,
+	})
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	rows, err := conn.Query(ctx, `SELECT metric, value FROM system.asynchronous_metrics
+		WHERE metric IN (
+			'OSUserTime', 'OSNiceTime', 'OSSystemTime',
+			'OSIdleTime', 'OSIOWaitTime',
+			'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
+		)`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var user, nice, sys, idle, iowait, irq, softirq, steal float64
+	for rows.Next() {
+		var metric string
+		var value float64
+		if err := rows.Scan(&metric, &value); err != nil {
+			continue
+		}
+		switch metric {
+		case "OSUserTime":
+			user = value
+		case "OSNiceTime":
+			nice = value
+		case "OSSystemTime":
+			sys = value
+		case "OSIdleTime":
+			idle = value
+		case "OSIOWaitTime":
+			iowait = value
+		case "OSIrqTime":
+			irq = value
+		case "OSSoftIrqTime":
+			softirq = value
+		case "OSStealTime":
+			steal = value
+		}
+	}
+
+	busy := user + nice + sys + irq + softirq + steal
+	total := busy + idle + iowait
+	if total <= 0 {
+		return 0, nil
+	}
+	return math.Round(busy/total*1000) / 10, nil
+}
+
+// CPUHistory returns collected CPU samples for the given time range, per node.
+func (mc *MetricsCollector) CPUHistory(since time.Duration, bucketSize time.Duration) map[string][]map[string]interface{} {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	cutoff := time.Now().Add(-since)
+	result := make(map[string][]map[string]interface{})
+
+	for node, samples := range mc.history {
+		// Bucket the samples
+		type bucket struct {
+			sum   float64
+			count int
+		}
+		buckets := map[int64]*bucket{}
+		var bucketKeys []int64
+
+		for _, s := range samples {
+			if s.Time.Before(cutoff) {
+				continue
+			}
+			key := s.Time.Truncate(bucketSize).Unix()
+			b, ok := buckets[key]
+			if !ok {
+				b = &bucket{}
+				buckets[key] = b
+				bucketKeys = append(bucketKeys, key)
+			}
+			b.sum += s.Value
+			b.count++
+		}
+
+		sort.Slice(bucketKeys, func(i, j int) bool { return bucketKeys[i] < bucketKeys[j] })
+
+		var points []map[string]interface{}
+		for _, key := range bucketKeys {
+			b := buckets[key]
+			t := time.Unix(key, 0).UTC()
+			points = append(points, map[string]interface{}{
+				"time":  t.Format("2006-01-02 15:04:05"),
+				"value": math.Round(b.sum/float64(b.count)*10) / 10,
+			})
+		}
+		result[node] = points
+	}
+	return result
+}
+
 type PerformanceHandler struct {
-	db *storage.ClickHouseClient
+	db        *storage.ClickHouseClient
+	collector *MetricsCollector
 }
 
 func NewPerformanceHandler(db *storage.ClickHouseClient) *PerformanceHandler {
-	return &PerformanceHandler{db: db}
+	mc := NewMetricsCollector(db)
+	log.Printf("[Performance] Started metrics collector for %d node(s)", len(db.Addrs()))
+	return &PerformanceHandler{db: db, collector: mc}
+}
+
+// StopCollector stops the background metrics collector.
+func (h *PerformanceHandler) StopCollector() {
+	if h.collector != nil {
+		h.collector.Stop()
+	}
 }
 
 // HandleProcesses returns currently running queries from system.processes
@@ -121,14 +335,20 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 
 	// Parse time range
 	interval := "1 HOUR"
-	bucket := "1 MINUTE"
+	var since time.Duration
+	var bucketSize time.Duration
 	switch r.URL.Query().Get("range") {
 	case "8h":
 		interval = "8 HOUR"
-		bucket = "5 MINUTE"
+		since = 8 * time.Hour
+		bucketSize = 5 * time.Minute
 	case "24h":
 		interval = "24 HOUR"
-		bucket = "15 MINUTE"
+		since = 24 * time.Hour
+		bucketSize = 15 * time.Minute
+	default:
+		since = 1 * time.Hour
+		bucketSize = 1 * time.Minute
 	}
 
 	result := map[string]interface{}{
@@ -201,88 +421,20 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 		result["recent_queries"] = recentQueries
 	}
 
-	// CPU history from metric log. ClickHouse OS*Time metrics are already
-	// rates (seconds of CPU time per second of wall time), not cumulative
-	// counters, so we average per bucket and compute the ratio directly.
-	cpuSQL := fmt.Sprintf(`SELECT
-		toStartOfInterval(event_time, INTERVAL %s) AS t,
-		metric,
-		avg(value) AS value
-	FROM system.asynchronous_metric_log
-	WHERE event_time > now() - INTERVAL %s
-		AND metric IN (
-			'OSUserTime', 'OSNiceTime', 'OSSystemTime',
-			'OSIdleTime', 'OSIOWaitTime',
-			'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
-		)
-	GROUP BY t, metric
-	ORDER BY t`, bucket, interval)
-	cpuRows, err := h.db.Query(r.Context(), cpuSQL)
-	if err == nil {
-		result["cpu_history"] = computeCpuHistory(cpuRows)
+	// CPU history from collector (works on both Docker and K8s).
+	cpuHistory := h.collector.CPUHistory(since, bucketSize)
+	if len(cpuHistory) == 1 {
+		// Single node: return flat array for backwards compatibility.
+		for _, points := range cpuHistory {
+			result["cpu_history"] = points
+		}
+	} else if len(cpuHistory) > 1 {
+		// Multi-node: return per-node data so the frontend can draw
+		// one line per ClickHouse node.
+		result["cpu_history_nodes"] = cpuHistory
 	}
 
 	respondJSON(w, http.StatusOK, result)
-}
-
-// computeCpuHistory pivots averaged rate metrics per time bucket and
-// computes CPU% directly. ClickHouse OS*Time values are already rates
-// (seconds of CPU time per second of wall time across all cores).
-func computeCpuHistory(rows []map[string]interface{}) []map[string]interface{} {
-	type cpuPoint struct {
-		user, nice, system, idle, iowait, irq, softirq, steal float64
-	}
-
-	byTime := map[string]*cpuPoint{}
-	var times []string
-
-	for _, row := range rows {
-		t := fmt.Sprintf("%v", row["t"])
-		metric, _ := row["metric"].(string)
-		value := toFloat64(row["value"])
-
-		if _, ok := byTime[t]; !ok {
-			byTime[t] = &cpuPoint{}
-			times = append(times, t)
-		}
-		switch metric {
-		case "OSUserTime":
-			byTime[t].user = value
-		case "OSNiceTime":
-			byTime[t].nice = value
-		case "OSSystemTime":
-			byTime[t].system = value
-		case "OSIdleTime":
-			byTime[t].idle = value
-		case "OSIOWaitTime":
-			byTime[t].iowait = value
-		case "OSIrqTime":
-			byTime[t].irq = value
-		case "OSSoftIrqTime":
-			byTime[t].softirq = value
-		case "OSStealTime":
-			byTime[t].steal = value
-		}
-	}
-
-	sort.Strings(times)
-
-	var result []map[string]interface{}
-	for _, t := range times {
-		p := byTime[t]
-		busy := p.user + p.nice + p.system + p.irq + p.softirq + p.steal
-		total := busy + p.idle + p.iowait
-		if total <= 0 {
-			continue
-		}
-		pct := math.Round(busy/total*1000) / 10
-
-		result = append(result, map[string]interface{}{
-			"time":  t,
-			"value": pct,
-		})
-	}
-	return result
 }
 
 func toFloat64(v interface{}) float64 {

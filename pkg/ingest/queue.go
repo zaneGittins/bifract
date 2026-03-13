@@ -217,20 +217,66 @@ func (q *IngestQueue) monitorCPU() {
 	}
 }
 
-// queryClickHouseCPU returns the current host CPU utilization as a
-// percentage (0-100) by reading OS CPU time metrics from ClickHouse.
+// queryClickHouseCPU returns the highest CPU utilization (0-100) across
+// all ClickHouse nodes. In single-node mode this queries via the shared
+// connection pool. In cluster mode it queries each node individually and
+// returns the max, so backpressure triggers when any node is overloaded.
 func (q *IngestQueue) queryClickHouseCPU() (float64, error) {
+	addrs := q.db.Addrs()
+	if len(addrs) <= 1 {
+		return q.queryNodeCPU(nil)
+	}
+	var maxPct float64
+	var lastErr error
+	for _, addr := range addrs {
+		pct, err := q.queryNodeCPU(&addr)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if pct > maxPct {
+			maxPct = pct
+		}
+	}
+	if maxPct > 0 || lastErr == nil {
+		return maxPct, nil
+	}
+	return 0, lastErr
+}
+
+// queryNodeCPU queries CPU metrics from a single ClickHouse node.
+// If addr is nil, uses the shared connection pool.
+func (q *IngestQueue) queryNodeCPU(addr *string) (float64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	rows, err := q.db.Query(ctx, `SELECT metric, value FROM system.asynchronous_metrics
-		WHERE metric IN (
-			'OSUserTime', 'OSNiceTime', 'OSSystemTime',
-			'OSIdleTime', 'OSIOWaitTime',
-			'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
-		)`)
+
+	var rows []map[string]interface{}
+	var err error
+
+	if addr != nil {
+		conn, openErr := storage.OpenClickHouseAddr(*addr, q.db.User, q.db.Password)
+		if openErr != nil {
+			return 0, openErr
+		}
+		defer conn.Close()
+		rows, err = storage.QueryConn(ctx, conn, `SELECT metric, value FROM system.asynchronous_metrics
+			WHERE metric IN (
+				'OSUserTime', 'OSNiceTime', 'OSSystemTime',
+				'OSIdleTime', 'OSIOWaitTime',
+				'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
+			)`)
+	} else {
+		rows, err = q.db.Query(ctx, `SELECT metric, value FROM system.asynchronous_metrics
+			WHERE metric IN (
+				'OSUserTime', 'OSNiceTime', 'OSSystemTime',
+				'OSIdleTime', 'OSIOWaitTime',
+				'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
+			)`)
+	}
 	if err != nil {
 		return 0, err
 	}
+
 	var user, nice, system, idle, iowait, irq, softirq, steal float64
 	for _, row := range rows {
 		name, _ := row["metric"].(string)

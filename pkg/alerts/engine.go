@@ -236,14 +236,27 @@ func (e *Engine) evaluationLoop(interval time.Duration) {
 	}
 }
 
+// alertEngineLockID is the Postgres advisory lock ID used to ensure only one
+// Bifract replica evaluates alerts at a time. The value is arbitrary but must
+// be consistent across all replicas.
+const alertEngineLockID int64 = 0x6269667261637401 // "bifract\x01"
+
 // evaluateAllAlerts runs one evaluation cycle for every enabled alert.
 // Only one cycle runs at a time; if the previous cycle hasn't finished
-// when the next tick fires, the tick is skipped.
+// when the next tick fires, the tick is skipped. A Postgres advisory lock
+// ensures only one replica in a multi-instance deployment evaluates alerts.
 func (e *Engine) evaluateAllAlerts() {
 	if !e.running.CompareAndSwap(false, true) {
 		return
 	}
 	defer e.running.Store(false)
+
+	// Distributed lock: only one replica evaluates alerts at a time.
+	unlock, acquired := e.pg.TryAdvisoryLock(context.Background(), alertEngineLockID)
+	if !acquired {
+		return
+	}
+	defer unlock()
 
 	if e.ingestActive != nil && e.ingestActive() {
 		return

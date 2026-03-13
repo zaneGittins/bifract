@@ -22,6 +22,9 @@ type K8sConfig struct {
 	CHStorageGB  int
 	StorageClass string
 	OutputDir    string
+	MTLSEnabled  bool
+	MTLSCACert   string // PEM-encoded CA cert for client verification
+	MTLSCAKey    string // PEM-encoded CA key for signing client certs
 }
 
 // K8s wizard steps
@@ -121,7 +124,7 @@ func newK8sWizardModel() k8sWizardModel {
 		outputDirInput:  outputDir,
 		sslChoices:      []string{"Let's Encrypt (automatic)", "Custom certificate"},
 		sslCursor:       0,
-		ipChoices:       []string{"Allow all traffic", "Restrict UI only (allow ingest)", "Restrict all traffic"},
+		ipChoices:       []string{"Allow all traffic", "Restrict UI only (allow ingest)", "Restrict all traffic", "mTLS (mutual TLS for UI)"},
 		ipCursor:        0,
 	}
 }
@@ -230,6 +233,12 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 			m.config.IPAccess = IPAccessRestrictApp
 		case 2:
 			m.config.IPAccess = IPAccessRestrictAll
+		case 3:
+			m.config.IPAccess = IPAccessMTLSApp
+			m.config.MTLSEnabled = true
+			m.step = k8sStepCHShards
+			m.shardsInput.Focus()
+			return m, textinput.Blink
 		}
 		m.step = k8sStepAllowedIPs
 		m.allowedIPsInput.Focus()
@@ -430,6 +439,14 @@ func RunInstallK8s() error {
 	if err := cfg.GeneratePasswords(); err != nil {
 		return fmt.Errorf("generate passwords: %w", err)
 	}
+	if cfg.MTLSEnabled {
+		caCert, caKey, err := GenerateClientCAPEM()
+		if err != nil {
+			return fmt.Errorf("generate mTLS CA: %w", err)
+		}
+		cfg.MTLSCACert = caCert
+		cfg.MTLSCAKey = caKey
+	}
 	printDone("Credentials generated")
 
 	// Create output directory
@@ -440,6 +457,7 @@ func RunInstallK8s() error {
 		filepath.Join(cfg.OutputDir, "postgres"),
 		filepath.Join(cfg.OutputDir, "bifract"),
 		filepath.Join(cfg.OutputDir, "caddy"),
+		filepath.Join(cfg.OutputDir, "litellm"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0755); err != nil {
@@ -452,6 +470,18 @@ func RunInstallK8s() error {
 	printStep("Writing manifests...")
 	if err := writeK8sManifests(cfg); err != nil {
 		return fmt.Errorf("write manifests: %w", err)
+	}
+	if cfg.MTLSEnabled {
+		caDir := filepath.Join(cfg.OutputDir, "client-ca")
+		if err := os.MkdirAll(caDir, 0700); err != nil {
+			return fmt.Errorf("create client-ca dir: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(caDir, "ca.pem"), []byte(cfg.MTLSCACert), 0644); err != nil {
+			return fmt.Errorf("write CA cert: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(caDir, "ca-key.pem"), []byte(cfg.MTLSCAKey), 0600); err != nil {
+			return fmt.Errorf("write CA key: %w", err)
+		}
 	}
 	printDone("Manifests written to " + cfg.OutputDir)
 
@@ -476,6 +506,12 @@ func RunInstallK8s() error {
 	fmt.Println(summary)
 	fmt.Println()
 	fmt.Println(WarningStyle.Render("  Save the admin password above. It will not be shown again."))
+	if cfg.MTLSEnabled {
+		fmt.Println()
+		fmt.Println(WarningStyle.Render("  mTLS is enabled. CA files are in " + filepath.Join(cfg.OutputDir, "client-ca") + "/"))
+		fmt.Println(DimStyle.Render("  Generate a client certificate with:"))
+		fmt.Println(DimStyle.Render("    bifract --generate-client-cert --ca-dir " + filepath.Join(cfg.OutputDir, "client-ca") + " --name \"user@example.com\" --password changeme"))
+	}
 	fmt.Println()
 	fmt.Println(DimStyle.Render("  Deploy with:"))
 	fmt.Println(DimStyle.Render("    1. Install cert-manager:"))
@@ -502,9 +538,13 @@ type k8sTemplateData struct {
 	PostgresPassword    string
 	ClickHousePassword  string
 	PasswordPepper      string
+	AdminPasswordHash   string
 	FeedEncryptionKey   string
 	BackupEncryptionKey string
+	LiteLLMMasterKey    string
 	IPBlock             string
+	MTLSEnabled         bool
+	MTLSCACert          string
 }
 
 // k8sManifestFile maps an embedded template to its output path.
@@ -523,6 +563,9 @@ var k8sManifests = []k8sManifestFile{
 	{"templates/k8s/bifract-secrets.yaml.tmpl", "bifract/secrets.yaml"},
 	{"templates/k8s/caddy-deployment.yaml.tmpl", "caddy/deployment.yaml"},
 	{"templates/k8s/caddy-configmap.yaml.tmpl", "caddy/configmap.yaml"},
+	{"templates/k8s/caddy-log-shipper.yaml.tmpl", "caddy/log-shipper.yaml"},
+	{"templates/k8s/litellm-deployment.yaml.tmpl", "litellm/deployment.yaml"},
+	{"templates/k8s/litellm-configmap.yaml.tmpl", "litellm/configmap.yaml"},
 	{"templates/k8s/network-policies.yaml.tmpl", "network-policies.yaml"},
 }
 
@@ -538,9 +581,13 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		PostgresPassword:    cfg.PostgresPassword,
 		ClickHousePassword:  cfg.ClickHousePassword,
 		PasswordPepper:      cfg.PasswordPepper,
+		AdminPasswordHash:   cfg.AdminPasswordHash,
 		FeedEncryptionKey:   cfg.FeedEncryptionKey,
 		BackupEncryptionKey: cfg.BackupEncryptionKey,
+		LiteLLMMasterKey:    cfg.LiteLLMMasterKey,
 		IPBlock:             buildIPBlock(cfg),
+		MTLSEnabled:         cfg.MTLSEnabled,
+		MTLSCACert:          indentPEM(cfg.MTLSCACert, "    "),
 	}
 
 	for _, m := range k8sManifests {
@@ -554,6 +601,18 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		}
 		if err := os.WriteFile(outPath, []byte(content), 0600); err != nil {
 			return fmt.Errorf("write %s: %w", m.output, err)
+		}
+	}
+
+	// Conditionally write mTLS CA secret.
+	if cfg.MTLSEnabled {
+		content, err := renderK8sTemplate("templates/k8s/caddy-mtls.yaml.tmpl", data)
+		if err != nil {
+			return fmt.Errorf("render mTLS template: %w", err)
+		}
+		outPath := filepath.Join(cfg.OutputDir, "caddy/mtls-ca.yaml")
+		if err := os.WriteFile(outPath, []byte(content), 0600); err != nil {
+			return fmt.Errorf("write mTLS CA secret: %w", err)
 		}
 	}
 
@@ -588,6 +647,15 @@ func buildCHHostsList(shards, replicas int) string {
 		}
 	}
 	return strings.Join(hosts, ",")
+}
+
+// indentPEM prepends each line of a PEM string with the given prefix.
+func indentPEM(pem, prefix string) string {
+	lines := strings.Split(strings.TrimRight(pem, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 // buildIPBlock generates the Caddy IP restriction block for the Caddyfile template.

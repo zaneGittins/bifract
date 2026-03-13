@@ -15,11 +15,15 @@ import (
 
 type ClickHouseClient struct {
 	conn     driver.Conn
+	addrs    []string // host:port addresses
 	User     string
 	Password string
 	Database string
 	Cluster  string // ClickHouse cluster name; empty for single-node deployments
 }
+
+// Addrs returns the host:port addresses this client connects to.
+func (c *ClickHouseClient) Addrs() []string { return c.addrs }
 
 // IsCluster returns true when the client is configured for a replicated cluster.
 func (c *ClickHouseClient) IsCluster() bool {
@@ -210,11 +214,12 @@ func NewClickHouseClient(host string, port int, database, user, password string)
 
 // NewClickHouseClientWithPool creates a client with explicit pool configuration.
 func NewClickHouseClientWithPool(host string, port int, database, user, password string, pool ClickHousePoolConfig) (*ClickHouseClient, error) {
-	conn, err := openClickHouseConn([]string{fmt.Sprintf("%s:%d", host, port)}, database, user, password, pool)
+	addr := fmt.Sprintf("%s:%d", host, port)
+	conn, err := openClickHouseConn([]string{addr}, database, user, password, pool)
 	if err != nil {
 		return nil, err
 	}
-	return &ClickHouseClient{conn: conn, User: user, Password: password, Database: database}, nil
+	return &ClickHouseClient{conn: conn, addrs: []string{addr}, User: user, Password: password, Database: database}, nil
 }
 
 // validClusterName matches only safe ClickHouse cluster identifiers.
@@ -255,7 +260,7 @@ func NewClickHouseClusterClient(hosts []string, port int, database, user, passwo
 	if err != nil {
 		return nil, err
 	}
-	return &ClickHouseClient{conn: conn, User: user, Password: password, Database: database, Cluster: cluster}, nil
+	return &ClickHouseClient{conn: conn, addrs: addrs, User: user, Password: password, Database: database, Cluster: cluster}, nil
 }
 
 // openClickHouseConn opens a connection to ClickHouse with the given addresses.
@@ -286,6 +291,71 @@ func openClickHouseConn(addrs []string, database, user, password string, pool Cl
 		return nil, fmt.Errorf("failed to connect to ClickHouse: %w", err)
 	}
 	return conn, nil
+}
+
+// OpenClickHouseAddr opens a lightweight, single-connection ClickHouse conn
+// to a specific host:port. Callers must Close() when done.
+func OpenClickHouseAddr(addr, user, password string) (driver.Conn, error) {
+	conn, err := clickhouse.Open(&clickhouse.Options{
+		Addr: []string{addr},
+		Auth: clickhouse.Auth{
+			Database: "default",
+			Username: user,
+			Password: password,
+		},
+		DialTimeout:  3 * time.Second,
+		MaxOpenConns: 1,
+		MaxIdleConns: 0,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// QueryConn executes a query on a raw driver.Conn and returns results as
+// []map[string]interface{}, mirroring ClickHouseClient.Query.
+func QueryConn(ctx context.Context, conn driver.Conn, query string) ([]map[string]interface{}, error) {
+	rows, err := conn.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []map[string]interface{}
+	columnTypes := rows.ColumnTypes()
+	for rows.Next() {
+		values := make([]interface{}, len(columnTypes))
+		for i, col := range columnTypes {
+			typeName := col.DatabaseTypeName()
+			switch {
+			case typeName == "Float64" || typeName == "Nullable(Float64)":
+				values[i] = new(float64)
+			case typeName == "String" || typeName == "Nullable(String)":
+				values[i] = new(string)
+			case typeName == "UInt64" || typeName == "Nullable(UInt64)":
+				values[i] = new(uint64)
+			default:
+				values[i] = new(string)
+			}
+		}
+		if err := rows.Scan(values...); err != nil {
+			continue
+		}
+		row := make(map[string]interface{})
+		for i, col := range columnTypes {
+			switch v := values[i].(type) {
+			case *float64:
+				row[col.Name()] = *v
+			case *string:
+				row[col.Name()] = *v
+			case *uint64:
+				row[col.Name()] = *v
+			}
+		}
+		results = append(results, row)
+	}
+	return results, nil
 }
 
 // EscCHStr escapes a value for safe use inside single-quoted ClickHouse strings.

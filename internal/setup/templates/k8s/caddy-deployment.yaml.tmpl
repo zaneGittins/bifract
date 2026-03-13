@@ -29,6 +29,13 @@ spec:
               subPath: Caddyfile
             - name: caddy-data
               mountPath: /data
+            - name: caddy-logs
+              mountPath: /var/log/caddy
+{{- if .MTLSEnabled}}
+            - name: client-ca
+              mountPath: /etc/caddy/client-ca
+              readOnly: true
+{{- end}}
           resources:
             requests:
               cpu: 100m
@@ -36,12 +43,46 @@ spec:
             limits:
               cpu: "1"
               memory: 512Mi
+        - name: log-shipper
+          image: alpine:3
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              apk add --no-cache jq curl > /dev/null 2>&1
+              exec /scripts/ship-logs.sh
+          env:
+            - name: BIFRACT_INGEST_URL
+              value: "http://bifract.bifract.svc.cluster.local:8080/api/v1/internal/ingest/system"
+          volumeMounts:
+            - name: caddy-logs
+              mountPath: /var/log/caddy
+              readOnly: true
+            - name: log-shipper-script
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
       volumes:
         - name: caddyfile
           configMap:
             name: caddy-config
         - name: caddy-data
           emptyDir: {}
+        - name: caddy-logs
+          emptyDir: {}
+        - name: log-shipper-script
+          configMap:
+            name: caddy-log-shipper
+            defaultMode: 0755
+{{- if .MTLSEnabled}}
+        - name: client-ca
+          secret:
+            secretName: caddy-mtls-ca
+{{- end}}
 ---
 apiVersion: v1
 kind: Service
@@ -50,6 +91,7 @@ metadata:
   namespace: bifract
 spec:
   type: LoadBalancer
+  externalTrafficPolicy: Local
   ports:
     - port: 443
       targetPort: 443

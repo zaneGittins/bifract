@@ -10,6 +10,22 @@ data:
     }
 
     {{.Domain}} {
+{{- if .MTLSEnabled}}
+      tls {
+        client_auth {
+          mode require_and_verify
+          trusted_ca_cert_file /etc/caddy/client-ca/ca.pem
+        }
+      }
+{{- end}}
+      log {
+        output file /var/log/caddy/access.log {
+          roll_size 50MiB
+          roll_keep 5
+          roll_keep_for 168h
+        }
+        format json
+      }
       header {
         Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
         X-Content-Type-Options "nosniff"

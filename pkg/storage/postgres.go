@@ -1180,6 +1180,31 @@ func (c *PostgresClient) Exec(ctx context.Context, query string, args ...interfa
 	return c.db.ExecContext(ctx, query, args...)
 }
 
+// TryAdvisoryLock attempts to acquire a PostgreSQL session-level advisory lock
+// using a dedicated connection. Returns the unlock function (must be called to
+// release) and true if the lock was acquired, or nil and false if another
+// session already holds it. The lock is automatically released if the returned
+// connection is closed (e.g. on process crash).
+func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unlock func(), acquired bool) {
+	conn, err := c.db.Conn(ctx)
+	if err != nil {
+		return nil, false
+	}
+	var ok bool
+	if err := conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, lockID).Scan(&ok); err != nil {
+		conn.Close()
+		return nil, false
+	}
+	if !ok {
+		conn.Close()
+		return nil, false
+	}
+	return func() {
+		conn.QueryRowContext(context.Background(), `SELECT pg_advisory_unlock($1)`, lockID)
+		conn.Close()
+	}, true
+}
+
 // ============================
 // Notebooks Database Operations
 // ============================

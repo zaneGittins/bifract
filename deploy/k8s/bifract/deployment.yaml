@@ -13,6 +13,15 @@ spec:
       labels:
         app: bifract
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: bifract
+                topologyKey: kubernetes.io/hostname
       containers:
         - name: bifract
           image: ghcr.io/zanegittins/bifract:latest
@@ -79,6 +88,15 @@ spec:
                 configMapKeyRef:
                   name: bifract-config
                   key: CORS_ORIGINS
+            - name: LITELLM_URL
+              value: http://litellm:8000
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: LITELLM_MASTER_KEY
+            - name: LITELLM_MODEL
+              value: bifract-chat-anthropic
           readinessProbe:
             httpGet:
               path: /api/v1/health

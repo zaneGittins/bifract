@@ -50,6 +50,26 @@ spec:
       ports:
         - port: 8080
 ---
+# LiteLLM: only accept traffic from Bifract pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-litellm-from-bifract
+  namespace: bifract
+spec:
+  podSelector:
+    matchLabels:
+      app: litellm
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: bifract
+      ports:
+        - port: 8000
+---
 # PostgreSQL: only accept traffic from Bifract pods
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

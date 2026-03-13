@@ -1,6 +1,6 @@
 # Kubernetes Deployment
 
-Bifract supports Kubernetes as an alternate deployment method for high availability and horizontal scaling of ClickHouse. This guide covers deploying to a managed Kubernetes cluster (e.g., DigitalOcean DOKS, AWS EKS, GKE).
+ClickHouse scales vertically on a single node exceptionally well, but when you need high availability or have outgrown the resources of a single machine, Bifract supports deploying across a Kubernetes cluster. This guide walks through deploying to a managed Kubernetes provider such as DigitalOcean DOKS, AWS EKS, or GKE.
 
 Docker Compose remains the primary and simplest deployment method. See [Installation](installation.md) for the standard setup.
 
@@ -9,7 +9,7 @@ Docker Compose remains the primary and simplest deployment method. See [Installa
 - A running Kubernetes cluster (1.28+)
 - `kubectl` configured and connected to your cluster
 - `helm` v3.0+ installed
-- A domain name with DNS access
+- A domain name
 
 ## Architecture
 
@@ -19,8 +19,9 @@ graph TB
     sources["Log Sources"]
 
     subgraph k8s ["Kubernetes Cluster (bifract namespace)"]
-        caddy["Caddy (LoadBalancer)<br/><small>Reverse Proxy + TLS</small>"]
+        caddy["Caddy (LoadBalancer)<br/><small>Reverse Proxy + TLS + Log Shipper</small>"]
         bifract["Bifract x2<br/><small>Stateless Replicas</small>"]
+        litellm["LiteLLM<br/><small>AI Proxy</small>"]
         pg[("PostgreSQL<br/><small>StatefulSet</small>")]
         ch[("ClickHouse x2<br/><small>Replicated via Operator</small>")]
         keeper[("ClickHouse Keeper<br/><small>Managed by Operator</small>")]
@@ -31,10 +32,11 @@ graph TB
     caddy -->|":8080"| bifract
     bifract --> pg
     bifract --> ch
+    bifract --> litellm
     ch --> keeper
 ```
 
-Traffic flow is enforced by NetworkPolicies: only Caddy accepts external traffic, only Caddy can reach Bifract, and only Bifract can reach the databases.
+Traffic flow is enforced by NetworkPolicies: only Caddy accepts external traffic, only Caddy can reach Bifract, only Bifract can reach the databases and LiteLLM. A log shipper sidecar in the Caddy pod ships access logs to the Bifract system fractal for audit visibility.
 
 ## Step 1: Install the ClickHouse Operator
 
@@ -52,7 +54,7 @@ Wait for cert-manager to be ready:
 kubectl -n cert-manager wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager --timeout=120s
 ```
 
-Then install the ClickHouse operator:
+Then install ClickHouse operator:
 
 ```bash
 helm install clickhouse-operator -n clickhouse-operator-system --create-namespace \
@@ -79,8 +81,9 @@ The wizard will prompt for:
 |---------|-------------|---------|
 | Domain | Your domain name | `bifract.example.com` |
 | SSL mode | Let's Encrypt or custom cert | Let's Encrypt |
-| IP access | Traffic restriction mode | Allow all |
-| CH replicas | ClickHouse replicas (2+ for HA) | `2` |
+| IP access | Traffic restriction mode (includes mTLS option) | Allow all |
+| CH shards | ClickHouse shards for horizontal scaling | `1` |
+| CH replicas | ClickHouse replicas per shard (2+ for HA) | `2` |
 | CH storage | Storage per replica in GB | `100` |
 | Output dir | Where to write manifests | `./bifract-k8s` |
 
@@ -104,7 +107,8 @@ You should see:
 - 1 ClickHouse Keeper pod (managed by the operator via `KeeperCluster`)
 - 2 ClickHouse replica pods (managed by the operator via `ClickHouseCluster`)
 - 2 Bifract pods
-- 1 Caddy pod
+- 1 Caddy pod (with a log shipper sidecar)
+- 1 LiteLLM pod
 
 ClickHouse and Keeper pods may take a minute as the operator creates and configures them.
 
@@ -116,9 +120,7 @@ Get the load balancer's external IP:
 kubectl -n bifract get svc caddy
 ```
 
-Create an A record for your domain pointing to the `EXTERNAL-IP`. The IP may take 1-2 minutes to be provisioned.
-
-Once DNS propagates, Caddy will automatically provision a Let's Encrypt certificate. You can then log in at `https://your-domain.com` with the admin credentials from Step 2.
+Create an A record for your domain pointing to the external IP of Caddy. Once DNS propagates, Caddy will automatically provision a Let's Encrypt certificate. You can then log in at `https://your-domain.com` with the admin credentials from Step 2.
 
 ## Verification
 
@@ -141,11 +143,11 @@ kubectl -n bifract get networkpolicies
 
 ## Scaling ClickHouse
 
-The default deployment creates 1 shard with 2 replicas. Replicas provide high availability within a shard. Shards distribute data across multiple nodes for increased storage capacity and query throughput.
+The default deployment creates 1 shard with 2 replicas. Both shard and replica counts can be configured during `--install-k8s`. Replicas provide high availability within a shard. Shards distribute data across multiple nodes for increased storage capacity and query throughput.
 
 **Adding replicas** (HA within a shard): edit the `ClickHouseCluster` resource and increase `replicas`. Then update the `CLICKHOUSE_HOSTS` env var in the Bifract deployment to include the new replica hostnames. Hostnames follow the pattern `bifract-ch-clickhouse-{shard}-{replica}-0.bifract-ch-clickhouse-headless`.
 
-**Adding shards** (horizontal scaling): add the `shards` field to the `ClickHouseCluster` spec:
+**Adding shards** (horizontal scaling): edit the `ClickHouseCluster` resource and increase `shards`:
 
 ```yaml
 spec:
@@ -153,10 +155,10 @@ spec:
   replicas: 2
 ```
 
-This creates 2 shards with 2 replicas each (4 total ClickHouse pods). Update `CLICKHOUSE_HOSTS` to include at least one host per shard:
+This creates 2 shards with 2 replicas each (4 total ClickHouse pods). Update `CLICKHOUSE_HOSTS` to include all hosts:
 
 ```
-bifract-ch-clickhouse-0-0-0.bifract-ch-clickhouse-headless,bifract-ch-clickhouse-1-0-0.bifract-ch-clickhouse-headless
+bifract-ch-clickhouse-0-0-0.bifract-ch-clickhouse-headless,bifract-ch-clickhouse-0-1-0.bifract-ch-clickhouse-headless,bifract-ch-clickhouse-1-0-0.bifract-ch-clickhouse-headless,bifract-ch-clickhouse-1-1-0.bifract-ch-clickhouse-headless
 ```
 
 Bifract's Distributed table automatically routes queries across all shards and distributes writes evenly using random sharding.
@@ -189,6 +191,8 @@ kubectl -n bifract get pods --show-labels
 ```
 
 The ClickHouse pods should have `app.kubernetes.io/instance=bifract-ch-clickhouse` and Keeper pods should have `app.kubernetes.io/instance=bifract-keeper-keeper`.
+
+**Client IPs showing as internal addresses:** The Caddy Service uses `externalTrafficPolicy: Local` to preserve client source IPs. If you see internal 10.x.x.x addresses in logs, verify this setting is present on the `caddy` Service. Note that `externalTrafficPolicy: Local` requires at least one Caddy pod running on a node that receives traffic from the load balancer.
 
 **Password mismatch after regenerating manifests:** If you re-run `--install-k8s` (which generates new passwords) but the databases still have data from a previous deployment, the credentials will not match. Delete the database PVCs and reapply:
 

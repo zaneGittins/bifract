@@ -79,7 +79,7 @@ const Performance = {
                 this.renderMetrics(metData.metrics || {}, metData.async_metrics || {});
                 this.renderRecentQueries(metData.recent_queries || []);
                 this.updateCharts(metData.recent_queries || []);
-                this.renderCpuChart(metData.cpu_history || []);
+                this.renderCpuChart(metData.cpu_history || [], metData.cpu_history_nodes || null);
             }
 
             this.renderPressureBanner(pressureData);
@@ -129,33 +129,25 @@ const Performance = {
         this.setText('metricTotalRows', this.formatNumber(totalRows));
     },
 
-    renderCpuChart(cpuHistory) {
+    // Per-node color palette for multi-node CPU charts.
+    nodeColors: [
+        '#9c6ade', '#4ecdc4', '#ff6b6b', '#ffd93d',
+        '#6bcb77', '#4d96ff', '#ff8fab', '#c9b1ff'
+    ],
+
+    renderCpuChart(cpuHistory, cpuHistoryNodes) {
         const canvas = document.getElementById('perfCpuChart');
         if (!canvas) return;
 
         const placeholder = document.getElementById('perfCpuPlaceholder');
+        const isMultiNode = cpuHistoryNodes && Object.keys(cpuHistoryNodes).length > 0;
+        const hasSingle = cpuHistory && cpuHistory.length > 0;
 
-        if (!cpuHistory || cpuHistory.length === 0) {
+        if (!isMultiNode && !hasSingle) {
             if (placeholder) placeholder.style.display = '';
             return;
         }
         if (placeholder) placeholder.style.display = 'none';
-
-        const labels = cpuHistory.map(p => {
-            const t = String(p.time || '');
-            // Extract HH:MM:SS from datetime string
-            const parts = t.split(' ');
-            const timePart = parts.length > 1 ? parts[1] : parts[0];
-            return timePart.substring(0, 8);
-        });
-        const data = cpuHistory.map(p => p.value);
-
-        if (this.cpuChart) {
-            this.cpuChart.data.labels = labels;
-            this.cpuChart.data.datasets[0].data = data;
-            this.cpuChart.update('none');
-            return;
-        }
 
         const cv = window.ThemeManager ? ThemeManager.getCSSVar : (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
         const chartText = cv('--chart-text') || '#e8eaed';
@@ -164,26 +156,82 @@ const Performance = {
         const chartBorder = cv('--chart-border') || '#24243e';
         const accentColor = cv('--accent-primary') || '#9c6ade';
 
-        const ctx = canvas.getContext('2d');
-        this.cpuChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'CPU %',
+        const extractTime = (p) => {
+            const t = String(p.time || '');
+            const parts = t.split(' ');
+            const timePart = parts.length > 1 ? parts[1] : parts[0];
+            return timePart.substring(0, 8);
+        };
+
+        let labels, datasets;
+
+        if (isMultiNode) {
+            // Build unified time labels from all nodes.
+            const timeSet = new Set();
+            for (const points of Object.values(cpuHistoryNodes)) {
+                for (const p of points) timeSet.add(String(p.time || ''));
+            }
+            const sortedTimes = Array.from(timeSet).sort();
+            labels = sortedTimes.map(t => {
+                const parts = t.split(' ');
+                return (parts.length > 1 ? parts[1] : parts[0]).substring(0, 8);
+            });
+
+            const nodes = Object.keys(cpuHistoryNodes).sort();
+            datasets = nodes.map((node, i) => {
+                const color = this.nodeColors[i % this.nodeColors.length];
+                const timeMap = {};
+                for (const p of cpuHistoryNodes[node]) {
+                    timeMap[String(p.time || '')] = p.value;
+                }
+                const data = sortedTimes.map(t => timeMap[t] !== undefined ? timeMap[t] : null);
+                return {
+                    label: node,
                     data: data,
-                    borderColor: accentColor,
-                    backgroundColor: accentColor + '1a',
+                    borderColor: color,
+                    backgroundColor: color + '1a',
                     borderWidth: 2,
-                    fill: true,
+                    fill: false,
                     tension: 0.3,
                     pointRadius: data.length > 60 ? 0 : 2,
                     pointHoverRadius: 4,
-                    pointBackgroundColor: accentColor,
-                    pointHoverBackgroundColor: accentColor,
-                    pointHoverBorderColor: accentColor
-                }]
-            },
+                    pointBackgroundColor: color,
+                    pointHoverBackgroundColor: color,
+                    pointHoverBorderColor: color,
+                    spanGaps: true
+                };
+            });
+        } else {
+            labels = cpuHistory.map(extractTime);
+            const data = cpuHistory.map(p => p.value);
+            datasets = [{
+                label: 'CPU %',
+                data: data,
+                borderColor: accentColor,
+                backgroundColor: accentColor + '1a',
+                borderWidth: 2,
+                fill: true,
+                tension: 0.3,
+                pointRadius: data.length > 60 ? 0 : 2,
+                pointHoverRadius: 4,
+                pointBackgroundColor: accentColor,
+                pointHoverBackgroundColor: accentColor,
+                pointHoverBorderColor: accentColor
+            }];
+        }
+
+        if (this.cpuChart) {
+            this.cpuChart.data.labels = labels;
+            this.cpuChart.data.datasets = datasets;
+            this.cpuChart.options.plugins.legend.display = isMultiNode;
+            this.cpuChart.update('none');
+            return;
+        }
+
+        const ctx = canvas.getContext('2d');
+        this.cpuChart = new Chart(ctx, {
+            type: 'line',
+            data: { labels: labels, datasets: datasets },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
@@ -193,7 +241,15 @@ const Performance = {
                     mode: 'index'
                 },
                 plugins: {
-                    legend: { display: false },
+                    legend: {
+                        display: isMultiNode,
+                        labels: {
+                            color: chartText,
+                            font: { family: 'Inter', size: 11 },
+                            boxWidth: 12,
+                            padding: 8
+                        }
+                    },
                     tooltip: {
                         backgroundColor: chartBg,
                         titleColor: chartText,
@@ -201,7 +257,10 @@ const Performance = {
                         borderColor: chartBorder,
                         borderWidth: 1,
                         callbacks: {
-                            label: (ctx) => ctx.parsed.y.toFixed(1) + '%'
+                            label: (ctx) => {
+                                const name = ctx.dataset.label || 'CPU';
+                                return name + ': ' + ctx.parsed.y.toFixed(1) + '%';
+                            }
                         }
                     }
                 },
