@@ -134,7 +134,7 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 	// In cluster mode, create the Distributed table for cross-shard reads.
 	if c.IsCluster() {
 		distSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS logs_distributed%s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', sipHash64(fractal_id))",
+			"CREATE TABLE IF NOT EXISTS logs_distributed%s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
 			c.OnClusterSQL(), EscCHStr(c.Cluster),
 		)
 		if err := c.conn.Exec(ctx, distSQL); err != nil {

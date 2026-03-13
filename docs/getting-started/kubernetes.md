@@ -139,6 +139,28 @@ kubectl -n bifract exec -it bifract-ch-clickhouse-0-0-0 -- \
 kubectl -n bifract get networkpolicies
 ```
 
+## Scaling ClickHouse
+
+The default deployment creates 1 shard with 2 replicas. Replicas provide high availability within a shard. Shards distribute data across multiple nodes for increased storage capacity and query throughput.
+
+**Adding replicas** (HA within a shard): edit the `ClickHouseCluster` resource and increase `replicas`. Then update the `CLICKHOUSE_HOSTS` env var in the Bifract deployment to include the new replica hostnames. Hostnames follow the pattern `bifract-ch-clickhouse-{shard}-{replica}-0.bifract-ch-clickhouse-headless`.
+
+**Adding shards** (horizontal scaling): add the `shards` field to the `ClickHouseCluster` spec:
+
+```yaml
+spec:
+  shards: 2
+  replicas: 2
+```
+
+This creates 2 shards with 2 replicas each (4 total ClickHouse pods). Update `CLICKHOUSE_HOSTS` to include at least one host per shard:
+
+```
+bifract-ch-clickhouse-0-0-0.bifract-ch-clickhouse-headless,bifract-ch-clickhouse-1-0-0.bifract-ch-clickhouse-headless
+```
+
+Bifract's Distributed table automatically routes queries across all shards and distributes writes evenly using random sharding.
+
 ## Updating Bifract
 
 After pushing a new container image, restart the deployment to pull it:

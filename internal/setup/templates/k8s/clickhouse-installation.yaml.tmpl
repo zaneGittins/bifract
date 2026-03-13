@@ -29,6 +29,7 @@ metadata:
   name: bifract-ch
   namespace: bifract
 spec:
+  shards: {{.CHShards}}
   replicas: {{.CHReplicas}}
   keeperClusterRef:
     name: bifract-keeper

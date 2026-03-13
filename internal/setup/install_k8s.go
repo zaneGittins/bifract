@@ -17,6 +17,7 @@ import (
 // K8sConfig extends SetupConfig with Kubernetes-specific settings.
 type K8sConfig struct {
 	SetupConfig
+	CHShards     int
 	CHReplicas   int
 	CHStorageGB  int
 	StorageClass string
@@ -32,6 +33,7 @@ const (
 	k8sStepSSL
 	k8sStepIPAccess
 	k8sStepAllowedIPs
+	k8sStepCHShards
 	k8sStepCHReplicas
 	k8sStepCHStorage
 	k8sStepOutputDir
@@ -46,6 +48,7 @@ type k8sWizardModel struct {
 
 	domainInput     textinput.Model
 	allowedIPsInput textinput.Model
+	shardsInput     textinput.Model
 	replicasInput   textinput.Model
 	storageInput    textinput.Model
 	outputDirInput  textinput.Model
@@ -74,6 +77,13 @@ func newK8sWizardModel() k8sWizardModel {
 	allowedIPs.PromptStyle = PromptStyle
 	allowedIPs.TextStyle = lipgloss.NewStyle().Foreground(White)
 
+	shards := textinput.New()
+	shards.Placeholder = "1"
+	shards.SetValue("1")
+	shards.Width = 10
+	shards.PromptStyle = PromptStyle
+	shards.TextStyle = lipgloss.NewStyle().Foreground(White)
+
 	replicas := textinput.New()
 	replicas.Placeholder = "2"
 	replicas.SetValue("2")
@@ -98,12 +108,14 @@ func newK8sWizardModel() k8sWizardModel {
 	return k8sWizardModel{
 		step: k8sStepWelcome,
 		config: &K8sConfig{
+			CHShards:    1,
 			CHReplicas:  2,
 			CHStorageGB: 100,
 			OutputDir:   "./bifract-k8s",
 		},
 		domainInput:     domain,
 		allowedIPsInput: allowedIPs,
+		shardsInput:     shards,
 		replicasInput:   replicas,
 		storageInput:    storage,
 		outputDirInput:  outputDir,
@@ -143,6 +155,8 @@ func (m k8sWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.domainInput, cmd = m.domainInput.Update(msg)
 	case k8sStepAllowedIPs:
 		m.allowedIPsInput, cmd = m.allowedIPsInput.Update(msg)
+	case k8sStepCHShards:
+		m.shardsInput, cmd = m.shardsInput.Update(msg)
 	case k8sStepCHReplicas:
 		m.replicasInput, cmd = m.replicasInput.Update(msg)
 	case k8sStepCHStorage:
@@ -209,8 +223,8 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 		switch m.ipCursor {
 		case 0:
 			m.config.IPAccess = IPAccessAll
-			m.step = k8sStepCHReplicas
-			m.replicasInput.Focus()
+			m.step = k8sStepCHShards
+			m.shardsInput.Focus()
 			return m, textinput.Blink
 		case 1:
 			m.config.IPAccess = IPAccessRestrictApp
@@ -232,6 +246,21 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.ipValidationErr = ""
+		m.step = k8sStepCHShards
+		m.shardsInput.Focus()
+		return m, textinput.Blink
+
+	case k8sStepCHShards:
+		val := strings.TrimSpace(m.shardsInput.Value())
+		if val == "" {
+			val = "1"
+		}
+		n := 1
+		fmt.Sscanf(val, "%d", &n)
+		if n < 1 {
+			n = 1
+		}
+		m.config.CHShards = n
 		m.step = k8sStepCHReplicas
 		m.replicasInput.Focus()
 		return m, textinput.Blink
@@ -335,8 +364,14 @@ func (m k8sWizardModel) View() string {
 			b.WriteString("\n  " + ErrorStyle.Render(m.ipValidationErr))
 		}
 
+	case k8sStepCHShards:
+		b.WriteString(PromptStyle.Render("  ClickHouse shards: "))
+		b.WriteString(m.shardsInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(DimStyle.Render("  Shards distribute data horizontally. 1 is fine for most workloads."))
+
 	case k8sStepCHReplicas:
-		b.WriteString(PromptStyle.Render("  ClickHouse replicas: "))
+		b.WriteString(PromptStyle.Render("  ClickHouse replicas per shard: "))
 		b.WriteString(m.replicasInput.View())
 		b.WriteString("\n\n")
 		b.WriteString(DimStyle.Render("  Minimum 2 for HA"))
@@ -354,7 +389,8 @@ func (m k8sWizardModel) View() string {
 		b.WriteString(fmt.Sprintf("  Domain:             %s\n", ValueStyle.Render(m.config.Domain)))
 		b.WriteString(fmt.Sprintf("  SSL:                %s\n", ValueStyle.Render(string(m.config.SSLMode))))
 		b.WriteString(fmt.Sprintf("  IP Access:          %s\n", ValueStyle.Render(string(m.config.IPAccess))))
-		b.WriteString(fmt.Sprintf("  CH Replicas:        %s\n", ValueStyle.Render(fmt.Sprintf("%d", m.config.CHReplicas))))
+		b.WriteString(fmt.Sprintf("  CH Shards:          %s\n", ValueStyle.Render(fmt.Sprintf("%d", m.config.CHShards))))
+		b.WriteString(fmt.Sprintf("  CH Replicas/Shard:  %s\n", ValueStyle.Render(fmt.Sprintf("%d", m.config.CHReplicas))))
 		b.WriteString(fmt.Sprintf("  CH Storage:         %s\n", ValueStyle.Render(fmt.Sprintf("%dGi per replica", m.config.CHStorageGB))))
 		b.WriteString(fmt.Sprintf("  Output:             %s\n", ValueStyle.Render(m.config.OutputDir)))
 		b.WriteString("\n")
@@ -458,6 +494,7 @@ func RunInstallK8s() error {
 type k8sTemplateData struct {
 	ImageTag            string
 	Domain              string
+	CHShards            int
 	CHReplicas          int
 	CHStorageGB         int
 	CHPasswordHash      string
@@ -493,10 +530,11 @@ func writeK8sManifests(cfg *K8sConfig) error {
 	data := k8sTemplateData{
 		ImageTag:            Version,
 		Domain:              cfg.Domain,
+		CHShards:            cfg.CHShards,
 		CHReplicas:          cfg.CHReplicas,
 		CHStorageGB:         cfg.CHStorageGB,
 		CHPasswordHash:      fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
-		CHHostsList:         buildCHHostsList(cfg.CHReplicas),
+		CHHostsList:         buildCHHostsList(cfg.CHShards, cfg.CHReplicas),
 		PostgresPassword:    cfg.PostgresPassword,
 		ClickHousePassword:  cfg.ClickHousePassword,
 		PasswordPepper:      cfg.PasswordPepper,
@@ -540,11 +578,14 @@ func renderK8sTemplate(name string, data k8sTemplateData) (string, error) {
 
 // buildCHHostsList generates the comma-separated ClickHouse host list for the
 // Bifract deployment env var based on the official operator's naming convention.
-// Pods are addressable via the shared headless service: <cluster>-clickhouse-headless.
-func buildCHHostsList(replicas int) string {
-	hosts := make([]string, replicas)
-	for i := 0; i < replicas; i++ {
-		hosts[i] = fmt.Sprintf("bifract-ch-clickhouse-0-%d-0.bifract-ch-clickhouse-headless", i)
+// Pods are named: bifract-ch-clickhouse-{shard}-{replica}-0
+// The list includes all replicas across all shards.
+func buildCHHostsList(shards, replicas int) string {
+	hosts := make([]string, 0, shards*replicas)
+	for s := 0; s < shards; s++ {
+		for r := 0; r < replicas; r++ {
+			hosts = append(hosts, fmt.Sprintf("bifract-ch-clickhouse-%d-%d-0.bifract-ch-clickhouse-headless", s, r))
+		}
 	}
 	return strings.Join(hosts, ",")
 }
