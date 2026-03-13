@@ -295,7 +295,7 @@ func (m k8sWizardModel) View() string {
 	switch m.step {
 	case k8sStepWelcome:
 		b.WriteString("  This wizard generates Kubernetes manifests with secure defaults.\n")
-		b.WriteString("  You will need the Altinity ClickHouse Operator installed on your cluster.\n\n")
+		b.WriteString("  You will need the official ClickHouse Operator and cert-manager installed.\n\n")
 		b.WriteString(DimStyle.Render("  Press Enter to continue, q to quit"))
 
 	case k8sStepDomain:
@@ -442,9 +442,12 @@ func RunInstallK8s() error {
 	fmt.Println(WarningStyle.Render("  Save the admin password above. It will not be shown again."))
 	fmt.Println()
 	fmt.Println(DimStyle.Render("  Deploy with:"))
-	fmt.Println(DimStyle.Render("    1. Install the ClickHouse Operator:"))
-	fmt.Println(DimStyle.Render("       kubectl apply -f https://raw.githubusercontent.com/Altinity/clickhouse-operator/master/deploy/operator/clickhouse-operator-install-bundle.yaml"))
-	fmt.Println(DimStyle.Render("    2. Apply the manifests:"))
+	fmt.Println(DimStyle.Render("    1. Install cert-manager:"))
+	fmt.Println(DimStyle.Render("       kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml"))
+	fmt.Println(DimStyle.Render("    2. Install the ClickHouse Operator:"))
+	fmt.Println(DimStyle.Render("       helm install clickhouse-operator -n clickhouse-operator-system --create-namespace \\"))
+	fmt.Println(DimStyle.Render("         oci://ghcr.io/clickhouse/clickhouse-operator-helm"))
+	fmt.Println(DimStyle.Render("    3. Apply the manifests:"))
 	fmt.Println(DimStyle.Render("       kubectl apply -k " + cfg.OutputDir))
 	fmt.Println()
 
@@ -536,11 +539,12 @@ func renderK8sTemplate(name string, data k8sTemplateData) (string, error) {
 }
 
 // buildCHHostsList generates the comma-separated ClickHouse host list for the
-// Bifract deployment env var based on the operator's predictable DNS naming.
+// Bifract deployment env var based on the official operator's naming convention.
+// Pods are addressable via the shared headless service: <cluster>-clickhouse-headless.
 func buildCHHostsList(replicas int) string {
 	hosts := make([]string, replicas)
 	for i := 0; i < replicas; i++ {
-		hosts[i] = fmt.Sprintf("chi-bifract-bifract-0-%d", i)
+		hosts[i] = fmt.Sprintf("bifract-ch-clickhouse-0-%d-0.bifract-ch-clickhouse-headless", i)
 	}
 	return strings.Join(hosts, ",")
 }

@@ -70,7 +70,8 @@ spec:
       ports:
         - port: 5432
 ---
-# ClickHouse: only accept traffic from Bifract pods and other CH nodes
+# ClickHouse: allow Bifract connections and inter-node replication.
+# The official ClickHouse operator labels pods with app.kubernetes.io/instance.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -79,7 +80,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      clickhouse.altinity.com/app: chop
+      app.kubernetes.io/instance: bifract-ch-clickhouse
   policyTypes:
     - Ingress
   ingress:
@@ -91,22 +92,17 @@ spec:
       ports:
         - port: 9000
         - port: 8123
-    # Inter-node replication
+    # Inter-node replication and keeper connections
     - from:
         - podSelector:
             matchLabels:
-              clickhouse.altinity.com/app: chop
+              app.kubernetes.io/instance: bifract-ch-clickhouse
       ports:
         - port: 9000
         - port: 9009
         - port: 8123
-    # Keeper connections from CH nodes
-    - from:
-        - podSelector:
-            matchLabels:
-              clickhouse.altinity.com/app: chop
 ---
-# ClickHouse Keeper: only accept from CH nodes
+# ClickHouse Keeper: only accept from CH nodes and other keepers
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -115,14 +111,20 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: clickhouse-keeper
+      app.kubernetes.io/instance: bifract-keeper-keeper
   policyTypes:
     - Ingress
   ingress:
     - from:
         - podSelector:
             matchLabels:
-              clickhouse.altinity.com/app: chop
+              app.kubernetes.io/instance: bifract-ch-clickhouse
       ports:
         - port: 2181
+        - port: 9181
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: bifract-keeper-keeper
+      ports:
         - port: 9181

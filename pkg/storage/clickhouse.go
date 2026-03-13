@@ -236,6 +236,21 @@ func NewClickHouseClusterClient(hosts []string, port int, database, user, passwo
 			addrs[i] = fmt.Sprintf("%s:%d", h, port)
 		}
 	}
+	// In cluster mode the target database may not exist yet (the operator
+	// doesn't pre-create it). Connect to "default" first and ensure the
+	// database is created ON CLUSTER before opening the real connection.
+	bootstrap, err := openClickHouseConn(addrs, "default", user, password, pool)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap connection: %w", err)
+	}
+	createDB := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s ON CLUSTER '%s'",
+		EscCHStr(database), EscCHStr(cluster))
+	if execErr := bootstrap.Exec(context.Background(), createDB); execErr != nil {
+		bootstrap.Close()
+		return nil, fmt.Errorf("create database %s: %w", database, execErr)
+	}
+	bootstrap.Close()
+
 	conn, err := openClickHouseConn(addrs, database, user, password, pool)
 	if err != nil {
 		return nil, err

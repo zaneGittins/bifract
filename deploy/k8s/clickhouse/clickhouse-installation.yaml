@@ -1,117 +1,79 @@
-# ClickHouse cluster managed by the Altinity ClickHouse Operator.
-# Prerequisites: install the operator first:
-#   kubectl apply -f https://raw.githubusercontent.com/Altinity/clickhouse-operator/master/deploy/operator/clickhouse-operator-install-bundle.yaml
+# ClickHouse cluster managed by the official ClickHouse Kubernetes Operator.
+# Prerequisites:
+#   1. Install cert-manager:
+#      kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml
+#   2. Install the ClickHouse operator:
+#      helm install clickhouse-operator -n clickhouse-operator-system --create-namespace \
+#        oci://ghcr.io/clickhouse/clickhouse-operator-helm
 #
-# Customize shardsCount, replicasCount, and storage to fit your workload.
-apiVersion: "clickhouse.altinity.com/v1"
-kind: "ClickHouseInstallation"
+# Customize replicas and storage to fit your workload.
+apiVersion: clickhouse.com/v1alpha1
+kind: KeeperCluster
 metadata:
-  name: bifract
+  name: bifract-keeper
   namespace: bifract
 spec:
-  defaults:
-    templates:
-      dataVolumeClaimTemplate: data-volume
-      podTemplate: clickhouse-pod
-  configuration:
-    zookeeper:
-      nodes:
-        - host: clickhouse-keeper
-          port: 2181
-    clusters:
-      - name: bifract
-        layout:
-          shardsCount: 1
-          replicasCount: 2
-    settings:
-      default_database: logs
-      max_execution_time: 60
-      use_uncompressed_cache: 1
-    users:
-      default/password_sha256_hex: "" # Set via secret or kustomize overlay
-      default/access_management: 1
-      default/networks/ip:
-        - "::/0"
-  templates:
-    podTemplates:
-      - name: clickhouse-pod
-        spec:
-          containers:
-            - name: clickhouse
-              image: clickhouse/clickhouse-server:26.2-alpine
-              resources:
-                requests:
-                  cpu: "1"
-                  memory: 4Gi
-                limits:
-                  cpu: "4"
-                  memory: 16Gi
-    volumeClaimTemplates:
-      - name: data-volume
-        spec:
-          accessModes:
-            - ReadWriteOnce
-          resources:
-            requests:
-              storage: 100Gi
----
-# ClickHouse Keeper for cluster coordination.
-# The ClickHouse Operator can also manage Keeper natively; this standalone
-# StatefulSet is provided as a simple default.
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: clickhouse-keeper
-  namespace: bifract
-spec:
-  serviceName: clickhouse-keeper
   replicas: 1
-  selector:
-    matchLabels:
-      app: clickhouse-keeper
-  template:
-    metadata:
-      labels:
-        app: clickhouse-keeper
-    spec:
-      containers:
-        - name: keeper
-          image: clickhouse/clickhouse-keeper:26.2-alpine
-          ports:
-            - containerPort: 2181
-              name: client
-            - containerPort: 9181
-              name: raft
-          volumeMounts:
-            - name: keeper-data
-              mountPath: /var/lib/clickhouse-keeper
-          resources:
-            requests:
-              cpu: 250m
-              memory: 512Mi
-            limits:
-              cpu: "1"
-              memory: 1Gi
-  volumeClaimTemplates:
-    - metadata:
-        name: keeper-data
-      spec:
-        accessModes: [ReadWriteOnce]
-        resources:
-          requests:
-            storage: 10Gi
+  dataVolumeClaimSpec:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 10Gi
+  containerTemplate:
+    image:
+      repository: clickhouse/clickhouse-keeper
+      tag: "26.2-alpine"
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
 ---
-apiVersion: v1
-kind: Service
+apiVersion: clickhouse.com/v1alpha1
+kind: ClickHouseCluster
 metadata:
-  name: clickhouse-keeper
+  name: bifract-ch
   namespace: bifract
 spec:
-  clusterIP: None
-  ports:
-    - port: 2181
-      name: client
-    - port: 9181
-      name: raft
-  selector:
-    app: clickhouse-keeper
+  replicas: 2
+  keeperClusterRef:
+    name: bifract-keeper
+  dataVolumeClaimSpec:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 100Gi
+  containerTemplate:
+    image:
+      repository: clickhouse/clickhouse-server
+      tag: "26.2-alpine"
+    resources:
+      requests:
+        cpu: "1"
+        memory: 4Gi
+      limits:
+        cpu: "4"
+        memory: 16Gi
+  settings:
+    defaultUserPassword:
+      passwordType: password_sha256_hex
+      secret:
+        name: bifract-secrets
+        key: CLICKHOUSE_PASSWORD_HASH
+    extraConfig:
+      default_database: logs
+    extraUsersConfig:
+      users:
+        default:
+          access_management: 1
+          networks:
+            ip:
+              - "::/0"
+      profiles:
+        default:
+          max_execution_time: 60
+          use_uncompressed_cache: 1
