@@ -39,6 +39,14 @@ func (h *QueryHandler) SetGeoIPEnabled(enabled bool) {
 	h.geoIPEnabled = enabled
 }
 
+// queryTableName returns "logs_distributed" in cluster mode, "logs" otherwise.
+func (h *QueryHandler) queryTableName() string {
+	if h.db != nil && h.db.IsCluster() {
+		return "logs_distributed"
+	}
+	return "logs"
+}
+
 // SetRBACResolver injects the RBAC resolver for access filtering.
 func (h *QueryHandler) SetRBACResolver(resolver *rbac.Resolver) {
 	h.rbacResolver = resolver
@@ -359,6 +367,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		HasCommentFilter:      hasCommentFilter,
 		CommentLogIDs:         commentLogIDs,
 		GeoIPEnabled:          h.geoIPEnabled,
+		TableName:             h.queryTableName(),
 	}
 	translationResult, err := parser.TranslateToSQLWithOrder(pipeline, opts)
 	if err != nil {
@@ -764,8 +773,9 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Run logs query and histogram query in parallel
-	logsSQL := fmt.Sprintf("SELECT timestamp, toString(fields) AS fields, log_id FROM logs %s ORDER BY timestamp DESC LIMIT 50", whereClause)
-	histogramSQL := fmt.Sprintf("SELECT toStartOfInterval(timestamp, INTERVAL 15 MINUTE) AS bucket, count() AS cnt FROM logs %s GROUP BY bucket ORDER BY bucket", whereClause)
+	readTbl := h.queryTableName()
+	logsSQL := fmt.Sprintf("SELECT timestamp, toString(fields) AS fields, log_id FROM %s %s ORDER BY timestamp DESC LIMIT 50", readTbl, whereClause)
+	histogramSQL := fmt.Sprintf("SELECT toStartOfInterval(timestamp, INTERVAL 15 MINUTE) AS bucket, count() AS cnt FROM %s %s GROUP BY bucket ORDER BY bucket", readTbl, whereClause)
 
 	type logsResult struct {
 		rows []map[string]interface{}

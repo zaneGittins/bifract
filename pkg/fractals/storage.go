@@ -334,14 +334,14 @@ func (s *Storage) ComputeAllFractalStats(ctx context.Context, fractals []*Fracta
 	}
 
 	// Query 1: count, min/max timestamp per fractal_id (cheap: uses primary key)
-	countQuery := `
+	countQuery := fmt.Sprintf(`
 		SELECT fractal_id,
 		       count()          AS count,
 		       min(timestamp)   AS oldest,
 		       max(timestamp)   AS newest
-		FROM logs
+		FROM %s
 		GROUP BY fractal_id
-	`
+	`, s.ch.ReadTable())
 	rows, err := s.ch.Query(ctx, countQuery)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute fractal count stats: %w", err)

@@ -881,12 +881,17 @@ func (m *Manager) executeQuery(ctx context.Context, fractalID string, args runQu
 		}
 	}
 
+	tableName := "logs"
+	if m.ch != nil && m.ch.IsCluster() {
+		tableName = "logs_distributed"
+	}
 	opts := parser.QueryOptions{
 		StartTime:             start,
 		EndTime:               end,
 		MaxRows:               20,
 		FractalID:             fractalID,
 		IncludeEmptyFractalID: includeEmptyFractalID,
+		TableName:             tableName,
 	}
 
 	result, err := parser.TranslateToSQLWithOrder(pipeline, opts)

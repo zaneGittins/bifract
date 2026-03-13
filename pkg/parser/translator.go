@@ -19,6 +19,15 @@ type QueryOptions struct {
 	UseIngestTimestamp    bool                          // Filter on ingest_timestamp instead of timestamp (used by alerts)
 	AlertExtraFields     []string                      // Additional fields to project in alert auto-projection (throttle field, template fields)
 	GeoIPEnabled         bool                          // True when MaxMind GeoLite2 dictionaries are loaded
+	TableName            string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
+}
+
+// EffectiveTableName returns the table name to query, defaulting to "logs".
+func (o QueryOptions) EffectiveTableName() string {
+	if o.TableName != "" {
+		return o.TableName
+	}
+	return "logs"
 }
 
 type TranslationResult struct {

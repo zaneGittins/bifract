@@ -56,6 +56,7 @@ nav:
     - API Keys: administration/ingest-tokens.md
     - Backup & Restore: administration/backup-restore.md
     - Reverse Proxy: administration/reverse-proxy.md
+    - Disk Quotas: administration/disk-quotas.md
   - Ingestion:
     - Sending Logs: ingestion/overview.md
     - CLI Tool: ingestion/cli-tool.md

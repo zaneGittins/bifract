@@ -83,7 +83,7 @@ func (h *StatusHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	status.ClickHouse.Connected = true
 
 	// Get total log count
-	countQuery := "SELECT count() as count FROM logs"
+	countQuery := "SELECT count() as count FROM " + h.db.ReadTable()
 	results, err := h.db.Query(r.Context(), countQuery)
 	if err == nil && len(results) > 0 {
 		if count, ok := results[0]["count"].(uint64); ok {
@@ -112,7 +112,7 @@ func (h *StatusHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Get oldest and newest log timestamps
 	if status.ClickHouse.TotalLogs > 0 {
-		oldestQuery := "SELECT min(timestamp) as oldest FROM logs"
+		oldestQuery := "SELECT min(timestamp) as oldest FROM " + h.db.ReadTable()
 		results, err = h.db.Query(r.Context(), oldestQuery)
 		if err == nil && len(results) > 0 {
 			if oldest, ok := results[0]["oldest"]; ok {
@@ -120,7 +120,7 @@ func (h *StatusHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		newestQuery := "SELECT max(timestamp) as newest FROM logs"
+		newestQuery := "SELECT max(timestamp) as newest FROM " + h.db.ReadTable()
 		results, err = h.db.Query(r.Context(), newestQuery)
 		if err == nil && len(results) > 0 {
 			if newest, ok := results[0]["newest"]; ok {
@@ -203,7 +203,8 @@ func (h *StatusHandler) HandleClearLogs(w http.ResponseWriter, r *http.Request) 
 		}
 
 		// Then truncate the logs table
-		err := h.db.Exec(r.Context(), "TRUNCATE TABLE logs")
+		truncateSQL := h.db.InjectOnCluster("TRUNCATE TABLE logs")
+		err := h.db.Exec(r.Context(), truncateSQL)
 		if err != nil {
 			respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
 				"success": false,

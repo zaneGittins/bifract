@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifract
+  namespace: bifract
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bifract
+  template:
+    metadata:
+      labels:
+        app: bifract
+    spec:
+      containers:
+        - name: bifract
+          image: ghcr.io/zanegittins/bifract:latest
+          ports:
+            - containerPort: 8080
+          env:
+            # PostgreSQL
+            - name: POSTGRES_HOST
+              value: postgres
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: bifract
+            - name: POSTGRES_USER
+              value: bifract
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: POSTGRES_PASSWORD
+            # ClickHouse cluster
+            - name: CLICKHOUSE_HOSTS
+              value: "chi-bifract-bifract-0-0,chi-bifract-bifract-0-1"
+            - name: CLICKHOUSE_PORT
+              value: "9000"
+            - name: CLICKHOUSE_DB
+              value: logs
+            - name: CLICKHOUSE_USER
+              value: default
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: CLICKHOUSE_PASSWORD
+            - name: CLICKHOUSE_CLUSTER
+              value: bifract
+            # Application config
+            - name: BIFRACT_PORT
+              value: "8080"
+            - name: BIFRACT_SECURE_COOKIES
+              value: "true"
+            - name: BIFRACT_PASSWORD_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: PASSWORD_PEPPER
+            - name: BIFRACT_FEED_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: FEED_ENCRYPTION_KEY
+            - name: BIFRACT_BACKUP_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: BACKUP_ENCRYPTION_KEY
+            - name: BIFRACT_CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: bifract-config
+                  key: CORS_ORIGINS
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifract
+  namespace: bifract
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app: bifract

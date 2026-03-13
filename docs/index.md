@@ -12,7 +12,7 @@ It leverages ClickHouse for log storage, PostgreSQL for configuration, and provi
 - **Sending logs?** See [Ingestion](ingestion/overview.md)
 - **Writing queries?** Learn [BQL basics](bql/basics.md)
 - **Setting up alerts?** Read [Alerting](alerting/alerts.md)
-- **API integration?** Jump to the [API Reference](api.md)
+- **API integration?** Jump to the [API Reference](api/authentication.md)
 
 ---
 

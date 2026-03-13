@@ -369,11 +369,16 @@ func (e *Engine) resolvePrismFractalIDs(ctx context.Context, prismID string, cac
 
 // buildQueryOpts constructs parser.QueryOptions with fractal/prism scoping.
 func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time.Time, cache *prismResolveCache) (parser.QueryOptions, error) {
+	tableName := "logs"
+	if e.ch != nil && e.ch.IsCluster() {
+		tableName = "logs_distributed"
+	}
 	opts := parser.QueryOptions{
 		StartTime:         from,
 		EndTime:           to,
 		MaxRows:           10000,
 		UseIngestTimestamp: true,
+		TableName:         tableName,
 	}
 	if alert.PrismID != "" {
 		ids, err := e.resolvePrismFractalIDs(ctx, alert.PrismID, cache)

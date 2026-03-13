@@ -1,0 +1,568 @@
+package setup
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"text/template"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// K8sConfig extends SetupConfig with Kubernetes-specific settings.
+type K8sConfig struct {
+	SetupConfig
+	CHReplicas   int
+	CHStorageGB  int
+	StorageClass string
+	OutputDir    string
+}
+
+// K8s wizard steps
+type k8sStep int
+
+const (
+	k8sStepWelcome k8sStep = iota
+	k8sStepDomain
+	k8sStepSSL
+	k8sStepIPAccess
+	k8sStepAllowedIPs
+	k8sStepCHReplicas
+	k8sStepCHStorage
+	k8sStepOutputDir
+	k8sStepConfirm
+	k8sStepDone
+)
+
+type k8sWizardModel struct {
+	step   k8sStep
+	config *K8sConfig
+	err    error
+
+	domainInput     textinput.Model
+	allowedIPsInput textinput.Model
+	replicasInput   textinput.Model
+	storageInput    textinput.Model
+	outputDirInput  textinput.Model
+
+	sslChoices     []string
+	sslCursor      int
+	ipChoices      []string
+	ipCursor       int
+	ipValidationErr string
+
+	width  int
+	height int
+}
+
+func newK8sWizardModel() k8sWizardModel {
+	domain := textinput.New()
+	domain.Placeholder = "bifract.example.com"
+	domain.Focus()
+	domain.Width = 40
+	domain.PromptStyle = PromptStyle
+	domain.TextStyle = lipgloss.NewStyle().Foreground(White)
+
+	allowedIPs := textinput.New()
+	allowedIPs.Placeholder = "10.0.0.0/8, 192.168.1.0/24"
+	allowedIPs.Width = 50
+	allowedIPs.PromptStyle = PromptStyle
+	allowedIPs.TextStyle = lipgloss.NewStyle().Foreground(White)
+
+	replicas := textinput.New()
+	replicas.Placeholder = "2"
+	replicas.SetValue("2")
+	replicas.Width = 10
+	replicas.PromptStyle = PromptStyle
+	replicas.TextStyle = lipgloss.NewStyle().Foreground(White)
+
+	storage := textinput.New()
+	storage.Placeholder = "100"
+	storage.SetValue("100")
+	storage.Width = 10
+	storage.PromptStyle = PromptStyle
+	storage.TextStyle = lipgloss.NewStyle().Foreground(White)
+
+	outputDir := textinput.New()
+	outputDir.Placeholder = "./bifract-k8s"
+	outputDir.SetValue("./bifract-k8s")
+	outputDir.Width = 40
+	outputDir.PromptStyle = PromptStyle
+	outputDir.TextStyle = lipgloss.NewStyle().Foreground(White)
+
+	return k8sWizardModel{
+		step: k8sStepWelcome,
+		config: &K8sConfig{
+			CHReplicas:  2,
+			CHStorageGB: 100,
+			OutputDir:   "./bifract-k8s",
+		},
+		domainInput:     domain,
+		allowedIPsInput: allowedIPs,
+		replicasInput:   replicas,
+		storageInput:    storage,
+		outputDirInput:  outputDir,
+		sslChoices:      []string{"Let's Encrypt (automatic)", "Custom certificate"},
+		sslCursor:       0,
+		ipChoices:       []string{"Allow all traffic", "Restrict UI only (allow ingest)", "Restrict all traffic"},
+		ipCursor:        0,
+	}
+}
+
+func (m k8sWizardModel) Init() tea.Cmd {
+	return textinput.Blink
+}
+
+func (m k8sWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			m.err = fmt.Errorf("cancelled")
+			return m, tea.Quit
+		case "enter":
+			return m.handleEnter()
+		case "up", "k":
+			m.handleUp()
+		case "down", "j":
+			m.handleDown()
+		}
+	}
+
+	var cmd tea.Cmd
+	switch m.step {
+	case k8sStepDomain:
+		m.domainInput, cmd = m.domainInput.Update(msg)
+	case k8sStepAllowedIPs:
+		m.allowedIPsInput, cmd = m.allowedIPsInput.Update(msg)
+	case k8sStepCHReplicas:
+		m.replicasInput, cmd = m.replicasInput.Update(msg)
+	case k8sStepCHStorage:
+		m.storageInput, cmd = m.storageInput.Update(msg)
+	case k8sStepOutputDir:
+		m.outputDirInput, cmd = m.outputDirInput.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m *k8sWizardModel) handleUp() {
+	switch m.step {
+	case k8sStepSSL:
+		if m.sslCursor > 0 {
+			m.sslCursor--
+		}
+	case k8sStepIPAccess:
+		if m.ipCursor > 0 {
+			m.ipCursor--
+		}
+	}
+}
+
+func (m *k8sWizardModel) handleDown() {
+	switch m.step {
+	case k8sStepSSL:
+		if m.sslCursor < len(m.sslChoices)-1 {
+			m.sslCursor++
+		}
+	case k8sStepIPAccess:
+		if m.ipCursor < len(m.ipChoices)-1 {
+			m.ipCursor++
+		}
+	}
+}
+
+func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
+	switch m.step {
+	case k8sStepWelcome:
+		m.step = k8sStepDomain
+		m.domainInput.Focus()
+		return m, textinput.Blink
+
+	case k8sStepDomain:
+		domain := strings.TrimSpace(m.domainInput.Value())
+		if domain == "" {
+			return m, nil
+		}
+		m.config.Domain = domain
+		m.step = k8sStepSSL
+		return m, nil
+
+	case k8sStepSSL:
+		switch m.sslCursor {
+		case 0:
+			m.config.SSLMode = SSLLetsEncrypt
+		case 1:
+			m.config.SSLMode = SSLCustom
+		}
+		m.step = k8sStepIPAccess
+		return m, nil
+
+	case k8sStepIPAccess:
+		switch m.ipCursor {
+		case 0:
+			m.config.IPAccess = IPAccessAll
+			m.step = k8sStepCHReplicas
+			m.replicasInput.Focus()
+			return m, textinput.Blink
+		case 1:
+			m.config.IPAccess = IPAccessRestrictApp
+		case 2:
+			m.config.IPAccess = IPAccessRestrictAll
+		}
+		m.step = k8sStepAllowedIPs
+		m.allowedIPsInput.Focus()
+		return m, textinput.Blink
+
+	case k8sStepAllowedIPs:
+		ips := strings.TrimSpace(m.allowedIPsInput.Value())
+		if ips == "" {
+			return m, nil
+		}
+		m.config.ParseAllowedIPs(ips)
+		if err := m.config.ValidateAllowedIPs(); err != nil {
+			m.ipValidationErr = err.Error()
+			return m, nil
+		}
+		m.ipValidationErr = ""
+		m.step = k8sStepCHReplicas
+		m.replicasInput.Focus()
+		return m, textinput.Blink
+
+	case k8sStepCHReplicas:
+		val := strings.TrimSpace(m.replicasInput.Value())
+		if val == "" {
+			val = "2"
+		}
+		n := 2
+		fmt.Sscanf(val, "%d", &n)
+		if n < 1 {
+			n = 1
+		}
+		m.config.CHReplicas = n
+		m.step = k8sStepCHStorage
+		m.storageInput.Focus()
+		return m, textinput.Blink
+
+	case k8sStepCHStorage:
+		val := strings.TrimSpace(m.storageInput.Value())
+		if val == "" {
+			val = "100"
+		}
+		n := 100
+		fmt.Sscanf(val, "%d", &n)
+		if n < 10 {
+			n = 10
+		}
+		m.config.CHStorageGB = n
+		m.step = k8sStepOutputDir
+		m.outputDirInput.Focus()
+		return m, textinput.Blink
+
+	case k8sStepOutputDir:
+		dir := strings.TrimSpace(m.outputDirInput.Value())
+		if dir == "" {
+			dir = "./bifract-k8s"
+		}
+		m.config.OutputDir = dir
+		m.step = k8sStepConfirm
+		return m, nil
+
+	case k8sStepConfirm:
+		m.step = k8sStepDone
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
+func (m k8sWizardModel) View() string {
+	var b strings.Builder
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(Green).
+		Render("  Bifract Kubernetes Setup")
+	b.WriteString(title + "\n\n")
+
+	switch m.step {
+	case k8sStepWelcome:
+		b.WriteString("  This wizard generates Kubernetes manifests with secure defaults.\n")
+		b.WriteString("  You will need the Altinity ClickHouse Operator installed on your cluster.\n\n")
+		b.WriteString(DimStyle.Render("  Press Enter to continue, q to quit"))
+
+	case k8sStepDomain:
+		b.WriteString(PromptStyle.Render("  Domain name: "))
+		b.WriteString(m.domainInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(DimStyle.Render("  e.g. bifract.example.com"))
+
+	case k8sStepSSL:
+		b.WriteString(PromptStyle.Render("  SSL mode:\n\n"))
+		for i, choice := range m.sslChoices {
+			cursor := "  "
+			if i == m.sslCursor {
+				cursor = "> "
+				b.WriteString(lipgloss.NewStyle().Foreground(Green).Render(cursor+choice) + "\n")
+			} else {
+				b.WriteString(DimStyle.Render(cursor+choice) + "\n")
+			}
+		}
+
+	case k8sStepIPAccess:
+		b.WriteString(PromptStyle.Render("  IP access control:\n\n"))
+		for i, choice := range m.ipChoices {
+			cursor := "  "
+			if i == m.ipCursor {
+				cursor = "> "
+				b.WriteString(lipgloss.NewStyle().Foreground(Green).Render(cursor+choice) + "\n")
+			} else {
+				b.WriteString(DimStyle.Render(cursor+choice) + "\n")
+			}
+		}
+
+	case k8sStepAllowedIPs:
+		b.WriteString(PromptStyle.Render("  Allowed IPs/CIDRs (comma-separated): "))
+		b.WriteString(m.allowedIPsInput.View())
+		if m.ipValidationErr != "" {
+			b.WriteString("\n  " + ErrorStyle.Render(m.ipValidationErr))
+		}
+
+	case k8sStepCHReplicas:
+		b.WriteString(PromptStyle.Render("  ClickHouse replicas: "))
+		b.WriteString(m.replicasInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(DimStyle.Render("  Minimum 2 for HA"))
+
+	case k8sStepCHStorage:
+		b.WriteString(PromptStyle.Render("  ClickHouse storage per replica (GB): "))
+		b.WriteString(m.storageInput.View())
+
+	case k8sStepOutputDir:
+		b.WriteString(PromptStyle.Render("  Output directory: "))
+		b.WriteString(m.outputDirInput.View())
+
+	case k8sStepConfirm:
+		b.WriteString(PromptStyle.Render("  Configuration Summary\n\n"))
+		b.WriteString(fmt.Sprintf("  Domain:             %s\n", ValueStyle.Render(m.config.Domain)))
+		b.WriteString(fmt.Sprintf("  SSL:                %s\n", ValueStyle.Render(string(m.config.SSLMode))))
+		b.WriteString(fmt.Sprintf("  IP Access:          %s\n", ValueStyle.Render(string(m.config.IPAccess))))
+		b.WriteString(fmt.Sprintf("  CH Replicas:        %s\n", ValueStyle.Render(fmt.Sprintf("%d", m.config.CHReplicas))))
+		b.WriteString(fmt.Sprintf("  CH Storage:         %s\n", ValueStyle.Render(fmt.Sprintf("%dGi per replica", m.config.CHStorageGB))))
+		b.WriteString(fmt.Sprintf("  Output:             %s\n", ValueStyle.Render(m.config.OutputDir)))
+		b.WriteString("\n")
+		b.WriteString(DimStyle.Render("  Press Enter to generate manifests"))
+	}
+
+	return b.String()
+}
+
+// RunInstallK8s runs the Kubernetes installation wizard and generates manifests.
+func RunInstallK8s() error {
+	PrintBanner()
+
+	model := newK8sWizardModel()
+	p := tea.NewProgram(model)
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("wizard error: %w", err)
+	}
+
+	final := finalModel.(k8sWizardModel)
+	if final.err != nil {
+		return final.err
+	}
+	if final.step != k8sStepDone {
+		return fmt.Errorf("wizard did not complete")
+	}
+
+	cfg := final.config
+
+	// Generate secure credentials
+	PrintBanner()
+	fmt.Println(TitleStyle.Render("  Generating Kubernetes Manifests"))
+	fmt.Println()
+
+	printStep("Generating secure credentials...")
+	if err := cfg.GeneratePasswords(); err != nil {
+		return fmt.Errorf("generate passwords: %w", err)
+	}
+	printDone("Credentials generated")
+
+	// Create output directory
+	printStep("Creating output directory...")
+	dirs := []string{
+		cfg.OutputDir,
+		filepath.Join(cfg.OutputDir, "clickhouse"),
+		filepath.Join(cfg.OutputDir, "postgres"),
+		filepath.Join(cfg.OutputDir, "bifract"),
+		filepath.Join(cfg.OutputDir, "caddy"),
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			return fmt.Errorf("create directory %s: %w", d, err)
+		}
+	}
+	printDone("Directories created")
+
+	// Generate manifests
+	printStep("Writing manifests...")
+	if err := writeK8sManifests(cfg); err != nil {
+		return fmt.Errorf("write manifests: %w", err)
+	}
+	printDone("Manifests written to " + cfg.OutputDir)
+
+	// Final summary
+	fmt.Println()
+	fmt.Println(TitleStyle.Render("  Kubernetes Manifests Ready"))
+	fmt.Println()
+
+	summaryText := fmt.Sprintf(
+		"%s  %s\n%s  %s\n%s  %s\n\n%s  %s",
+		PromptStyle.Render("Domain:   "), ValueStyle.Render(cfg.Domain),
+		PromptStyle.Render("Username: "), ValueStyle.Render("admin"),
+		PromptStyle.Render("Password: "), lipgloss.NewStyle().Foreground(White).Bold(true).Render(cfg.AdminPassword),
+		PromptStyle.Render("Manifests:"), DimStyle.Render(cfg.OutputDir),
+	)
+
+	summary := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(Green).
+		Padding(1, 3).
+		Render(summaryText)
+	fmt.Println(summary)
+	fmt.Println()
+	fmt.Println(WarningStyle.Render("  Save the admin password above. It will not be shown again."))
+	fmt.Println()
+	fmt.Println(DimStyle.Render("  Deploy with:"))
+	fmt.Println(DimStyle.Render("    1. Install the ClickHouse Operator:"))
+	fmt.Println(DimStyle.Render("       kubectl apply -f https://raw.githubusercontent.com/Altinity/clickhouse-operator/master/deploy/operator/clickhouse-operator-install-bundle.yaml"))
+	fmt.Println(DimStyle.Render("    2. Apply the manifests:"))
+	fmt.Println(DimStyle.Render("       kubectl apply -k " + cfg.OutputDir))
+	fmt.Println()
+
+	return nil
+}
+
+// k8sTemplateData holds all values needed by the K8s manifest templates.
+type k8sTemplateData struct {
+	ImageTag            string
+	Domain              string
+	CHReplicas          int
+	CHStorageGB         int
+	CHPasswordHash      string
+	CHHostsList         string
+	PostgresPassword    string
+	ClickHousePassword  string
+	PasswordPepper      string
+	FeedEncryptionKey   string
+	BackupEncryptionKey string
+	IPBlock             string
+}
+
+// k8sManifestFile maps an embedded template to its output path.
+type k8sManifestFile struct {
+	template string // path within TemplateFS
+	output   string // path relative to output dir
+}
+
+var k8sManifests = []k8sManifestFile{
+	{"templates/k8s/namespace.yaml.tmpl", "namespace.yaml"},
+	{"templates/k8s/kustomization.yaml.tmpl", "kustomization.yaml"},
+	{"templates/k8s/clickhouse-installation.yaml.tmpl", "clickhouse/clickhouse-installation.yaml"},
+	{"templates/k8s/postgres-statefulset.yaml.tmpl", "postgres/statefulset.yaml"},
+	{"templates/k8s/bifract-deployment.yaml.tmpl", "bifract/deployment.yaml"},
+	{"templates/k8s/bifract-configmap.yaml.tmpl", "bifract/configmap.yaml"},
+	{"templates/k8s/bifract-secrets.yaml.tmpl", "bifract/secrets.yaml"},
+	{"templates/k8s/caddy-deployment.yaml.tmpl", "caddy/deployment.yaml"},
+	{"templates/k8s/caddy-configmap.yaml.tmpl", "caddy/configmap.yaml"},
+	{"templates/k8s/network-policies.yaml.tmpl", "network-policies.yaml"},
+}
+
+func writeK8sManifests(cfg *K8sConfig) error {
+	data := k8sTemplateData{
+		ImageTag:            Version,
+		Domain:              cfg.Domain,
+		CHReplicas:          cfg.CHReplicas,
+		CHStorageGB:         cfg.CHStorageGB,
+		CHPasswordHash:      fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
+		CHHostsList:         buildCHHostsList(cfg.CHReplicas),
+		PostgresPassword:    cfg.PostgresPassword,
+		ClickHousePassword:  cfg.ClickHousePassword,
+		PasswordPepper:      cfg.PasswordPepper,
+		FeedEncryptionKey:   cfg.FeedEncryptionKey,
+		BackupEncryptionKey: cfg.BackupEncryptionKey,
+		IPBlock:             buildIPBlock(cfg),
+	}
+
+	for _, m := range k8sManifests {
+		content, err := renderK8sTemplate(m.template, data)
+		if err != nil {
+			return fmt.Errorf("render %s: %w", m.template, err)
+		}
+		outPath := filepath.Join(cfg.OutputDir, m.output)
+		if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+			return fmt.Errorf("create dir for %s: %w", m.output, err)
+		}
+		if err := os.WriteFile(outPath, []byte(content), 0600); err != nil {
+			return fmt.Errorf("write %s: %w", m.output, err)
+		}
+	}
+
+	return nil
+}
+
+func renderK8sTemplate(name string, data k8sTemplateData) (string, error) {
+	content, err := TemplateFS.ReadFile(name)
+	if err != nil {
+		return "", fmt.Errorf("read template %s: %w", name, err)
+	}
+	tmpl, err := template.New(filepath.Base(name)).Parse(string(content))
+	if err != nil {
+		return "", fmt.Errorf("parse template %s: %w", name, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("execute template %s: %w", name, err)
+	}
+	return buf.String(), nil
+}
+
+// buildCHHostsList generates the comma-separated ClickHouse host list for the
+// Bifract deployment env var based on the operator's predictable DNS naming.
+func buildCHHostsList(replicas int) string {
+	hosts := make([]string, replicas)
+	for i := 0; i < replicas; i++ {
+		hosts[i] = fmt.Sprintf("chi-bifract-bifract-0-%d", i)
+	}
+	return strings.Join(hosts, ",")
+}
+
+// buildIPBlock generates the Caddy IP restriction block for the Caddyfile template.
+func buildIPBlock(cfg *K8sConfig) string {
+	if cfg.IPAccess != IPAccessRestrictApp && cfg.IPAccess != IPAccessRestrictAll {
+		return ""
+	}
+	if len(cfg.AllowedIPs) == 0 {
+		return ""
+	}
+	var remoteIPs []string
+	for _, ip := range cfg.AllowedIPs {
+		remoteIPs = append(remoteIPs, "        remote_ip "+ip)
+	}
+	return fmt.Sprintf(`
+      @blocked {
+        not {
+%s
+        }
+      }
+      respond @blocked 403
+`, strings.Join(remoteIPs, "\n"))
+}

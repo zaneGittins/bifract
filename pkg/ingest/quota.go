@@ -158,11 +158,11 @@ func (qm *QuotaManager) triggerRollover(fractalID string, st *fractalQuotaState)
 	// is (fractal_id, timestamp, log_id) so this scan is index-efficient.
 	cutoffQuery := fmt.Sprintf(
 		`SELECT max(timestamp) FROM (
-			SELECT timestamp FROM logs WHERE fractal_id = '%s'
+			SELECT timestamp FROM %s WHERE fractal_id = '%s'
 			ORDER BY fractal_id ASC, timestamp ASC
 			LIMIT %d
 		)`,
-		storage.EscCHStr(fractalID), logsToDelete,
+		qm.ch.ReadTable(), storage.EscCHStr(fractalID), logsToDelete,
 	)
 
 	rows, err := qm.ch.Query(ctx, cutoffQuery)

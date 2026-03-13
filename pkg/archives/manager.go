@@ -321,8 +321,8 @@ func (m *Manager) queryArchiveChunk(ctx context.Context, fractalID string, reten
 	// mismatch: the clickhouse-go driver may serialize time.Time as DateTime
 	// (second precision) while the column is DateTime64(3) (milliseconds).
 	// Comparing epoch-millis integers sidesteps the issue entirely.
-	query := `SELECT timestamp, raw_log, log_id, fractal_id, ingest_timestamp
-	          FROM logs WHERE fractal_id = ?`
+	query := fmt.Sprintf(`SELECT timestamp, raw_log, log_id, fractal_id, ingest_timestamp
+	          FROM %s WHERE fractal_id = ?`, m.ch.ReadTable())
 	args := []interface{}{fractalID}
 
 	if !firstChunk {

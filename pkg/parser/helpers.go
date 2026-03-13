@@ -69,8 +69,8 @@ func buildAnalyzeFieldsSQL(
 	sql.WriteString("max(toFloat64OrNull(kv.2)) AS _max, ")
 	sql.WriteString("round(stddevPop(toFloat64OrNull(kv.2)), 2) AS _stdev ")
 	sql.WriteString("FROM (")
-	sql.WriteString(fmt.Sprintf("SELECT arrayJoin(JSONExtractKeysAndValues(toString(fields), 'String')) AS kv FROM logs%s LIMIT %d",
-		whereClause, scanLimit))
+	sql.WriteString(fmt.Sprintf("SELECT arrayJoin(JSONExtractKeysAndValues(toString(fields), 'String')) AS kv FROM %s%s LIMIT %d",
+		opts.EffectiveTableName(), whereClause, scanLimit))
 	sql.WriteString(")")
 	sql.WriteString(pathFilter)
 	sql.WriteString(" GROUP BY kv.1 ")
@@ -157,7 +157,7 @@ func buildTraversalSQL(
 	sql.WriteString(fmt.Sprintf("%s AS _node_id, ", childRef))
 	sql.WriteString(fmt.Sprintf("%s AS _path", childRef))
 	sql.WriteString(baseIncludeCols)
-	sql.WriteString(" FROM logs ")
+	sql.WriteString(fmt.Sprintf(" FROM %s ", opts.EffectiveTableName()))
 	sql.WriteString(fmt.Sprintf("WHERE %s ", baseWhere))
 
 	sql.WriteString("UNION ALL ")
@@ -168,7 +168,7 @@ func buildTraversalSQL(
 	sql.WriteString(fmt.Sprintf("l.%s AS _node_id, ", childRef))
 	sql.WriteString(fmt.Sprintf("concat(t._path, ' > ', l.%s) AS _path", childRef))
 	sql.WriteString(recursiveIncludeCols)
-	sql.WriteString(" FROM logs l ")
+	sql.WriteString(fmt.Sprintf(" FROM %s l ", opts.EffectiveTableName()))
 	sql.WriteString(fmt.Sprintf("INNER JOIN traversal t ON l.%s = t._node_id ", parentRef))
 	sql.WriteString(fmt.Sprintf("WHERE %s", recursiveWhere))
 

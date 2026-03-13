@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,6 +18,86 @@ type ClickHouseClient struct {
 	User     string
 	Password string
 	Database string
+	Cluster  string // ClickHouse cluster name; empty for single-node deployments
+}
+
+// IsCluster returns true when the client is configured for a replicated cluster.
+func (c *ClickHouseClient) IsCluster() bool {
+	return c.Cluster != ""
+}
+
+// OnClusterSQL returns the ON CLUSTER clause for DDL statements, or an empty
+// string for single-node deployments.
+func (c *ClickHouseClient) OnClusterSQL() string {
+	if c.Cluster == "" {
+		return ""
+	}
+	return " ON CLUSTER '" + EscCHStr(c.Cluster) + "'"
+}
+
+// ReadTable returns the table name for read queries. In cluster mode this is
+// "logs_distributed" for cross-shard reads; in single-node mode it is "logs".
+func (c *ClickHouseClient) ReadTable() string {
+	if c.Cluster != "" {
+		return "logs_distributed"
+	}
+	return "logs"
+}
+
+// rewriteEngineRe matches ENGINE = MergeTree(...) or ReplacingMergeTree(...) etc.
+var rewriteEngineRe = regexp.MustCompile(`(?i)ENGINE\s*=\s*(MergeTree|ReplacingMergeTree)\s*\(\s*\)`)
+
+// RewriteEngine replaces single-node table engines with their replicated
+// equivalents when cluster mode is active. Returns the input unchanged for
+// single-node deployments.
+func (c *ClickHouseClient) RewriteEngine(sql string) string {
+	if c.Cluster == "" {
+		return sql
+	}
+	return rewriteEngineRe.ReplaceAllStringFunc(sql, func(match string) string {
+		upper := strings.ToUpper(match)
+		if strings.Contains(upper, "REPLACINGMERGETREE") {
+			return "ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')"
+		}
+		return "ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')"
+	})
+}
+
+// injectOnClusterRe are precompiled patterns for DDL statement prefixes.
+// Each captures the portion before where the ON CLUSTER clause belongs.
+var injectOnClusterPatterns = []struct {
+	prefix string
+	re     *regexp.Regexp
+}{
+	{"CREATE TABLE", regexp.MustCompile(`(?i)(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+)`)},
+	{"ALTER TABLE", regexp.MustCompile(`(?i)(ALTER\s+TABLE\s+\S+)`)},
+	{"TRUNCATE", regexp.MustCompile(`(?i)(TRUNCATE\s+TABLE\s+(?:IF\s+EXISTS\s+)?\S+)`)},
+	{"DROP TABLE", regexp.MustCompile(`(?i)(DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?\S+)`)},
+	{"CREATE OR REPLACE DICTIONARY", regexp.MustCompile(`(?i)(CREATE\s+(?:OR\s+REPLACE\s+)?DICTIONARY\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+)`)},
+	{"CREATE DICTIONARY", regexp.MustCompile(`(?i)(CREATE\s+(?:OR\s+REPLACE\s+)?DICTIONARY\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+)`)},
+	{"DROP DICTIONARY", regexp.MustCompile(`(?i)(DROP\s+DICTIONARY\s+(?:IF\s+EXISTS\s+)?\S+)`)},
+}
+
+// InjectOnCluster inserts an ON CLUSTER clause into CREATE TABLE, ALTER TABLE,
+// TRUNCATE TABLE, and DROP TABLE statements. No-op for single-node deployments.
+func (c *ClickHouseClient) InjectOnCluster(sql string) string {
+	if c.Cluster == "" {
+		return sql
+	}
+	upper := strings.ToUpper(strings.TrimSpace(sql))
+	for _, p := range injectOnClusterPatterns {
+		if strings.HasPrefix(upper, p.prefix) {
+			loc := p.re.FindStringIndex(sql)
+			if loc != nil {
+				// Insert ON CLUSTER clause directly after the matched prefix.
+				// Avoids ReplaceAllString to prevent regex replacement char
+				// interpretation (e.g. $ in cluster names).
+				return sql[:loc[1]] + c.OnClusterSQL() + sql[loc[1]:]
+			}
+			break
+		}
+	}
+	return sql
 }
 
 type LogEntry struct {
@@ -42,10 +123,25 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 		if tableExists && !strings.HasPrefix(upper, "ALTER ") {
 			continue
 		}
+		// In cluster mode, inject ON CLUSTER and rewrite engines to replicated variants.
+		stmt = c.InjectOnCluster(stmt)
+		stmt = c.RewriteEngine(stmt)
 		if err := c.conn.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("failed to execute clickhouse init statement: %w\nstatement: %s", err, stmt)
 		}
 	}
+
+	// In cluster mode, create the Distributed table for cross-shard reads.
+	if c.IsCluster() {
+		distSQL := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS logs_distributed%s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', sipHash64(fractal_id))",
+			c.OnClusterSQL(), EscCHStr(c.Cluster),
+		)
+		if err := c.conn.Exec(ctx, distSQL); err != nil {
+			return fmt.Errorf("failed to create distributed table: %w\nstatement: %s", err, distSQL)
+		}
+	}
+
 	return nil
 }
 
@@ -114,8 +210,43 @@ func NewClickHouseClient(host string, port int, database, user, password string)
 
 // NewClickHouseClientWithPool creates a client with explicit pool configuration.
 func NewClickHouseClientWithPool(host string, port int, database, user, password string, pool ClickHousePoolConfig) (*ClickHouseClient, error) {
+	conn, err := openClickHouseConn([]string{fmt.Sprintf("%s:%d", host, port)}, database, user, password, pool)
+	if err != nil {
+		return nil, err
+	}
+	return &ClickHouseClient{conn: conn, User: user, Password: password, Database: database}, nil
+}
+
+// validClusterName matches only safe ClickHouse cluster identifiers.
+var validClusterName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// NewClickHouseClusterClient creates a cluster-aware client that connects to
+// multiple ClickHouse nodes. The driver handles failover and load-balancing
+// across the provided addresses.
+func NewClickHouseClusterClient(hosts []string, port int, database, user, password, cluster string, pool ClickHousePoolConfig) (*ClickHouseClient, error) {
+	if !validClusterName.MatchString(cluster) {
+		return nil, fmt.Errorf("invalid cluster name %q: must be alphanumeric, hyphens, or underscores only", cluster)
+	}
+	addrs := make([]string, len(hosts))
+	for i, h := range hosts {
+		h = strings.TrimSpace(h)
+		if strings.Contains(h, ":") {
+			addrs[i] = h
+		} else {
+			addrs[i] = fmt.Sprintf("%s:%d", h, port)
+		}
+	}
+	conn, err := openClickHouseConn(addrs, database, user, password, pool)
+	if err != nil {
+		return nil, err
+	}
+	return &ClickHouseClient{conn: conn, User: user, Password: password, Database: database, Cluster: cluster}, nil
+}
+
+// openClickHouseConn opens a connection to ClickHouse with the given addresses.
+func openClickHouseConn(addrs []string, database, user, password string, pool ClickHousePoolConfig) (driver.Conn, error) {
 	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{fmt.Sprintf("%s:%d", host, port)},
+		Addr: addrs,
 		Auth: clickhouse.Auth{
 			Database: database,
 			Username: user,
@@ -136,12 +267,10 @@ func NewClickHouseClientWithPool(host string, port int, database, user, password
 			Method: clickhouse.CompressionLZ4,
 		},
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to ClickHouse: %w", err)
 	}
-
-	return &ClickHouseClient{conn: conn, User: user, Password: password, Database: database}, nil
+	return conn, nil
 }
 
 // EscCHStr escapes a value for safe use inside single-quoted ClickHouse strings.
@@ -362,7 +491,7 @@ func decodeJSONFieldKeys(m map[string]interface{}) map[string]interface{} {
 func (c *ClickHouseClient) CountLogs(ctx context.Context, startTime, endTime time.Time) (uint64, error) {
 	var count uint64
 	err := c.conn.QueryRow(ctx,
-		"SELECT count() as count FROM logs WHERE toUnixTimestamp64Milli(timestamp) >= ? AND toUnixTimestamp64Milli(timestamp) <= ?",
+		fmt.Sprintf("SELECT count() as count FROM %s WHERE toUnixTimestamp64Milli(timestamp) >= ? AND toUnixTimestamp64Milli(timestamp) <= ?", c.ReadTable()),
 		startTime.UnixMilli(), endTime.UnixMilli(),
 	).Scan(&count)
 	if err != nil {

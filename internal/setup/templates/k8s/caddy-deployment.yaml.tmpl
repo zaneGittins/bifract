@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caddy
+  namespace: bifract
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: caddy
+  template:
+    metadata:
+      labels:
+        app: caddy
+    spec:
+      containers:
+        - name: caddy
+          image: caddy:2-alpine
+          ports:
+            - containerPort: 443
+              name: https
+            - containerPort: 8443
+              name: ingest
+            - containerPort: 80
+              name: http
+          volumeMounts:
+            - name: caddyfile
+              mountPath: /etc/caddy/Caddyfile
+              subPath: Caddyfile
+            - name: caddy-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      volumes:
+        - name: caddyfile
+          configMap:
+            name: caddy-config
+        - name: caddy-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: caddy
+  namespace: bifract
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 443
+      targetPort: 443
+      name: https
+    - port: 8443
+      targetPort: 8443
+      name: ingest
+    - port: 80
+      targetPort: 80
+      name: http
+  selector:
+    app: caddy

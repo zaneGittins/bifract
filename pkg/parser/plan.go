@@ -154,7 +154,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	var sql strings.Builder
 	sql.WriteString("SELECT ")
 	sql.WriteString(selectClause)
-	sql.WriteString(" FROM logs")
+	sql.WriteString(" FROM " + opts.EffectiveTableName())
 
 	// WHERE
 	if len(source.Layer.Where) > 0 {

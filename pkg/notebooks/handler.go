@@ -1775,8 +1775,8 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		go func(sections []sectionLogID) {
 			for _, s := range sections {
 				sql := fmt.Sprintf(
-					"SELECT timestamp, raw_log, log_id, toString(fields) AS fields FROM logs WHERE fractal_id = '%s' AND log_id = '%s' LIMIT 1",
-					s.FractalID, s.LogID,
+					"SELECT timestamp, raw_log, log_id, toString(fields) AS fields FROM %s WHERE fractal_id = '%s' AND log_id = '%s' LIMIT 1",
+					h.ch.ReadTable(), s.FractalID, s.LogID,
 				)
 				rows, err := h.ch.Query(context.Background(), sql)
 				if err != nil {

@@ -1,0 +1,128 @@
+# Network policies enforce that all external traffic flows through Caddy.
+# Only Caddy can reach Bifract, only Bifract can reach the databases.
+
+# Default deny all ingress within the namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: bifract
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Caddy: allow external traffic (LoadBalancer)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-caddy-ingress
+  namespace: bifract
+spec:
+  podSelector:
+    matchLabels:
+      app: caddy
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 80
+        - port: 443
+        - port: 8443
+---
+# Bifract: only accept traffic from Caddy pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-bifract-from-caddy
+  namespace: bifract
+spec:
+  podSelector:
+    matchLabels:
+      app: bifract
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: caddy
+      ports:
+        - port: 8080
+---
+# PostgreSQL: only accept traffic from Bifract pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-from-bifract
+  namespace: bifract
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: bifract
+      ports:
+        - port: 5432
+---
+# ClickHouse: only accept traffic from Bifract pods and other CH nodes
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-clickhouse-from-bifract
+  namespace: bifract
+spec:
+  podSelector:
+    matchLabels:
+      clickhouse.altinity.com/app: chop
+  policyTypes:
+    - Ingress
+  ingress:
+    # Bifract app connections
+    - from:
+        - podSelector:
+            matchLabels:
+              app: bifract
+      ports:
+        - port: 9000
+        - port: 8123
+    # Inter-node replication
+    - from:
+        - podSelector:
+            matchLabels:
+              clickhouse.altinity.com/app: chop
+      ports:
+        - port: 9000
+        - port: 9009
+        - port: 8123
+    # Keeper connections from CH nodes
+    - from:
+        - podSelector:
+            matchLabels:
+              clickhouse.altinity.com/app: chop
+---
+# ClickHouse Keeper: only accept from CH nodes
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-keeper-from-clickhouse
+  namespace: bifract
+spec:
+  podSelector:
+    matchLabels:
+      app: clickhouse-keeper
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              clickhouse.altinity.com/app: chop
+      ports:
+        - port: 2181
+        - port: 9181

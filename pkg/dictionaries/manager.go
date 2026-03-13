@@ -300,7 +300,7 @@ func (m *Manager) RemoveColumn(ctx context.Context, id, colName string) (*Dictio
 
 	// Drop secondary key dict before altering the table
 	if wasKey {
-		_ = m.ch.Exec(ctx, fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(id, colName))))
+		_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(id, colName)))))
 	}
 
 	colsJSON, _ := json.Marshal(newCols)
@@ -308,8 +308,8 @@ func (m *Manager) RemoveColumn(ctx context.Context, id, colName string) (*Dictio
 		return nil, err
 	}
 
-	dropSQL := fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN IF EXISTS `%s`",
-		escCH(dict.CHTableName), escCH(colName))
+	dropSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN IF EXISTS `%s`",
+		escCH(dict.CHTableName), escCH(colName)))
 	if err := m.ch.Exec(ctx, dropSQL); err != nil {
 		return nil, fmt.Errorf("failed to drop column: %w", err)
 	}
@@ -389,7 +389,7 @@ func (m *Manager) UnsetColumnKey(ctx context.Context, id, colName string) (*Dict
 		return nil, err
 	}
 
-	_ = m.ch.Exec(ctx, fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, colName))))
+	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, colName)))))
 	return m.GetDictionary(ctx, id)
 }
 
@@ -589,13 +589,13 @@ func (m *Manager) createCHObjects(ctx context.Context, dict *Dictionary) error {
 }
 
 func (m *Manager) dropCHObjects(ctx context.Context, dict *Dictionary) error {
-	_ = m.ch.Exec(ctx, fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(dict.CHDictName)))
+	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(dict.CHDictName))))
 	for _, c := range dict.Columns {
 		if c.IsKey {
-			_ = m.ch.Exec(ctx, fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, c.Name))))
+			_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, c.Name)))))
 		}
 	}
-	_ = m.ch.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(dict.CHTableName)))
+	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(dict.CHTableName))))
 	return nil
 }
 
@@ -607,6 +607,7 @@ func (m *Manager) createCHTable(ctx context.Context, dict *Dictionary) error {
 	createSQL := fmt.Sprintf(
 		"CREATE TABLE IF NOT EXISTS `%s` (%s) ENGINE = ReplacingMergeTree() ORDER BY (`%s`)",
 		escCH(dict.CHTableName), strings.Join(colDefs, ", "), escCH(dict.KeyColumn))
+	createSQL = m.ch.RewriteEngine(m.ch.InjectOnCluster(createSQL))
 	return m.ch.Exec(ctx, createSQL)
 }
 
@@ -635,19 +636,19 @@ func (m *Manager) createCHDictionary(ctx context.Context, dict *Dictionary, cols
 		escCHStr(m.ch.User),
 		escCHStr(m.ch.Password),
 	)
-	return m.ch.Exec(ctx, createSQL)
+	return m.ch.Exec(ctx, m.ch.InjectOnCluster(createSQL))
 }
 
 // recreateAllCHDictionaries drops and recreates the primary dictionary and any secondary
 // key column dictionaries after a schema change.
 func (m *Manager) recreateAllCHDictionaries(ctx context.Context, dict *Dictionary, cols []DictionaryColumn) error {
-	_ = m.ch.Exec(ctx, fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(dict.CHDictName)))
+	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(dict.CHDictName))))
 	if err := m.createCHDictionary(ctx, dict, cols); err != nil {
 		return err
 	}
 	for _, c := range cols {
 		if c.IsKey {
-			_ = m.ch.Exec(ctx, fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, c.Name))))
+			_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, c.Name)))))
 			if err := m.createCHDictionaryForKey(ctx, dict, c.Name, cols); err != nil {
 				return fmt.Errorf("failed to recreate secondary key dictionary for %q: %w", c.Name, err)
 			}
@@ -684,7 +685,7 @@ func (m *Manager) createCHDictionaryForKey(ctx context.Context, dict *Dictionary
 		escCHStr(m.ch.User),
 		escCHStr(m.ch.Password),
 	)
-	return m.ch.Exec(ctx, createSQL)
+	return m.ch.Exec(ctx, m.ch.InjectOnCluster(createSQL))
 }
 
 func (m *Manager) updateRowCount(ctx context.Context, dict *Dictionary) {
@@ -890,7 +891,7 @@ func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *Dictionar
 	}
 
 	// Truncate existing data.
-	truncSQL := fmt.Sprintf("TRUNCATE TABLE `%s`", escCH(dict.CHTableName))
+	truncSQL := m.ch.InjectOnCluster(fmt.Sprintf("TRUNCATE TABLE `%s`", escCH(dict.CHTableName)))
 	if err := m.ch.Exec(ctx, truncSQL); err != nil {
 		return 0, fmt.Errorf("failed to truncate dictionary table: %w", err)
 	}

@@ -1,0 +1,109 @@
+apiVersion: "clickhouse.altinity.com/v1"
+kind: "ClickHouseInstallation"
+metadata:
+  name: bifract
+  namespace: bifract
+spec:
+  defaults:
+    templates:
+      dataVolumeClaimTemplate: data-volume
+      podTemplate: clickhouse-pod
+  configuration:
+    zookeeper:
+      nodes:
+        - host: clickhouse-keeper
+          port: 2181
+    clusters:
+      - name: bifract
+        layout:
+          shardsCount: 1
+          replicasCount: {{.CHReplicas}}
+    settings:
+      default_database: logs
+      max_execution_time: 60
+      use_uncompressed_cache: 1
+    users:
+      default/password_sha256_hex: "{{.CHPasswordHash}}"
+      default/access_management: 1
+      default/networks/ip:
+        - "::/0"
+  templates:
+    podTemplates:
+      - name: clickhouse-pod
+        spec:
+          containers:
+            - name: clickhouse
+              image: clickhouse/clickhouse-server:26.2-alpine
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: 4Gi
+                limits:
+                  cpu: "4"
+                  memory: 16Gi
+    volumeClaimTemplates:
+      - name: data-volume
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: {{.CHStorageGB}}Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse-keeper
+  namespace: bifract
+spec:
+  serviceName: clickhouse-keeper
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse-keeper
+  template:
+    metadata:
+      labels:
+        app: clickhouse-keeper
+    spec:
+      containers:
+        - name: keeper
+          image: clickhouse/clickhouse-keeper:26.2-alpine
+          ports:
+            - containerPort: 2181
+              name: client
+            - containerPort: 9181
+              name: raft
+          volumeMounts:
+            - name: keeper-data
+              mountPath: /var/lib/clickhouse-keeper
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: keeper-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-keeper
+  namespace: bifract
+spec:
+  clusterIP: None
+  ports:
+    - port: 2181
+      name: client
+    - port: 9181
+      name: raft
+  selector:
+    app: clickhouse-keeper

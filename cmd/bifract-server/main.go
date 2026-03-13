@@ -117,15 +117,6 @@ func main() {
 			queryPool.MaxIdleConns = 2
 		}
 	}
-	db, err := storage.NewClickHouseClientWithPool(
-		config.ClickHouseHost, config.ClickHousePort,
-		config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
-		queryPool,
-	)
-	if err != nil {
-		log.Fatalf("Failed to connect to ClickHouse (query pool): %v", err)
-	}
-	defer db.Close()
 
 	ingestPool := storage.DefaultIngestPoolConfig()
 	if config.CHIngestMaxConns > 0 {
@@ -135,14 +126,48 @@ func main() {
 			ingestPool.MaxIdleConns = 2
 		}
 	}
-	dbIngest, err := storage.NewClickHouseClientWithPool(
-		config.ClickHouseHost, config.ClickHousePort,
-		config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
-		ingestPool,
-	)
-	if err != nil {
-		log.Fatalf("Failed to connect to ClickHouse (ingest pool): %v", err)
+
+	var db, dbIngest *storage.ClickHouseClient
+
+	if config.ClickHouseCluster != "" && config.ClickHouseHosts != "" {
+		// Cluster mode: connect to multiple hosts
+		hosts := strings.Split(config.ClickHouseHosts, ",")
+		db, err = storage.NewClickHouseClusterClient(
+			hosts, config.ClickHousePort,
+			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
+			config.ClickHouseCluster, queryPool,
+		)
+		if err != nil {
+			log.Fatalf("Failed to connect to ClickHouse cluster (query pool): %v", err)
+		}
+		dbIngest, err = storage.NewClickHouseClusterClient(
+			hosts, config.ClickHousePort,
+			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
+			config.ClickHouseCluster, ingestPool,
+		)
+		if err != nil {
+			log.Fatalf("Failed to connect to ClickHouse cluster (ingest pool): %v", err)
+		}
+	} else {
+		// Single-node mode (default)
+		db, err = storage.NewClickHouseClientWithPool(
+			config.ClickHouseHost, config.ClickHousePort,
+			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
+			queryPool,
+		)
+		if err != nil {
+			log.Fatalf("Failed to connect to ClickHouse (query pool): %v", err)
+		}
+		dbIngest, err = storage.NewClickHouseClientWithPool(
+			config.ClickHouseHost, config.ClickHousePort,
+			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
+			ingestPool,
+		)
+		if err != nil {
+			log.Fatalf("Failed to connect to ClickHouse (ingest pool): %v", err)
+		}
 	}
+	defer db.Close()
 	defer dbIngest.Close()
 
 	// Health check both pools
@@ -889,6 +914,10 @@ type Config struct {
 	CHQueryMaxConns  int
 	CHIngestMaxConns int
 
+	// ClickHouse cluster mode (empty = single-node)
+	ClickHouseHosts   string // Comma-separated list of hosts (overrides ClickHouseHost when set)
+	ClickHouseCluster string // Cluster name for ON CLUSTER DDL and ReplicatedMergeTree
+
 	// Base URL for external links (e.g. webhook alert_link)
 	BaseURL string
 
@@ -930,6 +959,10 @@ func loadConfig() Config {
 		CHQueryMaxConns:  getEnvInt("BIFRACT_CH_QUERY_MAX_CONNS", 0),
 		CHIngestMaxConns: getEnvInt("BIFRACT_CH_INGEST_MAX_CONNS", 0),
 
+		// ClickHouse cluster mode
+		ClickHouseHosts:   getEnv("CLICKHOUSE_HOSTS", ""),
+		ClickHouseCluster: getEnv("CLICKHOUSE_CLUSTER", ""),
+
 		// Base URL
 		BaseURL: getEnv("BIFRACT_BASE_URL", ""),
 
@@ -951,6 +984,12 @@ func loadConfig() Config {
 	log.Printf("  Max Body Size: %d bytes", config.MaxBodySize)
 	log.Printf("  Rate Limit: %d req/s (burst: %d)", config.IngestRateLimit, config.IngestRateBurst)
 	log.Printf("  Alert Eval Interval: %ds", config.AlertEvalInterval)
+	if config.ClickHouseCluster != "" {
+		log.Printf("  ClickHouse Cluster: %s (replicated mode)", config.ClickHouseCluster)
+		if config.ClickHouseHosts != "" {
+			log.Printf("  ClickHouse Hosts: %s", config.ClickHouseHosts)
+		}
+	}
 
 	return config
 }

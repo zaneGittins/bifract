@@ -120,7 +120,7 @@ func (m *Manager) loadCity(ctx context.Context, csvDir string) error {
 	log.Printf("[MaxMind] Parsed %d city locations", len(locations))
 
 	// Create backing table
-	if err := m.ch.Exec(ctx, `
+	createCitySQL := m.ch.RewriteEngine(m.ch.InjectOnCluster(`
 		CREATE TABLE IF NOT EXISTS geoip_city (
 			network String,
 			country String DEFAULT '',
@@ -132,12 +132,13 @@ func (m *Manager) loadCity(ctx context.Context, csvDir string) error {
 			longitude Float64 DEFAULT 0,
 			postal_code String DEFAULT ''
 		) ENGINE = MergeTree() ORDER BY network
-	`); err != nil {
+	`))
+	if err := m.ch.Exec(ctx, createCitySQL); err != nil {
 		return fmt.Errorf("create geoip_city table: %w", err)
 	}
 
 	// Truncate before reload
-	if err := m.ch.Exec(ctx, "TRUNCATE TABLE geoip_city"); err != nil {
+	if err := m.ch.Exec(ctx, m.ch.InjectOnCluster("TRUNCATE TABLE geoip_city")); err != nil {
 		return fmt.Errorf("truncate geoip_city: %w", err)
 	}
 
@@ -281,7 +282,7 @@ func (m *Manager) loadCityBlocks(ctx context.Context, path string, locations map
 }
 
 func (m *Manager) createCityDictionary(ctx context.Context) error {
-	sql := fmt.Sprintf(`
+	dictSQL := m.ch.InjectOnCluster(fmt.Sprintf(`
 		CREATE OR REPLACE DICTIONARY geoip_city_lookup (
 			network String,
 			country String DEFAULT '',
@@ -297,9 +298,9 @@ func (m *Manager) createCityDictionary(ctx context.Context) error {
 		SOURCE(CLICKHOUSE(TABLE 'geoip_city' DB '%s' USER '%s' PASSWORD '%s'))
 		LIFETIME(MIN 0 MAX 3600)
 		LAYOUT(IP_TRIE())
-	`, m.ch.Database, m.ch.User, m.ch.Password)
+	`, m.ch.Database, m.ch.User, m.ch.Password))
 
-	if err := m.ch.Exec(ctx, sql); err != nil {
+	if err := m.ch.Exec(ctx, dictSQL); err != nil {
 		return fmt.Errorf("create geoip_city_lookup dictionary: %w", err)
 	}
 
@@ -315,18 +316,19 @@ func (m *Manager) createCityDictionary(ctx context.Context) error {
 // loadASN parses GeoLite2 ASN CSVs and loads into ClickHouse.
 func (m *Manager) loadASN(ctx context.Context, csvDir string) error {
 	// Create backing table
-	if err := m.ch.Exec(ctx, `
+	createASNSQL := m.ch.RewriteEngine(m.ch.InjectOnCluster(`
 		CREATE TABLE IF NOT EXISTS geoip_asn (
 			network String,
 			asn UInt32 DEFAULT 0,
 			as_org String DEFAULT ''
 		) ENGINE = MergeTree() ORDER BY network
-	`); err != nil {
+	`))
+	if err := m.ch.Exec(ctx, createASNSQL); err != nil {
 		return fmt.Errorf("create geoip_asn table: %w", err)
 	}
 
 	// Truncate before reload
-	if err := m.ch.Exec(ctx, "TRUNCATE TABLE geoip_asn"); err != nil {
+	if err := m.ch.Exec(ctx, m.ch.InjectOnCluster("TRUNCATE TABLE geoip_asn")); err != nil {
 		return fmt.Errorf("truncate geoip_asn: %w", err)
 	}
 
@@ -409,7 +411,7 @@ func (m *Manager) loadASNBlocks(ctx context.Context, path string) (int, error) {
 }
 
 func (m *Manager) createASNDictionary(ctx context.Context) error {
-	sql := fmt.Sprintf(`
+	dictSQL := m.ch.InjectOnCluster(fmt.Sprintf(`
 		CREATE OR REPLACE DICTIONARY geoip_asn_lookup (
 			network String,
 			asn UInt32 DEFAULT 0,
@@ -419,9 +421,9 @@ func (m *Manager) createASNDictionary(ctx context.Context) error {
 		SOURCE(CLICKHOUSE(TABLE 'geoip_asn' DB '%s' USER '%s' PASSWORD '%s'))
 		LIFETIME(MIN 0 MAX 3600)
 		LAYOUT(IP_TRIE())
-	`, m.ch.Database, m.ch.User, m.ch.Password)
+	`, m.ch.Database, m.ch.User, m.ch.Password))
 
-	if err := m.ch.Exec(ctx, sql); err != nil {
+	if err := m.ch.Exec(ctx, dictSQL); err != nil {
 		return fmt.Errorf("create geoip_asn_lookup dictionary: %w", err)
 	}
 

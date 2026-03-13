@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caddy-config
+  namespace: bifract
+data:
+  Caddyfile: |
+    {
+      admin off
+    }
+
+    {{.Domain}} {
+      header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+      }
+{{.IPBlock}}
+      respond /api/v1/ingest* 403
+      respond /_bulk 403
+      respond /api/v1/internal/* 403
+
+      reverse_proxy bifract.bifract.svc.cluster.local:8080 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+      }
+
+      request_body {
+        max_size 200MiB
+      }
+    }
+
+    :8443 {
+      @ingest {
+        path /api/v1/ingest*
+        path /_bulk
+      }
+      handle @ingest {
+        reverse_proxy bifract.bifract.svc.cluster.local:8080 {
+          header_up X-Real-IP {remote_host}
+          header_up X-Forwarded-For {remote_host}
+          header_up X-Forwarded-Proto {scheme}
+        }
+      }
+      handle {
+        respond 403
+      }
+      request_body {
+        max_size 200MiB
+      }
+    }

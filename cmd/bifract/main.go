@@ -30,7 +30,7 @@ func main() {
 		}
 	}
 
-	var installMode, upgradeMode, reconfigureMode, showVersion, skipSelfUpdate bool
+	var installMode, installK8sMode, upgradeMode, reconfigureMode, showVersion, skipSelfUpdate bool
 	var backupMode, restoreMode, listBackupsMode, nonInteractive, genClientCertMode bool
 	var startMode, stopMode, statusMode bool
 	var restoreFile, certName, certPassword string
@@ -40,6 +40,8 @@ func main() {
 		switch args[i] {
 		case "--install":
 			installMode = true
+		case "--install-k8s":
+			installK8sMode = true
 		case "--upgrade":
 			upgradeMode = true
 		case "--backup":
@@ -116,6 +118,9 @@ func main() {
 	if installMode {
 		modeCount++
 	}
+	if installK8sMode {
+		modeCount++
+	}
 	if upgradeMode {
 		modeCount++
 	}
@@ -167,6 +172,15 @@ func main() {
 		setup.SelfUpdate(os.Args)
 	}
 
+	// K8s install does not require Docker
+	if installK8sMode {
+		if err := setup.RunInstallK8s(); err != nil {
+			fmt.Fprintf(os.Stderr, "\n%s %v\n", setup.ErrorStyle.Render("Error:"), err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Preflight: check Docker is installed and running
 	if _, err := exec.LookPath("docker"); err != nil {
 		fmt.Fprintf(os.Stderr, "%s Docker is not installed or not in PATH.\n  Install it from https://docs.docker.com/get-docker/\n", setup.ErrorStyle.Render("Error:"))
@@ -215,7 +229,8 @@ func printUsage() {
 	fmt.Println("Usage: bifract <mode> [options]")
 	fmt.Println()
 	fmt.Println("Modes:")
-	fmt.Println("  --install          Run fresh installation wizard")
+	fmt.Println("  --install          Run fresh installation wizard (Docker Compose)")
+	fmt.Println("  --install-k8s      Generate Kubernetes manifests with secure defaults")
 	fmt.Println("  --upgrade          Upgrade an existing installation")
 	fmt.Println("  --reconfigure      Regenerate config files from .env (no version change)")
 	fmt.Println("  --start            Start Bifract")
