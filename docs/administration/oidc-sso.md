@@ -4,7 +4,7 @@ Bifract supports generic OpenID Connect (OIDC) for single sign-on. This works wi
 
 ## Enabling OIDC
 
-Set these environment variables (in `.env` or `docker-compose.yml`):
+Set these environment variables (in `.env` for Docker Compose, or in the `bifract-secrets` Secret for Kubernetes):
 
 ```bash
 BIFRACT_OIDC_ISSUER_URL=https://login.microsoftonline.com/{tenant-id}/v2.0
@@ -13,6 +13,8 @@ BIFRACT_OIDC_CLIENT_SECRET=your-client-secret
 ```
 
 Restart Bifract. The login page will show a "Sign in with SSO" button.
+
+For Kubernetes deployments, see [Post-Deploy Configuration](../getting-started/kubernetes.md#post-deploy-configuration).
 
 ## Provider Setup
 

@@ -23,17 +23,30 @@ graph TB
         bifract["Bifract x2<br/><small>Stateless Replicas</small>"]
         litellm["LiteLLM<br/><small>AI Proxy</small>"]
         pg[("PostgreSQL<br/><small>StatefulSet</small>")]
-        ch[("ClickHouse x2<br/><small>Replicated via Operator</small>")]
-        keeper[("ClickHouse Keeper<br/><small>Managed by Operator</small>")]
+
+        subgraph ch ["ClickHouse Cluster (Operator-managed)"]
+            subgraph shard0 ["Shard 0"]
+                ch0r0[("Replica 0")]
+                ch0r1[("Replica 1")]
+            end
+            subgraph shard1 ["Shard 1"]
+                ch1r0[("Replica 0")]
+                ch1r1[("Replica 1")]
+            end
+        end
+
+        keeper[("ClickHouse Keeper<br/><small>Coordinates replication</small>")]
     end
 
     users -->|"HTTPS :443"| caddy
     sources -->|"HTTPS :8443"| caddy
     caddy -->|":8080"| bifract
     bifract --> pg
-    bifract --> ch
+    bifract -->|"Distributed table"| ch
     bifract --> litellm
-    ch --> keeper
+    ch0r0 <-->|"replication"| ch0r1
+    ch1r0 <-->|"replication"| ch1r1
+    ch0r0 & ch0r1 & ch1r0 & ch1r1 --> keeper
 ```
 
 Traffic flow is enforced by NetworkPolicies: only Caddy accepts external traffic, only Caddy can reach Bifract, only Bifract can reach the databases and LiteLLM. A log shipper sidecar in the Caddy pod ships access logs to the Bifract system fractal for audit visibility.
@@ -165,6 +178,22 @@ bifract-ch-clickhouse-0-0-0.bifract-ch-clickhouse-headless,bifract-ch-clickhouse
 ```
 
 Bifract's Distributed table automatically routes queries across all shards and distributes writes evenly using random sharding.
+
+## Post-Deploy Configuration
+
+Optional features are configured by editing the `bifract-secrets` Secret. The generated manifests include empty placeholders for all optional integrations. To enable a feature, populate the relevant keys and restart Bifract:
+
+```bash
+kubectl -n bifract edit secret bifract-secrets
+kubectl rollout restart deployment bifract -n bifract
+```
+
+| Feature | Secret Keys | Docs |
+|---------|------------|------|
+| OIDC / SSO | `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URL`, `OIDC_SCOPES`, `OIDC_DEFAULT_ROLE`, `OIDC_ALLOWED_DOMAINS`, `OIDC_BUTTON_TEXT` | [OIDC/SSO](../administration/oidc-sso.md) |
+| S3 Backups | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` | [Backup & Restore](../administration/backup-restore.md) |
+| GeoIP Enrichment | `MAXMIND_LICENSE_KEY`, `MAXMIND_ACCOUNT_ID` | [Field Operations](../bql/field-operations.md) |
+| AI Chat | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | [AI Chat](../features/ai-chat.md) |
 
 ## Updating Bifract
 

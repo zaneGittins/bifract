@@ -60,6 +60,10 @@ spec:
               value: "8080"
             - name: BIFRACT_SECURE_COOKIES
               value: "true"
+            - name: BIFRACT_DOMAIN
+              value: "{{.Domain}}"
+            - name: BIFRACT_BASE_URL
+              value: "https://{{.Domain}}"
             - name: BIFRACT_PASSWORD_PEPPER
               valueFrom:
                 secretKeyRef:
@@ -143,6 +147,55 @@ spec:
                   optional: true
             - name: MAXMIND_EDITION_IDS
               value: "GeoLite2-City-CSV,GeoLite2-ASN-CSV"
+            # OIDC / SSO
+            - name: BIFRACT_OIDC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_ISSUER_URL
+                  optional: true
+            - name: BIFRACT_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_CLIENT_ID
+                  optional: true
+            - name: BIFRACT_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_CLIENT_SECRET
+                  optional: true
+            - name: BIFRACT_OIDC_REDIRECT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_REDIRECT_URL
+                  optional: true
+            - name: BIFRACT_OIDC_SCOPES
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_SCOPES
+                  optional: true
+            - name: BIFRACT_OIDC_DEFAULT_ROLE
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_DEFAULT_ROLE
+                  optional: true
+            - name: BIFRACT_OIDC_ALLOWED_DOMAINS
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_ALLOWED_DOMAINS
+                  optional: true
+            - name: BIFRACT_OIDC_BUTTON_TEXT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_BUTTON_TEXT
+                  optional: true
           readinessProbe:
             httpGet:
               path: /api/v1/health
