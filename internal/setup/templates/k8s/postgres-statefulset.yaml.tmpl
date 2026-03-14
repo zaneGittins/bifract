@@ -41,11 +41,11 @@ spec:
             periodSeconds: 10
           resources:
             requests:
-              cpu: 250m
-              memory: 512Mi
+              cpu: {{.PostgresRes.CPURequest}}
+              memory: {{.PostgresRes.MemRequest}}
             limits:
-              cpu: "2"
-              memory: 2Gi
+              cpu: "{{.PostgresRes.CPULimit}}"
+              memory: {{.PostgresRes.MemLimit}}
   volumeClaimTemplates:
     - metadata:
         name: postgres-data

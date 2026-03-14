@@ -97,6 +97,55 @@ spec:
                   key: LITELLM_MASTER_KEY
             - name: LITELLM_MODEL
               value: bifract-chat-anthropic
+            # Query limits
+            - name: BIFRACT_MAX_QUERY_ROWS
+              value: "250"
+            # S3 (for backups/archives)
+            - name: BIFRACT_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_ENDPOINT
+                  optional: true
+            - name: BIFRACT_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_BUCKET
+                  optional: true
+            - name: BIFRACT_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_ACCESS_KEY
+                  optional: true
+            - name: BIFRACT_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_SECRET_KEY
+                  optional: true
+            - name: BIFRACT_S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_REGION
+                  optional: true
+            # MaxMind GeoIP
+            - name: MAXMIND_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: MAXMIND_LICENSE_KEY
+                  optional: true
+            - name: MAXMIND_ACCOUNT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: MAXMIND_ACCOUNT_ID
+                  optional: true
+            - name: MAXMIND_EDITION_IDS
+              value: "GeoLite2-City-CSV,GeoLite2-ASN-CSV"
           readinessProbe:
             httpGet:
               path: /api/v1/health
@@ -109,6 +158,9 @@ spec:
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 20
+          volumeMounts:
+            - name: archives
+              mountPath: /archives
           resources:
             requests:
               cpu: 500m
@@ -116,6 +168,9 @@ spec:
             limits:
               cpu: "2"
               memory: 2Gi
+      volumes:
+        - name: archives
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

@@ -82,10 +82,13 @@ The wizard will prompt for:
 | Domain | Your domain name | `bifract.example.com` |
 | SSL mode | Let's Encrypt or custom cert | Let's Encrypt |
 | IP access | Traffic restriction mode (includes mTLS option) | Allow all |
+| Resource profile | Cluster sizing preset (X-Small through X-Large) | Small |
 | CH shards | ClickHouse shards for horizontal scaling | `1` |
 | CH replicas | ClickHouse replicas per shard (2+ for HA) | `2` |
 | CH storage | Storage per replica in GB | `100` |
 | Output dir | Where to write manifests | `./bifract-k8s` |
+
+The resource profile sets CPU and memory requests/limits for all components based on your expected workload. Shard and replica counts are pre-filled by the profile but can be adjusted. See [Sizing Guide](sizing.md) for details on each profile.
 
 This generates a complete set of Kustomize manifests with secure credentials in the output directory. Save the admin password displayed at the end.
 

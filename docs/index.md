@@ -9,6 +9,7 @@ It leverages ClickHouse for log storage, PostgreSQL for configuration, and provi
 ## Where to Start
 
 - **New to Bifract?** Start with [Installation](getting-started/installation.md)
+- **Deploying on Kubernetes?** See [Kubernetes](getting-started/kubernetes.md) and [Sizing Guide](getting-started/sizing.md)
 - **Sending logs?** See [Ingestion](ingestion/overview.md)
 - **Writing queries?** Learn [BQL basics](bql/basics.md)
 - **Setting up alerts?** Read [Alerting](alerting/alerts.md)

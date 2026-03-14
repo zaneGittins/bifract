@@ -19,17 +19,28 @@ type cpuSample struct {
 	Value float64 // CPU% (0-100)
 }
 
-// MetricsCollector polls system.asynchronous_metrics via the existing
-// ClickHouse connection and stores CPU history in a ring buffer.
-type MetricsCollector struct {
-	mu      sync.RWMutex
-	history []cpuSample
-	// Previous jiffy snapshot for delta-based CPU%.
+// nodeState tracks cumulative jiffy counters for a single ClickHouse node.
+type nodeState struct {
 	prevBusy  float64
 	prevTotal float64
-	maxAge    time.Duration
-	db        *storage.ClickHouseClient
-	stop      chan struct{}
+}
+
+// MetricsCollector polls system.asynchronous_metrics via the existing
+// ClickHouse connection and stores CPU history in a ring buffer.
+// In multi-node setups each node is queried individually so that
+// delta-based CPU% is never computed across different hosts.
+type MetricsCollector struct {
+	mu      sync.RWMutex
+	// Single-node: only "history" is populated.
+	history []cpuSample
+	// Multi-node: per-node history keyed by address.
+	nodeHistory map[string][]cpuSample
+	// Per-node previous jiffy snapshots (keyed by address).
+	// Single-node uses the key "_single".
+	nodes  map[string]*nodeState
+	maxAge time.Duration
+	db     *storage.ClickHouseClient
+	stop   chan struct{}
 }
 
 const (
@@ -40,9 +51,11 @@ const (
 // NewMetricsCollector creates and starts a background collector.
 func NewMetricsCollector(db *storage.ClickHouseClient) *MetricsCollector {
 	mc := &MetricsCollector{
-		maxAge: maxHistoryAge,
-		db:     db,
-		stop:   make(chan struct{}),
+		nodes:       make(map[string]*nodeState),
+		nodeHistory: make(map[string][]cpuSample),
+		maxAge:      maxHistoryAge,
+		db:          db,
+		stop:        make(chan struct{}),
 	}
 	go mc.run()
 	return mc
@@ -67,18 +80,49 @@ func (mc *MetricsCollector) run() {
 	}
 }
 
+const cpuMetricsSQL = `SELECT metric, value FROM system.asynchronous_metrics
+	WHERE metric IN (
+		'OSUserTime', 'OSNiceTime', 'OSSystemTime',
+		'OSIdleTime', 'OSIOWaitTime',
+		'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
+	)`
+
 func (mc *MetricsCollector) collect() {
+	addrs := mc.db.Addrs()
+	if len(addrs) <= 1 {
+		// Single-node: query via the shared connection pool.
+		mc.collectNode("_single", nil)
+	} else {
+		// Multi-node: query each node individually so deltas stay
+		// within the same host and never produce cross-node nonsense.
+		for _, addr := range addrs {
+			a := addr
+			mc.collectNode(addr, &a)
+		}
+	}
+}
+
+// collectNode samples CPU jiffies from a single ClickHouse node and records
+// the delta-based CPU% in the appropriate history slice.
+func (mc *MetricsCollector) collectNode(key string, addr *string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	rows, err := mc.db.Query(ctx, `SELECT metric, value FROM system.asynchronous_metrics
-		WHERE metric IN (
-			'OSUserTime', 'OSNiceTime', 'OSSystemTime',
-			'OSIdleTime', 'OSIOWaitTime',
-			'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
-		)`)
+	var rows []map[string]interface{}
+	var err error
+	if addr != nil {
+		conn, openErr := storage.OpenClickHouseAddr(*addr, mc.db.User, mc.db.Password)
+		if openErr != nil {
+			log.Printf("[MetricsCollector] failed to connect to %s: %v", *addr, openErr)
+			return
+		}
+		defer conn.Close()
+		rows, err = storage.QueryConn(ctx, conn, cpuMetricsSQL)
+	} else {
+		rows, err = mc.db.Query(ctx, cpuMetricsSQL)
+	}
 	if err != nil {
-		log.Printf("[MetricsCollector] failed to query CPU metrics: %v", err)
+		log.Printf("[MetricsCollector] failed to query CPU metrics (node %s): %v", key, err)
 		return
 	}
 
@@ -109,7 +153,7 @@ func (mc *MetricsCollector) collect() {
 	busy := user + nice + sys + irq + softirq + steal
 	total := busy + idle + iowait
 	if total <= 0 {
-		log.Printf("[MetricsCollector] OS CPU metrics not available (all zero)")
+		log.Printf("[MetricsCollector] OS CPU metrics not available (node %s)", key)
 		return
 	}
 
@@ -117,33 +161,79 @@ func (mc *MetricsCollector) collect() {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 
-	// Compute delta-based CPU% using the difference from the previous snapshot.
-	// The OS*Time metrics are cumulative jiffies, so we need two samples.
-	if mc.prevTotal > 0 {
-		dBusy := busy - mc.prevBusy
-		dTotal := total - mc.prevTotal
+	ns := mc.nodes[key]
+	if ns == nil {
+		ns = &nodeState{}
+		mc.nodes[key] = ns
+	}
+
+	if ns.prevTotal > 0 {
+		dBusy := busy - ns.prevBusy
+		dTotal := total - ns.prevTotal
 		var pct float64
 		if dTotal > 0 {
 			pct = math.Round(dBusy/dTotal*1000) / 10
+			if pct < 0 {
+				pct = 0
+			} else if pct > 100 {
+				pct = 100
+			}
 		}
-		mc.history = append(mc.history, cpuSample{Time: now, Value: pct})
-		// Trim old samples
-		cutoff := now.Add(-mc.maxAge)
-		start := 0
-		for start < len(mc.history) && mc.history[start].Time.Before(cutoff) {
-			start++
+		sample := cpuSample{Time: now, Value: pct}
+		if key == "_single" {
+			mc.history = append(mc.history, sample)
+		} else {
+			mc.nodeHistory[key] = append(mc.nodeHistory[key], sample)
 		}
-		mc.history = mc.history[start:]
 	}
-	mc.prevBusy = busy
-	mc.prevTotal = total
+	ns.prevBusy = busy
+	ns.prevTotal = total
+
+	// Trim old samples for this key.
+	cutoff := now.Add(-mc.maxAge)
+	if key == "_single" {
+		mc.history = trimSamples(mc.history, cutoff)
+	} else {
+		mc.nodeHistory[key] = trimSamples(mc.nodeHistory[key], cutoff)
+	}
 }
 
-// CPUHistory returns collected CPU samples for the given time range.
+func trimSamples(samples []cpuSample, cutoff time.Time) []cpuSample {
+	start := 0
+	for start < len(samples) && samples[start].Time.Before(cutoff) {
+		start++
+	}
+	return samples[start:]
+}
+
+// CPUHistory returns collected CPU samples for the given time range (single-node).
 func (mc *MetricsCollector) CPUHistory(since time.Duration, bucketSize time.Duration) []map[string]interface{} {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
+	return bucketSamples(mc.history, since, bucketSize)
+}
 
+// CPUHistoryNodes returns per-node CPU history keyed by node address.
+// Returns nil when running in single-node mode.
+func (mc *MetricsCollector) CPUHistoryNodes(since time.Duration, bucketSize time.Duration) map[string][]map[string]interface{} {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	if len(mc.nodeHistory) == 0 {
+		return nil
+	}
+	result := make(map[string][]map[string]interface{}, len(mc.nodeHistory))
+	for node, samples := range mc.nodeHistory {
+		if points := bucketSamples(samples, since, bucketSize); len(points) > 0 {
+			result[node] = points
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func bucketSamples(samples []cpuSample, since time.Duration, bucketSize time.Duration) []map[string]interface{} {
 	cutoff := time.Now().Add(-since)
 
 	type bucket struct {
@@ -153,7 +243,7 @@ func (mc *MetricsCollector) CPUHistory(since time.Duration, bucketSize time.Dura
 	buckets := map[int64]*bucket{}
 	var bucketKeys []int64
 
-	for _, s := range mc.history {
+	for _, s := range samples {
 		if s.Time.Before(cutoff) {
 			continue
 		}
@@ -393,6 +483,9 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 	// CPU history from collector (works on both Docker and K8s).
 	if cpuHistory := h.collector.CPUHistory(since, bucketSize); len(cpuHistory) > 0 {
 		result["cpu_history"] = cpuHistory
+	}
+	if nodeHistory := h.collector.CPUHistoryNodes(since, bucketSize); nodeHistory != nil {
+		result["cpu_history_nodes"] = nodeHistory
 	}
 
 	respondJSON(w, http.StatusOK, result)

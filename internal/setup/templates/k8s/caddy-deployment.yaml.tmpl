@@ -36,13 +36,29 @@ spec:
               mountPath: /etc/caddy/client-ca
               readOnly: true
 {{- end}}
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
+              cpu: {{.CaddyRes.CPURequest}}
+              memory: {{.CaddyRes.MemRequest}}
             limits:
-              cpu: "1"
-              memory: 512Mi
+              cpu: "{{.CaddyRes.CPULimit}}"
+              memory: {{.CaddyRes.MemLimit}}
         - name: log-shipper
           image: alpine:3
           command: ["/bin/sh", "-c"]
@@ -61,11 +77,11 @@ spec:
               mountPath: /scripts
           resources:
             requests:
-              cpu: 10m
-              memory: 32Mi
+              cpu: {{.CaddyShipper.CPURequest}}
+              memory: {{.CaddyShipper.MemRequest}}
             limits:
-              cpu: 100m
-              memory: 64Mi
+              cpu: {{.CaddyShipper.CPULimit}}
+              memory: {{.CaddyShipper.MemLimit}}
       volumes:
         - name: caddyfile
           configMap:

@@ -31,6 +31,22 @@ spec:
               mountPath: /data
             - name: caddy-logs
               mountPath: /var/log/caddy
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
           resources:
             requests:
               cpu: 100m

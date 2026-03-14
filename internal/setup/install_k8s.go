@@ -14,9 +14,101 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// ResourceProfile defines CPU and memory requests/limits for a component.
+type ResourceProfile struct {
+	CPURequest string
+	CPULimit   string
+	MemRequest string
+	MemLimit   string
+}
+
+// SizeProfile defines resource allocations for all components at a given scale.
+type SizeProfile struct {
+	Name           string
+	Description    string
+	CHShards       int
+	CHReplicas     int
+	ClickHouse     ResourceProfile
+	CHKeeper       ResourceProfile
+	Bifract        ResourceProfile
+	Postgres       ResourceProfile
+	Caddy          ResourceProfile
+	CaddyShipper   ResourceProfile
+	LiteLLM        ResourceProfile
+}
+
+var sizeProfiles = []SizeProfile{
+	{
+		Name:        "X-Small",
+		Description: "Development and light workloads (3 nodes, 8 vCPU / 16GB each)",
+		CHShards:    1,
+		CHReplicas:  2,
+		ClickHouse:  ResourceProfile{"1", "4", "4Gi", "16Gi"},
+		CHKeeper:    ResourceProfile{"250m", "1", "512Mi", "1Gi"},
+		Bifract:     ResourceProfile{"500m", "2", "512Mi", "2Gi"},
+		Postgres:    ResourceProfile{"250m", "2", "512Mi", "2Gi"},
+		Caddy:       ResourceProfile{"100m", "1", "128Mi", "512Mi"},
+		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
+		LiteLLM:     ResourceProfile{"100m", "500m", "256Mi", "512Mi"},
+	},
+	{
+		Name:        "Small",
+		Description: "Light production, up to ~1 TB/day (3 nodes, 8 vCPU / 32GB each)",
+		CHShards:    1,
+		CHReplicas:  2,
+		ClickHouse:  ResourceProfile{"2", "4", "6Gi", "20Gi"},
+		CHKeeper:    ResourceProfile{"250m", "1", "512Mi", "1Gi"},
+		Bifract:     ResourceProfile{"500m", "2", "512Mi", "2Gi"},
+		Postgres:    ResourceProfile{"500m", "2", "1Gi", "2Gi"},
+		Caddy:       ResourceProfile{"100m", "1", "128Mi", "512Mi"},
+		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
+		LiteLLM:     ResourceProfile{"100m", "500m", "256Mi", "512Mi"},
+	},
+	{
+		Name:        "Medium",
+		Description: "Production workloads, ~1-2 TB/day (3 nodes, 16 vCPU / 32GB each)",
+		CHShards:    2,
+		CHReplicas:  2,
+		ClickHouse:  ResourceProfile{"2", "8", "8Gi", "24Gi"},
+		CHKeeper:    ResourceProfile{"500m", "2", "1Gi", "2Gi"},
+		Bifract:     ResourceProfile{"1", "4", "1Gi", "4Gi"},
+		Postgres:    ResourceProfile{"500m", "4", "1Gi", "4Gi"},
+		Caddy:       ResourceProfile{"250m", "2", "256Mi", "1Gi"},
+		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
+		LiteLLM:     ResourceProfile{"100m", "500m", "256Mi", "512Mi"},
+	},
+	{
+		Name:        "Large",
+		Description: "High-volume production, ~2-10 TB/day (3 nodes, 32 vCPU / 64GB each)",
+		CHShards:    3,
+		CHReplicas:  2,
+		ClickHouse:  ResourceProfile{"4", "16", "16Gi", "48Gi"},
+		CHKeeper:    ResourceProfile{"500m", "2", "1Gi", "2Gi"},
+		Bifract:     ResourceProfile{"2", "8", "2Gi", "8Gi"},
+		Postgres:    ResourceProfile{"1", "4", "2Gi", "8Gi"},
+		Caddy:       ResourceProfile{"500m", "2", "512Mi", "1Gi"},
+		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
+		LiteLLM:     ResourceProfile{"250m", "1", "512Mi", "1Gi"},
+	},
+	{
+		Name:        "X-Large",
+		Description: "Very high-volume production, ~10+ TB/day (6 nodes, 32 vCPU / 64GB each)",
+		CHShards:    6,
+		CHReplicas:  2,
+		ClickHouse:  ResourceProfile{"8", "32", "32Gi", "96Gi"},
+		CHKeeper:    ResourceProfile{"1", "2", "2Gi", "4Gi"},
+		Bifract:     ResourceProfile{"4", "16", "4Gi", "16Gi"},
+		Postgres:    ResourceProfile{"2", "8", "4Gi", "16Gi"},
+		Caddy:       ResourceProfile{"1", "4", "1Gi", "2Gi"},
+		CaddyShipper: ResourceProfile{"10m", "200m", "32Mi", "128Mi"},
+		LiteLLM:     ResourceProfile{"500m", "2", "1Gi", "2Gi"},
+	},
+}
+
 // K8sConfig extends SetupConfig with Kubernetes-specific settings.
 type K8sConfig struct {
 	SetupConfig
+	SizeProfile  SizeProfile
 	CHShards     int
 	CHReplicas   int
 	CHStorageGB  int
@@ -36,6 +128,7 @@ const (
 	k8sStepSSL
 	k8sStepIPAccess
 	k8sStepAllowedIPs
+	k8sStepSizeProfile
 	k8sStepCHShards
 	k8sStepCHReplicas
 	k8sStepCHStorage
@@ -56,11 +149,12 @@ type k8sWizardModel struct {
 	storageInput    textinput.Model
 	outputDirInput  textinput.Model
 
-	sslChoices     []string
-	sslCursor      int
-	ipChoices      []string
-	ipCursor       int
+	sslChoices      []string
+	sslCursor       int
+	ipChoices       []string
+	ipCursor        int
 	ipValidationErr string
+	sizeCursor      int
 
 	width  int
 	height int
@@ -111,6 +205,7 @@ func newK8sWizardModel() k8sWizardModel {
 	return k8sWizardModel{
 		step: k8sStepWelcome,
 		config: &K8sConfig{
+			SizeProfile: sizeProfiles[0],
 			CHShards:    1,
 			CHReplicas:  2,
 			CHStorageGB: 100,
@@ -180,6 +275,10 @@ func (m *k8sWizardModel) handleUp() {
 		if m.ipCursor > 0 {
 			m.ipCursor--
 		}
+	case k8sStepSizeProfile:
+		if m.sizeCursor > 0 {
+			m.sizeCursor--
+		}
 	}
 }
 
@@ -192,6 +291,10 @@ func (m *k8sWizardModel) handleDown() {
 	case k8sStepIPAccess:
 		if m.ipCursor < len(m.ipChoices)-1 {
 			m.ipCursor++
+		}
+	case k8sStepSizeProfile:
+		if m.sizeCursor < len(sizeProfiles)-1 {
+			m.sizeCursor++
 		}
 	}
 }
@@ -226,9 +329,8 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 		switch m.ipCursor {
 		case 0:
 			m.config.IPAccess = IPAccessAll
-			m.step = k8sStepCHShards
-			m.shardsInput.Focus()
-			return m, textinput.Blink
+			m.step = k8sStepSizeProfile
+			return m, nil
 		case 1:
 			m.config.IPAccess = IPAccessRestrictApp
 		case 2:
@@ -236,9 +338,8 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 		case 3:
 			m.config.IPAccess = IPAccessMTLSApp
 			m.config.MTLSEnabled = true
-			m.step = k8sStepCHShards
-			m.shardsInput.Focus()
-			return m, textinput.Blink
+			m.step = k8sStepSizeProfile
+			return m, nil
 		}
 		m.step = k8sStepAllowedIPs
 		m.allowedIPsInput.Focus()
@@ -255,6 +356,16 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.ipValidationErr = ""
+		m.step = k8sStepSizeProfile
+		return m, nil
+
+	case k8sStepSizeProfile:
+		profile := sizeProfiles[m.sizeCursor]
+		m.config.SizeProfile = profile
+		m.config.CHShards = profile.CHShards
+		m.config.CHReplicas = profile.CHReplicas
+		m.shardsInput.SetValue(fmt.Sprintf("%d", profile.CHShards))
+		m.replicasInput.SetValue(fmt.Sprintf("%d", profile.CHReplicas))
 		m.step = k8sStepCHShards
 		m.shardsInput.Focus()
 		return m, textinput.Blink
@@ -373,6 +484,22 @@ func (m k8sWizardModel) View() string {
 			b.WriteString("\n  " + ErrorStyle.Render(m.ipValidationErr))
 		}
 
+	case k8sStepSizeProfile:
+		b.WriteString(PromptStyle.Render("  Resource profile:\n\n"))
+		for i, profile := range sizeProfiles {
+			cursor := "  "
+			if i == m.sizeCursor {
+				cursor = "> "
+				b.WriteString(lipgloss.NewStyle().Foreground(Green).Render(cursor+profile.Name) + "\n")
+				b.WriteString(lipgloss.NewStyle().Foreground(Green).Render("    "+profile.Description) + "\n")
+			} else {
+				b.WriteString(DimStyle.Render(cursor+profile.Name) + "\n")
+				b.WriteString(DimStyle.Render("    "+profile.Description) + "\n")
+			}
+		}
+		b.WriteString("\n")
+		b.WriteString(DimStyle.Render("  Shard and replica counts can be adjusted in the next steps."))
+
 	case k8sStepCHShards:
 		b.WriteString(PromptStyle.Render("  ClickHouse shards: "))
 		b.WriteString(m.shardsInput.View())
@@ -398,6 +525,7 @@ func (m k8sWizardModel) View() string {
 		b.WriteString(fmt.Sprintf("  Domain:             %s\n", ValueStyle.Render(m.config.Domain)))
 		b.WriteString(fmt.Sprintf("  SSL:                %s\n", ValueStyle.Render(string(m.config.SSLMode))))
 		b.WriteString(fmt.Sprintf("  IP Access:          %s\n", ValueStyle.Render(string(m.config.IPAccess))))
+		b.WriteString(fmt.Sprintf("  Resource Profile:   %s\n", ValueStyle.Render(m.config.SizeProfile.Name)))
 		b.WriteString(fmt.Sprintf("  CH Shards:          %s\n", ValueStyle.Render(fmt.Sprintf("%d", m.config.CHShards))))
 		b.WriteString(fmt.Sprintf("  CH Replicas/Shard:  %s\n", ValueStyle.Render(fmt.Sprintf("%d", m.config.CHReplicas))))
 		b.WriteString(fmt.Sprintf("  CH Storage:         %s\n", ValueStyle.Render(fmt.Sprintf("%dGi per replica", m.config.CHStorageGB))))
@@ -545,6 +673,15 @@ type k8sTemplateData struct {
 	IPBlock             string
 	MTLSEnabled         bool
 	MTLSCACert          string
+
+	// Resource profiles
+	CH           ResourceProfile
+	CHKeeper     ResourceProfile
+	BifractRes   ResourceProfile
+	PostgresRes  ResourceProfile
+	CaddyRes     ResourceProfile
+	CaddyShipper ResourceProfile
+	LiteLLMRes   ResourceProfile
 }
 
 // k8sManifestFile maps an embedded template to its output path.
@@ -588,6 +725,13 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		IPBlock:             buildIPBlock(cfg),
 		MTLSEnabled:         cfg.MTLSEnabled,
 		MTLSCACert:          indentPEM(cfg.MTLSCACert, "    "),
+		CH:                  cfg.SizeProfile.ClickHouse,
+		CHKeeper:            cfg.SizeProfile.CHKeeper,
+		BifractRes:          cfg.SizeProfile.Bifract,
+		PostgresRes:         cfg.SizeProfile.Postgres,
+		CaddyRes:            cfg.SizeProfile.Caddy,
+		CaddyShipper:        cfg.SizeProfile.CaddyShipper,
+		LiteLLMRes:          cfg.SizeProfile.LiteLLM,
 	}
 
 	for _, m := range k8sManifests {

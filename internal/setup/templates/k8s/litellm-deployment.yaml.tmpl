@@ -56,11 +56,11 @@ spec:
             periodSeconds: 30
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: {{.LiteLLMRes.CPURequest}}
+              memory: {{.LiteLLMRes.MemRequest}}
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: "{{.LiteLLMRes.CPULimit}}"
+              memory: {{.LiteLLMRes.MemLimit}}
       volumes:
         - name: config
           configMap:

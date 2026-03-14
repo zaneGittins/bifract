@@ -69,7 +69,8 @@ export const options = {
   thresholds: {
     bifract_ingest_latency_ms: ["p(95)<2000"],
     bifract_query_latency_ms: ["p(95)<5000"],
-    http_req_failed: ["rate<0.05"],
+    "http_req_failed{name:ingest}": ["rate<0.05"],
+    "http_req_failed{name:query}": ["rate<0.05"],
   },
 };
 
@@ -175,6 +176,7 @@ function runIngest() {
       Authorization: `Bearer ${INGEST_TOKEN}`,
     },
     tags: { name: "ingest" },
+    responseCallback: http.expectedStatuses(200, 429),
   });
 
   ingestLatency.add(res.timings.duration);
@@ -320,37 +322,39 @@ export function handleSummary(data) {
 
   const get = (name) => data.metrics[name];
 
+  const val = (m, key) => m && m.values && m.values[key] != null ? m.values[key] : null;
+
   const il = get("bifract_ingest_logs_total");
-  if (il) {
+  if (val(il, "count") !== null) {
     out.push(`Logs ingested:    ${il.values.count}`);
   }
   const ie = get("bifract_ingest_errors_total");
-  if (ie) {
+  if (val(ie, "count") !== null) {
     out.push(`Ingest errors:    ${ie.values.count}`);
   }
   const i4 = get("bifract_ingest_429s_total");
-  if (i4) {
+  if (val(i4, "count") !== null) {
     out.push(`Ingest 429s:      ${i4.values.count}`);
   }
   const ilt = get("bifract_ingest_latency_ms");
-  if (ilt) {
+  if (val(ilt, "p(50)") !== null) {
     out.push(
       `Ingest latency:   p50=${ilt.values["p(50)"].toFixed(0)}ms  p95=${ilt.values["p(95)"].toFixed(0)}ms  p99=${ilt.values["p(99)"].toFixed(0)}ms`
     );
   }
 
   const ql = get("bifract_query_latency_ms");
-  if (ql) {
+  if (val(ql, "p(50)") !== null) {
     out.push(
       `Query latency:    p50=${ql.values["p(50)"].toFixed(0)}ms  p95=${ql.values["p(95)"].toFixed(0)}ms  p99=${ql.values["p(99)"].toFixed(0)}ms`
     );
   }
   const qe = get("bifract_query_errors_total");
-  if (qe) {
+  if (val(qe, "count") !== null) {
     out.push(`Query errors:     ${qe.values.count}`);
   }
   const qr = get("bifract_query_rows_returned");
-  if (qr) {
+  if (val(qr, "avg") !== null) {
     out.push(`Query rows (avg): ${qr.values.avg.toFixed(0)}`);
   }
 
