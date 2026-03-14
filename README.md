@@ -35,7 +35,7 @@ This automatically checks for a newer version of `bifract` itself, downloads it 
 
 ## Documentation
 
-Full documentation is available at **[docs.bifracthq.io](https://docs.bifracthq.io)**, including installation guides, query language reference, and administration.
+Full documentation is available at **[docs.bifract.io](https://docs.bifract.io)**, including installation guides, query language reference, and administration.
 
 ## Contributing
 
