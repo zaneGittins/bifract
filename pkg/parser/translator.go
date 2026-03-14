@@ -285,6 +285,13 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		fieldOrder = computeFieldOrder(selectStrings, deferredAssignments)
 	}
 
+	// --- Join: skip explicit formatter to let all join columns pass through ---
+	if plan.IsJoin && plan.JoinSubSQL != "" {
+		// The join wrapper adds columns from the subquery. An explicit formatter
+		// SELECT would drop them. Use SELECT * with timestamp formatting instead.
+		plan.Formatters = nil
+	}
+
 	// --- Build z-score window layers ---
 	if plan.ModifiedZScoreExpr != "" {
 		buildZScoreWindowLayers(plan)

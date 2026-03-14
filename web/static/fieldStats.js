@@ -226,10 +226,6 @@ const FieldStats = {
         }
 
         input.dispatchEvent(new Event('input', { bubbles: true }));
-
-        if (window.Toast) {
-            Toast.show(`${exclude ? 'Excluded' : 'Added'}: ${filter}`, 'info');
-        }
     },
 
     handleFilter(value) {

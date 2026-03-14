@@ -243,47 +243,11 @@ type Response struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
-func NewAuthHandler(pg *storage.PostgresClient) *AuthHandler {
-	handler := &AuthHandler{
-		pg:            pg,
-		store:         newMemorySessionStore(),
-		secureCookies: os.Getenv("BIFRACT_SECURE_COOKIES") == "true",
-		loginLimiter:  newLoginRateLimiter(),
-	}
-
-	// Start cleanup goroutine for expired sessions
-	go handler.cleanupExpiredSessions()
-
-	return handler
-}
-
-func NewAuthHandlerWithFractals(pg *storage.PostgresClient, fractalManager *fractals.Manager) *AuthHandler {
-	handler := &AuthHandler{
-		pg:             pg,
-		store:          newMemorySessionStore(),
-		fractalManager: fractalManager,
-		secureCookies:  os.Getenv("BIFRACT_SECURE_COOKIES") == "true",
-		loginLimiter:   newLoginRateLimiter(),
-	}
-
-	// Start cleanup goroutine for expired sessions
-	go handler.cleanupExpiredSessions()
-
-	return handler
-}
-
 func NewAuthHandlerWithAPIKeys(pg *storage.PostgresClient, ch *storage.ClickHouseClient, fractalManager *fractals.Manager, apiKeyValidator APIKeyValidator) *AuthHandler {
-	var store SessionStore
-	if os.Getenv("CLICKHOUSE_CLUSTER") != "" {
-		store = newPgSessionStore(pg.DB())
-		log.Println("[Auth] Using Postgres-backed session store (cluster mode)")
-	} else {
-		store = newMemorySessionStore()
-	}
 	handler := &AuthHandler{
 		pg:              pg,
 		ch:              ch,
-		store:           store,
+		store:           newPgSessionStore(pg.DB()),
 		fractalManager:  fractalManager,
 		apiKeyValidator: apiKeyValidator,
 		secureCookies:   os.Getenv("BIFRACT_SECURE_COOKIES") == "true",

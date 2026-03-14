@@ -26,6 +26,7 @@ import (
 	"bifract/pkg/fractals"
 	"bifract/pkg/ingest"
 	"bifract/pkg/ingesttokens"
+	"bifract/pkg/metrics"
 	"bifract/pkg/notebooks"
 	"bifract/pkg/prisms"
 	"bifract/pkg/query"
@@ -821,6 +822,16 @@ func main() {
 		r.Put("/_bulk", elasticHandler.HandleBulk)
 	})
 
+	// Prometheus metrics server (separate listen address, disabled by default).
+	var metricsServer *metrics.Server
+	if config.MetricsEnabled {
+		collector := metrics.New(Version)
+		collector.AttachIngest(ingestQueue)
+		collector.AttachAlerts(alertEngine)
+		metricsServer = metrics.NewServer(config.MetricsAddr, collector)
+		metricsServer.Start()
+	}
+
 	// Serve static files and web UI
 	fs := http.FileServer(http.Dir("./web"))
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
@@ -887,6 +898,11 @@ func main() {
 		archiveManager.Shutdown()
 	}
 
+	// Stop metrics server
+	if metricsServer != nil {
+		metricsServer.Shutdown()
+	}
+
 	log.Println("Server stopped gracefully")
 }
 
@@ -932,6 +948,10 @@ type Config struct {
 
 	// CORS
 	CORSOrigins string
+
+	// Prometheus metrics (disabled by default)
+	MetricsEnabled bool
+	MetricsAddr    string
 }
 
 func loadConfig() Config {
@@ -977,6 +997,10 @@ func loadConfig() Config {
 
 		// CORS
 		CORSOrigins: getEnv("BIFRACT_CORS_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080"),
+
+		// Prometheus metrics
+		MetricsEnabled: os.Getenv("BIFRACT_METRICS_ENABLED") == "true",
+		MetricsAddr:    getEnv("BIFRACT_METRICS_ADDR", ":9090"),
 	}
 
 	log.Printf("Configuration loaded:")
@@ -998,6 +1022,10 @@ func loadConfig() Config {
 		if config.ClickHouseHosts != "" {
 			log.Printf("  ClickHouse Hosts: %s", config.ClickHouseHosts)
 		}
+	}
+
+	if config.MetricsEnabled {
+		log.Printf("  Prometheus Metrics: %s/metrics", config.MetricsAddr)
 	}
 
 	return config

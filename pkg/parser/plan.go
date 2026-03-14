@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -79,6 +80,14 @@ type QueryPlan struct {
 	OutlierThreshold   string
 	MADWindowExpr      string
 	ZScoreFilters      []string
+
+	// Join-specific fields
+	IsJoin       bool
+	JoinType     string   // "inner" or "left"
+	JoinKey      string   // field to join on
+	JoinSubSQL   string   // translated subquery SQL
+	JoinInclude  []string // fields to include from subquery (empty = all)
+	JoinMaxRows  int      // max rows for subquery safety limit
 
 	// Table command tracking
 	HasTableCmd bool
@@ -197,6 +206,11 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	// Apply additional stages (chained aggregation, stage index > 0)
 	for i := 1; i < len(p.Stages); i++ {
 		innerSQL = wrapWithLayer(innerSQL, p.Stages[i].Layer)
+	}
+
+	// Apply join wrapping (subquery JOIN)
+	if p.IsJoin && p.JoinSubSQL != "" {
+		innerSQL = p.wrapWithJoin(innerSQL)
 	}
 
 	// Apply formatters (outer SELECT for timestamp formatting, deferred math)
@@ -338,6 +352,60 @@ func wrapWithLayer(innerSQL string, layer QueryLayer) string {
 		outer.WriteString(layer.Limit)
 	}
 	return outer.String()
+}
+
+// wrapWithJoin wraps the outer query SQL with a JOIN against the subquery.
+func (p *QueryPlan) wrapWithJoin(outerSQL string) string {
+	joinType := "INNER"
+	if p.JoinType == "left" {
+		joinType = "LEFT"
+	}
+
+	// Resolve the join key for the outer query. If the outer SELECT has the
+	// join key as a named column (e.g. from groupby), use it directly.
+	// Otherwise, use the JSON field reference so ClickHouse can find it.
+	outerKeyRef := p.JoinKey
+	if !p.outerHasColumn(outerSQL, p.JoinKey) {
+		outerKeyRef = jsonFieldRef(p.JoinKey)
+	}
+
+	var sql strings.Builder
+	sql.WriteString("SELECT _outer.*")
+
+	// Add subquery fields (with _join_ prefix to avoid collisions)
+	if len(p.JoinInclude) > 0 {
+		for _, field := range p.JoinInclude {
+			sql.WriteString(fmt.Sprintf(", _join_sub.%s AS _join_%s", field, field))
+		}
+	} else {
+		sql.WriteString(", _join_sub.*")
+	}
+
+	sql.WriteString(" FROM (")
+	sql.WriteString(outerSQL)
+	sql.WriteString(") AS _outer ")
+	sql.WriteString(joinType)
+	sql.WriteString(" JOIN (")
+	sql.WriteString(p.JoinSubSQL)
+	sql.WriteString(") AS _join_sub ON _outer.")
+	sql.WriteString(outerKeyRef)
+	sql.WriteString(" = _join_sub.")
+	sql.WriteString(p.JoinKey)
+
+	return sql.String()
+}
+
+// outerHasColumn checks if the outer SQL SELECT clause contains the given column name as an alias.
+func (p *QueryPlan) outerHasColumn(sql string, column string) bool {
+	// Check source stage selects for an alias matching the column
+	source := p.SourceStage()
+	for _, sel := range source.Layer.Selects {
+		alias := extractFieldAlias(sel.String())
+		if alias == column {
+			return true
+		}
+	}
+	return false
 }
 
 // selectFieldStrings converts the source stage Selects to a flat string slice for legacy functions.

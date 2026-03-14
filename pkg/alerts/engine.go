@@ -219,6 +219,18 @@ func (e *Engine) Stop() {
 	}
 }
 
+// Metrics source methods (satisfy metrics.AlertSource interface).
+
+func (e *Engine) CachedAlertCount() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.alertsCache)
+}
+
+func (e *Engine) IsRunning() bool {
+	return e.running.Load()
+}
+
 func (e *Engine) evaluationLoop(interval time.Duration) {
 	defer e.evalWg.Done()
 

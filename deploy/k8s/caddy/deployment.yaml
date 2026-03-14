@@ -66,7 +66,8 @@ spec:
           configMap:
             name: caddy-config
         - name: caddy-data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: caddy-data
         - name: caddy-logs
           emptyDir: {}
         - name: log-shipper-script
@@ -94,3 +95,15 @@ spec:
       name: http
   selector:
     app: caddy
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: caddy-data
+  namespace: bifract
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

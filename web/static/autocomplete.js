@@ -67,7 +67,8 @@ const Autocomplete = {
         { keyword: 'histogram(', desc: 'Numeric distribution histogram' },
         { keyword: 'heatmap(', desc: '2D density heatmap' },
         { keyword: 'lookupIP(', desc: 'GeoIP/ASN enrichment (MaxMind)' },
-        { keyword: 'graphWorld(', desc: 'World map visualization' }
+        { keyword: 'graphWorld(', desc: 'World map visualization' },
+        { keyword: 'join(', desc: 'Join with subquery results' }
     ],
     selectedIndex: -1,
 
@@ -631,6 +632,18 @@ const Autocomplete = {
                 { name: 'buckets', desc: 'Number of equal-width bins (default: 20)', required: false },
             ],
             example: 'histogram(response_time, buckets=30)',
+        },
+        'join': {
+            name: 'join',
+            signature: 'join(key, type=inner|left, max=N, include=[fields]) { subquery }',
+            args: [
+                { name: 'key', desc: 'Field to join on (must exist in both queries)', required: true },
+                { name: 'type', desc: 'Join type: inner (default) or left', required: false },
+                { name: 'max', desc: 'Max subquery rows (default: 10000, max: 100000)', required: false },
+                { name: 'include', desc: 'Fields to include from subquery (default: all)', required: false },
+                { name: '{ subquery }', desc: 'BQL subquery in curly braces', required: true },
+            ],
+            example: 'action="denied" | join(src_ip) { action="login" | groupby(src_ip) | count() }',
         },
         'heatmap': {
             name: 'heatmap',

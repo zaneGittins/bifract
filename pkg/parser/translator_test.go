@@ -3726,3 +3726,124 @@ func TestAlertAutoProjection(t *testing.T) {
 		})
 	}
 }
+
+func TestJoinFunction(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:   1000,
+		FractalID: "test-fractal-123",
+	}
+
+	tests := []struct {
+		name           string
+		query          string
+		wantContain    []string
+		wantNotContain []string
+		wantErr        bool
+		errContains    string
+	}{
+		{
+			name:  "Basic inner join",
+			query: `action="login_failed" | join(user) { action="login_success" | groupby(user) | count() }`,
+			wantContain: []string{
+				"INNER JOIN",
+				"_outer",
+				"_join_sub",
+				"= _join_sub.user",
+				"fractal_id = 'test-fractal-123'",
+			},
+		},
+		{
+			name:  "Left join with type parameter",
+			query: `* | join(src_ip, type=left) { * | groupby(src_ip) | count() }`,
+			wantContain: []string{
+				"LEFT JOIN",
+				"= _join_sub.src_ip",
+			},
+		},
+		{
+			name:  "Join with include parameter",
+			query: `* | join(user, include=[department,role]) { * | groupby(user) | count() }`,
+			wantContain: []string{
+				"INNER JOIN",
+				"_join_sub.department AS _join_department",
+				"_join_sub.role AS _join_role",
+			},
+		},
+		{
+			name:  "Join with max parameter",
+			query: `* | join(user, max=500) { * | groupby(user) | count() }`,
+			wantContain: []string{
+				"INNER JOIN",
+				"LIMIT 500",
+			},
+		},
+		{
+			name:  "Join enforces fractal isolation on subquery",
+			query: `* | join(user) { action="login" | groupby(user) }`,
+			wantContain: []string{
+				"fractal_id = 'test-fractal-123'",
+			},
+		},
+		{
+			name:        "Join with invalid type",
+			query:       `* | join(user, type=cross) { * | count() }`,
+			wantErr:     true,
+			errContains: "type must be 'inner' or 'left'",
+		},
+		{
+			name:        "Join without key",
+			query:       `* | join(type=inner) { * | count() }`,
+			wantErr:     true,
+			errContains: "requires a join key",
+		},
+		{
+			name:        "Nested join rejected",
+			query:       `* | join(user) { * | join(ip) { * | count() } }`,
+			wantErr:     true,
+			errContains: "nested join",
+		},
+		{
+			name:        "Join with empty subquery",
+			query:       `* | join(user) { }`,
+			wantErr:     true,
+			errContains: "subquery cannot be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pipeline, err := ParseQuery(tt.query)
+			if err != nil {
+				if tt.wantErr {
+					return
+				}
+				t.Fatalf("parse error: %v", err)
+			}
+			result, err := TranslateToSQLWithOrder(pipeline, opts)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errContains)
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Fatalf("expected error containing %q, got: %v", tt.errContains, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("translate error: %v", err)
+			}
+			for _, want := range tt.wantContain {
+				if !strings.Contains(result.SQL, want) {
+					t.Errorf("expected SQL to contain %q\ngot: %s", want, result.SQL)
+				}
+			}
+			for _, notWant := range tt.wantNotContain {
+				if strings.Contains(result.SQL, notWant) {
+					t.Errorf("expected SQL to NOT contain %q\ngot: %s", notWant, result.SQL)
+				}
+			}
+		})
+	}
+}

@@ -350,6 +350,16 @@ func (q *IngestQueue) LastIngested(fractalID string) time.Time {
 	return q.lastIngested[fractalID]
 }
 
+// Metrics source methods (satisfy metrics.IngestSource interface).
+
+func (q *IngestQueue) AcceptedTotal() int64         { return q.Metrics.Accepted.Load() }
+func (q *IngestQueue) InsertedTotal() int64         { return q.Metrics.Inserted.Load() }
+func (q *IngestQueue) InsertErrorsTotal() int64     { return q.Metrics.InsertErrors.Load() }
+func (q *IngestQueue) QueueDropsTotal() int64       { return q.Metrics.QueueDrops.Load() }
+func (q *IngestQueue) RetriesTotal() int64          { return q.Metrics.Retries.Load() }
+func (q *IngestQueue) CPUPressure() bool            { return q.cpuPressure.Load() == 1 }
+func (q *IngestQueue) ConsecutiveFailures() int64   { return q.consecutiveFailures.Load() }
+
 // worker drains the channel and coalesces multiple small batches into larger
 // ClickHouse inserts. It flushes when the coalesced batch reaches
 // defaultMaxBatchSize or after defaultFlushInterval, whichever comes first.

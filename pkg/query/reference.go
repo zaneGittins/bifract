@@ -195,6 +195,23 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 			{
+				Name:        "join",
+				Category:    "Enrichment",
+				Description: "Correlates results with a subquery by joining on a shared field. The subquery runs with the same time range and fractal isolation. Supports inner and left joins.",
+				Syntax:      "| join(key, type=inner|left, max=N, include=[fields]) { subquery }",
+				Parameters: []Param{
+					{Name: "key", Type: "string", Required: true, Description: "Field to join on (must exist in both outer query and subquery results)"},
+					{Name: "type", Type: "string", Required: false, Description: "Join type: inner (default) or left"},
+					{Name: "max", Type: "number", Required: false, Description: "Max rows the subquery can return (default: 10000, hard max: 100000)"},
+					{Name: "include", Type: "array", Required: false, Description: "Fields to include from subquery results (default: all, prefixed with _join_)"},
+				},
+				Examples: []string{
+					`action="denied" | join(src_ip) { action="login" | groupby(src_ip) | count() }`,
+					`* | join(user, type=left, include=[department,role]) { * | groupby(user) | selectFirst(department) | selectFirst(role) }`,
+					`action="login_failed" | join(user, max=5000) { action="login_success" | groupby(user) | count() }`,
+				},
+			},
+			{
 				Name:        "case",
 				Category:    "Transformation",
 				Description: "Conditional field assignment using case statements",

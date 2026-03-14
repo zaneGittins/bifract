@@ -290,12 +290,21 @@ func (s *Storage) DeleteFractal(ctx context.Context, fractalID string) error {
 		return fmt.Errorf("fractal not found")
 	}
 
-	// TODO: Delete ClickHouse data for this fractal in background job
-	// For now, we'll leave the log data and clean it up later
-
 	// Commit transaction
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Delete ClickHouse log data for this fractal. ALTER TABLE DELETE is
+	// asynchronous in ClickHouse so this returns quickly. If it fails the
+	// fractal is already gone from PostgreSQL (no new queries or ingestion
+	// can reach it), so we log the error and move on.
+	deleteQuery := fmt.Sprintf(
+		"ALTER TABLE logs DELETE WHERE fractal_id = '%s'",
+		storage.EscCHStr(fractalID),
+	)
+	if err := s.ch.Exec(ctx, deleteQuery); err != nil {
+		fmt.Printf("Warning: failed to delete ClickHouse data for fractal %s: %v\n", fractalID, err)
 	}
 
 	return nil

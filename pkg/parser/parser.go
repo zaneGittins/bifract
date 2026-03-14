@@ -554,6 +554,11 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 		return p.parseChainCommand()
 	}
 
+	// Special handling for join function: join(key, type=inner) { subquery }
+	if cmd.Name == "join" {
+		return p.parseJoinCommand()
+	}
+
 	// Expect (
 	if _, err := p.expect(TokenLParen); err != nil {
 		return nil, err
@@ -1062,6 +1067,101 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 	if withinValue != "" {
 		cmd.Arguments = append(cmd.Arguments, withinValue)
 	}
+
+	return cmd, nil
+}
+
+// parseJoinCommand parses join(key, type=inner, max=10000, include=[f1,f2]) { subquery } syntax
+func (p *Parser) parseJoinCommand() (*CommandNode, error) {
+	cmd := &CommandNode{Name: "join"}
+
+	// Expect (
+	if _, err := p.expect(TokenLParen); err != nil {
+		return nil, fmt.Errorf("expected '(' after join, got %s", p.current().Type)
+	}
+
+	// Parse arguments: join key, optional type=, max=, include=[]
+	var args []string
+	for p.current().Type != TokenRParen && p.current().Type != TokenEOF {
+		tok := p.current()
+		if tok.Type == TokenComma {
+			p.advance()
+			continue
+		}
+
+		val := tok.Value
+		p.advance()
+
+		// Handle param=value syntax
+		if p.current().Type == TokenEqual {
+			val += "="
+			p.advance()
+			if p.current().Type == TokenLBracket {
+				// Handle array: include=[f1,f2]
+				p.advance() // skip [
+				val += "["
+				for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
+					if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
+						val += p.current().Value
+						p.advance()
+					}
+					if p.current().Type == TokenComma {
+						val += ","
+						p.advance()
+					}
+				}
+				if p.current().Type == TokenRBracket {
+					val += "]"
+					p.advance()
+				}
+			} else if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
+				val += p.current().Value
+				p.advance()
+			}
+		}
+
+		args = append(args, val)
+	}
+
+	// Expect )
+	if _, err := p.expect(TokenRParen); err != nil {
+		return nil, fmt.Errorf("expected ')' after join arguments, got %s", p.current().Type)
+	}
+
+	// Expect {
+	if _, err := p.expect(TokenLBrace); err != nil {
+		return nil, fmt.Errorf("expected '{' after join(...), got %s", p.current().Type)
+	}
+
+	// Consume block body as raw string, tracking brace depth for nested case/chain blocks
+	var body strings.Builder
+	depth := 1
+	first := true
+	for depth > 0 && p.current().Type != TokenEOF {
+		tok := p.current()
+		if tok.Type == TokenLBrace {
+			depth++
+		} else if tok.Type == TokenRBrace {
+			depth--
+			if depth == 0 {
+				break
+			}
+		}
+		if !first {
+			body.WriteString(" ")
+		}
+		body.WriteString(tok.Value)
+		first = false
+		p.advance()
+	}
+
+	// Expect closing }
+	if _, err := p.expect(TokenRBrace); err != nil {
+		return nil, fmt.Errorf("expected '}' to close join block, got %s", p.current().Type)
+	}
+
+	// Arguments: [0]=block body, [1..N]=parsed params (key, type=, max=, include=)
+	cmd.Arguments = append([]string{body.String()}, args...)
 
 	return cmd, nil
 }

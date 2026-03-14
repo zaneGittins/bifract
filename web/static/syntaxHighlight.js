@@ -143,7 +143,7 @@ const SyntaxHighlight = {
             }
             // Check for functions
             else if (/[a-zA-Z_]/.test(line[i])) {
-                const funcMatch = line.substring(i).match(/^(groupBy|count|sum|avg|max|min|percentile|stdDev|median|mad|multi|sort|limit|head|tail|table|regex|replace|concat|lowercase|lower|now|timeChart|timechart|singleval|case|eval|in|piechart|barchart|graph|bucket|match|selectfirst|selectlast|uppercase|chain|bfs|dfs|len|levenshtein|base64Decode|dedup|cidr|split|substr|urldecode|coalesce|hash|comment|collect|top|sprintf|strftime|skewness|kurtosis|frequency|modifiedZScore|madOutlier|iqr|headTail|analyzeFields|histogram|heatmap|lookupIP|lookupip|geoip|graphWorld|graphworld|worldmap)(?=\s*\()/i);
+                const funcMatch = line.substring(i).match(/^(groupBy|count|sum|avg|max|min|percentile|stdDev|median|mad|multi|sort|limit|head|tail|table|regex|replace|concat|lowercase|lower|now|timeChart|timechart|singleval|case|eval|in|piechart|barchart|graph|bucket|match|selectfirst|selectlast|uppercase|chain|bfs|dfs|len|levenshtein|base64Decode|dedup|cidr|split|substr|urldecode|coalesce|hash|comment|collect|top|sprintf|strftime|skewness|kurtosis|frequency|modifiedZScore|madOutlier|iqr|headTail|analyzeFields|histogram|heatmap|lookupIP|lookupip|geoip|graphWorld|graphworld|worldmap|join)(?=\s*\()/i);
                 if (funcMatch) {
                     result.push(`<span class="hl-function">${this.escapeHtml(funcMatch[0])}</span>`);
                     i += funcMatch[0].length;

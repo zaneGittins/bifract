@@ -30,7 +30,9 @@ data:
         Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
         X-Content-Type-Options "nosniff"
         X-Frame-Options "DENY"
+        X-XSS-Protection "1; mode=block"
         Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
       }
 {{.IPBlock}}
       respond /api/v1/ingest* 403
@@ -48,22 +50,26 @@ data:
       }
     }
 
-    :8443 {
-      @ingest {
-        path /api/v1/ingest*
-        path /_bulk
+    {{.Domain}}:8443 {
+      log {
+        output file /var/log/caddy/access.log {
+          roll_size 50MiB
+          roll_keep 5
+          roll_keep_for 168h
+        }
+        format json
       }
+      request_body {
+        max_size 200MiB
+      }
+      @ingest path /api/v1/ingest* /_bulk
       handle @ingest {
+        log_skip
         reverse_proxy bifract.bifract.svc.cluster.local:8080 {
           header_up X-Real-IP {remote_host}
           header_up X-Forwarded-For {remote_host}
           header_up X-Forwarded-Proto {scheme}
         }
       }
-      handle {
-        respond 403
-      }
-      request_body {
-        max_size 200MiB
-      }
+      respond 403
     }

@@ -58,6 +58,7 @@ nav:
     - Backup & Restore: administration/backup-restore.md
     - Reverse Proxy: administration/reverse-proxy.md
     - Disk Quotas: administration/disk-quotas.md
+    - Monitoring: administration/monitoring.md
   - Ingestion:
     - Sending Logs: ingestion/overview.md
     - CLI Tool: ingestion/cli-tool.md
@@ -68,6 +69,7 @@ nav:
     - Display & Sorting: bql/display-and-sorting.md
     - Field Operations: bql/field-operations.md
     - Chain Detection: bql/chain.md
+    - Join: bql/join.md
     - Graph Traversal: bql/graph-traversal.md
     - Enrichment: bql/enrichment.md
     - Time Functions: bql/time-functions.md
