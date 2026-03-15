@@ -61,11 +61,11 @@ func (m *Manager) ListDictionaries(ctx context.Context, fractalID, prismID strin
 	var q string
 	var arg string
 	if prismID != "" {
-		q = `SELECT id, name, description, fractal_id, is_global, key_column, columns, row_count, created_by, created_at, updated_at
+		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, created_by, created_at, updated_at
 		     FROM dictionaries WHERE prism_id = $1 OR is_global = true ORDER BY name ASC`
 		arg = prismID
 	} else {
-		q = `SELECT id, name, description, fractal_id, is_global, key_column, columns, row_count, created_by, created_at, updated_at
+		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, created_by, created_at, updated_at
 		     FROM dictionaries WHERE fractal_id = $1 OR is_global = true ORDER BY name ASC`
 		arg = fractalID
 	}
@@ -79,7 +79,7 @@ func (m *Manager) ListDictionaries(ctx context.Context, fractalID, prismID strin
 	for rows.Next() {
 		d := &Dictionary{}
 		var colsJSON []byte
-		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.IsGlobal, &d.KeyColumn,
+		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
 			&colsJSON, &d.RowCount, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -98,9 +98,9 @@ func (m *Manager) GetDictionary(ctx context.Context, id string) (*Dictionary, er
 	d := &Dictionary{}
 	var colsJSON []byte
 	err := m.pg.QueryRow(ctx,
-		`SELECT id, name, description, fractal_id, is_global, key_column, columns, row_count, created_by, created_at, updated_at
+		`SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, created_by, created_at, updated_at
 		 FROM dictionaries WHERE id = $1`, id).
-		Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.IsGlobal, &d.KeyColumn,
+		Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
 			&colsJSON, &d.RowCount, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -113,14 +113,24 @@ func (m *Manager) GetDictionary(ctx context.Context, id string) (*Dictionary, er
 	return d, nil
 }
 
-// GetDictionaryByName returns a dictionary by fractal ID and name.
-func (m *Manager) GetDictionaryByName(ctx context.Context, fractalID, name string) (*Dictionary, error) {
+// GetDictionaryByName returns a dictionary by name within a fractal or prism scope.
+// Pass fractalID or prismID (not both). The matching scope column is used for the lookup.
+func (m *Manager) GetDictionaryByName(ctx context.Context, fractalID, prismID, name string) (*Dictionary, error) {
 	d := &Dictionary{}
 	var colsJSON []byte
-	err := m.pg.QueryRow(ctx,
-		`SELECT id, name, description, fractal_id, is_global, key_column, columns, row_count, created_by, created_at, updated_at
-		 FROM dictionaries WHERE fractal_id = $1 AND name = $2`, fractalID, name).
-		Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.IsGlobal, &d.KeyColumn,
+	var q string
+	var arg string
+	if prismID != "" {
+		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, created_by, created_at, updated_at
+		     FROM dictionaries WHERE prism_id = $1 AND name = $2`
+		arg = prismID
+	} else {
+		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, created_by, created_at, updated_at
+		     FROM dictionaries WHERE fractal_id = $1 AND name = $2`
+		arg = fractalID
+	}
+	err := m.pg.QueryRow(ctx, q, arg, name).
+		Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
 			&colsJSON, &d.RowCount, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -839,11 +849,12 @@ func (m *Manager) GetDictionaryActionsByAlertID(ctx context.Context, alertID str
 // ExecuteDictionaryAction replaces the target dictionary contents with data from log results.
 // The dictionary is created automatically if it doesn't exist. All log fields become columns;
 // the first field is used as the key. Existing data is completely overwritten.
-func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *DictionaryAction, fractalID string, logs []map[string]interface{}) (int, error) {
+// Pass fractalID or prismID (not both) to scope the dictionary.
+func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *DictionaryAction, fractalID, prismID string, logs []map[string]interface{}) (int, error) {
 	if action.DictionaryName == "" {
 		return 0, fmt.Errorf("dictionary action %q has no target dictionary name", action.Name)
 	}
-	if fractalID == "" {
+	if fractalID == "" && prismID == "" {
 		return 0, fmt.Errorf("fractal_id or prism_id is required to execute dictionary action")
 	}
 
@@ -867,14 +878,14 @@ func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *Dictionar
 	keyCol := colOrder[0]
 
 	// Look up or create the target dictionary.
-	dict, err := m.GetDictionaryByName(ctx, fractalID, action.DictionaryName)
+	dict, err := m.GetDictionaryByName(ctx, fractalID, prismID, action.DictionaryName)
 	if err != nil {
 		// Dictionary doesn't exist - create it.
 		var cols []DictionaryColumn
 		for _, c := range colOrder {
 			cols = append(cols, DictionaryColumn{Name: c, Type: "string"})
 		}
-		dict, err = m.CreateDictionary(ctx, fractalID, "", action.DictionaryName, "", keyCol, cols, action.CreatedBy, false)
+		dict, err = m.CreateDictionary(ctx, fractalID, prismID, action.DictionaryName, "", keyCol, cols, action.CreatedBy, false)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create dictionary %q: %w", action.DictionaryName, err)
 		}

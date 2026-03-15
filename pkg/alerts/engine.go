@@ -183,6 +183,12 @@ func (e *Engine) shouldSkipAlert(alert *Alert) bool {
 	if e.lastIngested == nil {
 		return false
 	}
+	// Scheduled alerts run on a cron schedule regardless of ingest
+	// activity. They may check for the absence of data or aggregate
+	// over fixed windows, so skipping them defeats their purpose.
+	if alert.AlertType == "scheduled" {
+		return false
+	}
 	// Prism alerts span multiple fractals; skip logic would need all
 	// member IDs resolved. Not worth the complexity -- don't skip.
 	if alert.PrismID != "" || alert.FractalID == "" {
@@ -610,6 +616,9 @@ func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results 
 
 	throttled, throttleKey := e.isThrottled(alert, results)
 	if throttled {
+		if err := e.updateLastTriggered(ctx, alert.ID); err != nil {
+			fmt.Printf("[Alert Engine] Failed to update last triggered for throttled alert %s: %v\n", alert.Name, err)
+		}
 		return e.recordExecution(ctx, alert.ID, alert.FractalID, len(results), true, throttleKey, executionTimeMs, []WebhookResult{}, []FractalResult{})
 	}
 
@@ -665,17 +674,11 @@ func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results 
 
 	// Execute dictionary actions
 	if e.dictManager != nil && len(alert.DictionaryActions) > 0 {
-		dictFractalID := alert.FractalID
-		if dictFractalID == "" && alert.PrismID != "" {
-			if ids, err := e.resolvePrismFractalIDs(ctx, alert.PrismID, nil); err == nil && len(ids) > 0 {
-				dictFractalID = ids[0]
-			}
-		}
 		for _, da := range alert.DictionaryActions {
 			if !da.Enabled {
 				continue
 			}
-			count, err := e.dictManager.ExecuteDictionaryAction(ctx, da, dictFractalID, results)
+			count, err := e.dictManager.ExecuteDictionaryAction(ctx, da, alert.FractalID, alert.PrismID, results)
 			if err != nil {
 				fmt.Printf("[Alert Engine] Dictionary action %s failed for alert %s: %v\n", da.Name, alert.Name, err)
 			} else {
@@ -839,6 +842,10 @@ func (e *Engine) refreshAlertsCache(ctx context.Context) ([]*Alert, error) {
 			schedule, cronErr := cronParser.Parse(*alert.ScheduleCron)
 			if cronErr != nil {
 				fmt.Printf("[Alert Engine] Failed to parse cron for alert %s: %v\n", alert.Name, cronErr)
+				reason := fmt.Sprintf("Auto-disabled: invalid cron expression: %v", cronErr)
+				if disableErr := e.disableAlertWithReason(ctx, alert.ID, reason); disableErr != nil {
+					fmt.Printf("[Alert Engine] Failed to disable alert %s: %v\n", alert.Name, disableErr)
+				}
 				continue
 			}
 			alert.CronSchedule = schedule

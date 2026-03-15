@@ -9,12 +9,13 @@ type DictionaryColumn struct {
 	IsKey bool   `json:"is_key"` // if true, a secondary ClickHouse DICTIONARY keyed by this column is maintained
 }
 
-// Dictionary is a per-fractal lookup table backed by a ClickHouse dictionary.
+// Dictionary is a lookup table backed by a ClickHouse dictionary, scoped to a fractal or prism.
 type Dictionary struct {
 	ID          string             `json:"id"`
 	Name        string             `json:"name"`
 	Description string             `json:"description"`
 	FractalID   string             `json:"fractal_id"`
+	PrismID     string             `json:"prism_id,omitempty"`
 	IsGlobal    bool               `json:"is_global"`
 	KeyColumn   string             `json:"key_column"`
 	Columns     []DictionaryColumn `json:"columns"`

@@ -51,6 +51,7 @@ type HavingCondition struct {
 	Value    string
 	IsRegex  bool
 	Logic    string // "AND", "OR", ""
+	GroupID  int    // Conditions with the same non-zero GroupID are parenthesized together
 }
 
 func (h HavingCondition) Type() string { return "having" }
@@ -137,6 +138,9 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		if err := p.checkIterationLimit(); err != nil {
 			return nil, err
 		}
+		// Guard against stalled parsing: if position doesn't advance in a full
+		// iteration, we'd loop forever. Break with an error instead.
+		startPos := p.pos
 		// Skip pipe if present
 		if p.current().Type == TokenPipe {
 			p.advance()
@@ -179,26 +183,33 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		}
 
 		// Handle bare string/regex searches in pipeline
-		if p.current().Type == TokenString {
-			// Create HAVING condition for raw_log search
-			having := &HavingCondition{
-				Field:    "raw_log",
-				Operator: "~", // Regex match for substring search
-				Value:    p.current().Value,
-				IsRegex:  true,
+		if p.current().Type == TokenString || p.current().Type == TokenRegex {
+			// Check if this is part of a compound expression (e.g., "A" OR "B")
+			if p.isCompoundHavingCondition() {
+				conditions, err := p.parseCompoundHavingConditions()
+				if err != nil {
+					return nil, err
+				}
+				pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
+			} else if p.current().Type == TokenString {
+				having := &HavingCondition{
+					Field:    "raw_log",
+					Operator: "~",
+					Value:    p.current().Value,
+					IsRegex:  true,
+				}
+				p.advance()
+				pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
+			} else {
+				having := &HavingCondition{
+					Field:    "raw_log",
+					Operator: "=",
+					Value:    p.current().Value,
+					IsRegex:  true,
+				}
+				p.advance()
+				pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
 			}
-			p.advance()
-			pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
-		} else if p.current().Type == TokenRegex {
-			// Create HAVING condition for raw_log regex search
-			having := &HavingCondition{
-				Field:    "raw_log",
-				Operator: "=",
-				Value:    p.current().Value,
-				IsRegex:  true,
-			}
-			p.advance()
-			pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
 		} else if p.isAssignment() {
 			// Check if this is an assignment (field := expression)
 			assignment, err := p.parseAssignment()
@@ -231,6 +242,12 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			}
 			pipeline.Commands = append(pipeline.Commands, *cmd)
 		}
+
+		// If the parser position hasn't moved, we're stuck on a token that
+		// no branch consumed. Break to avoid an infinite loop.
+		if p.pos == startPos {
+			return nil, fmt.Errorf("unexpected token in pipeline: %s (%q)", p.current().Type, p.current().Value)
+		}
 	}
 
 	return pipeline, nil
@@ -253,31 +270,16 @@ func (p *Parser) parseFilter() (*FilterNode, error) {
 		return nil, nil
 	}
 
-	// Handle bare regex queries like /powershell/ (search raw_log)
-	if p.current().Type == TokenRegex {
+	// Handle bare regex/string queries like /powershell/ or "powershell" (search raw_log)
+	// These are routed through parseConditionsWithPrecedence so that
+	// OR/AND chains like: "foo" OR "bar" are handled correctly.
+	if p.current().Type == TokenRegex || p.current().Type == TokenString {
 		filter := &FilterNode{}
-		condition := ConditionNode{
-			Field:   "raw_log",
-			Operator: "=",
-			Value:   p.current().Value,
-			IsRegex: true,
+		conditions, err := p.parseConditions()
+		if err != nil {
+			return nil, err
 		}
-		p.advance()
-		filter.Conditions = []ConditionNode{condition}
-		return filter, nil
-	}
-
-	// Handle bare string queries like "powershell" (search raw_log)
-	if p.current().Type == TokenString {
-		filter := &FilterNode{}
-		condition := ConditionNode{
-			Field:    "raw_log",
-			Operator: "~", // Use regex match for substring search
-			Value:    p.current().Value,
-			IsRegex:  true,
-		}
-		p.advance()
-		filter.Conditions = []ConditionNode{condition}
+		filter.Conditions = conditions
 		return filter, nil
 	}
 
@@ -397,6 +399,22 @@ func (p *Parser) parseConditionsWithPrecedence(minPrecedence int) ([]ConditionNo
 			cond := &ConditionNode{
 				Field:    field,
 				Operator: "=",
+				Value:    p.current().Value,
+				IsRegex:  true,
+				Negate:   negate,
+				GroupID:  0,
+			}
+			p.advance()
+			currentConditions = []ConditionNode{*cond}
+		} else if p.current().Type == TokenString {
+			// Bare string: substring search on raw_log (or inherit field)
+			field := "raw_log"
+			if len(conditions) > 0 {
+				field = conditions[len(conditions)-1].Field
+			}
+			cond := &ConditionNode{
+				Field:    field,
+				Operator: "~",
 				Value:    p.current().Value,
 				IsRegex:  true,
 				Negate:   negate,
@@ -613,13 +631,17 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 						p.advance() // skip [
 						paramName += "["
 						for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
+							if err := p.checkIterationLimit(); err != nil {
+								return nil, err
+							}
 							if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
 								paramName += p.current().Value
 								p.advance()
-							}
-							if p.current().Type == TokenComma {
+							} else if p.current().Type == TokenComma {
 								paramName += ","
 								p.advance()
+							} else {
+								return nil, fmt.Errorf("unexpected token in array parameter: %s", p.current().Type)
 							}
 						}
 						if p.current().Type == TokenRBracket {
@@ -674,12 +696,16 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 				p.advance() // skip [
 				var arrParts []string
 				for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
+					if err := p.checkIterationLimit(); err != nil {
+						return nil, err
+					}
 					if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
 						arrParts = append(arrParts, p.current().Value)
 						p.advance()
-					}
-					if p.current().Type == TokenComma {
+					} else if p.current().Type == TokenComma {
 						p.advance()
+					} else {
+						return nil, fmt.Errorf("unexpected token in array: %s", p.current().Type)
 					}
 				}
 				if p.current().Type == TokenRBracket {
@@ -761,6 +787,11 @@ func (p *Parser) parseCompoundHavingConditions() ([]HavingCondition, error) {
 		return nil, err
 	}
 
+	// Assign a shared GroupID so these conditions are parenthesized
+	// together when mixed with other HAVING conditions.
+	p.groupIDCounter++
+	groupID := p.groupIDCounter
+
 	// Convert ConditionNodes to HavingConditions
 	for _, condNode := range conditionNodes {
 		having := HavingCondition{
@@ -769,6 +800,7 @@ func (p *Parser) parseCompoundHavingConditions() ([]HavingCondition, error) {
 			Value:    condNode.Value,
 			IsRegex:  condNode.IsRegex,
 			Logic:    condNode.Logic,
+			GroupID:  groupID,
 		}
 		conditions = append(conditions, having)
 	}
@@ -812,6 +844,17 @@ func (p *Parser) parseConditionsForHaving() ([]ConditionNode, error) {
 			cond := &ConditionNode{
 				Field:    "raw_log",
 				Operator: "=",
+				Value:    p.current().Value,
+				IsRegex:  true,
+				Negate:   negate,
+			}
+			p.advance()
+			currentConditions = []ConditionNode{*cond}
+		} else if p.current().Type == TokenString {
+			// Bare string in HAVING context: substring search on raw_log
+			cond := &ConditionNode{
+				Field:    "raw_log",
+				Operator: "~",
 				Value:    p.current().Value,
 				IsRegex:  true,
 				Negate:   negate,
@@ -1101,13 +1144,17 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 				p.advance() // skip [
 				val += "["
 				for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
+					if err := p.checkIterationLimit(); err != nil {
+						return nil, err
+					}
 					if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
 						val += p.current().Value
 						p.advance()
-					}
-					if p.current().Type == TokenComma {
+					} else if p.current().Type == TokenComma {
 						val += ","
 						p.advance()
+					} else {
+						return nil, fmt.Errorf("unexpected token in array: %s", p.current().Type)
 					}
 				}
 				if p.current().Type == TokenRBracket {

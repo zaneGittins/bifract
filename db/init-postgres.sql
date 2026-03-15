@@ -802,6 +802,7 @@ CREATE INDEX IF NOT EXISTS idx_alerts_prism_id       ON alerts(prism_id)       W
 CREATE INDEX IF NOT EXISTS idx_notebooks_prism_id    ON notebooks(prism_id)    WHERE prism_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_dashboards_prism_id   ON dashboards(prism_id)   WHERE prism_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_dictionaries_prism_id ON dictionaries(prism_id) WHERE prism_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionaries_prism_name ON dictionaries(prism_id, name) WHERE prism_id IS NOT NULL;
 
 -- Global dictionaries: available to all fractals/prisms
 ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS is_global BOOLEAN NOT NULL DEFAULT false;

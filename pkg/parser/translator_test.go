@@ -3582,6 +3582,51 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			},
 		},
 		{
+			name:  "bare strings with OR get correct OR logic",
+			query: `"prod-billing-9" OR "prod-billing-10"`,
+			wantContain: []string{
+				"match(raw_log, 'prod-billing-9')",
+				"match(raw_log, 'prod-billing-10')",
+				" OR ",
+			},
+		},
+		{
+			name:  "bare strings with AND get correct AND logic",
+			query: `"prod-billing-9" AND "prod-billing-10"`,
+			wantContain: []string{
+				"match(raw_log, 'prod-billing-9')",
+				"match(raw_log, 'prod-billing-10')",
+			},
+		},
+		{
+			name:  "three bare strings with OR",
+			query: `"foo" OR "bar" OR "baz"`,
+			wantContain: []string{
+				"match(raw_log, 'foo')",
+				"match(raw_log, 'bar')",
+				"match(raw_log, 'baz')",
+				" OR ",
+			},
+		},
+		{
+			name:  "bare strings with OR in pipeline are grouped",
+			query: `* | service="test" | "A" OR "B" | user=/admin/i`,
+			wantContain: []string{
+				"match(raw_log, 'A') OR match(raw_log, 'B')",
+				"service",
+				"match(fields.`user`.:String, '(?i)admin')",
+			},
+		},
+		{
+			name:  "bare strings with AND in pipeline are grouped",
+			query: `* | service="test" | "A" AND "B" | user=/admin/i`,
+			wantContain: []string{
+				"match(raw_log, 'A') AND match(raw_log, 'B')",
+				"service",
+				"match(fields.`user`.:String, '(?i)admin')",
+			},
+		},
+		{
 			name:  "field regex does NOT get hasToken pre-filters",
 			query: "image=/powershell/i",
 			wantContain: []string{

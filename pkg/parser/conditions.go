@@ -92,16 +92,58 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 }
 
 // materializeCondGroup builds SQL for a group of conditions and joins them.
+// Conditions sharing the same non-zero GroupID are parenthesized together.
 func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry) string {
 	if len(conditions) == 0 {
 		return ""
 	}
-	var groups []condGroup
+
+	// Collect conditions into sub-groups by GroupID.
+	// GroupID 0 means ungrouped (each is its own entry).
+	type subGroup struct {
+		parts []condGroup
+		logic string // logic connecting this sub-group to the next
+	}
+	var result []subGroup
+	groupIndex := map[int]int{} // GroupID -> index in result
+
 	for _, cond := range conditions {
 		condSQL := buildConditionSQL(cond, registry)
-		if condSQL != "" {
-			groups = append(groups, condGroup{sql: condSQL, logic: cond.Logic})
+		if condSQL == "" {
+			continue
 		}
+		if cond.GroupID == 0 {
+			result = append(result, subGroup{
+				parts: []condGroup{{sql: condSQL}},
+				logic: cond.Logic,
+			})
+		} else if idx, ok := groupIndex[cond.GroupID]; ok {
+			// The previous entry in this group needs its intra-group logic set.
+			// That logic was stored on the previous condition's Logic field.
+			prevParts := result[idx].parts
+			if len(prevParts) > 0 && prevParts[len(prevParts)-1].logic == "" {
+				result[idx].parts[len(prevParts)-1].logic = result[idx].logic
+			}
+			result[idx].parts = append(result[idx].parts, condGroup{sql: condSQL})
+			// Update the sub-group's outward logic to this condition's Logic
+			result[idx].logic = cond.Logic
+		} else {
+			groupIndex[cond.GroupID] = len(result)
+			result = append(result, subGroup{
+				parts: []condGroup{{sql: condSQL}},
+				logic: cond.Logic,
+			})
+		}
+	}
+
+	// Build the final groups: each sub-group with multiple parts gets parenthesized
+	var groups []condGroup
+	for _, sg := range result {
+		sql := joinCondGroups(sg.parts)
+		if len(sg.parts) > 1 {
+			sql = "(" + sql + ")"
+		}
+		groups = append(groups, condGroup{sql: sql, logic: sg.logic})
 	}
 	return joinCondGroups(groups)
 }
