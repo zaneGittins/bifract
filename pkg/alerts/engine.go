@@ -288,6 +288,7 @@ func (e *Engine) evaluateAllAlerts() {
 	if len(alerts) == 0 {
 		return
 	}
+	log.Printf("[Alert Engine] Evaluating %d alert(s)", len(alerts))
 
 	// Scale timeout with alert count so large deployments don't hit the
 	// deadline before all alerts have been evaluated.
@@ -322,6 +323,7 @@ func (e *Engine) evaluateAllAlerts() {
 			}
 
 			if e.shouldSkipAlert(a) {
+				log.Printf("[Alert Engine] Skipped alert '%s' (no new data)", a.Name)
 				return
 			}
 
@@ -335,7 +337,7 @@ func (e *Engine) evaluateAllAlerts() {
 				evalErr = e.evaluateAlertCursor(ctx, a, prismCache)
 			}
 			if evalErr != nil {
-				fmt.Printf("[Alert Engine] Alert '%s' error: %v\n", a.Name, evalErr)
+				log.Printf("[Alert Engine] Alert '%s' error: %v", a.Name, evalErr)
 				if consecutiveFailures.Add(1) >= circuitBreakerThreshold {
 					if tripped.CompareAndSwap(false, true) {
 						log.Printf("[Alert Engine] Circuit breaker tripped after %d consecutive failures", circuitBreakerThreshold)
@@ -483,7 +485,7 @@ func getAlertTimeout() int {
 // in-memory cache so the next tick starts from the right position.
 func (e *Engine) advanceCursor(ctx context.Context, alert *Alert, t time.Time) {
 	if err := e.updateLastEvaluated(ctx, alert.ID, t); err != nil {
-		fmt.Printf("[Alert Engine] Failed to advance cursor for alert %s: %v\n", alert.Name, err)
+		log.Printf("[Alert Engine] Failed to advance cursor for alert %s: %v", alert.Name, err)
 	} else {
 		alert.LastEvaluatedAt = t
 	}
@@ -617,7 +619,7 @@ func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results 
 	throttled, throttleKey := e.isThrottled(alert, results)
 	if throttled {
 		if err := e.updateLastTriggered(ctx, alert.ID); err != nil {
-			fmt.Printf("[Alert Engine] Failed to update last triggered for throttled alert %s: %v\n", alert.Name, err)
+			log.Printf("[Alert Engine] Failed to update last triggered for throttled alert %s: %v", alert.Name, err)
 		}
 		return e.recordExecution(ctx, alert.ID, alert.FractalID, len(results), true, throttleKey, executionTimeMs, []WebhookResult{}, []FractalResult{})
 	}
@@ -680,9 +682,9 @@ func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results 
 			}
 			count, err := e.dictManager.ExecuteDictionaryAction(ctx, da, alert.FractalID, alert.PrismID, results)
 			if err != nil {
-				fmt.Printf("[Alert Engine] Dictionary action %s failed for alert %s: %v\n", da.Name, alert.Name, err)
+				log.Printf("[Alert Engine] Dictionary action %s failed for alert %s: %v", da.Name, alert.Name, err)
 			} else {
-				fmt.Printf("[Alert Engine] Dictionary action %s upserted %d rows for alert %s\n", da.Name, count, alert.Name)
+				log.Printf("[Alert Engine] Dictionary action %s upserted %d rows for alert %s", da.Name, count, alert.Name)
 			}
 		}
 	}
@@ -706,7 +708,7 @@ func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results 
 	e.updateThrottle(alert, results)
 
 	if err := e.updateLastTriggered(ctx, alert.ID); err != nil {
-		fmt.Printf("[Alert Engine] Failed to update last triggered for alert %s: %v\n", alert.Name, err)
+		log.Printf("[Alert Engine] Failed to update last triggered for alert %s: %v", alert.Name, err)
 	}
 
 	return e.recordExecution(ctx, alert.ID, alert.FractalID, len(results), false, throttleKey, executionTimeMs, webhookResults, fractalResults)
@@ -832,7 +834,7 @@ func (e *Engine) refreshAlertsCache(ctx context.Context) ([]*Alert, error) {
 
 		parsedQuery, err := parser.ParseQuery(alert.QueryString)
 		if err != nil {
-			fmt.Printf("[Alert Engine] Failed to parse query for alert %s: %v\n", alert.Name, err)
+			log.Printf("[Alert Engine] Failed to parse query for alert %s: %v", alert.Name, err)
 			continue
 		}
 		alert.ParsedQuery = parsedQuery
@@ -841,10 +843,10 @@ func (e *Engine) refreshAlertsCache(ctx context.Context) ([]*Alert, error) {
 		if alert.AlertType == "scheduled" && alert.ScheduleCron != nil && *alert.ScheduleCron != "" {
 			schedule, cronErr := cronParser.Parse(*alert.ScheduleCron)
 			if cronErr != nil {
-				fmt.Printf("[Alert Engine] Failed to parse cron for alert %s: %v\n", alert.Name, cronErr)
+				log.Printf("[Alert Engine] Failed to parse cron for alert %s: %v", alert.Name, cronErr)
 				reason := fmt.Sprintf("Auto-disabled: invalid cron expression: %v", cronErr)
 				if disableErr := e.disableAlertWithReason(ctx, alert.ID, reason); disableErr != nil {
-					fmt.Printf("[Alert Engine] Failed to disable alert %s: %v\n", alert.Name, disableErr)
+					log.Printf("[Alert Engine] Failed to disable alert %s: %v", alert.Name, disableErr)
 				}
 				continue
 			}
@@ -854,7 +856,7 @@ func (e *Engine) refreshAlertsCache(ctx context.Context) ([]*Alert, error) {
 		if e.dictManager != nil {
 			dictActions, dictErr := e.dictManager.GetDictionaryActionsByAlertID(ctx, alert.ID)
 			if dictErr != nil {
-				fmt.Printf("[Alert Engine] Failed to load dictionary actions for alert %s: %v\n", alert.Name, dictErr)
+				log.Printf("[Alert Engine] Failed to load dictionary actions for alert %s: %v", alert.Name, dictErr)
 			} else {
 				alert.DictionaryActions = dictActions
 			}
