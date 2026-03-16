@@ -409,14 +409,14 @@ func main() {
 	groupHandler := groups.NewHandler(pg)
 
 	commentHandler := comments.NewCommentHandlerWithFractals(pg, db, fractalManager)
-	notebookHandler := notebooks.NewNotebookHandler(pg, db, fractalManager, config.LiteLLMURL, config.LiteLLMMasterKey, config.LiteLLMModel)
+	notebookHandler := notebooks.NewNotebookHandler(pg, db, fractalManager, config.LiteLLMURL, config.LiteLLMMasterKey)
 	notebookHandler.SetRBACResolver(authHandler.RBACResolver())
 	dashboardHandler := dashboards.NewDashboardHandler(pg, fractalManager)
 	dashboardHandler.SetRBACResolver(authHandler.RBACResolver())
 	alertHandler := alerts.NewHandlerWithFractals(alertManager, fractalManager)
 	alertHandler.SetRBACResolver(authHandler.RBACResolver())
 
-	chatManager := chat.NewManager(pg, db, fractalManager, normalizerManager, config.LiteLLMURL, config.LiteLLMMasterKey, config.LiteLLMModel)
+	chatManager := chat.NewManager(pg, db, fractalManager, normalizerManager, config.LiteLLMURL, config.LiteLLMMasterKey)
 	rbacAdapter := &fractalAccessAdapter{resolver: authHandler.RBACResolver()}
 	chatHandler := chat.NewHandler(chatManager, fractalManager, rbacAdapter)
 	savedQueryHandler := savedqueries.NewHandler(pg, fractalManager)
@@ -926,8 +926,6 @@ type Config struct {
 	MaxQueryRows       int
 	LiteLLMURL         string
 	LiteLLMMasterKey   string
-	LiteLLMModel       string
-
 	// Ingestion queue
 	IngestQueueSize int
 	IngestWorkers   int
@@ -975,8 +973,6 @@ func loadConfig() Config {
 		MaxQueryRows:       getEnvInt("BIFRACT_MAX_QUERY_ROWS", 10000),
 		LiteLLMURL:         getEnv("LITELLM_URL", "http://litellm:8000"),
 		LiteLLMMasterKey:   getEnv("LITELLM_MASTER_KEY", ""),
-		LiteLLMModel:       getEnv("LITELLM_MODEL", "bifract-chat"),
-
 		// Ingestion queue defaults
 		IngestQueueSize: getEnvInt("BIFRACT_INGEST_QUEUE_SIZE", 100),
 		IngestWorkers:   getEnvInt("BIFRACT_INGEST_WORKERS", 4),
@@ -1015,7 +1011,6 @@ func loadConfig() Config {
 	log.Printf("  Server Port: %d", config.Port)
 	log.Printf("  Max Query Rows: %d", config.MaxQueryRows)
 	log.Printf("  LiteLLM URL: %s", config.LiteLLMURL)
-	log.Printf("  LiteLLM Model: %s", config.LiteLLMModel)
 	log.Printf("  CH Query Pool Max Conns: %d (0=default)", config.CHQueryMaxConns)
 	log.Printf("  CH Ingest Pool Max Conns: %d (0=default)", config.CHIngestMaxConns)
 	log.Printf("  Ingest Queue: %d slots, %d workers", config.IngestQueueSize, config.IngestWorkers)

@@ -193,7 +193,7 @@ kubectl rollout restart deployment bifract -n bifract
 | OIDC / SSO | `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URL`, `OIDC_SCOPES`, `OIDC_DEFAULT_ROLE`, `OIDC_ALLOWED_DOMAINS`, `OIDC_BUTTON_TEXT` | [OIDC/SSO](../administration/oidc-sso.md) |
 | S3 Backups | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` | [Backup & Restore](../administration/backup-restore.md) |
 | GeoIP Enrichment | `MAXMIND_LICENSE_KEY`, `MAXMIND_ACCOUNT_ID` | [Field Operations](../bql/field-operations.md) |
-| AI Chat | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | [AI Chat](../features/ai-chat.md) |
+| AI Chat | `LITELLM_API_KEY` | [AI Chat](../features/ai-chat.md) |
 
 ## Updating Bifract
 

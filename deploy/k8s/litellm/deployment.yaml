@@ -20,17 +20,11 @@ spec:
           ports:
             - containerPort: 8000
           env:
-            - name: OPENAI_API_KEY
+            - name: LITELLM_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: bifract-secrets
-                  key: OPENAI_API_KEY
-                  optional: true
-            - name: ANTHROPIC_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: bifract-secrets
-                  key: ANTHROPIC_API_KEY
+                  key: LITELLM_API_KEY
                   optional: true
             - name: LITELLM_MASTER_KEY
               valueFrom:

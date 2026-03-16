@@ -47,7 +47,6 @@ type SetupConfig struct {
 	S3Region    string
 
 	ImageTag     string
-	LiteLLMModel  string
 
 	SecureCookies bool
 	CORSOrigins   string
@@ -94,7 +93,6 @@ func DefaultConfig() *SetupConfig {
 		Domain:        "localhost",
 		SSLMode:       SSLSelfSigned,
 		ImageTag:      Version,
-		LiteLLMModel:  "bifract-chat-anthropic",
 		SecureCookies: false,
 		CORSOrigins:   "http://localhost:8080,http://127.0.0.1:8080",
 		IPAccess:      IPAccessAll,

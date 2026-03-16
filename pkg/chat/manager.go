@@ -100,7 +100,6 @@ type Manager struct {
 	normalizerManager   *normalizers.Manager
 	litellmURL          string
 	litellmKey          string
-	litellmModel        string
 	httpClient          *http.Client
 }
 
@@ -110,7 +109,7 @@ func NewManager(
 	ch *storage.ClickHouseClient,
 	fractalManager *fractals.Manager,
 	normalizerManager *normalizers.Manager,
-	litellmURL, litellmKey, litellmModel string,
+	litellmURL, litellmKey string,
 ) *Manager {
 	return &Manager{
 		pg:                pg,
@@ -119,7 +118,6 @@ func NewManager(
 		normalizerManager: normalizerManager,
 		litellmURL:        litellmURL,
 		litellmKey:        litellmKey,
-		litellmModel:      litellmModel,
 		httpClient:        &http.Client{Timeout: 120 * time.Second},
 	}
 }
@@ -528,7 +526,7 @@ func (m *Manager) StreamResponse(ctx context.Context, w io.Writer, flusher http.
 // Returns the full assistant content text and any tool calls.
 func (m *Manager) streamFromLiteLLM(ctx context.Context, w io.Writer, flusher http.Flusher, messages []llmMessage, tools []llmTool) (string, []llmToolCall, error) {
 	reqBody := llmRequest{
-		Model:      m.litellmModel,
+		Model:      "bifract-chat",
 		Messages:   messages,
 		Tools:      tools,
 		Stream:     true,
@@ -560,7 +558,7 @@ func (m *Manager) streamFromLiteLLM(ctx context.Context, w io.Writer, flusher ht
 		body, _ := io.ReadAll(resp.Body)
 		bodyStr := string(body)
 		if resp.StatusCode == http.StatusUnauthorized && (strings.Contains(bodyStr, "api-key") || strings.Contains(bodyStr, "api_key") || strings.Contains(bodyStr, "AuthenticationError")) {
-			return "", nil, fmt.Errorf("AI provider API key is not configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY in your .env file")
+			return "", nil, fmt.Errorf("AI provider API key is not configured. Set LITELLM_API_KEY in your .env file")
 		}
 		return "", nil, fmt.Errorf("litellm error %d: %s", resp.StatusCode, bodyStr)
 	}

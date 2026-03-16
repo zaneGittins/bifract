@@ -95,8 +95,6 @@ spec:
                 secretKeyRef:
                   name: bifract-secrets
                   key: LITELLM_MASTER_KEY
-            - name: LITELLM_MODEL
-              value: bifract-chat-anthropic
             # Query limits
             - name: BIFRACT_MAX_QUERY_ROWS
               value: "250"

@@ -27,7 +27,6 @@ type NotebookHandler struct {
 	rbacResolver   *rbac.Resolver
 	litellmURL     string
 	litellmKey     string
-	litellmModel   string
 }
 
 // SetRBACResolver sets the RBAC resolver for fractal-level access checks.
@@ -59,14 +58,13 @@ type Response struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
-func NewNotebookHandler(pg *storage.PostgresClient, ch *storage.ClickHouseClient, fractalManager *fractals.Manager, litellmURL, litellmKey, litellmModel string) *NotebookHandler {
+func NewNotebookHandler(pg *storage.PostgresClient, ch *storage.ClickHouseClient, fractalManager *fractals.Manager, litellmURL, litellmKey string) *NotebookHandler {
 	return &NotebookHandler{
 		pg:             pg,
 		ch:             ch,
 		fractalManager: fractalManager,
 		litellmURL:     litellmURL,
 		litellmKey:     litellmKey,
-		litellmModel:   litellmModel,
 	}
 }
 
@@ -1181,7 +1179,7 @@ func (h *NotebookHandler) callLiteLLM(ctx context.Context, notebookContent strin
 		notebookContent
 
 	body := reqBody{
-		Model:    h.litellmModel,
+		Model:    "bifract-chat",
 		Messages: []msg{{Role: "user", Content: prompt}},
 	}
 
@@ -1311,7 +1309,7 @@ func (h *NotebookHandler) callLiteLLMWithTools(ctx context.Context, notebookCont
 	}
 
 	body := map[string]interface{}{
-		"model":    h.litellmModel,
+		"model":    "bifract-chat",
 		"messages": []msg{{Role: "user", Content: prompt}},
 		"tools":    []interface{}{toolSchema},
 		"tool_choice": map[string]interface{}{

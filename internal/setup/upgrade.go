@@ -111,9 +111,6 @@ func RunUpgrade(dir string) error {
 	if v, ok := existingEnv["BIFRACT_DOMAIN"]; ok {
 		cfg.Domain = v
 	}
-	if v, ok := existingEnv["LITELLM_MODEL"]; ok {
-		cfg.LiteLLMModel = v
-	}
 	if v, ok := existingEnv["BIFRACT_CORS_ORIGINS"]; ok {
 		cfg.CORSOrigins = v
 	}
@@ -200,7 +197,7 @@ func RunUpgrade(dir string) error {
 	envContent := RenderEnvFile(cfg)
 	// Preserve manually-configured keys not managed by the setup wizard.
 	preserveKeys := []string{
-		"OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+		"LITELLM_API_KEY",
 		"MAXMIND_LICENSE_KEY", "MAXMIND_ACCOUNT_ID", "MAXMIND_EDITION_IDS",
 		"BIFRACT_BASE_URL",
 		"BIFRACT_OIDC_ISSUER_URL", "BIFRACT_OIDC_CLIENT_ID", "BIFRACT_OIDC_CLIENT_SECRET",

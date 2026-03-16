@@ -1215,7 +1215,10 @@ func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unl
 		return nil, false
 	}
 	return func() {
-		conn.QueryRowContext(context.Background(), `SELECT pg_advisory_unlock($1)`, lockID)
+		unlockCtx, unlockCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer unlockCancel()
+		var unlocked bool
+		conn.QueryRowContext(unlockCtx, `SELECT pg_advisory_unlock($1)`, lockID).Scan(&unlocked)
 		conn.Close()
 	}, true
 }

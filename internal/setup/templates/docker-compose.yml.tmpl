@@ -72,8 +72,7 @@ services:
     volumes:
       - ./litellm-config.yaml:/app/config.yaml
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
     command: ["--config", "/app/config.yaml", "--port", "8000"]
     networks:
@@ -103,7 +102,6 @@ services:
       BIFRACT_FEED_ENCRYPTION_KEY: ${BIFRACT_FEED_ENCRYPTION_KEY}
       LITELLM_URL: http://litellm:8000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
-      LITELLM_MODEL: ${LITELLM_MODEL:-bifract-chat-anthropic}
       BIFRACT_BASE_URL: ${BIFRACT_BASE_URL:-}
       BIFRACT_OIDC_ISSUER_URL: ${BIFRACT_OIDC_ISSUER_URL:-}
       BIFRACT_OIDC_CLIENT_ID: ${BIFRACT_OIDC_CLIENT_ID:-}

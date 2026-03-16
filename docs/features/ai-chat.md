@@ -8,28 +8,27 @@ LLM-powered chat assistant scoped to each fractal. It queries your logs using BQ
 
 Chat requires a [LiteLLM](https://docs.litellm.ai/) proxy container and an API key for at least one supported provider (OpenAI, Anthropic, etc). AI keys are not configured during initial setup; add them manually to your `.env` file after installation.
 
-### 1. Configure a model
+### 1. Add your API key to .env
 
-Edit `litellm-config.yaml` in your install directory:
+Open the `.env` file in your install directory and set `LITELLM_API_KEY` to your provider key:
+
+```bash
+LITELLM_API_KEY=sk-ant-...
+```
+
+### 2. Configure a model (optional)
+
+The default `litellm-config.yaml` uses Anthropic. To use a different provider, edit the file:
 
 ```yaml
 model_list:
   - model_name: bifract-chat
     litellm_params:
-      model: anthropic/claude-haiku-4-5-20251001
-      api_key: os.environ/ANTHROPIC_API_KEY
-      drop_params: true
+      model: openai/gpt-4o-mini
+      api_key: os.environ/LITELLM_API_KEY
 ```
 
-### 2. Add your API key to .env
-
-Open the `.env` file in your install directory and add your provider key:
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-`LITELLM_MODEL` controls which model is used and defaults to `bifract-chat-anthropic`. Change it to match your `model_name` if needed.
+Change the `model` field to match your provider. The model name must stay `bifract-chat`.
 
 ### 3. Restart the stack
 
@@ -53,20 +52,4 @@ LiteLLM runs on the internal Docker network only and is not exposed to the host.
 
 ## Supported Providers
 
-Any provider supported by LiteLLM works. Add entries to `litellm-config.yaml`:
-
-```yaml
-model_list:
-  - model_name: bifract-chat-openai
-    litellm_params:
-      model: openai/gpt-4o-mini
-      api_key: os.environ/OPENAI_API_KEY
-
-  - model_name: bifract-chat-anthropic
-    litellm_params:
-      model: anthropic/claude-haiku-4-5-20251001
-      api_key: os.environ/ANTHROPIC_API_KEY
-      drop_params: true
-```
-
-Then set `LITELLM_MODEL` to whichever `model_name` you want to use.
+Any provider supported by LiteLLM works. Change the `model` field in `litellm-config.yaml` to match your provider (e.g. `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5-20251001`). Set `LITELLM_API_KEY` to the corresponding API key. Some providers may need `drop_params: true` in `litellm_params`.
