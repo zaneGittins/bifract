@@ -76,6 +76,25 @@ var bqlSeeds = []string{
 	// Mixed piped filters
 	`* | service="test" | "A" OR "B" | user=/admin/i`,
 	`* | service="test" | "A" AND "B" | user=/admin/i`,
+	// NOT in pipeline (bare strings, fields, regex)
+	`* | NOT "error"`,
+	`* | NOT /error/i`,
+	`* | NOT status="500"`,
+	`* | NOT "error" OR "warning"`,
+	`* | "error" OR NOT "warning"`,
+	`* | NOT status="500" AND service="web"`,
+	`* | status="200" OR NOT status="500"`,
+	// Parenthesized groups in pipeline
+	`* | (status="200" OR status="201")`,
+	`* | (status="200" OR status="201") AND service="web"`,
+	`* | service="web" AND (status="200" OR status="201")`,
+	`* | ("error" OR "warning") AND service="web"`,
+	`* | NOT (status="500" OR status="503")`,
+	`* | NOT ("error" OR "warning")`,
+	`* | (status="200" OR status="201") | service="web"`,
+	`service="web" | (status="200" OR status="201") | "success"`,
+	// Nested parens in pipeline
+	`* | (status="200" OR status="201") AND (level="info" OR level="debug")`,
 	// Bare regex
 	`/powershell/i | command_line!=/cmd/i`,
 	`/Convert-GuidToCompressedGuid/i`,
@@ -506,6 +525,22 @@ func TestSQLStructuralProperties(t *testing.T) {
 		// Mixed piped filters
 		{"mixed_pipe_or", `* | service="test" | "A" OR "B" | user=/admin/i`},
 		{"mixed_pipe_and", `* | service="test" | "A" AND "B" | user=/admin/i`},
+
+		// NOT in pipeline
+		{"not_string_pipeline", `* | NOT "error"`},
+		{"not_field_pipeline", `* | NOT status="500"`},
+		{"not_string_or_pipeline", `* | NOT "error" OR "warning"`},
+		{"not_field_and_pipeline", `* | NOT status="500" AND service="web"`},
+		{"mid_compound_not", `* | "error" OR NOT "warning"`},
+
+		// Parenthesized groups in pipeline
+		{"paren_group_pipeline", `* | (status="200" OR status="201")`},
+		{"paren_group_and_field", `* | (status="200" OR status="201") AND service="web"`},
+		{"field_and_paren_group", `* | service="web" AND (status="200" OR status="201")`},
+		{"not_paren_group", `* | NOT (status="500" OR status="503")`},
+		{"paren_strings_and_field", `* | ("error" OR "warning") AND service="web"`},
+		{"nested_paren_groups", `* | (status="200" OR status="201") AND (level="info" OR level="debug")`},
+		{"paren_group_multi_pipe", `* | (status="200" OR status="201") | service="web"`},
 
 		// Bare regex
 		{"bare_regex_i", `/powershell/i | command_line!=/cmd/i`},

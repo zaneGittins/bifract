@@ -395,7 +395,10 @@
                     <section class="settings-view-section">
                         <div class="section-header">
                             <h2>Normalizers</h2>
-                            <button id="normalizerCreateBtn" class="btn-primary btn-sm">+ Create Normalizer</button>
+                            <div class="section-header-actions">
+                                <button class="btn-secondary btn-sm" onclick="Normalizers.importNormalizer()">Import YAML</button>
+                                <button id="normalizerCreateBtn" class="btn-primary btn-sm">+ Create Normalizer</button>
+                            </div>
                         </div>
                         <p class="section-description">Normalizers transform field names during log ingestion. Attach them to ingest tokens to standardize field names across log sources.</p>
                         <div id="normalizersListContainer">
@@ -415,6 +418,7 @@
                                 <h2 id="normalizerEditorTitle">Create Normalizer</h2>
                             </div>
                             <div class="header-right">
+                                <button class="btn-secondary" onclick="Normalizers.togglePreview()">Preview</button>
                                 <button class="btn-primary" onclick="Normalizers.saveNormalizer()">Save</button>
                             </div>
                         </div>
@@ -453,6 +457,18 @@
                                     <button class="btn-secondary btn-sm" onclick="Normalizers.addTimestampFieldRow()" style="margin-top: 0.5rem;">+ Add Timestamp Field</button>
                                 </div>
                             </div>
+                        </div>
+                        <!-- Preview Panel -->
+                        <div id="normalizerPreviewContainer" class="normalizer-preview-container" style="display: none;">
+                            <div class="normalizer-preview-header">
+                                <h3>Dry-Run Preview</h3>
+                                <p class="help-text">Paste sample JSON to see how fields will be normalized with the current configuration.</p>
+                            </div>
+                            <div class="normalizer-preview-input-row">
+                                <textarea id="normalizerPreviewInput" rows="6" placeholder='{"Computer": "WS01", "data": {"win": {"eventdata": {"QueryName": "example.com"}}}}'></textarea>
+                                <button class="btn-primary btn-sm" onclick="Normalizers.runPreview()">Run Preview</button>
+                            </div>
+                            <div id="normalizerPreviewResults"></div>
                         </div>
                     </div>
                 </div>

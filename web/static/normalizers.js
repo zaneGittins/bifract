@@ -13,6 +13,25 @@ const Normalizers = {
         uppercase:  { label: 'uppercase',  desc: 'Uppercase all field names',                      conflicts: ['lowercase'] }
     },
 
+    TIMESTAMP_PRESETS: [
+        { label: 'ISO 8601 / RFC 3339',         value: '2006-01-02T15:04:05Z07:00' },
+        { label: 'ISO 8601 (nanoseconds)',       value: '2006-01-02T15:04:05.999999999Z07:00' },
+        { label: 'ISO 8601 (milliseconds)',      value: '2006-01-02T15:04:05.000Z07:00' },
+        { label: 'Date + Time (space)',          value: '2006-01-02 15:04:05' },
+        { label: 'Date + Time (millis)',         value: '2006-01-02 15:04:05.000' },
+        { label: 'Unix (seconds)',               value: 'unix' },
+        { label: 'Unix (milliseconds)',          value: 'unixmilli' },
+        { label: 'Unix (microseconds)',          value: 'unixmicro' },
+        { label: 'Unix (nanoseconds)',           value: 'unixnano' },
+        { label: 'RFC 822',                      value: '02 Jan 06 15:04 MST' },
+        { label: 'RFC 850',                      value: 'Monday, 02-Jan-06 15:04:05 MST' },
+        { label: 'ANSIC',                        value: 'Mon Jan _2 15:04:05 2006' },
+        { label: 'Syslog (BSD)',                 value: 'Jan _2 15:04:05' },
+        { label: 'Syslog (ISO)',                 value: '2006-01-02T15:04:05.000000+00:00' },
+        { label: 'Apache Common Log',            value: '02/Jan/2006:15:04:05 -0700' },
+        { label: 'Windows FileTime (ticks)',     value: 'unixnano' },
+    ],
+
     init() {
         const createBtn = document.getElementById('normalizerCreateBtn');
         if (createBtn) {
@@ -57,6 +76,7 @@ const Normalizers = {
                     <th>Name</th>
                     <th>Transforms</th>
                     <th>Field Mappings</th>
+                    <th>Used By</th>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -70,8 +90,11 @@ const Normalizers = {
                 <td>${Utils.escapeHtml(n.name)}${defaultBadge}</td>
                 <td class="context-link-fields">${Utils.escapeHtml(transforms)}</td>
                 <td>${mappingCount} mapping${mappingCount !== 1 ? 's' : ''}</td>
+                <td><span class="normalizer-usage-cell" id="normalizer-usage-${n.id}">--</span></td>
                 <td class="context-link-actions">
                     <button class="btn-sm btn-secondary" onclick="Normalizers.openEditForm('${n.id}')" title="Edit">Edit</button>
+                    <button class="btn-sm btn-secondary" onclick="Normalizers.duplicateNormalizer('${n.id}')" title="Duplicate">Duplicate</button>
+                    <button class="btn-sm btn-secondary" onclick="Normalizers.exportNormalizer('${n.id}', '${Utils.escapeHtml(n.name)}')" title="Export YAML">Export</button>
                     ${!n.is_default ? `<button class="btn-sm btn-secondary" onclick="Normalizers.setDefault('${n.id}')" title="Set as default">Set Default</button>` : ''}
                     ${!n.is_default ? `<button class="btn-sm btn-danger" onclick="Normalizers.deleteNormalizer('${n.id}')" title="Delete">Delete</button>` : ''}
                 </td>
@@ -80,6 +103,37 @@ const Normalizers = {
 
         html += '</tbody></table>';
         container.innerHTML = html;
+
+        // Load token usage for each normalizer
+        this.normalizers.forEach(n => this._loadTokenUsage(n.id));
+    },
+
+    async _loadTokenUsage(normalizerId) {
+        const cell = document.getElementById(`normalizer-usage-${normalizerId}`);
+        if (!cell) return;
+        try {
+            const data = await HttpUtils.safeFetch(`/api/v1/normalizers/${normalizerId}/tokens`);
+            const tokens = data.data.tokens || [];
+            if (tokens.length === 0) {
+                cell.textContent = 'No tokens';
+                cell.className = 'normalizer-usage-cell usage-none';
+                return;
+            }
+            // Group by fractal
+            const byFractal = {};
+            tokens.forEach(t => {
+                if (!byFractal[t.fractal_name]) byFractal[t.fractal_name] = [];
+                byFractal[t.fractal_name].push(t.token_name);
+            });
+            const parts = Object.entries(byFractal).map(([fractal, tnames]) => {
+                const tokenList = tnames.map(n => Utils.escapeHtml(n)).join(', ');
+                return `<span class="usage-fractal" title="${tokenList}">${Utils.escapeHtml(fractal)} (${tnames.length})</span>`;
+            });
+            cell.innerHTML = parts.join(', ');
+            cell.className = 'normalizer-usage-cell';
+        } catch {
+            cell.textContent = '--';
+        }
     },
 
     showEditor(title) {
@@ -187,6 +241,9 @@ const Normalizers = {
 
         document.getElementById('normalizerTimestampFields').innerHTML = '';
 
+        const previewContainer = document.getElementById('normalizerPreviewContainer');
+        if (previewContainer) previewContainer.style.display = 'none';
+
         this.showEditor('Create Normalizer');
         document.getElementById('normalizerName')?.focus();
     },
@@ -221,6 +278,9 @@ const Normalizers = {
                 this.addTimestampFieldRow(tf.field, tf.format);
             });
 
+            const previewContainer = document.getElementById('normalizerPreviewContainer');
+            if (previewContainer) previewContainer.style.display = 'none';
+
             this.showEditor('Edit Normalizer');
         } catch (err) {
             Utils.showNotification('Failed to load normalizer', 'error');
@@ -253,11 +313,42 @@ const Normalizers = {
 
         const row = document.createElement('div');
         row.className = 'normalizer-ts-field-row';
+
+        // Build preset options
+        let presetOptions = '<option value="">Select preset...</option>';
+        this.TIMESTAMP_PRESETS.forEach(p => {
+            const selected = (format && format === p.value) ? ' selected' : '';
+            presetOptions += `<option value="${Utils.escapeHtml(p.value)}"${selected}>${Utils.escapeHtml(p.label)}</option>`;
+        });
+        // Add custom option if format doesn't match any preset
+        const isCustom = format && !this.TIMESTAMP_PRESETS.some(p => p.value === format);
+        if (isCustom) {
+            presetOptions += `<option value="${Utils.escapeHtml(format)}" selected>Custom: ${Utils.escapeHtml(format)}</option>`;
+        }
+
         row.innerHTML = `
             <input type="text" class="ts-field-name" placeholder="Field name (e.g. system_time)" value="${Utils.escapeHtml(field || '')}">
-            <input type="text" class="ts-field-format" placeholder="Go time format" value="${Utils.escapeHtml(format || '')}">
+            <select class="ts-field-preset" title="Select a preset or type a custom format">
+                ${presetOptions}
+            </select>
+            <input type="text" class="ts-field-format" placeholder="Custom Go format (e.g. 2006-01-02T15:04:05Z07:00)" value="${Utils.escapeHtml(format || '')}">
             <button class="btn-sm btn-danger mapping-remove" onclick="this.parentElement.remove()" title="Remove">&times;</button>
         `;
+
+        // Wire up preset -> format sync
+        const presetSelect = row.querySelector('.ts-field-preset');
+        const formatInput = row.querySelector('.ts-field-format');
+        presetSelect.addEventListener('change', () => {
+            if (presetSelect.value) {
+                formatInput.value = presetSelect.value;
+            }
+        });
+        formatInput.addEventListener('input', () => {
+            // If user types a custom value, deselect preset
+            const match = this.TIMESTAMP_PRESETS.find(p => p.value === formatInput.value);
+            presetSelect.value = match ? match.value : '';
+        });
+
         container.appendChild(row);
     },
 
@@ -348,7 +439,18 @@ const Normalizers = {
     },
 
     async deleteNormalizer(id) {
-        if (!confirm('Delete this normalizer? Tokens using it will revert to no normalization.')) return;
+        // Show token usage before confirming
+        let usageMsg = '';
+        try {
+            const data = await HttpUtils.safeFetch(`/api/v1/normalizers/${id}/tokens`);
+            const tokens = data.data.tokens || [];
+            if (tokens.length > 0) {
+                const names = tokens.map(t => `${t.token_name} (${t.fractal_name})`).join(', ');
+                usageMsg = `\n\nCurrently used by ${tokens.length} token(s): ${names}`;
+            }
+        } catch { /* ignore */ }
+
+        if (!confirm(`Delete this normalizer? Tokens using it will revert to no normalization.${usageMsg}`)) return;
         try {
             await HttpUtils.safeFetch(`/api/v1/normalizers/${id}`, { method: 'DELETE' });
             Utils.showNotification('Normalizer deleted', 'success');
@@ -365,6 +467,149 @@ const Normalizers = {
             this.loadNormalizers();
         } catch (err) {
             Utils.showNotification(`Failed to set default: ${err.message}`, 'error');
+        }
+    },
+
+    // --- Duplicate ---
+
+    async duplicateNormalizer(id) {
+        try {
+            await HttpUtils.safeFetch(`/api/v1/normalizers/${id}/duplicate`, { method: 'POST' });
+            Utils.showNotification('Normalizer duplicated', 'success');
+            this.loadNormalizers();
+        } catch (err) {
+            Utils.showNotification(`Failed to duplicate: ${err.message}`, 'error');
+        }
+    },
+
+    // --- Export / Import YAML ---
+
+    async exportNormalizer(id, name) {
+        try {
+            const response = await fetch(`/api/v1/normalizers/${id}/export`, { credentials: 'include' });
+            if (!response.ok) throw new Error('Export failed');
+            const yamlText = await response.text();
+            const blob = new Blob([yamlText], { type: 'text/yaml' });
+            const link = document.createElement('a');
+            const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+            link.href = URL.createObjectURL(blob);
+            link.download = `${safeName}.yaml`;
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+            Utils.showNotification('Normalizer exported', 'success');
+        } catch (err) {
+            Utils.showNotification(`Export failed: ${err.message}`, 'error');
+        }
+    },
+
+    importNormalizer() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.yaml,.yml';
+        input.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            try {
+                const text = await file.text();
+                const response = await fetch('/api/v1/normalizers/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/yaml' },
+                    credentials: 'include',
+                    body: text
+                });
+                const data = await response.json();
+                if (!data.success) throw new Error(data.error || 'Import failed');
+                Utils.showNotification('Normalizer imported', 'success');
+                this.loadNormalizers();
+            } catch (err) {
+                Utils.showNotification(`Import failed: ${err.message}`, 'error');
+            }
+        };
+        input.click();
+    },
+
+    // --- Dry-Run Preview ---
+
+    async runPreview() {
+        const textarea = document.getElementById('normalizerPreviewInput');
+        const resultsContainer = document.getElementById('normalizerPreviewResults');
+        if (!textarea || !resultsContainer) return;
+
+        const sampleJSON = textarea.value.trim();
+        if (!sampleJSON) {
+            Utils.showNotification('Paste sample JSON to preview', 'error');
+            return;
+        }
+
+        // Validate JSON client-side first
+        try {
+            JSON.parse(sampleJSON);
+        } catch {
+            Utils.showNotification('Invalid JSON', 'error');
+            return;
+        }
+
+        const formData = this._getFormData();
+
+        try {
+            const data = await HttpUtils.safeFetch('/api/v1/normalizers/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    transforms: formData.transforms,
+                    field_mappings: formData.field_mappings,
+                    sample_json: sampleJSON
+                })
+            });
+
+            const fields = data.data.fields || [];
+            const collisions = data.data.collisions || {};
+            const hasCollisions = Object.keys(collisions).length > 0;
+
+            let html = '';
+
+            if (hasCollisions) {
+                html += '<div class="preview-collision-warning">Field name collisions detected. Colliding fields will fall back to their full dot-notation path during ingestion.</div>';
+            }
+
+            html += `<table class="context-links-table preview-table">
+                <thead>
+                    <tr>
+                        <th>Original Field</th>
+                        <th>Normalized</th>
+                        <th>Sample Value</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+            fields.forEach(f => {
+                const collisionClass = f.collision ? ' class="preview-collision-row"' : '';
+                const collisionBadge = f.collision ? ' <span class="preview-collision-badge">collision</span>' : '';
+                const value = f.value.length > 80 ? Utils.escapeHtml(f.value.substring(0, 80)) + '...' : Utils.escapeHtml(f.value);
+                html += `<tr${collisionClass}>
+                    <td><code>${Utils.escapeHtml(f.original)}</code></td>
+                    <td><code>${Utils.escapeHtml(f.normalized)}</code>${collisionBadge}</td>
+                    <td class="preview-value">${value}</td>
+                </tr>`;
+            });
+
+            html += '</tbody></table>';
+            resultsContainer.innerHTML = html;
+        } catch (err) {
+            resultsContainer.innerHTML = `<div class="preview-error">${Utils.escapeHtml(err.message)}</div>`;
+        }
+    },
+
+    togglePreview() {
+        const container = document.getElementById('normalizerPreviewContainer');
+        if (!container) return;
+        const isVisible = container.style.display !== 'none';
+        container.style.display = isVisible ? 'none' : 'block';
+        if (!isVisible) {
+            document.getElementById('normalizerPreviewInput')?.focus();
         }
     }
 };

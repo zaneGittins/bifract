@@ -159,14 +159,14 @@ func RunReconfigure(dir string) error {
 
 	printDone("Configuration files updated")
 
-	// Restart Caddy to pick up changes
+	// Recreate containers to pick up compose changes (e.g. new volume mounts for mTLS)
 	docker := &DockerOps{Dir: dir}
 	if docker.IsRunning() {
-		printStep("Restarting Caddy...")
-		if out, err := docker.Restart("bifract-caddy"); err != nil {
-			printWarn(fmt.Sprintf("restart caddy: %s", out))
+		printStep("Applying configuration changes...")
+		if out, err := docker.Up(); err != nil {
+			printWarn(fmt.Sprintf("docker compose up: %s", out))
 		} else {
-			printDone("Caddy restarted")
+			printDone("Configuration applied")
 		}
 	} else {
 		printWarn("Containers not running, changes will apply on next start")

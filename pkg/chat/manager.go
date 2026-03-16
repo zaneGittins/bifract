@@ -16,6 +16,7 @@ import (
 	"github.com/lib/pq"
 
 	"bifract/pkg/fractals"
+	"bifract/pkg/normalizers"
 	"bifract/pkg/parser"
 	"bifract/pkg/storage"
 )
@@ -93,13 +94,14 @@ RULES:
 
 // Manager handles chat conversation persistence and LLM communication.
 type Manager struct {
-	pg             *storage.PostgresClient
-	ch             *storage.ClickHouseClient
-	fractalManager *fractals.Manager
-	litellmURL     string
-	litellmKey     string
-	litellmModel   string
-	httpClient     *http.Client
+	pg                  *storage.PostgresClient
+	ch                  *storage.ClickHouseClient
+	fractalManager      *fractals.Manager
+	normalizerManager   *normalizers.Manager
+	litellmURL          string
+	litellmKey          string
+	litellmModel        string
+	httpClient          *http.Client
 }
 
 // NewManager creates a new chat manager.
@@ -107,16 +109,18 @@ func NewManager(
 	pg *storage.PostgresClient,
 	ch *storage.ClickHouseClient,
 	fractalManager *fractals.Manager,
+	normalizerManager *normalizers.Manager,
 	litellmURL, litellmKey, litellmModel string,
 ) *Manager {
 	return &Manager{
-		pg:             pg,
-		ch:             ch,
-		fractalManager: fractalManager,
-		litellmURL:     litellmURL,
-		litellmKey:     litellmKey,
-		litellmModel:   litellmModel,
-		httpClient:     &http.Client{Timeout: 120 * time.Second},
+		pg:                pg,
+		ch:                ch,
+		fractalManager:    fractalManager,
+		normalizerManager: normalizerManager,
+		litellmURL:        litellmURL,
+		litellmKey:        litellmKey,
+		litellmModel:      litellmModel,
+		httpClient:        &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -410,7 +414,8 @@ func (m *Manager) StreamResponse(ctx context.Context, w io.Writer, flusher http.
 	}
 
 	recentQueries := m.getRecentSuccessfulQueries(ctx, conv.FractalID, conv.ID)
-	systemPrompt := m.buildSystemPrompt(fractal, recentQueries, customInstructions)
+	normalizerHints := m.getNormalizerHints(ctx)
+	systemPrompt := m.buildSystemPrompt(fractal, recentQueries, customInstructions, normalizerHints)
 	history = m.trimHistory(history)
 	messages := m.buildLLMMessages(systemPrompt, history)
 
@@ -663,6 +668,14 @@ func (m *Manager) executeTool(ctx context.Context, fractalID string, tc llmToolC
 		}
 		json.Unmarshal([]byte(tc.Function.Arguments), &args)
 		return m.getFields(ctx, fractalID, args.Filter)
+	case "validate_bql":
+		var args struct {
+			Query string `json:"query"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return nil, fmt.Errorf("invalid validate_bql args: %w", err)
+		}
+		return m.validateBQL(args.Query)
 	case "search_alerts":
 		var args struct {
 			Search string `json:"search"`
@@ -676,10 +689,137 @@ func (m *Manager) executeTool(ctx context.Context, fractalID string, tc llmToolC
 	}
 }
 
-// getFields discovers available field names in the fractal's logs.
-// If filter is non-empty, only returns fields containing that substring.
-// Returns top fields ranked by frequency to keep context manageable.
+// validateBQL parses a BQL query string without executing it, returning
+// whether the syntax is valid. This lets the AI self-correct before wasting
+// a tool round on a query that would fail.
+func (m *Manager) validateBQL(query string) (interface{}, error) {
+	_, err := parser.ParseQuery(query)
+	if err != nil {
+		return map[string]interface{}{
+			"valid": false,
+			"error": err.Error(),
+		}, nil
+	}
+	return map[string]interface{}{
+		"valid": true,
+	}, nil
+}
+
+// getFields discovers available field names in the fractal's logs along with
+// sample values and cardinality. This "field fingerprinting" gives the AI
+// semantic understanding of each field so it can write accurate queries.
 func (m *Manager) getFields(ctx context.Context, fractalID string, filter string) (interface{}, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	includeEmptyFractalID := false
+	if m.fractalManager != nil {
+		if defaultFractal, err := m.fractalManager.GetDefaultFractal(queryCtx); err == nil && defaultFractal.ID == fractalID {
+			includeEmptyFractalID = true
+		}
+	}
+
+	safeFractalID := strings.ReplaceAll(strings.ReplaceAll(fractalID, "\\", "\\\\"), "'", "\\'")
+	fractalClause := "fractal_id = '" + safeFractalID + "'"
+	if includeEmptyFractalID {
+		fractalClause = "fractal_id IN ('" + safeFractalID + "', '')"
+	}
+
+	filterClause := ""
+	if filter != "" {
+		safe := strings.Map(func(r rune) rune {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+				return r
+			}
+			return -1
+		}, filter)
+		if safe != "" {
+			filterClause = fmt.Sprintf("HAVING field_name LIKE '%%%s%%'", safe)
+		}
+	}
+
+	limit := 30
+	if filter != "" {
+		limit = 50
+	}
+
+	// Single query that extracts field names, sample values, and cardinality
+	// from a recent sample of logs. Uses LIMIT on the inner subquery to keep
+	// it fast even on very large datasets.
+	sqlStr := fmt.Sprintf(`
+		SELECT
+			field_name,
+			count() AS freq,
+			uniqExact(field_value) AS cardinality,
+			groupUniqArraySample(5)(field_value) AS samples
+		FROM (
+			SELECT
+				replaceAll(p, '%%2E', '.') AS field_name,
+				JSON_VALUE(fields, concat('$.', p)) AS field_value
+			FROM (
+				SELECT fields
+				FROM logs
+				WHERE %s AND timestamp >= now() - INTERVAL 1 DAY
+				LIMIT 10000
+			)
+			ARRAY JOIN JSONAllPaths(fields) AS p
+		)
+		WHERE field_value != ''
+		GROUP BY field_name
+		%s
+		ORDER BY freq DESC
+		LIMIT %d
+	`, fractalClause, filterClause, limit)
+
+	rows, err := m.ch.Query(queryCtx, sqlStr)
+	if err != nil {
+		// Fall back to the simpler field-names-only query if fingerprinting fails
+		return m.getFieldsSimple(ctx, fractalID, filter)
+	}
+
+	type fieldInfo struct {
+		Name        string   `json:"name"`
+		Count       uint64   `json:"count"`
+		Cardinality uint64   `json:"cardinality"`
+		Samples     []string `json:"samples"`
+		Pattern     string   `json:"pattern"`
+	}
+	var fields []fieldInfo
+	for _, row := range rows {
+		fn, _ := row["field_name"].(string)
+		if fn == "" {
+			continue
+		}
+		freq, _ := row["freq"].(uint64)
+		card, _ := row["cardinality"].(uint64)
+
+		var samples []string
+		if s, ok := row["samples"].([]interface{}); ok {
+			for _, v := range s {
+				if sv, ok := v.(string); ok && sv != "" {
+					samples = append(samples, sv)
+				}
+			}
+		}
+
+		pattern := classifyFieldPattern(samples)
+		fields = append(fields, fieldInfo{
+			Name:        fn,
+			Count:       freq,
+			Cardinality: card,
+			Samples:     samples,
+			Pattern:     pattern,
+		})
+	}
+
+	return map[string]interface{}{
+		"fields": fields,
+		"count":  len(fields),
+	}, nil
+}
+
+// getFieldsSimple is the fallback field discovery that only returns names and counts.
+func (m *Manager) getFieldsSimple(ctx context.Context, fractalID string, filter string) (interface{}, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -698,7 +838,6 @@ func (m *Manager) getFields(ctx context.Context, fractalID string, filter string
 
 	filterClause := ""
 	if filter != "" {
-		// Sanitize filter for LIKE - only allow alphanumeric, underscore, dash, dot
 		safe := strings.Map(func(r rune) rune {
 			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
 				return r
@@ -750,6 +889,70 @@ func (m *Manager) getFields(ctx context.Context, fractalID string, filter string
 		"fields": fields,
 		"count":  len(fields),
 	}, nil
+}
+
+// classifyFieldPattern analyzes sample values and returns a human-readable pattern hint.
+func classifyFieldPattern(samples []string) string {
+	if len(samples) == 0 {
+		return ""
+	}
+
+	hasIPv4 := false
+	hasNumeric := false
+	allUpperOrShort := true
+
+	for _, s := range samples {
+		// Check for IPv4 pattern
+		if len(s) >= 7 && len(s) <= 45 {
+			dotCount := 0
+			for _, c := range s {
+				if c == '.' {
+					dotCount++
+				}
+			}
+			if dotCount == 3 {
+				hasIPv4 = true
+			}
+		}
+
+		// Check numeric
+		isNum := len(s) > 0
+		for _, c := range s {
+			if (c < '0' || c > '9') && c != '.' && c != '-' {
+				isNum = false
+				break
+			}
+		}
+		if isNum {
+			hasNumeric = true
+		}
+
+		// Check if values look like enums (short uppercase or mixed)
+		if len(s) > 20 {
+			allUpperOrShort = false
+		}
+	}
+
+	switch {
+	case hasIPv4:
+		return "ip_address"
+	case hasNumeric:
+		return "numeric"
+	case allUpperOrShort && len(samples) > 0:
+		// Check if all samples are very short, suggesting enum-like values
+		maxLen := 0
+		for _, s := range samples {
+			if len(s) > maxLen {
+				maxLen = len(s)
+			}
+		}
+		if maxLen <= 20 {
+			return "enum"
+		}
+		return "text"
+	default:
+		return "text"
+	}
 }
 
 // searchAlerts searches alert detection rules by name/description for the given fractal.
@@ -1024,22 +1227,24 @@ func (m *Manager) getRecentSuccessfulQueries(ctx context.Context, fractalID, cur
 }
 
 // buildSystemPrompt constructs the system prompt for the LLM.
-func (m *Manager) buildSystemPrompt(fractal *fractals.Fractal, recentQueries []string, customInstructions string) string {
+func (m *Manager) buildSystemPrompt(fractal *fractals.Fractal, recentQueries []string, customInstructions string, normalizerHints string) string {
 	prompt := fmt.Sprintf(`You are an intelligent assistant embedded in the Bifract log management and collaboration platform.
 
 You are currently analyzing the fractal named "%s" (ID: %s).
 
 Your tools:
-1. get_fields - Discover available field names. Call this ONCE at the start of a new conversation.
+1. get_fields - Discover available field names with sample values, cardinality, and value patterns. Call this ONCE at the start of a new conversation. The results show you what each field looks like so you can write accurate queries.
 2. run_query - Execute BQL queries against the fractal's logs.
-3. search_alerts - Search existing alert detection rules. Returns alert names, BQL queries, type, and labels. Call with no search term to list all alerts, or with a search term to filter. Alerts contain expert-written BQL queries you can learn from, reuse, or adapt.
-4. present_results - MANDATORY final tool call for EVERY response. This is the ONLY way the user sees your output.
+3. validate_bql - Validate a BQL query without executing it. Returns parse errors if the syntax is invalid. Use this to check your query before running it, especially for complex queries.
+4. search_alerts - Search existing alert detection rules. Returns alert names, BQL queries, type, and labels. Call with no search term to list all alerts, or with a search term to filter. Alerts contain expert-written BQL queries you can learn from, reuse, or adapt.
+5. present_results - MANDATORY final tool call for EVERY response. This is the ONLY way the user sees your output.
 
 CRITICAL RULES:
 - You MUST end every response by calling present_results. The user CANNOT see any text outside of present_results.
 - You have a maximum of 5 tool call rounds. Be efficient. Plan your queries carefully.
 - In your FIRST round, call get_fields AND search_alerts together (parallel tool calls). This gives you both the available fields and existing detection rules to work with. Only skip search_alerts in the first round if the user is asking a simple, non-security question.
 - When the user asks about threats, detections, hunting, suspicious activity, writing queries, or anything security-related, ALWAYS use search_alerts to check for existing detection rules first.
+- Before running a complex query, use validate_bql to check the syntax first. This saves a round-trip if there is a parse error.
 - Prefer fewer, broader queries over many narrow ones. Combine related questions into one query where possible.
 - After 2-3 queries, call present_results with what you have. Do not exhaustively search; summarize available findings.
 
@@ -1053,6 +1258,10 @@ present_results guidelines:
 
 %s`, fractal.Name, fractal.ID, bqlSyntaxRef)
 
+	if normalizerHints != "" {
+		prompt += "\n" + normalizerHints
+	}
+
 	if len(recentQueries) > 0 {
 		prompt += "\nRecent successful queries in this fractal (use these as examples of valid syntax and available fields):\n"
 		for _, q := range recentQueries {
@@ -1065,6 +1274,39 @@ present_results guidelines:
 	}
 
 	return prompt
+}
+
+// getNormalizerHints builds a context string describing active normalizer field mappings.
+// This helps the AI understand canonical field names and what source fields map to them.
+func (m *Manager) getNormalizerHints(ctx context.Context) string {
+	if m.normalizerManager == nil {
+		return ""
+	}
+
+	norms, err := m.normalizerManager.List(ctx)
+	if err != nil || len(norms) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("FIELD MAPPING CONTEXT (from normalizers):\n")
+	b.WriteString("Ingested logs are processed by normalizers that rename/map fields. Use the TARGET field names in your queries.\n")
+
+	for _, n := range norms {
+		if len(n.FieldMappings) == 0 {
+			continue
+		}
+		label := n.Name
+		if n.IsDefault {
+			label += " [DEFAULT]"
+		}
+		b.WriteString(fmt.Sprintf("\nNormalizer: %s\n", label))
+		for _, fm := range n.FieldMappings {
+			b.WriteString(fmt.Sprintf("  %s <- %s\n", fm.Target, strings.Join(fm.Sources, ", ")))
+		}
+	}
+
+	return b.String()
 }
 
 // trimHistory limits conversation history to avoid exceeding the LLM context window.
@@ -1234,7 +1476,7 @@ func (m *Manager) toolDefinitions() []llmTool {
 			Type: "function",
 			Function: llmFunction{
 				Name:        "get_fields",
-				Description: "Discover available field NAMES (not values) in the fractal's logs, ranked by frequency. Returns the top 30 most common field names. Use the optional filter to narrow by field name substring (e.g. filter='src' finds fields named src_ip, source, etc.). This does NOT search log content. Use run_query for that. Call this FIRST in new conversations.",
+				Description: "Discover available fields in the fractal's logs with sample values, cardinality, and value patterns. Returns the top 30 fields ranked by frequency. Each field includes: name, count, cardinality (number of unique values), samples (up to 5 example values), and pattern (ip_address, numeric, enum, or text). Use this to understand what values a field contains before writing queries. Call this FIRST in new conversations.",
 				Parameters: map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -1243,6 +1485,23 @@ func (m *Manager) toolDefinitions() []llmTool {
 							"description": "Optional keyword to filter field names (case-insensitive substring match). Use when looking for specific field types like 'ip', 'user', 'host', etc.",
 						},
 					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llmFunction{
+				Name:        "validate_bql",
+				Description: "Validate a BQL query string without executing it. Returns whether the syntax is valid and any parse errors. Use this to check complex queries before running them to avoid wasting a tool round on a syntax error. Zero cost (no database query).",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "The BQL query string to validate.",
+						},
+					},
+					"required": []string{"query"},
 				},
 			},
 		},

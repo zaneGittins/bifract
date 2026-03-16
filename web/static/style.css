@@ -10172,6 +10172,150 @@ div.vis-tooltip {
     color: var(--text-muted);
 }
 
+/* Normalizer Preview Panel */
+
+.normalizer-preview-container {
+    margin-top: 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.normalizer-preview-header {
+    margin-bottom: 0.75rem;
+}
+
+.normalizer-preview-header h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 0.25rem 0;
+}
+
+.normalizer-preview-input-row {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    margin-bottom: 1rem;
+}
+
+.normalizer-preview-input-row textarea {
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: 0.825rem;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0.625rem;
+    border-radius: 4px;
+    resize: vertical;
+}
+
+.normalizer-preview-input-row textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.preview-table {
+    font-size: 0.85rem;
+}
+
+.preview-table code {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    background: var(--bg-tertiary);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+}
+
+.preview-value {
+    color: var(--text-secondary);
+    font-size: 0.825rem;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.preview-collision-row {
+    background: rgba(248, 113, 113, 0.08);
+}
+
+.preview-collision-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    background: rgba(248, 113, 113, 0.15);
+    color: #f87171;
+    margin-left: 0.4rem;
+    font-weight: 500;
+}
+
+.preview-collision-warning {
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.75rem;
+    border-radius: 4px;
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.2);
+    color: #f87171;
+    font-size: 0.825rem;
+}
+
+.preview-error {
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.2);
+    color: #f87171;
+    font-size: 0.85rem;
+}
+
+/* Token Usage in Normalizer List */
+
+.normalizer-usage-cell {
+    font-size: 0.825rem;
+    color: var(--text-secondary);
+}
+
+.normalizer-usage-cell.usage-none {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.usage-fractal {
+    display: inline-block;
+    font-size: 0.775rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    cursor: default;
+}
+
+/* Timestamp Field Preset */
+
+.normalizer-ts-field-row .ts-field-preset {
+    flex: 0.8;
+    font-size: 0.825rem;
+}
+
+.normalizer-ts-field-row .ts-field-format {
+    flex: 1;
+}
+
+.normalizer-ts-field-row .ts-field-name {
+    flex: 0.8;
+}
+
+/* Section header with multiple buttons */
+
+.section-header-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
 @media (max-width: 768px) {
     .normalizer-editor-body {
         grid-template-columns: 1fr;

@@ -238,7 +238,12 @@ func TestPipelineBooleanConditions(t *testing.T) {
 		{
 			name:    "NOT regex in pipeline",
 			query:   `* | NOT /error/`,
-			wantSQL: []string{"match(raw_log,"},
+			wantSQL: []string{"NOT match(raw_log,"},
+		},
+		{
+			name:    "NOT string in pipeline",
+			query:   `* | NOT "error"`,
+			wantSQL: []string{"NOT match(raw_log,"},
 		},
 		{
 			name:    "field OR in pipeline",
@@ -256,9 +261,64 @@ func TestPipelineBooleanConditions(t *testing.T) {
 			wantSQL: []string{"fields.`status`.:String = '200'", "match(raw_log, 'success')"},
 		},
 		{
-			name:    "NOT field in pipeline",
-			query:   `* | NOT status="500"`,
-			wantSQL: []string{"fields.`status`.:String"},
+			name:      "NOT field in pipeline",
+			query:     `* | NOT status="500"`,
+			wantSQL:   []string{"fields.`status`.:String != '500'"},
+			wantNoSQL: []string{"fields.`status`.:String = '500'"},
+		},
+		{
+			name:    "NOT string then OR in pipeline",
+			query:   `* | NOT "error" OR "warning"`,
+			wantSQL: []string{"NOT match(raw_log,", " OR ", "match(raw_log, 'warning')"},
+		},
+		{
+			name:      "NOT field then AND in pipeline",
+			query:     `* | NOT status="500" AND service="web"`,
+			wantSQL:   []string{"fields.`status`.:String != '500'", "fields.`service`.:String = 'web'"},
+			wantNoSQL: []string{"fields.`status`.:String = '500'"},
+		},
+		{
+			name:    "mid-compound NOT: string OR NOT string",
+			query:   `* | "error" OR NOT "warning"`,
+			wantSQL: []string{"match(raw_log, 'error')", "NOT match(raw_log,", " OR "},
+		},
+		{
+			name:      "mid-compound NOT: field OR NOT field",
+			query:     `* | status="200" OR NOT status="500"`,
+			wantSQL:   []string{"fields.`status`.:String = '200'", "fields.`status`.:String != '500'", " OR "},
+			wantNoSQL: []string{"fields.`status`.:String = '500'"},
+		},
+		{
+			name:      "De Morgan: NOT (A OR B) in compound",
+			query:     `* | status="200" AND NOT (level="error" OR level="warn")`,
+			wantSQL:   []string{"fields.`status`.:String = '200'", "fields.`level`.:String != 'error'", "fields.`level`.:String != 'warn'"},
+			wantNoSQL: []string{"fields.`level`.:String = 'error'", "fields.`level`.:String = 'warn'"},
+		},
+		{
+			name:    "paren group as pipeline stage",
+			query:   `* | (status="200" OR status="201")`,
+			wantSQL: []string{"fields.`status`.:String = '200'", "fields.`status`.:String = '201'", " OR "},
+		},
+		{
+			name:    "paren group AND field in pipeline",
+			query:   `* | (status="200" OR status="201") AND service="web"`,
+			wantSQL: []string{"fields.`status`.:String = '200'", "fields.`status`.:String = '201'", "fields.`service`.:String = 'web'", " OR "},
+		},
+		{
+			name:    "field AND paren group in pipeline preserves grouping",
+			query:   `* | service="web" AND (status="200" OR status="201")`,
+			wantSQL: []string{"fields.`service`.:String = 'web'", "fields.`status`.:String = '200'", "fields.`status`.:String = '201'"},
+		},
+		{
+			name:      "NOT paren group in pipeline applies De Morgan",
+			query:     `* | NOT (status="500" OR status="503")`,
+			wantSQL:   []string{"fields.`status`.:String != '500'", "fields.`status`.:String != '503'"},
+			wantNoSQL: []string{"fields.`status`.:String = '500'", "fields.`status`.:String = '503'"},
+		},
+		{
+			name:    "paren group with strings in pipeline",
+			query:   `* | ("error" OR "warning") AND service="web"`,
+			wantSQL: []string{"match(raw_log, 'error')", "match(raw_log, 'warning')", "fields.`service`.:String = 'web'"},
 		},
 		{
 			name:    "regex OR field in pipeline",

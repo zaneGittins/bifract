@@ -40,51 +40,51 @@ type SizeProfile struct {
 var sizeProfiles = []SizeProfile{
 	{
 		Name:        "X-Small",
-		Description: "Development and light workloads (3 nodes, 8 vCPU / 16GB each)",
+		Description: "Development/staging, ~10-50 GB/day (3 nodes, 4 vCPU / 8GB each)",
 		CHShards:    1,
 		CHReplicas:  2,
-		ClickHouse:  ResourceProfile{"1", "4", "4Gi", "16Gi"},
-		CHKeeper:    ResourceProfile{"250m", "1", "512Mi", "1Gi"},
-		Bifract:     ResourceProfile{"500m", "2", "512Mi", "2Gi"},
-		Postgres:    ResourceProfile{"250m", "2", "512Mi", "2Gi"},
-		Caddy:       ResourceProfile{"100m", "1", "128Mi", "512Mi"},
+		ClickHouse:  ResourceProfile{"2", "3", "4Gi", "5Gi"},
+		CHKeeper:    ResourceProfile{"250m", "500m", "256Mi", "512Mi"},
+		Bifract:     ResourceProfile{"500m", "1", "512Mi", "1Gi"},
+		Postgres:    ResourceProfile{"500m", "1", "512Mi", "1Gi"},
+		Caddy:       ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:     ResourceProfile{"100m", "500m", "256Mi", "512Mi"},
 	},
 	{
 		Name:        "Small",
-		Description: "Light production, up to ~1 TB/day (3 nodes, 8 vCPU / 32GB each)",
+		Description: "Light production, ~50-200 GB/day (3 nodes, 8 vCPU / 16GB each)",
 		CHShards:    1,
 		CHReplicas:  2,
-		ClickHouse:  ResourceProfile{"2", "4", "6Gi", "20Gi"},
+		ClickHouse:  ResourceProfile{"4", "6", "8Gi", "12Gi"},
 		CHKeeper:    ResourceProfile{"250m", "1", "512Mi", "1Gi"},
-		Bifract:     ResourceProfile{"500m", "2", "512Mi", "2Gi"},
+		Bifract:     ResourceProfile{"1", "2", "1Gi", "2Gi"},
 		Postgres:    ResourceProfile{"500m", "2", "1Gi", "2Gi"},
-		Caddy:       ResourceProfile{"100m", "1", "128Mi", "512Mi"},
+		Caddy:       ResourceProfile{"200m", "1", "256Mi", "512Mi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:     ResourceProfile{"100m", "500m", "256Mi", "512Mi"},
 	},
 	{
 		Name:        "Medium",
-		Description: "Production workloads, ~1-2 TB/day (3 nodes, 16 vCPU / 32GB each)",
+		Description: "Production workloads, ~200-500 GB/day (3 nodes, 16 vCPU / 32GB each)",
 		CHShards:    2,
 		CHReplicas:  2,
-		ClickHouse:  ResourceProfile{"2", "8", "8Gi", "24Gi"},
+		ClickHouse:  ResourceProfile{"3", "8", "6Gi", "16Gi"},
 		CHKeeper:    ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		Bifract:     ResourceProfile{"1", "4", "1Gi", "4Gi"},
-		Postgres:    ResourceProfile{"500m", "4", "1Gi", "4Gi"},
-		Caddy:       ResourceProfile{"250m", "2", "256Mi", "1Gi"},
+		Postgres:    ResourceProfile{"500m", "2", "1Gi", "4Gi"},
+		Caddy:       ResourceProfile{"250m", "1", "256Mi", "1Gi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:     ResourceProfile{"100m", "500m", "256Mi", "512Mi"},
 	},
 	{
 		Name:        "Large",
-		Description: "High-volume production, ~2-10 TB/day (3 nodes, 32 vCPU / 64GB each)",
+		Description: "High-volume production, ~500 GB-2 TB/day (3 nodes, 32 vCPU / 64GB each)",
 		CHShards:    3,
 		CHReplicas:  2,
-		ClickHouse:  ResourceProfile{"4", "16", "16Gi", "48Gi"},
+		ClickHouse:  ResourceProfile{"8", "16", "16Gi", "32Gi"},
 		CHKeeper:    ResourceProfile{"500m", "2", "1Gi", "2Gi"},
-		Bifract:     ResourceProfile{"2", "8", "2Gi", "8Gi"},
+		Bifract:     ResourceProfile{"2", "4", "2Gi", "8Gi"},
 		Postgres:    ResourceProfile{"1", "4", "2Gi", "8Gi"},
 		Caddy:       ResourceProfile{"500m", "2", "512Mi", "1Gi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
@@ -92,13 +92,13 @@ var sizeProfiles = []SizeProfile{
 	},
 	{
 		Name:        "X-Large",
-		Description: "Very high-volume production, ~10+ TB/day (6 nodes, 32 vCPU / 64GB each)",
+		Description: "Very high-volume production, ~2-10 TB/day (6 nodes, 32 vCPU / 64GB each)",
 		CHShards:    6,
 		CHReplicas:  2,
-		ClickHouse:  ResourceProfile{"8", "32", "32Gi", "96Gi"},
+		ClickHouse:  ResourceProfile{"8", "16", "16Gi", "32Gi"},
 		CHKeeper:    ResourceProfile{"1", "2", "2Gi", "4Gi"},
-		Bifract:     ResourceProfile{"4", "16", "4Gi", "16Gi"},
-		Postgres:    ResourceProfile{"2", "8", "4Gi", "16Gi"},
+		Bifract:     ResourceProfile{"4", "8", "4Gi", "16Gi"},
+		Postgres:    ResourceProfile{"2", "4", "4Gi", "16Gi"},
 		Caddy:       ResourceProfile{"1", "4", "1Gi", "2Gi"},
 		CaddyShipper: ResourceProfile{"10m", "200m", "32Mi", "128Mi"},
 		LiteLLM:     ResourceProfile{"500m", "2", "1Gi", "2Gi"},
@@ -671,6 +671,7 @@ type k8sTemplateData struct {
 	BackupEncryptionKey string
 	LiteLLMMasterKey    string
 	IPBlock             string
+	IPBlockIngest       string
 	MTLSEnabled         bool
 	MTLSCACert          string
 
@@ -723,6 +724,7 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		BackupEncryptionKey: cfg.BackupEncryptionKey,
 		LiteLLMMasterKey:    cfg.LiteLLMMasterKey,
 		IPBlock:             buildIPBlock(cfg),
+		IPBlockIngest:       buildIPBlockIngest(cfg),
 		MTLSEnabled:         cfg.MTLSEnabled,
 		MTLSCACert:          indentPEM(cfg.MTLSCACert, "    "),
 		CH:                  cfg.SizeProfile.ClickHouse,
@@ -802,7 +804,7 @@ func indentPEM(pem, prefix string) string {
 	return strings.Join(lines, "\n")
 }
 
-// buildIPBlock generates the Caddy IP restriction block for the Caddyfile template.
+// buildIPBlock generates the Caddy IP restriction block for the main site in the Caddyfile template.
 func buildIPBlock(cfg *K8sConfig) string {
 	if cfg.IPAccess != IPAccessRestrictApp && cfg.IPAccess != IPAccessRestrictAll {
 		return ""
@@ -810,16 +812,19 @@ func buildIPBlock(cfg *K8sConfig) string {
 	if len(cfg.AllowedIPs) == 0 {
 		return ""
 	}
-	var remoteIPs []string
-	for _, ip := range cfg.AllowedIPs {
-		remoteIPs = append(remoteIPs, "        remote_ip "+ip)
+	ipList := strings.Join(cfg.AllowedIPs, " ")
+	return fmt.Sprintf("      @blocked not remote_ip %s\n      respond @blocked 403\n", ipList)
+}
+
+// buildIPBlockIngest generates the Caddy IP restriction block for the ingest port (8443).
+// Only restrict-all mode restricts ingest; restrict-app leaves ingest open to all IPs.
+func buildIPBlockIngest(cfg *K8sConfig) string {
+	if cfg.IPAccess != IPAccessRestrictAll {
+		return ""
 	}
-	return fmt.Sprintf(`
-      @blocked {
-        not {
-%s
-        }
-      }
-      respond @blocked 403
-`, strings.Join(remoteIPs, "\n"))
+	if len(cfg.AllowedIPs) == 0 {
+		return ""
+	}
+	ipList := strings.Join(cfg.AllowedIPs, " ")
+	return fmt.Sprintf("      @blocked_ingest not remote_ip %s\n      respond @blocked_ingest 403\n", ipList)
 }

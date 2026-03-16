@@ -283,6 +283,66 @@ func (m *Manager) GetTokenCount(ctx context.Context, normalizerID string) (int, 
 	return count, nil
 }
 
+// GetTokenUsage returns tokens using a normalizer along with their fractal names.
+func (m *Manager) GetTokenUsage(ctx context.Context, normalizerID string) ([]TokenUsageInfo, error) {
+	rows, err := m.pg.Query(ctx,
+		`SELECT t.id, t.name, t.fractal_id, COALESCE(f.name, t.fractal_id) as fractal_name
+		 FROM ingest_tokens t
+		 LEFT JOIN fractals f ON f.id = t.fractal_id
+		 WHERE t.normalizer_id = $1
+		 ORDER BY fractal_name, t.name`, normalizerID)
+	if err != nil {
+		return nil, fmt.Errorf("query token usage: %w", err)
+	}
+	defer rows.Close()
+
+	var tokens []TokenUsageInfo
+	for rows.Next() {
+		var ti TokenUsageInfo
+		if err := rows.Scan(&ti.TokenID, &ti.TokenName, &ti.FractalID, &ti.FractalName); err != nil {
+			return nil, fmt.Errorf("scan token usage: %w", err)
+		}
+		tokens = append(tokens, ti)
+	}
+	if tokens == nil {
+		tokens = []TokenUsageInfo{}
+	}
+	return tokens, rows.Err()
+}
+
+// Duplicate creates a copy of an existing normalizer with " (Copy)" appended to the name.
+func (m *Manager) Duplicate(ctx context.Context, id string, createdBy string) (*Normalizer, error) {
+	original, err := m.Get(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("source normalizer not found")
+	}
+
+	// Find a unique name
+	baseName := original.Name + " (Copy)"
+	candidateName := baseName
+	for i := 2; ; i++ {
+		var exists bool
+		err := m.pg.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM normalizers WHERE name = $1)`, candidateName).Scan(&exists)
+		if err != nil {
+			return nil, fmt.Errorf("check name uniqueness: %w", err)
+		}
+		if !exists {
+			break
+		}
+		candidateName = fmt.Sprintf("%s (%d)", baseName, i)
+	}
+
+	req := CreateRequest{
+		Name:            candidateName,
+		Description:     original.Description,
+		Transforms:      original.Transforms,
+		FieldMappings:   original.FieldMappings,
+		TimestampFields: original.TimestampFields,
+	}
+	return m.Create(ctx, req, createdBy)
+}
+
 // TimeFormat is a helper for JSON serialization of timestamps.
 func TimeFormat(t time.Time) string {
 	return t.Format(time.RFC3339)

@@ -675,8 +675,8 @@ func TestChainFunction(t *testing.T) {
 		}
 	})
 
-	t.Run("chain with multiple fields", func(t *testing.T) {
-		pipeline, err := ParseQuery("* | chain(user, computer, within=1d) { event_id=4624; event_id=4688 }")
+	t.Run("chain with multiple identity fields", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | chain(user, source_user, target_user, within=1d) { event_id=4624; event_id=4688 }")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -685,20 +685,30 @@ func TestChainFunction(t *testing.T) {
 			t.Fatalf("Failed to translate: %v", err)
 		}
 		sql := result.SQL
-		if !strings.Contains(sql, "fields.`user`.:String AS user") {
-			t.Errorf("Expected user field in SELECT, got: %s", sql)
+		// Multi-identity mode: should use arrayJoin to expand rows
+		if !strings.Contains(sql, "arrayJoin(arrayFilter(x -> x != ''") {
+			t.Errorf("Expected arrayJoin for multi-identity fields, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`computer`.:String AS computer") {
-			t.Errorf("Expected computer field in SELECT, got: %s", sql)
+		// Should reference all three fields in the array
+		if !strings.Contains(sql, "fields.`user`.:String") {
+			t.Errorf("Expected user field reference, got: %s", sql)
 		}
-		if !strings.Contains(sql, "GROUP BY user, computer") {
-			t.Errorf("Expected both fields in GROUP BY, got: %s", sql)
+		if !strings.Contains(sql, "fields.`source_user`.:String") {
+			t.Errorf("Expected source_user field reference, got: %s", sql)
 		}
-		if len(result.FieldOrder) < 3 {
-			t.Fatalf("Expected at least 3 fields, got %d: %v", len(result.FieldOrder), result.FieldOrder)
+		if !strings.Contains(sql, "fields.`target_user`.:String") {
+			t.Errorf("Expected target_user field reference, got: %s", sql)
 		}
-		if result.FieldOrder[0] != "user" || result.FieldOrder[1] != "computer" || result.FieldOrder[2] != "chain_count" {
-			t.Errorf("Expected field order [user, computer, chain_count], got %v", result.FieldOrder)
+		// Should GROUP BY _entity
+		if !strings.Contains(sql, "GROUP BY _entity") {
+			t.Errorf("Expected GROUP BY _entity, got: %s", sql)
+		}
+		// Field order: _entity, chain_count
+		if len(result.FieldOrder) < 2 {
+			t.Fatalf("Expected at least 2 fields, got %d: %v", len(result.FieldOrder), result.FieldOrder)
+		}
+		if result.FieldOrder[0] != "_entity" || result.FieldOrder[1] != "chain_count" {
+			t.Errorf("Expected field order [_entity, chain_count], got %v", result.FieldOrder)
 		}
 	})
 

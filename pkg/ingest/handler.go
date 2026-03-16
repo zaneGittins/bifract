@@ -423,12 +423,18 @@ func (h *IngestHandler) flattenJSON(obj map[string]interface{}, prefix string, f
 
 func (h *IngestHandler) flattenJSONDepth(obj map[string]interface{}, prefix string, fields map[string]string, norm *normalizers.CompiledNormalizer, depth int) {
 	if depth >= maxFlattenDepth {
+		if _, set := fields["_bifract_truncated"]; !set {
+			fields["_bifract_truncated"] = "true"
+			fields["_bifract_truncation_reason"] = "max_depth"
+		}
 		return
 	}
 	hasFlatten := norm != nil && norm.HasFlatten
 
 	for key, value := range obj {
 		if len(fields) >= maxFlattenFields {
+			fields["_bifract_truncated"] = "true"
+			fields["_bifract_truncation_reason"] = "max_fields"
 			return
 		}
 		fieldName := key
@@ -439,45 +445,35 @@ func (h *IngestHandler) flattenJSONDepth(obj map[string]interface{}, prefix stri
 		switch v := value.(type) {
 		case map[string]interface{}:
 			h.flattenJSONDepth(v, fieldName, fields, norm, depth+1)
-		case []interface{}:
-			b, _ := json.Marshal(v)
-			outKey := fieldName
-			if hasFlatten {
-				outKey = lastSegment(fieldName)
-			}
-			fields[normalizeField(outKey, norm)] = string(b)
-		case string:
-			outKey := fieldName
-			if hasFlatten {
-				outKey = lastSegment(fieldName)
-			}
-			fields[normalizeField(outKey, norm)] = v
-		case float64:
-			outKey := fieldName
-			if hasFlatten {
-				outKey = lastSegment(fieldName)
-			}
-			fields[normalizeField(outKey, norm)] = fmt.Sprintf("%v", v)
-		case bool:
-			outKey := fieldName
-			if hasFlatten {
-				outKey = lastSegment(fieldName)
-			}
-			fields[normalizeField(outKey, norm)] = fmt.Sprintf("%v", v)
-		case nil:
-			outKey := fieldName
-			if hasFlatten {
-				outKey = lastSegment(fieldName)
-			}
-			fields[normalizeField(outKey, norm)] = ""
 		default:
-			b, _ := json.Marshal(v)
 			outKey := fieldName
 			if hasFlatten {
 				outKey = lastSegment(fieldName)
 			}
-			fields[normalizeField(outKey, norm)] = string(b)
+			normalized := normalizeField(outKey, norm)
+			// On collision, fall back to the full dot-notation path
+			if _, exists := fields[normalized]; exists && hasFlatten {
+				normalized = normalizeField(fieldName, norm)
+			}
+			fields[normalized] = stringifyValue(v)
 		}
+	}
+}
+
+// stringifyValue converts an arbitrary JSON value to its string representation.
+func stringifyValue(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case float64:
+		return fmt.Sprintf("%v", val)
+	case bool:
+		return fmt.Sprintf("%v", val)
+	case nil:
+		return ""
+	default:
+		b, _ := json.Marshal(val)
+		return string(b)
 	}
 }
 

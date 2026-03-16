@@ -400,11 +400,11 @@ const Autocomplete = {
             name: 'chain',
             signature: 'chain(field, ..., within=duration) { step1 ; step2 ; ... }',
             args: [
-                { name: 'field', desc: 'Grouping field(s) for sequence', required: true },
+                { name: 'field', desc: 'Identity field(s). Single field groups directly. Multiple fields are treated as aliases for the same entity (e.g. user, source_user, target_user).', required: true },
                 { name: 'within', desc: 'Max time window between steps (e.g. 5m)', required: false },
                 { name: '{ steps }', desc: 'Sequential conditions separated by ;', required: true },
             ],
-            example: 'chain(user_id, within=5m) { action="login" ; action="purchase" }',
+            example: 'chain(user, source_user, target_user, within=1d) { event_id=1 | image=/powershell/i ; event_id=10 ; event_id=4625 }',
         },
         'match': {
             name: 'match',

@@ -6,66 +6,66 @@ When deploying Bifract on Kubernetes, choosing the right resource profile ensure
 
 ### X-Small
 
-**Use case:** Development, staging, or light production workloads.
+**Use case:** Development, staging, or light workloads up to ~10-50 GB/day.
 
-**Recommended cluster:** 3 nodes, 8 vCPU / 16GB RAM each.
+**Recommended cluster:** 3 nodes, 4 vCPU / 8GB RAM each (12 cores / 24GB total).
 
 | Component | CPU Request / Limit | Memory Request / Limit |
 |---|---|---|
-| ClickHouse (per replica) | 1 / 4 | 4Gi / 16Gi |
-| ClickHouse Keeper | 250m / 1 | 512Mi / 1Gi |
-| Bifract | 500m / 2 | 512Mi / 2Gi |
-| PostgreSQL | 250m / 2 | 512Mi / 2Gi |
-| Caddy | 100m / 1 | 128Mi / 512Mi |
+| ClickHouse (per replica) | 2 / 3 | 4Gi / 5Gi |
+| ClickHouse Keeper | 250m / 500m | 256Mi / 512Mi |
+| Bifract | 500m / 1 | 512Mi / 1Gi |
+| PostgreSQL | 500m / 1 | 512Mi / 1Gi |
+| Caddy | 100m / 500m | 128Mi / 256Mi |
 | LiteLLM | 100m / 500m | 256Mi / 512Mi |
 
 **Default shards/replicas:** 1 shard, 2 replicas.
 
 ### Small
 
-**Use case:** Light production workloads, up to approximately 1 TB/day of raw log ingest.
+**Use case:** Light production workloads, approximately 50-200 GB/day of raw log ingest.
 
-**Recommended cluster:** 3 nodes, 8 vCPU / 32GB RAM each.
+**Recommended cluster:** 3 nodes, 8 vCPU / 16GB RAM each (24 cores / 48GB total).
 
 | Component | CPU Request / Limit | Memory Request / Limit |
 |---|---|---|
-| ClickHouse (per replica) | 2 / 4 | 6Gi / 20Gi |
+| ClickHouse (per replica) | 4 / 6 | 8Gi / 12Gi |
 | ClickHouse Keeper | 250m / 1 | 512Mi / 1Gi |
-| Bifract | 500m / 2 | 512Mi / 2Gi |
+| Bifract | 1 / 2 | 1Gi / 2Gi |
 | PostgreSQL | 500m / 2 | 1Gi / 2Gi |
-| Caddy | 100m / 1 | 128Mi / 512Mi |
+| Caddy | 200m / 1 | 256Mi / 512Mi |
 | LiteLLM | 100m / 500m | 256Mi / 512Mi |
 
 **Default shards/replicas:** 1 shard, 2 replicas.
 
 ### Medium
 
-**Use case:** Production workloads, approximately 1-2 TB/day of raw log ingest.
+**Use case:** Production workloads, approximately 200-500 GB/day of raw log ingest.
 
-**Recommended cluster:** 3 nodes, 16 vCPU / 32GB RAM each.
+**Recommended cluster:** 3 nodes, 16 vCPU / 32GB RAM each (48 cores / 96GB total).
 
 | Component | CPU Request / Limit | Memory Request / Limit |
 |---|---|---|
-| ClickHouse (per replica) | 2 / 8 | 8Gi / 24Gi |
+| ClickHouse (per replica) | 3 / 8 | 6Gi / 16Gi |
 | ClickHouse Keeper | 500m / 2 | 1Gi / 2Gi |
 | Bifract | 1 / 4 | 1Gi / 4Gi |
-| PostgreSQL | 500m / 4 | 1Gi / 4Gi |
-| Caddy | 250m / 2 | 256Mi / 1Gi |
+| PostgreSQL | 500m / 2 | 1Gi / 4Gi |
+| Caddy | 250m / 1 | 256Mi / 1Gi |
 | LiteLLM | 100m / 500m | 256Mi / 512Mi |
 
 **Default shards/replicas:** 2 shards, 2 replicas (4 ClickHouse pods). Sharding begins at this tier to distribute write load and parallelize queries across nodes.
 
 ### Large
 
-**Use case:** High-volume production, approximately 2-10 TB/day of raw log ingest.
+**Use case:** High-volume production, approximately 500 GB - 2 TB/day of raw log ingest.
 
-**Recommended cluster:** 3 nodes, 32 vCPU / 64GB RAM each.
+**Recommended cluster:** 3 nodes, 32 vCPU / 64GB RAM each (96 cores / 192GB total).
 
 | Component | CPU Request / Limit | Memory Request / Limit |
 |---|---|---|
-| ClickHouse (per replica) | 4 / 16 | 16Gi / 48Gi |
+| ClickHouse (per replica) | 8 / 16 | 16Gi / 32Gi |
 | ClickHouse Keeper | 500m / 2 | 1Gi / 2Gi |
-| Bifract | 2 / 8 | 2Gi / 8Gi |
+| Bifract | 2 / 4 | 2Gi / 8Gi |
 | PostgreSQL | 1 / 4 | 2Gi / 8Gi |
 | Caddy | 500m / 2 | 512Mi / 1Gi |
 | LiteLLM | 250m / 1 | 512Mi / 1Gi |
@@ -74,16 +74,16 @@ When deploying Bifract on Kubernetes, choosing the right resource profile ensure
 
 ### X-Large
 
-**Use case:** Very high-volume production, 10+ TB/day of raw log ingest.
+**Use case:** Very high-volume production, 2-10 TB/day of raw log ingest.
 
-**Recommended cluster:** 6 nodes, 32 vCPU / 64GB RAM each.
+**Recommended cluster:** 6 nodes, 32 vCPU / 64GB RAM each (192 cores / 384GB total).
 
 | Component | CPU Request / Limit | Memory Request / Limit |
 |---|---|---|
-| ClickHouse (per replica) | 8 / 32 | 32Gi / 96Gi |
+| ClickHouse (per replica) | 8 / 16 | 16Gi / 32Gi |
 | ClickHouse Keeper | 1 / 2 | 2Gi / 4Gi |
-| Bifract | 4 / 16 | 4Gi / 16Gi |
-| PostgreSQL | 2 / 8 | 4Gi / 16Gi |
+| Bifract | 4 / 8 | 4Gi / 16Gi |
+| PostgreSQL | 2 / 4 | 4Gi / 16Gi |
 | Caddy | 1 / 4 | 1Gi / 2Gi |
 | LiteLLM | 500m / 2 | 1Gi / 2Gi |
 
@@ -102,7 +102,7 @@ The wizard pre-fills shard and replica counts based on the selected profile, but
 
 ## Choosing a Profile
 
-The ingest estimates assume a mix of concurrent queries, active alerts, and steady ingest. A cluster handling only ingest with no queries could sustain higher volume, but sizing for realistic production use is the right approach.
+The lower tiers (X-Small, Small) align closely with the [Docker Compose sizing table](installation.md#hardware-sizing) since they use a single shard. Medium and above benefit from sharding, which distributes writes and parallelizes queries across nodes, allowing higher throughput than a single-node deployment with comparable total resources. All estimates account for Kubernetes overhead (system pods, replication, and scheduling constraints) and assume realistic production use with concurrent queries and alerts.
 
 Key factors that affect capacity beyond raw ingest volume:
 

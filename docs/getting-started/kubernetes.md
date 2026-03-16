@@ -51,9 +51,9 @@ graph TB
 
 Traffic flow is enforced by NetworkPolicies: only Caddy accepts external traffic, only Caddy can reach Bifract, only Bifract can reach the databases and LiteLLM. A log shipper sidecar in the Caddy pod ships access logs to the Bifract system fractal for audit visibility.
 
-## Step 1: Install the ClickHouse Operator
+## Step 1: Install ClickHouse Operator
 
-Bifract uses the [official ClickHouse Kubernetes Operator](https://clickhouse.com/docs/clickhouse-operator) to manage ClickHouse and Keeper clusters.
+Bifract uses the [official ClickHouse Kubernetes Operator](https://clickhouse.com/docs/clickhouse-operator/overview) to manage ClickHouse and Keeper clusters.
 
 First, install cert-manager (required by the operator):
 

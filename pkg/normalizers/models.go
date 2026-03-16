@@ -91,3 +91,20 @@ type UpdateRequest struct {
 	FieldMappings   []FieldMapping   `json:"field_mappings"`
 	TimestampFields []TimestampField `json:"timestamp_fields"`
 }
+
+// NormalizerExport is the YAML-serializable form for import/export.
+type NormalizerExport struct {
+	Name            string           `yaml:"name" json:"name"`
+	Description     string           `yaml:"description,omitempty" json:"description,omitempty"`
+	Transforms      []Transform      `yaml:"transforms" json:"transforms"`
+	FieldMappings   []FieldMapping   `yaml:"field_mappings" json:"field_mappings"`
+	TimestampFields []TimestampField `yaml:"timestamp_fields,omitempty" json:"timestamp_fields,omitempty"`
+}
+
+// TokenUsageInfo describes a token that references a normalizer.
+type TokenUsageInfo struct {
+	TokenID     string `json:"token_id"`
+	TokenName   string `json:"token_name"`
+	FractalID   string `json:"fractal_id"`
+	FractalName string `json:"fractal_name"`
+}

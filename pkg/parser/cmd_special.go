@@ -308,8 +308,30 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	condArgs := strings.Join(steps, ", ")
 	tsExpr := "toDateTime(timestamp)"
 
-	// SELECT and GROUP BY for each grouping field
-	for _, chainField := range chainFields {
+	// Multi-identity mode: when multiple fields are provided, they all represent
+	// the same entity (e.g., user, source_user, target_user). We use arrayJoin
+	// to expand each row into one row per non-empty identity field value, so an
+	// event naturally lands in every entity group it belongs to.
+	if len(chainFields) > 1 {
+		var arrayElems []string
+		for _, f := range chainFields {
+			if f == "timestamp" || f == "raw_log" || f == "log_id" {
+				arrayElems = append(arrayElems, f)
+			} else {
+				arrayElems = append(arrayElems, jsonFieldRef(f))
+			}
+		}
+		entityExpr := fmt.Sprintf("arrayJoin(arrayFilter(x -> x != '', [%s]))", strings.Join(arrayElems, ", "))
+
+		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
+			Expr: fmt.Sprintf("%s AS _entity", entityExpr),
+		})
+		source.Layer.GroupBy = append(source.Layer.GroupBy, "_entity")
+		ctx.Registry.Register("_entity", FieldKindPerRow, "_entity", ctx.CmdIndex)
+		ctx.Registry.SetResolveExpr("_entity", entityExpr)
+	} else {
+		// Single field: original behavior, GROUP BY that field directly.
+		chainField := chainFields[0]
 		safeField, err := sanitizeIdentifier(chainField)
 		if err != nil {
 			return fmt.Errorf("chain(): invalid field name: %w", err)

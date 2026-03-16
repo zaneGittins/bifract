@@ -134,7 +134,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 
 	// Parse pipeline commands, assignments, and HAVING conditions
 	// Commands/assignments can start with a pipe OR start directly (when no filter)
-	for p.current().Type == TokenPipe || p.current().Type == TokenFunction || p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenRegex || p.current().Type == TokenAnd || p.current().Type == TokenOr || p.current().Type == TokenNot {
+	for p.current().Type == TokenPipe || p.current().Type == TokenFunction || p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenRegex || p.current().Type == TokenAnd || p.current().Type == TokenOr || p.current().Type == TokenNot || p.current().Type == TokenLParen {
 		if err := p.checkIterationLimit(); err != nil {
 			return nil, err
 		}
@@ -155,21 +155,14 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			p.advance()
 			continue
 		}
+		// Track whether a NOT was consumed for this iteration.
+		// NOT + function is handled as a negated command (special case).
+		// All other NOT cases set pipelineNegate so the condition branches
+		// below can apply the negation to whatever they parse.
+		pipelineNegate := false
 		if p.current().Type == TokenNot {
 			p.advance()
-			// Parse the next condition and negate it
-			if p.current().Type == TokenRegex {
-				having := &HavingCondition{
-					Field:    "raw_log",
-					Operator: "!=",
-					Value:    p.current().Value,
-					IsRegex:  true,
-				}
-				p.advance()
-				pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
-				continue
-			}
-			// Negated function call (e.g., !in())
+			// Negated function call (e.g., !in()) produces a Command, not a condition
 			if p.current().Type == TokenFunction {
 				cmd, err := p.parseCommand()
 				if err != nil {
@@ -179,7 +172,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				pipeline.Commands = append(pipeline.Commands, *cmd)
 				continue
 			}
-			// For field conditions after NOT, fall through to HAVING parsing
+			pipelineNegate = true
 		}
 
 		// Handle bare string/regex searches in pipeline
@@ -190,20 +183,32 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if err != nil {
 					return nil, err
 				}
+				// NOT binds tightly: NOT "A" OR "B" means (NOT "A") OR "B"
+				if pipelineNegate && len(conditions) > 0 {
+					negateHavingCondition(&conditions[0])
+				}
 				pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 			} else if p.current().Type == TokenString {
+				operator := "~"
+				if pipelineNegate {
+					operator = "!="
+				}
 				having := &HavingCondition{
 					Field:    "raw_log",
-					Operator: "~",
+					Operator: operator,
 					Value:    p.current().Value,
 					IsRegex:  true,
 				}
 				p.advance()
 				pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
 			} else {
+				operator := "="
+				if pipelineNegate {
+					operator = "!="
+				}
 				having := &HavingCondition{
 					Field:    "raw_log",
-					Operator: "=",
+					Operator: operator,
 					Value:    p.current().Value,
 					IsRegex:  true,
 				}
@@ -225,6 +230,9 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if err != nil {
 					return nil, err
 				}
+				if pipelineNegate && len(conditions) > 0 {
+					negateHavingCondition(&conditions[0])
+				}
 				pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 			} else {
 				// Parse simple HAVING condition
@@ -232,8 +240,31 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if err != nil {
 					return nil, err
 				}
+				if pipelineNegate {
+					negateHavingCondition(having)
+				}
 				pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
 			}
+		} else if p.current().Type == TokenLParen {
+			// Parenthesized condition group in pipeline, e.g.:
+			//   * | (status="200" OR status="201")
+			//   * | (status="200" OR status="201") AND service="web"
+			conditions, err := p.parseCompoundHavingConditions()
+			if err != nil {
+				return nil, err
+			}
+			if pipelineNegate {
+				for i := range conditions {
+					negateHavingCondition(&conditions[i])
+					switch conditions[i].Logic {
+					case "AND":
+						conditions[i].Logic = "OR"
+					case "OR":
+						conditions[i].Logic = "AND"
+					}
+				}
+			}
+			pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 		} else {
 			// It's a command
 			cmd, err := p.parseCommand()
@@ -789,18 +820,24 @@ func (p *Parser) parseCompoundHavingConditions() ([]HavingCondition, error) {
 
 	// Assign a shared GroupID so these conditions are parenthesized
 	// together when mixed with other HAVING conditions.
+	// Conditions that already have a GroupID (from inner paren groups)
+	// keep their existing GroupID to preserve nested grouping.
 	p.groupIDCounter++
 	groupID := p.groupIDCounter
 
 	// Convert ConditionNodes to HavingConditions
 	for _, condNode := range conditionNodes {
+		assignedGroupID := groupID
+		if condNode.GroupID != 0 {
+			assignedGroupID = condNode.GroupID
+		}
 		having := HavingCondition{
 			Field:    condNode.Field,
 			Operator: condNode.Operator,
 			Value:    condNode.Value,
 			IsRegex:  condNode.IsRegex,
 			Logic:    condNode.Logic,
-			GroupID:  groupID,
+			GroupID:  assignedGroupID,
 		}
 		conditions = append(conditions, having)
 	}
@@ -832,32 +869,59 @@ func (p *Parser) parseConditionsForHaving() ([]ConditionNode, error) {
 				return nil, err
 			}
 
-			// Apply negation to all conditions in the group if needed
+			// Apply negation by flipping operators. We use operator-based
+			// negation (not a Negate flag) because the output is converted
+			// to HavingCondition which has no Negate field.
+			// De Morgan's law: NOT (A OR B) = NOT A AND NOT B
+			if negate {
+				for i := range groupedConditions {
+					negateConditionOperator(&groupedConditions[i])
+					switch groupedConditions[i].Logic {
+					case "AND":
+						groupedConditions[i].Logic = "OR"
+					case "OR":
+						groupedConditions[i].Logic = "AND"
+					}
+				}
+			}
+
+			// Assign a shared GroupID to preserve the parenthesization
+			// when these conditions are flattened into the outer list.
+			// Without this, (A OR B) AND C would flatten to A OR B AND C
+			// and SQL precedence would evaluate it as A OR (B AND C).
+			p.groupIDCounter++
+			innerGroupID := p.groupIDCounter
 			for i := range groupedConditions {
-				if negate {
-					groupedConditions[i].Negate = !groupedConditions[i].Negate
+				if groupedConditions[i].GroupID == 0 {
+					groupedConditions[i].GroupID = innerGroupID
 				}
 			}
 			currentConditions = groupedConditions
 		} else if p.current().Type == TokenRegex {
 			// Bare regex in HAVING context always searches raw_log
+			operator := "="
+			if negate {
+				operator = "!="
+			}
 			cond := &ConditionNode{
 				Field:    "raw_log",
-				Operator: "=",
+				Operator: operator,
 				Value:    p.current().Value,
 				IsRegex:  true,
-				Negate:   negate,
 			}
 			p.advance()
 			currentConditions = []ConditionNode{*cond}
 		} else if p.current().Type == TokenString {
 			// Bare string in HAVING context: substring search on raw_log
+			operator := "~"
+			if negate {
+				operator = "!="
+			}
 			cond := &ConditionNode{
 				Field:    "raw_log",
-				Operator: "~",
+				Operator: operator,
 				Value:    p.current().Value,
 				IsRegex:  true,
-				Negate:   negate,
 			}
 			p.advance()
 			currentConditions = []ConditionNode{*cond}
@@ -867,7 +931,9 @@ func (p *Parser) parseConditionsForHaving() ([]ConditionNode, error) {
 			if err != nil {
 				return nil, err
 			}
-			cond.Negate = negate
+			if negate {
+				negateConditionOperator(cond)
+			}
 			currentConditions = []ConditionNode{*cond}
 		}
 

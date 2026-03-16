@@ -19,25 +19,16 @@ type cpuSample struct {
 	Value float64 // CPU% (0-100)
 }
 
-// nodeState tracks cumulative jiffy counters for a single ClickHouse node.
-type nodeState struct {
-	prevBusy  float64
-	prevTotal float64
-}
-
 // MetricsCollector polls system.asynchronous_metrics via the existing
 // ClickHouse connection and stores CPU history in a ring buffer.
 // In multi-node setups each node is queried individually so that
-// delta-based CPU% is never computed across different hosts.
+// per-node CPU% is accurate.
 type MetricsCollector struct {
 	mu      sync.RWMutex
 	// Single-node: only "history" is populated.
 	history []cpuSample
 	// Multi-node: per-node history keyed by address.
 	nodeHistory map[string][]cpuSample
-	// Per-node previous jiffy snapshots (keyed by address).
-	// Single-node uses the key "_single".
-	nodes  map[string]*nodeState
 	maxAge time.Duration
 	db     *storage.ClickHouseClient
 	stop   chan struct{}
@@ -51,7 +42,6 @@ const (
 // NewMetricsCollector creates and starts a background collector.
 func NewMetricsCollector(db *storage.ClickHouseClient) *MetricsCollector {
 	mc := &MetricsCollector{
-		nodes:       make(map[string]*nodeState),
 		nodeHistory: make(map[string][]cpuSample),
 		maxAge:      maxHistoryAge,
 		db:          db,
@@ -157,37 +147,26 @@ func (mc *MetricsCollector) collectNode(key string, addr *string) {
 		return
 	}
 
+	// Modern ClickHouse (23+) reports OS* metrics as instantaneous ratios
+	// (value per core, summed across cores), not cumulative jiffies.
+	// Compute CPU% directly from the ratio of busy to total time.
+	pct := math.Round(busy/total*1000) / 10
+	if pct < 0 {
+		pct = 0
+	} else if pct > 100 {
+		pct = 100
+	}
+
 	now := time.Now()
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 
-	ns := mc.nodes[key]
-	if ns == nil {
-		ns = &nodeState{}
-		mc.nodes[key] = ns
+	sample := cpuSample{Time: now, Value: pct}
+	if key == "_single" {
+		mc.history = append(mc.history, sample)
+	} else {
+		mc.nodeHistory[key] = append(mc.nodeHistory[key], sample)
 	}
-
-	if ns.prevTotal > 0 {
-		dBusy := busy - ns.prevBusy
-		dTotal := total - ns.prevTotal
-		var pct float64
-		if dTotal > 0 {
-			pct = math.Round(dBusy/dTotal*1000) / 10
-			if pct < 0 {
-				pct = 0
-			} else if pct > 100 {
-				pct = 100
-			}
-		}
-		sample := cpuSample{Time: now, Value: pct}
-		if key == "_single" {
-			mc.history = append(mc.history, sample)
-		} else {
-			mc.nodeHistory[key] = append(mc.nodeHistory[key], sample)
-		}
-	}
-	ns.prevBusy = busy
-	ns.prevTotal = total
 
 	// Trim old samples for this key.
 	cutoff := now.Add(-mc.maxAge)

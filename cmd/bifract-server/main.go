@@ -416,7 +416,7 @@ func main() {
 	alertHandler := alerts.NewHandlerWithFractals(alertManager, fractalManager)
 	alertHandler.SetRBACResolver(authHandler.RBACResolver())
 
-	chatManager := chat.NewManager(pg, db, fractalManager, config.LiteLLMURL, config.LiteLLMMasterKey, config.LiteLLMModel)
+	chatManager := chat.NewManager(pg, db, fractalManager, normalizerManager, config.LiteLLMURL, config.LiteLLMMasterKey, config.LiteLLMModel)
 	rbacAdapter := &fractalAccessAdapter{resolver: authHandler.RBACResolver()}
 	chatHandler := chat.NewHandler(chatManager, fractalManager, rbacAdapter)
 	savedQueryHandler := savedqueries.NewHandler(pg, fractalManager)
@@ -794,10 +794,15 @@ func main() {
 			// Normalizers (list for all users, CRUD admin-checked in handler)
 			r.Get("/normalizers", normalizerHandler.HandleList)
 			r.Post("/normalizers", normalizerHandler.HandleCreate)
+			r.Post("/normalizers/preview", normalizerHandler.HandlePreview)
+			r.Post("/normalizers/import", normalizerHandler.HandleImportYAML)
 			r.Get("/normalizers/{id}", normalizerHandler.HandleGet)
 			r.Put("/normalizers/{id}", normalizerHandler.HandleUpdate)
 			r.Delete("/normalizers/{id}", normalizerHandler.HandleDelete)
 			r.Post("/normalizers/{id}/set-default", normalizerHandler.HandleSetDefault)
+			r.Post("/normalizers/{id}/duplicate", normalizerHandler.HandleDuplicate)
+			r.Get("/normalizers/{id}/export", normalizerHandler.HandleExportYAML)
+			r.Get("/normalizers/{id}/tokens", normalizerHandler.HandleTokenUsage)
 
 			// Admin-only routes (checked in handler)
 			r.Post("/auth/register", authHandler.HandleRegister)
@@ -846,7 +851,7 @@ func main() {
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
 		Handler:      r,
-		ReadTimeout:  15 * time.Second,
+		ReadTimeout:  120 * time.Second,
 		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}

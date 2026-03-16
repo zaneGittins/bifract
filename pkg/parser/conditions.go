@@ -249,3 +249,45 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 	}
 	return ""
 }
+
+// negateConditionOperator flips the operator on a ConditionNode to apply NOT.
+// Used by parseConditionsForHaving where the output is converted to
+// HavingCondition (which has no Negate field), so negation must be
+// encoded in the operator itself.
+func negateConditionOperator(c *ConditionNode) {
+	switch c.Operator {
+	case "=", "~":
+		c.Operator = "!="
+	case "!=":
+		c.Operator = "="
+	case ">":
+		c.Operator = "<="
+	case "<":
+		c.Operator = ">="
+	case ">=":
+		c.Operator = "<"
+	case "<=":
+		c.Operator = ">"
+	}
+}
+
+// negateHavingCondition flips the operator on a HavingCondition to apply NOT.
+// For regex/string conditions (IsRegex=true), "=" and "~" become "!=" (which
+// triggers NOT in buildRegexMatchSQL). For comparison operators, the relational
+// sense is inverted (e.g. ">" becomes "<=").
+func negateHavingCondition(h *HavingCondition) {
+	switch h.Operator {
+	case "=", "~":
+		h.Operator = "!="
+	case "!=":
+		h.Operator = "="
+	case ">":
+		h.Operator = "<="
+	case "<":
+		h.Operator = ">="
+	case ">=":
+		h.Operator = "<"
+	case "<=":
+		h.Operator = ">"
+	}
+}

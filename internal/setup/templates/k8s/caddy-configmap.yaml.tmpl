@@ -34,19 +34,27 @@ data:
         Referrer-Policy "strict-origin-when-cross-origin"
         -Server
       }
-{{.IPBlock}}
-      respond /api/v1/ingest* 403
-      respond /_bulk 403
-      respond /api/v1/internal/* 403
-
-      reverse_proxy bifract.bifract.svc.cluster.local:8080 {
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
-      }
-
       request_body {
         max_size 200MiB
+      }
+{{.IPBlock}}
+      @ingest_main path /api/v1/ingest* /_bulk
+
+      route {
+        respond /api/v1/internal/* 403
+{{- if .IPBlock}}
+        respond @blocked 403
+{{- end}}
+        respond @ingest_main 403
+        reverse_proxy bifract.bifract.svc.cluster.local:8080 {
+          header_up X-Real-IP {remote_host}
+          header_up X-Forwarded-For {remote_host}
+          header_up X-Forwarded-Proto {scheme}
+          transport http {
+            dial_timeout 10s
+            response_header_timeout 120s
+          }
+        }
       }
     }
 
@@ -62,14 +70,24 @@ data:
       request_body {
         max_size 200MiB
       }
+{{.IPBlockIngest}}
       @ingest path /api/v1/ingest* /_bulk
-      handle @ingest {
+      @not_ingest not path /api/v1/ingest* /_bulk
+
+      route {
+{{- if .IPBlockIngest}}
+        respond @blocked_ingest 403
+{{- end}}
+        respond @not_ingest 403
         log_skip
         reverse_proxy bifract.bifract.svc.cluster.local:8080 {
           header_up X-Real-IP {remote_host}
           header_up X-Forwarded-For {remote_host}
           header_up X-Forwarded-Proto {scheme}
+          transport http {
+            dial_timeout 10s
+            response_header_timeout 120s
+          }
         }
       }
-      respond 403
     }

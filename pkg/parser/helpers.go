@@ -1239,8 +1239,9 @@ func parseChainSteps(blockBody string) ([]string, error) {
 			continue
 		}
 
-		// Split by | to get individual conditions within a step (ANDed together)
-		parts := strings.Split(rawStep, "|")
+		// Split by | to get individual conditions within a step (ANDed together).
+		// Respect regex literals: don't split on | inside /.../ delimiters.
+		parts := splitPipeRespectRegex(rawStep)
 		var conditions []string
 		for _, part := range parts {
 			part = strings.TrimSpace(part)
@@ -1267,6 +1268,41 @@ func parseChainSteps(blockBody string) ([]string, error) {
 	}
 
 	return steps, nil
+}
+
+// splitPipeRespectRegex splits s on '|' but skips '|' inside regex literals (/.../flags).
+func splitPipeRespectRegex(s string) []string {
+	var parts []string
+	var cur strings.Builder
+	inRegex := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '/' && !inRegex {
+			// Enter regex if preceded by '=' (field=/pattern/) or at start of token.
+			if i == 0 || s[i-1] == '=' || (i > 0 && s[i-1] == ' ' && i >= 2 && s[i-2] == '=') {
+				inRegex = true
+			}
+		} else if ch == '/' && inRegex {
+			// Closing slash. Skip trailing flags (e.g. /pattern/i).
+			inRegex = false
+			cur.WriteByte(ch)
+			for i+1 < len(s) && s[i+1] >= 'a' && s[i+1] <= 'z' {
+				i++
+				cur.WriteByte(s[i])
+			}
+			continue
+		}
+		if ch == '|' && !inRegex {
+			parts = append(parts, cur.String())
+			cur.Reset()
+			continue
+		}
+		cur.WriteByte(ch)
+	}
+	if cur.Len() > 0 {
+		parts = append(parts, cur.String())
+	}
+	return parts
 }
 
 // parseChainCondition parses a single condition string into a SQL boolean expression.
