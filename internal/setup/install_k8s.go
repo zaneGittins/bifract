@@ -117,6 +117,14 @@ type K8sConfig struct {
 	MTLSEnabled  bool
 	MTLSCACert   string // PEM-encoded CA cert for client verification
 	MTLSCAKey    string // PEM-encoded CA key for signing client certs
+
+	// UserSecrets holds optional user-configured secrets that are not
+	// managed by the setup wizard (e.g. LITELLM_API_KEY, OIDC settings).
+	// Preserved during upgrades, empty on fresh installs.
+	UserSecrets map[string]string
+
+	// ImagePullSecrets preserves manually-added pull secret names across upgrades.
+	ImagePullSecrets []string
 }
 
 // K8s wizard steps
@@ -205,6 +213,7 @@ func newK8sWizardModel() k8sWizardModel {
 	return k8sWizardModel{
 		step: k8sStepWelcome,
 		config: &K8sConfig{
+			SetupConfig: SetupConfig{ImageTag: Version},
 			SizeProfile: sizeProfiles[0],
 			CHShards:    1,
 			CHReplicas:  2,
@@ -683,6 +692,12 @@ type k8sTemplateData struct {
 	CaddyRes     ResourceProfile
 	CaddyShipper ResourceProfile
 	LiteLLMRes   ResourceProfile
+
+	// User-configured secrets (preserved during upgrades, empty on fresh install)
+	UserSecrets map[string]string
+
+	// ImagePullSecrets preserves manually-added pull secret names across upgrades.
+	ImagePullSecrets []string
 }
 
 // k8sManifestFile maps an embedded template to its output path.
@@ -708,8 +723,12 @@ var k8sManifests = []k8sManifestFile{
 }
 
 func writeK8sManifests(cfg *K8sConfig) error {
+	if cfg.UserSecrets == nil {
+		cfg.UserSecrets = make(map[string]string)
+	}
 	data := k8sTemplateData{
-		ImageTag:            Version,
+		ImageTag:            cfg.ImageTag,
+		ImagePullSecrets:    cfg.ImagePullSecrets,
 		Domain:              cfg.Domain,
 		CHShards:            cfg.CHShards,
 		CHReplicas:          cfg.CHReplicas,
@@ -723,6 +742,7 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		FeedEncryptionKey:   cfg.FeedEncryptionKey,
 		BackupEncryptionKey: cfg.BackupEncryptionKey,
 		LiteLLMMasterKey:    cfg.LiteLLMMasterKey,
+		UserSecrets:         cfg.UserSecrets,
 		IPBlock:             buildIPBlock(cfg),
 		IPBlockIngest:       buildIPBlockIngest(cfg),
 		MTLSEnabled:         cfg.MTLSEnabled,

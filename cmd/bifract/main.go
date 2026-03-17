@@ -30,10 +30,11 @@ func main() {
 		}
 	}
 
-	var installMode, installK8sMode, upgradeMode, reconfigureMode, showVersion, skipSelfUpdate bool
+	var installMode, installK8sMode, upgradeMode, upgradeK8sMode, reconfigureMode, reconfigureK8sMode, showVersion, skipSelfUpdate bool
 	var backupMode, restoreMode, listBackupsMode, nonInteractive, genClientCertMode bool
 	var startMode, stopMode, statusMode bool
 	var restoreFile, certName, certPassword string
+	var ipAccess, allowedIPs, domain, sizeProfile string
 	dir := "/opt/bifract"
 
 	for i := 0; i < len(args); i++ {
@@ -44,6 +45,8 @@ func main() {
 			installK8sMode = true
 		case "--upgrade":
 			upgradeMode = true
+		case "--upgrade-k8s":
+			upgradeK8sMode = true
 		case "--backup":
 			backupMode = true
 		case "--restore":
@@ -52,6 +55,40 @@ func main() {
 			listBackupsMode = true
 		case "--reconfigure":
 			reconfigureMode = true
+		case "--reconfigure-k8s":
+			reconfigureK8sMode = true
+		case "--ip-access":
+			if i+1 < len(args) {
+				i++
+				ipAccess = args[i]
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --ip-access requires a value (all, restrict-app, restrict-all, mtls-app)")
+				os.Exit(1)
+			}
+		case "--allowed-ips":
+			if i+1 < len(args) {
+				i++
+				allowedIPs = args[i]
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --allowed-ips requires a value")
+				os.Exit(1)
+			}
+		case "--domain":
+			if i+1 < len(args) {
+				i++
+				domain = args[i]
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --domain requires a value")
+				os.Exit(1)
+			}
+		case "--size":
+			if i+1 < len(args) {
+				i++
+				sizeProfile = args[i]
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --size requires a value (x-small, small, medium, large, x-large)")
+				os.Exit(1)
+			}
 		case "--gen-client-cert":
 			genClientCertMode = true
 		case "--start":
@@ -121,6 +158,9 @@ func main() {
 	if installK8sMode {
 		modeCount++
 	}
+	if upgradeK8sMode {
+		modeCount++
+	}
 	if upgradeMode {
 		modeCount++
 	}
@@ -134,6 +174,9 @@ func main() {
 		modeCount++
 	}
 	if reconfigureMode {
+		modeCount++
+	}
+	if reconfigureK8sMode {
 		modeCount++
 	}
 	if genClientCertMode {
@@ -172,9 +215,29 @@ func main() {
 		setup.SelfUpdate(os.Args)
 	}
 
-	// K8s install and client cert generation do not require Docker
+	// K8s install/upgrade and client cert generation do not require Docker
 	if installK8sMode {
 		if err := setup.RunInstallK8s(); err != nil {
+			fmt.Fprintf(os.Stderr, "\n%s %v\n", setup.ErrorStyle.Render("Error:"), err)
+			os.Exit(1)
+		}
+		return
+	}
+	if upgradeK8sMode {
+		if err := setup.RunUpgradeK8s(dir, setup.K8sUpgradeOpts{SizeProfile: sizeProfile}); err != nil {
+			fmt.Fprintf(os.Stderr, "\n%s %v\n", setup.ErrorStyle.Render("Error:"), err)
+			os.Exit(1)
+		}
+		return
+	}
+	if reconfigureK8sMode {
+		opts := setup.K8sReconfigureOpts{
+			Domain:      domain,
+			IPAccess:    ipAccess,
+			AllowedIPs:  allowedIPs,
+			SizeProfile: sizeProfile,
+		}
+		if err := setup.RunReconfigureK8s(dir, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "\n%s %v\n", setup.ErrorStyle.Render("Error:"), err)
 			os.Exit(1)
 		}
@@ -238,8 +301,10 @@ func printUsage() {
 	fmt.Println("Modes:")
 	fmt.Println("  --install          Run fresh installation wizard (Docker Compose)")
 	fmt.Println("  --install-k8s      Generate Kubernetes manifests with secure defaults")
-	fmt.Println("  --upgrade          Upgrade an existing installation")
+	fmt.Println("  --upgrade          Upgrade an existing installation (Docker Compose)")
+	fmt.Println("  --upgrade-k8s      Upgrade existing K8s manifests (preserves secrets/settings)")
 	fmt.Println("  --reconfigure      Regenerate config files from .env (no version change)")
+	fmt.Println("  --reconfigure-k8s  Re-render K8s manifests (preserves secrets, allows setting changes)")
 	fmt.Println("  --start            Start Bifract")
 	fmt.Println("  --stop             Stop Bifract")
 	fmt.Println("  --status           Show deployment status and health")
@@ -254,6 +319,10 @@ func printUsage() {
 	fmt.Println("  --restore-file F   Backup file to restore from (required with --restore)")
 	fmt.Println("  --name NAME        Client certificate common name (required with --gen-client-cert)")
 	fmt.Println("  --password PASS    Password for .p12 bundle (required with --gen-client-cert)")
+	fmt.Println("  --domain DOMAIN    Override domain (with --reconfigure-k8s)")
+	fmt.Println("  --size PROFILE     Override size profile: x-small, small, medium, large, x-large")
+	fmt.Println("  --ip-access MODE   Override IP access mode: all, restrict-app, restrict-all, mtls-app")
+	fmt.Println("  --allowed-ips IPs  Override allowed IPs (comma-separated CIDRs)")
 	fmt.Println("  --non-interactive  Skip confirmation prompts (for cron/scripts)")
 	fmt.Println("  --version          Show version and exit")
 	fmt.Println("  --help             Show this help")

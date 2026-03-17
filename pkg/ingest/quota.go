@@ -184,7 +184,7 @@ func (qm *QuotaManager) triggerRollover(fractalID string, st *fractalQuotaState)
 
 	deleteQuery := fmt.Sprintf(
 		"ALTER TABLE logs DELETE WHERE fractal_id = '%s' AND timestamp <= '%s'",
-		storage.EscCHStr(fractalID), cutoff,
+		storage.EscCHStr(fractalID), storage.EscCHStr(cutoff),
 	)
 	if err := qm.ch.Exec(ctx, deleteQuery); err != nil {
 		return fmt.Errorf("rollover delete failed: %w", err)

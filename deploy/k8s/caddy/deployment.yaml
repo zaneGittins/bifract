@@ -13,9 +13,17 @@ spec:
       labels:
         app: caddy
     spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: caddy
           image: caddy:2-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_BIND_SERVICE"]
           ports:
             - containerPort: 443
               name: https
@@ -56,6 +64,10 @@ spec:
               memory: 512Mi
         - name: log-shipper
           image: alpine:3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           command: ["/bin/sh", "-c"]
           args:
             - |

@@ -90,12 +90,25 @@ func ListYAMLFiles(repoDir, subPath string) ([]string, error) {
 		searchDir = filepath.Join(repoDir, subPath)
 	}
 
+	// Prevent path traversal via symlinks or ".." components.
+	repoAbs, err := filepath.Abs(repoDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repo dir: %w", err)
+	}
+	searchAbs, err := filepath.EvalSymlinks(searchDir)
+	if err != nil {
+		return nil, fmt.Errorf("path %q does not exist in the repository", subPath)
+	}
+	if !strings.HasPrefix(searchAbs, repoAbs+string(filepath.Separator)) && searchAbs != repoAbs {
+		return nil, fmt.Errorf("path %q escapes the repository", subPath)
+	}
+
 	if info, err := os.Stat(searchDir); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("path %q does not exist in the repository", subPath)
 	}
 
 	var files []string
-	err := filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -126,7 +139,19 @@ func ListYAMLFiles(repoDir, subPath string) ([]string, error) {
 // ReadFile reads the content of a file within the cloned repo.
 func ReadFile(repoDir, filePath string) ([]byte, error) {
 	fullPath := filepath.Join(repoDir, filePath)
-	data, err := os.ReadFile(fullPath)
+	// Resolve symlinks and verify the path stays within the repo boundary.
+	repoAbs, err := filepath.Abs(repoDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repo dir: %w", err)
+	}
+	realPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("read file %s: %w", filePath, err)
+	}
+	if !strings.HasPrefix(realPath, repoAbs+string(filepath.Separator)) {
+		return nil, fmt.Errorf("path %q escapes the repository", filePath)
+	}
+	data, err := os.ReadFile(realPath)
 	if err != nil {
 		return nil, fmt.Errorf("read file %s: %w", filePath, err)
 	}

@@ -12,6 +12,19 @@ var (
 )
 
 func CompareVersions(a, b string) int {
+	// "dev" is always considered newer than any released version.
+	aIsDev := a == "dev" || a == ""
+	bIsDev := b == "dev" || b == ""
+	if aIsDev && bIsDev {
+		return 0
+	}
+	if aIsDev {
+		return 1
+	}
+	if bIsDev {
+		return -1
+	}
+
 	pa := parseVersion(a)
 	pb := parseVersion(b)
 	for i := 0; i < 3; i++ {

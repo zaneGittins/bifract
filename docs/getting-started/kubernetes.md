@@ -195,12 +195,56 @@ kubectl rollout restart deployment bifract -n bifract
 | GeoIP Enrichment | `MAXMIND_LICENSE_KEY`, `MAXMIND_ACCOUNT_ID` | [Field Operations](../bql/field-operations.md) |
 | AI Chat | `LITELLM_API_KEY` | [AI Chat](../features/ai-chat.md) |
 
-## Updating Bifract
+## Upgrading
 
-After pushing a new container image, restart the deployment to pull it:
+Use `--upgrade-k8s` to upgrade to a new Bifract version. This re-renders all manifests with the new image tag while preserving your secrets, resource profiles, and settings. A timestamped backup is created before any files are modified.
 
 ```bash
-kubectl rollout restart deployment bifract -n bifract
+bifract --upgrade-k8s --dir ./bifract-k8s
+```
+
+The command will:
+
+1. Read your existing secrets and settings from the current manifests
+2. Check that the new version's container image is available
+3. Back up all manifests to `.backups/<timestamp>/`
+4. Re-render manifests with the new version
+5. Print `kubectl apply -k` instructions
+
+PVCs are not modified. Existing data is preserved across upgrades.
+
+If the binary is already the same version as the deployed manifests, the command exits with "Already up to date".
+
+## Reconfiguring
+
+Use `--reconfigure-k8s` to change settings without upgrading the version. This is useful for switching IP access modes, changing the domain, or picking up template improvements after a binary update.
+
+```bash
+# Switch to mTLS (generates CA automatically)
+bifract --reconfigure-k8s --dir ./bifract-k8s --ip-access mtls-app
+
+# Change domain
+bifract --reconfigure-k8s --dir ./bifract-k8s --domain new.example.com
+
+# Switch to IP-restricted access
+bifract --reconfigure-k8s --dir ./bifract-k8s --ip-access restrict-app --allowed-ips "10.0.0.0/8,192.168.1.0/24"
+
+# Re-render with no changes (picks up new templates)
+bifract --reconfigure-k8s --dir ./bifract-k8s
+```
+
+Available override flags:
+
+| Flag | Description | Values |
+|------|-------------|--------|
+| `--ip-access` | IP access control mode | `all`, `restrict-app`, `restrict-all`, `mtls-app` |
+| `--allowed-ips` | Allowed CIDRs (comma-separated) | `10.0.0.0/8,192.168.1.0/24` |
+| `--domain` | Domain name | `bifract.example.com` |
+
+Like `--upgrade-k8s`, a backup is created before writing. All secrets and resource profiles are preserved. After reconfiguring, apply the changes:
+
+```bash
+kubectl apply -k ./bifract-k8s
 ```
 
 ## Troubleshooting

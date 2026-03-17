@@ -26,6 +26,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           push: true
+          build-args: |
+            BIFRACT_VERSION=${{ github.ref_name }}
           tags: |
             ghcr.io/zanegittins/bifract:latest
             ghcr.io/zanegittins/bifract:${{ github.ref_name }}
