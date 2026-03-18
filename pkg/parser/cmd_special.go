@@ -271,16 +271,15 @@ func (h *chainHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) < 2 {
+	if len(cmd.Arguments) < 1 {
 		return fmt.Errorf("chain() requires grouping field(s) and step definitions")
 	}
 	source := ctx.Plan.CurrentStage()
 
 	chainFieldsStr := cmd.Arguments[0]
-	blockBody := cmd.Arguments[1]
 	var withinSeconds int
-	if len(cmd.Arguments) >= 3 {
-		withinSeconds = spanToSeconds(cmd.Arguments[2])
+	if len(cmd.Arguments) >= 2 {
+		withinSeconds = spanToSeconds(cmd.Arguments[1])
 	}
 
 	chainFields := strings.Split(chainFieldsStr, ",")
@@ -288,7 +287,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		chainFields[i] = strings.TrimSpace(f)
 	}
 
-	steps, err := parseChainSteps(blockBody)
+	steps, err := parseChainSteps(cmd.BlockTokens)
 	if err != nil {
 		return fmt.Errorf("chain(): %w", err)
 	}

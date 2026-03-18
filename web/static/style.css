@@ -1294,7 +1294,7 @@ body.search-active {
     flex-direction: column;
     flex: 1;
     min-height: 0;
-    overflow: hidden;
+    overflow: auto;
 }
 
 #searchView .results-container {
@@ -7561,8 +7561,8 @@ tr.perf-danger td {
     background: var(--bg-secondary);
     border: 1px solid var(--bg-tertiary);
     border-radius: 8px;
-    padding: 20px;
-    margin: 20px 0;
+    padding: 12px;
+    margin: 8px 0;
     display: flex;
     flex-direction: column;
     position: relative;
@@ -7570,9 +7570,14 @@ tr.perf-danger td {
     min-height: 400px;
 }
 
-.chart-container canvas {
+.chart-container > canvas {
     max-width: 100%;
     max-height: 400px;
+}
+
+.chart-container .heatmap-container canvas {
+    max-width: none;
+    max-height: none;
 }
 
 .chart-container h3 {

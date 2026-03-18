@@ -733,6 +733,74 @@ func TestChainFunction(t *testing.T) {
 			t.Errorf("Expected AND conditions for multi-pipe steps, got: %s", sql)
 		}
 	})
+
+	t.Run("chain with explicit AND keyword", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | chain(computer_name, within=1d) { event_id=1 | image=/fodhelper/i; event_id=1 | image=/powershell/i AND commandline=/anydesk/i }")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		sql := result.SQL
+		t.Logf("SQL: %s", sql)
+		if !strings.Contains(sql, "sequenceMatch") {
+			t.Errorf("Expected sequenceMatch, got: %s", sql)
+		}
+		// Step 2 should have all three conditions ANDed
+		if !strings.Contains(sql, "match(") {
+			t.Errorf("Expected regex match conditions, got: %s", sql)
+		}
+	})
+
+	t.Run("chain with OR in step", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | chain(user, within=1d) { event_id=4624 | logon_type=2 OR logon_type=10; event_id=4688 | image=/cmd.exe/i }")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		sql := result.SQL
+		t.Logf("SQL: %s", sql)
+		if !strings.Contains(sql, "OR") {
+			t.Errorf("Expected OR in chain step SQL, got: %s", sql)
+		}
+	})
+
+	t.Run("chain with NOT in step", func(t *testing.T) {
+		pipeline, err := ParseQuery(`* | chain(user, within=1d) { event_id=4624; event_id=4688 | NOT image=/explorer/i }`)
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		sql := result.SQL
+		t.Logf("SQL: %s", sql)
+		if !strings.Contains(sql, "NOT") {
+			t.Errorf("Expected NOT in chain step SQL, got: %s", sql)
+		}
+	})
+
+	t.Run("chain with parenthesized group in step", func(t *testing.T) {
+		pipeline, err := ParseQuery(`* | chain(user, within=1d) { event_id=4624 | (logon_type=2 OR logon_type=10); event_id=4688 }`)
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		sql := result.SQL
+		t.Logf("SQL: %s", sql)
+		if !strings.Contains(sql, "OR") {
+			t.Errorf("Expected OR in parenthesized group, got: %s", sql)
+		}
+	})
 }
 
 func TestHashFunction(t *testing.T) {

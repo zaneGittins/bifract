@@ -421,7 +421,7 @@ func (m *Manager) StreamResponse(ctx context.Context, w io.Writer, flusher http.
 	tools := m.toolDefinitions()
 
 	// Stream loop - may iterate multiple times if tool calls are made
-	const maxToolRounds = 5
+	const maxToolRounds = 15
 	for round := 0; round < maxToolRounds; round++ {
 		// Call LiteLLM with streaming
 		assistantContent, toolCallsRaw, err := m.streamFromLiteLLM(ctx, w, flusher, messages, tools)
@@ -444,9 +444,29 @@ func (m *Manager) StreamResponse(ctx context.Context, w io.Writer, flusher http.
 
 		toolCallsJSON, _ := json.Marshal(toolCallsRaw)
 
-		// Check if this is a present_results call (terminal, display only)
+		// Check for display-only tool calls (think, render_chart, present_results)
 		isPresentCall := false
 		for _, tc := range toolCallsRaw {
+			if tc.Function.Name == "think" {
+				var args struct {
+					Reasoning string `json:"reasoning"`
+				}
+				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				sendSSEEvent(w, flusher, StreamEvent{
+					Type:     "think",
+					ToolName: "think",
+					ToolArgs: args,
+				})
+			}
+			if tc.Function.Name == "render_chart" {
+				var args renderChartArgs
+				json.Unmarshal([]byte(tc.Function.Arguments), &args)
+				sendSSEEvent(w, flusher, StreamEvent{
+					Type:     "chart",
+					ToolName: "render_chart",
+					ToolArgs: args,
+				})
+			}
 			if tc.Function.Name == "present_results" {
 				isPresentCall = true
 				var args presentResultsArgs
@@ -456,7 +476,7 @@ func (m *Manager) StreamResponse(ctx context.Context, w io.Writer, flusher http.
 					ToolName: "present_results",
 					ToolArgs: args,
 				})
-				// Save the present_results tool call so history preserves severity styling
+				// Save with tool calls so history preserves both chart and severity styling
 				if _, err := m.saveMessage(ctx, conv.ID, "assistant", args.Summary, json.RawMessage(toolCallsJSON), nil); err != nil {
 					log.Printf("[Chat] failed to save present_results message: %v", err)
 				}
@@ -482,6 +502,17 @@ func (m *Manager) StreamResponse(ctx context.Context, w io.Writer, flusher http.
 
 		// Execute each tool call
 		for _, tc := range toolCallsRaw {
+			// Display-only tools: skip execution, provide minimal result
+			if tc.Function.Name == "render_chart" || tc.Function.Name == "think" {
+				messages = append(messages, llmMessage{
+					Role:       "tool",
+					Content:    `{"ok":true}`,
+					ToolCallID: tc.ID,
+					Name:       tc.Function.Name,
+				})
+				continue
+			}
+
 			result, toolErr := m.executeTool(ctx, conv.FractalID, tc, timeRange)
 			if toolErr != nil {
 				result = map[string]interface{}{"error": toolErr.Error()}
@@ -707,7 +738,7 @@ func (m *Manager) validateBQL(query string) (interface{}, error) {
 // sample values and cardinality. This "field fingerprinting" gives the AI
 // semantic understanding of each field so it can write accurate queries.
 func (m *Manager) getFields(ctx context.Context, fractalID string, filter string) (interface{}, error) {
-	queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	queryCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
 	includeEmptyFractalID := false
@@ -1150,11 +1181,18 @@ func (m *Manager) executeQuery(ctx context.Context, fractalID string, args runQu
 // tool_calls across all conversations in this fractal. Only includes queries whose
 // subsequent tool result returned >0 rows.
 func (m *Manager) getRecentSuccessfulQueries(ctx context.Context, fractalID, currentConvID string) []string {
-	// Get recent assistant tool_calls paired with their tool result content
+	// Get recent assistant tool_calls paired with their tool result content.
+	// Scoped to recent conversations (last 10) in this fractal for performance.
 	rows, err := m.pg.Query(ctx, `
+		WITH recent_convs AS (
+			SELECT id FROM chat_conversations
+			WHERE fractal_id = $1
+			ORDER BY updated_at DESC
+			LIMIT 10
+		)
 		SELECT m.tool_calls, next_msg.content AS tool_content
 		FROM chat_messages m
-		JOIN chat_conversations c ON c.id = m.conversation_id
+		JOIN recent_convs c ON c.id = m.conversation_id
 		LEFT JOIN LATERAL (
 			SELECT content FROM chat_messages
 			WHERE conversation_id = m.conversation_id
@@ -1163,8 +1201,7 @@ func (m *Manager) getRecentSuccessfulQueries(ctx context.Context, fractalID, cur
 			ORDER BY created_at ASC
 			LIMIT 1
 		) next_msg ON true
-		WHERE c.fractal_id = $1
-		  AND m.role = 'assistant'
+		WHERE m.role = 'assistant'
 		  AND m.tool_calls IS NOT NULL
 		  AND m.tool_calls != '[]'::jsonb
 		ORDER BY m.created_at DESC
@@ -1231,20 +1268,30 @@ func (m *Manager) buildSystemPrompt(fractal *fractals.Fractal, recentQueries []s
 You are currently analyzing the fractal named "%s" (ID: %s).
 
 Your tools:
-1. get_fields - Discover available field names with sample values, cardinality, and value patterns. Call this ONCE at the start of a new conversation. The results show you what each field looks like so you can write accurate queries.
+1. get_fields - Discover available field names with sample values, cardinality, and value patterns. Call this ONCE at the start of a new conversation.
 2. run_query - Execute BQL queries against the fractal's logs.
-3. validate_bql - Validate a BQL query without executing it. Returns parse errors if the syntax is invalid. Use this to check your query before running it, especially for complex queries.
-4. search_alerts - Search existing alert detection rules. Returns alert names, BQL queries, type, and labels. Call with no search term to list all alerts, or with a search term to filter. Alerts contain expert-written BQL queries you can learn from, reuse, or adapt.
-5. present_results - MANDATORY final tool call for EVERY response. This is the ONLY way the user sees your output.
+3. validate_bql - Validate a BQL query without executing it. Returns parse errors if invalid.
+4. search_alerts - Search existing alert detection rules. Returns alert names, BQL queries, type, and labels.
+5. think - Plan your next step and reason about findings so far. Use this to build multi-step investigations: analyze what you have found, identify gaps, and decide what to query next. The user sees this as a collapsible "thinking" block.
+6. render_chart - Render a standalone chart (bar, line, or pie) inline in the chat. Use SELECTIVELY.
+7. present_results - Optional structured report for presenting significant findings. Supports inline charts. For simple answers, just respond with plain text.
 
 CRITICAL RULES:
-- You MUST end every response by calling present_results. The user CANNOT see any text outside of present_results.
-- You have a maximum of 5 tool call rounds. Be efficient. Plan your queries carefully.
-- In your FIRST round, call get_fields AND search_alerts together (parallel tool calls). This gives you both the available fields and existing detection rules to work with. Only skip search_alerts in the first round if the user is asking a simple, non-security question.
-- When the user asks about threats, detections, hunting, suspicious activity, writing queries, or anything security-related, ALWAYS use search_alerts to check for existing detection rules first.
-- Before running a complex query, use validate_bql to check the syntax first. This saves a round-trip if there is a parse error.
-- Prefer fewer, broader queries over many narrow ones. Combine related questions into one query where possible.
-- After 2-3 queries, call present_results with what you have. Do not exhaustively search; summarize available findings.
+- The user CAN see your plain text responses. For simple answers, just respond naturally.
+- Use present_results ONLY for significant findings: security issues, notable data patterns, complex analysis.
+- You have a maximum of 15 tool call rounds. For simple questions, 2-3 rounds suffice. For complex investigations, use as many as needed.
+- In your FIRST round, call get_fields AND search_alerts together (parallel tool calls). Only skip search_alerts if the question is non-security.
+- When the user asks about threats, detections, hunting, or anything security-related, ALWAYS use search_alerts first.
+- Before running a complex query, use validate_bql to check the syntax first.
+
+MULTI-STEP INVESTIGATIONS:
+- For complex questions (threat hunting, anomaly detection, incident investigation), use the think tool to plan and iterate.
+- Build on your results: after each query, use think to analyze what you found and decide what to query next. Reference specific data points from previous results.
+- Example flow: get_fields + search_alerts -> run_query (find suspicious users) -> think (analyze results, plan next step) -> run_query (check their login sources) -> think (correlate findings) -> run_query (check for lateral movement) -> present_results.
+- Do not artificially limit yourself for complex questions. Follow the investigation thread as deep as the data leads you.
+- For simple questions, skip think and answer directly in 2-3 rounds.
+
+Chart guidelines: Use charts ONLY when they add genuine insight. Good uses: distributions (pie), comparisons (bar), trends (line). Do NOT chart single values or tiny datasets. You can include a chart inside present_results using the chart field, or use render_chart for a standalone chart. Keep labels to 15 or fewer.
 
 When the user asks about data, use run_query to fetch real data rather than making assumptions.
 The time range for all queries is controlled by the user via a UI selector. Do NOT set time_range, start_time, or end_time in run_query. Just provide the query string.
@@ -1252,7 +1299,8 @@ The time range for all queries is controlled by the user via a UI selector. Do N
 present_results guidelines:
 - summary: 1-3 concise sentences. No markdown, no headers, no bullet points.
 - findings: Use for notable data points (counts, top values, comparisons). Omit for simple answers.
-- severity: "info" for general responses, "warning" for anomalies, "critical" for urgent security issues.
+- severity: "info" for general responses, "warning" for anomalies worth attention, "critical" for urgent security issues.
+- chart: Optional. Include chart data directly in the report to combine visuals with findings in one block.
 
 %s`, fractal.Name, fractal.ID, bqlSyntaxRef)
 
@@ -1522,18 +1570,74 @@ func (m *Manager) toolDefinitions() []llmTool {
 		{
 			Type: "function",
 			Function: llmFunction{
+				Name:        "think",
+				Description: "Plan your next step and reason about findings so far. Use this to build a multi-step investigation: analyze what you have learned, identify gaps, and decide what to query next. The user sees this as a collapsible thinking block. Call this between queries when you need to correlate findings, pivot your approach, or plan a deeper investigation. Each think call does not count against your query budget.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"reasoning": map[string]interface{}{
+							"type":        "string",
+							"description": "Your analysis of findings so far and plan for the next step. Reference specific data from previous query results. Example: 'User admin had 342 failed logins from 5 unique IPs. Next I should check if any of those IPs successfully authenticated, then look for process execution from those sessions.'",
+						},
+					},
+					"required": []string{"reasoning"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llmFunction{
+				Name:        "render_chart",
+				Description: "Render a standalone chart inline in the chat. Use ONLY when a visual genuinely helps: distributions (pie), comparisons (bar), or trends over time (line). Do NOT use for simple counts or tiny datasets. For charts combined with a written report, use present_results with its chart field instead.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"chart_type": map[string]interface{}{
+							"type":        "string",
+							"enum":        []string{"bar", "line", "pie"},
+							"description": "Chart type. Use 'bar' for comparing categories (e.g. top users, event types). Use 'line' for trends over time (e.g. hourly counts). Use 'pie' for showing proportions of a whole.",
+						},
+						"title": map[string]interface{}{
+							"type":        "string",
+							"description": "Short chart title describing what is shown (e.g. 'Events by Source IP', 'Hourly Error Rate').",
+						},
+						"labels": map[string]interface{}{
+							"type":        "array",
+							"items":       map[string]interface{}{"type": "string"},
+							"description": "X-axis labels (categories for bar/pie, time buckets for line). Keep to 15 or fewer for readability.",
+						},
+						"datasets": map[string]interface{}{
+							"type": "array",
+							"items": map[string]interface{}{
+								"type": "object",
+								"properties": map[string]interface{}{
+									"label": map[string]interface{}{"type": "string", "description": "Series name (e.g. 'Count', 'Error Rate'). For single-series charts use a descriptive name."},
+									"data":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "number"}, "description": "Numeric values, one per label. Must have the same length as labels."},
+								},
+								"required": []string{"label", "data"},
+							},
+							"description": "One or more data series. Use multiple datasets for multi-line charts comparing series.",
+						},
+					},
+					"required": []string{"chart_type", "title", "labels", "datasets"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llmFunction{
 				Name:        "present_results",
-				Description: "MANDATORY: You MUST call this as the FINAL step of EVERY response to present your findings to the user. This is the only way the user sees your response. Never respond with plain text. Always use this tool.",
+				Description: "Present a structured report with findings to the user. Use this when you have significant findings, security issues, or complex analysis worth highlighting. For simple conversational answers, just respond with plain text instead. Supports an optional inline chart.",
 				Parameters: map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
 						"summary": map[string]interface{}{
 							"type":        "string",
-							"description": "A concise paragraph summarizing your analysis or answer. This is the main text the user sees. Keep it to 1-3 sentences. Do not use markdown headers, bullet points, or numbered lists.",
+							"description": "A concise paragraph summarizing your analysis or answer. Keep it to 1-3 sentences. No markdown headers, bullet points, or numbered lists.",
 						},
 						"findings": map[string]interface{}{
 							"type":        "array",
-							"description": "Optional key findings displayed as a label-value table. Use for notable data points, counts, or comparisons. Omit for simple conversational responses.",
+							"description": "Optional key findings displayed as a label-value table. Use for notable data points, counts, or comparisons.",
 							"items": map[string]interface{}{
 								"type": "object",
 								"properties": map[string]interface{}{
@@ -1546,7 +1650,35 @@ func (m *Manager) toolDefinitions() []llmTool {
 						"severity": map[string]interface{}{
 							"type":        "string",
 							"enum":        []string{"info", "warning", "critical"},
-							"description": "Severity level of findings. Use 'info' for general responses, 'warning' for anomalies worth attention, 'critical' for urgent security issues.",
+							"description": "Severity level. Use 'info' for general findings, 'warning' for anomalies worth attention, 'critical' for urgent security issues.",
+						},
+						"chart": map[string]interface{}{
+							"type":        "object",
+							"description": "Optional inline chart to include in the report. Same structure as render_chart.",
+							"properties": map[string]interface{}{
+								"chart_type": map[string]interface{}{
+									"type": "string",
+									"enum": []string{"bar", "line", "pie"},
+								},
+								"title": map[string]interface{}{
+									"type": "string",
+								},
+								"labels": map[string]interface{}{
+									"type":  "array",
+									"items": map[string]interface{}{"type": "string"},
+								},
+								"datasets": map[string]interface{}{
+									"type": "array",
+									"items": map[string]interface{}{
+										"type": "object",
+										"properties": map[string]interface{}{
+											"label": map[string]interface{}{"type": "string"},
+											"data":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "number"}},
+										},
+										"required": []string{"label", "data"},
+									},
+								},
+							},
 						},
 					},
 					"required": []string{"summary"},

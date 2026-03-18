@@ -1447,215 +1447,30 @@ const QueryExecutor = {
         const chartContainer = document.getElementById('chartContainer');
         const chartCanvas = document.getElementById('resultsChart');
         if (!chartContainer) return;
-
-        // Hide default canvas
         if (chartCanvas) chartCanvas.style.display = 'none';
 
-        // Remove any previous pie container
         const oldPie = chartContainer.querySelector('.pie-chart-wrapper');
         if (oldPie) oldPie.remove();
 
-        // Extract data for pie chart
-        const fields = this.fieldOrder || Object.keys(results[0] || {});
-        if (fields.length < 2) return;
-
-        const labelField = fields[0];
-        const valueField = fields.find(f => f === '_count' || f.includes('count') || f === 'sum' || f === 'avg') || fields[1];
-        const limit = (this.chartConfig && this.chartConfig.limit) || 10;
-
-        let chartData = results.map(result => ({
-            label: String(result[labelField] || 'Unknown'),
-            value: parseFloat(result[valueField]) || 0
-        }));
-        chartData.sort((a, b) => b.value - a.value);
-
-        const labels = [];
-        const data = [];
-        const backgroundColors = [
-            '#9c6ade', '#b794f6', '#8b5fbf', '#a855f7', '#7c3aed',
-            '#6366f1', '#3b82f6', '#06b6d4', '#10b981', '#f59e0b',
-            '#ef4444', '#f97316', '#84cc16', '#22c55e', '#14b8a6'
-        ];
-
-        const topItems = chartData.slice(0, limit);
-        const remainingItems = chartData.slice(limit);
-
-        topItems.forEach(item => {
-            labels.push(item.label);
-            data.push(item.value);
+        const result = BifractCharts.renderPieChart(chartContainer, {
+            data: results,
+            fields: this.fieldOrder,
+            config: this.chartConfig
         });
-
-        if (remainingItems.length > 0) {
-            const othersValue = remainingItems.reduce((sum, item) => sum + item.value, 0);
-            labels.push(`Others (${remainingItems.length})`);
-            data.push(othersValue);
-        }
-
-        // Create a wrapper div with explicit sizing for Chart.js
-        const wrapper = document.createElement('div');
-        wrapper.className = 'pie-chart-wrapper';
-        wrapper.style.position = 'relative';
-        wrapper.style.width = '100%';
-        wrapper.style.height = '400px';
-        chartContainer.appendChild(wrapper);
-
-        // Create a brand new canvas inside the wrapper
-        const freshCanvas = document.createElement('canvas');
-        wrapper.appendChild(freshCanvas);
-
-        const cv = ThemeManager.getCSSVar;
-        this.currentChart = new Chart(freshCanvas, {
-            type: 'pie',
-            data: {
-                labels: labels,
-                datasets: [{
-                    data: data,
-                    backgroundColor: backgroundColors.slice(0, data.length),
-                    borderColor: cv('--chart-border'),
-                    borderWidth: 2
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        position: 'bottom',
-                        labels: {
-                            color: cv('--chart-text'),
-                            font: {
-                                family: 'Inter',
-                                size: 12
-                            },
-                            padding: 20
-                        }
-                    },
-                    tooltip: {
-                        backgroundColor: cv('--chart-bg'),
-                        titleColor: cv('--chart-text'),
-                        bodyColor: cv('--chart-text-secondary'),
-                        borderColor: cv('--chart-accent'),
-                        borderWidth: 1
-                    }
-                },
-                layout: {
-                    padding: 20
-                }
-            }
-        });
+        if (result && result.chart) this.currentChart = result.chart;
     },
 
     renderBarChart(results) {
         const chartCanvas = document.getElementById('resultsChart');
         if (!chartCanvas) return;
-
-        // Show canvas for bar chart
         chartCanvas.style.display = 'block';
 
-        // Extract data for bar chart
-        // Assumption: first field is the label, second field is the value
-        const fields = this.fieldOrder || Object.keys(results[0] || {});
-        if (fields.length < 2) {
-            console.error('Bar chart requires at least 2 fields (label and value)');
-            return;
-        }
-
-        const labelField = fields[0];
-        const valueField = fields.find(f => f === '_count' || f.includes('count') || f === 'sum' || f === 'avg') || fields[1];
-
-        // Get limit from chart config (default 10)
-        const limit = (this.chartConfig && this.chartConfig.limit) || 10;
-
-        // Prepare and sort data by value (descending)
-        let chartData = results.map(result => ({
-            label: String(result[labelField] || 'Unknown'),
-            value: parseFloat(result[valueField]) || 0
-        }));
-
-        // Sort by value descending
-        chartData.sort((a, b) => b.value - a.value);
-
-        // Take top N items
-        const topItems = chartData.slice(0, limit);
-
-        const labels = [];
-        const data = [];
-
-        topItems.forEach(item => {
-            labels.push(item.label);
-            data.push(item.value);
+        const result = BifractCharts.renderBarChart(chartCanvas, {
+            data: results,
+            fields: this.fieldOrder,
+            config: this.chartConfig
         });
-
-        const cv = ThemeManager.getCSSVar;
-        const ctx = chartCanvas.getContext('2d');
-        this.currentChart = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: valueField.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()),
-                    data: data,
-                    backgroundColor: cv('--chart-accent'),
-                    borderColor: cv('--chart-accent-dark'),
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                plugins: {
-                    legend: {
-                        position: 'top',
-                        labels: {
-                            color: cv('--chart-text'),
-                            font: {
-                                family: 'Inter',
-                                size: 12
-                            }
-                        }
-                    },
-                    tooltip: {
-                        backgroundColor: cv('--chart-bg'),
-                        titleColor: cv('--chart-text'),
-                        bodyColor: cv('--chart-text-secondary'),
-                        borderColor: cv('--chart-accent'),
-                        borderWidth: 1
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: {
-                            color: cv('--chart-text-secondary'),
-                            font: {
-                                family: 'Inter',
-                                size: 11
-                            }
-                        },
-                        grid: {
-                            color: cv('--chart-grid')
-                        }
-                    },
-                    x: {
-                        ticks: {
-                            color: cv('--chart-text-secondary'),
-                            font: {
-                                family: 'Inter',
-                                size: 11
-                            },
-                            maxRotation: 45,
-                            minRotation: 0
-                        },
-                        grid: {
-                            color: cv('--chart-grid')
-                        }
-                    }
-                },
-                layout: {
-                    padding: 20
-                }
-            }
-        });
+        if (result && result.chart) this.currentChart = result.chart;
     },
 
     renderGraph(results) {
@@ -2073,522 +1888,58 @@ const QueryExecutor = {
     renderSingleVal(results) {
         const chartContainer = document.getElementById('chartContainer');
         if (!chartContainer) return;
-
-        let rawValue = '--';
-        let label = '';
-
-        if (results && results.length > 0) {
-            const fields = this.fieldOrder || Object.keys(results[0] || {});
-            const valueField = fields.find(f =>
-                f === '_count' || f === 'count' || f.startsWith('sum_') ||
-                f.startsWith('avg_') || f.startsWith('min_') || f.startsWith('max_') ||
-                f.startsWith('stddev_')
-            ) || fields[0];
-
-            const val = results[0][valueField];
-            const numValue = parseFloat(val);
-            rawValue = isNaN(numValue) ? String(val) : this.formatSingleValue(numValue);
-            label = (this.chartConfig && this.chartConfig.label) || valueField.replace(/_/g, ' ');
-        }
-
-        const el = document.createElement('div');
-        el.className = 'singleval-display';
-        el.innerHTML = `
-            <div class="singleval-value">${Utils.escapeHtml(rawValue)}</div>
-            <div class="singleval-label">${Utils.escapeHtml(label)}</div>
-        `;
-        chartContainer.appendChild(el);
+        BifractCharts.renderSingleVal(chartContainer, {
+            data: results,
+            fields: this.fieldOrder,
+            config: this.chartConfig
+        });
     },
 
     renderTimeChart(results) {
         const chartCanvas = document.getElementById('resultsChart');
         const networkDiv = document.getElementById('networkGraph');
         if (!chartCanvas) return;
-
         chartCanvas.style.display = 'block';
         if (networkDiv) networkDiv.style.display = 'none';
+        if (this.currentChart) { this.currentChart.destroy(); this.currentChart = null; }
 
-        if (this.currentChart) {
-            this.currentChart.destroy();
-            this.currentChart = null;
-        }
-
-        if (!results || results.length === 0) return;
-
-        const fields = this.fieldOrder || Object.keys(results[0] || {});
-        const timeField = fields.find(f => f === 'time_bucket') || fields[0];
-        const valueFields = fields.filter(f =>
-            f !== timeField && f !== 'time_bucket' &&
-            (f === '_count' || f === 'count' || f.startsWith('sum_') ||
-             f.startsWith('avg_') || f.startsWith('min_') || f.startsWith('max_') ||
-             f.startsWith('bucket_') || f.startsWith('stddev_'))
-        );
-        const groupFields = fields.filter(f => f !== timeField && !valueFields.includes(f));
-
-        const cv = ThemeManager.getCSSVar;
-        const seriesColors = [
-            '#9c6ade', '#3b82f6', '#10b981', '#f59e0b', '#ef4444',
-            '#06b6d4', '#8b5fbf', '#f97316', '#84cc16', '#14b8a6'
-        ];
-
-        let datasets;
-        const valueField = valueFields[0] || fields[1];
-
-        if (groupFields.length > 0) {
-            const groupField = groupFields[0];
-            const groups = {};
-            results.forEach(row => {
-                const key = String(row[groupField] || 'Unknown');
-                if (!groups[key]) groups[key] = [];
-                groups[key].push(row);
-            });
-
-            datasets = Object.entries(groups).map(([key, rows], idx) => ({
-                label: key,
-                data: rows.map(r => parseFloat(r[valueField]) || 0),
-                borderColor: seriesColors[idx % seriesColors.length],
-                backgroundColor: seriesColors[idx % seriesColors.length] + '20',
-                fill: true,
-                tension: 0.3,
-                pointRadius: 2,
-                pointHoverRadius: 5,
-                borderWidth: 2
-            }));
-
-            // Use labels from the first group (all groups share the same time buckets)
-            var labels = Object.values(groups)[0].map(r => String(r[timeField] || ''));
-        } else {
-            labels = results.map(r => String(r[timeField] || ''));
-            datasets = [{
-                label: valueField.replace(/_/g, ' '),
-                data: results.map(r => parseFloat(r[valueField]) || 0),
-                borderColor: cv('--chart-accent'),
-                backgroundColor: cv('--chart-accent') + '20',
-                fill: true,
-                tension: 0.3,
-                pointRadius: 2,
-                pointHoverRadius: 5,
-                borderWidth: 2
-            }];
-        }
-
-        const ctx = chartCanvas.getContext('2d');
-        this.currentChart = new Chart(ctx, {
-            type: 'line',
-            data: { labels, datasets },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                interaction: {
-                    mode: 'index',
-                    intersect: false
-                },
-                plugins: {
-                    legend: {
-                        display: datasets.length > 1,
-                        position: 'top',
-                        labels: {
-                            color: cv('--chart-text'),
-                            font: { family: 'Inter', size: 12 },
-                            usePointStyle: true,
-                            pointStyle: 'circle'
-                        }
-                    },
-                    tooltip: {
-                        backgroundColor: cv('--chart-bg'),
-                        titleColor: cv('--chart-text'),
-                        bodyColor: cv('--chart-text-secondary'),
-                        borderColor: cv('--chart-accent'),
-                        borderWidth: 1
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: {
-                            color: cv('--chart-text-secondary'),
-                            font: { family: 'Inter', size: 11 }
-                        },
-                        grid: { color: cv('--chart-grid') }
-                    },
-                    x: {
-                        ticks: {
-                            color: cv('--chart-text-secondary'),
-                            font: { family: 'Inter', size: 10 },
-                            maxRotation: 45,
-                            minRotation: 0,
-                            maxTicksLimit: 20
-                        },
-                        grid: { color: cv('--chart-grid') }
-                    }
-                },
-                layout: { padding: 10 }
-            }
+        const result = BifractCharts.renderTimeChart(chartCanvas, {
+            data: results,
+            fields: this.fieldOrder,
+            config: this.chartConfig
         });
+        if (result && result.chart) this.currentChart = result.chart;
     },
 
     renderHistogram(results) {
         const chartCanvas = document.getElementById('resultsChart');
         const networkDiv = document.getElementById('networkGraph');
         if (!chartCanvas) return;
-
         chartCanvas.style.display = 'block';
         if (networkDiv) networkDiv.style.display = 'none';
+        if (this.currentChart) { this.currentChart.destroy(); this.currentChart = null; }
 
-        if (this.currentChart) {
-            this.currentChart.destroy();
-            this.currentChart = null;
-        }
-
-        if (!results || results.length === 0) return;
-
-        const labels = [];
-        const data = [];
-
-        results.forEach(row => {
-            const lower = parseFloat(row._bin_lower);
-            const upper = parseFloat(row._bin_upper);
-            const count = parseFloat(row._bin_count) || 0;
-            if (!isNaN(lower) && !isNaN(upper)) {
-                labels.push(`${this.formatBinEdge(lower)} - ${this.formatBinEdge(upper)}`);
-                data.push(count);
-            }
+        const result = BifractCharts.renderHistogram(chartCanvas, {
+            data: results,
+            config: this.chartConfig
         });
-
-        const fieldName = (this.chartConfig && this.chartConfig.field) || 'value';
-        const cv = ThemeManager.getCSSVar;
-        const ctx = chartCanvas.getContext('2d');
-
-        this.currentChart = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels,
-                datasets: [{
-                    label: `Distribution of ${fieldName}`,
-                    data,
-                    backgroundColor: cv('--chart-accent') + 'B0',
-                    borderColor: cv('--chart-accent'),
-                    borderWidth: 1,
-                    barPercentage: 1.0,
-                    categoryPercentage: 1.0
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'top',
-                        labels: {
-                            color: cv('--chart-text'),
-                            font: { family: 'Inter', size: 12 }
-                        }
-                    },
-                    tooltip: {
-                        backgroundColor: cv('--chart-bg'),
-                        titleColor: cv('--chart-text'),
-                        bodyColor: cv('--chart-text-secondary'),
-                        borderColor: cv('--chart-accent'),
-                        borderWidth: 1,
-                        callbacks: {
-                            label: (context) => {
-                                return `Count: ${context.raw.toLocaleString()}`;
-                            }
-                        }
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        title: {
-                            display: true,
-                            text: 'Count',
-                            color: cv('--chart-text-secondary'),
-                            font: { family: 'Inter', size: 11 }
-                        },
-                        ticks: {
-                            color: cv('--chart-text-secondary'),
-                            font: { family: 'Inter', size: 11 }
-                        },
-                        grid: { color: cv('--chart-grid') }
-                    },
-                    x: {
-                        title: {
-                            display: true,
-                            text: fieldName,
-                            color: cv('--chart-text-secondary'),
-                            font: { family: 'Inter', size: 11 }
-                        },
-                        ticks: {
-                            color: cv('--chart-text-secondary'),
-                            font: { family: 'Inter', size: 10 },
-                            maxRotation: 45,
-                            minRotation: 0
-                        },
-                        grid: { color: cv('--chart-grid') }
-                    }
-                },
-                layout: { padding: 10 }
-            }
-        });
+        if (result && result.chart) this.currentChart = result.chart;
     },
 
     renderHeatmap(results) {
         const chartCanvas = document.getElementById('resultsChart');
         const networkDiv = document.getElementById('networkGraph');
-        if (!chartCanvas) return;
-
-        chartCanvas.style.display = 'none';
+        if (chartCanvas) chartCanvas.style.display = 'none';
         if (networkDiv) networkDiv.style.display = 'none';
 
-        if (this.currentChart) {
-            this.currentChart.destroy();
-            this.currentChart = null;
-        }
-
-        if (!results || results.length === 0) return;
-
         const chartContainer = document.getElementById('chartContainer');
-        if (!chartContainer) return;
+        if (!chartContainer || !results || results.length === 0) return;
 
-        const oldHeatmap = chartContainer.querySelector('.heatmap-container');
-        if (oldHeatmap) oldHeatmap.remove();
-
-        const xField = (this.chartConfig && this.chartConfig.xField) || '_heatmap_x';
-        const yField = (this.chartConfig && this.chartConfig.yField) || '_heatmap_y';
-
-        const xVals = [];
-        const yVals = [];
-        const xSet = new Set();
-        const ySet = new Set();
-        const valueMap = {};
-        let maxVal = 0;
-
-        const xKey = results.length > 0 && results[0]._heatmap_x !== undefined ? '_heatmap_x' : xField;
-        const yKey = results.length > 0 && results[0]._heatmap_y !== undefined ? '_heatmap_y' : yField;
-        const vKey = results.length > 0 && results[0]._heatmap_value !== undefined ? '_heatmap_value' : '_count';
-
-        results.forEach(row => {
-            const x = String(row[xKey] || '');
-            const y = String(row[yKey] || '');
-            const v = parseFloat(row[vKey]) || 0;
-            if (!xSet.has(x)) { xSet.add(x); xVals.push(x); }
-            if (!ySet.has(y)) { ySet.add(y); yVals.push(y); }
-            valueMap[`${x}||${y}`] = v;
-            if (v > maxVal) maxVal = v;
+        const result = BifractCharts.renderHeatmap(chartContainer, {
+            data: results,
+            config: this.chartConfig
         });
-
-        // Sort axes: numeric-aware sort
-        const smartSort = (a, b) => {
-            const na = parseFloat(a), nb = parseFloat(b);
-            if (!isNaN(na) && !isNaN(nb)) return na - nb;
-            return a.localeCompare(b);
-        };
-        xVals.sort(smartSort);
-        yVals.sort(smartSort);
-
-        const cv = ThemeManager.getCSSVar;
-        const yLabelWidth = 150;
-        const xLabelHeight = 70;
-        const axisTitleSize = 24;
-        const legendBarWidth = 18;
-        const legendLabelWidth = 50;
-        const legendGap = 16;
-
-        // Fill available container width, with a minimum cell size
-        const availableWidth = chartContainer.clientWidth || 800;
-        const gridAvailWidth = availableWidth - yLabelWidth - legendGap - legendBarWidth - legendLabelWidth;
-        const cellW = Math.max(20, Math.floor(gridAvailWidth / Math.max(xVals.length, 1)));
-        const cellH = Math.max(28, Math.min(60, Math.floor(400 / Math.max(yVals.length, 1))));
-        const gridWidth = xVals.length * cellW;
-        const gridHeight = yVals.length * cellH;
-        const totalWidth = yLabelWidth + gridWidth + legendGap + legendBarWidth + legendLabelWidth;
-        const totalHeight = xLabelHeight + gridHeight + axisTitleSize;
-
-        const container = document.createElement('div');
-        container.className = 'heatmap-container';
-        container.style.cssText = 'overflow:auto;max-height:620px;position:relative;';
-
-        const canvas = document.createElement('canvas');
-        const dpr = window.devicePixelRatio || 1;
-        canvas.width = totalWidth * dpr;
-        canvas.height = totalHeight * dpr;
-        canvas.style.cssText = `display:block;width:${totalWidth}px;height:${totalHeight}px;image-rendering:auto;`;
-        container.appendChild(canvas);
-        chartContainer.appendChild(container);
-
-        const ctx = canvas.getContext('2d');
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        const bgColor = cv('--bg-primary') || '#1a1a2e';
-        const textColor = cv('--chart-text-secondary') || '#8b8fa3';
-        const textPrimary = cv('--chart-text') || '#e0e0e0';
-
-        // Theme-aware color stops
-        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-        const bgRGB = this.hexToRGB(cv('--bg-secondary') || (isLight ? '#f0ece6' : '#1a1a2e'));
-        const accentRGB = this.hexToRGB(cv('--chart-accent') || (isLight ? '#2563b5' : '#9c6ade'));
-        const colorStops = isLight ? [
-            bgRGB,
-            { r: Math.round((bgRGB.r + accentRGB.r) / 2), g: Math.round((bgRGB.g + accentRGB.g) / 2), b: Math.round((bgRGB.b + accentRGB.b) / 2) },
-            accentRGB,
-            { r: Math.min(255, accentRGB.r + 60), g: Math.max(0, accentRGB.g - 20), b: Math.max(0, accentRGB.b - 40) },
-            { r: 180, g: 40, b: 30 },
-        ] : [
-            { r: 30, g: 28, b: 50 },
-            { r: 88, g: 60, b: 160 },
-            { r: 156, g: 106, b: 222 },
-            { r: 200, g: 120, b: 180 },
-            { r: 255, g: 160, b: 100 },
-        ];
-
-        const interpolateColor = (t) => {
-            t = Math.max(0, Math.min(1, t));
-            const segment = t * (colorStops.length - 1);
-            const i = Math.min(Math.floor(segment), colorStops.length - 2);
-            const frac = segment - i;
-            const a = colorStops[i], b = colorStops[i + 1];
-            return {
-                r: Math.round(a.r + (b.r - a.r) * frac),
-                g: Math.round(a.g + (b.g - a.g) * frac),
-                b: Math.round(a.b + (b.b - a.b) * frac),
-            };
-        };
-
-        // Clear
-        ctx.fillStyle = bgColor;
-        ctx.fillRect(0, 0, totalWidth, totalHeight);
-
-        // Y-axis title (rotated)
-        ctx.save();
-        ctx.font = '12px Inter, sans-serif';
-        ctx.fillStyle = textPrimary;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.translate(12, xLabelHeight + gridHeight / 2);
-        ctx.rotate(-Math.PI / 2);
-        ctx.fillText(yField, 0, 0);
-        ctx.restore();
-
-        // X-axis title
-        ctx.font = '12px Inter, sans-serif';
-        ctx.fillStyle = textPrimary;
-        ctx.textAlign = 'center';
-        ctx.fillText(xField, yLabelWidth + gridWidth / 2, xLabelHeight + gridHeight + axisTitleSize - 4);
-
-        // Column headers (x labels)
-        ctx.save();
-        ctx.font = '11px Inter, sans-serif';
-        ctx.fillStyle = textColor;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'bottom';
-        xVals.forEach((x, i) => {
-            const cx = yLabelWidth + i * cellW + cellW / 2;
-            const label = x.length > 12 ? x.substring(0, 12) + '\u2026' : x;
-            ctx.fillText(label, cx, xLabelHeight - 6);
-        });
-        ctx.restore();
-
-        // Row labels (y labels)
-        ctx.font = '11px Inter, sans-serif';
-        ctx.fillStyle = textColor;
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'middle';
-        yVals.forEach((y, j) => {
-            const cy = xLabelHeight + j * cellH + cellH / 2;
-            const label = y.length > 20 ? y.substring(0, 20) + '\u2026' : y;
-            ctx.fillText(label, yLabelWidth - 8, cy);
-        });
-
-        // Grid cells (no gaps - fill completely)
-        yVals.forEach((y, j) => {
-            xVals.forEach((x, i) => {
-                const v = valueMap[`${x}||${y}`] || 0;
-                const intensity = maxVal > 0 ? v / maxVal : 0;
-                const c = interpolateColor(intensity);
-                ctx.fillStyle = `rgb(${c.r}, ${c.g}, ${c.b})`;
-                const cx = yLabelWidth + i * cellW;
-                const cy = xLabelHeight + j * cellH;
-                ctx.fillRect(cx, cy, cellW, cellH);
-
-                if (cellW >= 36 && cellH >= 28 && v > 0) {
-                    ctx.fillStyle = intensity > 0.4 ? '#ffffff' : textColor;
-                    ctx.font = '10px Inter, sans-serif';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(this.formatHeatmapValue(v), cx + cellW / 2, cy + cellH / 2);
-                }
-            });
-        });
-
-        // Vertical color scale legend (right side)
-        const legendX = yLabelWidth + gridWidth + legendGap;
-        const legendY = xLabelHeight;
-        const legendH = gridHeight;
-        const scaleSteps = 100;
-        const stepH = legendH / scaleSteps;
-
-        for (let s = 0; s < scaleSteps; s++) {
-            const t = 1 - s / scaleSteps; // top = max, bottom = 0
-            const c = interpolateColor(t);
-            ctx.fillStyle = `rgb(${c.r}, ${c.g}, ${c.b})`;
-            ctx.fillRect(legendX, legendY + s * stepH, legendBarWidth, stepH + 1);
-        }
-        // Legend border
-        ctx.strokeStyle = cv('--border-color') || '#333';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(legendX, legendY, legendBarWidth, legendH);
-
-        // Legend tick labels
-        ctx.font = '10px Inter, sans-serif';
-        ctx.fillStyle = textColor;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        const tickCount = 5;
-        for (let t = 0; t <= tickCount; t++) {
-            const frac = t / tickCount;
-            const val = maxVal * (1 - frac);
-            const ty = legendY + frac * legendH;
-            // Tick mark
-            ctx.fillRect(legendX + legendBarWidth, ty - 0.5, 4, 1);
-            ctx.fillText(this.formatHeatmapValue(val), legendX + legendBarWidth + 6, ty);
-        }
-
-        // Tooltip on hover
-        const tooltip = document.createElement('div');
-        tooltip.className = 'heatmap-tooltip';
-        tooltip.style.cssText = `display:none;position:fixed;padding:6px 10px;border-radius:4px;font-size:11px;pointer-events:none;z-index:1000;background:${cv('--chart-bg') || '#2a2a3e'};color:${cv('--chart-text') || '#e0e0e0'};border:1px solid ${cv('--chart-accent') || '#9c6ade'};font-family:Inter,sans-serif;`;
-        document.body.appendChild(tooltip);
-
-        canvas.addEventListener('mousemove', (e) => {
-            const rect = canvas.getBoundingClientRect();
-            const scaleX = totalWidth / rect.width;
-            const scaleY = totalHeight / rect.height;
-            const mx = (e.clientX - rect.left) * scaleX;
-            const my = (e.clientY - rect.top) * scaleY;
-            const xi = Math.floor((mx - yLabelWidth) / cellW);
-            const yi = Math.floor((my - xLabelHeight) / cellH);
-
-            if (xi >= 0 && xi < xVals.length && yi >= 0 && yi < yVals.length) {
-                const x = xVals[xi];
-                const y = yVals[yi];
-                const v = valueMap[`${x}||${y}`] || 0;
-                tooltip.innerHTML = `<strong>${Utils.escapeHtml(xField)}</strong>: ${Utils.escapeHtml(x)}<br><strong>${Utils.escapeHtml(yField)}</strong>: ${Utils.escapeHtml(y)}<br><strong>Value</strong>: ${v.toLocaleString()}`;
-                tooltip.style.display = 'block';
-                tooltip.style.left = (e.clientX + 12) + 'px';
-                tooltip.style.top = (e.clientY + 12) + 'px';
-            } else {
-                tooltip.style.display = 'none';
-            }
-        });
-
-        canvas.addEventListener('mouseleave', () => {
-            tooltip.style.display = 'none';
-        });
-
-        this._heatmapTooltip = tooltip;
+        if (result && result.tooltip) this._heatmapTooltip = result.tooltip;
     },
 
     renderWorldMap(results) {
@@ -2596,11 +1947,7 @@ const QueryExecutor = {
         const networkDiv = document.getElementById('networkGraph');
         if (chartCanvas) chartCanvas.style.display = 'none';
         if (networkDiv) networkDiv.style.display = 'none';
-
-        if (this.currentChart) {
-            this.currentChart.destroy();
-            this.currentChart = null;
-        }
+        if (this.currentChart) { this.currentChart.destroy(); this.currentChart = null; }
 
         const chartContainer = document.getElementById('chartContainer');
         if (!chartContainer || !results || results.length === 0) return;
@@ -2623,41 +1970,10 @@ const QueryExecutor = {
         this._worldmapInstance = BifractWorldMap._lastMap;
     },
 
-    hexToRGB(hex) {
-        hex = hex.replace('#', '');
-        if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
-        return {
-            r: parseInt(hex.substring(0, 2), 16) || 156,
-            g: parseInt(hex.substring(2, 4), 16) || 106,
-            b: parseInt(hex.substring(4, 6), 16) || 222
-        };
-    },
-
-    formatBinEdge(num) {
-        if (Number.isInteger(num)) return num.toLocaleString();
-        if (Math.abs(num) >= 1000) return num.toFixed(0);
-        if (Math.abs(num) >= 1) return num.toFixed(2);
-        return num.toPrecision(3);
-    },
-
-    formatHeatmapValue(num) {
-        if (num === 0) return '0';
-        const abs = Math.abs(num);
-        if (abs >= 1e6) return (num / 1e6).toFixed(1) + 'M';
-        if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'K';
-        if (Number.isInteger(num)) return num.toLocaleString();
-        return num.toFixed(1);
-    },
-
-    formatSingleValue(num) {
-        if (num === 0) return '0';
-        const abs = Math.abs(num);
-        if (abs >= 1e9) return (num / 1e9).toFixed(1) + 'B';
-        if (abs >= 1e6) return (num / 1e6).toFixed(1) + 'M';
-        if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'K';
-        if (Number.isInteger(num)) return num.toLocaleString();
-        return num.toFixed(2);
-    },
+    hexToRGB(hex) { return BifractCharts.hexToRGB(hex); },
+    formatBinEdge(num) { return BifractCharts.formatBinEdge(num); },
+    formatHeatmapValue(num) { return BifractCharts.formatHeatmapValue(num); },
+    formatSingleValue(num) { return BifractCharts.formatSingleValue(num); },
 
     // ============================
     // Share Query Functionality

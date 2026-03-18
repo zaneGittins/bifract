@@ -49,7 +49,7 @@ var sizeProfiles = []SizeProfile{
 		Postgres:    ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 		Caddy:       ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:     ResourceProfile{"100m", "500m", "256Mi", "512Mi"},
+		LiteLLM:     ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
 	},
 	{
 		Name:        "Small",
@@ -62,7 +62,7 @@ var sizeProfiles = []SizeProfile{
 		Postgres:    ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		Caddy:       ResourceProfile{"200m", "1", "256Mi", "512Mi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:     ResourceProfile{"100m", "500m", "256Mi", "512Mi"},
+		LiteLLM:     ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
 	},
 	{
 		Name:        "Medium",
@@ -75,7 +75,7 @@ var sizeProfiles = []SizeProfile{
 		Postgres:    ResourceProfile{"500m", "2", "1Gi", "4Gi"},
 		Caddy:       ResourceProfile{"250m", "1", "256Mi", "1Gi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:     ResourceProfile{"100m", "500m", "256Mi", "512Mi"},
+		LiteLLM:     ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
 	},
 	{
 		Name:        "Large",

@@ -524,11 +524,11 @@ const App = {
         const statusContainer = document.getElementById('statusIndicatorCompact');
 
         try {
-            const response = await fetch('/api/v1/status');
+            const response = await fetch('/api/v1/health/clickhouse');
             const data = await response.json();
 
             if (statusDot && statusContainer) {
-                if (data.success && data.clickhouse && data.clickhouse.connected) {
+                if (data.success && data.connected) {
                     statusDot.className = 'status-dot status-connected';
                     statusContainer.title = 'ClickHouse Connected';
                 } else {

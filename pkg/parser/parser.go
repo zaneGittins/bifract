@@ -57,9 +57,10 @@ type HavingCondition struct {
 func (h HavingCondition) Type() string { return "having" }
 
 type CommandNode struct {
-	Name      string
-	Arguments []string
-	Negate    bool // True when command is prefixed with ! (e.g., !in())
+	Name        string
+	Arguments   []string
+	Negate      bool    // True when command is prefixed with ! (e.g., !in())
+	BlockTokens []Token // Raw tokens from block body (used by chain to avoid double-tokenization)
 }
 
 func (c CommandNode) Type() string { return "command" }
@@ -1152,16 +1153,10 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 		return nil, fmt.Errorf("expected '{' after chain(...), got %s", p.current().Type)
 	}
 
-	// Consume block body as raw string, preserving spaces between tokens
-	var body strings.Builder
-	body.WriteString("{ ")
-	first := true
+	// Capture raw tokens from the block body (avoids double-tokenization of regex literals).
+	var blockTokens []Token
 	for p.current().Type != TokenRBrace && p.current().Type != TokenEOF {
-		if !first {
-			body.WriteString(" ")
-		}
-		body.WriteString(p.current().Value)
-		first = false
+		blockTokens = append(blockTokens, p.current())
 		p.advance()
 	}
 
@@ -1169,13 +1164,13 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 	if _, err := p.expect(TokenRBrace); err != nil {
 		return nil, fmt.Errorf("expected '}' to close chain block, got %s", p.current().Type)
 	}
-	body.WriteString("}")
 
-	// Arguments: [0]=groupFields (comma-separated), [1]=blockBody, [2]=within (optional)
-	cmd.Arguments = []string{strings.Join(groupFields, ","), body.String()}
+	// Arguments: [0]=groupFields (comma-separated), [1]=within (optional)
+	cmd.Arguments = []string{strings.Join(groupFields, ",")}
 	if withinValue != "" {
 		cmd.Arguments = append(cmd.Arguments, withinValue)
 	}
+	cmd.BlockTokens = blockTokens
 
 	return cmd, nil
 }

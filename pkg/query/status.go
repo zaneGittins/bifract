@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
+	"time"
 
 	"bifract/pkg/storage"
 )
@@ -19,6 +21,11 @@ type StatusHandler struct {
 	db           *storage.ClickHouseClient
 	pg           *storage.PostgresClient
 	quotaClearer quotaClearer
+
+	cacheMu    sync.RWMutex
+	cached     *StatusResponse
+	cachedAt   time.Time
+	cacheTTL   time.Duration
 }
 
 // SetQuotaClearer attaches a quota manager that is notified when logs are cleared.
@@ -27,9 +34,9 @@ func (h *StatusHandler) SetQuotaClearer(qc quotaClearer) {
 }
 
 type StatusResponse struct {
-	Success    bool              `json:"success"`
-	ClickHouse ClickHouseStatus  `json:"clickhouse"`
-	Error      string            `json:"error,omitempty"`
+	Success    bool             `json:"success"`
+	ClickHouse ClickHouseStatus `json:"clickhouse"`
+	Error      string           `json:"error,omitempty"`
 }
 
 type ClickHouseStatus struct {
@@ -44,8 +51,26 @@ type ClickHouseStatus struct {
 
 func NewStatusHandler(db *storage.ClickHouseClient, pg *storage.PostgresClient) *StatusHandler {
 	return &StatusHandler{
-		db: db,
-		pg: pg,
+		db:       db,
+		pg:       pg,
+		cacheTTL: 60 * time.Second,
+	}
+}
+
+// HandleHealthCheck is an ultralight endpoint that only pings ClickHouse.
+// Used by the UI status dot; no expensive queries.
+func (h *StatusHandler) HandleHealthCheck(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	connected := h.db.HealthCheck(ctx) == nil
+	w.Header().Set("Content-Type", "application/json")
+	if connected {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"success":true,"connected":true}`))
+	} else {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"success":true,"connected":false}`))
 	}
 }
 
@@ -65,6 +90,33 @@ func (h *StatusHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Serve from cache if fresh
+	h.cacheMu.RLock()
+	if h.cached != nil && time.Since(h.cachedAt) < h.cacheTTL {
+		resp := *h.cached
+		h.cacheMu.RUnlock()
+		respondJSON(w, http.StatusOK, resp)
+		return
+	}
+	h.cacheMu.RUnlock()
+
+	status := h.fetchStatus()
+
+	// Store in cache
+	h.cacheMu.Lock()
+	h.cached = &status
+	h.cachedAt = time.Now()
+	h.cacheMu.Unlock()
+
+	respondJSON(w, http.StatusOK, status)
+}
+
+// fetchStatus queries ClickHouse for the full status. Uses a background
+// context so it is not canceled by a departing HTTP client.
+func (h *StatusHandler) fetchStatus() StatusResponse {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	status := StatusResponse{
 		Success: true,
 		ClickHouse: ClickHouseStatus{
@@ -72,26 +124,15 @@ func (h *StatusHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// Check connection
-	if err := h.db.HealthCheck(r.Context()); err != nil {
+	if err := h.db.HealthCheck(ctx); err != nil {
 		status.Success = false
 		status.Error = fmt.Sprintf("ClickHouse health check failed: %v", err)
-		respondJSON(w, http.StatusOK, status)
-		return
+		return status
 	}
 
 	status.ClickHouse.Connected = true
 
-	// Get total log count
-	countQuery := "SELECT count() as count FROM " + h.db.ReadTable()
-	results, err := h.db.Query(r.Context(), countQuery)
-	if err == nil && len(results) > 0 {
-		if count, ok := results[0]["count"].(uint64); ok {
-			status.ClickHouse.TotalLogs = count
-		}
-	}
-
-	// Get storage size
+	// Storage size from system.parts metadata (lightweight, no data scan)
 	sizeQuery := `
 		SELECT
 			formatReadableSize(sum(bytes_on_disk)) as size,
@@ -99,7 +140,7 @@ func (h *StatusHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		FROM system.parts
 		WHERE database = 'logs' AND table = 'logs' AND active = 1
 	`
-	results, err = h.db.Query(r.Context(), sizeQuery)
+	results, err := h.db.Query(ctx, sizeQuery)
 	if err == nil && len(results) > 0 {
 		if size, ok := results[0]["size"].(string); ok {
 			status.ClickHouse.TableSize = size
@@ -110,26 +151,42 @@ func (h *StatusHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get oldest and newest log timestamps
+	// Use system.parts row counts instead of SELECT count() full scan.
+	// system.parts.rows is maintained by ClickHouse metadata and is free.
+	countQuery := `
+		SELECT sum(rows) as count
+		FROM system.parts
+		WHERE database = 'logs' AND table = 'logs' AND active = 1
+	`
+	results, err = h.db.Query(ctx, countQuery)
+	if err == nil && len(results) > 0 {
+		if count, ok := results[0]["count"].(uint64); ok {
+			status.ClickHouse.TotalLogs = count
+		}
+	}
+
+	// min/max timestamp: use system.parts min/max columns to avoid full scans.
+	// MergeTree stores per-part min/max for the partition key and ORDER BY columns.
 	if status.ClickHouse.TotalLogs > 0 {
-		oldestQuery := "SELECT min(timestamp) as oldest FROM " + h.db.ReadTable()
-		results, err = h.db.Query(r.Context(), oldestQuery)
+		minMaxQuery := `
+			SELECT
+				min(min_time) as oldest,
+				max(max_time) as newest
+			FROM system.parts
+			WHERE database = 'logs' AND table = 'logs' AND active = 1
+		`
+		results, err = h.db.Query(ctx, minMaxQuery)
 		if err == nil && len(results) > 0 {
 			if oldest, ok := results[0]["oldest"]; ok {
 				status.ClickHouse.OldestLog = fmt.Sprintf("%v", oldest)
 			}
-		}
-
-		newestQuery := "SELECT max(timestamp) as newest FROM " + h.db.ReadTable()
-		results, err = h.db.Query(r.Context(), newestQuery)
-		if err == nil && len(results) > 0 {
 			if newest, ok := results[0]["newest"]; ok {
 				status.ClickHouse.NewestLog = fmt.Sprintf("%v", newest)
 			}
 		}
 	}
 
-	respondJSON(w, http.StatusOK, status)
+	return status
 }
 
 func (h *StatusHandler) HandleClearLogs(w http.ResponseWriter, r *http.Request) {

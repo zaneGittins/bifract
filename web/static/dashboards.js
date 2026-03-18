@@ -473,9 +473,12 @@ const Dashboards = {
                 </div>
             `;
             setTimeout(() => {
-                if (window.Notebooks && Notebooks.renderGraphInNotebook) {
-                    Notebooks.renderGraphInNotebook(graphId, results);
-                }
+                const el = document.getElementById(graphId);
+                if (el) BifractCharts.renderGraphSimple(el, {
+                    data: results.results || [],
+                    fields: results.field_order,
+                    config: results.chart_config || {}
+                });
             }, 300);
             return graphHtml;
         }
@@ -488,9 +491,11 @@ const Dashboards = {
                 </div>
             `;
             setTimeout(() => {
-                if (window.Notebooks && Notebooks.renderHeatmapInNotebook) {
-                    Notebooks.renderHeatmapInNotebook(heatmapId, results);
-                }
+                const el = document.getElementById(heatmapId);
+                if (el) BifractCharts.renderHeatmap(el, {
+                    data: results.results || [],
+                    config: results.chart_config || {}
+                });
             }, 300);
             return heatmapHtml;
         }
@@ -533,339 +538,31 @@ const Dashboards = {
         const canvas = document.getElementById(chartId);
         if (!canvas) return;
 
-        const existingChart = Chart.getChart(canvas);
-        if (existingChart) existingChart.destroy();
-
-        const chartType = results.chart_type;
-        const chartData = results.results;
-
         try {
-            if (chartType === 'piechart') {
-                this.renderPieChart(canvas, chartData, results);
-            } else if (chartType === 'barchart') {
-                this.renderBarChart(canvas, chartData, results);
-            } else if (chartType === 'timechart') {
-                this.renderTimeChart(canvas, chartData, results);
-            } else if (chartType === 'histogram') {
-                if (window.Notebooks && Notebooks.renderHistogramChart) {
-                    Notebooks.renderHistogramChart(canvas, chartData, results);
-                }
-            }
+            BifractCharts.renderOnCanvas(canvas, results.chart_type, {
+                data: results.results,
+                fields: results.field_order,
+                config: results.chart_config || {},
+                maintainAspectRatio: false,
+                height: '100%'
+            });
         } catch (err) {
             console.error('[Dashboards] Chart render error:', err);
         }
     },
 
-    renderPieChart(canvas, data, results) {
-        if (!data || data.length === 0) return;
-
-        const fields = results.field_order || Object.keys(data[0] || {});
-        const labelField = fields[0];
-        const valueField = fields.find(f => f === '_count' || f.includes('count') || f === 'sum' || f === 'avg') || fields[1];
-
-        const chartConfig = results.chart_config || {};
-        const limit = chartConfig.limit || data.length;
-
-        let chartData = data.map(row => ({
-            label: row[labelField] || 'Unknown',
-            value: parseFloat(row[valueField]) || 0
-        }));
-        chartData.sort((a, b) => b.value - a.value);
-
-        const topItems = chartData.slice(0, limit);
-        const remaining = chartData.slice(limit);
-
-        const labels = topItems.map(item => item.label);
-        const values = topItems.map(item => item.value);
-
-        if (remaining.length > 0) {
-            labels.push(`Others (${remaining.length})`);
-            values.push(remaining.reduce((s, i) => s + i.value, 0));
-        }
-
-        const colors = [
-            '#9c6ade', '#b794f6', '#8b5fbf', '#a855f7', '#7c3aed',
-            '#6366f1', '#3b82f6', '#06b6d4', '#10b981', '#f59e0b',
-            '#ef4444', '#f97316', '#84cc16', '#22c55e', '#14b8a6'
-        ];
-
-        const cv = ThemeManager.getCSSVar;
-
-        // Use a fresh canvas to avoid stale state from Chart.js destroy/recreate
-        const parent = canvas.parentElement;
-        canvas.style.display = 'none';
-
-        const oldPie = parent.querySelector('.pie-chart-wrapper');
-        if (oldPie) oldPie.remove();
-
-        const wrapper = document.createElement('div');
-        wrapper.className = 'pie-chart-wrapper';
-        wrapper.style.position = 'relative';
-        wrapper.style.width = '100%';
-        wrapper.style.height = '100%';
-        parent.appendChild(wrapper);
-
-        const freshCanvas = document.createElement('canvas');
-        wrapper.appendChild(freshCanvas);
-
-        new Chart(freshCanvas, {
-            type: 'pie',
-            data: {
-                labels,
-                datasets: [{
-                    data: values,
-                    backgroundColor: colors.slice(0, values.length),
-                    borderColor: cv('--chart-border'),
-                    borderWidth: 2
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        position: 'bottom',
-                        labels: {
-                            color: cv('--chart-text'),
-                            font: { family: 'Inter', size: 12 },
-                            padding: 20
-                        }
-                    },
-                    tooltip: {
-                        backgroundColor: cv('--chart-bg'),
-                        titleColor: cv('--chart-text'),
-                        bodyColor: cv('--chart-text-secondary'),
-                        borderColor: cv('--chart-accent'),
-                        borderWidth: 1
-                    }
-                },
-                layout: { padding: 20 }
-            }
-        });
-    },
-
-    renderBarChart(canvas, data, results) {
-        if (!data || data.length === 0) return;
-
-        const fields = results.field_order || Object.keys(data[0] || {});
-        const labelField = fields[0];
-        const valueField = fields.find(f => f === '_count' || f.includes('count') || f === 'sum' || f === 'avg') || fields[1];
-
-        const chartConfig = results.chart_config || {};
-        const limit = chartConfig.limit || data.length;
-        const topItems = data.slice(0, limit);
-
-        const labels = topItems.map(row => String(row[labelField] || 'Unknown'));
-        const values = topItems.map(row => parseFloat(row[valueField]) || 0);
-
-        const cv = ThemeManager.getCSSVar;
-        new Chart(canvas, {
-            type: 'bar',
-            data: {
-                labels,
-                datasets: [{
-                    label: valueField.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()),
-                    data: values,
-                    backgroundColor: cv('--chart-accent'),
-                    borderColor: cv('--chart-accent-dark'),
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        position: 'top',
-                        labels: {
-                            color: cv('--chart-text'),
-                            font: { family: 'Inter', size: 12 }
-                        }
-                    },
-                    tooltip: {
-                        backgroundColor: cv('--chart-bg'),
-                        titleColor: cv('--chart-text'),
-                        bodyColor: cv('--chart-text-secondary'),
-                        borderColor: cv('--chart-accent'),
-                        borderWidth: 1
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: { color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 11 } },
-                        grid: { color: cv('--chart-grid') }
-                    },
-                    x: {
-                        ticks: {
-                            color: cv('--chart-text-secondary'),
-                            font: { family: 'Inter', size: 11 },
-                            maxRotation: 45,
-                            minRotation: 0
-                        },
-                        grid: { color: cv('--chart-grid-half') }
-                    }
-                }
-            }
-        });
-    },
-
     renderSingleValWidget(results, widgetConfig) {
-        const data = results.results;
-        if (!data || data.length === 0) {
-            return '<div class="singleval-display"><div class="singleval-value">--</div></div>';
-        }
-
-        const fields = results.field_order || Object.keys(data[0] || {});
-        const valueField = fields.find(f =>
-            f === '_count' || f === 'count' || f.startsWith('sum_') ||
-            f.startsWith('avg_') || f.startsWith('min_') || f.startsWith('max_') ||
-            f.startsWith('stddev_')
-        ) || fields[0];
-
-        const rawValue = data[0][valueField];
-        const numValue = parseFloat(rawValue);
-        const displayValue = isNaN(numValue) ? String(rawValue) : this.formatSingleValue(numValue);
-
-        const chartConfig = results.chart_config || {};
-        const label = chartConfig.label || valueField.replace(/_/g, ' ');
-
-        // Apply conditional formatting to singleval
-        let valueStyle = '';
-        const rules = (widgetConfig && widgetConfig.row_coloring_rules) || [];
-        for (const rule of rules) {
-            if (!rule.column) continue;
-            if (rule.column === valueField && this.evaluateRule(rawValue, rule)) {
-                const color = rule.color || '#8b5cf6';
-                valueStyle = `color: ${color};`;
-                break;
-            }
-        }
-
-        return `
-            <div class="singleval-display">
-                <div class="singleval-value" style="${valueStyle}">${Utils.escapeHtml(displayValue)}</div>
-                <div class="singleval-label">${Utils.escapeHtml(label)}</div>
-            </div>
-        `;
-    },
-
-    renderTimeChart(canvas, data, results) {
-        if (!data || data.length === 0) return;
-
-        const fields = results.field_order || Object.keys(data[0] || {});
-        const timeField = fields.find(f => f === 'time_bucket') || fields[0];
-        const valueFields = fields.filter(f =>
-            f !== timeField && f !== 'time_bucket' &&
-            (f === '_count' || f === 'count' || f.startsWith('sum_') ||
-             f.startsWith('avg_') || f.startsWith('min_') || f.startsWith('max_') ||
-             f.startsWith('bucket_') || f.startsWith('stddev_'))
-        );
-        const groupFields = fields.filter(f => f !== timeField && !valueFields.includes(f));
-
-        const cv = ThemeManager.getCSSVar;
-        const seriesColors = [
-            '#9c6ade', '#3b82f6', '#10b981', '#f59e0b', '#ef4444',
-            '#06b6d4', '#8b5fbf', '#f97316', '#84cc16', '#14b8a6'
-        ];
-
-        let datasets;
-        let labels;
-        const valueField = valueFields[0] || fields[1];
-
-        if (groupFields.length > 0) {
-            const groupField = groupFields[0];
-            const groups = {};
-            data.forEach(row => {
-                const key = String(row[groupField] || 'Unknown');
-                if (!groups[key]) groups[key] = [];
-                groups[key].push(row);
-            });
-
-            datasets = Object.entries(groups).map(([key, rows], idx) => ({
-                label: key,
-                data: rows.map(r => parseFloat(r[valueField]) || 0),
-                borderColor: seriesColors[idx % seriesColors.length],
-                backgroundColor: seriesColors[idx % seriesColors.length] + '20',
-                fill: true,
-                tension: 0.3,
-                pointRadius: 2,
-                pointHoverRadius: 5,
-                borderWidth: 2
-            }));
-
-            labels = Object.values(groups)[0].map(r => String(r[timeField] || ''));
-        } else {
-            labels = data.map(r => String(r[timeField] || ''));
-            datasets = [{
-                label: valueField.replace(/_/g, ' '),
-                data: data.map(r => parseFloat(r[valueField]) || 0),
-                borderColor: cv('--chart-accent'),
-                backgroundColor: cv('--chart-accent') + '20',
-                fill: true,
-                tension: 0.3,
-                pointRadius: 2,
-                pointHoverRadius: 5,
-                borderWidth: 2
-            }];
-        }
-
-        new Chart(canvas, {
-            type: 'line',
-            data: { labels, datasets },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                interaction: { mode: 'index', intersect: false },
-                plugins: {
-                    legend: {
-                        display: datasets.length > 1,
-                        position: 'top',
-                        labels: {
-                            color: cv('--chart-text'),
-                            font: { family: 'Inter', size: 11 },
-                            usePointStyle: true,
-                            pointStyle: 'circle'
-                        }
-                    },
-                    tooltip: {
-                        backgroundColor: cv('--chart-bg'),
-                        titleColor: cv('--chart-text'),
-                        bodyColor: cv('--chart-text-secondary'),
-                        borderColor: cv('--chart-accent'),
-                        borderWidth: 1
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: { color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 11 } },
-                        grid: { color: cv('--chart-grid') }
-                    },
-                    x: {
-                        ticks: {
-                            color: cv('--chart-text-secondary'),
-                            font: { family: 'Inter', size: 10 },
-                            maxRotation: 45,
-                            minRotation: 0,
-                            maxTicksLimit: 15
-                        },
-                        grid: { color: cv('--chart-grid') }
-                    }
-                },
-                layout: { padding: 6 }
-            }
+        return BifractCharts.renderSingleVal(null, {
+            data: results.results,
+            fields: results.field_order,
+            config: results.chart_config || {},
+            coloringRules: (widgetConfig && widgetConfig.row_coloring_rules) || [],
+            returnHtml: true
         });
     },
 
     formatSingleValue(num) {
-        if (num === 0) return '0';
-        const abs = Math.abs(num);
-        if (abs >= 1e9) return (num / 1e9).toFixed(1) + 'B';
-        if (abs >= 1e6) return (num / 1e6).toFixed(1) + 'M';
-        if (abs >= 1e4) return (num / 1e3).toFixed(1) + 'K';
-        if (Number.isInteger(num)) return num.toLocaleString();
-        return num.toFixed(2);
+        return BifractCharts.formatSingleValue(num);
     },
 
     renderResultsTable(results, resultMetadata, widgetConfig) {

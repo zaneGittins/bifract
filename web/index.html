@@ -988,6 +988,9 @@
                                 <span class="chat-sidebar-title">Conversations</span>
                                 <button id="newConversationBtn" class="chat-new-btn" title="New conversation">+</button>
                             </div>
+                            <div class="chat-conv-search-wrap">
+                                <input type="text" id="chatConvSearch" class="chat-conv-search" placeholder="Filter..." />
+                            </div>
                             <div id="conversationList" class="conversation-list"></div>
                             <div class="chat-sidebar-footer">
                                 <button id="chatInstructionsBtn" class="chat-instructions-btn" title="Manage instructions">
@@ -1059,6 +1062,11 @@
                                         <button id="chatSendBtn" class="chat-send-btn" title="Send">
                                             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                 <path d="M14 8L2 2l3 6-3 6 12-6z" fill="currentColor"/>
+                                            </svg>
+                                        </button>
+                                        <button id="chatStopBtn" class="chat-stop-btn" title="Stop" style="display:none" onclick="Chat.stopStreaming()">
+                                            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <rect x="3" y="3" width="10" height="10" rx="2" fill="currentColor"/>
                                             </svg>
                                         </button>
                                     </div>
@@ -2446,6 +2454,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
     <!-- marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 
     <script src="/static/toast.js"></script>
     <script src="/static/fractalContext.js"></script>
@@ -2475,6 +2484,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/performance.js"></script>
     <script src="/static/alerts.js"></script>
     <script src="/static/alertFeeds.js"></script>
+    <script src="/static/charts.js"></script>
     <script src="/static/notebooks.js"></script>
     <script src="/static/dashboards.js"></script>
     <script src="/static/dictionaries.js"></script>

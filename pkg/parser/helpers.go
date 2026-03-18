@@ -1225,222 +1225,58 @@ func spanToSeconds(span string) int {
 	}
 }
 
-// parseChainSteps parses a chain block body into per-step SQL boolean expressions.
-// Input: "{ event_id=4624; event_id=1 | image=/explorer/i; event_id=1 | image=/powershell/i }"
+// parseChainSteps parses chain block tokens into per-step SQL boolean expressions.
+// Each step is parsed using the full BQL parser, supporting AND, OR, NOT, parentheses,
+// regex, wildcards, and all other filter syntax. Pipe tokens within chain steps
+// are treated as AND (for backward compatibility).
 // Output: []string of SQL boolean expressions, one per step.
-func parseChainSteps(blockBody string) ([]string, error) {
-	body := strings.Trim(blockBody, "{}")
-	rawSteps := strings.Split(body, ";")
+func parseChainSteps(tokens []Token) ([]string, error) {
+	// Split tokens by semicolons into per-step token slices.
+	// Convert pipe tokens to AND tokens within each step.
+	var allSteps [][]Token
+	var current []Token
+	for _, tok := range tokens {
+		if tok.Type == TokenSemicolon {
+			if len(current) > 0 {
+				allSteps = append(allSteps, current)
+				current = nil
+			}
+			continue
+		}
+		if tok.Type == TokenPipe {
+			current = append(current, Token{Type: TokenAnd, Value: "AND"})
+			continue
+		}
+		current = append(current, tok)
+	}
+	if len(current) > 0 {
+		allSteps = append(allSteps, current)
+	}
 
 	var steps []string
-	for _, rawStep := range rawSteps {
-		rawStep = strings.TrimSpace(rawStep)
-		if rawStep == "" {
+	for _, stepTokens := range allSteps {
+		// Append EOF so the parser knows when to stop.
+		stepTokens = append(stepTokens, Token{Type: TokenEOF})
+
+		p := NewParser(stepTokens)
+		filter, err := p.parseFilter()
+		if err != nil {
+			return nil, fmt.Errorf("chain step: %w", err)
+		}
+		if filter == nil || len(filter.Conditions) == 0 {
 			continue
 		}
 
-		// Split by | to get individual conditions within a step (ANDed together).
-		// Respect regex literals: don't split on | inside /.../ delimiters.
-		parts := splitPipeRespectRegex(rawStep)
-		var conditions []string
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if part == "" {
-				continue
-			}
-			cond, err := parseChainCondition(part)
-			if err != nil {
-				return nil, err
-			}
-			if cond != "" {
-				conditions = append(conditions, cond)
-			}
+		sql, err := buildWhereClause(filter.Conditions)
+		if err != nil {
+			return nil, fmt.Errorf("chain step: %w", err)
 		}
-
-		if len(conditions) == 0 {
-			continue
-		}
-		if len(conditions) == 1 {
-			steps = append(steps, conditions[0])
-		} else {
-			steps = append(steps, "("+strings.Join(conditions, " AND ")+")")
+		if sql != "" {
+			steps = append(steps, sql)
 		}
 	}
 
 	return steps, nil
-}
-
-// splitPipeRespectRegex splits s on '|' but skips '|' inside regex literals (/.../flags).
-func splitPipeRespectRegex(s string) []string {
-	var parts []string
-	var cur strings.Builder
-	inRegex := false
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if ch == '/' && !inRegex {
-			// Enter regex if preceded by '=' (field=/pattern/) or at start of token.
-			if i == 0 || s[i-1] == '=' || (i > 0 && s[i-1] == ' ' && i >= 2 && s[i-2] == '=') {
-				inRegex = true
-			}
-		} else if ch == '/' && inRegex {
-			// Closing slash. Skip trailing flags (e.g. /pattern/i).
-			inRegex = false
-			cur.WriteByte(ch)
-			for i+1 < len(s) && s[i+1] >= 'a' && s[i+1] <= 'z' {
-				i++
-				cur.WriteByte(s[i])
-			}
-			continue
-		}
-		if ch == '|' && !inRegex {
-			parts = append(parts, cur.String())
-			cur.Reset()
-			continue
-		}
-		cur.WriteByte(ch)
-	}
-	if cur.Len() > 0 {
-		parts = append(parts, cur.String())
-	}
-	return parts
-}
-
-// parseChainCondition parses a single condition string into a SQL boolean expression.
-func parseChainCondition(cond string) (string, error) {
-	cond = strings.TrimSpace(cond)
-
-	// Bare regex: /pattern/ or /pattern/i
-	if strings.HasPrefix(cond, "/") {
-		lastSlash := strings.LastIndex(cond[1:], "/")
-		if lastSlash >= 0 {
-			lastSlash++ // adjust for the offset
-			pattern := cond[1:lastSlash]
-			flags := cond[lastSlash+1:]
-			if strings.Contains(flags, "i") {
-				pattern = "(?i)" + pattern
-			}
-			return fmt.Sprintf("match(raw_log, '%s')", escapeString(pattern)), nil
-		}
-	}
-
-	// Regex condition: field=/pattern/flags or field=(?i)pattern (pre-processed by lexer)
-	if (strings.Contains(cond, "=/") && strings.Count(cond, "/") >= 2) || strings.Contains(cond, "=(?i)") || strings.Contains(cond, "= (?i)") {
-		equalPos := strings.Index(cond, "=")
-		if equalPos > 0 {
-			field := strings.TrimSpace(cond[:equalPos])
-			regexPart := strings.TrimSpace(cond[equalPos+1:])
-
-			var pattern string
-			if strings.HasPrefix(regexPart, "(?i)") {
-				pattern = regexPart
-			} else {
-				lastSlash := strings.LastIndex(regexPart, "/")
-				if lastSlash > 0 {
-					rawPattern := regexPart[1:lastSlash]
-					flags := ""
-					if lastSlash < len(regexPart)-1 {
-						flags = regexPart[lastSlash+1:]
-					}
-					if strings.Contains(flags, "i") {
-						pattern = "(?i)" + rawPattern
-					} else {
-						pattern = rawPattern
-					}
-				}
-			}
-
-			if pattern != "" {
-				fieldRef := fieldReference(field)
-				return fmt.Sprintf("match(%s, '%s')", fieldRef, escapeString(pattern)), nil
-			}
-		}
-	}
-
-	// Inequality: field!=value
-	if strings.Contains(cond, "!=") {
-		parts := strings.SplitN(cond, "!=", 2)
-		if len(parts) == 2 {
-			field := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			value = strings.Trim(value, `"'`)
-			return fmt.Sprintf("%s != '%s'", fieldReference(field), escapeString(value)), nil
-		}
-	}
-
-	// Greater than or equal: field>=value
-	if strings.Contains(cond, ">=") {
-		parts := strings.SplitN(cond, ">=", 2)
-		if len(parts) == 2 {
-			field := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			if err := validateNumeric(value); err == nil {
-				return fmt.Sprintf("toFloat64OrZero(%s) >= %s", fieldReference(field), value), nil
-			}
-		}
-	}
-
-	// Less than or equal: field<=value
-	if strings.Contains(cond, "<=") {
-		parts := strings.SplitN(cond, "<=", 2)
-		if len(parts) == 2 {
-			field := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			if err := validateNumeric(value); err == nil {
-				return fmt.Sprintf("toFloat64OrZero(%s) <= %s", fieldReference(field), value), nil
-			}
-		}
-	}
-
-	// Equality: field=value (must come after != and regex checks)
-	if strings.Contains(cond, "=") && !strings.Contains(cond, "=/") {
-		parts := strings.SplitN(cond, "=", 2)
-		if len(parts) == 2 {
-			field := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			value = strings.Trim(value, `"'`)
-			return fmt.Sprintf("%s = '%s'", fieldReference(field), escapeString(value)), nil
-		}
-	}
-
-	// Greater than: field>value
-	if strings.Contains(cond, ">") {
-		parts := strings.SplitN(cond, ">", 2)
-		if len(parts) == 2 {
-			field := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			if err := validateNumeric(value); err == nil {
-				return fmt.Sprintf("toFloat64OrZero(%s) > %s", fieldReference(field), value), nil
-			}
-		}
-	}
-
-	// Less than: field<value
-	if strings.Contains(cond, "<") {
-		parts := strings.SplitN(cond, "<", 2)
-		if len(parts) == 2 {
-			field := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			if err := validateNumeric(value); err == nil {
-				return fmt.Sprintf("toFloat64OrZero(%s) < %s", fieldReference(field), value), nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("unrecognized chain condition: %s", cond)
-}
-
-// fieldReference returns the SQL reference for a field name.
-func fieldReference(field string) string {
-	switch field {
-	case "timestamp":
-		return "timestamp"
-	case "raw_log":
-		return "raw_log"
-	case "log_id":
-		return "log_id"
-	default:
-		return jsonFieldRef(field)
-	}
 }
 
 // extractParameter extracts the value of a parameter from a parameter string

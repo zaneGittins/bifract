@@ -29,7 +29,7 @@ type Message struct {
 
 // StreamEvent is sent over SSE to the frontend.
 type StreamEvent struct {
-	Type       string      `json:"type"` // "token", "tool_call", "tool_result", "error", "done"
+	Type       string      `json:"type"` // "token", "tool_call", "tool_result", "think", "chart", "present", "error", "title", "done"
 	Content    string      `json:"content,omitempty"`
 	ToolName   string      `json:"tool_name,omitempty"`
 	ToolArgs   interface{} `json:"tool_args,omitempty"`
@@ -116,9 +116,22 @@ type presentResultsArgs struct {
 	Summary  string            `json:"summary"`
 	Findings []presentFinding  `json:"findings,omitempty"`
 	Severity string            `json:"severity,omitempty"` // "info", "warning", "critical"
+	Chart    *renderChartArgs  `json:"chart,omitempty"`
 }
 
 type presentFinding struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
+}
+
+type renderChartArgs struct {
+	ChartType string           `json:"chart_type"` // "bar", "line", "pie"
+	Title     string           `json:"title"`
+	Labels    []string         `json:"labels"`
+	Datasets  []chartDataset   `json:"datasets"`
+}
+
+type chartDataset struct {
+	Label string    `json:"label"`
+	Data  []float64 `json:"data"`
 }

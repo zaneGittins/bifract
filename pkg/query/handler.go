@@ -413,6 +413,10 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	executionTime := time.Since(queryStart).Milliseconds()
 
 	if err != nil {
+		// Client disconnected; nothing to write back.
+		if r.Context().Err() == context.Canceled {
+			return
+		}
 		// Check if it was a timeout
 		if err == context.DeadlineExceeded || (queryCtx.Err() == context.DeadlineExceeded) {
 			respondJSON(w, http.StatusRequestTimeout, QueryResponse{
@@ -807,6 +811,18 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 	executionTime := time.Since(queryStart).Milliseconds()
 
 	if logsRes.err != nil {
+		// Client disconnected; nothing to write back.
+		if r.Context().Err() == context.Canceled {
+			return
+		}
+		if logsRes.err == context.DeadlineExceeded || queryCtx.Err() == context.DeadlineExceeded {
+			respondJSON(w, http.StatusRequestTimeout, QueryResponse{
+				Success:     false,
+				Error:       "Recent logs query timed out. ClickHouse may be under heavy load.",
+				ExecutionMs: executionTime,
+			})
+			return
+		}
 		log.Printf("[QueryHandler] Failed to fetch recent logs: %v", logsRes.err)
 		respondJSON(w, http.StatusInternalServerError, QueryResponse{
 			Success:     false,

@@ -558,6 +558,7 @@ func main() {
 			r.Get("/logs/recent", queryHandler.HandleGetRecentLogs)
 			r.Post("/logs/by-timestamp", queryHandler.HandleGetLogByTimestamp)
 			r.Get("/status", statusHandler.HandleStatus)
+			r.Get("/health/clickhouse", statusHandler.HandleHealthCheck)
 			r.Get("/system/pressure", func(w http.ResponseWriter, r *http.Request) {
 				alertsDeferred := ingestQueue.Depth() > config.IngestQueueSize/10
 				w.Header().Set("Content-Type", "application/json")
