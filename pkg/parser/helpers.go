@@ -356,6 +356,18 @@ func collectConditionFields(conditions []ConditionNode) map[string]bool {
 	return fields
 }
 
+// collectHavingConditionFields recursively collects all leaf field names from
+// HavingConditions (including compound nodes) into the provided map.
+func collectHavingConditionFields(conditions []HavingCondition, fields map[string]bool) {
+	for _, cond := range conditions {
+		if cond.IsCompound {
+			collectHavingConditionFields(cond.Children, fields)
+		} else if cond.Field != "" {
+			fields[cond.Field] = true
+		}
+	}
+}
+
 // buildWhereClause builds a WHERE clause from multiple conditions respecting OR/AND logic and parenthetical grouping.
 // Conditions with the same GroupID > 0 are collected into a group. If GroupNegate is set, the whole group is wrapped in NOT(...).
 func buildWhereClause(conditions []ConditionNode) (string, error) {

@@ -29,6 +29,15 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 	willHaveAggregation := plan.IsAggregated || plan.HasGroupBy
 
 	for _, cond := range conditions {
+		// Compound nodes: inspect all leaf fields to determine the
+		// highest-priority target. The entire compound must stay as a
+		// unit since its children are connected by AND/OR.
+		if cond.IsCompound {
+			target := classifyCompoundTarget(cond, registry, plan, willHaveAggregation)
+			*target = append(*target, cond)
+			continue
+		}
+
 		entry := registry.Get(cond.Field)
 		var target *[]HavingCondition
 
@@ -74,6 +83,63 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 	}
 }
 
+// classifyCompoundTarget inspects all leaf fields in a compound HavingCondition
+// and returns the highest-priority target bucket. Priority: HAVING > DeferredWhere > WHERE.
+func classifyCompoundTarget(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) *[]HavingCondition {
+	// Priority levels: 0=WHERE, 1=DeferredWhere, 2=HAVING
+	maxPriority := 0
+
+	var walk func(c HavingCondition)
+	walk = func(c HavingCondition) {
+		if c.IsCompound {
+			for _, child := range c.Children {
+				walk(child)
+			}
+			return
+		}
+		priority := 0
+		entry := registry.Get(c.Field)
+		if entry != nil {
+			switch entry.Kind {
+			case FieldKindWindow:
+				if plan.IsTraversal {
+					priority = 2
+				} else {
+					priority = 1
+				}
+			case FieldKindAggregate:
+				if willHaveAggregation {
+					priority = 2
+				}
+			case FieldKindAssignment:
+				if willHaveAggregation {
+					priority = 2
+				}
+			}
+		} else {
+			switch c.Field {
+			case "count", "sum", "avg":
+				if willHaveAggregation {
+					priority = 2
+				}
+			}
+		}
+		if priority > maxPriority {
+			maxPriority = priority
+		}
+	}
+	walk(cond)
+
+	switch maxPriority {
+	case 2:
+		return &plan.pendingHavingConditions
+	case 1:
+		return &plan.pendingDeferredConditions
+	default:
+		return &plan.pendingWhereConditions
+	}
+}
+
 // materializeConditions generates SQL from the classified pending conditions
 // using the fully-populated registry (after Execute). Appends to SourceStage
 // which matches the original routing target (CurrentStage before any PushStage).
@@ -92,58 +158,35 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 }
 
 // materializeCondGroup builds SQL for a group of conditions and joins them.
-// Conditions sharing the same non-zero GroupID are parenthesized together.
+// Handles both flat conditions (with GroupID-based grouping) and compound
+// nodes (tree-based nesting) for arbitrary expression depth.
 func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry) string {
 	if len(conditions) == 0 {
 		return ""
 	}
 
-	// Collect conditions into sub-groups by GroupID.
-	// GroupID 0 means ungrouped (each is its own entry).
-	type subGroup struct {
-		parts []condGroup
-		logic string // logic connecting this sub-group to the next
-	}
-	var result []subGroup
-	groupIndex := map[int]int{} // GroupID -> index in result
-
-	for _, cond := range conditions {
-		condSQL := buildConditionSQL(cond, registry)
-		if condSQL == "" {
-			continue
-		}
-		if cond.GroupID == 0 {
-			result = append(result, subGroup{
-				parts: []condGroup{{sql: condSQL}},
-				logic: cond.Logic,
-			})
-		} else if idx, ok := groupIndex[cond.GroupID]; ok {
-			// The previous entry in this group needs its intra-group logic set.
-			// That logic was stored on the previous condition's Logic field.
-			prevParts := result[idx].parts
-			if len(prevParts) > 0 && prevParts[len(prevParts)-1].logic == "" {
-				result[idx].parts[len(prevParts)-1].logic = result[idx].logic
-			}
-			result[idx].parts = append(result[idx].parts, condGroup{sql: condSQL})
-			// Update the sub-group's outward logic to this condition's Logic
-			result[idx].logic = cond.Logic
-		} else {
-			groupIndex[cond.GroupID] = len(result)
-			result = append(result, subGroup{
-				parts: []condGroup{{sql: condSQL}},
-				logic: cond.Logic,
-			})
-		}
-	}
-
-	// Build the final groups: each sub-group with multiple parts gets parenthesized
+	// Build each condition into a condGroup (sql + logic connector).
 	var groups []condGroup
-	for _, sg := range result {
-		sql := joinCondGroups(sg.parts)
-		if len(sg.parts) > 1 {
-			sql = "(" + sql + ")"
+	for _, cond := range conditions {
+		var condSQL string
+		if cond.IsCompound {
+			// Recursively render compound sub-expression.
+			inner := materializeCondGroup(cond.Children, registry)
+			if inner == "" {
+				continue
+			}
+			if cond.Negate {
+				condSQL = "NOT (" + inner + ")"
+			} else {
+				condSQL = "(" + inner + ")"
+			}
+		} else {
+			condSQL = buildConditionSQL(cond, registry)
+			if condSQL == "" {
+				continue
+			}
 		}
-		groups = append(groups, condGroup{sql: sql, logic: sg.logic})
+		groups = append(groups, condGroup{sql: condSQL, logic: cond.Logic})
 	}
 	return joinCondGroups(groups)
 }
@@ -251,9 +294,9 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 }
 
 // negateConditionOperator flips the operator on a ConditionNode to apply NOT.
-// Used by parseConditionsForHaving where the output is converted to
-// HavingCondition (which has no Negate field), so negation must be
-// encoded in the operator itself.
+// Used by parseConditionsWithPrecedence where negation must be encoded in the
+// operator itself (ConditionNode uses Negate flag for leaf conditions but
+// operator-level negation for flat groups).
 func negateConditionOperator(c *ConditionNode) {
 	switch c.Operator {
 	case "=", "~":
@@ -272,10 +315,15 @@ func negateConditionOperator(c *ConditionNode) {
 }
 
 // negateHavingCondition flips the operator on a HavingCondition to apply NOT.
+// For compound nodes, toggles the Negate flag.
 // For regex/string conditions (IsRegex=true), "=" and "~" become "!=" (which
 // triggers NOT in buildRegexMatchSQL). For comparison operators, the relational
 // sense is inverted (e.g. ">" becomes "<=").
 func negateHavingCondition(h *HavingCondition) {
+	if h.IsCompound {
+		h.Negate = !h.Negate
+		return
+	}
 	switch h.Operator {
 	case "=", "~":
 		h.Operator = "!="

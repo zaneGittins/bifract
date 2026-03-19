@@ -116,7 +116,9 @@ Archives use a versioned NDJSON format, compressed with zstd and encrypted with 
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `BIFRACT_ARCHIVE_MAX_MEMORY` | Per-query ClickHouse memory ceiling (bytes) for archive reads | `2000000000` (2GB) |
+| `BIFRACT_ARCHIVE_MAX_MEMORY` | Per-query ClickHouse memory ceiling (bytes) for archive reads | `3000000000` (3GB) |
+| `BIFRACT_ARCHIVE_MAX_DURATION` | Maximum wall-clock time an archive is allowed to run (Go duration string) | `24h` |
+| `BIFRACT_ARCHIVE_MAX_ERROR_TIME` | Maximum cumulative time spent waiting on retries before the archive fails (Go duration string) | `30m` |
 
 ### Restoring an Archive
 

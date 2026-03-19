@@ -52,6 +52,13 @@ type HavingCondition struct {
 	IsRegex  bool
 	Logic    string // "AND", "OR", ""
 	GroupID  int    // Conditions with the same non-zero GroupID are parenthesized together
+
+	// Compound node support for arbitrary nesting depth.
+	// When IsCompound is true, Children holds the sub-expression tree and
+	// leaf fields (Field, Operator, Value, IsRegex) are unused.
+	IsCompound bool
+	Children   []HavingCondition
+	Negate     bool // NOT applied to the entire compound sub-expression
 }
 
 func (h HavingCondition) Type() string { return "having" }
@@ -188,7 +195,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if pipelineNegate && len(conditions) > 0 {
 					negateHavingCondition(&conditions[0])
 				}
-				pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
+				pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
 			} else if p.current().Type == TokenString {
 				operator := "~"
 				if pipelineNegate {
@@ -234,7 +241,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if pipelineNegate && len(conditions) > 0 {
 					negateHavingCondition(&conditions[0])
 				}
-				pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
+				pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
 			} else {
 				// Parse simple HAVING condition
 				having, err := p.parseHavingCondition()
@@ -254,18 +261,15 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			if err != nil {
 				return nil, err
 			}
-			if pipelineNegate {
-				for i := range conditions {
-					negateHavingCondition(&conditions[i])
-					switch conditions[i].Logic {
-					case "AND":
-						conditions[i].Logic = "OR"
-					case "OR":
-						conditions[i].Logic = "AND"
-					}
+			// NOT binds to the first element (the parenthesized group).
+			if pipelineNegate && len(conditions) > 0 {
+				if conditions[0].IsCompound {
+					conditions[0].Negate = !conditions[0].Negate
+				} else {
+					negateHavingCondition(&conditions[0])
 				}
 			}
-			pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
+			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
 		} else {
 			// It's a command
 			cmd, err := p.parseCommand()
@@ -811,43 +815,28 @@ func (p *Parser) isCompoundHavingCondition() bool {
 }
 
 func (p *Parser) parseCompoundHavingConditions() ([]HavingCondition, error) {
-	var conditions []HavingCondition
-
-	// Use the same logic as parseConditionsWithPrecedence but create HavingConditions instead of ConditionNodes
-	conditionNodes, err := p.parseConditionsForHaving()
-	if err != nil {
-		return nil, err
-	}
-
-	// Assign a shared GroupID so these conditions are parenthesized
-	// together when mixed with other HAVING conditions.
-	// Conditions that already have a GroupID (from inner paren groups)
-	// keep their existing GroupID to preserve nested grouping.
-	p.groupIDCounter++
-	groupID := p.groupIDCounter
-
-	// Convert ConditionNodes to HavingConditions
-	for _, condNode := range conditionNodes {
-		assignedGroupID := groupID
-		if condNode.GroupID != 0 {
-			assignedGroupID = condNode.GroupID
-		}
-		having := HavingCondition{
-			Field:    condNode.Field,
-			Operator: condNode.Operator,
-			Value:    condNode.Value,
-			IsRegex:  condNode.IsRegex,
-			Logic:    condNode.Logic,
-			GroupID:  assignedGroupID,
-		}
-		conditions = append(conditions, having)
-	}
-
-	return conditions, nil
+	return p.parseHavingConditionsWithPrecedence(0)
 }
 
-func (p *Parser) parseConditionsForHaving() ([]ConditionNode, error) {
-	var conditions []ConditionNode
+// wrapHavingConditions wraps multiple conditions in a compound node so they
+// stay grouped when combined with conditions from other pipeline stages.
+// Without this, OR in one stage bleeds into adjacent stages.
+func wrapHavingConditions(conditions []HavingCondition) []HavingCondition {
+	if len(conditions) > 1 {
+		return []HavingCondition{{
+			IsCompound: true,
+			Children:   conditions,
+		}}
+	}
+	return conditions
+}
+
+// parseHavingConditionsWithPrecedence parses boolean expressions in pipeline
+// stages, producing HavingCondition nodes (including compound nodes for
+// parenthesized sub-expressions). This mirrors parseConditionsWithPrecedence
+// but produces HavingCondition directly, supporting arbitrary nesting depth.
+func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]HavingCondition, error) {
+	var conditions []HavingCondition
 
 	for {
 		// Check for negation
@@ -857,12 +846,12 @@ func (p *Parser) parseConditionsForHaving() ([]ConditionNode, error) {
 			p.advance()
 		}
 
-		var currentConditions []ConditionNode
+		var currentConditions []HavingCondition
 
 		// Handle parentheses
 		if p.current().Type == TokenLParen {
 			p.advance() // consume (
-			groupedConditions, err := p.parseConditionsForHaving()
+			innerConditions, err := p.parseHavingConditionsWithPrecedence(0)
 			if err != nil {
 				return nil, err
 			}
@@ -870,89 +859,92 @@ func (p *Parser) parseConditionsForHaving() ([]ConditionNode, error) {
 				return nil, err
 			}
 
-			// Apply negation by flipping operators. We use operator-based
-			// negation (not a Negate flag) because the output is converted
-			// to HavingCondition which has no Negate field.
-			// De Morgan's law: NOT (A OR B) = NOT A AND NOT B
-			if negate {
-				for i := range groupedConditions {
-					negateConditionOperator(&groupedConditions[i])
-					switch groupedConditions[i].Logic {
-					case "AND":
-						groupedConditions[i].Logic = "OR"
-					case "OR":
-						groupedConditions[i].Logic = "AND"
-					}
+			// Single compound child means redundant parens like ((compound)).
+			if len(innerConditions) == 1 && innerConditions[0].IsCompound {
+				if negate {
+					innerConditions[0].Negate = !innerConditions[0].Negate
 				}
-			}
-
-			// Assign a shared GroupID to preserve the parenthesization
-			// when these conditions are flattened into the outer list.
-			// Without this, (A OR B) AND C would flatten to A OR B AND C
-			// and SQL precedence would evaluate it as A OR (B AND C).
-			p.groupIDCounter++
-			innerGroupID := p.groupIDCounter
-			for i := range groupedConditions {
-				if groupedConditions[i].GroupID == 0 {
-					groupedConditions[i].GroupID = innerGroupID
+				currentConditions = innerConditions
+			} else if len(innerConditions) == 1 && !negate {
+				// Single leaf in parens: (A) is just A.
+				currentConditions = innerConditions
+			} else {
+				// Wrap in a compound node to preserve grouping at any depth.
+				compound := HavingCondition{
+					IsCompound: true,
+					Children:   innerConditions,
+					Negate:     negate,
 				}
+				currentConditions = []HavingCondition{compound}
 			}
-			currentConditions = groupedConditions
 		} else if p.current().Type == TokenRegex {
 			// Bare regex in HAVING context always searches raw_log
 			operator := "="
 			if negate {
 				operator = "!="
 			}
-			cond := &ConditionNode{
+			cond := HavingCondition{
 				Field:    "raw_log",
 				Operator: operator,
 				Value:    p.current().Value,
 				IsRegex:  true,
 			}
 			p.advance()
-			currentConditions = []ConditionNode{*cond}
+			currentConditions = []HavingCondition{cond}
 		} else if p.current().Type == TokenString {
 			// Bare string in HAVING context: substring search on raw_log
 			operator := "~"
 			if negate {
 				operator = "!="
 			}
-			cond := &ConditionNode{
+			cond := HavingCondition{
 				Field:    "raw_log",
 				Operator: operator,
 				Value:    p.current().Value,
 				IsRegex:  true,
 			}
 			p.advance()
-			currentConditions = []ConditionNode{*cond}
+			currentConditions = []HavingCondition{cond}
 		} else {
-			// Parse a single condition
+			// Parse a single condition (field op value)
 			cond, err := p.parseCondition()
 			if err != nil {
 				return nil, err
 			}
-			if negate {
-				negateConditionOperator(cond)
+			having := HavingCondition{
+				Field:    cond.Field,
+				Operator: cond.Operator,
+				Value:    cond.Value,
+				IsRegex:  cond.IsRegex,
 			}
-			currentConditions = []ConditionNode{*cond}
+			if negate {
+				negateHavingCondition(&having)
+			}
+			currentConditions = []HavingCondition{having}
 		}
 
 		conditions = append(conditions, currentConditions...)
 
-		// Check for AND/OR
+		// Check for AND/OR with precedence
 		tok := p.current()
+		var precedence int
 		var operator string
 
 		if tok.Type == TokenAnd {
+			precedence = 2
 			operator = "AND"
 		} else if tok.Type == TokenOr {
+			precedence = 1
 			operator = "OR"
 		} else if tok.Type == TokenField {
 			// Implicit AND if we see another field
+			precedence = 2
 			operator = "AND"
 		} else {
-			// No more operators, break
+			break
+		}
+
+		if precedence < minPrecedence {
 			break
 		}
 

@@ -458,11 +458,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		// Alert queries: project only referenced fields + log_id + timestamp
 		if ctx.Opts.UseIngestTimestamp && ctx.Pipeline.Filter != nil {
 			fields := collectConditionFields(ctx.Pipeline.Filter.Conditions)
-			for _, hc := range ctx.Pipeline.HavingConditions {
-				if hc.Field != "" {
-					fields[hc.Field] = true
-				}
-			}
+			collectHavingConditionFields(ctx.Pipeline.HavingConditions, fields)
 			// Include alert-configured extra fields (throttle field, template fields)
 			for _, f := range ctx.Opts.AlertExtraFields {
 				if f != "" {

@@ -356,7 +356,7 @@ func (m *Manager) streamArchiveHTTP(
 	chAddr := m.ch.HTTPAddr()
 	maxMem := getArchiveMaxMemory()
 
-	reqURL := fmt.Sprintf("http://%s/?database=%s&max_threads=1&max_execution_time=3600&max_memory_usage=%d",
+	reqURL := fmt.Sprintf("http://%s/?database=%s&max_threads=1&max_execution_time=3600&max_memory_usage=%d&max_block_size=2048",
 		chAddr, m.ch.Database, maxMem)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(query))
@@ -511,8 +511,6 @@ func isTransientClickHouseError(err error) bool {
 		strings.Contains(msg, "EOF")
 }
 
-// getArchiveMaxMemory returns the per-query memory ceiling for archive queries.
-// Configurable via BIFRACT_ARCHIVE_MAX_MEMORY (bytes). Default 1GB.
 // getArchiveMaxDuration returns the maximum wall-clock time an archive is
 // allowed to run. Configurable via BIFRACT_ARCHIVE_MAX_DURATION. Default 24h.
 func getArchiveMaxDuration() time.Duration {
@@ -536,13 +534,16 @@ func getArchiveMaxErrorTime() time.Duration {
 	return 30 * time.Minute
 }
 
+// getArchiveMaxMemory returns the per-query memory ceiling for archive queries.
+// Configurable via BIFRACT_ARCHIVE_MAX_MEMORY (bytes). Default 3GB.
+// Safe with max_threads=1 since only one thread processes data at a time.
 func getArchiveMaxMemory() uint64 {
 	if v := os.Getenv("BIFRACT_ARCHIVE_MAX_MEMORY"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil && n > 0 {
 			return n
 		}
 	}
-	return 1_000_000_000
+	return 3_000_000_000
 }
 
 // RestoreArchive starts an asynchronous restore operation from an archive.

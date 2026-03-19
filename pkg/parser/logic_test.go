@@ -289,10 +289,9 @@ func TestPipelineBooleanConditions(t *testing.T) {
 			wantNoSQL: []string{"fields.`status`.:String = '500'"},
 		},
 		{
-			name:      "De Morgan: NOT (A OR B) in compound",
-			query:     `* | status="200" AND NOT (level="error" OR level="warn")`,
-			wantSQL:   []string{"fields.`status`.:String = '200'", "fields.`level`.:String != 'error'", "fields.`level`.:String != 'warn'"},
-			wantNoSQL: []string{"fields.`level`.:String = 'error'", "fields.`level`.:String = 'warn'"},
+			name:    "De Morgan: NOT (A OR B) in compound",
+			query:   `* | status="200" AND NOT (level="error" OR level="warn")`,
+			wantSQL: []string{"fields.`status`.:String = '200'", "NOT (", "fields.`level`.:String = 'error'", " OR ", "fields.`level`.:String = 'warn'"},
 		},
 		{
 			name:    "paren group as pipeline stage",
@@ -310,10 +309,9 @@ func TestPipelineBooleanConditions(t *testing.T) {
 			wantSQL: []string{"fields.`service`.:String = 'web'", "fields.`status`.:String = '200'", "fields.`status`.:String = '201'"},
 		},
 		{
-			name:      "NOT paren group in pipeline applies De Morgan",
-			query:     `* | NOT (status="500" OR status="503")`,
-			wantSQL:   []string{"fields.`status`.:String != '500'", "fields.`status`.:String != '503'"},
-			wantNoSQL: []string{"fields.`status`.:String = '500'", "fields.`status`.:String = '503'"},
+			name:    "NOT paren group in pipeline applies NOT wrapping",
+			query:   `* | NOT (status="500" OR status="503")`,
+			wantSQL: []string{"NOT (", "fields.`status`.:String = '500'", " OR ", "fields.`status`.:String = '503'"},
 		},
 		{
 			name:    "paren group with strings in pipeline",
@@ -334,6 +332,54 @@ func TestPipelineBooleanConditions(t *testing.T) {
 			name:    "chained pipeline with OR and AND",
 			query:   `* | "error" OR "warning" | status="500"`,
 			wantSQL: []string{"match(raw_log, 'error')", "match(raw_log, 'warning')", "fields.`status`.:String = '500'"},
+		},
+		// Regression: A OR (B AND C) OR D in pipeline must not merge A and D
+		// into one group. All three OR branches must appear.
+		{
+			name:    "pipeline: A OR (B AND C) OR D preserves all branches",
+			query:   `* | image=/regedit/i OR (image=/excel/i AND image=/exe/i) OR image=/powershell/i`,
+			wantSQL: []string{"(?i)regedit", "(?i)excel", "(?i)exe", "(?i)powershell", " OR "},
+		},
+		{
+			name:    "pipeline: A OR (B AND C) OR D with groupby",
+			query:   `event_id=1 | image=/regedit/i OR (image=/excel/i AND image=/exe/i) OR image=/powershell/i | groupby(image)`,
+			wantSQL: []string{"(?i)regedit", "(?i)excel", "(?i)exe", "(?i)powershell", " OR ", "GROUP BY"},
+		},
+		{
+			name:    "pipeline: A AND (B OR C) AND D",
+			query:   `* | a="1" AND (b="2" OR c="3") AND d="4"`,
+			wantSQL: []string{"fields.`a`.:String = '1'", "fields.`b`.:String = '2'", "fields.`c`.:String = '3'", "fields.`d`.:String = '4'", " OR "},
+		},
+		{
+			name:    "pipeline: (A OR B) AND (C OR D)",
+			query:   `* | (a="1" OR b="2") AND (c="3" OR d="4")`,
+			wantSQL: []string{"fields.`a`.:String = '1'", "fields.`b`.:String = '2'", "fields.`c`.:String = '3'", "fields.`d`.:String = '4'", " OR "},
+		},
+		// Deep nesting: compound nodes handle arbitrary depth
+		{
+			name:    "pipeline: A OR ((B AND C) OR D)",
+			query:   `* | a="1" OR ((b="2" AND c="3") OR d="4")`,
+			wantSQL: []string{"fields.`a`.:String = '1'", "fields.`b`.:String = '2'", "fields.`c`.:String = '3'", "fields.`d`.:String = '4'", " OR "},
+		},
+		{
+			name:    "pipeline: ((A OR B) AND (C OR D)) AND E",
+			query:   `* | ((a="1" OR b="2") AND (c="3" OR d="4")) AND e="5"`,
+			wantSQL: []string{"fields.`a`.:String = '1'", "fields.`b`.:String = '2'", "fields.`c`.:String = '3'", "fields.`d`.:String = '4'", "fields.`e`.:String = '5'"},
+		},
+		{
+			name:    "pipeline: NOT ((A OR B) AND C)",
+			query:   `* | NOT ((a="1" OR b="2") AND c="3")`,
+			wantSQL: []string{"NOT (", "fields.`a`.:String = '1'", "fields.`b`.:String = '2'", "fields.`c`.:String = '3'"},
+		},
+		{
+			name:    "pipeline: triple nested parens",
+			query:   `* | (((a="1" OR b="2")))`,
+			wantSQL: []string{"fields.`a`.:String = '1'", "fields.`b`.:String = '2'", " OR "},
+		},
+		{
+			name:    "pipeline: NOT (NOT (A OR B)) double negation",
+			query:   `* | NOT (NOT (a="1" OR b="2"))`,
+			wantSQL: []string{"fields.`a`.:String = '1'", "fields.`b`.:String = '2'", " OR "},
 		},
 	}
 

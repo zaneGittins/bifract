@@ -27,3 +27,6 @@ A complete reference of all variables with comments is available in [`.env.examp
 | `BIFRACT_ALLOWED_IPS` | _(empty)_ | Comma-separated IPs or CIDR ranges allowed when IP access is restricted |
 | `BIFRACT_METRICS_ENABLED` | `false` | Set `true` to enable the Prometheus metrics endpoint |
 | `BIFRACT_METRICS_ADDR` | `:9090` | Listen address for the metrics server (separate from the main app) |
+| `BIFRACT_ARCHIVE_MAX_MEMORY` | `3000000000` | Per-query ClickHouse memory ceiling (bytes) for archive reads |
+| `BIFRACT_ARCHIVE_MAX_DURATION` | `24h` | Maximum wall-clock time an archive is allowed to run |
+| `BIFRACT_ARCHIVE_MAX_ERROR_TIME` | `30m` | Maximum cumulative time spent waiting on retries before the archive fails |
