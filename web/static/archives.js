@@ -306,4 +306,5 @@ const Archives = {
     }
 };
 
+window.Archives = Archives;
 document.addEventListener('DOMContentLoaded', () => Archives.init());

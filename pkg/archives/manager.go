@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -218,7 +219,7 @@ func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentio
 			break
 		}
 
-		chunkRows, err := m.queryArchiveChunk(ctx, archive.FractalID, retentionDays, firstChunk, cursorTS, cursorID, *archiveEndTS)
+		chunkRows, err := m.queryArchiveChunkWithRetry(ctx, archive.FractalID, retentionDays, firstChunk, cursorTS, cursorID, *archiveEndTS)
 		if err != nil {
 			zstdWriter.Close()
 			encWriter.Close()
@@ -350,8 +351,55 @@ func (m *Manager) queryArchiveChunk(ctx context.Context, fractalID string, reten
 	return m.ch.QueryRows(ctx, query, args...)
 }
 
+// queryArchiveChunkWithRetry wraps queryArchiveChunk with retries for transient
+// ClickHouse errors (connection resets, memory pressure from background merges).
+func (m *Manager) queryArchiveChunkWithRetry(ctx context.Context, fractalID string, retentionDays *int, firstChunk bool, cursorTS time.Time, cursorID string, archiveEndTS time.Time) (driver.Rows, error) {
+	const maxRetries = 5
+	backoff := 5 * time.Second
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		rows, err := m.queryArchiveChunk(ctx, fractalID, retentionDays, firstChunk, cursorTS, cursorID, archiveEndTS)
+		if err == nil {
+			return rows, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !isTransientClickHouseError(err) {
+			return nil, err
+		}
+		if attempt == maxRetries {
+			return nil, fmt.Errorf("after %d retries: %w", maxRetries, err)
+		}
+		log.Printf("[Archives] Transient ClickHouse error (attempt %d/%d), retrying in %v: %v", attempt+1, maxRetries, backoff, err)
+		select {
+		case <-time.After(backoff):
+			backoff *= 2
+			if backoff > 60*time.Second {
+				backoff = 60 * time.Second
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return nil, fmt.Errorf("unreachable")
+}
+
+// isTransientClickHouseError returns true for errors that are likely temporary
+// and worth retrying (connection resets, OOM from background merges, etc).
+func isTransientClickHouseError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "MEMORY_LIMIT_EXCEEDED") ||
+		strings.Contains(msg, "memory limit exceeded") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "EOF")
+}
+
 // getArchiveMaxMemory returns the per-query memory ceiling for archive chunk
-// queries. Configurable via BIFRACT_ARCHIVE_MAX_MEMORY (bytes). Default 2GB.
+// queries. Configurable via BIFRACT_ARCHIVE_MAX_MEMORY (bytes). Default 1GB.
 func getArchiveMaxMemory() uint64 {
 	if v := os.Getenv("BIFRACT_ARCHIVE_MAX_MEMORY"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil && n > 0 {
