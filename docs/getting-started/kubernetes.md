@@ -95,7 +95,7 @@ The wizard will prompt for:
 | Domain | Your domain name | `bifract.example.com` |
 | SSL mode | Let's Encrypt or custom cert | Let's Encrypt |
 | IP access | Traffic restriction mode (includes mTLS option) | Allow all |
-| Resource profile | Cluster sizing preset (X-Small through X-Large) | Small |
+| Resource profile | Cluster sizing preset (Dev through X-Large) | Small |
 | CH shards | ClickHouse shards for horizontal scaling | `1` |
 | CH replicas | ClickHouse replicas per shard (2+ for HA) | `2` |
 | CH storage | Storage per replica in GB | `100` |

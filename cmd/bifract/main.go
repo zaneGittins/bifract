@@ -86,7 +86,7 @@ func main() {
 				i++
 				sizeProfile = args[i]
 			} else {
-				fmt.Fprintln(os.Stderr, "Error: --size requires a value (x-small, small, medium, large, x-large)")
+				fmt.Fprintln(os.Stderr, "Error: --size requires a value (dev, x-small, small, medium, large, x-large)")
 				os.Exit(1)
 			}
 		case "--gen-client-cert":
@@ -320,7 +320,7 @@ func printUsage() {
 	fmt.Println("  --name NAME        Client certificate common name (required with --gen-client-cert)")
 	fmt.Println("  --password PASS    Password for .p12 bundle (required with --gen-client-cert)")
 	fmt.Println("  --domain DOMAIN    Override domain (with --reconfigure-k8s)")
-	fmt.Println("  --size PROFILE     Override size profile: x-small, small, medium, large, x-large")
+	fmt.Println("  --size PROFILE     Override size profile: dev, x-small, small, medium, large, x-large")
 	fmt.Println("  --ip-access MODE   Override IP access mode: all, restrict-app, restrict-all, mtls-app")
 	fmt.Println("  --allowed-ips IPs  Override allowed IPs (comma-separated CIDRs)")
 	fmt.Println("  --non-interactive  Skip confirmation prompts (for cron/scripts)")

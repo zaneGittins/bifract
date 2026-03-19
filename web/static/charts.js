@@ -610,15 +610,20 @@ window.BifractCharts = {
         ctx.textAlign = 'center';
         ctx.fillText(xField, yLabelWidth + gridWidth / 2, xLabelHeight + gridHeight + axisTitleSize - 6);
 
-        // Column headers
+        // Column headers - truncate dynamically based on cell width
         ctx.save();
         ctx.font = '11px Inter, sans-serif';
         ctx.fillStyle = textColor;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
+        const maxLabelPx = cellW - 4;
         xVals.forEach((x, i) => {
             const cx = yLabelWidth + i * cellW + cellW / 2;
-            const label = x.length > 12 ? x.substring(0, 12) + '\u2026' : x;
+            let label = x;
+            while (label.length > 1 && ctx.measureText(label).width > maxLabelPx) {
+                label = label.substring(0, label.length - 1);
+            }
+            if (label.length < x.length) label = label.substring(0, Math.max(1, label.length - 1)) + '\u2026';
             ctx.fillText(label, cx, xLabelHeight - 6);
         });
         ctx.restore();

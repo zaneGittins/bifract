@@ -649,6 +649,7 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 	var req struct {
 		Timestamp string `json:"timestamp"`
 		LogID     string `json:"log_id,omitempty"`
+		FractalID string `json:"fractal_id,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -673,7 +674,7 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 	}
 
 	// Query ClickHouse for logs at this exact timestamp
-	logEntry, err := h.db.GetLogByTimestamp(r.Context(), timestamp, req.LogID)
+	logEntry, err := h.db.GetLogByTimestamp(r.Context(), timestamp, req.LogID, req.FractalID)
 	if err != nil {
 		log.Printf("[QueryHandler] Failed to fetch log: %v", err)
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{

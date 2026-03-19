@@ -151,7 +151,7 @@ func (m *Manager) runArchive(ctx context.Context, archive *Archive, retentionDay
 // archiveChunkSize is the number of rows fetched per cursor query.
 // Kept small to limit ClickHouse memory usage per query. Large raw_log
 // values can make even modest row counts exceed memory limits.
-const archiveChunkSize = 10000
+const archiveChunkSize = 2000
 
 func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentionDays *int, storagePath string) error {
 	archiveEndTS := archive.ArchiveEndTS
@@ -358,7 +358,7 @@ func getArchiveMaxMemory() uint64 {
 			return n
 		}
 	}
-	return 2_000_000_000
+	return 1_000_000_000
 }
 
 // RestoreArchive starts an asynchronous restore operation from an archive.

@@ -230,6 +230,15 @@ func (h *StatusHandler) HandleClearLogs(w http.ResponseWriter, r *http.Request) 
 			h.quotaClearer.NotifyCleared(fractalID)
 		}
 
+		// Zero out cached stats so the UI reflects the clear immediately.
+		if h.pg != nil {
+			if _, err := h.pg.Exec(r.Context(),
+				`UPDATE fractals SET log_count = 0, size_bytes = 0, earliest_log = NULL, latest_log = NULL, updated_at = NOW() WHERE id = $1`,
+				fractalID); err != nil {
+				log.Printf("failed to zero stats for fractal %s: %v", fractalID, err)
+			}
+		}
+
 		// Delete logs in the background; large fractals can take minutes and
 		// we don't want the HTTP connection to outlive the operation.
 		go func(id string) {

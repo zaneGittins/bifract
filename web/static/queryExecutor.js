@@ -223,6 +223,8 @@ const QueryExecutor = {
         // Reset chart/graph container so loading spinner is visible
         const chartContainer = document.getElementById('chartContainer');
         if (chartContainer) chartContainer.style.display = 'none';
+        const fieldsDrawerReset = document.getElementById('fieldStatsDrawer');
+        if (fieldsDrawerReset) fieldsDrawerReset.style.display = '';
         if (elements.resultsTable) {
             elements.resultsTable.style.display = 'block';
             elements.resultsTable.innerHTML = '<div class="loading-spinner"><span class="spinner"></span><button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
@@ -1363,9 +1365,11 @@ const QueryExecutor = {
 
         if (!chartContainer) return;
 
-        // Hide table and show chart container
+        // Hide table and fields drawer, show chart container
         if (resultsTable) resultsTable.style.display = 'none';
         chartContainer.style.display = 'block';
+        const fieldsDrawer = document.getElementById('fieldStatsDrawer');
+        if (fieldsDrawer) fieldsDrawer.style.display = 'none';
 
         // Remove any singleval overlay from a previous render
         const oldSingleval = chartContainer.querySelector('.singleval-display');

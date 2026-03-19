@@ -191,7 +191,7 @@ func fallbackProfile(parsed, fallback ResourceProfile) ResourceProfile {
 // buildK8sConfigFromExisting constructs a K8sConfig from parsed secrets and settings.
 // Shared between upgrade and reconfigure flows.
 func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings *k8sSettings) *K8sConfig {
-	// Use X-Small as fallback when resources couldn't be parsed from manifests.
+	// Use Dev as fallback when resources couldn't be parsed from manifests.
 	fb := sizeProfiles[0]
 
 	// Warn for each component falling back to defaults.
@@ -209,7 +209,7 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 		{"LiteLLM", settings.litellmResources},
 	} {
 		if resourceProfileEmpty(c.parsed) {
-			printWarn(fmt.Sprintf("%s resources not found in manifests, using X-Small defaults", c.name))
+			printWarn(fmt.Sprintf("%s resources not found in manifests, using Dev defaults", c.name))
 		}
 	}
 

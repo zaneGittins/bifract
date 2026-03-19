@@ -443,6 +443,15 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 		return fmt.Errorf("failed to delete logs for fractal %s: %w", fractalID, err)
 	}
 
+	// Force ClickHouse to merge away lightweight-deleted rows so that
+	// system.parts reflects the actual on-disk size. Without this, the
+	// deleted rows stay in parts indefinitely and inflate the reported
+	// storage size for other fractals sharing the table.
+	optimizeSQL := c.InjectOnCluster("OPTIMIZE TABLE logs FINAL")
+	if err := c.conn.Exec(ctx, optimizeSQL); err != nil {
+		log.Printf("Warning: OPTIMIZE after delete for fractal %s failed: %v", fractalID, err)
+	}
+
 	log.Printf("Successfully deleted logs for fractal %s", fractalID)
 	return nil
 }
@@ -598,17 +607,29 @@ func (c *ClickHouseClient) QueryRow(ctx context.Context, query string, args ...i
 }
 
 // GetLogByTimestamp fetches a log by log_id ONLY - no timestamp fallback
-func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time.Time, logID string) (map[string]interface{}, error) {
+func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time.Time, logID string, fractalID string) (map[string]interface{}, error) {
 	if logID == "" {
 		return nil, fmt.Errorf("log_id is required")
 	}
 
 	log.Printf("[GetLogByTimestamp] Searching for log_id: %s", logID)
 
+	// Build query using ordering key columns (fractal_id, timestamp, log_id) for efficient index usage.
+	query := "SELECT timestamp, raw_log, log_id, toString(fields) AS fields, fractal_id, ingest_timestamp FROM logs WHERE log_id = ?"
+	args := []interface{}{logID}
+
+	if fractalID != "" {
+		query += " AND fractal_id = ?"
+		args = append(args, fractalID)
+	}
+	if !timestamp.IsZero() {
+		query += " AND timestamp = ?"
+		args = append(args, timestamp)
+	}
+	query += " LIMIT 1"
+
 	// Use explicit column list to avoid scan issues with the JSON column type (SELECT * would fail)
-	rows, err := c.conn.Query(ctx,
-		"SELECT timestamp, raw_log, log_id, toString(fields) AS fields, fractal_id, ingest_timestamp FROM logs WHERE log_id = ? LIMIT 1",
-		logID)
+	rows, err := c.conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query log: %w", err)
 	}
