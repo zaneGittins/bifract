@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -260,8 +261,14 @@ func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentio
 				return fmt.Errorf("archive exceeded max cumulative error wait time of %v (%d logs archived): %w", maxErrorTime, logCount, streamErr)
 			}
 
-			log.Printf("[Archives] Transient error (attempt %d/%d, %d rows before error), retrying in %v: %v",
-				consecutiveErrors, maxConsecutiveRetries, rowsRead, backoff, streamErr)
+			// Save cursor progress if rows were read before the error.
+			if rowsRead > 0 {
+				firstQuery = false
+				m.archives.UpdateArchiveCursor(ctx, archive.ID, cursorTS, cursorID, logCount)
+			}
+
+			log.Printf("[Archives] Transient error (attempt %d/%d, %d rows before error, %d total), retrying in %v: %v",
+				consecutiveErrors, maxConsecutiveRetries, rowsRead, logCount, backoff, streamErr)
 			select {
 			case <-time.After(backoff):
 				backoff *= 2
@@ -624,8 +631,9 @@ func (m *Manager) runRestore(ctx context.Context, archive *Archive, targetFracta
 	log.Printf("[Archives] Restore of archive %s completed", archive.ID)
 }
 
-// restoreBatchSize is the number of raw logs sent per HTTP POST to the ingest endpoint.
-const restoreBatchSize = 500
+// restoreBatchSize is the number of raw logs sent per HTTP POST to the ingest
+// endpoint. Matches the default used by the bifract --ingest CLI.
+const restoreBatchSize = 5000
 
 func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFractalID, ingestToken string, clearExisting bool) error {
 	if clearExisting {
@@ -671,12 +679,51 @@ func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFr
 
 	ingestURL := fmt.Sprintf("http://localhost:%s/api/v1/ingest", getBifractPort())
 
+	// Use the same adaptive concurrency pattern as the bifract --ingest CLI:
+	// auto-detect workers from CPU cores, adaptive pacer with AIMD that
+	// throttles down on 429s and scales back up on sustained success.
+	workers := restoreAutoDetectWorkers()
+	pacer := newRestorePacer(workers)
+	defer pacer.stop()
+
+	log.Printf("[Archives] Restore using %d workers with adaptive pacing", workers)
+
+	type batchJob struct {
+		logs   []string
+		offset int64
+	}
+	jobs := make(chan batchJob, workers*2)
+	var workerErr error
+	var workerErrOnce sync.Once
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				pacer.acquire()
+				err, throttled := postIngestBatchWithSignal(ctx, ingestURL, ingestToken, job.logs)
+				pacer.release(throttled)
+				if err != nil {
+					workerErrOnce.Do(func() {
+						workerErr = fmt.Errorf("ingest batch at offset %d: %w", job.offset, err)
+					})
+					return
+				}
+			}
+		}()
+	}
+
 	batch := make([]string, 0, restoreBatchSize)
 	var totalSent int64
 
 	for scanner.Scan() {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			break
+		}
+		if workerErr != nil {
+			break
 		}
 
 		rawLog, err := extractRawLog(scanner.Bytes())
@@ -691,28 +738,36 @@ func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFr
 		batch = append(batch, rawLog)
 
 		if len(batch) >= restoreBatchSize {
-			if err := postIngestBatch(ctx, ingestURL, ingestToken, batch); err != nil {
-				return fmt.Errorf("ingest batch at offset %d: %w", totalSent, err)
-			}
+			sending := make([]string, len(batch))
+			copy(sending, batch)
+			jobs <- batchJob{logs: sending, offset: totalSent}
 			totalSent += int64(len(batch))
 			batch = batch[:0]
 
-			if totalSent%50000 == 0 {
+			if totalSent%100000 == 0 {
 				log.Printf("[Archives] Restore progress: %d logs sent to ingest", totalSent)
 			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
+		close(jobs)
+		wg.Wait()
 		return fmt.Errorf("scan archive: %w", err)
 	}
 
-	// Send remaining batch
-	if len(batch) > 0 {
-		if err := postIngestBatch(ctx, ingestURL, ingestToken, batch); err != nil {
-			return fmt.Errorf("ingest final batch: %w", err)
-		}
+	if len(batch) > 0 && workerErr == nil {
+		sending := make([]string, len(batch))
+		copy(sending, batch)
+		jobs <- batchJob{logs: sending, offset: totalSent}
 		totalSent += int64(len(batch))
+	}
+
+	close(jobs)
+	wg.Wait()
+
+	if workerErr != nil {
+		return workerErr
 	}
 
 	log.Printf("[Archives] Restore complete: %d logs sent to ingest for fractal %s", totalSent, targetFractalID)
@@ -721,34 +776,139 @@ func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFr
 
 // extractRawLog pulls the raw_log string from a v1 NDJSON archive line.
 func extractRawLog(line []byte) (string, error) {
-	var generic map[string]json.RawMessage
-	if err := json.Unmarshal(line, &generic); err != nil {
+	var row archiveLogRowV1
+	if err := json.Unmarshal(line, &row); err != nil {
 		return "", fmt.Errorf("unmarshal archive line: %w", err)
 	}
-
-	rawField, ok := generic["raw"]
-	if !ok {
-		return "", nil
-	}
-
-	var rawLog string
-	if err := json.Unmarshal(rawField, &rawLog); err != nil {
-		return "", fmt.Errorf("unmarshal raw field: %w", err)
-	}
-	return rawLog, nil
+	return row.RawLog, nil
 }
 
-// restoreHTTPClient is used for restore POST requests. It has a per-request
-// timeout to prevent the restore goroutine from blocking indefinitely.
-var restoreHTTPClient = &http.Client{Timeout: 60 * time.Second}
+// restoreAutoDetectWorkers picks worker count from CPU cores, matching the
+// bifract --ingest CLI auto-detection logic.
+func restoreAutoDetectWorkers() int {
+	cpus := runtime.NumCPU()
+	if cpus < 2 {
+		return 2
+	}
+	if cpus > 32 {
+		return 32
+	}
+	return cpus
+}
 
-// postIngestBatch sends a batch of raw log lines to the local ingest endpoint
-// as newline-separated text. This works with all parser types (JSON, KV, syslog)
-// because the ingest endpoint dispatches based on the token's parser_type:
-// JSON tokens parse each line as a JSON object (NDJSON), KV tokens parse each
-// line as key=value text, and syslog tokens parse each line as a syslog message.
-// Retries with exponential backoff on 429 responses.
-func postIngestBatch(ctx context.Context, url, token string, batch []string) error {
+// restorePacer is a minimal adaptive concurrency limiter using AIMD, matching
+// the AdaptivePacer from the bifract --ingest CLI. It throttles down on 429s
+// and scales back up after sustained success.
+type restorePacer struct {
+	mu       sync.Mutex
+	cond     *sync.Cond
+	inflight int
+	limit    int
+	maxLimit int
+
+	windowSuccesses int64
+	windowThrottles int64
+
+	consecutiveStable int
+	stopCh            chan struct{}
+	stopOnce          sync.Once
+}
+
+func newRestorePacer(maxConcurrency int) *restorePacer {
+	p := &restorePacer{
+		limit:    maxConcurrency,
+		maxLimit: maxConcurrency,
+		stopCh:   make(chan struct{}),
+	}
+	p.cond = sync.NewCond(&p.mu)
+	go p.tuneLoop()
+	return p
+}
+
+func (p *restorePacer) acquire() {
+	p.mu.Lock()
+	for p.inflight >= p.limit {
+		p.cond.Wait()
+	}
+	p.inflight++
+	p.mu.Unlock()
+}
+
+func (p *restorePacer) release(throttled bool) {
+	p.mu.Lock()
+	p.inflight--
+	if throttled {
+		p.windowThrottles++
+	} else {
+		p.windowSuccesses++
+	}
+	p.cond.Signal()
+	p.mu.Unlock()
+}
+
+func (p *restorePacer) stop() {
+	p.stopOnce.Do(func() { close(p.stopCh) })
+}
+
+func (p *restorePacer) tuneLoop() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			p.evaluate()
+		case <-p.stopCh:
+			return
+		}
+	}
+}
+
+func (p *restorePacer) evaluate() {
+	p.mu.Lock()
+	successes := p.windowSuccesses
+	throttles := p.windowThrottles
+	p.windowSuccesses = 0
+	p.windowThrottles = 0
+	total := successes + throttles
+
+	if total == 0 {
+		p.mu.Unlock()
+		return
+	}
+
+	throttleRate := float64(throttles) / float64(total)
+	oldLimit := p.limit
+
+	if throttleRate > 0.05 {
+		// Multiplicative decrease.
+		newLimit := int(float64(p.limit) * 0.5)
+		if newLimit < 1 {
+			newLimit = 1
+		}
+		p.limit = newLimit
+		p.consecutiveStable = 0
+		log.Printf("[Archives] Restore pacer: throttle rate %.0f%%, reducing concurrency to %d", throttleRate*100, newLimit)
+	} else if throttles == 0 {
+		p.consecutiveStable++
+		if p.consecutiveStable >= 3 && p.limit < p.maxLimit {
+			p.limit++
+			p.consecutiveStable = 0
+		}
+	} else {
+		p.consecutiveStable = 0
+	}
+
+	changed := p.limit != oldLimit
+	p.mu.Unlock()
+
+	if changed {
+		p.cond.Broadcast()
+	}
+}
+
+// postIngestBatchWithSignal is like postIngestBatch but returns a throttle
+// signal so the adaptive pacer can adjust concurrency.
+func postIngestBatchWithSignal(ctx context.Context, url, token string, batch []string) (error, bool) {
 	var buf bytes.Buffer
 	for i, line := range batch {
 		if i > 0 {
@@ -759,34 +919,26 @@ func postIngestBatch(ctx context.Context, url, token string, batch []string) err
 	body := buf.Bytes()
 
 	backoff := 500 * time.Millisecond
-	const maxRetries = 10
+	const maxRetries = 5
+	var sawThrottle bool
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return ctx.Err(), sawThrottle
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
-			return fmt.Errorf("create request: %w", err)
+			return fmt.Errorf("create request: %w", err), false
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+token)
 
 		resp, err := restoreHTTPClient.Do(req)
 		if err != nil {
-			return fmt.Errorf("POST ingest: %w", err)
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusOK {
-			return nil
-		}
-
-		if resp.StatusCode == http.StatusTooManyRequests {
+			sawThrottle = true
 			if attempt == maxRetries {
-				return fmt.Errorf("ingest returned 429 after %d retries", maxRetries)
+				return fmt.Errorf("POST ingest: %w", err), sawThrottle
 			}
 			select {
 			case <-time.After(backoff):
@@ -795,16 +947,44 @@ func postIngestBatch(ctx context.Context, url, token string, batch []string) err
 					backoff = 30 * time.Second
 				}
 			case <-ctx.Done():
-				return ctx.Err()
+				return ctx.Err(), sawThrottle
+			}
+			continue
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			return nil, sawThrottle
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			sawThrottle = true
+			if attempt == maxRetries {
+				return fmt.Errorf("ingest returned status %d after %d retries", resp.StatusCode, maxRetries), sawThrottle
+			}
+			select {
+			case <-time.After(backoff):
+				backoff *= 2
+				if backoff > 30*time.Second {
+					backoff = 30 * time.Second
+				}
+			case <-ctx.Done():
+				return ctx.Err(), sawThrottle
 			}
 			continue
 		}
 
-		return fmt.Errorf("ingest returned status %d", resp.StatusCode)
+		return fmt.Errorf("ingest returned status %d", resp.StatusCode), false
 	}
 
-	return nil
+	return nil, sawThrottle
 }
+
+// restoreHTTPClient is used for restore POST requests. It has a per-request
+// timeout to prevent the restore goroutine from blocking indefinitely.
+var restoreHTTPClient = &http.Client{Timeout: 60 * time.Second}
+
 
 // getBifractPort returns the port the Bifract HTTP server is listening on.
 func getBifractPort() string {
