@@ -25,6 +25,19 @@ type ClickHouseClient struct {
 // Addrs returns the host:port addresses this client connects to.
 func (c *ClickHouseClient) Addrs() []string { return c.addrs }
 
+// HTTPAddr returns the first host with port 8123 (ClickHouse HTTP interface).
+// The native addrs use port 9000; the HTTP interface is always on 8123.
+func (c *ClickHouseClient) HTTPAddr() string {
+	if len(c.addrs) == 0 {
+		return "localhost:8123"
+	}
+	host := c.addrs[0]
+	if idx := strings.LastIndex(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+	return host + ":8123"
+}
+
 // IsCluster returns true when the client is configured for a replicated cluster.
 func (c *ClickHouseClient) IsCluster() bool {
 	return c.Cluster != ""

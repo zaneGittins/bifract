@@ -15,8 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/klauspost/compress/zstd"
 
 	"bifract/pkg/backup"
@@ -149,11 +147,6 @@ func (m *Manager) runArchive(ctx context.Context, archive *Archive, retentionDay
 	log.Printf("[Archives] Archive %s completed", archive.ID)
 }
 
-// archiveChunkSize is the number of rows fetched per cursor query.
-// Kept small to limit ClickHouse memory usage per query. Large raw_log
-// values can make even modest row counts exceed memory limits.
-const archiveChunkSize = 2000
-
 func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentionDays *int, storagePath string) error {
 	archiveEndTS := archive.ArchiveEndTS
 	if archiveEndTS == nil {
@@ -161,7 +154,7 @@ func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentio
 		archiveEndTS = &now
 	}
 
-	// Set up streaming pipeline: rows -> JSON -> zstd -> encrypt -> storage
+	// Set up streaming pipeline: CH HTTP -> reformat -> zstd -> encrypt -> storage
 	pr, pw := io.Pipe()
 
 	var writeErr error
@@ -194,10 +187,12 @@ func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentio
 		return fmt.Errorf("create zstd writer: %w", err)
 	}
 
-	encoder := json.NewEncoder(zstdWriter)
+	archiveWriter := bufio.NewWriterSize(zstdWriter, 256*1024) // 256KB buffer
 
 	// Write v1 format header
-	if err := encoder.Encode(archiveHeader{Version: 1}); err != nil {
+	header, _ := json.Marshal(archiveHeader{Version: 1})
+	header = append(header, '\n')
+	if _, err := archiveWriter.Write(header); err != nil {
 		zstdWriter.Close()
 		encWriter.Close()
 		pw.CloseWithError(err)
@@ -207,88 +202,105 @@ func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentio
 
 	var logCount int64
 	var timeStart, timeEnd *time.Time
-
-	// Cursor state for chunked iteration. The logs table is ordered by
-	// (fractal_id, timestamp, log_id), so tuple comparison is index-friendly.
 	var cursorTS time.Time
 	var cursorID string
-	firstChunk := true
+	firstQuery := true
+
+	// Stream data from ClickHouse HTTP interface with cursor-based retry.
+	// Each iteration opens a streaming query from the cursor position.
+	// On transient failure, the cursor resumes from the last written row.
+	const maxConsecutiveRetries = 10
+	maxArchiveDuration := getArchiveMaxDuration()
+	maxErrorTime := getArchiveMaxErrorTime()
+
+	consecutiveErrors := 0
+	backoff := 5 * time.Second
+	archiveStart := time.Now()
+	var cumulativeErrorTime time.Duration
 
 	for {
 		if ctx.Err() != nil {
 			break
 		}
 
-		chunkRows, err := m.queryArchiveChunkWithRetry(ctx, archive.FractalID, retentionDays, firstChunk, cursorTS, cursorID, *archiveEndTS)
-		if err != nil {
+		if elapsed := time.Since(archiveStart); elapsed > maxArchiveDuration {
 			zstdWriter.Close()
 			encWriter.Close()
-			pw.CloseWithError(err)
+			pw.CloseWithError(fmt.Errorf("exceeded max archive duration"))
 			<-writeDone
-			return fmt.Errorf("query chunk: %w", err)
+			return fmt.Errorf("archive exceeded max duration of %v (%d logs archived)", maxArchiveDuration, logCount)
 		}
 
-		chunkCount := 0
-		var scanErr error
-		for chunkRows.Next() {
-			if ctx.Err() != nil {
+		rowsRead, streamErr := m.streamArchiveHTTP(ctx, archive.FractalID, retentionDays, firstQuery, cursorTS, cursorID, *archiveEndTS, archiveWriter, &logCount, &cursorTS, &cursorID, &timeStart, &timeEnd)
+
+		if streamErr != nil {
+			if !isTransientClickHouseError(streamErr) {
+				zstdWriter.Close()
+				encWriter.Close()
+				pw.CloseWithError(streamErr)
+				<-writeDone
+				return fmt.Errorf("stream archive: %w", streamErr)
+			}
+
+			consecutiveErrors++
+			if consecutiveErrors > maxConsecutiveRetries {
+				zstdWriter.Close()
+				encWriter.Close()
+				pw.CloseWithError(streamErr)
+				<-writeDone
+				return fmt.Errorf("stream archive after %d consecutive retries: %w", maxConsecutiveRetries, streamErr)
+			}
+
+			cumulativeErrorTime += backoff
+			if cumulativeErrorTime > maxErrorTime {
+				zstdWriter.Close()
+				encWriter.Close()
+				pw.CloseWithError(streamErr)
+				<-writeDone
+				return fmt.Errorf("archive exceeded max cumulative error wait time of %v (%d logs archived): %w", maxErrorTime, logCount, streamErr)
+			}
+
+			log.Printf("[Archives] Transient error (attempt %d/%d, %d rows before error), retrying in %v: %v",
+				consecutiveErrors, maxConsecutiveRetries, rowsRead, backoff, streamErr)
+			select {
+			case <-time.After(backoff):
+				backoff *= 2
+				if backoff > 60*time.Second {
+					backoff = 60 * time.Second
+				}
+			case <-ctx.Done():
 				break
 			}
-
-			var row archiveLogRowV1
-			if err := chunkRows.Scan(
-				&row.Timestamp, &row.RawLog, &row.LogID,
-				&row.FractalID, &row.IngestTimestamp,
-			); err != nil {
-				scanErr = fmt.Errorf("scan row: %w", err)
-				break
+			if logCount > 0 {
+				firstQuery = false
 			}
-
-			if err := encoder.Encode(row); err != nil {
-				scanErr = fmt.Errorf("encode row: %w", err)
-				break
-			}
-
-			cursorTS = row.Timestamp
-			cursorID = row.LogID
-			chunkCount++
-			logCount++
-
-			if timeStart == nil || row.Timestamp.Before(*timeStart) {
-				t := row.Timestamp
-				timeStart = &t
-			}
-			if timeEnd == nil || row.Timestamp.After(*timeEnd) {
-				t := row.Timestamp
-				timeEnd = &t
-			}
+			continue
 		}
 
-		if scanErr == nil {
-			scanErr = chunkRows.Err()
-		}
-		chunkRows.Close()
-
-		if scanErr != nil {
-			zstdWriter.Close()
-			encWriter.Close()
-			pw.CloseWithError(scanErr)
-			<-writeDone
-			return fmt.Errorf("iterate rows: %w", scanErr)
-		}
-
-		if chunkCount == 0 {
+		// Stream completed without error. If zero rows were read, we're done.
+		if rowsRead == 0 {
 			break
 		}
 
-		firstChunk = false
+		// Successful stream resets consecutive error tracking.
+		consecutiveErrors = 0
+		backoff = 5 * time.Second
+		firstQuery = false
+
 		m.archives.UpdateArchiveCursor(ctx, archive.ID, cursorTS, cursorID, logCount)
 		if logCount%1000000 == 0 {
 			log.Printf("[Archives] Archive %s progress: %d logs archived", archive.ID, logCount)
 		}
 	}
 
-	// Close pipeline in order: zstd -> encrypt -> pipe
+	// Flush and close pipeline in order: buffer -> zstd -> encrypt -> pipe
+	if err := archiveWriter.Flush(); err != nil {
+		zstdWriter.Close()
+		encWriter.Close()
+		pw.CloseWithError(err)
+		<-writeDone
+		return fmt.Errorf("flush archive writer: %w", err)
+	}
 	if err := zstdWriter.Close(); err != nil {
 		encWriter.Close()
 		pw.CloseWithError(err)
@@ -313,76 +325,176 @@ func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentio
 	)
 }
 
-// queryArchiveChunk fetches the next batch of rows using cursor-based pagination.
-// The query deliberately excludes the fields column to avoid forcing ClickHouse
-// to reconstruct JSON objects in memory, which was the root cause of ~20GB memory
-// spikes on large fractals.
-func (m *Manager) queryArchiveChunk(ctx context.Context, fractalID string, retentionDays *int, firstChunk bool, cursorTS time.Time, cursorID string, archiveEndTS time.Time) (driver.Rows, error) {
-	// Use toUnixTimestamp64Milli for cursor comparisons to avoid a precision
-	// mismatch: the clickhouse-go driver may serialize time.Time as DateTime
-	// (second precision) while the column is DateTime64(3) (milliseconds).
-	// Comparing epoch-millis integers sidesteps the issue entirely.
-	query := fmt.Sprintf(`SELECT timestamp, raw_log, log_id, fractal_id, ingest_timestamp
-	          FROM %s WHERE fractal_id = ?`, m.ch.ReadTable())
-	args := []interface{}{fractalID}
+// archiveHTTPClient is used for streaming queries to ClickHouse's HTTP interface.
+// The timeout is intentionally zero (no limit) because archive streams can run
+// for hours on large fractals; cancellation is handled via context.
+var archiveHTTPClient = &http.Client{Timeout: 0}
 
-	if !firstChunk {
-		query += ` AND (toUnixTimestamp64Milli(timestamp), log_id) > (?, ?)`
-		args = append(args, cursorTS.UnixMilli(), cursorID)
+// streamArchiveHTTP opens a single streaming query to ClickHouse via the HTTP
+// interface and pipes JSONEachRow output through the archive pipeline. It returns
+// the number of rows successfully written and any error encountered.
+//
+// The HTTP interface streams results row-by-row without buffering the full result
+// set, and max_threads=1 ensures ClickHouse decompresses one granule at a time,
+// keeping memory usage minimal even for 100GB+ fractals.
+func (m *Manager) streamArchiveHTTP(
+	ctx context.Context,
+	fractalID string,
+	retentionDays *int,
+	firstQuery bool,
+	cursorTS time.Time,
+	cursorID string,
+	archiveEndTS time.Time,
+	w *bufio.Writer,
+	logCount *int64,
+	outCursorTS *time.Time,
+	outCursorID *string,
+	timeStart, timeEnd **time.Time,
+) (int64, error) {
+	query := m.buildArchiveQuery(fractalID, retentionDays, firstQuery, cursorTS, cursorID, archiveEndTS)
+
+	chAddr := m.ch.HTTPAddr()
+	maxMem := getArchiveMaxMemory()
+
+	reqURL := fmt.Sprintf("http://%s/?database=%s&max_threads=1&max_execution_time=3600&max_memory_usage=%d",
+		chAddr, m.ch.Database, maxMem)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(query))
+	if err != nil {
+		return 0, fmt.Errorf("create request: %w", err)
 	}
 
-	// Pin upper time bound so newly arriving logs are excluded.
-	query += ` AND toUnixTimestamp64Milli(timestamp) <= ?`
-	args = append(args, archiveEndTS.UnixMilli())
-
-	if retentionDays != nil && *retentionDays > 0 {
-		query += ` AND timestamp >= now() - toIntervalDay(?)`
-		args = append(args, *retentionDays)
+	if m.ch.User != "" {
+		req.Header.Set("X-ClickHouse-User", m.ch.User)
+	}
+	if m.ch.Password != "" {
+		req.Header.Set("X-ClickHouse-Key", m.ch.Password)
 	}
 
-	query += ` ORDER BY fractal_id, timestamp, log_id LIMIT ?`
-	args = append(args, archiveChunkSize)
+	resp, err := archiveHTTPClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("clickhouse HTTP request: %w", err)
+	}
+	defer resp.Body.Close()
 
-	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
-		"max_execution_time": 300,
-		"max_memory_usage":   getArchiveMaxMemory(),
-	}))
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return 0, fmt.Errorf("clickhouse HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 
-	return m.ch.QueryRows(ctx, query, args...)
+	// Stream the response line by line. ClickHouse JSONEachRow format outputs
+	// one JSON object per line, which we reformat into the v1 archive schema.
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 512*1024), 10*1024*1024) // 10MB max line
+
+	var rowsRead int64
+	for scanner.Scan() {
+		if ctx.Err() != nil {
+			return rowsRead, ctx.Err()
+		}
+
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		// Parse the ClickHouse JSONEachRow output and reformat to v1 schema.
+		archiveLine, ts, logID, parseErr := reformatToV1(line)
+		if parseErr != nil {
+			log.Printf("[Archives] Warning: skipping malformed row: %v", parseErr)
+			continue
+		}
+
+		if _, err := w.Write(archiveLine); err != nil {
+			return rowsRead, fmt.Errorf("write row: %w", err)
+		}
+		if err := w.WriteByte('\n'); err != nil {
+			return rowsRead, fmt.Errorf("write newline: %w", err)
+		}
+
+		*outCursorTS = ts
+		*outCursorID = logID
+		rowsRead++
+		*logCount++
+
+		if *timeStart == nil || ts.Before(**timeStart) {
+			*timeStart = &ts
+		}
+		if *timeEnd == nil || ts.After(**timeEnd) {
+			*timeEnd = &ts
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return rowsRead, fmt.Errorf("scan response: %w", err)
+	}
+
+	return rowsRead, nil
 }
 
-// queryArchiveChunkWithRetry wraps queryArchiveChunk with retries for transient
-// ClickHouse errors (connection resets, memory pressure from background merges).
-func (m *Manager) queryArchiveChunkWithRetry(ctx context.Context, fractalID string, retentionDays *int, firstChunk bool, cursorTS time.Time, cursorID string, archiveEndTS time.Time) (driver.Rows, error) {
-	const maxRetries = 5
-	backoff := 5 * time.Second
+// chRow is the JSON structure returned by ClickHouse JSONEachRow for our SELECT.
+type chRow struct {
+	Timestamp       string `json:"timestamp"`
+	RawLog          string `json:"raw_log"`
+	LogID           string `json:"log_id"`
+	FractalID       string `json:"fractal_id"`
+	IngestTimestamp string `json:"ingest_timestamp"`
+}
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		rows, err := m.queryArchiveChunk(ctx, fractalID, retentionDays, firstChunk, cursorTS, cursorID, archiveEndTS)
-		if err == nil {
-			return rows, nil
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if !isTransientClickHouseError(err) {
-			return nil, err
-		}
-		if attempt == maxRetries {
-			return nil, fmt.Errorf("after %d retries: %w", maxRetries, err)
-		}
-		log.Printf("[Archives] Transient ClickHouse error (attempt %d/%d), retrying in %v: %v", attempt+1, maxRetries, backoff, err)
-		select {
-		case <-time.After(backoff):
-			backoff *= 2
-			if backoff > 60*time.Second {
-				backoff = 60 * time.Second
-			}
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+// reformatToV1 converts a ClickHouse JSONEachRow line into the v1 archive format.
+// Returns the formatted JSON bytes, parsed timestamp, and log_id for cursor tracking.
+func reformatToV1(line []byte) ([]byte, time.Time, string, error) {
+	var row chRow
+	if err := json.Unmarshal(line, &row); err != nil {
+		return nil, time.Time{}, "", err
 	}
-	return nil, fmt.Errorf("unreachable")
+
+	ts, err := time.Parse("2006-01-02 15:04:05.000", row.Timestamp)
+	if err != nil {
+		return nil, time.Time{}, "", fmt.Errorf("parse timestamp %q: %w", row.Timestamp, err)
+	}
+
+	its, err := time.Parse("2006-01-02 15:04:05.000", row.IngestTimestamp)
+	if err != nil {
+		its = ts // fallback
+	}
+
+	v1 := archiveLogRowV1{
+		Timestamp:       ts,
+		RawLog:          row.RawLog,
+		LogID:           row.LogID,
+		FractalID:       row.FractalID,
+		IngestTimestamp:  its,
+	}
+
+	out, err := json.Marshal(v1)
+	return out, ts, row.LogID, err
+}
+
+// buildArchiveQuery constructs the SQL for streaming archive data.
+func (m *Manager) buildArchiveQuery(fractalID string, retentionDays *int, firstQuery bool, cursorTS time.Time, cursorID string, archiveEndTS time.Time) string {
+	query := fmt.Sprintf(
+		`SELECT timestamp, raw_log, log_id, fractal_id, ingest_timestamp FROM %s WHERE fractal_id = '%s'`,
+		m.ch.ReadTable(), escapeCHString(fractalID))
+
+	if !firstQuery {
+		query += fmt.Sprintf(` AND (toUnixTimestamp64Milli(timestamp), log_id) > (%d, '%s')`,
+			cursorTS.UnixMilli(), escapeCHString(cursorID))
+	}
+
+	query += fmt.Sprintf(` AND toUnixTimestamp64Milli(timestamp) <= %d`, archiveEndTS.UnixMilli())
+
+	if retentionDays != nil && *retentionDays > 0 {
+		query += fmt.Sprintf(` AND timestamp >= now() - toIntervalDay(%d)`, *retentionDays)
+	}
+
+	query += ` ORDER BY fractal_id, timestamp, log_id FORMAT JSONEachRow`
+	return query
+}
+
+// escapeCHString escapes single quotes for ClickHouse string literals.
+func escapeCHString(s string) string {
+	return strings.ReplaceAll(s, "'", "\\'")
 }
 
 // isTransientClickHouseError returns true for errors that are likely temporary
@@ -394,12 +506,36 @@ func isTransientClickHouseError(err error) bool {
 		strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "MEMORY_LIMIT_EXCEEDED") ||
 		strings.Contains(msg, "memory limit exceeded") ||
+		strings.Contains(msg, "OvercommitTracker") ||
 		strings.Contains(msg, "i/o timeout") ||
 		strings.Contains(msg, "EOF")
 }
 
-// getArchiveMaxMemory returns the per-query memory ceiling for archive chunk
-// queries. Configurable via BIFRACT_ARCHIVE_MAX_MEMORY (bytes). Default 1GB.
+// getArchiveMaxMemory returns the per-query memory ceiling for archive queries.
+// Configurable via BIFRACT_ARCHIVE_MAX_MEMORY (bytes). Default 1GB.
+// getArchiveMaxDuration returns the maximum wall-clock time an archive is
+// allowed to run. Configurable via BIFRACT_ARCHIVE_MAX_DURATION. Default 24h.
+func getArchiveMaxDuration() time.Duration {
+	if v := os.Getenv("BIFRACT_ARCHIVE_MAX_DURATION"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 24 * time.Hour
+}
+
+// getArchiveMaxErrorTime returns the maximum cumulative time the archive will
+// spend waiting on retries before giving up. Configurable via
+// BIFRACT_ARCHIVE_MAX_ERROR_TIME. Default 30m.
+func getArchiveMaxErrorTime() time.Duration {
+	if v := os.Getenv("BIFRACT_ARCHIVE_MAX_ERROR_TIME"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 30 * time.Minute
+}
+
 func getArchiveMaxMemory() uint64 {
 	if v := os.Getenv("BIFRACT_ARCHIVE_MAX_MEMORY"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil && n > 0 {
