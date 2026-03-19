@@ -638,7 +638,10 @@ const restoreBatchSize = 5000
 func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFractalID, ingestToken string, clearExisting bool) error {
 	if clearExisting {
 		log.Printf("[Archives] Clearing existing data for fractal %s before restore", targetFractalID)
-		if err := m.ch.DeleteLogsByFractalID(ctx, targetFractalID); err != nil {
+		// Skip OPTIMIZE TABLE FINAL: the lightweight delete takes effect
+		// immediately for queries, and the expensive full-table rewrite
+		// would block restore for minutes on large tables.
+		if err := m.ch.DeleteLogsByFractalIDOpt(ctx, targetFractalID, false); err != nil {
 			return fmt.Errorf("clear existing data: %w", err)
 		}
 	}
@@ -1002,6 +1005,35 @@ func (m *Manager) GetArchive(ctx context.Context, archiveID string) (*Archive, e
 // ListArchives returns all archives for a fractal.
 func (m *Manager) ListArchives(ctx context.Context, fractalID string) ([]*Archive, error) {
 	return m.archives.ListArchives(ctx, fractalID)
+}
+
+// CancelOperation stops a running archive or restore. For restores, the archive
+// is set back to "completed" since the archive file is still valid. For
+// in-progress archives, the incomplete archive is deleted.
+func (m *Manager) CancelOperation(ctx context.Context, archiveID string) error {
+	archive, err := m.archives.GetArchive(ctx, archiveID)
+	if err != nil {
+		return err
+	}
+
+	if archive.Status != StatusInProgress && archive.Status != StatusRestoring {
+		return fmt.Errorf("archive is not in an active state (status: %s)", archive.Status)
+	}
+
+	// Cancel the running goroutine.
+	m.mu.Lock()
+	if cancel, ok := m.running[archiveID]; ok {
+		cancel()
+	}
+	m.mu.Unlock()
+
+	if archive.Status == StatusRestoring {
+		// Restore cancelled: archive file is still valid, set back to completed.
+		return m.archives.SetArchiveStatus(ctx, archiveID, StatusCompleted)
+	}
+
+	// In-progress archive cancelled: incomplete file, delete everything.
+	return m.DeleteArchive(ctx, archiveID)
 }
 
 // DeleteArchive deletes an archive record and its storage file.

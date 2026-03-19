@@ -236,6 +236,47 @@ func (h *Handler) HandleRestoreArchive(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleCancelOperation cancels a running archive or restore operation.
+func (h *Handler) HandleCancelOperation(w http.ResponseWriter, r *http.Request) {
+	if h.manager == nil {
+		h.sendError(w, http.StatusServiceUnavailable, "Archive system not available")
+		return
+	}
+
+	user := h.getCurrentUser(r)
+	if user == nil {
+		h.sendError(w, http.StatusUnauthorized, "Authentication required")
+		return
+	}
+
+	fractalID := chi.URLParam(r, "id")
+	archiveID := chi.URLParam(r, "archiveId")
+
+	role := h.resolveFractalRole(r, fractalID)
+	if !rbac.HasAccess(user, role, rbac.RoleAdmin) {
+		h.sendError(w, http.StatusForbidden, "Insufficient permissions")
+		return
+	}
+
+	archive, err := h.manager.GetArchive(r.Context(), archiveID)
+	if err != nil {
+		h.sendError(w, http.StatusNotFound, "Archive not found")
+		return
+	}
+	if archive.FractalID != fractalID {
+		h.sendError(w, http.StatusNotFound, "Archive not found")
+		return
+	}
+
+	if err := h.manager.CancelOperation(r.Context(), archiveID); err != nil {
+		log.Printf("[Archives] Failed to cancel operation %s: %v", archiveID, err)
+		h.sendError(w, http.StatusInternalServerError, "Failed to cancel operation")
+		return
+	}
+
+	h.sendSuccess(w, "Operation cancelled", nil)
+}
+
 // HandleDeleteArchive deletes an archive and its storage file.
 func (h *Handler) HandleDeleteArchive(w http.ResponseWriter, r *http.Request) {
 	if h.manager == nil {

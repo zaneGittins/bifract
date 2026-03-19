@@ -256,9 +256,29 @@ const Archives = {
         }
     },
 
-    confirmCancel(archiveId) {
-        if (!confirm('Cancel this operation? The incomplete archive will be removed.')) return;
-        this.deleteArchive(archiveId);
+    async confirmCancel(archiveId) {
+        if (!confirm('Cancel this operation?')) return;
+
+        try {
+            const response = await fetch(
+                `/api/v1/fractals/${this.currentFractalId}/archives/${archiveId}/cancel`,
+                {
+                    method: 'POST',
+                    credentials: 'include'
+                }
+            );
+            const data = await response.json();
+
+            if (!data.success) {
+                Toast.error('Cancel Failed', data.error || 'Failed to cancel operation');
+                return;
+            }
+
+            Toast.success('Operation Cancelled', 'The operation has been stopped.');
+            this.loadArchives(this.currentFractalId);
+        } catch (err) {
+            Toast.error('Cancel Failed', err.message);
+        }
     },
 
     confirmDelete(archiveId) {

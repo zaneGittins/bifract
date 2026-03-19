@@ -448,6 +448,14 @@ func (c *ClickHouseClient) Exec(ctx context.Context, query string) error {
 // lightweight delete. The session max_execution_time is overridden to unlimited
 // for this query so large fractals don't hit the default 60s cap.
 func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID string) error {
+	return c.DeleteLogsByFractalIDOpt(ctx, fractalID, true)
+}
+
+// DeleteLogsByFractalIDOpt is like DeleteLogsByFractalID but allows skipping
+// the OPTIMIZE TABLE FINAL that forces immediate merge of deleted rows.
+// The lightweight delete takes effect immediately for queries; the optimize
+// only affects reported disk size and can be deferred.
+func (c *ClickHouseClient) DeleteLogsByFractalIDOpt(ctx context.Context, fractalID string, optimize bool) error {
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"max_execution_time": 0,
 	}))
@@ -456,13 +464,15 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 		return fmt.Errorf("failed to delete logs for fractal %s: %w", fractalID, err)
 	}
 
-	// Force ClickHouse to merge away lightweight-deleted rows so that
-	// system.parts reflects the actual on-disk size. Without this, the
-	// deleted rows stay in parts indefinitely and inflate the reported
-	// storage size for other fractals sharing the table.
-	optimizeSQL := c.InjectOnCluster("OPTIMIZE TABLE logs FINAL")
-	if err := c.conn.Exec(ctx, optimizeSQL); err != nil {
-		log.Printf("Warning: OPTIMIZE after delete for fractal %s failed: %v", fractalID, err)
+	if optimize {
+		// Force ClickHouse to merge away lightweight-deleted rows so that
+		// system.parts reflects the actual on-disk size. Without this, the
+		// deleted rows stay in parts indefinitely and inflate the reported
+		// storage size for other fractals sharing the table.
+		optimizeSQL := c.InjectOnCluster("OPTIMIZE TABLE logs FINAL")
+		if err := c.conn.Exec(ctx, optimizeSQL); err != nil {
+			log.Printf("Warning: OPTIMIZE after delete for fractal %s failed: %v", fractalID, err)
+		}
 	}
 
 	log.Printf("Successfully deleted logs for fractal %s", fractalID)

@@ -691,6 +691,7 @@ func main() {
 			r.Get("/fractals/{id}/archives", archiveHandler.HandleListArchives)
 			r.Get("/fractals/{id}/archives/{archiveId}", archiveHandler.HandleGetArchive)
 			r.Post("/fractals/{id}/archives/{archiveId}/restore", archiveHandler.HandleRestoreArchive)
+			r.Post("/fractals/{id}/archives/{archiveId}/cancel", archiveHandler.HandleCancelOperation)
 			r.Delete("/fractals/{id}/archives/{archiveId}", archiveHandler.HandleDeleteArchive)
 
 			// Fractal permissions (fractal admin or tenant admin, checked in handler)
