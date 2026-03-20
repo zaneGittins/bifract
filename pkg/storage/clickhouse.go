@@ -459,7 +459,8 @@ func (c *ClickHouseClient) DeleteLogsByFractalIDOpt(ctx context.Context, fractal
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"max_execution_time": 0,
 	}))
-	err := c.conn.Exec(ctx, "DELETE FROM logs WHERE fractal_id = ?", fractalID)
+	deleteSQL := c.InjectOnCluster("DELETE FROM logs") + " WHERE fractal_id = ?"
+	err := c.conn.Exec(ctx, deleteSQL, fractalID)
 	if err != nil {
 		return fmt.Errorf("failed to delete logs for fractal %s: %w", fractalID, err)
 	}
