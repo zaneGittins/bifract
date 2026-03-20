@@ -673,7 +673,7 @@ const Autocomplete = {
         });
         input.addEventListener('keydown', (e) => this.handleKeyDown(e));
 
-        // Document-wide listeners for function hints (works on all query textareas)
+        // Document-wide listeners for function hints and Tab completion on all query textareas
         document.addEventListener('input', (e) => {
             if (e.target.tagName === 'TEXTAREA' && this._isQueryTextarea(e.target)) {
                 this._checkHintTrigger(e.target);
@@ -682,6 +682,15 @@ const Autocomplete = {
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && this._hintVisible) {
                 this.hideHint();
+            }
+            // Tab completion on any query textarea (dashboard/notebook editors)
+            if (e.key === 'Tab' && e.target.tagName === 'TEXTAREA' && e.target !== input && this._isQueryTextarea(e.target)) {
+                const best = this._getBestMatch(e.target);
+                if (best) {
+                    e.preventDefault();
+                    e._autocompleteHandled = true;
+                    this._applyCompletion(best.keyword, best.mode, e.target);
+                }
             }
         });
 
@@ -906,8 +915,8 @@ const Autocomplete = {
 
     // Compute the best Tab-completion match based on current cursor context.
     // Returns { keyword, mode } or null if no match.
-    _getBestMatch() {
-        const input = document.getElementById('queryInput');
+    _getBestMatch(textarea) {
+        const input = textarea || document.getElementById('queryInput');
         if (!input) return null;
 
         const value = input.value;
@@ -979,17 +988,17 @@ const Autocomplete = {
         }
 
         if (e.key === 'Tab') {
-            const best = this._getBestMatch();
+            const best = this._getBestMatch(e.target);
             if (best) {
                 e.preventDefault();
                 e._autocompleteHandled = true;
-                this._applyCompletion(best.keyword, best.mode);
+                this._applyCompletion(best.keyword, best.mode, e.target);
             }
         }
     },
 
-    _applyCompletion(keyword, mode) {
-        const input = document.getElementById('queryInput');
+    _applyCompletion(keyword, mode, textarea) {
+        const input = textarea || document.getElementById('queryInput');
         if (!input) return;
 
         const value = input.value;
@@ -1020,7 +1029,22 @@ const Autocomplete = {
         input.focus();
 
         if (window.SyntaxHighlight) {
-            SyntaxHighlight.update();
+            if (input.id === 'queryInput' || input.id === 'editorQueryInput') {
+                SyntaxHighlight.updateHighlight(input.id, input.id === 'queryInput' ? 'queryHighlight' : 'alertQueryHighlight');
+            } else if (input.id) {
+                // Dashboard/notebook editors use fixed-height containers,
+                // so only update highlight content without resizing.
+                let highlightEl = null;
+                if (input.id.startsWith('wie-q-')) {
+                    highlightEl = document.getElementById(input.id.replace('wie-q-', 'wie-h-'));
+                } else if (input.id.startsWith('edit-content-')) {
+                    highlightEl = document.getElementById(input.id.replace('edit-content-', 'edit-highlight-'));
+                }
+                if (highlightEl) {
+                    highlightEl.innerHTML = SyntaxHighlight.highlight(input.value) + '<br/>';
+                    highlightEl.scrollTop = input.scrollTop;
+                }
+            }
         }
     }
 };

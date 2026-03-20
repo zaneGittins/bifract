@@ -56,6 +56,18 @@ const SettingsView = {
         }
     },
 
+    switchSubTab(tabName) {
+        const tabBar = document.getElementById('settingsSubTabs');
+        if (tabBar) {
+            tabBar.querySelectorAll('.alerts-sub-tab').forEach(btn => btn.classList.remove('active'));
+            const activeBtn = tabBar.querySelector(`.alerts-sub-tab[data-subtab="${tabName}"]`);
+            if (activeBtn) activeBtn.classList.add('active');
+        }
+        document.querySelectorAll('.settings-sub-panel').forEach(panel => panel.style.display = 'none');
+        const panel = document.getElementById('settingsSubTab' + tabName.charAt(0).toUpperCase() + tabName.slice(1));
+        if (panel) panel.style.display = '';
+    },
+
     async show() {
         // Hide other views
         const searchView = document.getElementById('searchView');

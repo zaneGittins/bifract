@@ -7,26 +7,20 @@
 /* Header - matches notebooks-header */
 .ingest-header {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-end;
     align-items: center;
-    margin-bottom: 20px;
-    padding-bottom: 15px;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.ingest-header h2 {
-    color: var(--text-primary);
-    font-size: 1.5rem;
-    font-weight: 600;
-    margin: 0;
+    margin-bottom: 1rem;
+    padding-bottom: 0;
+    border-bottom: none;
 }
 
 /* Search and filters - matches notebooks-filters */
 .ingest-filters {
     display: flex;
-    gap: 15px;
-    margin-bottom: 20px;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
     align-items: center;
+    flex-wrap: wrap;
 }
 
 .ingest-search {

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// countHandler handles count()
+// countHandler handles count(), count(field), count(field, unique=true)
 type countHandler struct{}
 
 func (h *countHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
@@ -17,6 +17,78 @@ func (h *countHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
+
+	// Parse arguments: count(field, unique=true)
+	var field string
+	unique := false
+	for _, arg := range cmd.Arguments {
+		if arg == "unique=true" || arg == "distinct=true" {
+			unique = true
+		} else if arg == "unique=false" || arg == "distinct=false" {
+			// explicit false, ignore
+		} else if !strings.Contains(arg, "=") && field == "" {
+			field = arg
+		}
+	}
+
+	// Bare count() after groupby: push second stage to count the number of groups.
+	// count(field) or count(field, unique=true) still adds to the groupby stage.
+	if ctx.Plan.HasGroupBy && len(source.Layer.GroupBy) > 0 && field == "" && !unique {
+		if err := assembleGroupBySelects(ctx, source, nil); err != nil {
+			return fmt.Errorf("count (stage finalize): %w", err)
+		}
+		prevOutputs := make(map[string]bool)
+		for _, sel := range source.Layer.Selects {
+			alias := extractFieldAlias(sel.String())
+			if alias != "" {
+				prevOutputs[alias] = true
+			}
+		}
+		ctx.Plan.PushStage()
+		ctx.Plan.IsAggregated = false
+		ctx.Plan.aggregationOutputs = make(map[string]string)
+		ctx.Plan.outerAggregations = nil
+		ctx.Plan.outerAggFieldOrder = nil
+		ctx.Registry.ScopeToOutputs(prevOutputs)
+		ctx.Plan.HasGroupBy = false
+
+		newSource := ctx.Plan.CurrentStage()
+		newSource.Layer.Selects = append(newSource.Layer.Selects, SelectExpr{Expr: "COUNT(*) AS _count"})
+		ctx.Plan.IsAggregated = true
+		ctx.Plan.aggregationOutputs["_count"] = "COUNT(*)"
+		ctx.Registry.SetResolveExpr("_count", "_count")
+		return nil
+	}
+
+	// count(field, unique=true) - count distinct values
+	if field != "" && unique {
+		fieldRef := resolveFieldRef(field, ctx.Registry)
+		sqlExpr := fmt.Sprintf("uniqExact(%s)", fieldRef)
+		expr := fmt.Sprintf("%s AS _count", sqlExpr)
+		if !contains(selectExprStrings(source.Layer.Selects), expr) {
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: expr})
+		}
+		ctx.Plan.IsAggregated = true
+		ctx.Plan.aggregationOutputs["_count"] = sqlExpr
+		ctx.Registry.SetResolveExpr("_count", "_count")
+		return nil
+	}
+
+	// count(field) - count non-null values of field
+	if field != "" {
+		fieldRef := resolveFieldRef(field, ctx.Registry)
+		sqlExpr := fmt.Sprintf("count(%s)", fieldRef)
+		expr := fmt.Sprintf("%s AS _count", sqlExpr)
+		if !contains(selectExprStrings(source.Layer.Selects), expr) {
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: expr})
+		}
+		ctx.Plan.IsAggregated = true
+		ctx.Plan.aggregationOutputs["_count"] = sqlExpr
+		ctx.Registry.SetResolveExpr("_count", "_count")
+		return nil
+	}
+
+	// Bare count() without groupby
 	if !contains(selectExprStrings(source.Layer.Selects), "COUNT(*) AS _count") {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*) AS _count"})
 	}
@@ -655,6 +727,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	source := ctx.Plan.CurrentStage()
 	computedFields := ctx.Registry.AllComputed()
+	hasFunction := false
 
 	for i := 0; i < len(cmd.Arguments); i++ {
 		arg := cmd.Arguments[i]
@@ -662,6 +735,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if arg == "function=" && i+1 < len(cmd.Arguments) {
 			funcDef := cmd.Arguments[i+1]
 			i++
+			hasFunction = true
 
 			prevAliases := make(map[string]bool)
 			for _, sel := range source.Layer.Selects {
@@ -731,7 +805,17 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 	}
 
-	// Register default _count aggregation output. In multi-stage pipelines,
+	// Default aggregation: when no function= was specified, add COUNT(*)
+	// as the default aggregation function. This makes groupby(field)
+	// equivalent to groupby(field, function=count()).
+	if !hasFunction {
+		if !contains(selectExprStrings(source.Layer.Selects), "COUNT(*) AS _count") {
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*) AS _count"})
+		}
+		ctx.Plan.IsAggregated = true
+	}
+
+	// Register _count aggregation output. In multi-stage pipelines,
 	// skip this: the new stage should not pre-populate aggregationOutputs
 	// because subsequent aggregation commands (sum, avg, etc.) need to
 	// operate directly on the stage's SELECT, not the chained wrapper path.

@@ -38,7 +38,7 @@ Combine with other pipeline stages:
 
 ```
 * | match(dict="asset_inventory", field=hostname, column=name, include=[owner,department])
-  | groupBy(department) | count()
+  | groupBy(department, function=count())
 ```
 
 ## comment()
@@ -88,6 +88,6 @@ Keyword AND at least one matching tag.
 `comment()` can be combined with other pipeline commands:
 
 ```
-* | comment(tags=incident) | groupby(src_ip) | count()
+* | comment(tags=incident) | groupby(src_ip, function=count())
 * | comment() | table(timestamp, raw_log, src_ip)
 ```

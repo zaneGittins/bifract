@@ -2112,16 +2112,17 @@ func (c *PostgresClient) InsertDashboard(ctx context.Context, d Dashboard) (*Das
 
 func (c *PostgresClient) GetDashboard(ctx context.Context, id string) (*Dashboard, error) {
 	var d Dashboard
+	var scanFractalID, scanPrismID sql.NullString
 	err := c.db.QueryRowContext(ctx, `
 		SELECT d.id, d.name, d.description, d.time_range_type, d.time_range_start, d.time_range_end,
-		       d.fractal_id, COALESCE(d.variables, '[]'), d.created_by, d.created_at, d.updated_at,
+		       d.fractal_id, d.prism_id, COALESCE(d.variables, '[]'), d.created_by, d.created_at, d.updated_at,
 		       u.display_name, u.gravatar_color, u.gravatar_initial
 		FROM dashboards d
 		JOIN users u ON d.created_by = u.username
 		WHERE d.id = $1
 	`, id).Scan(
 		&d.ID, &d.Name, &d.Description, &d.TimeRangeType, &d.TimeRangeStart, &d.TimeRangeEnd,
-		&d.FractalID, &d.Variables, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
+		&scanFractalID, &scanPrismID, &d.Variables, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
 		&d.AuthorDisplayName, &d.AuthorGravatarColor, &d.AuthorGravatarInitial,
 	)
 	if err != nil {
@@ -2130,6 +2131,8 @@ func (c *PostgresClient) GetDashboard(ctx context.Context, id string) (*Dashboar
 		}
 		return nil, fmt.Errorf("failed to get dashboard: %w", err)
 	}
+	d.FractalID = scanFractalID.String
+	d.PrismID = scanPrismID.String
 	return &d, nil
 }
 

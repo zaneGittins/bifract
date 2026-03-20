@@ -696,12 +696,22 @@ const AlertFeeds = {
         `;
 
         panel.classList.add('open');
+
+        // Close on Escape
+        this._detailEscHandler = (e) => {
+            if (e.key === 'Escape') this.closeDetailsPanel();
+        };
+        document.addEventListener('keydown', this._detailEscHandler);
     },
 
     closeDetailsPanel() {
         const panel = document.getElementById('feedAlertDetailsPanel');
         if (panel) panel.classList.remove('open');
         this.currentDetailAlert = null;
+        if (this._detailEscHandler) {
+            document.removeEventListener('keydown', this._detailEscHandler);
+            this._detailEscHandler = null;
+        }
     },
 
     editFromPanel() {

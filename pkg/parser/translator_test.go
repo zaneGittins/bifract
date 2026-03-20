@@ -427,14 +427,39 @@ func TestSingleVal(t *testing.T) {
 		}
 	})
 
-	t.Run("singleval rejects groupBy", func(t *testing.T) {
+	t.Run("singleval with groupby count counts groups", func(t *testing.T) {
+		// groupby(status) | count() pushes a second stage that counts groups,
+		// producing a single row compatible with singleval().
 		pipeline, err := ParseQuery("* | groupBy(status) | count() | singleval()")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Expected success, got error: %v", err)
+		}
+		if result.ChartType != "singleval" {
+			t.Errorf("Expected chart type 'singleval', got %q", result.ChartType)
+		}
+		sql := result.SQL
+		// Should have nested subquery: outer COUNT(*) wrapping inner GROUP BY
+		if !strings.Contains(sql, "FROM (SELECT") {
+			t.Errorf("Expected nested subquery, got: %s", sql)
+		}
+		if !strings.Contains(sql, "COUNT(*)") {
+			t.Errorf("Expected COUNT(*) in query, got: %s", sql)
+		}
+	})
+
+	t.Run("singleval rejects bare groupBy", func(t *testing.T) {
+		// groupby without a second-stage agg still produces multiple rows
+		pipeline, err := ParseQuery("* | groupBy(status) | singleval()")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
 		_, err = TranslateToSQLWithOrder(pipeline, opts)
 		if err == nil {
-			t.Error("Expected error for singleval with groupBy")
+			t.Error("Expected error for singleval directly after groupBy")
 		}
 	})
 
@@ -2707,7 +2732,7 @@ func TestSkewnessFunction(t *testing.T) {
 	})
 
 	t.Run("chained skewness", func(t *testing.T) {
-		pipeline, err := ParseQuery("* | groupby(host) | count() | skewness(_count)")
+		pipeline, err := ParseQuery("* | groupby(host, function=count()) | skewness(_count)")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -2761,7 +2786,7 @@ func TestKurtosisFunction(t *testing.T) {
 	})
 
 	t.Run("chained kurtosis", func(t *testing.T) {
-		pipeline, err := ParseQuery("* | groupby(host) | count() | kurtosis(_count)")
+		pipeline, err := ParseQuery("* | groupby(host, function=count()) | kurtosis(_count)")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -2874,7 +2899,7 @@ func TestModifiedZScoreFunction(t *testing.T) {
 	})
 
 	t.Run("chained aggregation", func(t *testing.T) {
-		pipeline, err := ParseQuery("* | groupby(user) | count() | modifiedZScore(_count)")
+		pipeline, err := ParseQuery("* | groupby(user, function=count()) | modifiedZScore(_count)")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -2978,7 +3003,7 @@ func TestMadOutlierFunction(t *testing.T) {
 	})
 
 	t.Run("chained aggregation", func(t *testing.T) {
-		pipeline, err := ParseQuery("* | groupby(user) | count() | madOutlier(_count)")
+		pipeline, err := ParseQuery("* | groupby(user, function=count()) | madOutlier(_count)")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -2996,7 +3021,7 @@ func TestMadOutlierFunction(t *testing.T) {
 	})
 
 	t.Run("filter on _is_outlier applied to outer wrapper", func(t *testing.T) {
-		pipeline, err := ParseQuery("* | groupby(user_name) | count() | madOutlier(_count) | _is_outlier = 0")
+		pipeline, err := ParseQuery("* | groupby(user_name, function=count()) | madOutlier(_count) | _is_outlier = 0")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -3083,7 +3108,7 @@ func TestIQRFunction(t *testing.T) {
 	})
 
 	t.Run("chained aggregation", func(t *testing.T) {
-		pipeline, err := ParseQuery("* | groupby(host) | count() | iqr(_count)")
+		pipeline, err := ParseQuery("* | groupby(host, function=count()) | iqr(_count)")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -3351,7 +3376,7 @@ func TestMultiGroupBy(t *testing.T) {
 
 	t.Run("two stage groupby count then re-count", func(t *testing.T) {
 		// Count per src_ip, then re-group by _count to get count distribution
-		pipeline, err := ParseQuery("* | groupby(src_ip) | count() | groupby(_count) | count()")
+		pipeline, err := ParseQuery("* | groupby(src_ip, function=count()) | groupby(_count, function=count())")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -3376,7 +3401,7 @@ func TestMultiGroupBy(t *testing.T) {
 
 	t.Run("two stage groupby with sum across groups", func(t *testing.T) {
 		// Count per country+city, then sum counts per country
-		pipeline, err := ParseQuery("* | groupby(country, city) | count() | groupby(country) | sum(_count)")
+		pipeline, err := ParseQuery("* | groupby(country, city, function=count()) | groupby(country) | sum(_count)")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -3413,7 +3438,7 @@ func TestMultiGroupBy(t *testing.T) {
 	})
 
 	t.Run("multi-stage preserves inner stage selects", func(t *testing.T) {
-		pipeline, err := ParseQuery("* | groupby(user) | count() | groupby(_count) | count()")
+		pipeline, err := ParseQuery("* | groupby(user, function=count()) | groupby(_count, function=count())")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -3434,7 +3459,7 @@ func TestMultiGroupBy(t *testing.T) {
 
 	t.Run("chained agg without second groupby still works", func(t *testing.T) {
 		// Single groupby + avg of aggregation output (chained path, not multi-stage)
-		pipeline, err := ParseQuery("* | groupby(src_ip) | count() | avg(_count)")
+		pipeline, err := ParseQuery("* | groupby(src_ip, function=count()) | avg(_count)")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -3450,6 +3475,112 @@ func TestMultiGroupBy(t *testing.T) {
 		}
 		if !strings.Contains(sql, "GROUP BY src_ip") {
 			t.Errorf("Expected GROUP BY src_ip in inner query, got: %s", sql)
+		}
+	})
+}
+
+func TestGroupByCountGroups(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:   1000,
+	}
+
+	t.Run("groupby then count counts groups", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(computer_name) | count()")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Translation failed: %v", err)
+		}
+		sql := result.SQL
+		// Should have nested subquery: inner groups, outer counts groups
+		if !strings.Contains(sql, "FROM (SELECT") {
+			t.Errorf("Expected nested subquery, got: %s", sql)
+		}
+		if !strings.Contains(sql, "GROUP BY computer_name") {
+			t.Errorf("Expected GROUP BY computer_name in inner query, got: %s", sql)
+		}
+		if !result.IsAggregated {
+			t.Error("Expected IsAggregated=true")
+		}
+	})
+
+	t.Run("groupby count singleval", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(computer_name) | count() | singleval()")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Translation failed: %v", err)
+		}
+		if result.ChartType != "singleval" {
+			t.Errorf("Expected chart type 'singleval', got %q", result.ChartType)
+		}
+	})
+
+	t.Run("groupby default function is count", func(t *testing.T) {
+		// groupby(field) alone should produce COUNT(*) as default
+		pipeline, err := ParseQuery("* | groupby(status)")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Translation failed: %v", err)
+		}
+		if !strings.Contains(result.SQL, "COUNT(*)") {
+			t.Errorf("Expected COUNT(*) in output, got: %s", result.SQL)
+		}
+		if !result.IsAggregated {
+			t.Error("Expected IsAggregated=true")
+		}
+	})
+
+	t.Run("count with unique=true", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | count(computer_name, unique=true)")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Translation failed: %v", err)
+		}
+		if !strings.Contains(result.SQL, "uniqExact") {
+			t.Errorf("Expected uniqExact in query, got: %s", result.SQL)
+		}
+	})
+
+	t.Run("count with field", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | count(computer_name)")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Translation failed: %v", err)
+		}
+		sql := result.SQL
+		if !strings.Contains(sql, "count(") {
+			t.Errorf("Expected count(field) in query, got: %s", sql)
+		}
+	})
+
+	t.Run("singleval works with chained outer aggregation", func(t *testing.T) {
+		// groupby + chained agg (outerAggregations path) + singleval should work
+		pipeline, err := ParseQuery("* | groupby(src_ip, function=count()) | avg(_count) | singleval()")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Translation failed: %v", err)
+		}
+		if result.ChartType != "singleval" {
+			t.Errorf("Expected chart type 'singleval', got %q", result.ChartType)
 		}
 	})
 }
@@ -3868,7 +3999,7 @@ func TestJoinFunction(t *testing.T) {
 	}{
 		{
 			name:  "Basic inner join",
-			query: `action="login_failed" | join(user) { action="login_success" | groupby(user) | count() }`,
+			query: `action="login_failed" | join(user) { action="login_success" | groupby(user, function=count()) }`,
 			wantContain: []string{
 				"INNER JOIN",
 				"_outer",
@@ -3879,7 +4010,7 @@ func TestJoinFunction(t *testing.T) {
 		},
 		{
 			name:  "Left join with type parameter",
-			query: `* | join(src_ip, type=left) { * | groupby(src_ip) | count() }`,
+			query: `* | join(src_ip, type=left) { * | groupby(src_ip, function=count()) }`,
 			wantContain: []string{
 				"LEFT JOIN",
 				"= _join_sub.src_ip",
@@ -3887,7 +4018,7 @@ func TestJoinFunction(t *testing.T) {
 		},
 		{
 			name:  "Join with include parameter",
-			query: `* | join(user, include=[department,role]) { * | groupby(user) | count() }`,
+			query: `* | join(user, include=[department,role]) { * | groupby(user, function=count()) }`,
 			wantContain: []string{
 				"INNER JOIN",
 				"_join_sub.department AS _join_department",
@@ -3896,7 +4027,7 @@ func TestJoinFunction(t *testing.T) {
 		},
 		{
 			name:  "Join with max parameter",
-			query: `* | join(user, max=500) { * | groupby(user) | count() }`,
+			query: `* | join(user, max=500) { * | groupby(user, function=count()) }`,
 			wantContain: []string{
 				"INNER JOIN",
 				"LIMIT 500",

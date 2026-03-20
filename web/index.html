@@ -72,7 +72,6 @@
             <div id="fractalListingTabContent">
                 <section class="results-section">
                     <div class="fractal-listing-header">
-                        <h2>Fractals</h2>
                         <div class="fractal-listing-controls">
                             <input type="text" id="fractalListingSearch" class="fractal-listing-search" placeholder="Search fractals...">
                             <div class="fractal-listing-pagination">
@@ -80,6 +79,7 @@
                                 <span id="fractalListingPageInfo" class="page-info-compact"></span>
                                 <button id="fractalListingNextBtn" class="page-btn-compact">→</button>
                             </div>
+                            <span class="filters-spacer"></span>
                             <button id="createFractalBtn" class="btn-primary admin-only" style="display: none;">+ Create</button>
                         </div>
                     </div>
@@ -94,7 +94,6 @@
                 <div id="performanceView" class="admin-only" style="display: none;">
                     <section class="performance-view-section">
                         <div class="performance-header">
-                            <h2>Performance</h2>
                             <div class="performance-controls">
                                 <span id="perfLiveBadge" class="live-badge">LIVE</span>
                                 <select id="perfTimeRange" class="setting-select perf-refresh-select">
@@ -190,15 +189,24 @@
         <!-- Settings View (Admin Only) -->
         <div id="settingsView" class="admin-only" style="display: none;">
             <section class="settings-view-section">
-                <h2>Settings</h2>
+                <!-- Settings Sub-Tabs -->
+                <div class="alerts-sub-tabs" id="settingsSubTabs">
+                    <button class="alerts-sub-tab active" data-subtab="status" onclick="SettingsView.switchSubTab('status')">Status</button>
+                    <button class="alerts-sub-tab" data-subtab="users" onclick="SettingsView.switchSubTab('users')">Users</button>
+                    <button class="alerts-sub-tab" data-subtab="groups" onclick="SettingsView.switchSubTab('groups')">Groups</button>
+                    <button class="alerts-sub-tab" data-subtab="limits" onclick="SettingsView.switchSubTab('limits')">Limits</button>
+                </div>
 
-                <!-- System Status Card -->
+                <!-- Status Sub-Tab -->
+                <div id="settingsSubTabStatus" class="settings-sub-panel">
                 <div class="settings-card">
                     <h3>System Status</h3>
                     <div id="settingsStatus"></div>
                 </div>
+                </div>
 
-                <!-- User Management Card -->
+                <!-- Users Sub-Tab -->
+                <div id="settingsSubTabUsers" class="settings-sub-panel" style="display:none;">
                 <div class="settings-card">
                     <div class="section-header">
                         <h3>User Management</h3>
@@ -236,7 +244,10 @@
                     </div>
                 </div>
 
-                <!-- Groups Management Card -->
+                </div><!-- end settingsSubTabUsers -->
+
+                <!-- Groups Sub-Tab -->
+                <div id="settingsSubTabGroups" class="settings-sub-panel" style="display:none;">
                 <div class="settings-card">
                     <div class="section-header">
                         <h3>Groups</h3>
@@ -292,7 +303,10 @@
                     </div>
                 </div>
 
-                <!-- System Limits Card -->
+                </div><!-- end settingsSubTabGroups -->
+
+                <!-- Limits Sub-Tab -->
+                <div id="settingsSubTabLimits" class="settings-sub-panel" style="display:none;">
                 <div class="settings-card">
                     <h3>System Limits</h3>
 
@@ -323,6 +337,7 @@
                         </select>
                     </div>
                 </div>
+                </div><!-- end settingsSubTabLimits -->
             </section>
         </div>
 
@@ -332,11 +347,9 @@
             <div id="mainContextTabContent" style="display: none;">
                 <div id="contextLinksView" class="admin-only" style="display: none;">
                     <section class="settings-view-section">
-                        <div class="section-header">
-                            <h2>Context Links</h2>
+                        <div class="section-header" style="justify-content:flex-end;">
                             <button id="contextLinkCreateBtn" class="btn-primary btn-sm">+ Add Context Link</button>
                         </div>
-                        <p class="section-description">Context links add lookup icons next to matching field values in the log detail panel. When clicked, they open external services like VirusTotal or AlienVault OTX.</p>
                         <div id="contextLinksListContainer">
                             <div class="loading">Loading context links...</div>
                         </div>
@@ -393,14 +406,12 @@
             <div id="mainNormalizersTabContent" style="display: none;">
                 <div id="normalizersView" class="admin-only" style="display: none;">
                     <section class="settings-view-section">
-                        <div class="section-header">
-                            <h2>Normalizers</h2>
+                        <div class="section-header" style="justify-content:flex-end;">
                             <div class="section-header-actions">
                                 <button class="btn-secondary btn-sm" onclick="Normalizers.importNormalizer()">Import YAML</button>
                                 <button id="normalizerCreateBtn" class="btn-primary btn-sm">+ Create Normalizer</button>
                             </div>
                         </div>
-                        <p class="section-description">Normalizers transform field names during log ingestion. Attach them to ingest tokens to standardize field names across log sources.</p>
                         <div id="normalizersListContainer">
                             <div class="loading">Loading normalizers...</div>
                         </div>
@@ -693,14 +704,6 @@
             <!-- List View (existing) -->
             <div id="commentsListView">
             <section class="commented-logs-section">
-                <div class="commented-header">
-                    <h2>Comments</h2>
-                    <div class="commented-controls">
-                        <button id="generateNotebookBtn" class="btn-secondary" style="white-space: nowrap;">Generate Notebook</button>
-                        <button id="commentedRefreshBtn" class="btn-primary">Refresh</button>
-                    </div>
-                </div>
-
                 <div class="alerts-filters">
                     <input type="text" id="commentedSearchInput" class="alerts-search"
                            placeholder="Search comments, log IDs, authors..."
@@ -720,6 +723,9 @@
                             style="display:none;" onclick="CommentedLogs.bulkRemoveTag()">Remove Tag</button>
                     <button id="commentedBulkDeleteBtn" class="btn-danger btn-sm"
                             style="display:none;" onclick="CommentedLogs.bulkDelete()">Delete</button>
+                    <span class="filters-spacer"></span>
+                    <button id="generateNotebookBtn" class="btn-secondary" style="white-space: nowrap;">Generate Notebook</button>
+                    <button id="commentedRefreshBtn" class="btn-secondary">Refresh</button>
                 </div>
 
                 <div id="commentedResults">
@@ -777,18 +783,13 @@
                     <section class="notebooks-view-section">
                         <!-- Notebook Listing -->
                         <div id="notebookListing" class="notebooks-listing">
-                            <div class="notebooks-header">
-                                <h2>Notebooks</h2>
-                                <div style="display:flex;gap:0.5rem;">
-                                    <button id="importNotebookBtn" class="btn-secondary" onclick="Notebooks.importNotebook()">Import YAML</button>
-                                    <button id="createNotebookBtn" class="btn-primary">New Notebook</button>
-                                </div>
-                            </div>
-
-                            <!-- Search and Filters -->
+                            <!-- Search, Filters + Actions -->
                             <div class="notebooks-filters">
                                 <input type="text" id="notebookSearchInput" class="notebooks-search" placeholder="Search notebooks..." />
                                 <button id="notebooksRefreshBtn" class="btn-secondary">Refresh</button>
+                                <span class="filters-spacer"></span>
+                                <button id="importNotebookBtn" class="btn-secondary" onclick="Notebooks.importNotebook()">Import YAML</button>
+                                <button id="createNotebookBtn" class="btn-primary">New Notebook</button>
                             </div>
 
                             <!-- Notebooks Table -->
@@ -864,16 +865,12 @@
                     <section class="dashboards-view-section">
                         <!-- Dashboard Listing -->
                         <div id="dashboardListing" class="dashboards-listing">
-                            <div class="dashboards-header">
-                                <h2>Dashboards</h2>
-                                <div style="display:flex;gap:0.5rem;">
-                                    <button id="importDashboardBtn" class="btn-secondary" onclick="Dashboards.importDashboard()">Import YAML</button>
-                                    <button id="createDashboardBtn" class="btn-primary">New Dashboard</button>
-                                </div>
-                            </div>
                             <div class="dashboards-filters">
                                 <input type="text" id="dashboardSearchInput" class="dashboards-search" placeholder="Search dashboards..." />
                                 <button id="dashboardsRefreshBtn" class="btn-secondary">Refresh</button>
+                                <span class="filters-spacer"></span>
+                                <button id="importDashboardBtn" class="btn-secondary" onclick="Dashboards.importDashboard()">Import YAML</button>
+                                <button id="createDashboardBtn" class="btn-primary">New Dashboard</button>
                             </div>
                             <div class="dashboards-table-container">
                                 <table id="dashboardsTable" class="dashboards-table">
@@ -927,12 +924,10 @@
 
                         <!-- Dict Listing -->
                         <div id="dictListing" class="dashboards-listing">
-                            <div class="dashboards-header">
-                                <h2>Dicts</h2>
-                                <button id="dictCreateBtn" class="btn-primary">+ New Dict</button>
-                            </div>
                             <div class="dashboards-filters">
                                 <input type="text" id="dictSearchInput" class="dashboards-search" placeholder="Search dicts...">
+                                <span class="filters-spacer"></span>
+                                <button id="dictCreateBtn" class="btn-primary">+ New Dict</button>
                             </div>
 
                             <!-- Inline create form -->
@@ -1089,16 +1084,7 @@
         <!-- Manual Alerts View (existing) -->
         <div id="alertsView" class="auth-required" style="display: none;">
             <section class="alerts-view-section">
-                <div class="alerts-header">
-                    <h2>Alert Management</h2>
-                    <div class="alerts-controls">
-                        <button id="importYamlBtn" class="btn-primary">Import YAML</button>
-                        <button id="createAlertBtn" class="btn-primary">Create Alert</button>
-                        <button id="manageWebhooksBtn" class="btn-secondary">Manage Actions</button>
-                    </div>
-                </div>
-
-                <!-- Alert Filters -->
+                <!-- Alert Filters + Actions -->
                 <div class="alerts-filters">
                     <input type="text" id="alertSearchInput" class="alerts-search" placeholder="Search alerts..." />
                     <select id="alertStatusFilter" class="alerts-filter-select">
@@ -1112,6 +1098,10 @@
                     <button id="alertsBulkEnableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkEnableFiltered()">Enable Filtered</button>
                     <button id="alertsBulkDisableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkDisableFiltered()">Disable Filtered</button>
                     <button id="alertsRefreshBtn" class="btn-secondary">Refresh</button>
+                    <span class="filters-spacer"></span>
+                    <button id="importYamlBtn" class="btn-primary">Import YAML</button>
+                    <button id="createAlertBtn" class="btn-primary">Create Alert</button>
+                    <button id="manageWebhooksBtn" class="btn-secondary">Manage Actions</button>
                 </div>
 
                 <!-- Alerts List -->
@@ -1276,11 +1266,6 @@
                     <div class="ingest-tokens-container">
                         <!-- Token Listing -->
                         <div id="ingestTokenListing">
-                            <div class="ingest-header">
-                                <h2>Ingest Tokens</h2>
-                                <button id="createIngestTokenBtn" class="btn-primary">New Token</button>
-                            </div>
-
                             <!-- Dynamic panels (create form, edit panel, reveal banner) -->
                             <div id="ingestDynamicPanels"></div>
 
@@ -1288,6 +1273,8 @@
                             <div class="ingest-filters">
                                 <input type="text" id="ingestTokenSearchInput" class="ingest-search" placeholder="Search tokens..." />
                                 <button id="ingestTokensRefreshBtn" class="btn-secondary">Refresh</button>
+                                <span class="filters-spacer"></span>
+                                <button id="createIngestTokenBtn" class="btn-primary">New Token</button>
                             </div>
 
                             <!-- Tokens Table -->
@@ -1382,16 +1369,25 @@
 
                 <!-- Fractal management section (shown when a fractal is selected) -->
                 <div id="fractalOnlyManageSection" class="fractal-manage-view">
-                <div class="manage-title-row">
-                    <h2 id="manageFractalTitle">Manage Fractal</h2>
-                    <button id="manageEditFractalBtn" class="manage-edit-btn" title="Edit fractal name and description">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
-                    </button>
-                </div>
+                    <span id="manageFractalTitle" style="display:none;"></span>
+                    <button id="manageEditFractalBtn" style="display:none;"></button>
 
+                    <!-- Manage Sub-Tabs -->
+                    <div class="alerts-sub-tabs" id="manageSubTabs">
+                        <button class="alerts-sub-tab active" data-subtab="overview" onclick="FractalManageTab.switchSubTab('overview')">Overview</button>
+                        <button class="alerts-sub-tab fractal-admin-only" data-subtab="access" onclick="FractalManageTab.switchSubTab('access')">Access</button>
+                        <button class="alerts-sub-tab fractal-admin-only" data-subtab="lifecycle" onclick="FractalManageTab.switchSubTab('lifecycle')">Lifecycle</button>
+                        <button class="alerts-sub-tab fractal-admin-only" data-subtab="danger" onclick="FractalManageTab.switchSubTab('danger')">Danger Zone</button>
+                    </div>
+
+                    <!-- Overview Sub-Tab -->
+                    <div id="manageSubTabOverview" class="manage-sub-panel">
                     <div class="fractal-details-grid">
                         <div class="detail-section">
-                            <h3>Basic Information</h3>
+                            <div class="section-header-row" style="border:none;margin:0;padding:0 0 0.5rem 0;">
+                                <h3 style="margin:0;">Basic Information</h3>
+                                <button id="manageEditFractalBtnInline" class="btn-secondary btn-xs" onclick="FractalManageTab.editFractal()" title="Edit name and description">Edit</button>
+                            </div>
                             <div class="detail-row">
                                 <span class="detail-label">Name:</span>
                                 <span id="manageFractalName" class="detail-value"></span>
@@ -1435,7 +1431,11 @@
                         </div>
                     </div>
 
-                    <div class="fractal-permissions-section fractal-admin-only">
+                    </div><!-- end manageSubTabOverview -->
+
+                    <!-- Access Sub-Tab -->
+                    <div id="manageSubTabAccess" class="manage-sub-panel" style="display:none;">
+                    <div class="fractal-permissions-section">
                         <div class="section-header">
                             <h3>Permissions</h3>
                             <button id="grantPermissionBtn" class="btn-primary btn-sm">+ Grant Access</button>
@@ -1484,7 +1484,7 @@
                         </div>
                     </div>
 
-                    <div class="api-access-section fractal-admin-only">
+                    <div class="api-access-section">
                         <h3>API Access</h3>
                         <p class="section-description">Manage programmatic access to this fractal</p>
                         <div class="api-access-actions">
@@ -1493,17 +1493,22 @@
                             </button>
                         </div>
                     </div>
+                    </div><!-- end manageSubTabAccess -->
 
-                    <div class="fractal-settings">
-                        <h3>Retention</h3>
+                    <!-- Lifecycle Sub-Tab -->
+                    <div id="manageSubTabLifecycle" class="manage-sub-panel" style="display:none;">
+                    <div class="fractal-settings lifecycle-section">
+                        <h3>Log Lifecycle</h3>
+
+                        <div id="lifecycleSummary" class="lifecycle-summary"></div>
 
                         <div class="setting-item">
                             <div class="setting-info">
-                                <label for="manageFractalRetentionSelect" class="setting-label">Log Retention Period</label>
-                                <p class="setting-description">Automatically delete logs older than this period. Deletion runs hourly based on log timestamp. Default is unlimited.</p>
+                                <label for="manageFractalRetentionSelect" class="setting-label">Delete logs after</label>
+                                <p class="setting-description">Logs older than this are permanently removed. Runs hourly.</p>
                             </div>
                             <select id="manageFractalRetentionSelect" class="setting-select">
-                                <option value="">Unlimited</option>
+                                <option value="">Never (keep forever)</option>
                                 <option value="7">7 days</option>
                                 <option value="14">14 days</option>
                                 <option value="30">30 days</option>
@@ -1512,31 +1517,27 @@
                                 <option value="365">365 days</option>
                             </select>
                         </div>
-                    </div>
 
-                    <div class="fractal-settings fractal-admin-only">
-                        <h3>Archive Schedule</h3>
-
-                        <div class="setting-item">
+                        <div class="setting-item fractal-admin-only">
                             <div class="setting-info">
-                                <label for="manageFractalArchiveSchedule" class="setting-label">Automatic Archive Frequency</label>
-                                <p class="setting-description">Automatically create encrypted archives on a schedule. Uses the fractal's retention window if set.</p>
+                                <label for="manageFractalArchiveSchedule" class="setting-label">Automatic backups</label>
+                                <p class="setting-description">Create encrypted, integrity-verified backups on a schedule. Backups can be restored to any fractal.</p>
                             </div>
                             <select id="manageFractalArchiveSchedule" class="setting-select">
-                                <option value="never">Never</option>
+                                <option value="never">Off</option>
                                 <option value="daily">Daily</option>
                                 <option value="weekly">Weekly</option>
                                 <option value="monthly">Monthly</option>
                             </select>
                         </div>
 
-                        <div class="setting-item">
+                        <div class="setting-item fractal-admin-only">
                             <div class="setting-info">
-                                <label for="manageFractalMaxArchives" class="setting-label">Maximum Archives</label>
-                                <p class="setting-description">Keep at most this many archives. Oldest are automatically deleted when exceeded.</p>
+                                <label for="manageFractalMaxArchives" class="setting-label">Max backups to keep</label>
+                                <p class="setting-description">When exceeded, the oldest backup is automatically removed.</p>
                             </div>
                             <select id="manageFractalMaxArchives" class="setting-select">
-                                <option value="">Unlimited</option>
+                                <option value="">No limit</option>
                                 <option value="1">1</option>
                                 <option value="3">3</option>
                                 <option value="5">5</option>
@@ -1546,9 +1547,38 @@
                                 <option value="30">30</option>
                             </select>
                         </div>
+
+                        <div class="lifecycle-divider fractal-admin-only"></div>
+
+                        <div class="setting-item fractal-admin-only">
+                            <div class="setting-info">
+                                <label for="manageFractalQuotaInput" class="setting-label">Disk quota</label>
+                                <p class="setting-description">Limit how much disk this fractal can consume (measured as raw log bytes). Leave empty for no limit.</p>
+                            </div>
+                            <div class="quota-input-group">
+                                <input type="text" inputmode="numeric" pattern="[0-9]*" id="manageFractalQuotaInput" class="setting-input" placeholder="No limit" style="width:90px;">
+                                <span class="quota-unit">GB</span>
+                            </div>
+                        </div>
+
+                        <div class="setting-item fractal-admin-only">
+                            <div class="setting-info">
+                                <label for="manageFractalQuotaAction" class="setting-label">When quota is reached</label>
+                                <p class="setting-description">Reject stops accepting new logs (429). Rollover deletes the oldest logs to make room.</p>
+                                <p class="setting-description lifecycle-warning" id="manageQuotaRolloverWarning" style="display:none;">Rollover silently deletes your oldest logs to stay within quota. For sensitive data, pair this with archiving to ensure nothing is permanently lost.</p>
+                            </div>
+                            <select id="manageFractalQuotaAction" class="setting-select">
+                                <option value="reject">Reject new logs</option>
+                                <option value="rollover">Rollover (delete oldest)</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-item fractal-admin-only" style="justify-content:flex-end;">
+                            <button onclick="FractalManageTab.saveDiskQuota()" class="btn-primary btn-sm">Save Quota</button>
+                        </div>
                     </div>
 
-                    <div class="archives-section fractal-admin-only">
+                    <div class="archives-section">
                         <div class="section-header-row">
                             <div>
                                 <h3>Archives</h3>
@@ -1566,10 +1596,6 @@
                                     <input type="text" id="archiveRestoreToken" class="form-input" placeholder="Ingest token for the target fractal" autocomplete="off">
                                     <p class="section-description" style="margin-top: 0.25rem;">The token determines which fractal logs are restored into. To restore into a different fractal, use a token from that fractal.</p>
                                 </div>
-                                <label class="archive-restore-checkbox">
-                                    <input type="checkbox" id="archiveRestoreClear" checked>
-                                    <span>Clear existing logs in target fractal before restoring</span>
-                                </label>
                                 <div class="archive-restore-actions">
                                     <button class="btn-secondary btn-sm" onclick="Archives.cancelRestore()">Cancel</button>
                                     <button class="btn-primary btn-sm" id="archiveRestoreConfirmBtn" onclick="Archives.executeRestore()">Restore</button>
@@ -1578,7 +1604,11 @@
                         </div>
                     </div>
 
-                    <div class="danger-section fractal-admin-only">
+                    </div><!-- end manageSubTabLifecycle -->
+
+                    <!-- Danger Zone Sub-Tab -->
+                    <div id="manageSubTabDanger" class="manage-sub-panel" style="display:none;">
+                    <div class="danger-section">
                         <h3>Danger Zone</h3>
                         <div class="danger-actions">
                             <div class="danger-action-item">
@@ -1598,19 +1628,20 @@
                         </div>
                     </div>
 
+                    </div><!-- end manageSubTabDanger -->
+
                     <div id="manageFractalError" class="error-message" style="display: none;"></div>
                 </div>
             </div>
-        </div>
 
-        <!-- Alert Editor View (standalone, accessed from alerts) -->
-        <div id="alertEditorView" class="auth-required" style="display: none;">
-            <div class="alert-editor-container">
-                <!-- Header with Back Button and Save -->
-                <div class="alert-editor-header">
-                    <div class="header-left">
-                        <button id="backToAlertsBtn" class="btn-secondary" onclick="Alerts.backToAlerts()">
-                            ← Back to Alerts
+            <!-- Alert Editor View (standalone, accessed from alerts) -->
+            <div id="alertEditorView" class="auth-required" style="display: none;">
+                <div class="alert-editor-container">
+                    <!-- Header with Back Button and Save -->
+                    <div class="alert-editor-header">
+                        <div class="header-left">
+                            <button id="backToAlertsBtn" class="btn-secondary" onclick="Alerts.backToAlerts()">
+                                ← Back to Alerts
                         </button>
                     </div>
                     <div class="header-right">
@@ -1842,8 +1873,9 @@
         </div>
         <!-- End Alert Editor View -->
 
-        <!-- End Fractal Management View -->
-    </div>
+        </div><!-- End fractalView -->
+
+    </div><!-- End container -->
 
     <!-- Log Detail Side Panel (Left) -->
     <div id="logDetailPanel" class="log-detail-panel left-panel">

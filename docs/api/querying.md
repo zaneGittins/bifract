@@ -10,7 +10,7 @@ Authorization: Bearer bifract_<key>
 
 ```json
 {
-  "query": "event_id=1 | groupBy(image) | count()",
+  "query": "event_id=1 | groupBy(image, function=count())",
   "fractal_id": "uuid-of-fractal",
   "start": "2026-01-01T00:00:00Z",
   "end": "2026-01-02T00:00:00Z"
@@ -31,7 +31,7 @@ Authorization: Bearer bifract_<key>
   "success": true,
   "results": [{"image": "powershell.exe", "count": 42}],
   "count": 1,
-  "query": "event_id=1 | groupBy(image) | count()",
+  "query": "event_id=1 | groupBy(image, function=count())",
   "sql": "SELECT ...",
   "execution_ms": 12,
   "field_order": ["image", "count"],

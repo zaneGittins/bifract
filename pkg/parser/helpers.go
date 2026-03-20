@@ -1345,7 +1345,7 @@ func processStatsFn(fn string, selectFields *[]string, computedFields map[string
 			field = params["_positional"]
 		}
 		alias := params["as"]
-		distinct := params["distinct"] == "true"
+		distinct := params["distinct"] == "true" || params["unique"] == "true"
 		if field != "" && distinct {
 			if alias == "" {
 				alias = "unique_" + field

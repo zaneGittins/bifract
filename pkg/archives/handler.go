@@ -218,7 +218,7 @@ func (h *Handler) HandleRestoreArchive(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.manager.RestoreArchive(r.Context(), archiveID, targetFractalID, req.IngestToken, req.ClearExisting); err != nil {
+	if err := h.manager.RestoreArchive(r.Context(), archiveID, targetFractalID, req.IngestToken); err != nil {
 		log.Printf("[Archives] Failed to start restore for archive %s: %v", archiveID, err)
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "already in progress") || strings.Contains(err.Error(), "can only restore completed") {

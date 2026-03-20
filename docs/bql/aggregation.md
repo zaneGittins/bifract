@@ -7,6 +7,17 @@
 event_id=1 | count()
 ```
 
+### Count with Field
+
+Count non-null values of a specific field, or use `unique=true` for distinct counting:
+
+```
+* | count(computer_name)
+* | count(computer_name, unique=true)
+```
+
+`unique=true` uses `uniqExact()` for an exact distinct count.
+
 ## Sum / Avg / Max / Min
 
 ```
@@ -30,7 +41,7 @@ Returns p50, p75, p99 for `percentile()`.
 ```
 * | median(response_time)
 * | mad(response_time)
-* | groupBy(host) | mad(latency) | _mad > 50
+* | groupBy(host, function=mad(latency)) | _mad > 50
 ```
 
 `median()` returns the median value (`_median`). `mad()` returns both the median (`_median`) and the median absolute deviation (`_mad`), a robust measure of variability resistant to outliers. Unlike standard deviation, MAD is not skewed by extreme values, making it ideal for anomaly detection on noisy data.
@@ -57,7 +68,7 @@ Return the value from the earliest or latest event in each group:
 * | groupby(user) | multi(count(field=event_id, as=total))
 ```
 
-Use `distinct=true` for unique counts (`uniqExact`), and `as=` to name the output column.
+Use `distinct=true` or `unique=true` for unique counts (`uniqExact`), and `as=` to name the output column.
 
 ### Collect (groupArray)
 
@@ -85,8 +96,8 @@ Shows the top values with their frequency. Use `percent=true` to show percentage
 `skewness()` returns the population skewness (`_skewness`). `kurtosis()` returns the population excess kurtosis (`_kurtosis`). Both work on chained aggregation outputs:
 
 ```
-* | groupby(host) | count() | skewness(_count)
-* | groupby(host) | count() | kurtosis(_count)
+* | groupby(host, function=count()) | skewness(_count)
+* | groupby(host, function=count()) | kurtosis(_count)
 ```
 
 ## Frequency
@@ -104,7 +115,7 @@ Returns `value`, `_count`, `_percentage`, and `_cumulative_pct` columns, sorted 
 
 ```
 * | iqr(response_time)
-* | groupby(host) | count() | iqr(_count)
+* | groupby(host, function=count()) | iqr(_count)
 ```
 
 Returns `_q1` (25th percentile), `_q3` (75th percentile), and `_iqr` (Q3 - Q1).
@@ -161,20 +172,33 @@ Returns per-field stats: `field_name`, `_events`, `_distinct_vals`, `_mean`, `_m
 ```
 * | groupBy(image)
 * | groupBy(image, user)
-* | groupBy(image) | count()
-* | groupBy(user) | sum(bytes)
 ```
 
-`groupBy()` automatically adds a `_count` if no aggregation is specified.
+The default aggregation function is `count()`. Use `function=` to specify a different aggregation:
+
+```
+* | groupBy(user, function=sum(bytes))
+* | groupBy(user, function=avg(response_time))
+```
+
+### Counting Groups
+
+Piping `count()` after `groupBy()` counts the number of groups (not per-group counts). Combine with `singleval()` to display as a single metric:
+
+```
+* | groupBy(computer_name) | count() | singleval()
+```
 
 ### Distinct Count with groupBy
 
 ```
-* | groupBy(computer, function=count(field=user, distinct=true))
+* | groupBy(computer, function=count(field=user, unique=true))
 ```
 
-### Stats with groupBy
+### Multiple Aggregations with groupBy
+
+Use `function=multi(...)` to compute multiple aggregations per group:
 
 ```
-* | groupBy(computer, function=multi(count(computer), count(user,distinct=true), sum(bytes)))
+* | groupBy(computer, function=multi(count(computer), count(user, unique=true), sum(bytes)))
 ```

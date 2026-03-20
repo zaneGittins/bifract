@@ -29,6 +29,7 @@ type IngestSource interface {
 	Depth() int
 	Healthy() bool
 	CPUPressure() bool
+	DiskPressure() bool
 	ConsecutiveFailures() int64
 }
 
@@ -54,6 +55,7 @@ type Collector struct {
 	ingestQueueDepth   prometheus.Gauge
 	ingestHealthy      prometheus.Gauge
 	ingestCPUPressure  prometheus.Gauge
+	ingestDiskPressure prometheus.Gauge
 	ingestConsecFails  prometheus.Gauge
 
 	// Alert gauges.
@@ -132,6 +134,12 @@ func New(version string) *Collector {
 			Name:      "cpu_pressure",
 			Help:      "1 if ClickHouse CPU backpressure is active, 0 otherwise.",
 		}),
+		ingestDiskPressure: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "bifract",
+			Subsystem: "ingest",
+			Name:      "disk_pressure",
+			Help:      "1 if ClickHouse disk backpressure is active, 0 otherwise.",
+		}),
 		ingestConsecFails: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "bifract",
 			Subsystem: "ingest",
@@ -169,6 +177,7 @@ func New(version string) *Collector {
 		c.ingestQueueDepth,
 		c.ingestHealthy,
 		c.ingestCPUPressure,
+		c.ingestDiskPressure,
 		c.ingestConsecFails,
 		c.alertsCached,
 		c.alertsRunning,
@@ -229,6 +238,11 @@ func (c *Collector) collect() {
 			c.ingestCPUPressure.Set(1)
 		} else {
 			c.ingestCPUPressure.Set(0)
+		}
+		if s.DiskPressure() {
+			c.ingestDiskPressure.Set(1)
+		} else {
+			c.ingestDiskPressure.Set(0)
 		}
 		c.ingestConsecFails.Set(float64(s.ConsecutiveFailures()))
 	}

@@ -138,7 +138,7 @@ Splits a field by a delimiter and returns the Nth element (1-indexed) as `_split
 ```
 * | split(image, "\\", -1)
 * | split(path, "/", 2)
-* | split(email, "@", 2) | groupby(_split) | count()
+* | split(email, "@", 2) | groupby(_split, function=count())
 ```
 
 Use index `-1` to get the last element.
@@ -168,7 +168,7 @@ Returns the first non-empty value from a list of fields as `_coalesced`:
 
 ```
 * | coalesce(user, username, account_name)
-* | coalesce(src_ip, client_ip) | groupby(_coalesced) | count()
+* | coalesce(src_ip, client_ip) | groupby(_coalesced, function=count())
 ```
 
 ### Sprintf
@@ -178,7 +178,7 @@ Formats fields into a string using printf-style format specifiers as `_sprintf`:
 ```
 * | sprintf("%s - %s", username, action, as=user_action)
 * | sprintf("https://%s:%d/%s", hostname, port, path, as=full_url)
-* | sprintf("%s@%s", user, domain) | groupby(_sprintf) | count()
+* | sprintf("%s@%s", user, domain) | groupby(_sprintf, function=count())
 ```
 
 Supports `%s` (string), `%d` (integer), `%f` (float), and other standard format specifiers. Use `as=` to set a custom output field name.
@@ -192,7 +192,7 @@ Enriches logs with geolocation and ASN data from MaxMind GeoLite2 databases. Req
 ```
 * | lookupIP(field=src_ip, include=[country,city])
 * | lookupIP(field=client_ip, include=[asn,as_org,country])
-* | lookupIP(field=src_ip, include=[country,city]) | groupby(country) | count()
+* | lookupIP(field=src_ip, include=[country,city]) | groupby(country, function=count())
 ```
 
 **Parameters:**

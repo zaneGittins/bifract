@@ -40,8 +40,8 @@ Default direction is ascending.
 Filter on computed or aggregated fields after a pipeline stage:
 
 ```
-* | groupBy(image) | count() | _count > 100
-* | groupBy(user) | sum(bytes) | sum_bytes >= 1000000
+* | groupBy(image, function=count()) | _count > 100
+* | groupBy(user, function=sum(bytes)) | sum_bytes >= 1000000
 ```
 
 You can also add bare string or regex filters after the initial pipeline to further narrow results:

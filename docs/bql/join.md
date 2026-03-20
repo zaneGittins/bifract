@@ -24,7 +24,7 @@ Correlate results from two independent queries by joining on a shared field. The
 Find IPs that were denied but also had successful logins:
 ```
 action="denied" | join(src_ip) {
-  action="login_success" | groupby(src_ip) | count()
+  action="login_success" | groupby(src_ip, function=count())
 }
 ```
 
@@ -38,21 +38,21 @@ Enrich events with user metadata using a left join:
 Correlate login failures with successes by user:
 ```
 action="login_failed" | join(user) {
-  action="login_success" | groupby(user) | count()
+  action="login_success" | groupby(user, function=count())
 }
 ```
 
 Join with a custom max limit:
 ```
 * | join(src_ip, max=50000) {
-  * | groupby(src_ip) | count()
+  * | groupby(src_ip, function=count())
 } | sort(_join__count, desc)
 ```
 
 Combine with other pipeline commands:
 ```
 event_id=1 | join(user) {
-  event_id=4624 | groupby(user) | count()
+  event_id=4624 | groupby(user, function=count())
 } | sort(timestamp, desc) | limit(100)
 ```
 

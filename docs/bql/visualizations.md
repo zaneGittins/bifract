@@ -4,13 +4,13 @@
 
 ```
 * | groupBy(status) | piechart()
-* | groupBy(image) | count() | piechart(limit=5)
+* | groupBy(image, function=count()) | piechart(limit=5)
 ```
 
 ## Bar Chart
 
 ```
-* | groupBy(user) | count() | barchart()
+* | groupBy(user, function=count()) | barchart()
 * | groupBy(status) | barchart(limit=10)
 ```
 
@@ -25,11 +25,12 @@ Both `child=` and `parent=` are required. Max limit is 500.
 
 ## Single Value
 
-Display a single aggregate statistic as a large number. Requires an aggregation function and cannot be combined with `groupBy()`.
+Display a single aggregate statistic as a large number. Requires an aggregation that produces a single row.
 
 ```
 * | count() | singleval()
 * | avg(response_time) | singleval(label="Avg Response Time")
+* | groupBy(computer_name) | count() | singleval(label="Unique Computers")
 ```
 
 ### Parameters

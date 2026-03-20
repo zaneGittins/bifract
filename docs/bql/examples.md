@@ -3,19 +3,19 @@
 ### Find all PowerShell executions grouped by user
 
 ```
-image=/powershell/i | groupBy(user) | count() | sort(_count, order=desc)
+image=/powershell/i | groupBy(user, function=count()) | sort(_count, order=desc)
 ```
 
 ### Top 10 users by data transferred
 
 ```
-* | groupBy(user) | sum(bytes) | sort(_sum, order=desc) | limit(10)
+* | groupBy(user, function=sum(bytes)) | sort(_sum, order=desc) | limit(10)
 ```
 
 ### HTTP errors in the last time window
 
 ```
-status_code>=400 | groupBy(status_code) | count() | barchart()
+status_code>=400 | groupBy(status_code, function=count()) | barchart()
 ```
 
 ### Classify events by severity
@@ -25,7 +25,7 @@ status_code>=400 | groupBy(status_code) | count() | barchart()
   status_code>=500 | severity := "critical" ;
   status_code>=400 | severity := "warning" ;
   * | severity := "info"
-} | groupBy(severity) | count()
+} | groupBy(severity, function=count())
 ```
 
 ### Process ancestry graph

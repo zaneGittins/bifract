@@ -1104,6 +1104,7 @@ ALTER TABLE archives ADD COLUMN IF NOT EXISTS format_version INTEGER NOT NULL DE
 ALTER TABLE archives ADD COLUMN IF NOT EXISTS archive_end_ts TIMESTAMP;
 ALTER TABLE archives ADD COLUMN IF NOT EXISTS cursor_ts TIMESTAMP;
 ALTER TABLE archives ADD COLUMN IF NOT EXISTS cursor_id TEXT;
+ALTER TABLE archives ADD COLUMN IF NOT EXISTS checksum TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_archives_fractal_id ON archives(fractal_id);
 CREATE INDEX IF NOT EXISTS idx_archives_status ON archives(status);

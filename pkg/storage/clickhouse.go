@@ -459,8 +459,10 @@ func (c *ClickHouseClient) DeleteLogsByFractalIDOpt(ctx context.Context, fractal
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"max_execution_time": 0,
 	}))
-	deleteSQL := c.InjectOnCluster("DELETE FROM logs") + " WHERE fractal_id = ?"
-	err := c.conn.Exec(ctx, deleteSQL, fractalID)
+	// Lightweight deletes replicate automatically via ZooKeeper on
+	// ReplicatedMergeTree tables, so ON CLUSTER is not needed and would
+	// cause the query to block waiting for all replicas synchronously.
+	err := c.conn.Exec(ctx, "DELETE FROM logs WHERE fractal_id = ?", fractalID)
 	if err != nil {
 		return fmt.Errorf("failed to delete logs for fractal %s: %w", fractalID, err)
 	}

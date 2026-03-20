@@ -40,6 +40,12 @@ const (
 	cpuPressureTrigger = 80.0
 	cpuPressureRelease = 60.0
 	cpuPollInterval    = 5 * time.Second
+
+	// diskPressureTrigger is the disk usage% above which backpressure activates.
+	// diskPressureRelease is the disk usage% below which it deactivates.
+	// At 90% ClickHouse starts struggling; at 95%+ data corruption risk.
+	diskPressureTrigger = 90.0
+	diskPressureRelease = 80.0
 )
 
 // QueueMetrics tracks ingestion queue statistics
@@ -80,7 +86,11 @@ type IngestQueue struct {
 	// cpuPressure is 1 when ClickHouse CPU backpressure is active, 0 otherwise.
 	// Set by the background CPU monitor based on system.asynchronous_metrics.
 	cpuPressure atomic.Int64
-	stop        chan struct{} // signals CPU monitor to exit
+	// diskPressure is 1 when ClickHouse disk usage exceeds the high watermark.
+	// External ingestion is rejected while active; system fractals (audit,
+	// alerts, system) bypass this since they write directly via InsertLogs.
+	diskPressure atomic.Int64
+	stop         chan struct{} // signals CPU/disk monitor to exit
 
 	// lastIngested tracks the most recent successful insert time per fractal.
 	// Used by the alert engine to skip evaluation when no new data has arrived.
@@ -106,8 +116,8 @@ func NewIngestQueue(db *storage.ClickHouseClient, bufferSize, workers int) *Inge
 	}
 	q.wg.Add(1)
 	go q.monitorCPU()
-	log.Printf("[Ingest Queue] Started %d workers, buffer size %d, max enqueue batch %d, batch coalesce %d/%v, CPU backpressure %.0f%%/%.0f%%",
-		workers, bufferSize, maxEnqueueBatch, defaultMaxBatchSize, defaultFlushInterval, cpuPressureTrigger, cpuPressureRelease)
+	log.Printf("[Ingest Queue] Started %d workers, buffer size %d, max enqueue batch %d, batch coalesce %d/%v, CPU backpressure %.0f%%/%.0f%%, disk backpressure %.0f%%/%.0f%%",
+		workers, bufferSize, maxEnqueueBatch, defaultMaxBatchSize, defaultFlushInterval, cpuPressureTrigger, cpuPressureRelease, diskPressureTrigger, diskPressureRelease)
 	return q
 }
 
@@ -138,6 +148,12 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 
 	// CPU backpressure: reject when ClickHouse CPU is saturated.
 	if q.cpuPressure.Load() == 1 {
+		q.Metrics.QueueDrops.Add(int64(len(logs)))
+		return false
+	}
+
+	// Disk backpressure: reject when ClickHouse disk is nearly full.
+	if q.diskPressure.Load() == 1 {
 		q.Metrics.QueueDrops.Add(int64(len(logs)))
 		return false
 	}
@@ -181,9 +197,12 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 }
 
 // Healthy returns false when workers are unable to insert into ClickHouse
-// or when CPU backpressure is active.
+// or when CPU or disk backpressure is active.
 func (q *IngestQueue) Healthy() bool {
 	if q.cpuPressure.Load() == 1 {
+		return false
+	}
+	if q.diskPressure.Load() == 1 {
 		return false
 	}
 	if q.consecutiveFailures.Load() < unhealthyThreshold {
@@ -192,7 +211,7 @@ func (q *IngestQueue) Healthy() bool {
 	return time.Now().Unix()-q.lastFailureUnix.Load() > int64(unhealthyCooldown.Seconds())
 }
 
-// monitorCPU polls ClickHouse OS CPU metrics and toggles cpuPressure.
+// monitorCPU polls ClickHouse OS CPU and disk metrics, toggling backpressure.
 func (q *IngestQueue) monitorCPU() {
 	defer q.wg.Done()
 	ticker := time.NewTicker(cpuPollInterval)
@@ -203,15 +222,25 @@ func (q *IngestQueue) monitorCPU() {
 			return
 		case <-ticker.C:
 			pct, err := q.queryClickHouseCPU()
-			if err != nil {
-				continue
+			if err == nil {
+				if pct >= cpuPressureTrigger && q.cpuPressure.Load() == 0 {
+					q.cpuPressure.Store(1)
+					log.Printf("[Ingest Queue] CPU backpressure ON (%.1f%%)", pct)
+				} else if pct < cpuPressureRelease && q.cpuPressure.Load() == 1 {
+					q.cpuPressure.Store(0)
+					log.Printf("[Ingest Queue] CPU backpressure OFF (%.1f%%)", pct)
+				}
 			}
-			if pct >= cpuPressureTrigger && q.cpuPressure.Load() == 0 {
-				q.cpuPressure.Store(1)
-				log.Printf("[Ingest Queue] CPU backpressure ON (%.1f%%)", pct)
-			} else if pct < cpuPressureRelease && q.cpuPressure.Load() == 1 {
-				q.cpuPressure.Store(0)
-				log.Printf("[Ingest Queue] CPU backpressure OFF (%.1f%%)", pct)
+
+			diskPct, diskErr := q.queryClickHouseDisk()
+			if diskErr == nil {
+				if diskPct >= diskPressureTrigger && q.diskPressure.Load() == 0 {
+					q.diskPressure.Store(1)
+					log.Printf("[Ingest Queue] Disk backpressure ON (%.1f%% used)", diskPct)
+				} else if diskPct < diskPressureRelease && q.diskPressure.Load() == 1 {
+					q.diskPressure.Store(0)
+					log.Printf("[Ingest Queue] Disk backpressure OFF (%.1f%% used)", diskPct)
+				}
 			}
 		}
 	}
@@ -308,6 +337,66 @@ func (q *IngestQueue) queryNodeCPU(addr *string) (float64, error) {
 	return busy / total * 100, nil
 }
 
+// queryClickHouseDisk returns the highest disk usage percentage (0-100) across
+// all ClickHouse nodes. Queries the system.disks table for the default disk.
+func (q *IngestQueue) queryClickHouseDisk() (float64, error) {
+	addrs := q.db.Addrs()
+	if len(addrs) <= 1 {
+		return q.queryNodeDisk(nil)
+	}
+	var maxPct float64
+	var lastErr error
+	for _, addr := range addrs {
+		pct, err := q.queryNodeDisk(&addr)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if pct > maxPct {
+			maxPct = pct
+		}
+	}
+	if maxPct > 0 || lastErr == nil {
+		return maxPct, nil
+	}
+	return 0, lastErr
+}
+
+// queryNodeDisk queries disk usage from a single ClickHouse node.
+func (q *IngestQueue) queryNodeDisk(addr *string) (float64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const diskQuery = `SELECT total_space, free_space FROM system.disks WHERE name = 'default' LIMIT 1`
+
+	var rows []map[string]interface{}
+	var err error
+
+	if addr != nil {
+		conn, openErr := storage.OpenClickHouseAddr(*addr, q.db.User, q.db.Password)
+		if openErr != nil {
+			return 0, openErr
+		}
+		defer conn.Close()
+		rows, err = storage.QueryConn(ctx, conn, diskQuery)
+	} else {
+		rows, err = q.db.Query(ctx, diskQuery)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+
+	total := asFloat64(rows[0]["total_space"])
+	free := asFloat64(rows[0]["free_space"])
+	if total <= 0 {
+		return 0, nil
+	}
+	return (total - free) / total * 100, nil
+}
+
 func asFloat64(v interface{}) float64 {
 	switch n := v.(type) {
 	case float64:
@@ -358,6 +447,7 @@ func (q *IngestQueue) InsertErrorsTotal() int64     { return q.Metrics.InsertErr
 func (q *IngestQueue) QueueDropsTotal() int64       { return q.Metrics.QueueDrops.Load() }
 func (q *IngestQueue) RetriesTotal() int64          { return q.Metrics.Retries.Load() }
 func (q *IngestQueue) CPUPressure() bool            { return q.cpuPressure.Load() == 1 }
+func (q *IngestQueue) DiskPressure() bool           { return q.diskPressure.Load() == 1 }
 func (q *IngestQueue) ConsecutiveFailures() int64   { return q.consecutiveFailures.Load() }
 
 // worker drains the channel and coalesces multiple small batches into larger

@@ -20,6 +20,7 @@ type Archive struct {
 	ArchiveType    string     `json:"archive_type"`
 	FormatVersion  int        `json:"format_version"`
 	ArchiveEndTS   *time.Time `json:"archive_end_ts,omitempty"`
+	Checksum       string     `json:"checksum,omitempty"`
 	CursorTS       *time.Time `json:"-"`
 	CursorID       *string    `json:"-"`
 }

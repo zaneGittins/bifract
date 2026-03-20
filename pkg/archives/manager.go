@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -155,8 +157,13 @@ func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentio
 		archiveEndTS = &now
 	}
 
-	// Set up streaming pipeline: CH HTTP -> reformat -> zstd -> encrypt -> storage
+	// Set up streaming pipeline: CH HTTP -> reformat -> zstd -> encrypt -> hash -> storage
 	pr, pw := io.Pipe()
+
+	// Wrap the pipe reader with a hashing reader so we compute SHA-256
+	// over the encrypted bytes that are actually stored on disk/S3.
+	hasher := sha256.New()
+	hashReader := io.TeeReader(pr, hasher)
 
 	var writeErr error
 	var written int64
@@ -164,7 +171,7 @@ func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentio
 
 	go func() {
 		defer close(writeDone)
-		written, writeErr = m.store.Write(ctx, storagePath, pr)
+		written, writeErr = m.store.Write(ctx, storagePath, hashReader)
 		if writeErr != nil {
 			pr.CloseWithError(writeErr)
 		}
@@ -326,9 +333,11 @@ func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentio
 		return fmt.Errorf("write archive: %w", writeErr)
 	}
 
+	checksum := hex.EncodeToString(hasher.Sum(nil))
+
 	return m.archives.UpdateArchiveStatus(
 		context.Background(), archive.ID, StatusCompleted, "",
-		written, logCount, timeStart, timeEnd,
+		written, logCount, timeStart, timeEnd, checksum,
 	)
 }
 
@@ -556,7 +565,7 @@ func getArchiveMaxMemory() uint64 {
 // RestoreArchive starts an asynchronous restore operation from an archive.
 // The ingestToken is used to POST raw logs to the local ingest endpoint,
 // ensuring logs go through the full ingestion pipeline.
-func (m *Manager) RestoreArchive(ctx context.Context, archiveID, targetFractalID, ingestToken string, clearExisting bool) error {
+func (m *Manager) RestoreArchive(ctx context.Context, archiveID, targetFractalID, ingestToken string) error {
 	if m.store == nil {
 		return fmt.Errorf("archive storage not configured")
 	}
@@ -606,12 +615,12 @@ func (m *Manager) RestoreArchive(ctx context.Context, archiveID, targetFractalID
 	m.mu.Unlock()
 
 	m.wg.Add(1)
-	go m.runRestore(restoreCtx, archive, targetFractalID, ingestToken, clearExisting)
+	go m.runRestore(restoreCtx, archive, targetFractalID, ingestToken)
 
 	return nil
 }
 
-func (m *Manager) runRestore(ctx context.Context, archive *Archive, targetFractalID, ingestToken string, clearExisting bool) {
+func (m *Manager) runRestore(ctx context.Context, archive *Archive, targetFractalID, ingestToken string) {
 	defer m.wg.Done()
 	defer func() {
 		m.mu.Lock()
@@ -621,9 +630,11 @@ func (m *Manager) runRestore(ctx context.Context, archive *Archive, targetFracta
 
 	log.Printf("[Archives] Starting restore of archive %s into fractal %s", archive.ID, targetFractalID)
 
-	if err := m.executeRestore(ctx, archive, targetFractalID, ingestToken, clearExisting); err != nil {
+	if err := m.executeRestore(ctx, archive, targetFractalID, ingestToken); err != nil {
 		log.Printf("[Archives] Restore of archive %s failed: %v", archive.ID, err)
-		m.archives.SetArchiveStatus(context.Background(), archive.ID, StatusFailed)
+		// Set back to completed, not failed - the archive itself is still valid,
+		// only the restore attempt failed. This allows retrying the restore.
+		m.archives.SetArchiveStatus(context.Background(), archive.ID, StatusCompleted)
 		return
 	}
 
@@ -635,15 +646,34 @@ func (m *Manager) runRestore(ctx context.Context, archive *Archive, targetFracta
 // endpoint. Matches the default used by the bifract --ingest CLI.
 const restoreBatchSize = 5000
 
-func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFractalID, ingestToken string, clearExisting bool) error {
-	if clearExisting {
-		log.Printf("[Archives] Clearing existing data for fractal %s before restore", targetFractalID)
-		// Skip OPTIMIZE TABLE FINAL: the lightweight delete takes effect
-		// immediately for queries, and the expensive full-table rewrite
-		// would block restore for minutes on large tables.
-		if err := m.ch.DeleteLogsByFractalIDOpt(ctx, targetFractalID, false); err != nil {
-			return fmt.Errorf("clear existing data: %w", err)
+// verifyChecksum reads the archive file and verifies its SHA-256 checksum
+// matches the stored value. This detects corruption or tampering before restore.
+func (m *Manager) verifyChecksum(ctx context.Context, archive *Archive) error {
+	reader, err := m.store.Read(ctx, archive.StoragePath)
+	if err != nil {
+		return fmt.Errorf("open archive for checksum: %w", err)
+	}
+	defer reader.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, reader); err != nil {
+		return fmt.Errorf("read archive for checksum: %w", err)
+	}
+
+	actual := hex.EncodeToString(hasher.Sum(nil))
+	if actual != archive.Checksum {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s (archive may be corrupted)", archive.Checksum, actual)
+	}
+	return nil
+}
+
+func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFractalID, ingestToken string) error {
+	// Verify archive integrity before restoring if a checksum is available.
+	if archive.Checksum != "" {
+		if err := m.verifyChecksum(ctx, archive); err != nil {
+			return fmt.Errorf("integrity check failed: %w", err)
 		}
+		log.Printf("[Archives] Integrity check passed for archive %s", archive.ID)
 	}
 
 	reader, err := m.store.Read(ctx, archive.StoragePath)

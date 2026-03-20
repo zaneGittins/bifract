@@ -22,7 +22,7 @@ func NewStorage(pg *storage.PostgresClient) *Storage {
 // archiveColumns is the standard column list used in SELECT queries.
 const archiveColumns = `id, fractal_id, filename, storage_type, storage_path, size_bytes, log_count,
 	time_range_start, time_range_end, status, error_message, created_by, created_at, archive_type,
-	format_version, archive_end_ts, cursor_ts, cursor_id`
+	format_version, archive_end_ts, cursor_ts, cursor_id, COALESCE(checksum, '')`
 
 // scanArchive scans a row into an Archive struct.
 func scanArchive(scanner interface{ Scan(dest ...interface{}) error }) (*Archive, error) {
@@ -33,7 +33,7 @@ func scanArchive(scanner interface{ Scan(dest ...interface{}) error }) (*Archive
 		&a.ID, &a.FractalID, &a.Filename, &a.StorageType, &a.StoragePath,
 		&a.SizeBytes, &a.LogCount, &a.TimeRangeStart, &a.TimeRangeEnd,
 		&a.Status, &errMsg, &a.CreatedBy, &a.CreatedAt, &a.ArchiveType,
-		&a.FormatVersion, &archiveEndTS, &cursorTS, &cursorID,
+		&a.FormatVersion, &archiveEndTS, &cursorTS, &cursorID, &a.Checksum,
 	)
 	if err != nil {
 		return nil, err
@@ -110,11 +110,11 @@ func (s *Storage) ListArchives(ctx context.Context, fractalID string) ([]*Archiv
 }
 
 // UpdateArchiveStatus updates the status and metadata of an archive.
-func (s *Storage) UpdateArchiveStatus(ctx context.Context, archiveID, status, errMsg string, sizeBytes, logCount int64, timeStart, timeEnd *time.Time) error {
+func (s *Storage) UpdateArchiveStatus(ctx context.Context, archiveID, status, errMsg string, sizeBytes, logCount int64, timeStart, timeEnd *time.Time, checksum string) error {
 	_, err := s.pg.DB().ExecContext(ctx,
 		`UPDATE archives SET status = $1, error_message = $2, size_bytes = $3, log_count = $4,
-		 time_range_start = $5, time_range_end = $6 WHERE id = $7`,
-		status, errMsg, sizeBytes, logCount, timeStart, timeEnd, archiveID,
+		 time_range_start = $5, time_range_end = $6, checksum = $7 WHERE id = $8`,
+		status, errMsg, sizeBytes, logCount, timeStart, timeEnd, checksum, archiveID,
 	)
 	if err != nil {
 		return fmt.Errorf("update archive status: %w", err)

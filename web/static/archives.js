@@ -45,7 +45,7 @@ const Archives = {
         }
 
         const rows = archives.map(a => {
-            const statusBadge = this.renderStatus(a.status, a.error_message, a.log_count);
+            const statusBadge = this.renderStatus(a.status, a.error_message, a.log_count, a.checksum);
             const size = this.formatBytes(a.size_bytes);
             const date = new Date(a.created_at).toLocaleDateString('en-US', {
                 year: 'numeric', month: 'short', day: 'numeric',
@@ -85,10 +85,13 @@ const Archives = {
             </table>`;
     },
 
-    renderStatus(status, errorMessage, logCount) {
+    renderStatus(status, errorMessage, logCount, checksum) {
         switch (status) {
-            case 'completed':
-                return `<span class="archive-badge archive-badge-success">Completed</span>`;
+            case 'completed': {
+                const verified = checksum ? ' title="SHA-256 verified"' : ' title="No checksum (created before integrity verification was added)"';
+                const icon = checksum ? '&#x2713; ' : '';
+                return `<span class="archive-badge archive-badge-success"${verified}>${icon}Completed</span>`;
+            }
             case 'in_progress': {
                 const progress = logCount > 0 ? ` ${this.formatCount(logCount)} logs` : '';
                 return `<span class="archive-badge archive-badge-active"><span class="spinner-sm"></span> Archiving${progress}</span>`;
@@ -205,20 +208,14 @@ const Archives = {
     async executeRestore() {
         if (!this.pendingRestoreArchiveId || !this.currentFractalId) return;
 
-        const clearCheckbox = document.getElementById('archiveRestoreClear');
         const confirmBtn = document.getElementById('archiveRestoreConfirmBtn');
         const tokenInput = document.getElementById('archiveRestoreToken');
 
-        const clearExisting = clearCheckbox ? clearCheckbox.checked : true;
         const ingestToken = tokenInput ? tokenInput.value.trim() : '';
 
         if (!ingestToken) {
             Toast.error('Missing Token', 'An ingest API key is required to restore an archive.');
             return;
-        }
-
-        if (clearExisting) {
-            if (!confirm('This will clear existing logs in the target fractal and replace them with the archived data. Continue?')) return;
         }
 
         try {
@@ -233,7 +230,7 @@ const Archives = {
                     method: 'POST',
                     credentials: 'include',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ clear_existing: clearExisting, ingest_token: ingestToken })
+                    body: JSON.stringify({ ingest_token: ingestToken })
                 }
             );
             const data = await response.json();

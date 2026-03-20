@@ -539,6 +539,12 @@ const Alerts = {
 
         // Store current alert for actions
         this.currentDetailAlert = alert;
+
+        // Close on Escape
+        this._detailEscHandler = (e) => {
+            if (e.key === 'Escape') this.closeAlertDetailsPanel();
+        };
+        document.addEventListener('keydown', this._detailEscHandler);
     },
 
     closeAlertDetailsPanel() {
@@ -547,6 +553,10 @@ const Alerts = {
             panel.classList.remove('open');
         }
         this.currentDetailAlert = null;
+        if (this._detailEscHandler) {
+            document.removeEventListener('keydown', this._detailEscHandler);
+            this._detailEscHandler = null;
+        }
     },
 
     renderAlertDetails(alert) {
@@ -2022,15 +2032,11 @@ throttleField: ${alert.throttle_field}` : ''}`;
         this.editingFeedAlert = opts.fromFeed || false;
         this.feedAlertOriginalId = this.editingFeedAlert ? alertId : null;
 
-        // Hide alerts view, feed alerts view, and actions manage view
-        const alertsView = document.getElementById('alertsView');
-        const feedAlertsView = document.getElementById('feedAlertsView');
+        // Hide alerts tab content (sub-tabs + list views) and show editor
+        const alertsTabContent = document.getElementById('fractalAlertsTabContent');
         const alertEditorView = document.getElementById('alertEditorView');
-        const actionsManageView = document.getElementById('actionsManageView');
 
-        if (alertsView) alertsView.style.display = 'none';
-        if (feedAlertsView) feedAlertsView.style.display = 'none';
-        if (actionsManageView) actionsManageView.style.display = 'none';
+        if (alertsTabContent) alertsTabContent.style.display = 'none';
         if (alertEditorView) alertEditorView.style.display = 'block';
 
         // Set up editor for create vs edit mode
@@ -2080,9 +2086,11 @@ throttleField: ${alert.throttle_field}` : ''}`;
         const banner = document.getElementById('feedAlertBanner');
         if (banner) banner.remove();
 
-        // Hide alert editor
+        // Hide alert editor and restore alerts tab content
         const alertEditorView = document.getElementById('alertEditorView');
+        const alertsTabContent = document.getElementById('fractalAlertsTabContent');
         if (alertEditorView) alertEditorView.style.display = 'none';
+        if (alertsTabContent) alertsTabContent.style.display = 'block';
 
         // Return to the correct view
         if (wasFromFeed) {
@@ -2238,9 +2246,9 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const sqlOutput = document.getElementById('alertSqlOutput');
             if (data.sql && sqlOutput && window.QueryExecutor) {
                 sqlOutput.innerHTML = QueryExecutor.highlightSQL(data.sql);
-                // Show SQL preview after query execution in alert editor
+                // Show SQL preview if user has it enabled
                 const alertSqlPreview = document.querySelector('#alertEditorView .sql-preview');
-                if (alertSqlPreview) {
+                if (alertSqlPreview && window.UserPrefs && UserPrefs.showSQL()) {
                     alertSqlPreview.style.display = 'block';
                 }
             }

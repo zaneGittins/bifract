@@ -122,7 +122,13 @@ func (h *singlevalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if !ctx.Plan.IsAggregated {
 		return fmt.Errorf("singleval() requires an aggregation function (e.g. count(), avg(), sum())")
 	}
-	if ctx.Plan.HasGroupBy {
+	// Only reject if the current stage still has an active GROUP BY with no
+	// outer aggregation wrapping it. When a second stage was pushed (e.g.
+	// groupby(field) | count() | singleval()), the current stage has no
+	// GROUP BY and produces a single row. Similarly, outerAggregations
+	// collapse grouped results into a single value.
+	currentStage := ctx.Plan.CurrentStage()
+	if len(currentStage.Layer.GroupBy) > 0 && len(ctx.Plan.outerAggregations) == 0 {
 		return fmt.Errorf("singleval() cannot be used with groupBy() - it displays a single value only")
 	}
 	ctx.Plan.ChartType = "singleval"

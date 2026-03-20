@@ -12,17 +12,32 @@ const FractalManageTab = {
         // Retention select
         const retentionSelect = document.getElementById('manageFractalRetentionSelect');
         if (retentionSelect) {
-            retentionSelect.addEventListener('change', () => this.saveRetentionSetting());
+            retentionSelect.addEventListener('change', () => {
+                this.saveRetentionSetting();
+                this.updateLifecycleSummary();
+            });
         }
 
         // Archive schedule selects
         const archiveScheduleSelect = document.getElementById('manageFractalArchiveSchedule');
         if (archiveScheduleSelect) {
-            archiveScheduleSelect.addEventListener('change', () => this.saveArchiveSchedule());
+            archiveScheduleSelect.addEventListener('change', () => {
+                this.saveArchiveSchedule();
+                this.updateLifecycleSummary();
+            });
         }
         const maxArchivesSelect = document.getElementById('manageFractalMaxArchives');
         if (maxArchivesSelect) {
-            maxArchivesSelect.addEventListener('change', () => this.saveArchiveSchedule());
+            maxArchivesSelect.addEventListener('change', () => {
+                this.saveArchiveSchedule();
+                this.updateLifecycleSummary();
+            });
+        }
+
+        // Quota action select - show/hide rollover warning
+        const quotaActionSelect = document.getElementById('manageFractalQuotaAction');
+        if (quotaActionSelect) {
+            quotaActionSelect.addEventListener('change', () => this.updateRolloverWarning());
         }
 
         // Action buttons
@@ -266,6 +281,9 @@ const FractalManageTab = {
 
         const fractal = this.currentFractal;
 
+        // Reset to overview subtab
+        this.switchSubTab('overview');
+
         // Update title
         const title = document.getElementById('manageFractalTitle');
         if (title) title.textContent = `Manage Fractal: ${fractal.name}`;
@@ -292,10 +310,10 @@ const FractalManageTab = {
             deleteDangerItem.style.display = isProtected ? 'none' : '';
         }
 
-        // Hide edit gear for default/system fractals
-        const editBtn = document.getElementById('manageEditFractalBtn');
-        if (editBtn) {
-            editBtn.style.display = isProtected ? 'none' : '';
+        // Hide edit button for default/system fractals
+        const editBtnInline = document.getElementById('manageEditFractalBtnInline');
+        if (editBtnInline) {
+            editBtnInline.style.display = isProtected ? 'none' : '';
         }
 
         // Populate retention select
@@ -313,6 +331,20 @@ const FractalManageTab = {
         if (maxArchivesSelect) {
             maxArchivesSelect.value = fractal.max_archives != null ? String(fractal.max_archives) : '';
         }
+
+        // Populate disk quota fields
+        const quotaInput = document.getElementById('manageFractalQuotaInput');
+        if (quotaInput) {
+            quotaInput.value = fractal.disk_quota_bytes != null
+                ? (fractal.disk_quota_bytes / (1024 ** 3)).toFixed(0)
+                : '';
+        }
+        const quotaActionSelect = document.getElementById('manageFractalQuotaAction');
+        if (quotaActionSelect) {
+            quotaActionSelect.value = fractal.disk_quota_action || 'reject';
+        }
+        this.updateRolloverWarning();
+        this.updateLifecycleSummary();
 
         // Load permissions
         if (window.GroupsView) {
@@ -599,6 +631,109 @@ const FractalManageTab = {
             FractalManagement.showEditFractalModal();
         } else {
             console.error('[FractalManageTab] FractalManagement not available for edit modal');
+        }
+    },
+
+    updateLifecycleSummary() {
+        const el = document.getElementById('lifecycleSummary');
+        if (!el) return;
+
+        const retentionSelect = document.getElementById('manageFractalRetentionSelect');
+        const archiveSelect = document.getElementById('manageFractalArchiveSchedule');
+
+        const retentionDays = retentionSelect ? retentionSelect.value : '';
+        const schedule = archiveSelect ? archiveSelect.value : 'never';
+
+        const parts = [];
+
+        if (retentionDays === '') {
+            parts.push('Logs are kept indefinitely.');
+        } else {
+            parts.push(`Logs older than ${retentionDays} days are deleted hourly.`);
+        }
+
+        if (schedule !== 'never') {
+            parts.push(`Encrypted backups are created ${schedule}.`);
+            if (retentionDays !== '') {
+                parts.push('A 1-day buffer ensures backups complete before deletion.');
+            }
+        } else if (retentionDays !== '') {
+            parts.push('No backups are configured, so deleted logs are gone permanently.');
+        }
+
+        el.textContent = parts.join(' ');
+    },
+
+    updateRolloverWarning() {
+        const actionSelect = document.getElementById('manageFractalQuotaAction');
+        const warning = document.getElementById('manageQuotaRolloverWarning');
+        if (actionSelect && warning) {
+            warning.style.display = actionSelect.value === 'rollover' ? '' : 'none';
+        }
+    },
+
+    async saveDiskQuota() {
+        if (!this.currentFractal) return;
+
+        const quotaInput = document.getElementById('manageFractalQuotaInput');
+        const quotaActionSelect = document.getElementById('manageFractalQuotaAction');
+        if (!quotaInput || !quotaActionSelect) return;
+
+        const gbValue = quotaInput.value.trim();
+        const action = quotaActionSelect.value;
+        const quotaBytes = gbValue === '' ? null : Math.round(parseFloat(gbValue) * (1024 ** 3));
+
+        if (quotaBytes !== null && (isNaN(quotaBytes) || quotaBytes < 1)) {
+            if (window.Toast) Toast.error('Invalid Quota', 'Enter a valid size or leave empty for no limit');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/disk-quota`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ quota_bytes: quotaBytes, action })
+            });
+
+            const data = await response.json();
+            if (!data.success) throw new Error(data.error || 'Failed to save quota');
+
+            this.currentFractal.disk_quota_bytes = quotaBytes;
+            this.currentFractal.disk_quota_action = action;
+            if (window.FractalContext) FractalContext.currentFractal = this.currentFractal;
+
+            if (window.Toast) {
+                Toast.success(
+                    'Quota Updated',
+                    quotaBytes == null
+                        ? 'Disk quota removed'
+                        : `Disk quota set to ${gbValue} GB (${action})`
+                );
+            }
+        } catch (error) {
+            console.error('Failed to save disk quota:', error);
+            if (window.Toast) Toast.error('Quota Save Failed', error.message);
+        }
+    },
+
+    switchSubTab(tabName) {
+        // Update tab buttons (scoped to the manage subtabs container)
+        const tabBar = document.getElementById('manageSubTabs');
+        if (tabBar) {
+            tabBar.querySelectorAll('.alerts-sub-tab').forEach(btn => btn.classList.remove('active'));
+            const activeBtn = tabBar.querySelector(`.alerts-sub-tab[data-subtab="${tabName}"]`);
+            if (activeBtn) activeBtn.classList.add('active');
+        }
+
+        // Show/hide panels
+        document.querySelectorAll('.manage-sub-panel').forEach(panel => panel.style.display = 'none');
+        const panel = document.getElementById('manageSubTab' + tabName.charAt(0).toUpperCase() + tabName.slice(1));
+        if (panel) panel.style.display = '';
+
+        // Reload archives when switching to lifecycle tab
+        if (tabName === 'lifecycle' && window.Archives && this.currentFractal) {
+            Archives.loadArchives(this.currentFractal.id);
         }
     },
 
