@@ -176,40 +176,60 @@ const SettingsView = {
 
             if (data.success) {
                 const ch = data.clickhouse || {};
+                const sys = data.system || {};
                 const currentLogCount = ch.total_logs || 0;
 
                 // Check if log count changed (only after initial load)
                 const isInitialLoad = this.lastLogCount === 0;
                 const logCountChanged = !isInitialLoad && this.lastLogCount !== currentLogCount;
                 const countIncrease = logCountChanged && currentLogCount > this.lastLogCount;
-                const previousLogCount = this.lastLogCount;
 
                 // Update internal counter
                 this.lastLogCount = currentLogCount;
 
+                // Disk pressure indicator
+                const diskPct = ch.disk_used_pct || 0;
+                let diskClass = 'status-ok';
+                if (diskPct >= 90) diskClass = 'status-error';
+                else if (diskPct >= 80) diskClass = 'status-warn';
+
+                const timeRange = ch.oldest_log && ch.newest_log
+                    ? this.formatTimestamp(ch.oldest_log) + ' to ' + this.formatTimestamp(ch.newest_log)
+                    : 'No logs';
+
                 container.innerHTML = `
-                    <div class="status-grid">
-                        <div class="status-item">
-                            <span class="status-label">ClickHouse</span>
-                            <span class="status-value ${ch.connected ? 'status-ok' : 'status-error'}">
-                                ${ch.connected ? '✓ Connected' : '✗ Disconnected'}
-                                ${showUpdateIndicator ? '<span class="update-indicator">●</span>' : ''}
-                            </span>
+                    <div class="status-rows">
+                        <div class="detail-row">
+                            <span class="detail-label">ClickHouse:</span>
+                            <span class="detail-value ${ch.connected ? 'status-ok' : 'status-error'}">${ch.connected ? 'Connected' : 'Disconnected'}</span>
                         </div>
-                        <div class="status-item ${logCountChanged ? 'status-updated' : ''}">
-                            <span class="status-label">
-                                Total Logs
-                                ${this.isActive ? '<span class="live-badge">LIVE</span>' : ''}
-                            </span>
-                            <span class="status-value log-count-value">
-                                ${currentLogCount.toLocaleString()}
-                                ${countIncrease ? '<span class="count-increase">↑</span>' : ''}
-                                ${showUpdateIndicator ? '<span class="update-indicator">●</span>' : ''}
-                            </span>
+                        <div class="detail-row">
+                            <span class="detail-label">Uptime:</span>
+                            <span class="detail-value">${ch.uptime || '-'}</span>
                         </div>
-                        <div class="status-item">
-                            <span class="status-label">Disk Usage</span>
-                            <span class="status-value">${ch.table_size || '0 B'}</span>
+                        <div class="detail-row ${logCountChanged ? 'status-updated' : ''}">
+                            <span class="detail-label">Total Logs:</span>
+                            <span class="detail-value log-count-value">${currentLogCount.toLocaleString()}${countIncrease ? ' <span class="count-increase">↑</span>' : ''}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Log Storage:</span>
+                            <span class="detail-value">${ch.table_size || '0 B'}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Disk Usage:</span>
+                            <span class="detail-value ${diskClass}">${diskPct}%${ch.disk_free ? ' (' + ch.disk_free + ' free)' : ''}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Log Time Range:</span>
+                            <span class="detail-value">${timeRange}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Fractals:</span>
+                            <span class="detail-value">${sys.fractal_count || 0}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Users:</span>
+                            <span class="detail-value">${sys.user_count || 0}</span>
                         </div>
                     </div>
                 `;
@@ -218,25 +238,26 @@ const SettingsView = {
                 if (logCountChanged) {
                     const logCountElement = container.querySelector('.status-item.status-updated');
                     if (logCountElement) {
-                        // Add highlight animation
                         logCountElement.classList.add('highlight-update');
                         setTimeout(() => {
                             logCountElement.classList.remove('highlight-update', 'status-updated');
                         }, 2000);
                     }
-
-                    // Show toast notification for significant increases
-                    // Ingestion toast disabled as per user request - distracting when frequently ingesting logs
-                    // if (countIncrease && window.Toast && !isInitialLoad) {
-                    //     const increase = currentLogCount - previousLogCount;
-                    //     if (increase > 100) { // Only show for significant increases
-                    //         Toast.info('Logs Updated', `${increase.toLocaleString()} new logs ingested`);
-                    //     }
-                    // }
                 }
             }
         } catch (error) {
             console.error('Failed to load status:', error);
+        }
+    },
+
+    formatTimestamp(ts) {
+        if (!ts) return '-';
+        try {
+            const d = new Date(ts);
+            if (isNaN(d.getTime())) return ts;
+            return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        } catch {
+            return ts;
         }
     },
 

@@ -36,17 +36,27 @@ func (h *StatusHandler) SetQuotaClearer(qc quotaClearer) {
 type StatusResponse struct {
 	Success    bool             `json:"success"`
 	ClickHouse ClickHouseStatus `json:"clickhouse"`
+	System     SystemStatus     `json:"system"`
 	Error      string           `json:"error,omitempty"`
 }
 
 type ClickHouseStatus struct {
-	Connected    bool   `json:"connected"`
-	TotalLogs    uint64 `json:"total_logs"`
-	StorageBytes uint64 `json:"storage_bytes"`
-	StorageMB    string `json:"storage_mb"`
-	OldestLog    string `json:"oldest_log,omitempty"`
-	NewestLog    string `json:"newest_log,omitempty"`
-	TableSize    string `json:"table_size"`
+	Connected    bool    `json:"connected"`
+	TotalLogs    uint64  `json:"total_logs"`
+	StorageBytes uint64  `json:"storage_bytes"`
+	StorageMB    string  `json:"storage_mb"`
+	OldestLog    string  `json:"oldest_log,omitempty"`
+	NewestLog    string  `json:"newest_log,omitempty"`
+	TableSize    string  `json:"table_size"`
+	UptimeStr    string  `json:"uptime,omitempty"`
+	DiskUsedPct  float64 `json:"disk_used_pct"`
+	DiskTotal    string  `json:"disk_total,omitempty"`
+	DiskFree     string  `json:"disk_free,omitempty"`
+}
+
+type SystemStatus struct {
+	FractalCount int `json:"fractal_count"`
+	UserCount    int `json:"user_count"`
 }
 
 func NewStatusHandler(db *storage.ClickHouseClient, pg *storage.PostgresClient) *StatusHandler {
@@ -183,6 +193,48 @@ func (h *StatusHandler) fetchStatus() StatusResponse {
 			if newest, ok := results[0]["newest"]; ok {
 				status.ClickHouse.NewestLog = fmt.Sprintf("%v", newest)
 			}
+		}
+	}
+
+	// ClickHouse uptime
+	uptimeQuery := `SELECT formatReadableTimeDelta(uptime()) as uptime`
+	results, err = h.db.Query(ctx, uptimeQuery)
+	if err == nil && len(results) > 0 {
+		if uptime, ok := results[0]["uptime"].(string); ok {
+			status.ClickHouse.UptimeStr = uptime
+		}
+	}
+
+	// Disk usage from system.disks
+	diskQuery := `SELECT
+		formatReadableSize(total_space) as total,
+		formatReadableSize(free_space) as free,
+		round((total_space - free_space) / total_space * 100, 1) as used_pct
+		FROM system.disks WHERE name = 'default' LIMIT 1`
+	results, err = h.db.Query(ctx, diskQuery)
+	if err == nil && len(results) > 0 {
+		if total, ok := results[0]["total"].(string); ok {
+			status.ClickHouse.DiskTotal = total
+		}
+		if free, ok := results[0]["free"].(string); ok {
+			status.ClickHouse.DiskFree = free
+		}
+		if pct, ok := results[0]["used_pct"].(float64); ok {
+			status.ClickHouse.DiskUsedPct = pct
+		}
+	}
+
+	// Fractal and user counts from Postgres
+	if h.pg != nil {
+		var fractalCount int
+		err := h.pg.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM fractals`).Scan(&fractalCount)
+		if err == nil {
+			status.System.FractalCount = fractalCount
+		}
+		var userCount int
+		err = h.pg.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&userCount)
+		if err == nil {
+			status.System.UserCount = userCount
 		}
 	}
 
