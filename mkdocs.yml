@@ -83,6 +83,7 @@ nav:
     - Dictionaries: features/dictionaries.md
     - Normalizers: features/normalizers.md
     - AI Chat: features/ai-chat.md
+    - MCP Server: features/mcp-server.md
   - API Reference:
     - Authentication: api/authentication.md
     - Ingestion: api/ingestion.md
