@@ -15,6 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"path/filepath"
+
+	"bifract/internal/setup"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
@@ -213,6 +216,7 @@ type AuthHandler struct {
 	loginLimiter    *loginRateLimiter
 	systemFractalID string
 	rbacResolver    *rbac.Resolver
+	clientCADir     string // path to client CA dir for mTLS cert generation
 }
 
 type LoginRequest struct {
@@ -253,6 +257,7 @@ func NewAuthHandlerWithAPIKeys(pg *storage.PostgresClient, ch *storage.ClickHous
 		secureCookies:   os.Getenv("BIFRACT_SECURE_COOKIES") == "true",
 		loginLimiter:    newLoginRateLimiter(),
 		rbacResolver:    rbac.NewResolver(pg),
+		clientCADir:     os.Getenv("BIFRACT_CLIENT_CA_DIR"),
 	}
 
 	// Resolve system fractal ID for auth event logging
@@ -1382,5 +1387,100 @@ func (h *AuthHandler) validateAPIKey(ctx context.Context, apiKey string) (*Valid
 	}
 
 	return h.apiKeyValidator.ValidateAPIKey(ctx, apiKey)
+}
+
+// HandleMTLSStatus returns whether mTLS client cert generation is available.
+func (h *AuthHandler) HandleMTLSStatus(w http.ResponseWriter, r *http.Request) {
+	user, ok := r.Context().Value("user").(*storage.User)
+	if !ok || user == nil || !user.IsAdmin {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Admin access required"})
+		return
+	}
+
+	enabled := false
+	if h.clientCADir != "" {
+		caPath := filepath.Join(h.clientCADir, "ca.pem")
+		keyPath := filepath.Join(h.clientCADir, "ca-key.pem")
+		if _, err := os.Stat(caPath); err == nil {
+			if _, err := os.Stat(keyPath); err == nil {
+				enabled = true
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(Response{Success: true, Data: map[string]bool{"mtls_enabled": enabled}})
+}
+
+// HandleGenerateClientCert generates a PKCS#12 client certificate for a user
+// and streams it as a download. Admin only.
+func (h *AuthHandler) HandleGenerateClientCert(w http.ResponseWriter, r *http.Request) {
+	user, ok := r.Context().Value("user").(*storage.User)
+	if !ok || user == nil || !user.IsAdmin {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Admin access required"})
+		return
+	}
+
+	username := chi.URLParam(r, "username")
+	if username == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Username is required"})
+		return
+	}
+
+	// Verify the target user exists
+	_, err := h.pg.GetUser(r.Context(), username)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "User not found"})
+		return
+	}
+
+	if h.clientCADir == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "mTLS is not configured"})
+		return
+	}
+
+	caCertPEM, err := os.ReadFile(filepath.Join(h.clientCADir, "ca.pem"))
+	if err != nil {
+		log.Printf("[Auth] Failed to read CA cert: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "mTLS CA not available"})
+		return
+	}
+	caKeyPEM, err := os.ReadFile(filepath.Join(h.clientCADir, "ca-key.pem"))
+	if err != nil {
+		log.Printf("[Auth] Failed to read CA key: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "mTLS CA not available"})
+		return
+	}
+
+	// Parse password from request body
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Password == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Password is required to protect the certificate"})
+		return
+	}
+
+	p12Data, err := setup.GenerateClientCertBytes(caCertPEM, caKeyPEM, username, req.Password)
+	if err != nil {
+		log.Printf("[Auth] Failed to generate client cert for %s: %v", username, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to generate certificate"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-pkcs12")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.p12"`, username))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(p12Data)))
+	w.WriteHeader(http.StatusOK)
+	w.Write(p12Data)
 }
 

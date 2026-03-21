@@ -28,7 +28,7 @@ uv pip install -e .
 
 ## Configure Claude Code
 
-Add to your Claude Code MCP settings (`~/.claude/settings.json` or project `.claude/settings.json`):
+Create a `.mcp.json` file in the directory where you use Claude Code:
 
 ```json
 {
@@ -117,9 +117,6 @@ Once configured, ask Claude Code things like:
 4. Create a new key with at least `query` permission
 5. For alert management, also enable `alert_manage`
 6. Copy the generated key (starts with `bifract_`)
-
-!!! warning
-    Never commit your API key to version control. Use environment variables or a secrets manager.
 
 ## How It Compares to AI Chat
 

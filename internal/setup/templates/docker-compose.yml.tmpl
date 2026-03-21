@@ -120,8 +120,14 @@ services:
       MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
       MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
       MAXMIND_EDITION_IDS: ${MAXMIND_EDITION_IDS:-GeoLite2-City-CSV,GeoLite2-ASN-CSV}
+{{- if eq .IPAccess "mtls-app"}}
+      BIFRACT_CLIENT_CA_DIR: /client-ca
+{{- end}}
     volumes:
       - bifract-archives:/archives
+{{- if eq .IPAccess "mtls-app"}}
+      - ./caddy/client-ca:/client-ca:ro
+{{- end}}
     healthcheck:
       test: ["CMD", "/bifract-server", "-healthcheck"]
       interval: 5s

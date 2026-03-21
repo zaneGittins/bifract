@@ -308,6 +308,69 @@ func GenerateClientCAPEM() (certPEM, keyPEM string, err error) {
 	return cert, k, nil
 }
 
+// GenerateClientCertBytes creates a client certificate signed by the given CA
+// PEM data and returns the PKCS#12 (.p12) bundle bytes in memory.
+func GenerateClientCertBytes(caCertPEM, caKeyPEM []byte, name, password string) ([]byte, error) {
+	caCertBlock, _ := pem.Decode(caCertPEM)
+	if caCertBlock == nil {
+		return nil, fmt.Errorf("failed to decode CA certificate PEM")
+	}
+	caCert, err := x509.ParseCertificate(caCertBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse CA cert: %w", err)
+	}
+
+	caKeyBlock, _ := pem.Decode(caKeyPEM)
+	if caKeyBlock == nil {
+		return nil, fmt.Errorf("failed to decode CA key PEM")
+	}
+	caKey, err := x509.ParseECPrivateKey(caKeyBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse CA key: %w", err)
+	}
+
+	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate client key: %w", err)
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("generate serial: %w", err)
+	}
+
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			Organization: []string{"Bifract"},
+			CommonName:   name,
+		},
+		NotBefore:             now,
+		NotAfter:              now.Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+	}
+
+	clientCertDER, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &clientKey.PublicKey, caKey)
+	if err != nil {
+		return nil, fmt.Errorf("sign client cert: %w", err)
+	}
+
+	clientCert, err := x509.ParseCertificate(clientCertDER)
+	if err != nil {
+		return nil, fmt.Errorf("parse signed cert: %w", err)
+	}
+
+	p12Data, err := pkcs12.Modern.Encode(clientKey, clientCert, []*x509.Certificate{caCert}, password)
+	if err != nil {
+		return nil, fmt.Errorf("create PKCS#12 bundle: %w", err)
+	}
+
+	return p12Data, nil
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil

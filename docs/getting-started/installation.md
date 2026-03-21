@@ -32,7 +32,7 @@ graph TB
     end
 
     users -- "HTTPS :443" --> caddy
-    sources -- "HTTPS :443" --> caddy
+    sources -- "HTTPS :8443" --> caddy
     caddy -- ":8080" --> bifract
     caddy -. "Access Logs" .-> bifract
     bifract -- ":5432" --> pg

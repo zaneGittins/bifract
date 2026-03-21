@@ -4,6 +4,7 @@ const SettingsView = {
     statusUpdateInterval: null,
     lastLogCount: 0,
     isActive: false,
+    mtlsEnabled: false,
 
     async init() {
         // Set up tab navigation
@@ -102,6 +103,7 @@ const SettingsView = {
         // Load data
         await this.loadSettings();
         await this.loadStatus();
+        await this.loadMTLSStatus();
         await this.loadUsers();
 
         // Load groups if available
@@ -261,6 +263,52 @@ const SettingsView = {
         }
     },
 
+    async loadMTLSStatus() {
+        try {
+            const response = await fetch('/api/v1/users/mtls-status', { credentials: 'include' });
+            const data = await response.json();
+            if (data.success && data.data) {
+                this.mtlsEnabled = data.data.mtls_enabled === true;
+            }
+        } catch {
+            this.mtlsEnabled = false;
+        }
+    },
+
+    async downloadClientCert(username) {
+        const password = prompt('Enter a password to protect the .p12 certificate:');
+        if (!password) return;
+
+        try {
+            const response = await fetch(`/api/v1/users/${encodeURIComponent(username)}/client-cert`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ password })
+            });
+
+            if (!response.ok) {
+                const data = await response.json();
+                if (window.Toast) Toast.error('Error', data.error || 'Failed to generate certificate');
+                return;
+            }
+
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${username}.p12`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            if (window.Toast) Toast.success('Downloaded', `Client certificate for ${username}`);
+        } catch (error) {
+            console.error('Error downloading client cert:', error);
+            if (window.Toast) Toast.error('Error', 'Network error');
+        }
+    },
+
     async loadUsers() {
         try {
             const response = await fetch('/api/v1/users', { credentials: 'include' });
@@ -322,6 +370,9 @@ const SettingsView = {
             html += `<td class="user-actions-cell">`;
             if (isAdmin) {
                 html += `<button class="btn-edit-user" onclick="SettingsView.editUserInline(this.closest('tr'), '${Utils.escapeJs(user.username)}', '${Utils.escapeJs(user.display_name)}', '${Utils.escapeJs(user.role)}')">Edit</button>`;
+            }
+            if (this.mtlsEnabled && isAdmin && !user.invite_pending) {
+                html += `<button class="btn-cert-download" onclick="SettingsView.downloadClientCert('${Utils.escapeJs(user.username)}')" title="Download mTLS client certificate">Cert</button>`;
             }
             if (user.invite_pending) {
                 html += `<button class="btn-invite-reset" onclick="SettingsView.resetInvite('${Utils.escapeJs(user.username)}')" title="Regenerate invite link">Resend Invite</button>`;

@@ -45,6 +45,7 @@ temp/
 # Code assistants
 CLAUDE.md
 .claude/
+.mcp.json
 reset_tags.md
 todo.md
 

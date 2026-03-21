@@ -29,3 +29,4 @@ Admins manage users from **Settings > Users**.
 
 - **Create user**: Provide a username, display name, password, and role (`admin` or `user`). Defaults to `user`.
 - **Delete user**: Remove a user account. Admins cannot delete their own account.
+- **Download mTLS certificate**: When running in `mtls-app` mode, a **Cert** button appears next to each user. Click it to generate and download a `.p12` client certificate for that user. See [mTLS Client Certificates](reverse-proxy.md#mtls-client-certificates) for details.

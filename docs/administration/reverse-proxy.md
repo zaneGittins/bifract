@@ -99,13 +99,17 @@ When `mtls-app` is selected during installation, bifract automatically:
 2. Creates an initial `admin.p12` client certificate
 3. Configures Caddy to require client certs for non-ingest routes
 
-To generate additional client certificates:
+To generate additional client certificates, use either the UI or the CLI:
+
+**UI (recommended)**: Go to **Settings > Users** and click the **Cert** button next to any user. You will be prompted for a password to protect the `.p12` file, which is then downloaded directly in your browser. The Cert button only appears when `mtls-app` mode is active.
+
+**CLI**:
 
 ```bash
 bifract --gen-client-cert --name alice --password secretpass --dir /opt/bifract
 ```
 
-This creates a `.p12` file in `caddy/client-ca/` that can be imported into any browser. Each certificate is valid for 1 year.
+Both methods create a PKCS#12 `.p12` file that can be imported into any browser. Each certificate is valid for 1 year.
 
 ### Notes
 

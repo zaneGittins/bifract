@@ -211,6 +211,10 @@ spec:
                   name: bifract-secrets
                   key: OIDC_BUTTON_TEXT
                   optional: true
+{{- if .MTLSEnabled}}
+            - name: BIFRACT_CLIENT_CA_DIR
+              value: /client-ca
+{{- end}}
           readinessProbe:
             httpGet:
               path: /api/v1/health
@@ -226,6 +230,11 @@ spec:
           volumeMounts:
             - name: archives
               mountPath: /archives
+{{- if .MTLSEnabled}}
+            - name: client-ca
+              mountPath: /client-ca
+              readOnly: true
+{{- end}}
           resources:
             requests:
               cpu: {{.BifractRes.CPURequest}}
@@ -236,6 +245,11 @@ spec:
       volumes:
         - name: archives
           emptyDir: {}
+{{- if .MTLSEnabled}}
+        - name: client-ca
+          secret:
+            secretName: caddy-mtls-ca
+{{- end}}
 ---
 apiVersion: v1
 kind: Service

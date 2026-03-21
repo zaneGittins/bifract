@@ -24,7 +24,7 @@ uv pip install -e .
 
 ## Configure Claude Code
 
-Add to your Claude Code MCP settings (`~/.claude/settings.json` or project `.claude/settings.json`):
+Create a `.mcp.json` file in the directory where you use Claude Code:
 
 ```json
 {
@@ -107,6 +107,4 @@ Once configured, you can ask Claude Code things like:
 ## Security Notes
 
 - API keys are scoped to a single fractal and cannot access other fractals
-- Never commit your API key to version control
-- Use environment variables or a secrets manager to provide the key
 - The MCP server communicates with Bifract over HTTPS with TLS verification enabled

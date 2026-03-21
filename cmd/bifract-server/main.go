@@ -332,6 +332,7 @@ func main() {
 	ingestHandler := ingest.NewIngestHandler(ingestQueue, config.MaxBodySize, tokenCache, ingestTokenStorage)
 	ingestHandler.SetQuotaManager(quotaManager)
 	elasticHandler := ingest.NewElasticBulkHandler(ingestHandler)
+	otlpHandler := ingest.NewOTLPHandler(ingestHandler)
 	internalIngestHandler := ingest.NewInternalIngestHandler(ingestQueue, config.MaxBodySize, fractalManager, normalizerManager)
 
 	// Wire ingest pressure signal to the alert engine so it defers evaluation
@@ -813,6 +814,8 @@ func main() {
 			r.Get("/users", authHandler.HandleListUsers)
 			r.Put("/users/{username}", authHandler.HandleUpdateUser)
 			r.Delete("/users", authHandler.HandleDeleteUser)
+			r.Get("/users/mtls-status", authHandler.HandleMTLSStatus)
+			r.Post("/users/{username}/client-cert", authHandler.HandleGenerateClientCert)
 			r.Delete("/logs", statusHandler.HandleClearLogs)
 
 			// Performance monitoring (admin-only, checked in handler)
@@ -827,6 +830,12 @@ func main() {
 		r.Use(ingest.RateLimitMiddleware(rateLimiter))
 		r.Post("/_bulk", elasticHandler.HandleBulk)
 		r.Put("/_bulk", elasticHandler.HandleBulk)
+	})
+
+	// OpenTelemetry (OTLP/HTTP) log ingestion (token-authenticated, no session required)
+	r.Group(func(r chi.Router) {
+		r.Use(ingest.RateLimitMiddleware(rateLimiter))
+		r.Post("/v1/logs", otlpHandler.HandleLogs)
 	})
 
 	// Prometheus metrics server (separate listen address, disabled by default).
