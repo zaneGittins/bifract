@@ -408,7 +408,8 @@ const Comments = {
             log_timestamp: String(timestamp),    // Ensure it's a string
             text: String(text),                  // Ensure it's a string
             tags: this.pendingTags.slice(),
-            query: currentQuery
+            query: currentQuery,
+            fractal_id: this.currentLogData.fractal_id || ''
         };
 
         console.log('[Comments] Saving comment with body:', requestBody);

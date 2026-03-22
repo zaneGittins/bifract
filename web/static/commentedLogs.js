@@ -418,7 +418,8 @@ const CommentedLogs = {
             html += `
                 <tr class="alert-row" data-comment-id="${comment.id}"
                     data-log-id="${Utils.escapeHtml(comment.log_id)}"
-                    data-log-ts="${Utils.escapeHtml(comment.log_timestamp)}">
+                    data-log-ts="${Utils.escapeHtml(comment.log_timestamp)}"
+                    data-fractal-id="${Utils.escapeHtml(comment.fractal_id || '')}">
                     <td onclick="event.stopPropagation()">
                         <input type="checkbox" ${isSelected ? 'checked' : ''}
                             onchange="CommentedLogs.toggleSelect('${comment.id}')" />
@@ -456,7 +457,8 @@ const CommentedLogs = {
             row.addEventListener('click', () => {
                 const logId = row.dataset.logId;
                 const logTs = row.dataset.logTs;
-                if (logId) this.showLogDetail(logId, logTs);
+                const fractalId = row.dataset.fractalId;
+                if (logId) this.showLogDetail(logId, logTs, fractalId);
             });
         });
     },
@@ -514,14 +516,18 @@ const CommentedLogs = {
     // Log Detail
     // ============================
 
-    async showLogDetail(logId, logTimestamp) {
+    async showLogDetail(logId, logTimestamp, fractalId) {
         try {
             let requestBody = {
                 timestamp: logTimestamp,
                 log_id: logId
             };
 
-            if (window.FractalContext && window.FractalContext.currentFractal) {
+            // Use the comment's own fractal_id (the fractal the log belongs to),
+            // not the current context which may be a prism or different fractal.
+            if (fractalId) {
+                requestBody.fractal_id = fractalId;
+            } else if (window.FractalContext && window.FractalContext.currentFractal) {
                 requestBody.fractal_id = window.FractalContext.currentFractal.id;
             }
 

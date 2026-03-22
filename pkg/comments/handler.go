@@ -29,6 +29,7 @@ type CreateCommentRequest struct {
 	Text         string   `json:"text"`
 	Tags         []string `json:"tags,omitempty"`
 	Query        string   `json:"query,omitempty"`
+	FractalID    string   `json:"fractal_id,omitempty"`
 }
 
 type UpdateCommentRequest struct {
@@ -129,16 +130,21 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Get selected fractal for comment isolation
-	selectedFractal, err := h.getSelectedFractal(r)
-	if err != nil {
-		log.Printf("[Comments] Failed to get selected fractal: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to determine fractal context",
-		})
-		return
+	// Determine fractal: prefer the log's own fractal_id from the request
+	// (sourced from ClickHouse log data), fall back to session fractal.
+	fractalID := req.FractalID
+	if fractalID == "" {
+		var err error
+		fractalID, err = h.getSelectedFractal(r)
+		if err != nil {
+			log.Printf("[Comments] Failed to get selected fractal: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(Response{
+				Success: false,
+				Error:   "Failed to determine fractal context",
+			})
+			return
+		}
 	}
 
 	// Create comment
@@ -149,7 +155,7 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		Author:       user.Username,
 		Tags:         req.Tags,
 		Query:        req.Query,
-		FractalID:    selectedFractal,
+		FractalID:    fractalID,
 	}
 
 	newComment, err := h.pg.InsertComment(r.Context(), comment)

@@ -641,7 +641,7 @@ func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time
 	log.Printf("[GetLogByTimestamp] Searching for log_id: %s", logID)
 
 	// Build query using ordering key columns (fractal_id, timestamp, log_id) for efficient index usage.
-	query := "SELECT timestamp, raw_log, log_id, toString(fields) AS fields, fractal_id, ingest_timestamp FROM logs WHERE log_id = ?"
+	query := fmt.Sprintf("SELECT timestamp, raw_log, log_id, toString(fields) AS fields, fractal_id, ingest_timestamp FROM %s WHERE log_id = ?", c.ReadTable())
 	args := []interface{}{logID}
 
 	if fractalID != "" {
@@ -744,7 +744,7 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 	}
 
 	rows, err := c.conn.Query(ctx,
-		"SELECT log_id, toString(fields) AS fields FROM logs WHERE log_id IN (?) AND fractal_id = ?",
+		fmt.Sprintf("SELECT log_id, toString(fields) AS fields FROM %s WHERE log_id IN (?) AND fractal_id = ?", c.ReadTable()),
 		logIDs, fractalID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query logs by IDs: %w", err)
