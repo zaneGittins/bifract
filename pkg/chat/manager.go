@@ -56,8 +56,8 @@ VALID query examples:
   level=*                             # all logs (match any level)
   level=error                         # filter by exact level
   level=error host=web01              # multiple AND filters
-  raw_log=*powershell*                # search full log text for "powershell"
-  raw_log=*powershell* | count()      # count logs containing "powershell"
+  /powershell/i                        # search full log text for "powershell"
+  /powershell/i | count()             # count logs containing "powershell"
   /error|fail/i | head(20)            # regex search across raw log text
   level=* | groupby(level)            # count per level (THIS is how you group)
   level=* | groupby(level, host)      # count per level+host combo
@@ -76,9 +76,9 @@ INVALID queries (WILL FAIL, never generate these):
   level=* | sort by timestamp desc    # WRONG: use sort(timestamp, order=desc)
 
 SEARCHING LOG CONTENT:
-- To search across all log content, use raw_log=*keyword* (wildcard) or /regex/i (bare regex)
-- raw_log contains the full original log text. Use it for broad keyword searches.
-- Only use specific fields (e.g. command_line=*powershell*) when you KNOW that field exists from get_fields
+- To search across all log content, use /keyword/i (regex) or "keyword" (bare string)
+- raw_log contains the full original log text. Use raw_log=/keyword/i for explicit field regex.
+- Only use specific fields (e.g. command_line=/powershell/i) when you KNOW that field exists from get_fields
 - Do NOT use "full_log". It does not exist. Use raw_log instead.
 
 RULES:

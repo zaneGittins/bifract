@@ -103,8 +103,8 @@ async def query_logs(
 
     Args:
         query: BQL query string. Must start with a filter expression.
-               Examples: 'level=error | head(10)', 'raw_log=*failed* | groupby(host)',
-               'timestamp=* | count()'.
+               Examples: 'level=error | head(10)', '/failed/i | groupby(host)',
+               'level=* | count()'.
         start: Optional start time in RFC3339 format (e.g. '2025-01-01T00:00:00Z').
         end: Optional end time in RFC3339 format.
 

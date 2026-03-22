@@ -52,12 +52,26 @@ Accepts standard Elasticsearch NDJSON bulk format:
 
 Response follows the Elasticsearch bulk response schema.
 
+## OpenTelemetry (OTLP)
+
+```
+POST /v1/logs
+Content-Type: application/x-protobuf | application/json
+```
+
+Accepts OTLP/HTTP `ExportLogsServiceRequest` in either protobuf or JSON encoding. This is the standard OTLP endpoint path, so most collectors and agents work without custom path configuration.
+
+Resource attributes are stored with a `resource.` prefix, scope attributes with a `scope.` prefix, and log record attributes are stored directly. The log body is mapped to the `message` field. Trace and span IDs are stored as hex strings.
+
+Returns an `ExportLogsServiceResponse` (empty on full success) using the same content type as the request.
+
 ## Response codes
 
 | Status | Meaning |
 |--------|---------|
 | `200` | Logs accepted into ingestion queue |
-| `400` | Invalid JSON or no valid logs found |
+| `400` | Invalid payload or no valid logs found |
+| `401` | Missing or invalid ingest token |
 | `413` | Request body exceeds size limit (default 200MB) |
 | `429` | Rate limit exceeded or ingestion queue full. Retry with backoff |
 

@@ -649,8 +649,11 @@ func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time
 		args = append(args, fractalID)
 	}
 	if !timestamp.IsZero() {
-		query += " AND timestamp = ?"
-		args = append(args, timestamp)
+		// Use a window around the timestamp to account for precision differences
+		// between PostgreSQL and ClickHouse DateTime64(3). The log_id filter is
+		// the real unique key; this just helps narrow partition/index scanning.
+		query += " AND timestamp >= ? AND timestamp <= ?"
+		args = append(args, timestamp.Add(-5*time.Second), timestamp.Add(5*time.Second))
 	}
 	query += " LIMIT 1"
 
@@ -724,7 +727,7 @@ func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time
 
 	if len(results) == 0 {
 		log.Printf("[GetLogByTimestamp] No log found with log_id: %s", logID)
-		return nil, fmt.Errorf("no log found with log_id: %s", logID)
+		return nil, nil
 	}
 
 	log.Printf("[GetLogByTimestamp] Found log with %d fields", len(results[0]))

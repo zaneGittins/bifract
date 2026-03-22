@@ -62,6 +62,73 @@ curl -X POST http://localhost:8080/api/v1/ingest \
 
 Bifract also accepts `POST /_bulk` and `PUT /_bulk` for compatibility with Elasticsearch-style clients. These endpoints also require the `Authorization: Bearer` header.
 
+### OpenTelemetry (OTLP)
+
+Bifract accepts OTLP/HTTP log exports at `POST /v1/logs`, the standard OTLP endpoint path. Both protobuf (`application/x-protobuf`) and JSON (`application/json`) content types are supported.
+
+```bash
+curl -X POST http://localhost:8080/v1/logs \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "resourceLogs": [{
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "my-service"}}
+        ]
+      },
+      "scopeLogs": [{
+        "logRecords": [{
+          "timeUnixNano": "1711063200000000000",
+          "severityText": "INFO",
+          "body": {"stringValue": "Request completed successfully"},
+          "attributes": [
+            {"key": "http.method", "value": {"stringValue": "GET"}}
+          ]
+        }]
+      }]
+    }]
+  }'
+```
+
+**Field mapping:**
+
+| OTLP field | Bifract field |
+|---|---|
+| `Body` | `message` |
+| `SeverityText` | `severity_text` |
+| `SeverityNumber` | `severity_number` |
+| `TraceId` | `trace_id` (hex) |
+| `SpanId` | `span_id` (hex) |
+| `Resource.Attributes` | Prefixed with `resource.` (e.g. `resource.service.name`) |
+| `Scope.Name/Version` | `scope.name`, `scope.version` |
+| `Scope.Attributes` | Prefixed with `scope.` |
+| `Attributes` | Stored directly (e.g. `http.method`) |
+| `TimeUnixNano` | `timestamp` |
+
+**OpenTelemetry Collector configuration:**
+
+```yaml
+exporters:
+  otlphttp:
+    endpoint: https://bifract.example.com
+    headers:
+      Authorization: "Bearer bifract_ingest_..."
+    # Only send logs - Bifract does not accept traces or metrics
+    signal:
+      traces:
+        enabled: false
+      metrics:
+        enabled: false
+
+service:
+  pipelines:
+    logs:
+      exporters: [otlphttp]
+```
+
+Normalizers configured on the ingest token apply to OTLP field names the same way they do for other formats.
+
 ## Fractal Routing
 
 Each ingest token is scoped to a single fractal. Logs are routed to the fractal associated with the token.
