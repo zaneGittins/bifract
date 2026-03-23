@@ -119,15 +119,40 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// Parse log timestamp
-	logTimestamp, err := time.Parse(time.RFC3339, req.LogTimestamp)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid log_timestamp format (use RFC3339)",
-		})
-		return
+	// Resolve log timestamp: if provided, parse it; otherwise look it up
+	// from ClickHouse so callers don't need to supply it.
+	var logTimestamp time.Time
+	if req.LogTimestamp != "" {
+		var err error
+		logTimestamp, err = time.Parse(time.RFC3339, req.LogTimestamp)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(Response{
+				Success: false,
+				Error:   "Invalid log_timestamp format (use RFC3339)",
+			})
+			return
+		}
+	} else {
+		logEntry, err := h.ch.GetLogByTimestamp(r.Context(), time.Time{}, req.LogID, "")
+		if err != nil || logEntry == nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(Response{
+				Success: false,
+				Error:   "Could not find log entry; provide log_timestamp or verify log_id",
+			})
+			return
+		}
+		if ts, ok := logEntry["timestamp"].(time.Time); ok {
+			logTimestamp = ts
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(Response{
+				Success: false,
+				Error:   "Could not resolve timestamp for log entry",
+			})
+			return
+		}
 	}
 
 	// Determine fractal: prefer the log's own fractal_id from the request

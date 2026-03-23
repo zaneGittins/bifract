@@ -425,7 +425,7 @@ async def get_alert_executions(alert_id: str) -> str:
 @mcp.tool()
 async def add_comment(
     log_id: str,
-    content: str,
+    text: str,
     tags: list[str] | None = None,
 ) -> str:
     """
@@ -434,7 +434,7 @@ async def add_comment(
 
     Args:
         log_id: The log_id of the log entry to comment on.
-        content: The comment text (supports markdown).
+        text: The comment text (supports markdown).
         tags: Optional list of tags to attach to the comment.
 
     Returns:
@@ -445,7 +445,7 @@ async def add_comment(
 
     body: dict = {
         "log_id": log_id,
-        "content": content,
+        "text": text,
     }
     if tags:
         body["tags"] = tags
