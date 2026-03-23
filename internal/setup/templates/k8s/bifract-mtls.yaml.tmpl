@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bifract-mtls-ca
+  namespace: bifract
+type: Opaque
+stringData:
+  ca.pem: |
+{{.MTLSCACert}}
+  ca-key.pem: |
+{{.MTLSCAKey}}

@@ -1,0 +1,194 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifract
+  namespace: bifract
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bifract
+  template:
+    metadata:
+      labels:
+        app: bifract
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: bifract
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bifract
+          image: ghcr.io/zanegittins/bifract:latest
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080
+          env:
+            # PostgreSQL
+            - name: POSTGRES_HOST
+              value: postgres
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: bifract
+            - name: POSTGRES_USER
+              value: bifract
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: POSTGRES_PASSWORD
+            # ClickHouse cluster
+            - name: CLICKHOUSE_HOSTS
+              value: "bifract-ch-clickhouse-0-0-0.bifract-ch-clickhouse-headless,bifract-ch-clickhouse-0-1-0.bifract-ch-clickhouse-headless"
+            - name: CLICKHOUSE_PORT
+              value: "9000"
+            - name: CLICKHOUSE_DB
+              value: logs
+            - name: CLICKHOUSE_USER
+              value: default
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: CLICKHOUSE_PASSWORD
+            - name: CLICKHOUSE_CLUSTER
+              value: default
+            # Application config
+            - name: BIFRACT_PORT
+              value: "8080"
+            - name: BIFRACT_SECURE_COOKIES
+              value: "true"
+            - name: BIFRACT_PASSWORD_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: PASSWORD_PEPPER
+            - name: BIFRACT_FEED_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: FEED_ENCRYPTION_KEY
+            - name: BIFRACT_BACKUP_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: BACKUP_ENCRYPTION_KEY
+            - name: BIFRACT_ADMIN_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ADMIN_PASSWORD_HASH
+            - name: BIFRACT_CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: bifract-config
+                  key: CORS_ORIGINS
+            - name: LITELLM_URL
+              value: http://litellm:8000
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: LITELLM_MASTER_KEY
+            # Query limits
+            - name: BIFRACT_MAX_QUERY_ROWS
+              value: "250"
+            # S3 (for backups/archives)
+            - name: BIFRACT_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_ENDPOINT
+                  optional: true
+            - name: BIFRACT_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_BUCKET
+                  optional: true
+            - name: BIFRACT_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_ACCESS_KEY
+                  optional: true
+            - name: BIFRACT_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_SECRET_KEY
+                  optional: true
+            - name: BIFRACT_S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_REGION
+                  optional: true
+            # MaxMind GeoIP
+            - name: MAXMIND_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: MAXMIND_LICENSE_KEY
+                  optional: true
+            - name: MAXMIND_ACCOUNT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: MAXMIND_ACCOUNT_ID
+                  optional: true
+            - name: MAXMIND_EDITION_IDS
+              value: "GeoLite2-City-CSV,GeoLite2-ASN-CSV"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: archives
+              mountPath: /archives
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        - name: archives
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifract
+  namespace: bifract
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app: bifract

@@ -1,0 +1,79 @@
+# Caddyfile for Kubernetes deployment.
+# Customize the domain, IP restrictions, and TLS settings as needed.
+# This mirrors the Docker Compose Caddyfile security model.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caddy-config
+  namespace: bifract
+data:
+  Caddyfile: |
+    {
+      admin off
+    }
+
+    bifract.example.com {
+      # JSON access logging for log shipper sidecar
+      log {
+        output file /var/log/caddy/access.log {
+          roll_size 50MiB
+          roll_keep 5
+          roll_keep_for 168h
+        }
+        format json
+      }
+
+      # Security headers
+      header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+      }
+
+      # Block ingest endpoints on the main port
+      respond /api/v1/ingest* 403
+      respond /_bulk 403
+
+      # Block internal endpoints
+      respond /api/v1/internal/* 403
+
+      # Reverse proxy to Bifract app
+      reverse_proxy bifract.bifract.svc.cluster.local:8080 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+      }
+
+      # Request body limit (200 MiB)
+      request_body {
+        max_size 200MiB
+      }
+    }
+
+    # Ingest-only listener on port 8443 (uses same domain cert)
+    bifract.example.com:8443 {
+      log {
+        output file /var/log/caddy/access.log {
+          roll_size 50MiB
+          roll_keep 5
+          roll_keep_for 168h
+        }
+        format json
+      }
+      request_body {
+        max_size 200MiB
+      }
+      @ingest path /api/v1/ingest* /_bulk
+      handle @ingest {
+        log_skip
+        reverse_proxy bifract.bifract.svc.cluster.local:8080 {
+          header_up X-Real-IP {remote_host}
+          header_up X-Forwarded-For {remote_host}
+          header_up X-Forwarded-Proto {scheme}
+        }
+      }
+      respond 403
+    }

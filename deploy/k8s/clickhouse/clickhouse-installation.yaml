@@ -1,0 +1,66 @@
+# ClickHouse cluster managed by the official ClickHouse Kubernetes Operator.
+# Prerequisites:
+#   1. Install cert-manager:
+#      kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml
+#   2. Install the ClickHouse operator:
+#      helm install clickhouse-operator -n clickhouse-operator-system --create-namespace \
+#        oci://ghcr.io/clickhouse/clickhouse-operator-helm
+#
+# Customize replicas and storage to fit your workload.
+apiVersion: clickhouse.com/v1alpha1
+kind: KeeperCluster
+metadata:
+  name: bifract-keeper
+  namespace: bifract
+spec:
+  replicas: 1
+  dataVolumeClaimSpec:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 10Gi
+  containerTemplate:
+    image:
+      repository: clickhouse/clickhouse-keeper
+      tag: "26.2-alpine"
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+---
+apiVersion: clickhouse.com/v1alpha1
+kind: ClickHouseCluster
+metadata:
+  name: bifract-ch
+  namespace: bifract
+spec:
+  replicas: 2
+  keeperClusterRef:
+    name: bifract-keeper
+  dataVolumeClaimSpec:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 100Gi
+  containerTemplate:
+    image:
+      repository: clickhouse/clickhouse-server
+      tag: "26.2-alpine"
+    resources:
+      requests:
+        cpu: "1"
+        memory: 4Gi
+      limits:
+        cpu: "4"
+        memory: 16Gi
+  settings:
+    defaultUserPassword:
+      passwordType: password_sha256_hex
+      secret:
+        name: bifract-secrets
+        key: CLICKHOUSE_PASSWORD_HASH

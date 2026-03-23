@@ -1,0 +1,1 @@
+ALTER TABLE archives ADD COLUMN IF NOT EXISTS checksum TEXT;

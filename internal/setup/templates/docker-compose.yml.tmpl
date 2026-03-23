@@ -1,0 +1,155 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: bifract-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8443:8443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+      - ./caddy/ship-logs.sh:/usr/local/bin/ship-logs.sh
+      - ./caddy/entrypoint.sh:/usr/local/bin/entrypoint.sh
+      - caddy-data:/data
+      - caddy-config:/config
+{{- if or (eq .SSLMode "self-signed") (eq .SSLMode "custom")}}
+      - ./caddy/certs:/etc/caddy/certs:ro
+{{- end}}
+{{- if eq .IPAccess "mtls-app"}}
+      - ./caddy/client-ca:/etc/caddy/client-ca:ro
+{{- end}}
+    environment:
+      BIFRACT_DOMAIN: ${BIFRACT_DOMAIN:-localhost}
+    entrypoint: ["/usr/local/bin/entrypoint.sh"]
+    depends_on:
+      - bifract
+    networks:
+      - bifract-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    container_name: bifract-postgres
+    environment:
+      POSTGRES_DB: bifract
+      POSTGRES_USER: bifract
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bifract"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bifract-network
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.2-alpine
+    container_name: bifract-clickhouse
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./db/init-clickhouse.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      CLICKHOUSE_DB: logs
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "default", "--password", "${CLICKHOUSE_PASSWORD}", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bifract-network
+    restart: unless-stopped
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-v1.81.14-stable
+    container_name: bifract-litellm
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml
+    environment:
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+    command: ["--config", "/app/config.yaml", "--port", "8000"]
+    networks:
+      - bifract-network
+    restart: unless-stopped
+
+  bifract:
+    image: ghcr.io/zanegittins/bifract:${BIFRACT_VERSION:-latest}
+    container_name: bifract-app
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_DB: logs
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: bifract
+      POSTGRES_USER: bifract
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      BIFRACT_PORT: 8080
+      BIFRACT_MAX_QUERY_ROWS: 250
+      BIFRACT_SECURE_COOKIES: ${BIFRACT_SECURE_COOKIES:-false}
+      BIFRACT_CORS_ORIGINS: ${BIFRACT_CORS_ORIGINS:-https://localhost}
+      BIFRACT_DOMAIN: ${BIFRACT_DOMAIN:-localhost}
+      BIFRACT_PASSWORD_PEPPER: ${BIFRACT_PASSWORD_PEPPER}
+      BIFRACT_FEED_ENCRYPTION_KEY: ${BIFRACT_FEED_ENCRYPTION_KEY}
+      LITELLM_URL: http://litellm:8000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      BIFRACT_BASE_URL: ${BIFRACT_BASE_URL:-}
+      BIFRACT_OIDC_ISSUER_URL: ${BIFRACT_OIDC_ISSUER_URL:-}
+      BIFRACT_OIDC_CLIENT_ID: ${BIFRACT_OIDC_CLIENT_ID:-}
+      BIFRACT_OIDC_CLIENT_SECRET: ${BIFRACT_OIDC_CLIENT_SECRET:-}
+      BIFRACT_OIDC_REDIRECT_URL: ${BIFRACT_OIDC_REDIRECT_URL:-}
+      BIFRACT_OIDC_SCOPES: ${BIFRACT_OIDC_SCOPES:-openid,profile,email}
+      BIFRACT_OIDC_DEFAULT_ROLE: ${BIFRACT_OIDC_DEFAULT_ROLE:-user}
+      BIFRACT_OIDC_ALLOWED_DOMAINS: ${BIFRACT_OIDC_ALLOWED_DOMAINS:-}
+      BIFRACT_OIDC_BUTTON_TEXT: ${BIFRACT_OIDC_BUTTON_TEXT:-Sign in with SSO}
+      BIFRACT_BACKUP_ENCRYPTION_KEY: ${BIFRACT_BACKUP_ENCRYPTION_KEY:-}
+      BIFRACT_S3_ENDPOINT: ${BIFRACT_S3_ENDPOINT:-}
+      BIFRACT_S3_BUCKET: ${BIFRACT_S3_BUCKET:-}
+      BIFRACT_S3_ACCESS_KEY: ${BIFRACT_S3_ACCESS_KEY:-}
+      BIFRACT_S3_SECRET_KEY: ${BIFRACT_S3_SECRET_KEY:-}
+      BIFRACT_S3_REGION: ${BIFRACT_S3_REGION:-}
+      MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
+      MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
+      MAXMIND_EDITION_IDS: ${MAXMIND_EDITION_IDS:-GeoLite2-City-CSV,GeoLite2-ASN-CSV}
+{{- if eq .IPAccess "mtls-app"}}
+      BIFRACT_CLIENT_CA_DIR: /client-ca
+{{- end}}
+    volumes:
+      - bifract-archives:/archives
+{{- if eq .IPAccess "mtls-app"}}
+      - ./caddy/client-ca:/client-ca:ro
+{{- end}}
+    healthcheck:
+      test: ["CMD", "/bifract-server", "-healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - bifract-network
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  clickhouse-data:
+  caddy-data:
+  caddy-config:
+  bifract-archives:
+
+networks:
+  bifract-network:
+    driver: bridge

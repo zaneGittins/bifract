@@ -1,0 +1,58 @@
+apiVersion: clickhouse.com/v1alpha1
+kind: KeeperCluster
+metadata:
+  name: bifract-keeper
+  namespace: bifract
+spec:
+  replicas: 1
+  dataVolumeClaimSpec:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 10Gi
+  containerTemplate:
+    image:
+      repository: clickhouse/clickhouse-keeper
+      tag: "26.2-alpine"
+    resources:
+      requests:
+        cpu: {{.CHKeeper.CPURequest}}
+        memory: {{.CHKeeper.MemRequest}}
+      limits:
+        cpu: "{{.CHKeeper.CPULimit}}"
+        memory: {{.CHKeeper.MemLimit}}
+---
+apiVersion: clickhouse.com/v1alpha1
+kind: ClickHouseCluster
+metadata:
+  name: bifract-ch
+  namespace: bifract
+spec:
+  shards: {{.CHShards}}
+  replicas: {{.CHReplicas}}
+  keeperClusterRef:
+    name: bifract-keeper
+  dataVolumeClaimSpec:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: {{.CHStorageGB}}Gi
+  containerTemplate:
+    image:
+      repository: clickhouse/clickhouse-server
+      tag: "26.2-alpine"
+    resources:
+      requests:
+        cpu: "{{.CH.CPURequest}}"
+        memory: {{.CH.MemRequest}}
+      limits:
+        cpu: "{{.CH.CPULimit}}"
+        memory: {{.CH.MemLimit}}
+  settings:
+    defaultUserPassword:
+      passwordType: password_sha256_hex
+      secret:
+        name: bifract-secrets
+        key: CLICKHOUSE_PASSWORD_HASH

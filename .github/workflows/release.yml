@@ -1,0 +1,63 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-bifract:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build bifract
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          BINARY_NAME="bifract-${{ matrix.goos }}-${{ matrix.goarch }}"
+          go build \
+            -ldflags="-w -s -X bifract/internal/setup.Version=${{ github.ref_name }} -X bifract/internal/setup.Commit=${{ github.sha }} -X bifract/internal/setup.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o "${BINARY_NAME}" \
+            ./cmd/bifract
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bifract-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: bifract-*
+
+  release:
+    needs: [build-bifract]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bifract-*
+          generate_release_notes: true

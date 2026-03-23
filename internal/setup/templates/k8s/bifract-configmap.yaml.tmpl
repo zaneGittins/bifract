@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bifract-config
+  namespace: bifract
+data:
+  CORS_ORIGINS: "https://{{.Domain}}"

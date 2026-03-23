@@ -1,0 +1,97 @@
+site_name: Bifract Documentation
+site_description: Open source log management, detection, and collaboration
+site_url: https://docs.bifract.io
+repo_url: https://github.com/zaneGittins/bifract
+repo_name: zaneGittins/bifract
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - attr_list
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Kubernetes: getting-started/kubernetes.md
+    - Configuration: getting-started/configuration.md
+  - Administration:
+    - Users & Roles: administration/users-and-roles.md
+    - OIDC / SSO: administration/oidc-sso.md
+    - Fractals: administration/fractals.md
+    - Prisms: administration/prisms.md
+    - API Keys: administration/ingest-tokens.md
+    - Backup & Restore: administration/backup-restore.md
+    - Reverse Proxy: administration/reverse-proxy.md
+    - Disk Quotas: administration/disk-quotas.md
+    - Monitoring: administration/monitoring.md
+  - Ingestion:
+    - Sending Logs: ingestion/overview.md
+    - CLI Tool: ingestion/cli-tool.md
+    - Tuning: ingestion/tuning.md
+  - BQL (Bifract Query Language):
+    - Basics & Filtering: bql/basics.md
+    - Aggregation: bql/aggregation.md
+    - Display & Sorting: bql/display-and-sorting.md
+    - Field Operations: bql/field-operations.md
+    - Chain Detection: bql/chain.md
+    - Join: bql/join.md
+    - Graph Traversal: bql/graph-traversal.md
+    - Enrichment: bql/enrichment.md
+    - Time Functions: bql/time-functions.md
+    - Visualizations: bql/visualizations.md
+    - Examples: bql/examples.md
+  - Alerting:
+    - Alerts: alerting/alerts.md
+    - Alert Feeds: alerting/alert-feeds.md
+  - Features:
+    - Dashboards & Notebooks: features/dashboards.md
+    - Dictionaries: features/dictionaries.md
+    - Normalizers: features/normalizers.md
+    - AI Chat: features/ai-chat.md
+    - MCP Server: features/mcp-server.md
+  - API Reference:
+    - Authentication: api/authentication.md
+    - Ingestion: api/ingestion.md
+    - Querying: api/querying.md
+    - Comments: api/comments.md
+    - Fractals: api/fractals.md
+    - Alerts: api/alerts.md
+    - Webhooks: api/webhooks.md
+    - Notebooks: api/notebooks.md
+    - Dashboards: api/dashboards.md
+    - Health & Status: api/health.md
