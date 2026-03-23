@@ -1075,6 +1075,7 @@ func (a *APIKeyValidatorAdapter) ValidateAPIKey(ctx context.Context, key string)
 		KeyID:       keyData.KeyID,
 		FractalID:   keyData.FractalID,
 		FractalName: keyData.FractalName,
+		CreatedBy:   keyData.CreatedBy,
 		Permissions: keyData.Permissions,
 	}, nil
 }

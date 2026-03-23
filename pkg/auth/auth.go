@@ -1365,6 +1365,7 @@ type ValidatedAPIKey struct {
 	KeyID       string            `json:"key_id"`
 	FractalID   string            `json:"fractal_id"`
 	FractalName string            `json:"fractal_name"`
+	CreatedBy   string            `json:"created_by"`
 	Permissions map[string]interface{} `json:"permissions"`
 }
 

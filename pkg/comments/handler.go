@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
@@ -134,7 +135,13 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	} else {
-		logEntry, err := h.ch.GetLogByTimestamp(r.Context(), time.Time{}, req.LogID, "")
+		// Scope the lookup to the caller's fractal to prevent cross-fractal
+		// information leakage via log_id probing.
+		lookupFractal := req.FractalID
+		if lookupFractal == "" {
+			lookupFractal, _ = h.getSelectedFractal(r)
+		}
+		logEntry, err := h.ch.GetLogByTimestamp(r.Context(), time.Time{}, req.LogID, lookupFractal)
 		if err != nil || logEntry == nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(Response{
@@ -187,12 +194,21 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
+	// For API key auth, attribute the comment to the key's creator (a real
+	// user in the DB) rather than the synthetic "apikey_<id>" username.
+	author := user.Username
+	if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
+		if keyData, ok := r.Context().Value("api_key").(*auth.ValidatedAPIKey); ok && keyData.CreatedBy != "" {
+			author = keyData.CreatedBy
+		}
+	}
+
 	// Create comment
 	comment := storage.Comment{
 		LogID:        req.LogID,
 		LogTimestamp: logTimestamp,
 		Text:         req.Text,
-		Author:       user.Username,
+		Author:       author,
 		Tags:         req.Tags,
 		Query:        req.Query,
 		FractalID:    fractalID,
