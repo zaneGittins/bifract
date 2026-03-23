@@ -22,7 +22,8 @@ func NewStorage(pg *storage.PostgresClient) *Storage {
 // archiveColumns is the standard column list used in SELECT queries.
 const archiveColumns = `id, fractal_id, filename, storage_type, storage_path, size_bytes, log_count,
 	time_range_start, time_range_end, status, error_message, created_by, created_at, archive_type,
-	format_version, archive_end_ts, cursor_ts, cursor_id, COALESCE(checksum, '')`
+	format_version, archive_end_ts, cursor_ts, cursor_id, COALESCE(checksum, ''),
+	restore_lines_sent, COALESCE(restore_error, '')`
 
 // scanArchive scans a row into an Archive struct.
 func scanArchive(scanner interface{ Scan(dest ...interface{}) error }) (*Archive, error) {
@@ -34,6 +35,7 @@ func scanArchive(scanner interface{ Scan(dest ...interface{}) error }) (*Archive
 		&a.SizeBytes, &a.LogCount, &a.TimeRangeStart, &a.TimeRangeEnd,
 		&a.Status, &errMsg, &a.CreatedBy, &a.CreatedAt, &a.ArchiveType,
 		&a.FormatVersion, &archiveEndTS, &cursorTS, &cursorID, &a.Checksum,
+		&a.RestoreLinesSent, &a.RestoreError,
 	)
 	if err != nil {
 		return nil, err
@@ -156,18 +158,33 @@ func (s *Storage) SetArchiveStatusWithError(ctx context.Context, archiveID, stat
 	return nil
 }
 
-// FailInterruptedArchives marks any in_progress or restoring archives as
-// failed. Called on startup to clean up after crashes.
+// FailInterruptedArchives marks in_progress archives as failed and restoring
+// archives back to completed (preserving restore_lines_sent for resume).
+// Called on startup to clean up after crashes.
 func (s *Storage) FailInterruptedArchives(ctx context.Context) (int64, error) {
-	res, err := s.pg.DB().ExecContext(ctx,
+	// In-progress archives are genuinely failed (incomplete file).
+	res1, err := s.pg.DB().ExecContext(ctx,
 		`UPDATE archives SET status = $1, error_message = 'interrupted by server restart'
-		 WHERE status IN ($2, $3)`,
-		StatusFailed, StatusInProgress, StatusRestoring,
+		 WHERE status = $2`,
+		StatusFailed, StatusInProgress,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("fail interrupted archives: %w", err)
 	}
-	return res.RowsAffected()
+	count1, _ := res1.RowsAffected()
+
+	// Restoring archives: the archive file is still valid. Set back to
+	// completed so restore can be resumed. Preserve restore_lines_sent.
+	res2, err := s.pg.DB().ExecContext(ctx,
+		`UPDATE archives SET status = $1, restore_error = 'interrupted by server restart'
+		 WHERE status = $2`,
+		StatusCompleted, StatusRestoring,
+	)
+	if err != nil {
+		return count1, fmt.Errorf("recover interrupted restores: %w", err)
+	}
+	count2, _ := res2.RowsAffected()
+	return count1 + count2, nil
 }
 
 // DeleteArchive removes an archive record.
@@ -215,4 +232,33 @@ func (s *Storage) GetOldestCompletedArchives(ctx context.Context, fractalID stri
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// UpdateRestoreCursor persists the number of lines confirmed sent during restore.
+// Does not filter on status so the final cursor update succeeds even if the
+// status was already changed to completed by a concurrent cancel operation.
+func (s *Storage) UpdateRestoreCursor(ctx context.Context, archiveID string, linesSent int64) {
+	s.pg.DB().ExecContext(ctx,
+		`UPDATE archives SET restore_lines_sent = $1 WHERE id = $2`,
+		linesSent, archiveID,
+	)
+}
+
+// SetRestoreError records a restore failure. Sets status back to completed
+// (archive file is still valid) and preserves restore_lines_sent for resume.
+func (s *Storage) SetRestoreError(ctx context.Context, archiveID, errMsg string) error {
+	_, err := s.pg.DB().ExecContext(ctx,
+		`UPDATE archives SET status = $1, restore_error = $2 WHERE id = $3`,
+		StatusCompleted, errMsg, archiveID,
+	)
+	return err
+}
+
+// ClearRestoreState resets restore progress for a fresh restore attempt.
+func (s *Storage) ClearRestoreState(ctx context.Context, archiveID string) error {
+	_, err := s.pg.DB().ExecContext(ctx,
+		`UPDATE archives SET restore_lines_sent = 0, restore_error = NULL WHERE id = $1`,
+		archiveID,
+	)
+	return err
 }

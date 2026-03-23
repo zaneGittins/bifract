@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -565,7 +566,7 @@ func getArchiveMaxMemory() uint64 {
 // RestoreArchive starts an asynchronous restore operation from an archive.
 // The ingestToken is used to POST raw logs to the local ingest endpoint,
 // ensuring logs go through the full ingestion pipeline.
-func (m *Manager) RestoreArchive(ctx context.Context, archiveID, targetFractalID, ingestToken string) error {
+func (m *Manager) RestoreArchive(ctx context.Context, archiveID, targetFractalID, ingestToken string, clearExisting bool) error {
 	if m.store == nil {
 		return fmt.Errorf("archive storage not configured")
 	}
@@ -604,6 +605,16 @@ func (m *Manager) RestoreArchive(ctx context.Context, archiveID, targetFractalID
 		}
 	}
 
+	// Determine resume vs fresh restore.
+	var skipLines int64
+	if clearExisting {
+		if err := m.archives.ClearRestoreState(ctx, archiveID); err != nil {
+			return fmt.Errorf("clear restore state: %w", err)
+		}
+	} else if archive.RestoreLinesSent > 0 {
+		skipLines = archive.RestoreLinesSent
+	}
+
 	if err := m.archives.SetArchiveStatus(ctx, archiveID, StatusRestoring); err != nil {
 		return err
 	}
@@ -615,12 +626,12 @@ func (m *Manager) RestoreArchive(ctx context.Context, archiveID, targetFractalID
 	m.mu.Unlock()
 
 	m.wg.Add(1)
-	go m.runRestore(restoreCtx, archive, targetFractalID, ingestToken)
+	go m.runRestore(restoreCtx, archive, targetFractalID, ingestToken, skipLines)
 
 	return nil
 }
 
-func (m *Manager) runRestore(ctx context.Context, archive *Archive, targetFractalID, ingestToken string) {
+func (m *Manager) runRestore(ctx context.Context, archive *Archive, targetFractalID, ingestToken string, skipLines int64) {
 	defer m.wg.Done()
 	defer func() {
 		m.mu.Lock()
@@ -628,16 +639,19 @@ func (m *Manager) runRestore(ctx context.Context, archive *Archive, targetFracta
 		m.mu.Unlock()
 	}()
 
-	log.Printf("[Archives] Starting restore of archive %s into fractal %s", archive.ID, targetFractalID)
+	if skipLines > 0 {
+		log.Printf("[Archives] Resuming restore of archive %s into fractal %s from line %d", archive.ID, targetFractalID, skipLines)
+	} else {
+		log.Printf("[Archives] Starting restore of archive %s into fractal %s", archive.ID, targetFractalID)
+	}
 
-	if err := m.executeRestore(ctx, archive, targetFractalID, ingestToken); err != nil {
+	if err := m.executeRestore(ctx, archive, targetFractalID, ingestToken, skipLines); err != nil {
 		log.Printf("[Archives] Restore of archive %s failed: %v", archive.ID, err)
-		// Set back to completed, not failed - the archive itself is still valid,
-		// only the restore attempt failed. This allows retrying the restore.
-		m.archives.SetArchiveStatus(context.Background(), archive.ID, StatusCompleted)
+		m.archives.SetRestoreError(context.Background(), archive.ID, err.Error())
 		return
 	}
 
+	m.archives.ClearRestoreState(context.Background(), archive.ID)
 	m.archives.SetArchiveStatus(context.Background(), archive.ID, StatusCompleted)
 	log.Printf("[Archives] Restore of archive %s completed", archive.ID)
 }
@@ -667,7 +681,7 @@ func (m *Manager) verifyChecksum(ctx context.Context, archive *Archive) error {
 	return nil
 }
 
-func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFractalID, ingestToken string) error {
+func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFractalID, ingestToken string, skipLines int64) error {
 	// Verify archive integrity before restoring if a checksum is available.
 	if archive.Checksum != "" {
 		if err := m.verifyChecksum(ctx, archive); err != nil {
@@ -710,11 +724,24 @@ func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFr
 
 	log.Printf("[Archives] Restoring archive %s (format v%d)", archive.ID, header.Version)
 
+	// Skip lines already restored in a previous attempt.
+	if skipLines > 0 {
+		log.Printf("[Archives] Resuming from line %d, skipping already-restored lines", skipLines)
+		var skipped int64
+		for skipped < skipLines && scanner.Scan() {
+			skipped++
+		}
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("skip lines: %w", err)
+		}
+		if skipped < skipLines {
+			return fmt.Errorf("archive has only %d data lines, expected at least %d (archive may have changed)", skipped, skipLines)
+		}
+		log.Printf("[Archives] Skipped %d lines, resuming restore", skipped)
+	}
+
 	ingestURL := fmt.Sprintf("http://localhost:%s/api/v1/ingest", getBifractPort())
 
-	// Use the same adaptive concurrency pattern as the bifract --ingest CLI:
-	// auto-detect workers from CPU cores, adaptive pacer with AIMD that
-	// throttles down on 429s and scales back up on sustained success.
 	workers := restoreAutoDetectWorkers()
 	pacer := newRestorePacer(workers)
 	defer pacer.stop()
@@ -730,6 +757,10 @@ func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFr
 	var workerErrOnce sync.Once
 	var wg sync.WaitGroup
 
+	// Track confirmed ingested lines for cursor persistence.
+	var confirmedSent atomic.Int64
+	confirmedSent.Store(skipLines)
+
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
@@ -744,12 +775,13 @@ func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFr
 					})
 					return
 				}
+				confirmedSent.Add(int64(len(job.logs)))
 			}
 		}()
 	}
 
 	batch := make([]string, 0, restoreBatchSize)
-	var totalSent int64
+	var totalSent int64 = skipLines
 
 	for scanner.Scan() {
 		if ctx.Err() != nil {
@@ -778,7 +810,11 @@ func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFr
 			batch = batch[:0]
 
 			if totalSent%100000 == 0 {
-				log.Printf("[Archives] Restore progress: %d logs sent to ingest", totalSent)
+				log.Printf("[Archives] Restore progress: %d / %d logs sent to ingest", totalSent, archive.LogCount)
+			}
+			// Persist cursor every 50k lines.
+			if totalSent%50000 == 0 {
+				m.archives.UpdateRestoreCursor(context.Background(), archive.ID, confirmedSent.Load())
 			}
 		}
 	}
@@ -786,6 +822,7 @@ func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFr
 	if err := scanner.Err(); err != nil {
 		close(jobs)
 		wg.Wait()
+		m.archives.UpdateRestoreCursor(context.Background(), archive.ID, confirmedSent.Load())
 		return fmt.Errorf("scan archive: %w", err)
 	}
 
@@ -798,6 +835,14 @@ func (m *Manager) executeRestore(ctx context.Context, archive *Archive, targetFr
 
 	close(jobs)
 	wg.Wait()
+
+	// Persist final cursor position using a background context since the
+	// request context may already be cancelled.
+	m.archives.UpdateRestoreCursor(context.Background(), archive.ID, confirmedSent.Load())
+
+	if ctx.Err() != nil {
+		return fmt.Errorf("restore cancelled: %w", ctx.Err())
+	}
 
 	if workerErr != nil {
 		return workerErr
@@ -1059,7 +1104,8 @@ func (m *Manager) CancelOperation(ctx context.Context, archiveID string) error {
 
 	if archive.Status == StatusRestoring {
 		// Restore cancelled: archive file is still valid, set back to completed.
-		return m.archives.SetArchiveStatus(ctx, archiveID, StatusCompleted)
+		// Use SetRestoreError so restore_lines_sent is preserved for resume.
+		return m.archives.SetRestoreError(ctx, archiveID, "cancelled by user")
 	}
 
 	// In-progress archive cancelled: incomplete file, delete everything.

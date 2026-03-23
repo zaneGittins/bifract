@@ -432,10 +432,17 @@ async def add_comment(
     Add a comment to a specific log entry. Comments enable collaboration
     by letting analysts annotate logs with findings, context, or notes.
 
+    The tag "AI-Generated" is always applied automatically.
+
+    When commenting on multiple logs that are part of the same investigation,
+    include a common tag to tie them together using the format IR-<ONE_WORD>,
+    for example: "IR-BruteForce", "IR-Exfiltration", "IR-LateralMovement".
+    Reuse the same IR tag across all comments belonging to the same investigation.
+
     Args:
         log_id: The log_id of the log entry to comment on.
         text: The comment text (supports markdown).
-        tags: Optional list of tags to attach to the comment.
+        tags: Optional list of additional tags to attach to the comment.
 
     Returns:
         The created comment.
@@ -443,12 +450,15 @@ async def add_comment(
     if (err := _check_config()):
         return err
 
+    all_tags = list(tags) if tags else []
+    if "AI-Generated" not in all_tags:
+        all_tags.insert(0, "AI-Generated")
+
     body: dict = {
         "log_id": log_id,
         "text": text,
+        "tags": all_tags,
     }
-    if tags:
-        body["tags"] = tags
 
     try:
         result = await _post("/comments", body)

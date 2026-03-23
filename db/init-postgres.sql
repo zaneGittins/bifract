@@ -47,16 +47,16 @@ CREATE OR REPLACE FUNCTION random_pastel_color()
 RETURNS VARCHAR(7) AS $$
 DECLARE
     colors TEXT[] := ARRAY[
-        '#FFB3BA',  -- Pastel Red
-        '#FFDFBA',  -- Pastel Orange
-        '#FFFFBA',  -- Pastel Yellow
-        '#BAFFC9',  -- Pastel Green
-        '#BAE1FF',  -- Pastel Blue
-        '#D4BAFF',  -- Pastel Purple
-        '#FFBAF3',  -- Pastel Pink
         '#9c6ade',  -- Bifract Purple
         '#6bcf7f',  -- Bifract Green
-        '#8be9fd'   -- Bifract Cyan
+        '#5bbce4',  -- Sky Blue
+        '#e07a8b',  -- Dusty Rose
+        '#d4a054',  -- Amber
+        '#ca6be0',  -- Orchid
+        '#5bc4b5',  -- Teal
+        '#e07a4f',  -- Burnt Sienna
+        '#7a9de0',  -- Periwinkle
+        '#b5c44f'   -- Chartreuse
     ];
 BEGIN
     RETURN colors[floor(random() * array_length(colors, 1) + 1)];
@@ -1088,7 +1088,9 @@ CREATE TABLE IF NOT EXISTS archives (
     format_version INTEGER NOT NULL DEFAULT 0,
     archive_end_ts TIMESTAMP,
     cursor_ts TIMESTAMP,
-    cursor_id TEXT
+    cursor_id TEXT,
+    restore_lines_sent BIGINT NOT NULL DEFAULT 0,
+    restore_error TEXT
 );
 
 ALTER TABLE archives ADD COLUMN IF NOT EXISTS storage_type VARCHAR(20) NOT NULL DEFAULT 'disk';
@@ -1105,6 +1107,8 @@ ALTER TABLE archives ADD COLUMN IF NOT EXISTS archive_end_ts TIMESTAMP;
 ALTER TABLE archives ADD COLUMN IF NOT EXISTS cursor_ts TIMESTAMP;
 ALTER TABLE archives ADD COLUMN IF NOT EXISTS cursor_id TEXT;
 ALTER TABLE archives ADD COLUMN IF NOT EXISTS checksum TEXT;
+ALTER TABLE archives ADD COLUMN IF NOT EXISTS restore_lines_sent BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE archives ADD COLUMN IF NOT EXISTS restore_error TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_archives_fractal_id ON archives(fractal_id);
 CREATE INDEX IF NOT EXISTS idx_archives_status ON archives(status);

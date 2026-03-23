@@ -2,6 +2,7 @@ const Archives = {
     currentFractalId: null,
     pollInterval: null,
     pendingRestoreArchiveId: null,
+    pendingRestoreIsResume: false,
 
     init() {
         // Button uses onclick in HTML, no addEventListener needed
@@ -45,7 +46,7 @@ const Archives = {
         }
 
         const rows = archives.map(a => {
-            const statusBadge = this.renderStatus(a.status, a.error_message, a.log_count, a.checksum);
+            const statusBadge = this.renderStatus(a);
             const size = this.formatBytes(a.size_bytes);
             const date = new Date(a.created_at).toLocaleDateString('en-US', {
                 year: 'numeric', month: 'short', day: 'numeric',
@@ -85,19 +86,36 @@ const Archives = {
             </table>`;
     },
 
-    renderStatus(status, errorMessage, logCount, checksum) {
+    renderStatus(archive) {
+        const { status, error_message: errorMessage, log_count: logCount, checksum,
+                restore_lines_sent: restoreLinesSent, restore_error: restoreError } = archive;
         switch (status) {
             case 'completed': {
                 const verified = checksum ? ' title="SHA-256 verified"' : ' title="No checksum (created before integrity verification was added)"';
                 const icon = checksum ? '&#x2713; ' : '';
-                return `<span class="archive-badge archive-badge-success"${verified}>${icon}Completed</span>`;
+                let badge = `<span class="archive-badge archive-badge-success"${verified}>${icon}Completed</span>`;
+                if (restoreError) {
+                    const resumeInfo = restoreLinesSent > 0
+                        ? ` (${this.formatCount(restoreLinesSent)} / ${this.formatCount(logCount)} logs restored)`
+                        : '';
+                    badge += `<br><span class="archive-badge archive-badge-error" title="${Utils.escapeHtml(restoreError)}" style="margin-top:0.25rem">Restore failed${resumeInfo}</span>`;
+                }
+                return badge;
             }
             case 'in_progress': {
                 const progress = logCount > 0 ? ` ${this.formatCount(logCount)} logs` : '';
                 return `<span class="archive-badge archive-badge-active"><span class="spinner-sm"></span> Archiving${progress}</span>`;
             }
-            case 'restoring':
-                return `<span class="archive-badge archive-badge-active"><span class="spinner-sm"></span> Restoring</span>`;
+            case 'restoring': {
+                let progress = '';
+                if (restoreLinesSent > 0 && logCount > 0) {
+                    const pct = Math.min(99, Math.round((restoreLinesSent / logCount) * 100));
+                    progress = ` ${pct}% (${this.formatCount(restoreLinesSent)} / ${this.formatCount(logCount)})`;
+                } else if (restoreLinesSent > 0) {
+                    progress = ` ${this.formatCount(restoreLinesSent)} logs`;
+                }
+                return `<span class="archive-badge archive-badge-active"><span class="spinner-sm"></span> Restoring${progress}</span>`;
+            }
             case 'failed':
                 return `<span class="archive-badge archive-badge-error" title="${Utils.escapeHtml(errorMessage || '')}">Failed</span>`;
             default:
@@ -112,7 +130,9 @@ const Archives = {
 
         let actions = '';
         if (archive.status === 'completed') {
-            actions += `<button class="btn-secondary btn-xs" onclick="Archives.confirmRestore('${archive.id}')">Restore</button> `;
+            const hasPartialRestore = archive.restore_lines_sent > 0 && !!archive.restore_error;
+            const label = hasPartialRestore ? 'Resume Restore' : 'Restore';
+            actions += `<button class="btn-secondary btn-xs" onclick="Archives.confirmRestore('${archive.id}', ${hasPartialRestore})">${label}</button> `;
         }
         actions += `<button class="btn-danger-sm btn-xs" onclick="Archives.confirmDelete('${archive.id}')">Delete</button>`;
         return actions;
@@ -180,23 +200,29 @@ const Archives = {
         }
     },
 
-    async confirmRestore(archiveId) {
+    async confirmRestore(archiveId, isResume) {
         if (!this.currentFractalId && window.FractalContext && FractalContext.currentFractal) {
             this.currentFractalId = FractalContext.currentFractal.id;
         }
         this.pendingRestoreArchiveId = archiveId;
+        this.pendingRestoreIsResume = !!isResume;
 
         const dialog = document.getElementById('archiveRestoreDialog');
         const info = document.getElementById('archiveRestoreInfo');
 
         if (!dialog) return;
 
-        info.textContent = 'Provide an ingest API key for the target fractal. The token determines which fractal logs are restored into.';
+        if (isResume) {
+            info.textContent = 'A previous restore was interrupted. Provide the same ingest API key to resume from where it left off.';
+        } else {
+            info.textContent = 'Provide an ingest API key for the target fractal. The token determines which fractal logs are restored into.';
+        }
         dialog.style.display = '';
     },
 
     cancelRestore() {
         this.pendingRestoreArchiveId = null;
+        this.pendingRestoreIsResume = false;
         const dialog = document.getElementById('archiveRestoreDialog');
         if (dialog) dialog.style.display = 'none';
         const tokenInput = document.getElementById('archiveRestoreToken');
@@ -228,7 +254,10 @@ const Archives = {
                     method: 'POST',
                     credentials: 'include',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ingest_token: ingestToken })
+                    body: JSON.stringify({
+                        ingest_token: ingestToken,
+                        clear_existing: !this.pendingRestoreIsResume
+                    })
                 }
             );
             const data = await response.json();

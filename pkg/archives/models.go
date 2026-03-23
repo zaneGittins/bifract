@@ -20,9 +20,11 @@ type Archive struct {
 	ArchiveType    string     `json:"archive_type"`
 	FormatVersion  int        `json:"format_version"`
 	ArchiveEndTS   *time.Time `json:"archive_end_ts,omitempty"`
-	Checksum       string     `json:"checksum,omitempty"`
-	CursorTS       *time.Time `json:"-"`
-	CursorID       *string    `json:"-"`
+	Checksum         string     `json:"checksum,omitempty"`
+	CursorTS         *time.Time `json:"-"`
+	CursorID         *string    `json:"-"`
+	RestoreLinesSent int64      `json:"restore_lines_sent"`
+	RestoreError     string     `json:"restore_error,omitempty"`
 }
 
 const (
