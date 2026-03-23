@@ -1077,12 +1077,18 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 					ctx := context.WithValue(r.Context(), "user", user)
 					ctx = context.WithValue(ctx, "auth_type", "api_key")
 					ctx = context.WithValue(ctx, "api_key", keyData)
-					ctx = context.WithValue(ctx, "selected_fractal", keyData.FractalID)
 					ctx = context.WithValue(ctx, "api_key_permissions", keyData.Permissions)
 
-					// Resolve an RBAC role from the API key's permission map.
-					// Individual handlers still check the permission map for fine-grained enforcement.
-					ctx = context.WithValue(ctx, "fractal_role", resolveAPIKeyRole(keyData.Permissions))
+					// Resolve RBAC role from API key permissions and set scope context.
+					// Prism keys set prism context; fractal keys set fractal context.
+					apiKeyRole := resolveAPIKeyRole(keyData.Permissions)
+					if keyData.PrismID != "" {
+						ctx = context.WithValue(ctx, "selected_prism", keyData.PrismID)
+						ctx = context.WithValue(ctx, "prism_role", apiKeyRole)
+					} else {
+						ctx = context.WithValue(ctx, "selected_fractal", keyData.FractalID)
+						ctx = context.WithValue(ctx, "fractal_role", apiKeyRole)
+					}
 
 					// Update usage stats (async) - but only if validation succeeds
 					go func() {
@@ -1373,12 +1379,14 @@ func (h *AuthHandler) SetSelectedPrismInSessionFromRequest(r *http.Request, pris
 
 // ValidatedAPIKey represents an API key validated for authentication
 type ValidatedAPIKey struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	KeyID       string            `json:"key_id"`
-	FractalID   string            `json:"fractal_id"`
-	FractalName string            `json:"fractal_name"`
-	CreatedBy   string            `json:"created_by"`
+	ID          string                 `json:"id"`
+	Name        string                 `json:"name"`
+	KeyID       string                 `json:"key_id"`
+	FractalID   string                 `json:"fractal_id,omitempty"`
+	FractalName string                 `json:"fractal_name,omitempty"`
+	PrismID     string                 `json:"prism_id,omitempty"`
+	PrismName   string                 `json:"prism_name,omitempty"`
+	CreatedBy   string                 `json:"created_by"`
 	Permissions map[string]interface{} `json:"permissions"`
 }
 

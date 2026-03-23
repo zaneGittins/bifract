@@ -1393,12 +1393,21 @@ CREATE INDEX IF NOT EXISTS idx_chat_conversations_prism_id  ON chat_conversation
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionaries_prism_name   ON dictionaries(prism_id, name)  WHERE prism_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_queries_prism_name  ON saved_queries(prism_id, name) WHERE prism_id IS NOT NULL;
 
+ALTER TABLE api_keys            ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE api_keys            ALTER COLUMN fractal_id DROP NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_api_keys_prism_id             ON api_keys(prism_id)             WHERE prism_id IS NOT NULL;
+
 ALTER TABLE comments DROP CONSTRAINT IF EXISTS comments_scope_check;
 ALTER TABLE comments ADD CONSTRAINT comments_scope_check CHECK (
     fractal_id IS NOT NULL OR prism_id IS NOT NULL
 );
 ALTER TABLE chat_conversations DROP CONSTRAINT IF EXISTS chat_conversations_scope_check;
 ALTER TABLE chat_conversations ADD CONSTRAINT chat_conversations_scope_check CHECK (
+    (fractal_id IS NOT NULL AND prism_id IS NULL) OR
+    (fractal_id IS NULL AND prism_id IS NOT NULL)
+);
+ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_scope_check;
+ALTER TABLE api_keys ADD CONSTRAINT api_keys_scope_check CHECK (
     (fractal_id IS NOT NULL AND prism_id IS NULL) OR
     (fractal_id IS NULL AND prism_id IS NOT NULL)
 );

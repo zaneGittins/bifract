@@ -1,6 +1,7 @@
 // API Keys Management Component
 const APIKeys = {
     currentFractal: null,
+    currentScope: null, // { type: 'fractal'|'prism', id, name }
     currentKeys: [],
     currentTab: 'overview',
     currentPage: 1,
@@ -8,6 +9,15 @@ const APIKeys = {
     init() {
         console.log('[APIKeys] Initialized');
         this.setupEventListeners();
+    },
+
+    // Returns the API base URL for the current scope
+    baseURL() {
+        if (!this.currentScope) return '';
+        if (this.currentScope.type === 'prism') {
+            return `/api/v1/prisms/${this.currentScope.id}/api-keys`;
+        }
+        return `/api/v1/fractals/${this.currentScope.id}/api-keys`;
     },
 
     setupEventListeners() {
@@ -178,6 +188,7 @@ const APIKeys = {
         });
     },
 
+    // Open modal for fractal API keys (existing behavior)
     async showAPIKeysModal() {
         if (!window.FractalContext || !window.FractalContext.currentFractal) {
             if (window.Toast) {
@@ -186,12 +197,33 @@ const APIKeys = {
             return;
         }
 
-        this.currentFractal = window.FractalContext.currentFractal;
+        const fractal = window.FractalContext.currentFractal;
+        this.currentFractal = fractal;
+        this.currentScope = { type: 'fractal', id: fractal.id, name: fractal.name };
 
-        // Load API keys for this fractal
+        await this._openModal();
+    },
+
+    // Open modal for prism API keys
+    async showPrismAPIKeysModal(prism) {
+        if (!prism || !prism.id) {
+            if (window.Toast) {
+                Toast.error('Error', 'No prism provided');
+            }
+            return;
+        }
+
+        this.currentFractal = null;
+        this.currentScope = { type: 'prism', id: prism.id, name: prism.name };
+
+        await this._openModal();
+    },
+
+    async _openModal() {
         await this.loadAPIKeys();
 
-        // Update titles and labels
+        const scopeLabel = this.currentScope.type === 'prism' ? 'Prism' : 'Fractal';
+
         const modalTitle = document.getElementById('apiKeysModalTitle');
         if (modalTitle) {
             modalTitle.textContent = 'API Keys Management';
@@ -199,10 +231,9 @@ const APIKeys = {
 
         const overviewTitle = document.getElementById('apiKeysOverviewTitle');
         if (overviewTitle) {
-            overviewTitle.textContent = `API Keys for ${this.currentFractal.name}`;
+            overviewTitle.textContent = `API Keys for ${this.currentScope.name}`;
         }
 
-        // Show the modal and switch to overview tab
         this.switchToTab('overview');
 
         const modal = document.getElementById('apiKeysModal');
@@ -217,9 +248,9 @@ const APIKeys = {
     },
 
     async loadAPIKeys() {
-        if (!this.currentFractal) return;
+        if (!this.currentScope) return;
         try {
-            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/api-keys`, {
+            const response = await fetch(this.baseURL(), {
                 method: 'GET',
                 credentials: 'include'
             });
@@ -250,10 +281,12 @@ const APIKeys = {
             return;
         }
 
+        const scopeLabel = this.currentScope?.type === 'prism' ? 'prism' : 'fractal';
+
         if (this.currentKeys.length === 0) {
             container.innerHTML = `
                 <div class="empty-state">
-                    <p>No API keys configured for this fractal.</p>
+                    <p>No API keys configured for this ${scopeLabel}.</p>
                     <button id="createFirstAPIKeyBtn" class="btn-primary" onclick="APIKeys.switchToTab('create')">
                         Create Your First API Key
                     </button>
@@ -441,7 +474,7 @@ const APIKeys = {
                 saveBtn.textContent = 'Creating...';
             }
 
-            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/api-keys`, {
+            const response = await fetch(this.baseURL(), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -495,8 +528,8 @@ const APIKeys = {
         }
 
         const keyFractal = document.getElementById('apiKeyResultFractal');
-        if (keyFractal && this.currentFractal) {
-            keyFractal.textContent = this.currentFractal.name;
+        if (keyFractal && this.currentScope) {
+            keyFractal.textContent = this.currentScope.name;
         }
 
         const copyBtn = document.getElementById('copyAPIKeyBtn');
@@ -535,7 +568,7 @@ const APIKeys = {
 
     async deleteAPIKey(keyId) {
         try {
-            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/api-keys/${keyId}`, {
+            const response = await fetch(`${this.baseURL()}/${keyId}`, {
                 method: 'DELETE',
                 credentials: 'include'
             });
@@ -565,7 +598,7 @@ const APIKeys = {
 
     async toggleAPIKey(keyId) {
         try {
-            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/api-keys/${keyId}/toggle`, {
+            const response = await fetch(`${this.baseURL()}/${keyId}/toggle`, {
                 method: 'POST',
                 credentials: 'include'
             });

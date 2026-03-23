@@ -783,6 +783,24 @@ const FractalManageTab = {
         }
     },
 
+    showPrismAPIKeys() {
+        if (!this.currentFractal) {
+            if (window.Toast) {
+                Toast.error('Error', 'No prism selected');
+            }
+            return;
+        }
+
+        if (window.APIKeys) {
+            window.APIKeys.showPrismAPIKeysModal(this.currentFractal);
+        } else {
+            if (window.Toast) {
+                Toast.error('Error', 'API Keys component not loaded');
+            }
+            console.error('APIKeys component not available');
+        }
+    },
+
 };
 
 // Make globally available

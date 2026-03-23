@@ -1326,6 +1326,7 @@
                         <button class="alerts-sub-tab active" data-subtab="overview" onclick="FractalManageTab.switchPrismSubTab('overview')">Overview</button>
                         <button class="alerts-sub-tab" data-subtab="members" onclick="FractalManageTab.switchPrismSubTab('members')">Members</button>
                         <button class="alerts-sub-tab" data-subtab="access" onclick="FractalManageTab.switchPrismSubTab('access')">Access</button>
+                        <button class="alerts-sub-tab" data-subtab="apikeys" onclick="FractalManageTab.switchPrismSubTab('apikeys')">API Keys</button>
                         <button class="alerts-sub-tab" data-subtab="danger" onclick="FractalManageTab.switchPrismSubTab('danger')">Danger Zone</button>
                     </div>
 
@@ -1434,6 +1435,17 @@
                         </div>
                     </div>
                     </div><!-- end prismSubTabAccess -->
+
+                    <!-- Prism API Keys Sub-Tab -->
+                    <div id="prismSubTabApikeys" class="prism-sub-panel" style="display:none;">
+                    <div class="fractal-permissions-section">
+                        <div class="section-header">
+                            <h3>API Keys</h3>
+                            <button class="btn-primary btn-sm" onclick="FractalManageTab.showPrismAPIKeys()">Manage API Keys</button>
+                        </div>
+                        <p class="section-description">Create and manage API keys for programmatic access to this prism. Prism API keys can query across all member fractals.</p>
+                    </div>
+                    </div><!-- end prismSubTabApikeys -->
 
                     <!-- Prism Danger Zone Sub-Tab -->
                     <div id="prismSubTabDanger" class="prism-sub-panel" style="display:none;">

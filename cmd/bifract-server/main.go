@@ -374,7 +374,7 @@ func main() {
 	settingsHandler := settings.NewHandler(pg)
 
 	// Create API key handler and storage
-	apiKeyHandler := apikeys.NewHandler(pg, fractalManager)
+	apiKeyHandler := apikeys.NewHandler(pg)
 	apiKeyStorage := apikeys.NewStorage(pg)
 
 	// Create API key validator adapter to avoid circular dependencies
@@ -405,6 +405,7 @@ func main() {
 
 	// Wire RBAC into handlers that need per-fractal permission checks
 	apiKeyHandler.SetRBAC(authHandler.RBACResolver())
+	apiKeyHandler.SetPrismResolver(prismManager)
 	ingestTokenHandler.SetRBAC(authHandler.RBACResolver())
 	queryHandler.SetRBACResolver(authHandler.RBACResolver())
 
@@ -729,13 +730,21 @@ func main() {
 			r.Post("/groups/{id}/members", groupHandler.HandleAddMember)
 			r.Delete("/groups/{id}/members/{username}", groupHandler.HandleRemoveMember)
 
-			// API Key management
+			// API Key management (fractal-scoped)
 			r.Get("/fractals/{id}/api-keys", apiKeyHandler.HandleListAPIKeys)
 			r.Post("/fractals/{id}/api-keys", apiKeyHandler.HandleCreateAPIKey)
 			r.Get("/fractals/{id}/api-keys/{keyId}", apiKeyHandler.HandleGetAPIKey)
 			r.Put("/fractals/{id}/api-keys/{keyId}", apiKeyHandler.HandleUpdateAPIKey)
 			r.Delete("/fractals/{id}/api-keys/{keyId}", apiKeyHandler.HandleDeleteAPIKey)
 			r.Post("/fractals/{id}/api-keys/{keyId}/toggle", apiKeyHandler.HandleToggleAPIKey)
+
+			// API Key management (prism-scoped)
+			r.Get("/prisms/{id}/api-keys", apiKeyHandler.HandleListPrismAPIKeys)
+			r.Post("/prisms/{id}/api-keys", apiKeyHandler.HandleCreatePrismAPIKey)
+			r.Get("/prisms/{id}/api-keys/{keyId}", apiKeyHandler.HandleGetPrismAPIKey)
+			r.Put("/prisms/{id}/api-keys/{keyId}", apiKeyHandler.HandleUpdatePrismAPIKey)
+			r.Delete("/prisms/{id}/api-keys/{keyId}", apiKeyHandler.HandleDeletePrismAPIKey)
+			r.Post("/prisms/{id}/api-keys/{keyId}/toggle", apiKeyHandler.HandleTogglePrismAPIKey)
 
 			// Ingest Token management
 			r.Get("/fractals/{id}/ingest-tokens", ingestTokenHandler.HandleListTokens)
@@ -1110,6 +1119,8 @@ func (a *APIKeyValidatorAdapter) ValidateAPIKey(ctx context.Context, key string)
 		KeyID:       keyData.KeyID,
 		FractalID:   keyData.FractalID,
 		FractalName: keyData.FractalName,
+		PrismID:     keyData.PrismID,
+		PrismName:   keyData.PrismName,
 		CreatedBy:   keyData.CreatedBy,
 		Permissions: keyData.Permissions,
 	}, nil

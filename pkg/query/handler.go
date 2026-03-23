@@ -266,12 +266,13 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		if user, ok := r.Context().Value("user").(*storage.User); ok {
 			if user.IsAdmin {
 				hasAccess = true
+			} else if ctxRole := rbac.PrismRoleFromContext(r.Context()); ctxRole.Satisfies(rbac.RoleViewer) {
+				// Context role is set by auth middleware for both session and API key auth
+				hasAccess = true
 			} else if h.rbacResolver != nil {
 				if role, err := h.rbacResolver.ResolvePrismRole(r.Context(), user.Username, selectedPrismID); err == nil {
 					hasAccess = role.Satisfies(rbac.RoleViewer)
 				}
-			} else {
-				hasAccess = rbac.PrismRoleFromContext(r.Context()).Satisfies(rbac.RoleViewer)
 			}
 		}
 		if !hasAccess {
@@ -614,14 +615,17 @@ func (h *QueryHandler) getSelectedIndex(r *http.Request) (string, error) {
 	authType := r.Context().Value("auth_type")
 
 	if authType == "api_key" {
-		// For API keys, always use the fractal associated with the key
-		// The selected_fractal is set by the auth middleware for API keys
+		// For fractal API keys, use the fractal associated with the key
 		if selectedFractal := r.Context().Value("selected_fractal"); selectedFractal != nil {
 			if fractalID, ok := selectedFractal.(string); ok && fractalID != "" {
 				return fractalID, nil
 			}
 		}
-		return "", fmt.Errorf("API key fractal context missing")
+		// For prism API keys, return empty so the prism path in the caller handles it
+		if selectedPrism, _ := r.Context().Value("selected_prism").(string); selectedPrism != "" {
+			return "", nil
+		}
+		return "", fmt.Errorf("API key context missing")
 	}
 
 	if authType == "session" {

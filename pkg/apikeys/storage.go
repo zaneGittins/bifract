@@ -24,9 +24,8 @@ func NewStorage(pg *storage.PostgresClient) *Storage {
 	return &Storage{pg: pg}
 }
 
-// GenerateAPIKey creates a new API key with format: bifract_<fractal_name>_<random>
-func (s *Storage) GenerateAPIKey(ctx context.Context, fractalName string) (string, string, error) {
-	// Generate 32 random bytes (64 hex chars)
+// GenerateAPIKey creates a new API key with format: bifract_<scope_name>_<random>
+func (s *Storage) GenerateAPIKey(ctx context.Context, scopeName string) (string, string, error) {
 	randomBytes := make([]byte, 32)
 	if _, err := rand.Read(randomBytes); err != nil {
 		return "", "", fmt.Errorf("failed to generate random key: %w", err)
@@ -34,13 +33,10 @@ func (s *Storage) GenerateAPIKey(ctx context.Context, fractalName string) (strin
 
 	randomStr := hex.EncodeToString(randomBytes)
 
-	// Sanitize fractal name for key format (replace non-alphanumeric with underscores)
-	sanitizedFractalName := strings.ReplaceAll(fractalName, "-", "_")
-	sanitizedFractalName = strings.ReplaceAll(sanitizedFractalName, " ", "_")
+	sanitized := strings.ReplaceAll(scopeName, "-", "_")
+	sanitized = strings.ReplaceAll(sanitized, " ", "_")
 
-	fullKey := fmt.Sprintf("bifract_%s_%s", sanitizedFractalName, randomStr)
-
-	// Create public key ID (first 8 chars of random part to ensure uniqueness)
+	fullKey := fmt.Sprintf("bifract_%s_%s", sanitized, randomStr)
 	keyID := randomStr[:8]
 
 	return fullKey, keyID, nil
@@ -52,67 +48,100 @@ func (s *Storage) HashKey(key string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// CreateAPIKey stores a new API key in the database
-func (s *Storage) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest, fractalID, username, fullKey, keyID string) (*APIKey, error) {
+// selectColumns is the standard column list for API key queries.
+const selectColumns = `ak.id, ak.name, ak.description, ak.key_id,
+	COALESCE(ak.fractal_id::text, ''), COALESCE(f.name, ''),
+	COALESCE(ak.prism_id::text, ''), COALESCE(p.name, ''),
+	COALESCE(ak.created_by, ''), ak.expires_at, ak.is_active, ak.permissions,
+	ak.created_at, ak.updated_at, ak.last_used_at, ak.usage_count`
+
+// fromClause is the standard FROM + LEFT JOINs for API key queries.
+const fromClause = `FROM api_keys ak
+	LEFT JOIN fractals f ON ak.fractal_id = f.id
+	LEFT JOIN prisms p ON ak.prism_id = p.id`
+
+// scanAPIKey scans a row into an APIKey struct and parses its permissions JSON.
+func scanAPIKey(scanner interface{ Scan(dest ...interface{}) error }) (*APIKey, error) {
+	var key APIKey
+	var permissionsJSON string
+
+	err := scanner.Scan(
+		&key.ID, &key.Name, &key.Description, &key.KeyID,
+		&key.FractalID, &key.FractalName,
+		&key.PrismID, &key.PrismName,
+		&key.CreatedBy, &key.ExpiresAt, &key.IsActive, &permissionsJSON,
+		&key.CreatedAt, &key.UpdatedAt, &key.LastUsedAt, &key.UsageCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal([]byte(permissionsJSON), &key.Permissions); err != nil {
+		return nil, fmt.Errorf("failed to parse permissions: %w", err)
+	}
+
+	return &key, nil
+}
+
+// CreateFractalAPIKey stores a new fractal-scoped API key.
+func (s *Storage) CreateFractalAPIKey(ctx context.Context, req CreateAPIKeyRequest, fractalID, username, fullKey, keyID string) (*APIKey, error) {
+	return s.createAPIKey(ctx, req, username, fullKey, keyID, fractalID, "")
+}
+
+// CreatePrismAPIKey stores a new prism-scoped API key.
+func (s *Storage) CreatePrismAPIKey(ctx context.Context, req CreateAPIKeyRequest, prismID, username, fullKey, keyID string) (*APIKey, error) {
+	return s.createAPIKey(ctx, req, username, fullKey, keyID, "", prismID)
+}
+
+func (s *Storage) createAPIKey(ctx context.Context, req CreateAPIKeyRequest, username, fullKey, keyID, fractalID, prismID string) (*APIKey, error) {
+	if (fractalID == "") == (prismID == "") {
+		return nil, fmt.Errorf("exactly one of fractalID or prismID must be provided")
+	}
+
 	keyHash := s.HashKey(fullKey)
 	permissions, err := ValidatePermissions(req.Permissions)
 	if err != nil {
 		return nil, fmt.Errorf("invalid permissions: %w", err)
 	}
 
-	// Convert permissions to JSON
 	permissionsJSON, err := json.Marshal(permissions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal permissions: %w", err)
 	}
 
-	var apiKey APIKey
-	var permissionsStr string
-	err = s.pg.DB().QueryRowContext(ctx, `
-		INSERT INTO api_keys (name, description, key_id, key_hash, fractal_id, created_by, expires_at, permissions)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, name, description, key_id, fractal_id, COALESCE(created_by, ''), expires_at,
-		          is_active, permissions, created_at, updated_at, last_used_at, usage_count
-	`, req.Name, req.Description, keyID, keyHash, fractalID, username, req.ExpiresAt, string(permissionsJSON)).Scan(
-		&apiKey.ID, &apiKey.Name, &apiKey.Description, &apiKey.KeyID,
-		&apiKey.FractalID, &apiKey.CreatedBy, &apiKey.ExpiresAt,
-		&apiKey.IsActive, &permissionsStr, &apiKey.CreatedAt,
-		&apiKey.UpdatedAt, &apiKey.LastUsedAt, &apiKey.UsageCount,
-	)
+	var fractalArg, prismArg interface{}
+	if fractalID != "" {
+		fractalArg = fractalID
+	}
+	if prismID != "" {
+		prismArg = prismID
+	}
 
-	if err != nil {
+	row := s.pg.DB().QueryRowContext(ctx, `
+		INSERT INTO api_keys (name, description, key_id, key_hash, fractal_id, prism_id, created_by, expires_at, permissions)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id
+	`, req.Name, req.Description, keyID, keyHash, fractalArg, prismArg, username, req.ExpiresAt, string(permissionsJSON))
+
+	var id string
+	if err := row.Scan(&id); err != nil {
 		return nil, fmt.Errorf("failed to create API key: %w", err)
 	}
 
-	// Parse permissions JSON back into map
-	if err := json.Unmarshal([]byte(permissionsStr), &apiKey.Permissions); err != nil {
-		return nil, fmt.Errorf("failed to parse permissions: %w", err)
-	}
-
-	return &apiKey, nil
+	return s.getAPIKeyByID(ctx, id)
 }
 
 // ValidateAPIKey checks if an API key is valid and returns associated data
 func (s *Storage) ValidateAPIKey(ctx context.Context, key string) (*ValidatedAPIKey, error) {
 	keyHash := s.HashKey(key)
 
-	var apiKey ValidatedAPIKey
-	var permissionsJSON string
-
-	err := s.pg.DB().QueryRowContext(ctx, `
-		SELECT ak.id, ak.name, ak.description, ak.key_id, ak.fractal_id, i.name as fractal_name,
-		       COALESCE(ak.created_by, ''), ak.expires_at, ak.is_active, ak.permissions,
-		       ak.created_at, ak.updated_at, ak.last_used_at, ak.usage_count
-		FROM api_keys ak
-		JOIN fractals i ON ak.fractal_id = i.id
+	row := s.pg.DB().QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT %s
+		%s
 		WHERE ak.key_hash = $1 AND ak.is_active = true
-	`, keyHash).Scan(
-		&apiKey.ID, &apiKey.Name, &apiKey.Description, &apiKey.KeyID,
-		&apiKey.FractalID, &apiKey.FractalName, &apiKey.CreatedBy,
-		&apiKey.ExpiresAt, &apiKey.IsActive, &permissionsJSON,
-		&apiKey.CreatedAt, &apiKey.UpdatedAt, &apiKey.LastUsedAt, &apiKey.UsageCount,
-	)
+	`, selectColumns, fromClause), keyHash)
 
+	apiKey, err := scanAPIKey(row)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("invalid API key")
 	}
@@ -120,17 +149,11 @@ func (s *Storage) ValidateAPIKey(ctx context.Context, key string) (*ValidatedAPI
 		return nil, fmt.Errorf("failed to validate API key: %w", err)
 	}
 
-	// Parse permissions JSON
-	if err := json.Unmarshal([]byte(permissionsJSON), &apiKey.Permissions); err != nil {
-		return nil, fmt.Errorf("failed to parse permissions: %w", err)
-	}
-
-	// Check expiration
 	if apiKey.ExpiresAt != nil && time.Now().After(*apiKey.ExpiresAt) {
 		return nil, fmt.Errorf("API key expired")
 	}
 
-	return &apiKey, nil
+	return &ValidatedAPIKey{APIKey: *apiKey}, nil
 }
 
 // UpdateLastUsed updates the last used timestamp and increments usage count
@@ -140,22 +163,23 @@ func (s *Storage) UpdateLastUsed(ctx context.Context, keyID string) error {
 		SET last_used_at = NOW(), usage_count = usage_count + 1, updated_at = NOW()
 		WHERE key_id = $1
 	`, keyID)
-
 	return err
 }
 
-// ListAPIKeys returns all API keys for a specific fractal
-func (s *Storage) ListAPIKeys(ctx context.Context, fractalID string) ([]APIKey, error) {
-	rows, err := s.pg.DB().QueryContext(ctx, `
-		SELECT ak.id, ak.name, ak.description, ak.key_id, ak.fractal_id, i.name as fractal_name,
-		       COALESCE(ak.created_by, ''), ak.expires_at, ak.is_active, ak.permissions,
-		       ak.created_at, ak.updated_at, ak.last_used_at, ak.usage_count
-		FROM api_keys ak
-		JOIN fractals i ON ak.fractal_id = i.id
-		WHERE ak.fractal_id = $1
-		ORDER BY ak.created_at DESC
-	`, fractalID)
+// ListAPIKeysByFractal returns all API keys for a specific fractal.
+func (s *Storage) ListAPIKeysByFractal(ctx context.Context, fractalID string) ([]APIKey, error) {
+	return s.listAPIKeys(ctx, "ak.fractal_id = $1", fractalID)
+}
 
+// ListAPIKeysByPrism returns all API keys for a specific prism.
+func (s *Storage) ListAPIKeysByPrism(ctx context.Context, prismID string) ([]APIKey, error) {
+	return s.listAPIKeys(ctx, "ak.prism_id = $1", prismID)
+}
+
+func (s *Storage) listAPIKeys(ctx context.Context, where string, scopeID string) ([]APIKey, error) {
+	query := fmt.Sprintf(`SELECT %s %s WHERE %s ORDER BY ak.created_at DESC`, selectColumns, fromClause, where)
+
+	rows, err := s.pg.DB().QueryContext(ctx, query, scopeID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list API keys: %w", err)
 	}
@@ -163,25 +187,11 @@ func (s *Storage) ListAPIKeys(ctx context.Context, fractalID string) ([]APIKey, 
 
 	var keys []APIKey
 	for rows.Next() {
-		var key APIKey
-		var permissionsJSON string
-
-		err := rows.Scan(
-			&key.ID, &key.Name, &key.Description, &key.KeyID,
-			&key.FractalID, &key.FractalName, &key.CreatedBy,
-			&key.ExpiresAt, &key.IsActive, &permissionsJSON,
-			&key.CreatedAt, &key.UpdatedAt, &key.LastUsedAt, &key.UsageCount,
-		)
+		key, err := scanAPIKey(rows)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan API key: %w", err)
 		}
-
-		// Parse permissions JSON
-		if err := json.Unmarshal([]byte(permissionsJSON), &key.Permissions); err != nil {
-			return nil, fmt.Errorf("failed to parse permissions for key %s: %w", key.ID, err)
-		}
-
-		keys = append(keys, key)
+		keys = append(keys, *key)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -191,43 +201,58 @@ func (s *Storage) ListAPIKeys(ctx context.Context, fractalID string) ([]APIKey, 
 	return keys, nil
 }
 
-// GetAPIKey retrieves a specific API key by ID
-func (s *Storage) GetAPIKey(ctx context.Context, keyID, fractalID string) (*APIKey, error) {
-	var apiKey APIKey
-	var permissionsJSON string
+// getAPIKeyByID retrieves an API key by its primary key ID (internal helper).
+func (s *Storage) getAPIKeyByID(ctx context.Context, id string) (*APIKey, error) {
+	row := s.pg.DB().QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT %s %s WHERE ak.id = $1
+	`, selectColumns, fromClause), id)
 
-	err := s.pg.DB().QueryRowContext(ctx, `
-		SELECT ak.id, ak.name, ak.description, ak.key_id, ak.fractal_id, i.name as fractal_name,
-		       COALESCE(ak.created_by, ''), ak.expires_at, ak.is_active, ak.permissions,
-		       ak.created_at, ak.updated_at, ak.last_used_at, ak.usage_count
-		FROM api_keys ak
-		JOIN fractals i ON ak.fractal_id = i.id
-		WHERE ak.id = $1 AND ak.fractal_id = $2
-	`, keyID, fractalID).Scan(
-		&apiKey.ID, &apiKey.Name, &apiKey.Description, &apiKey.KeyID,
-		&apiKey.FractalID, &apiKey.FractalName, &apiKey.CreatedBy,
-		&apiKey.ExpiresAt, &apiKey.IsActive, &permissionsJSON,
-		&apiKey.CreatedAt, &apiKey.UpdatedAt, &apiKey.LastUsedAt, &apiKey.UsageCount,
-	)
-
+	key, err := scanAPIKey(row)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("API key not found")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get API key: %w", err)
 	}
-
-	// Parse permissions JSON
-	if err := json.Unmarshal([]byte(permissionsJSON), &apiKey.Permissions); err != nil {
-		return nil, fmt.Errorf("failed to parse permissions: %w", err)
-	}
-
-	return &apiKey, nil
+	return key, nil
 }
 
-// UpdateAPIKey updates an existing API key
-func (s *Storage) UpdateAPIKey(ctx context.Context, keyID, fractalID string, req UpdateAPIKeyRequest) (*APIKey, error) {
-	// Build dynamic update query
+// GetFractalAPIKey retrieves a specific API key scoped to a fractal.
+func (s *Storage) GetFractalAPIKey(ctx context.Context, keyID, fractalID string) (*APIKey, error) {
+	return s.getAPIKeyScoped(ctx, keyID, "ak.fractal_id", fractalID)
+}
+
+// GetPrismAPIKey retrieves a specific API key scoped to a prism.
+func (s *Storage) GetPrismAPIKey(ctx context.Context, keyID, prismID string) (*APIKey, error) {
+	return s.getAPIKeyScoped(ctx, keyID, "ak.prism_id", prismID)
+}
+
+func (s *Storage) getAPIKeyScoped(ctx context.Context, keyID, scopeCol, scopeID string) (*APIKey, error) {
+	row := s.pg.DB().QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT %s %s WHERE ak.id = $1 AND %s = $2
+	`, selectColumns, fromClause, scopeCol), keyID, scopeID)
+
+	key, err := scanAPIKey(row)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("API key not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get API key: %w", err)
+	}
+	return key, nil
+}
+
+// UpdateFractalAPIKey updates a fractal-scoped API key.
+func (s *Storage) UpdateFractalAPIKey(ctx context.Context, keyID, fractalID string, req UpdateAPIKeyRequest) (*APIKey, error) {
+	return s.updateAPIKey(ctx, keyID, "fractal_id", fractalID, req)
+}
+
+// UpdatePrismAPIKey updates a prism-scoped API key.
+func (s *Storage) UpdatePrismAPIKey(ctx context.Context, keyID, prismID string, req UpdateAPIKeyRequest) (*APIKey, error) {
+	return s.updateAPIKey(ctx, keyID, "prism_id", prismID, req)
+}
+
+func (s *Storage) updateAPIKey(ctx context.Context, keyID, scopeCol, scopeID string, req UpdateAPIKeyRequest) (*APIKey, error) {
 	setParts := []string{}
 	args := []interface{}{}
 	argIndex := 1
@@ -274,33 +299,39 @@ func (s *Storage) UpdateAPIKey(ctx context.Context, keyID, fractalID string, req
 		return nil, fmt.Errorf("no fields to update")
 	}
 
-	// Always update the updated_at timestamp
 	setParts = append(setParts, "updated_at = NOW()")
 
-	// Add WHERE clause arguments
-	args = append(args, keyID, fractalID)
+	args = append(args, keyID, scopeID)
 
 	query := fmt.Sprintf(`
 		UPDATE api_keys
 		SET %s
-		WHERE id = $%d AND fractal_id = $%d
-	`, strings.Join(setParts, ", "), argIndex, argIndex+1)
+		WHERE id = $%d AND %s = $%d
+	`, strings.Join(setParts, ", "), argIndex, scopeCol, argIndex+1)
 
 	_, err := s.pg.DB().ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update API key: %w", err)
 	}
 
-	// Return the updated API key
-	return s.GetAPIKey(ctx, keyID, fractalID)
+	return s.getAPIKeyByID(ctx, keyID)
 }
 
-// DeleteAPIKey removes an API key from the database
-func (s *Storage) DeleteAPIKey(ctx context.Context, keyID, fractalID string) error {
-	result, err := s.pg.DB().ExecContext(ctx, `
+// DeleteFractalAPIKey removes a fractal-scoped API key.
+func (s *Storage) DeleteFractalAPIKey(ctx context.Context, keyID, fractalID string) error {
+	return s.deleteAPIKey(ctx, keyID, "fractal_id", fractalID)
+}
+
+// DeletePrismAPIKey removes a prism-scoped API key.
+func (s *Storage) DeletePrismAPIKey(ctx context.Context, keyID, prismID string) error {
+	return s.deleteAPIKey(ctx, keyID, "prism_id", prismID)
+}
+
+func (s *Storage) deleteAPIKey(ctx context.Context, keyID, scopeCol, scopeID string) error {
+	result, err := s.pg.DB().ExecContext(ctx, fmt.Sprintf(`
 		DELETE FROM api_keys
-		WHERE id = $1 AND fractal_id = $2
-	`, keyID, fractalID)
+		WHERE id = $1 AND %s = $2
+	`, scopeCol), keyID, scopeID)
 
 	if err != nil {
 		return fmt.Errorf("failed to delete API key: %w", err)
@@ -318,44 +349,35 @@ func (s *Storage) DeleteAPIKey(ctx context.Context, keyID, fractalID string) err
 	return nil
 }
 
-// ToggleAPIKey toggles the active status of an API key
-func (s *Storage) ToggleAPIKey(ctx context.Context, keyID, fractalID string) (*APIKey, error) {
-	_, err := s.pg.DB().ExecContext(ctx, `
+// ToggleFractalAPIKey toggles the active status of a fractal-scoped API key.
+func (s *Storage) ToggleFractalAPIKey(ctx context.Context, keyID, fractalID string) (*APIKey, error) {
+	return s.toggleAPIKey(ctx, keyID, "fractal_id", fractalID)
+}
+
+// TogglePrismAPIKey toggles the active status of a prism-scoped API key.
+func (s *Storage) TogglePrismAPIKey(ctx context.Context, keyID, prismID string) (*APIKey, error) {
+	return s.toggleAPIKey(ctx, keyID, "prism_id", prismID)
+}
+
+func (s *Storage) toggleAPIKey(ctx context.Context, keyID, scopeCol, scopeID string) (*APIKey, error) {
+	_, err := s.pg.DB().ExecContext(ctx, fmt.Sprintf(`
 		UPDATE api_keys
 		SET is_active = NOT is_active, updated_at = NOW()
-		WHERE id = $1 AND fractal_id = $2
-	`, keyID, fractalID)
+		WHERE id = $1 AND %s = $2
+	`, scopeCol), keyID, scopeID)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to toggle API key: %w", err)
 	}
 
-	// Return the updated API key
-	return s.GetAPIKey(ctx, keyID, fractalID)
-}
-
-// parsePermissions is a helper function to parse permissions JSON stored in database
-func (s *Storage) parsePermissions(apiKey *APIKey) error {
-	// The permissions are parsed via json.Unmarshal in the calling functions
-	// This function exists for consistency and future extensibility
-	if apiKey.Permissions == nil {
-		apiKey.Permissions = DefaultPermissions()
-	}
-	return nil
+	return s.getAPIKeyByID(ctx, keyID)
 }
 
 // GetAPIKeysByUser returns all API keys created by a specific user
 func (s *Storage) GetAPIKeysByUser(ctx context.Context, username string) ([]APIKey, error) {
-	rows, err := s.pg.DB().QueryContext(ctx, `
-		SELECT ak.id, ak.name, ak.description, ak.key_id, ak.fractal_id, i.name as fractal_name,
-		       COALESCE(ak.created_by, ''), ak.expires_at, ak.is_active, ak.permissions,
-		       ak.created_at, ak.updated_at, ak.last_used_at, ak.usage_count
-		FROM api_keys ak
-		JOIN fractals i ON ak.fractal_id = i.id
-		WHERE ak.created_by = $1
-		ORDER BY ak.created_at DESC
-	`, username)
+	query := fmt.Sprintf(`SELECT %s %s WHERE ak.created_by = $1 ORDER BY ak.created_at DESC`, selectColumns, fromClause)
 
+	rows, err := s.pg.DB().QueryContext(ctx, query, username)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list API keys by user: %w", err)
 	}
@@ -363,26 +385,22 @@ func (s *Storage) GetAPIKeysByUser(ctx context.Context, username string) ([]APIK
 
 	var keys []APIKey
 	for rows.Next() {
-		var key APIKey
-		var permissionsJSON string
-
-		err := rows.Scan(
-			&key.ID, &key.Name, &key.Description, &key.KeyID,
-			&key.FractalID, &key.FractalName, &key.CreatedBy,
-			&key.ExpiresAt, &key.IsActive, &permissionsJSON,
-			&key.CreatedAt, &key.UpdatedAt, &key.LastUsedAt, &key.UsageCount,
-		)
+		key, err := scanAPIKey(rows)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan API key: %w", err)
 		}
-
-		// Parse permissions JSON
-		if err := json.Unmarshal([]byte(permissionsJSON), &key.Permissions); err != nil {
-			return nil, fmt.Errorf("failed to parse permissions for key %s: %w", key.ID, err)
-		}
-
-		keys = append(keys, key)
+		keys = append(keys, *key)
 	}
 
 	return keys, nil
+}
+
+// GetFractalName returns the name of a fractal by ID.
+func (s *Storage) GetFractalName(ctx context.Context, fractalID string) (string, error) {
+	var name string
+	err := s.pg.DB().QueryRowContext(ctx, `SELECT name FROM fractals WHERE id = $1`, fractalID).Scan(&name)
+	if err != nil {
+		return "", err
+	}
+	return name, nil
 }

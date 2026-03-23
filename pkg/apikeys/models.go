@@ -5,14 +5,16 @@ import (
 	"time"
 )
 
-// APIKey represents an API key for programmatic access to a specific fractal
+// APIKey represents an API key for programmatic access to a fractal or prism
 type APIKey struct {
 	ID          string                 `json:"id" db:"id"`
 	Name        string                 `json:"name" db:"name"`
 	Description string                 `json:"description,omitempty" db:"description"`
 	KeyID       string                 `json:"key_id" db:"key_id"`        // Public identifier (first 8 chars)
-	FractalID   string                 `json:"fractal_id" db:"fractal_id"`
+	FractalID   string                 `json:"fractal_id,omitempty" db:"fractal_id"`
 	FractalName string                 `json:"fractal_name,omitempty"`    // Populated in responses
+	PrismID     string                 `json:"prism_id,omitempty" db:"prism_id"`
+	PrismName   string                 `json:"prism_name,omitempty"`      // Populated in responses
 	CreatedBy   string                 `json:"created_by" db:"created_by"`
 	ExpiresAt   *time.Time             `json:"expires_at,omitempty" db:"expires_at"`
 	IsActive    bool                   `json:"is_active" db:"is_active"`
@@ -62,12 +64,10 @@ type APIKeyResponse struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// ValidatedAPIKey represents an API key that has been validated for authentication
-// It includes additional context needed during request processing
+// ValidatedAPIKey represents an API key that has been validated for authentication.
+// FractalName and PrismName are populated from the embedded APIKey fields.
 type ValidatedAPIKey struct {
 	APIKey
-	// FractalName is always populated for validated keys
-	FractalName string `json:"fractal_name"`
 }
 
 // DefaultPermissions returns the default permissions for a new API key
