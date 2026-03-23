@@ -143,9 +143,24 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 			})
 			return
 		}
-		if ts, ok := logEntry["timestamp"].(time.Time); ok {
+		switch ts := logEntry["timestamp"].(type) {
+		case time.Time:
 			logTimestamp = ts
-		} else {
+		case string:
+			parsed, err := time.Parse("2006-01-02 15:04:05.000", ts)
+			if err != nil {
+				parsed, err = time.Parse(time.RFC3339, ts)
+			}
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(Response{
+					Success: false,
+					Error:   "Could not parse timestamp for log entry",
+				})
+				return
+			}
+			logTimestamp = parsed
+		default:
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(Response{
 				Success: false,
