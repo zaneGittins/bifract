@@ -102,6 +102,56 @@ const Utils = {
                    .replace(/>/g, '\\x3e');
     },
 
+    // Render a subset of markdown suitable for comments.
+    // Supports: bold, italic, strikethrough, inline code, code blocks,
+    // bullet/numbered lists, and links. Headings and images are excluded.
+    renderCommentMarkdown(text) {
+        if (typeof text !== 'string' || !text) return '';
+        if (window.marked && window.DOMPurify) {
+            try {
+                const renderer = new marked.Renderer();
+                // Strip headings - render as plain bold text instead
+                renderer.heading = function({ text }) {
+                    return `<p><strong>${text}</strong></p>`;
+                };
+                // Strip images
+                renderer.image = function() {
+                    return '';
+                };
+                // Strip horizontal rules
+                renderer.hr = function() {
+                    return '';
+                };
+                // Strip tables
+                renderer.table = function() {
+                    return '';
+                };
+                // Open links in new tab
+                renderer.link = function({ href, text }) {
+                    const escaped = Utils.escapeAttr(href || '');
+                    return `<a href="${escaped}" target="_blank" rel="noopener">${text}</a>`;
+                };
+                const html = marked.parse(text, {
+                    renderer,
+                    breaks: true,
+                    gfm: true,
+                    headerIds: false,
+                    mangle: false,
+                });
+                return DOMPurify.sanitize(html, {
+                    ALLOWED_TAGS: [
+                        'p', 'br', 'strong', 'b', 'em', 'i', 'del', 's',
+                        'code', 'pre', 'a', 'ul', 'ol', 'li', 'blockquote',
+                    ],
+                    ALLOWED_ATTR: ['href', 'target', 'rel'],
+                });
+            } catch (e) {
+                // Fall through to escaped plaintext
+            }
+        }
+        return Utils.escapeHtml(text).replace(/\n/g, '<br>');
+    },
+
     // Show notification toast
     showNotification(message, type = 'info') {
         // Remove existing notifications

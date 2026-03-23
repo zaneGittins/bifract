@@ -648,7 +648,7 @@ const Comments = {
                     </div>
                     ${tagsHtml}
                     <div class="comment-body">
-                        <div class="comment-text">${Utils.escapeHtml(comment.text)}</div>
+                        <div class="comment-text comment-markdown">${Utils.renderCommentMarkdown(comment.text)}</div>
                     </div>
                     ${queryHtml}
                     ${isAuthor ? `

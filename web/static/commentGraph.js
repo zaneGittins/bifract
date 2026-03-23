@@ -475,7 +475,7 @@ const CommentGraph = {
         for (const c of comments) {
             html += '<div class="detail-comment">';
             html += '<div class="detail-comment-author">' + Utils.escapeHtml(c.author_display_name || c.author) + '</div>';
-            html += '<div class="detail-comment-text">' + Utils.escapeHtml(c.text) + '</div>';
+            html += '<div class="detail-comment-text comment-markdown">' + Utils.renderCommentMarkdown(c.text) + '</div>';
             if (c.tags && c.tags.length > 0) {
                 html += '<div class="detail-comment-tags">';
                 for (const t of c.tags) {

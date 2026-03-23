@@ -898,7 +898,7 @@ const Notebooks = {
             return '<div class="section-error">Invalid comment context data</div>';
         }
 
-        const commentText = Utils.escapeHtml(data.comment_text || '');
+        const commentText = Utils.renderCommentMarkdown(data.comment_text || '');
         const query = data.query || '';
         const logId = data.log_id || '';
 

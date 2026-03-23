@@ -3565,7 +3565,55 @@ body {
     font-size: 0.8rem;
     line-height: 1.4;
     word-break: break-word;
+}
+
+.comment-text:not(.comment-markdown) {
     white-space: pre-wrap;
+}
+
+.comment-markdown p {
+    margin: 0 0 0.25rem 0;
+}
+.comment-markdown p:last-child {
+    margin-bottom: 0;
+}
+.comment-markdown code {
+    background: var(--bg-tertiary);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+.comment-markdown pre {
+    background: var(--bg-tertiary);
+    padding: 0.5rem;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 0.25rem 0;
+}
+.comment-markdown pre code {
+    background: none;
+    padding: 0;
+}
+.comment-markdown ul, .comment-markdown ol {
+    margin: 0.25rem 0;
+    padding-left: 1.25rem;
+}
+.comment-markdown li {
+    margin-bottom: 0.1rem;
+}
+.comment-markdown blockquote {
+    border-left: 2px solid var(--border-color);
+    margin: 0.25rem 0;
+    padding-left: 0.5rem;
+    color: var(--text-secondary);
+}
+.comment-markdown a {
+    color: var(--accent-primary);
+    text-decoration: none;
+}
+.comment-markdown a:hover {
+    text-decoration: underline;
 }
 
 .comment-actions {

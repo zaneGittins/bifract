@@ -433,7 +433,7 @@ const CommentedLogs = {
                             <span>${Utils.escapeHtml(comment.author_display_name || comment.author)}</span>
                         </div>
                     </td>
-                    <td class="comment-text-cell" title="${Utils.escapeHtml(comment.text)}">${Utils.escapeHtml(textPreview)}</td>
+                    <td class="comment-text-cell comment-markdown" title="${Utils.escapeHtml(comment.text)}">${Utils.renderCommentMarkdown(textPreview)}</td>
                     <td class="comment-tags-cell">${tagsHtml}</td>
                     <td class="comment-log-cell" title="${Utils.escapeHtml(comment.log_id)}">
                         <code>${Utils.escapeHtml(logIdShort)}</code>
