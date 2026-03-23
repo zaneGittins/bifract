@@ -35,7 +35,7 @@ func NewManager(pg *storage.PostgresClient) *Manager {
 func (m *Manager) List(ctx context.Context) ([]ContextLink, error) {
 	rows, err := m.pg.Query(ctx,
 		`SELECT id, short_name, match_fields, validation_regex, context_link,
-		        redirect_warning, enabled, is_default, created_by, created_at, updated_at
+		        redirect_warning, enabled, is_default, COALESCE(created_by, ''), created_at, updated_at
 		 FROM context_links ORDER BY short_name`)
 	if err != nil {
 		return nil, fmt.Errorf("query context_links: %w", err)
@@ -61,7 +61,7 @@ func (m *Manager) List(ctx context.Context) ([]ContextLink, error) {
 func (m *Manager) ListEnabled(ctx context.Context) ([]ContextLink, error) {
 	rows, err := m.pg.Query(ctx,
 		`SELECT id, short_name, match_fields, validation_regex, context_link,
-		        redirect_warning, enabled, is_default, created_by, created_at, updated_at
+		        redirect_warning, enabled, is_default, COALESCE(created_by, ''), created_at, updated_at
 		 FROM context_links WHERE enabled = true ORDER BY short_name`)
 	if err != nil {
 		return nil, fmt.Errorf("query enabled context_links: %w", err)
@@ -89,7 +89,7 @@ func (m *Manager) Get(ctx context.Context, id string) (*ContextLink, error) {
 	var createdAt, updatedAt time.Time
 	err := m.pg.QueryRow(ctx,
 		`SELECT id, short_name, match_fields, validation_regex, context_link,
-		        redirect_warning, enabled, is_default, created_by, created_at, updated_at
+		        redirect_warning, enabled, is_default, COALESCE(created_by, ''), created_at, updated_at
 		 FROM context_links WHERE id = $1`, id).Scan(
 		&cl.ID, &cl.ShortName, pq.Array(&cl.MatchFields),
 		&cl.ValidationRegex, &cl.ContextLink, &cl.RedirectWarning,
@@ -117,7 +117,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest, createdBy strin
 	err := m.pg.QueryRow(ctx,
 		`INSERT INTO context_links (short_name, match_fields, validation_regex, context_link, redirect_warning, enabled, created_by)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 RETURNING id, short_name, match_fields, validation_regex, context_link, redirect_warning, enabled, is_default, created_by, created_at, updated_at`,
+		 RETURNING id, short_name, match_fields, validation_regex, context_link, redirect_warning, enabled, is_default, COALESCE(created_by, ''), created_at, updated_at`,
 		req.ShortName, pq.Array(req.MatchFields), req.ValidationRegex, req.ContextLink,
 		req.RedirectWarning, req.Enabled, createdBy).Scan(
 		&cl.ID, &cl.ShortName, pq.Array(&cl.MatchFields),
@@ -148,7 +148,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Co
 		 SET short_name = $1, match_fields = $2, validation_regex = $3, context_link = $4,
 		     redirect_warning = $5, enabled = $6, updated_at = NOW()
 		 WHERE id = $7
-		 RETURNING id, short_name, match_fields, validation_regex, context_link, redirect_warning, enabled, is_default, created_by, created_at, updated_at`,
+		 RETURNING id, short_name, match_fields, validation_regex, context_link, redirect_warning, enabled, is_default, COALESCE(created_by, ''), created_at, updated_at`,
 		req.ShortName, pq.Array(req.MatchFields), req.ValidationRegex, req.ContextLink,
 		req.RedirectWarning, req.Enabled, id).Scan(
 		&cl.ID, &cl.ShortName, pq.Array(&cl.MatchFields),

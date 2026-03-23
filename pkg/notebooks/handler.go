@@ -58,6 +58,22 @@ func (h *NotebookHandler) requireRoleOnFractal(r *http.Request, fractalID string
 	return rbac.HasAccess(user, role, required)
 }
 
+// requireRoleOnPrism checks the user has the required role on a specific prism.
+func (h *NotebookHandler) requireRoleOnPrism(r *http.Request, prismID string, required rbac.Role) bool {
+	user, ok := r.Context().Value("user").(*storage.User)
+	if !ok || user == nil {
+		return false
+	}
+	if user.IsAdmin {
+		return true
+	}
+	if h.rbacResolver == nil {
+		prismRole := rbac.PrismRoleFromContext(r.Context())
+		return rbac.HasAccess(user, prismRole, required)
+	}
+	return rbac.HasAccess(user, h.rbacResolver.ResolvePrismRoleWithAdmin(r.Context(), user, prismID), required)
+}
+
 type Response struct {
 	Success bool        `json:"success"`
 	Message string      `json:"message,omitempty"`
@@ -154,7 +170,8 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 	user := r.Context().Value("user").(*storage.User)
 
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -287,7 +304,7 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Verify user has access to the notebook's fractal
-	if notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleViewer) {
+	if (notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleViewer)) || (notebook.PrismID != "" && !h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleViewer)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -349,9 +366,8 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// HandleUpdateNotebook updates notebook metadata (author only)
+// HandleUpdateNotebook updates notebook metadata. Authorization is via fractal role.
 func (h *NotebookHandler) HandleUpdateNotebook(w http.ResponseWriter, r *http.Request) {
-	user := r.Context().Value("user").(*storage.User)
 	notebookID := chi.URLParam(r, "id")
 
 	// Verify fractal access
@@ -361,7 +377,7 @@ func (h *NotebookHandler) HandleUpdateNotebook(w http.ResponseWriter, r *http.Re
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
 		return
 	}
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst) {
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -379,7 +395,7 @@ func (h *NotebookHandler) HandleUpdateNotebook(w http.ResponseWriter, r *http.Re
 	}
 
 	// Update notebook
-	err = h.pg.UpdateNotebook(r.Context(), notebookID, user.Username, req.Name, req.Description, req.TimeRangeType, req.TimeRangeStart, req.TimeRangeEnd, req.MaxResultsPerSection)
+	err = h.pg.UpdateNotebook(r.Context(), notebookID, req.Name, req.Description, req.TimeRangeType, req.TimeRangeStart, req.TimeRangeEnd, req.MaxResultsPerSection)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found or unauthorized") {
 			w.Header().Set("Content-Type", "application/json")
@@ -404,9 +420,8 @@ func (h *NotebookHandler) HandleUpdateNotebook(w http.ResponseWriter, r *http.Re
 	})
 }
 
-// HandleDeleteNotebook deletes a notebook (author only)
+// HandleDeleteNotebook deletes a notebook. Authorization is via fractal role.
 func (h *NotebookHandler) HandleDeleteNotebook(w http.ResponseWriter, r *http.Request) {
-	user := r.Context().Value("user").(*storage.User)
 	notebookID := chi.URLParam(r, "id")
 
 	// Verify fractal access
@@ -416,14 +431,14 @@ func (h *NotebookHandler) HandleDeleteNotebook(w http.ResponseWriter, r *http.Re
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
 		return
 	}
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst) {
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
 		return
 	}
 
-	err = h.pg.DeleteNotebook(r.Context(), notebookID, user.Username)
+	err = h.pg.DeleteNotebook(r.Context(), notebookID)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found or unauthorized") {
 			w.Header().Set("Content-Type", "application/json")
@@ -459,7 +474,7 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
 		return
 	}
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst) {
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -555,7 +570,7 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
 		return
 	}
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst) {
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -616,7 +631,7 @@ func (h *NotebookHandler) HandleDeleteSection(w http.ResponseWriter, r *http.Req
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
 		return
 	}
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst) {
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -661,7 +676,7 @@ func (h *NotebookHandler) HandleExecuteQuerySection(w http.ResponseWriter, r *ht
 		return
 	}
 
-	if notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleAnalyst) {
+	if (notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleAnalyst)) || (notebook.PrismID != "" && !h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleAnalyst)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -744,7 +759,7 @@ func (h *NotebookHandler) HandleReorderSections(w http.ResponseWriter, r *http.R
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
 		return
 	}
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst) {
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -805,7 +820,7 @@ func (h *NotebookHandler) HandleUpdateSectionResults(w http.ResponseWriter, r *h
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
 		return
 	}
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst) {
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -863,7 +878,7 @@ func (h *NotebookHandler) HandleUpdatePresence(w http.ResponseWriter, r *http.Re
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
 		return
 	}
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer) {
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -896,7 +911,7 @@ func (h *NotebookHandler) HandleGetPresence(w http.ResponseWriter, r *http.Reque
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
 		return
 	}
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer) {
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -983,7 +998,6 @@ func (h *NotebookHandler) getSelectedFractal(r *http.Request) (string, error) {
 
 func (h *NotebookHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.Request) {
 	notebookID := chi.URLParam(r, "id")
-	user := r.Context().Value("user").(*storage.User)
 
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
@@ -991,7 +1005,7 @@ func (h *NotebookHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.R
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
 		return
 	}
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst) {
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -1009,7 +1023,7 @@ func (h *NotebookHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.R
 		req.Variables = json.RawMessage("[]")
 	}
 
-	if err = h.pg.UpdateNotebookVariables(r.Context(), notebookID, user.Username, req.Variables); err != nil {
+	if err = h.pg.UpdateNotebookVariables(r.Context(), notebookID, req.Variables); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to update variables"})
 		return
@@ -1039,7 +1053,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
 		return
 	}
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst) {
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -1426,7 +1440,7 @@ func (h *NotebookHandler) HandleExportNotebook(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleViewer) {
+	if (notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleViewer)) || (notebook.PrismID != "" && !h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleViewer)) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -1490,17 +1504,19 @@ func (h *NotebookHandler) HandleExportNotebook(w http.ResponseWriter, r *http.Re
 func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(*storage.User)
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
 		return
 	}
 
-	selectedFractal, err := h.getSelectedFractal(r)
-	if err != nil {
+	selectedFractal, _ := h.getSelectedFractal(r)
+	selectedPrism, _ := r.Context().Value("selected_prism").(string)
+	if selectedFractal == "" && selectedPrism == "" {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "No fractal selected"})
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "No fractal or prism selected"})
 		return
 	}
 
@@ -1541,9 +1557,13 @@ func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Re
 		Description:          imported.Description,
 		TimeRangeType:        imported.TimeRange,
 		MaxResultsPerSection: imported.MaxResults,
-		FractalID:            selectedFractal,
 		Variables:            varsJSON,
 		CreatedBy:            user.Username,
+	}
+	if selectedPrism != "" {
+		nb.PrismID = selectedPrism
+	} else {
+		nb.FractalID = selectedFractal
 	}
 
 	created, err := h.pg.InsertNotebook(r.Context(), nb)
@@ -1595,7 +1615,8 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 	user := r.Context().Value("user").(*storage.User)
 
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -1616,14 +1637,23 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		return
 	}
 
-	selectedFractal, err := h.getSelectedFractal(r)
-	if err != nil {
+	selectedFractal, _ := h.getSelectedFractal(r)
+	selectedPrism, _ := r.Context().Value("selected_prism").(string)
+	if selectedFractal == "" && selectedPrism == "" {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to determine fractal context"})
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "No fractal or prism selected"})
 		return
 	}
 
-	comments, err := h.pg.GetCommentsByTagAndFractal(r.Context(), selectedFractal, req.Tag)
+	// Comments are fractal-scoped; in prism context use default fractal for comment lookup
+	commentFractal := selectedFractal
+	if commentFractal == "" && h.fractalManager != nil {
+		if df, err := h.fractalManager.GetDefaultFractal(r.Context()); err == nil {
+			commentFractal = df.ID
+		}
+	}
+
+	comments, err := h.pg.GetCommentsByTagAndFractal(r.Context(), commentFractal, req.Tag)
 	if err != nil {
 		log.Printf("[Notebooks] Failed to get comments by tag: %v", err)
 		w.Header().Set("Content-Type", "application/json")
@@ -1649,7 +1679,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		return
 	}
 	if existing != nil {
-		if err := h.pg.DeleteNotebookByID(r.Context(), existing.ID); err != nil {
+		if err := h.pg.DeleteNotebook(r.Context(), existing.ID); err != nil {
 			log.Printf("[Notebooks] Failed to delete existing notebook: %v", err)
 		}
 	}
@@ -1659,8 +1689,12 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		Description:          fmt.Sprintf("Auto-generated from comments tagged \"%s\"", req.Tag),
 		TimeRangeType:        "all",
 		MaxResultsPerSection: 1000,
-		FractalID:            selectedFractal,
 		CreatedBy:            user.Username,
+	}
+	if selectedPrism != "" {
+		notebook.PrismID = selectedPrism
+	} else {
+		notebook.FractalID = selectedFractal
 	}
 
 	newNotebook, err := h.pg.InsertNotebook(r.Context(), notebook)

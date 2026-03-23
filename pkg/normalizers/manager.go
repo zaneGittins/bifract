@@ -22,7 +22,7 @@ func NewManager(pg *storage.PostgresClient) *Manager {
 func (m *Manager) List(ctx context.Context) ([]Normalizer, error) {
 	rows, err := m.pg.Query(ctx,
 		`SELECT id, name, description, transforms, field_mappings, timestamp_fields,
-		        is_default, created_by, created_at, updated_at
+		        is_default, COALESCE(created_by, ''), created_at, updated_at
 		 FROM normalizers ORDER BY is_default DESC, name`)
 	if err != nil {
 		return nil, fmt.Errorf("query normalizers: %w", err)
@@ -43,7 +43,7 @@ func (m *Manager) List(ctx context.Context) ([]Normalizer, error) {
 func (m *Manager) Get(ctx context.Context, id string) (*Normalizer, error) {
 	row := m.pg.QueryRow(ctx,
 		`SELECT id, name, description, transforms, field_mappings, timestamp_fields,
-		        is_default, created_by, created_at, updated_at
+		        is_default, COALESCE(created_by, ''), created_at, updated_at
 		 FROM normalizers WHERE id = $1`, id)
 	n, err := scanNormalizerRow(row)
 	if err != nil {
@@ -58,7 +58,7 @@ func (m *Manager) Get(ctx context.Context, id string) (*Normalizer, error) {
 func (m *Manager) GetDefault(ctx context.Context) (*Normalizer, error) {
 	row := m.pg.QueryRow(ctx,
 		`SELECT id, name, description, transforms, field_mappings, timestamp_fields,
-		        is_default, created_by, created_at, updated_at
+		        is_default, COALESCE(created_by, ''), created_at, updated_at
 		 FROM normalizers WHERE is_default = true LIMIT 1`)
 	n, err := scanNormalizerRow(row)
 	if err != nil {
@@ -97,7 +97,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest, createdBy strin
 		`INSERT INTO normalizers (name, description, transforms, field_mappings, timestamp_fields, created_by)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id, name, description, transforms, field_mappings, timestamp_fields,
-		           is_default, created_by, created_at, updated_at`,
+		           is_default, COALESCE(created_by, ''), created_at, updated_at`,
 		req.Name, req.Description, string(transformsJSON), string(mappingsJSON), string(tsFieldsJSON), createdBy)
 
 	n, err := scanNormalizerRow(row)
@@ -124,7 +124,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*No
 		 SET name = $1, description = $2, transforms = $3, field_mappings = $4, timestamp_fields = $5, updated_at = NOW()
 		 WHERE id = $6
 		 RETURNING id, name, description, transforms, field_mappings, timestamp_fields,
-		           is_default, created_by, created_at, updated_at`,
+		           is_default, COALESCE(created_by, ''), created_at, updated_at`,
 		req.Name, req.Description, string(transformsJSON), string(mappingsJSON), string(tsFieldsJSON), id)
 
 	n, err := scanNormalizerRow(row)

@@ -92,15 +92,15 @@ func (h *Handler) HandleCreateConversation(w http.ResponseWriter, r *http.Reques
 	username := h.getUsername(r)
 
 	var req struct {
-		Title         string  `json:"title"`
-		InstructionID *string `json:"instruction_id"`
+		Title      string   `json:"title"`
+		LibraryIDs []string `json:"library_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	conv, err := h.manager.CreateConversation(r.Context(), fractalID, req.Title, username, req.InstructionID)
+	conv, err := h.manager.CreateConversation(r.Context(), fractalID, req.Title, username, req.LibraryIDs)
 	if err != nil {
 		log.Printf("[Chat] Failed to create conversation: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to create conversation")
@@ -199,27 +199,41 @@ func (h *Handler) HandleDeleteAllConversations(w http.ResponseWriter, r *http.Re
 }
 
 
-func (h *Handler) HandleSetConversationInstruction(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleSetConversationLibraries(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if h.verifyConversationOwner(w, r, id) == nil {
 		return
 	}
 
 	var req struct {
-		InstructionID *string `json:"instruction_id"`
+		LibraryIDs []string `json:"library_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	conv, err := h.manager.SetConversationInstruction(r.Context(), id, req.InstructionID)
-	if err != nil {
-		log.Printf("[Chat] Failed to set instruction for %s: %v", id, err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to update conversation")
+	if err := h.manager.SetConversationLibraries(r.Context(), id, req.LibraryIDs); err != nil {
+		log.Printf("[Chat] Failed to set libraries for %s: %v", id, err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to update conversation libraries")
 		return
 	}
-	h.respondSuccess(w, conv)
+	h.respondSuccess(w, map[string]bool{"updated": true})
+}
+
+func (h *Handler) HandleGetConversationLibraries(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if h.verifyConversationOwner(w, r, id) == nil {
+		return
+	}
+
+	libs, err := h.manager.GetConversationLibraries(r.Context(), id)
+	if err != nil {
+		log.Printf("[Chat] Failed to get libraries for %s: %v", id, err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to load conversation libraries")
+		return
+	}
+	h.respondSuccess(w, libs)
 }
 
 // ---- Instruction Handlers ----

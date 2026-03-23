@@ -89,6 +89,11 @@ const App = {
             IngestTokens.init();
         }
 
+        // Initialize instruction libraries module
+        if (window.InstructionLibraries) {
+            InstructionLibraries.init();
+        }
+
         // Initialize performance module
         if (window.Performance) {
             Performance.init();

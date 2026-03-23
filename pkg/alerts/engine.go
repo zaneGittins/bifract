@@ -748,7 +748,7 @@ func (e *Engine) refreshAlertsCache(ctx context.Context) ([]*Alert, error) {
 		       COALESCE(a.alert_type, 'event'), a.enabled,
 		       COALESCE(a.throttle_time_seconds, 0), COALESCE(a.throttle_field, ''), a.labels,
 		       COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''),
-		       a.created_by, a.created_at, a.updated_at, a.last_triggered,
+		       COALESCE(a.created_by, ''), a.created_at, a.updated_at, a.last_triggered,
 		       a.last_evaluated_at, COALESCE(a.disabled_reason, ''), a.window_duration,
 		       COALESCE(a.schedule_cron, ''), a.query_window_seconds,
 		       COALESCE(a.feed_id::text, ''), COALESCE(a.feed_rule_path, ''), COALESCE(a.feed_rule_hash, ''),

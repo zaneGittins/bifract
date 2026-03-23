@@ -182,6 +182,11 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 		fieldMapper = sigma.BuildFieldMapper(compiled)
 	}
 
+	// Fall back to "admin" if the feed's creator was deleted
+	if feed.CreatedBy == "" {
+		feed.CreatedBy = "admin"
+	}
+
 	// Track which paths we found (for deletion pass)
 	foundPaths := make([]string, 0, len(yamlFiles))
 

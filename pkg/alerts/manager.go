@@ -142,10 +142,10 @@ func NewManager(pg *storage.PostgresClient, engine *Engine, normalizerMgr *norma
 // ImportFromYAML parses YAML content and creates/updates an alert.
 // If the YAML is a Sigma rule, it is automatically translated to BQL.
 // normalizerID optionally specifies a normalizer to map Sigma field names.
-func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, createdBy string, fractalID string, normalizerID string) (*Alert, error) {
+func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, createdBy string, fractalID, prismID string, normalizerID string) (*Alert, error) {
 	// Auto-detect Sigma rules
 	if sigma.IsSigmaRule(yamlContent) {
-		return m.importSigmaRule(ctx, yamlContent, createdBy, fractalID, normalizerID)
+		return m.importSigmaRule(ctx, yamlContent, createdBy, fractalID, prismID, normalizerID)
 	}
 
 	var yamlAlert YAMLAlert
@@ -212,11 +212,11 @@ func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, create
 		QueryWindowSeconds:  yamlAlert.QueryWindowSeconds,
 	}
 
-	return m.CreateAlert(ctx, createReq, createdBy, fractalID, "")
+	return m.CreateAlert(ctx, createReq, createdBy, fractalID, prismID)
 }
 
 // importSigmaRule translates a Sigma YAML rule into a BQL-based alert.
-func (m *Manager) importSigmaRule(ctx context.Context, yamlContent string, createdBy string, fractalID string, normalizerID string) (*Alert, error) {
+func (m *Manager) importSigmaRule(ctx context.Context, yamlContent string, createdBy string, fractalID, prismID string, normalizerID string) (*Alert, error) {
 	rule, err := sigma.ParseSigmaRule(yamlContent)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse Sigma rule: %w", err)
@@ -270,7 +270,7 @@ func (m *Manager) importSigmaRule(ctx context.Context, yamlContent string, creat
 		Enabled:     false, // Disabled by default for review
 	}
 
-	return m.CreateAlert(ctx, createReq, createdBy, fractalID, "")
+	return m.CreateAlert(ctx, createReq, createdBy, fractalID, prismID)
 }
 
 func sigmaLabels(rule *sigma.SigmaRule) []string {
@@ -588,7 +588,7 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 		SELECT a.id, a.name, COALESCE(a.description, ''), a.query_string, COALESCE(a.alert_type, 'event'), a.enabled,
 		       COALESCE(a.throttle_time_seconds, 0), COALESCE(a.throttle_field, ''), a.labels, a."references",
 		       COALESCE(a.fractal_id::text, ''),
-		       a.created_by, COALESCE(a.updated_by, ''), a.created_at, a.updated_at, a.last_triggered,
+		       COALESCE(a.created_by, ''), COALESCE(a.updated_by, ''), a.created_at, a.updated_at, a.last_triggered,
 		       COALESCE(a.disabled_reason, ''), COALESCE(a.window_duration, 0),
 		       COALESCE(a.schedule_cron, ''), COALESCE(a.query_window_seconds, 0),
 		       COALESCE(json_agg(
@@ -681,7 +681,7 @@ func (m *Manager) ListAlerts(ctx context.Context, enabledOnly bool, fractalID, p
 		SELECT a.id, a.name, a.description, a.query_string, COALESCE(a.alert_type, 'event'), a.enabled,
 		       a.throttle_time_seconds, a.throttle_field, a.labels, a."references",
 		       COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''),
-		       a.created_by, a.updated_by, a.created_at, a.updated_at, a.last_triggered,
+		       COALESCE(a.created_by, ''), COALESCE(a.updated_by, ''), a.created_at, a.updated_at, a.last_triggered,
 		       COALESCE(a.disabled_reason, ''),
 		       (SELECT ae.execution_time_ms FROM alert_executions ae WHERE ae.alert_id = a.id ORDER BY ae.triggered_at DESC LIMIT 1),
 		       a.window_duration,
@@ -1139,7 +1139,7 @@ func (m *Manager) UpdateWebhookAction(ctx context.Context, webhookID string, req
 func (m *Manager) GetWebhookAction(ctx context.Context, webhookID string) (*WebhookAction, error) {
 	query := `
 		SELECT id, name, url, method, headers, auth_type, auth_config, timeout_seconds, retry_count, include_alert_link, enabled,
-		       created_by, created_at, updated_at
+		       COALESCE(created_by, ''), created_at, updated_at
 		FROM webhook_actions
 		WHERE id = $1
 	`
@@ -1174,7 +1174,7 @@ func (m *Manager) GetWebhookAction(ctx context.Context, webhookID string) (*Webh
 func (m *Manager) ListWebhookActions(ctx context.Context, enabledOnly bool) ([]*WebhookAction, error) {
 	baseQuery := `
 		SELECT id, name, url, method, headers, auth_type, auth_config, timeout_seconds, retry_count, include_alert_link, enabled,
-		       created_by, created_at, updated_at
+		       COALESCE(created_by, ''), created_at, updated_at
 		FROM webhook_actions
 	`
 
@@ -1640,7 +1640,7 @@ func (m *Manager) ListFeedAlerts(ctx context.Context, feedID string) ([]*Alert, 
 		SELECT id, name, description, query_string, COALESCE(alert_type, 'event'), enabled,
 		       labels, "references", COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''),
 		       COALESCE(feed_id::text, ''), COALESCE(feed_rule_path, ''), COALESCE(feed_rule_hash, ''),
-		       created_by, created_at, updated_at, COALESCE(disabled_reason, '')
+		       COALESCE(created_by, ''), created_at, updated_at, COALESCE(disabled_reason, '')
 		FROM alerts
 		WHERE feed_id = $1
 		ORDER BY name
@@ -1684,7 +1684,7 @@ func (m *Manager) ListAllFeedAlerts(ctx context.Context, fractalID, prismID stri
 		SELECT a.id, a.name, a.description, a.query_string, COALESCE(a.alert_type, 'event'), a.enabled,
 		       a.labels, a."references", COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''),
 		       COALESCE(a.feed_id::text, ''), COALESCE(a.feed_rule_path, ''), COALESCE(a.feed_rule_hash, ''),
-		       a.created_by, a.created_at, a.updated_at, COALESCE(a.disabled_reason, ''),
+		       COALESCE(a.created_by, ''), a.created_at, a.updated_at, COALESCE(a.disabled_reason, ''),
 		       a.last_triggered,
 		       (SELECT ae.execution_time_ms FROM alert_executions ae WHERE ae.alert_id = a.id ORDER BY ae.triggered_at DESC LIMIT 1),
 		       COALESCE(f.name, '') as feed_name

@@ -640,6 +640,10 @@ func (h *AuthHandler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) 
 	if role, ok := r.Context().Value("fractal_role").(string); ok {
 		fractalRole = role
 	}
+	prismRole := ""
+	if role, ok := r.Context().Value("prism_role").(string); ok {
+		prismRole = role
+	}
 
 	userData := map[string]interface{}{
 		"username":         user.Username,
@@ -648,6 +652,7 @@ func (h *AuthHandler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) 
 		"gravatar_initial": user.GravatarInitial,
 		"is_admin":         user.IsAdmin,
 		"fractal_role":     fractalRole,
+		"prism_role":       prismRole,
 	}
 	if user.ForcePasswordChange {
 		userData["force_password_change"] = true
@@ -1030,12 +1035,20 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 					ctx = context.WithValue(ctx, "selected_fractal", session.SelectedFractal)
 					ctx = context.WithValue(ctx, "selected_prism", session.SelectedPrism)
 
-					// Resolve fractal role for RBAC
+					// Resolve fractal/prism role for RBAC
 					if user.IsAdmin {
 						ctx = context.WithValue(ctx, "fractal_role", "admin")
-					} else if session.SelectedFractal != "" && h.rbacResolver != nil {
-						if role, err := h.rbacResolver.ResolveFractalRole(ctx, user.Username, session.SelectedFractal); err == nil {
-							ctx = context.WithValue(ctx, "fractal_role", string(role))
+						ctx = context.WithValue(ctx, "prism_role", "admin")
+					} else if h.rbacResolver != nil {
+						if session.SelectedFractal != "" {
+							if role, err := h.rbacResolver.ResolveFractalRole(ctx, user.Username, session.SelectedFractal); err == nil {
+								ctx = context.WithValue(ctx, "fractal_role", string(role))
+							}
+						}
+						if session.SelectedPrism != "" {
+							if role, err := h.rbacResolver.ResolvePrismRole(ctx, user.Username, session.SelectedPrism); err == nil {
+								ctx = context.WithValue(ctx, "prism_role", string(role))
+							}
 						}
 					}
 

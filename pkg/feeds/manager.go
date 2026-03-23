@@ -40,7 +40,7 @@ func (m *Manager) List(ctx context.Context, fractalID, prismID string) ([]*Feed,
 		       f.auth_token, f.normalizer_id, f.sync_schedule, COALESCE(f.min_level, ''), COALESCE(f.min_status, ''),
 		       f.enabled, COALESCE(f.fractal_id::text, ''), COALESCE(f.prism_id::text, ''),
 		       f.last_synced_at, f.last_sync_status, f.last_sync_rule_count,
-		       f.created_by, f.created_at, f.updated_at,
+		       COALESCE(f.created_by, ''), f.created_at, f.updated_at,
 		       (SELECT COUNT(*) FROM alerts a WHERE a.feed_id = f.id) as alert_count
 		FROM alert_feeds f
 		WHERE %s
@@ -71,7 +71,7 @@ func (m *Manager) ListAllEnabled(ctx context.Context) ([]*Feed, error) {
 		       f.auth_token, f.normalizer_id, f.sync_schedule, COALESCE(f.min_level, ''), COALESCE(f.min_status, ''),
 		       f.enabled, COALESCE(f.fractal_id::text, ''), COALESCE(f.prism_id::text, ''),
 		       f.last_synced_at, f.last_sync_status, f.last_sync_rule_count,
-		       f.created_by, f.created_at, f.updated_at,
+		       COALESCE(f.created_by, ''), f.created_at, f.updated_at,
 		       (SELECT COUNT(*) FROM alerts a WHERE a.feed_id = f.id) as alert_count
 		FROM alert_feeds f
 		WHERE f.enabled = true AND f.sync_schedule != 'never'
@@ -102,7 +102,7 @@ func (m *Manager) Get(ctx context.Context, id string) (*Feed, error) {
 		       f.auth_token, f.normalizer_id, f.sync_schedule, COALESCE(f.min_level, ''), COALESCE(f.min_status, ''),
 		       f.enabled, COALESCE(f.fractal_id::text, ''), COALESCE(f.prism_id::text, ''),
 		       f.last_synced_at, f.last_sync_status, f.last_sync_rule_count,
-		       f.created_by, f.created_at, f.updated_at,
+		       COALESCE(f.created_by, ''), f.created_at, f.updated_at,
 		       (SELECT COUNT(*) FROM alerts a WHERE a.feed_id = f.id) as alert_count
 		FROM alert_feeds f
 		WHERE f.id = $1

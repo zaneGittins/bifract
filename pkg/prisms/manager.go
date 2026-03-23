@@ -27,7 +27,7 @@ func (m *Manager) CreatePrism(ctx context.Context, name, description, createdBy 
 	err := m.pg.QueryRow(ctx, `
 		INSERT INTO prisms (name, description, created_by)
 		VALUES ($1, $2, $3)
-		RETURNING id, name, description, created_by, created_at, updated_at
+		RETURNING id, name, description, COALESCE(created_by, ''), created_at, updated_at
 	`, name, description, createdBy).Scan(
 		&p.ID, &p.Name, &p.Description, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt,
 	)

@@ -486,11 +486,12 @@ func (h *Handler) getCurrentUser(r *http.Request) string {
 	return ""
 }
 
-// requireAnalyst checks that the current user has at least analyst role on the session fractal.
+// requireAnalyst checks that the current user has at least analyst role on the session fractal or prism.
 func (h *Handler) requireAnalyst(w http.ResponseWriter, r *http.Request) bool {
 	user, _ := r.Context().Value("user").(*storage.User)
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
 		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
 		return false
 	}

@@ -576,6 +576,220 @@ const GroupsView = {
             return window.FractalContext.currentFractal.id;
         }
         return null;
+    },
+
+    // Prism Permissions
+
+    getCurrentPrismId() {
+        if (window.FractalManageTab && window.FractalManageTab.currentPrismId) {
+            return window.FractalManageTab.currentPrismId;
+        }
+        return null;
+    },
+
+    async loadPrismPermissions(prismId) {
+        const container = document.getElementById('prismPermissionsList');
+        if (!container) return;
+
+        try {
+            const resp = await fetch(`/api/v1/prisms/${prismId}/permissions`, { credentials: 'include' });
+            const data = await resp.json();
+            if (data.success) {
+                this.renderPrismPermissions((data.data && data.data.permissions) || [], prismId);
+            } else {
+                container.innerHTML = '<div class="text-muted">Failed to load permissions</div>';
+            }
+        } catch (err) {
+            console.error('[GroupsView] loadPrismPermissions error:', err);
+            container.innerHTML = '<div class="text-muted">Failed to load permissions</div>';
+        }
+    },
+
+    renderPrismPermissions(permissions, prismId) {
+        const container = document.getElementById('prismPermissionsList');
+        if (!container) return;
+
+        if (permissions.length === 0) {
+            container.innerHTML = '<div class="no-data" style="padding: 0.75rem; text-align: center; color: var(--text-muted);">No permissions granted. Only tenant admins can access this prism.</div>';
+            return;
+        }
+
+        let html = '<table class="users-table"><thead><tr><th>User / Group</th><th>Role</th><th></th></tr></thead><tbody>';
+        permissions.forEach(p => {
+            const isGroup = !!p.group_id;
+            const label = isGroup
+                ? `<span class="perm-type-badge perm-type-group">Group</span> ${Utils.escapeHtml(p.display_name || p.group_id)}`
+                : `<span class="perm-type-badge perm-type-user">User</span> ${Utils.escapeHtml(p.display_name || p.username)}`;
+
+            html += `<tr>
+                <td>${label}</td>
+                <td>
+                    <select class="setting-select perm-role-select" data-perm-id="${Utils.escapeHtml(p.id)}" data-prism-id="${Utils.escapeHtml(prismId)}" onchange="GroupsView.updatePrismPermissionRole(this)">
+                        <option value="viewer" ${p.role === 'viewer' ? 'selected' : ''}>viewer</option>
+                        <option value="analyst" ${p.role === 'analyst' ? 'selected' : ''}>analyst</option>
+                        <option value="admin" ${p.role === 'admin' ? 'selected' : ''}>admin</option>
+                    </select>
+                </td>
+                <td><button class="btn-delete-user btn-sm" onclick="GroupsView.revokePrismPermission('${Utils.escapeJs(p.id)}', '${Utils.escapeJs(prismId)}')">Revoke</button></td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    },
+
+    async updatePrismPermissionRole(selectEl) {
+        const permId = selectEl.dataset.permId;
+        const prismId = selectEl.dataset.prismId;
+        const role = selectEl.value;
+
+        try {
+            const resp = await fetch(`/api/v1/prisms/${prismId}/permissions/${permId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ role })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                if (window.Toast) Toast.success('Updated', `Role changed to ${role}`);
+            } else {
+                if (window.Toast) Toast.error('Error', data.error || 'Failed to update role');
+                await this.loadPrismPermissions(prismId);
+            }
+        } catch (err) {
+            console.error('[GroupsView] updatePrismPermissionRole error:', err);
+            if (window.Toast) Toast.error('Error', 'Network error');
+        }
+    },
+
+    async revokePrismPermission(permId, prismId) {
+        if (!confirm('Revoke this permission?')) return;
+
+        try {
+            const resp = await fetch(`/api/v1/prisms/${prismId}/permissions/${permId}`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await resp.json();
+            if (data.success) {
+                if (window.Toast) Toast.success('Revoked', 'Permission revoked');
+                await this.loadPrismPermissions(prismId);
+            } else {
+                if (window.Toast) Toast.error('Error', data.error || 'Failed to revoke permission');
+            }
+        } catch (err) {
+            console.error('[GroupsView] revokePrismPermission error:', err);
+            if (window.Toast) Toast.error('Error', 'Network error');
+        }
+    },
+
+    showPrismGrantForm() {
+        const form = document.getElementById('grantPrismPermissionForm');
+        if (form) form.style.display = 'block';
+        this.loadPrismGrantFormOptions();
+    },
+
+    hidePrismGrantForm() {
+        const form = document.getElementById('grantPrismPermissionForm');
+        if (form) form.style.display = 'none';
+        const typeSelect = document.getElementById('prismPermGrantType');
+        if (typeSelect) typeSelect.value = 'user';
+        const roleSelect = document.getElementById('prismPermRoleSelect');
+        if (roleSelect) roleSelect.value = 'viewer';
+        this.togglePrismGrantType();
+    },
+
+    togglePrismGrantType() {
+        const type = document.getElementById('prismPermGrantType')?.value;
+        const userGroup = document.getElementById('prismPermUserSelectGroup');
+        const groupGroup = document.getElementById('prismPermGroupSelectGroup');
+        if (userGroup) userGroup.style.display = type === 'user' ? '' : 'none';
+        if (groupGroup) groupGroup.style.display = type === 'group' ? '' : 'none';
+    },
+
+    async loadPrismGrantFormOptions() {
+        const userSelect = document.getElementById('prismPermUserSelect');
+        if (userSelect) {
+            try {
+                const resp = await fetch('/api/v1/users', { credentials: 'include' });
+                const data = await resp.json();
+                userSelect.innerHTML = '<option value="">Select user...</option>';
+                if (data.success) {
+                    (data.data || []).forEach(u => {
+                        const opt = document.createElement('option');
+                        opt.value = u.username;
+                        opt.textContent = `${u.display_name} (@${u.username})`;
+                        userSelect.appendChild(opt);
+                    });
+                }
+            } catch (err) {
+                console.error('[GroupsView] loadPrismGrantFormOptions users error:', err);
+            }
+        }
+
+        const groupSelect = document.getElementById('prismPermGroupSelect');
+        if (groupSelect) {
+            try {
+                const resp = await fetch('/api/v1/groups', { credentials: 'include' });
+                const data = await resp.json();
+                groupSelect.innerHTML = '<option value="">Select group...</option>';
+                if (data.success) {
+                    (data.data || []).forEach(g => {
+                        const opt = document.createElement('option');
+                        opt.value = g.id;
+                        opt.textContent = `${g.name} (${g.member_count || 0} members)`;
+                        groupSelect.appendChild(opt);
+                    });
+                }
+            } catch (err) {
+                console.error('[GroupsView] loadPrismGrantFormOptions groups error:', err);
+            }
+        }
+    },
+
+    async grantPrismPermission() {
+        const prismId = this.getCurrentPrismId();
+        if (!prismId) return;
+
+        const type = document.getElementById('prismPermGrantType')?.value;
+        const role = document.getElementById('prismPermRoleSelect')?.value;
+
+        let body = { role };
+        if (type === 'user') {
+            const username = document.getElementById('prismPermUserSelect')?.value;
+            if (!username) {
+                if (window.Toast) Toast.error('Error', 'Select a user');
+                return;
+            }
+            body.username = username;
+        } else {
+            const groupId = document.getElementById('prismPermGroupSelect')?.value;
+            if (!groupId) {
+                if (window.Toast) Toast.error('Error', 'Select a group');
+                return;
+            }
+            body.group_id = groupId;
+        }
+
+        try {
+            const resp = await fetch(`/api/v1/prisms/${prismId}/permissions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(body)
+            });
+            const data = await resp.json();
+            if (data.success) {
+                if (window.Toast) Toast.success('Granted', 'Permission granted');
+                this.hidePrismGrantForm();
+                await this.loadPrismPermissions(prismId);
+            } else {
+                if (window.Toast) Toast.error('Error', data.error || 'Failed to grant permission');
+            }
+        } catch (err) {
+            console.error('[GroupsView] grantPrismPermission error:', err);
+            if (window.Toast) Toast.error('Error', 'Network error');
+        }
     }
 };
 

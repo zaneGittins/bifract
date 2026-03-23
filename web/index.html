@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="/static/dictionaries.css">
     <link rel="stylesheet" href="/static/chat.css">
     <link rel="stylesheet" href="/static/ingestTokens.css">
+    <link rel="stylesheet" href="/static/instructionLibraries.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -970,6 +971,11 @@
 
             <!-- Chat Tab Content -->
             <div id="fractalChatTabContent" style="display: none;">
+                <div class="alerts-sub-tabs" id="chatSubTabs">
+                    <button class="alerts-sub-tab active" data-subtab="chat" onclick="Chat.switchSubTab('chat')">Chat</button>
+                    <button class="alerts-sub-tab" data-subtab="libraries" onclick="Chat.switchSubTab('libraries')">Libraries</button>
+                </div>
+                <div id="chatSubTabChat">
                 <div id="chatView" class="auth-required chat-view" style="display: none;">
                     <div class="chat-layout">
                         <!-- Sidebar: conversation list -->
@@ -1064,6 +1070,10 @@
                             </div>
                         </div>
                     </div>
+                </div>
+                </div><!-- end chatSubTabChat -->
+                <div id="chatSubTabLibraries" style="display:none;">
+                    <div id="instructionLibrariesView"></div>
                 </div>
             </div>
 
@@ -1309,16 +1319,24 @@
             <div id="fractalManageTabContent" class="fractal-admin-only" style="display: none;">
                 <!-- Prism management section (shown when a prism is selected) -->
                 <div id="prismManageSection" class="fractal-manage-view" style="display:none;">
-                    <div class="manage-title-row">
-                        <h2 id="managePrismTitle">Manage Prism</h2>
-                        <button onclick="FractalManageTab.editPrism()" class="manage-edit-btn" title="Edit prism name and description">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
-                        </button>
+                    <span id="managePrismTitle" style="display:none;"></span>
+
+                    <!-- Prism Manage Sub-Tabs -->
+                    <div class="alerts-sub-tabs" id="prismManageSubTabs">
+                        <button class="alerts-sub-tab active" data-subtab="overview" onclick="FractalManageTab.switchPrismSubTab('overview')">Overview</button>
+                        <button class="alerts-sub-tab" data-subtab="members" onclick="FractalManageTab.switchPrismSubTab('members')">Members</button>
+                        <button class="alerts-sub-tab" data-subtab="access" onclick="FractalManageTab.switchPrismSubTab('access')">Access</button>
+                        <button class="alerts-sub-tab" data-subtab="danger" onclick="FractalManageTab.switchPrismSubTab('danger')">Danger Zone</button>
                     </div>
 
+                    <!-- Prism Overview Sub-Tab -->
+                    <div id="prismSubTabOverview" class="prism-sub-panel">
                     <div class="fractal-details-grid">
                         <div class="detail-section">
-                            <h3>Basic Information</h3>
+                            <div class="section-header-row" style="border:none;margin:0;padding:0 0 0.5rem 0;">
+                                <h3 style="margin:0;">Basic Information</h3>
+                                <button id="manageEditPrismBtnInline" class="btn-secondary btn-xs" onclick="FractalManageTab.editPrism()" title="Edit name and description">Edit</button>
+                            </div>
                             <div class="detail-row">
                                 <span class="detail-label">Name:</span>
                                 <span id="managePrismName" class="detail-value"></span>
@@ -1331,12 +1349,31 @@
                                 <span class="detail-label">Created by:</span>
                                 <span id="managePrismCreatedBy" class="detail-value"></span>
                             </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Created:</span>
+                                <span id="managePrismCreatedAt" class="detail-value"></span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Last updated:</span>
+                                <span id="managePrismUpdatedAt" class="detail-value"></span>
+                            </div>
+                        </div>
+
+                        <div class="detail-section">
+                            <h3>Composition</h3>
+                            <div class="detail-row highlight">
+                                <span class="detail-label">Member fractals:</span>
+                                <span id="managePrismMemberCount" class="detail-value">0</span>
+                            </div>
                         </div>
                     </div>
+                    </div><!-- end prismSubTabOverview -->
 
+                    <!-- Prism Members Sub-Tab -->
+                    <div id="prismSubTabMembers" class="prism-sub-panel" style="display:none;">
                     <div class="fractal-settings">
                         <h3>Member Fractals</h3>
-                        <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:1rem;">Queries against this prism run across all member fractals.</p>
+                        <p class="section-description">Queries against this prism run across all member fractals.</p>
                         <div id="prismMembersList" style="margin-bottom:1rem;"></div>
                         <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
                             <select id="prismAddMemberSelect" class="setting-select" style="flex:1;min-width:180px;">
@@ -1345,7 +1382,61 @@
                             <button onclick="FractalManageTab.addPrismMember()" class="btn-secondary">Add</button>
                         </div>
                     </div>
+                    </div><!-- end prismSubTabMembers -->
 
+                    <!-- Prism Access Sub-Tab -->
+                    <div id="prismSubTabAccess" class="prism-sub-panel" style="display:none;">
+                    <div class="fractal-permissions-section">
+                        <div class="section-header">
+                            <h3>Permissions</h3>
+                            <button id="grantPrismPermissionBtn" class="btn-primary btn-sm" onclick="GroupsView.showPrismGrantForm()">+ Grant Access</button>
+                        </div>
+                        <p class="section-description">Control which users and groups can access this prism and their role level.</p>
+
+                        <div id="prismPermissionsList" class="permissions-list">
+                            <div class="loading">Loading permissions...</div>
+                        </div>
+
+                        <div id="grantPrismPermissionForm" style="display: none;">
+                            <h4>Grant Access</h4>
+                            <div class="form-group">
+                                <label for="prismPermGrantType">Grant to</label>
+                                <select id="prismPermGrantType" class="setting-select" onchange="GroupsView.togglePrismGrantType()">
+                                    <option value="user">User</option>
+                                    <option value="group">Group</option>
+                                </select>
+                            </div>
+                            <div class="form-group" id="prismPermUserSelectGroup">
+                                <label for="prismPermUserSelect">User</label>
+                                <select id="prismPermUserSelect" class="setting-select">
+                                    <option value="">Select user...</option>
+                                </select>
+                            </div>
+                            <div class="form-group" id="prismPermGroupSelectGroup" style="display: none;">
+                                <label for="prismPermGroupSelect">Group</label>
+                                <select id="prismPermGroupSelect" class="setting-select">
+                                    <option value="">Select group...</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="prismPermRoleSelect">Role</label>
+                                <select id="prismPermRoleSelect" class="setting-select">
+                                    <option value="viewer">Viewer</option>
+                                    <option value="analyst">Analyst</option>
+                                    <option value="admin">Admin</option>
+                                </select>
+                                <p class="help-text">Viewer: query/view. Analyst: create content. Admin: manage prism settings.</p>
+                            </div>
+                            <div class="form-actions">
+                                <button class="btn-primary" onclick="GroupsView.grantPrismPermission()">Grant</button>
+                                <button class="btn-secondary" onclick="GroupsView.hidePrismGrantForm()">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                    </div><!-- end prismSubTabAccess -->
+
+                    <!-- Prism Danger Zone Sub-Tab -->
+                    <div id="prismSubTabDanger" class="prism-sub-panel" style="display:none;">
                     <div class="danger-section">
                         <h3>Danger Zone</h3>
                         <div class="danger-actions">
@@ -1358,6 +1449,7 @@
                             </div>
                         </div>
                     </div>
+                    </div><!-- end prismSubTabDanger -->
 
                     <div id="managePrismError" class="error-message" style="display:none;"></div>
                 </div>
@@ -2528,6 +2620,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/archives.js"></script>
     <script src="/static/apiKeys.js"></script>
     <script src="/static/ingestTokens.js"></script>
+    <script src="/static/instructionLibraries.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

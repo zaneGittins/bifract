@@ -91,6 +91,9 @@ const FractalManageTab = {
 
         const prism = this.currentFractal;
 
+        // Reset to overview subtab
+        this.switchPrismSubTab('overview');
+
         const title = document.getElementById('managePrismTitle');
         if (title) title.textContent = `Manage Prism: ${prism.name}`;
 
@@ -100,6 +103,10 @@ const FractalManageTab = {
         if (descEl) descEl.textContent = prism.description || 'None';
         const createdByEl = document.getElementById('managePrismCreatedBy');
         if (createdByEl) createdByEl.textContent = prism.created_by || '';
+        const createdAtEl = document.getElementById('managePrismCreatedAt');
+        if (createdAtEl) createdAtEl.textContent = prism.created_at ? new Date(prism.created_at).toLocaleString() : '';
+        const updatedAtEl = document.getElementById('managePrismUpdatedAt');
+        if (updatedAtEl) updatedAtEl.textContent = prism.updated_at ? new Date(prism.updated_at).toLocaleString() : '';
 
         // Load full prism details (including members) from API
         try {
@@ -108,7 +115,10 @@ const FractalManageTab = {
                 const data = await resp.json();
                 if (data.success && data.data) {
                     this.currentPrismData = data.data;
-                    this.renderPrismMembers(data.data.members || []);
+                    const members = data.data.members || [];
+                    this.renderPrismMembers(members);
+                    const countEl = document.getElementById('managePrismMemberCount');
+                    if (countEl) countEl.textContent = members.length;
                 }
             }
         } catch (err) {
@@ -116,6 +126,8 @@ const FractalManageTab = {
         }
 
         this.loadAvailableFractalsForPrism();
+        this.currentPrismId = prism.id;
+        if (window.GroupsView) GroupsView.loadPrismPermissions(prism.id);
     },
 
     async loadAvailableFractalsForPrism() {
@@ -735,6 +747,21 @@ const FractalManageTab = {
         if (tabName === 'lifecycle' && window.Archives && this.currentFractal) {
             Archives.loadArchives(this.currentFractal.id);
         }
+    },
+
+    switchPrismSubTab(tabName) {
+        // Update tab buttons (scoped to the prism subtabs container)
+        const tabBar = document.getElementById('prismManageSubTabs');
+        if (tabBar) {
+            tabBar.querySelectorAll('.alerts-sub-tab').forEach(btn => btn.classList.remove('active'));
+            const activeBtn = tabBar.querySelector(`.alerts-sub-tab[data-subtab="${tabName}"]`);
+            if (activeBtn) activeBtn.classList.add('active');
+        }
+
+        // Show/hide prism panels
+        document.querySelectorAll('.prism-sub-panel').forEach(panel => panel.style.display = 'none');
+        const panel = document.getElementById('prismSubTab' + tabName.charAt(0).toUpperCase() + tabName.slice(1));
+        if (panel) panel.style.display = '';
     },
 
     showAPIKeysModal() {

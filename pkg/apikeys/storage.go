@@ -71,7 +71,7 @@ func (s *Storage) CreateAPIKey(ctx context.Context, req CreateAPIKeyRequest, fra
 	err = s.pg.DB().QueryRowContext(ctx, `
 		INSERT INTO api_keys (name, description, key_id, key_hash, fractal_id, created_by, expires_at, permissions)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, name, description, key_id, fractal_id, created_by, expires_at,
+		RETURNING id, name, description, key_id, fractal_id, COALESCE(created_by, ''), expires_at,
 		          is_active, permissions, created_at, updated_at, last_used_at, usage_count
 	`, req.Name, req.Description, keyID, keyHash, fractalID, username, req.ExpiresAt, string(permissionsJSON)).Scan(
 		&apiKey.ID, &apiKey.Name, &apiKey.Description, &apiKey.KeyID,
@@ -101,7 +101,7 @@ func (s *Storage) ValidateAPIKey(ctx context.Context, key string) (*ValidatedAPI
 
 	err := s.pg.DB().QueryRowContext(ctx, `
 		SELECT ak.id, ak.name, ak.description, ak.key_id, ak.fractal_id, i.name as fractal_name,
-		       ak.created_by, ak.expires_at, ak.is_active, ak.permissions,
+		       COALESCE(ak.created_by, ''), ak.expires_at, ak.is_active, ak.permissions,
 		       ak.created_at, ak.updated_at, ak.last_used_at, ak.usage_count
 		FROM api_keys ak
 		JOIN fractals i ON ak.fractal_id = i.id
@@ -148,7 +148,7 @@ func (s *Storage) UpdateLastUsed(ctx context.Context, keyID string) error {
 func (s *Storage) ListAPIKeys(ctx context.Context, fractalID string) ([]APIKey, error) {
 	rows, err := s.pg.DB().QueryContext(ctx, `
 		SELECT ak.id, ak.name, ak.description, ak.key_id, ak.fractal_id, i.name as fractal_name,
-		       ak.created_by, ak.expires_at, ak.is_active, ak.permissions,
+		       COALESCE(ak.created_by, ''), ak.expires_at, ak.is_active, ak.permissions,
 		       ak.created_at, ak.updated_at, ak.last_used_at, ak.usage_count
 		FROM api_keys ak
 		JOIN fractals i ON ak.fractal_id = i.id
@@ -198,7 +198,7 @@ func (s *Storage) GetAPIKey(ctx context.Context, keyID, fractalID string) (*APIK
 
 	err := s.pg.DB().QueryRowContext(ctx, `
 		SELECT ak.id, ak.name, ak.description, ak.key_id, ak.fractal_id, i.name as fractal_name,
-		       ak.created_by, ak.expires_at, ak.is_active, ak.permissions,
+		       COALESCE(ak.created_by, ''), ak.expires_at, ak.is_active, ak.permissions,
 		       ak.created_at, ak.updated_at, ak.last_used_at, ak.usage_count
 		FROM api_keys ak
 		JOIN fractals i ON ak.fractal_id = i.id
@@ -348,7 +348,7 @@ func (s *Storage) parsePermissions(apiKey *APIKey) error {
 func (s *Storage) GetAPIKeysByUser(ctx context.Context, username string) ([]APIKey, error) {
 	rows, err := s.pg.DB().QueryContext(ctx, `
 		SELECT ak.id, ak.name, ak.description, ak.key_id, ak.fractal_id, i.name as fractal_name,
-		       ak.created_by, ak.expires_at, ak.is_active, ak.permissions,
+		       COALESCE(ak.created_by, ''), ak.expires_at, ak.is_active, ak.permissions,
 		       ak.created_at, ak.updated_at, ak.last_used_at, ak.usage_count
 		FROM api_keys ak
 		JOIN fractals i ON ak.fractal_id = i.id

@@ -661,22 +661,23 @@ async def add_notebook_section(
 
 
 @mcp.tool()
-async def list_instructions() -> str:
+async def list_instruction_libraries() -> str:
     """
-    List all AI instructions configured for this fractal.
+    List all instruction libraries for this fractal.
 
-    AI instructions are reusable system prompts that guide the Bifract AI chat.
-    They can be collaboratively created and refined. One instruction can be
-    marked as the default for the fractal.
+    Instruction libraries are collections of pages that provide context and
+    guidance to the AI assistant. Pages marked as "always include" are injected
+    into every conversation; others are available on demand via the
+    read_instruction_page tool.
 
     Returns:
-        List of instructions with their names, content, and default status.
+        List of libraries with names, descriptions, page counts, and sync status.
     """
     if (err := _check_config()):
         return err
 
     try:
-        result = await _get("/chat/instructions")
+        result = await _get("/instruction-libraries")
     except httpx.HTTPStatusError as e:
         return f"Failed ({e.response.status_code}): {e.response.text}"
 
@@ -684,68 +685,25 @@ async def list_instructions() -> str:
 
 
 @mcp.tool()
-async def get_instruction(instruction_id: str) -> str:
+async def get_instruction_library(library_id: str) -> str:
     """
-    Get a specific AI instruction by ID to view its full content.
+    Get a specific instruction library with all its pages.
+
+    Returns the library details and a list of all pages (with names and
+    descriptions, but not full content). Use read_instruction_page to load
+    specific page content.
 
     Args:
-        instruction_id: The instruction UUID.
+        library_id: The library UUID.
 
     Returns:
-        Full instruction details including name, content, and default status.
+        Library details and page list.
     """
     if (err := _check_config()):
         return err
 
-    # The API doesn't have a dedicated GET by ID endpoint,
-    # so list all and filter client-side.
     try:
-        result = await _get("/chat/instructions")
-    except httpx.HTTPStatusError as e:
-        return f"Failed ({e.response.status_code}): {e.response.text}"
-
-    instructions = result.get("instructions", [])
-    for inst in instructions:
-        if inst.get("id") == instruction_id:
-            return json.dumps(inst, indent=2, default=str)
-
-    return f"Instruction {instruction_id} not found."
-
-
-@mcp.tool()
-async def create_instruction(
-    name: str,
-    content: str,
-    is_default: bool = False,
-) -> str:
-    """
-    Create a new AI instruction for the fractal.
-
-    AI instructions are system prompts that guide the Bifract AI chat assistant.
-    Use them to customize how the AI responds for this fractal's domain
-    (e.g. security-focused analysis, compliance checks, incident response).
-
-    Args:
-        name: Instruction name (e.g. 'Security Analyst', 'Compliance Reviewer').
-        content: The instruction content / system prompt text. This will be
-                 injected into the AI chat's context to guide its responses.
-        is_default: If true, this becomes the default instruction for the fractal.
-                    Only one instruction can be default at a time.
-
-    Returns:
-        The created instruction details.
-    """
-    if (err := _check_config()):
-        return err
-
-    body = {
-        "name": name,
-        "content": content,
-        "is_default": is_default,
-    }
-
-    try:
-        result = await _post("/chat/instructions", body)
+        result = await _get(f"/instruction-libraries/{library_id}")
     except httpx.HTTPStatusError as e:
         return f"Failed ({e.response.status_code}): {e.response.text}"
 
@@ -753,38 +711,156 @@ async def create_instruction(
 
 
 @mcp.tool()
-async def update_instruction(
-    instruction_id: str,
+async def read_instruction_page(library_id: str, page_id: str) -> str:
+    """
+    Read the full content of a specific instruction page.
+
+    Use this to selectively load instruction content when needed, rather than
+    loading all pages at once. This is the same selective loading pattern used
+    by the in-app AI Chat.
+
+    Args:
+        library_id: The library UUID containing the page.
+        page_id: The page UUID to read.
+
+    Returns:
+        Full page content including name, description, and instruction text.
+    """
+    if (err := _check_config()):
+        return err
+
+    try:
+        result = await _get(f"/instruction-libraries/{library_id}/pages/{page_id}")
+    except httpx.HTTPStatusError as e:
+        return f"Failed ({e.response.status_code}): {e.response.text}"
+
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+async def create_instruction_library(
     name: str,
-    content: str,
+    description: str = "",
     is_default: bool = False,
 ) -> str:
     """
-    Update an existing AI instruction.
+    Create a new instruction library for the fractal.
 
-    Use this to refine and improve instructions over time based on how well
-    they guide the AI chat assistant.
+    Libraries are collections of instruction pages that guide the AI assistant.
+    Use them to organize instructions by domain (e.g. SOC playbooks, compliance
+    procedures, enrichment guides).
 
     Args:
-        instruction_id: The instruction UUID to update.
-        name: Updated instruction name.
-        content: Updated instruction content / system prompt text.
-        is_default: Whether this should be the default instruction for the fractal.
+        name: Library name (e.g. 'SOC Playbooks', 'Compliance Checks').
+        description: Brief description of the library's purpose.
+        is_default: If true, this becomes the default library for the fractal.
+                    Only one library can be default at a time.
 
     Returns:
-        The updated instruction details.
+        The created library details.
     """
     if (err := _check_config()):
         return err
 
     body = {
         "name": name,
-        "content": content,
+        "description": description,
         "is_default": is_default,
+        "source": "manual",
     }
 
     try:
-        result = await _put(f"/chat/instructions/{instruction_id}", body)
+        result = await _post("/instruction-libraries", body)
+    except httpx.HTTPStatusError as e:
+        return f"Failed ({e.response.status_code}): {e.response.text}"
+
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+async def create_instruction_page(
+    library_id: str,
+    name: str,
+    content: str,
+    description: str = "",
+    always_include: bool = False,
+    sort_order: int = 0,
+) -> str:
+    """
+    Create a new instruction page in a library.
+
+    Pages contain the actual instruction text that guides the AI. Pages marked
+    as "always include" are injected into every conversation's system prompt.
+    Other pages appear in an index and are loaded on demand by the AI.
+
+    Args:
+        library_id: The library UUID to add the page to.
+        name: Page name (e.g. 'Incident Response', 'Triage Rules').
+        content: The instruction content (plain text or markdown).
+        description: Brief description shown in the AI's page index.
+        always_include: If true, this page is always in the AI's context.
+        sort_order: Display order (lower numbers appear first).
+
+    Returns:
+        The created page details.
+    """
+    if (err := _check_config()):
+        return err
+
+    body = {
+        "name": name,
+        "description": description,
+        "content": content,
+        "always_include": always_include,
+        "sort_order": sort_order,
+    }
+
+    try:
+        result = await _post(f"/instruction-libraries/{library_id}/pages", body)
+    except httpx.HTTPStatusError as e:
+        return f"Failed ({e.response.status_code}): {e.response.text}"
+
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+async def update_instruction_page(
+    library_id: str,
+    page_id: str,
+    name: str,
+    content: str,
+    description: str = "",
+    always_include: bool = False,
+    sort_order: int = 0,
+) -> str:
+    """
+    Update an existing instruction page.
+
+    Args:
+        library_id: The library UUID containing the page.
+        page_id: The page UUID to update.
+        name: Updated page name.
+        content: Updated instruction content.
+        description: Updated description for the AI's page index.
+        always_include: Whether this page should always be in context.
+        sort_order: Display order (lower numbers appear first).
+
+    Returns:
+        The updated page details.
+    """
+    if (err := _check_config()):
+        return err
+
+    body = {
+        "name": name,
+        "description": description,
+        "content": content,
+        "always_include": always_include,
+        "sort_order": sort_order,
+    }
+
+    try:
+        result = await _put(f"/instruction-libraries/{library_id}/pages/{page_id}", body)
     except httpx.HTTPStatusError as e:
         return f"Failed ({e.response.status_code}): {e.response.text}"
 

@@ -174,6 +174,10 @@ func (h *Handler) HandleGetAlert(w http.ResponseWriter, r *http.Request) {
 		if !h.requireRoleOnFractal(w, r, alert.FractalID, rbac.RoleViewer) {
 			return
 		}
+	} else if alert.PrismID != "" {
+		if !h.requireRoleOnPrism(w, r, alert.PrismID, rbac.RoleViewer) {
+			return
+		}
 	}
 
 	h.respondSuccess(w, map[string]interface{}{
@@ -203,6 +207,10 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 	}
 	if existing.FractalID != "" {
 		if !h.requireRoleOnFractal(w, r, existing.FractalID, rbac.RoleAnalyst) {
+			return
+		}
+	} else if existing.PrismID != "" {
+		if !h.requireRoleOnPrism(w, r, existing.PrismID, rbac.RoleAnalyst) {
 			return
 		}
 	} else if !h.requireRole(w, r, rbac.RoleAnalyst) {
@@ -281,6 +289,10 @@ func (h *Handler) HandleDeleteAlert(w http.ResponseWriter, r *http.Request) {
 		if !h.requireRoleOnFractal(w, r, existing.FractalID, rbac.RoleAnalyst) {
 			return
 		}
+	} else if existing.PrismID != "" {
+		if !h.requireRoleOnPrism(w, r, existing.PrismID, rbac.RoleAnalyst) {
+			return
+		}
 	} else if !h.requireRole(w, r, rbac.RoleAnalyst) {
 		return
 	}
@@ -323,7 +335,11 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.requireRole(w, r, rbac.RoleAnalyst) {
+	user := h.getUserObj(r)
+	fractalRole := rbac.RoleFromContext(r.Context())
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
+		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
@@ -356,14 +372,14 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fractalID, _, err := h.getScope(r)
+	fractalID, prismID, err := h.getScope(r)
 	if err != nil {
 		log.Printf("[Alerts] Failed to get selected index: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to determine fractal context")
 		return
 	}
 
-	alert, err := h.manager.ImportFromYAML(ctx, yamlContent, username, fractalID, normalizerID)
+	alert, err := h.manager.ImportFromYAML(ctx, yamlContent, username, fractalID, prismID, normalizerID)
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "failed to parse YAML") ||
@@ -407,6 +423,10 @@ func (h *Handler) HandleGetExecutions(w http.ResponseWriter, r *http.Request) {
 	}
 	if alert.FractalID != "" {
 		if !h.requireRoleOnFractal(w, r, alert.FractalID, rbac.RoleViewer) {
+			return
+		}
+	} else if alert.PrismID != "" {
+		if !h.requireRoleOnPrism(w, r, alert.PrismID, rbac.RoleViewer) {
 			return
 		}
 	}
@@ -958,11 +978,38 @@ func (h *Handler) requireRoleOnFractal(w http.ResponseWriter, r *http.Request, f
 	return true
 }
 
-// requireRole checks that the current user has at least the given role on the session fractal.
+// requireRoleOnPrism checks the user has the required role on a specific prism.
+func (h *Handler) requireRoleOnPrism(w http.ResponseWriter, r *http.Request, prismID string, required rbac.Role) bool {
+	user := h.getUserObj(r)
+	if user == nil {
+		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
+		return false
+	}
+	if user.IsAdmin {
+		return true
+	}
+	if h.rbacResolver == nil {
+		prismRole := rbac.PrismRoleFromContext(r.Context())
+		if !rbac.HasAccess(user, prismRole, required) {
+			h.respondError(w, http.StatusForbidden, "Insufficient permissions")
+			return false
+		}
+		return true
+	}
+	role := h.rbacResolver.ResolvePrismRoleWithAdmin(r.Context(), user, prismID)
+	if !rbac.HasAccess(user, role, required) {
+		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
+		return false
+	}
+	return true
+}
+
+// requireRole checks that the current user has at least the given role on the session fractal or prism.
 func (h *Handler) requireRole(w http.ResponseWriter, r *http.Request, required rbac.Role) bool {
 	user := h.getUserObj(r)
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, required) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, required) && !rbac.HasAccess(user, prismRole, required) {
 		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
 		return false
 	}
@@ -1021,6 +1068,10 @@ func (h *Handler) HandleDuplicateAlert(w http.ResponseWriter, r *http.Request) {
 	}
 	if existing.FractalID != "" {
 		if !h.requireRoleOnFractal(w, r, existing.FractalID, rbac.RoleAnalyst) {
+			return
+		}
+	} else if existing.PrismID != "" {
+		if !h.requireRoleOnPrism(w, r, existing.PrismID, rbac.RoleAnalyst) {
 			return
 		}
 	}
@@ -1142,8 +1193,14 @@ func (h *Handler) HandleToggleFeedAlert(w http.ResponseWriter, r *http.Request) 
 		h.respondError(w, http.StatusNotFound, "Alert not found")
 		return
 	}
-	if !h.requireRoleOnFractal(w, r, alert.FractalID, rbac.RoleAnalyst) {
-		return
+	if alert.FractalID != "" {
+		if !h.requireRoleOnFractal(w, r, alert.FractalID, rbac.RoleAnalyst) {
+			return
+		}
+	} else if alert.PrismID != "" {
+		if !h.requireRoleOnPrism(w, r, alert.PrismID, rbac.RoleAnalyst) {
+			return
+		}
 	}
 
 	var req struct {

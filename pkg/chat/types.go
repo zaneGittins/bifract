@@ -10,7 +10,7 @@ type Conversation struct {
 	ID            string    `json:"id"`
 	FractalID     string    `json:"fractal_id"`
 	Title         string    `json:"title"`
-	InstructionID *string   `json:"instruction_id"`
+	InstructionID *string   `json:"instruction_id,omitempty"` // legacy, kept for backward compat during migration
 	CreatedBy     string    `json:"created_by"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`

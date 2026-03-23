@@ -1050,6 +1050,55 @@ func (c *PostgresClient) GetAllCommentsByFractal(ctx context.Context, fractalID 
 	return comments, total, nil
 }
 
+// GetAllCommentsByFractalIDs returns comments across multiple fractals (for prism context).
+func (c *PostgresClient) GetAllCommentsByFractalIDs(ctx context.Context, fractalIDs []string, limit, offset int) ([]Comment, int, error) {
+	var total int
+	err := c.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM comments WHERE fractal_id = ANY($1)
+	`, pq.Array(fractalIDs)).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get total count: %w", err)
+	}
+
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query,
+		       c.created_at, c.updated_at, c.fractal_id,
+		       u.display_name, u.gravatar_color, u.gravatar_initial
+		FROM comments c
+		LEFT JOIN users u ON c.author = u.username
+		WHERE c.fractal_id = ANY($1)
+		ORDER BY c.created_at DESC
+		LIMIT $2 OFFSET $3
+	`, pq.Array(fractalIDs), limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get comments: %w", err)
+	}
+	defer rows.Close()
+
+	var comments []Comment
+	for rows.Next() {
+		var comment Comment
+		var tags pq.StringArray
+		err := rows.Scan(
+			&comment.ID, &comment.LogID, &comment.LogTimestamp, &comment.Text,
+			&comment.Author, &tags, &comment.Query,
+			&comment.CreatedAt, &comment.UpdatedAt, &comment.FractalID,
+			&comment.AuthorDisplayName, &comment.AuthorGravatarColor, &comment.AuthorGravatarInitial,
+		)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan comment: %w", err)
+		}
+		comment.Tags = tags
+		comments = append(comments, comment)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to iterate comments: %w", err)
+	}
+
+	return comments, total, nil
+}
+
 // BulkAddTagToComments adds a tag to multiple comments by ID.
 // Non-admin users can only modify comments they authored.
 func (c *PostgresClient) BulkAddTagToComments(ctx context.Context, commentIDs []string, tag string, authorUsername string, isAdmin bool) (int64, error) {
@@ -1306,7 +1355,7 @@ func (c *PostgresClient) InsertNotebook(ctx context.Context, notebook Notebook) 
 	err := c.db.QueryRowContext(ctx, `
 		INSERT INTO notebooks (name, description, time_range_type, time_range_start, time_range_end, max_results_per_section, fractal_id, prism_id, variables, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
-		RETURNING id, name, description, time_range_type, time_range_start, time_range_end, max_results_per_section, fractal_id, prism_id, COALESCE(variables, '[]'), created_by, created_at, updated_at
+		RETURNING id, name, description, time_range_type, time_range_start, time_range_end, max_results_per_section, fractal_id, prism_id, COALESCE(variables, '[]'), COALESCE(created_by, ''), created_at, updated_at
 	`, notebook.Name, notebook.Description, notebook.TimeRangeType, notebook.TimeRangeStart, notebook.TimeRangeEnd, notebook.MaxResultsPerSection, fractalIDPtr, prismIDPtr, string(varsJSON), notebook.CreatedBy).Scan(
 		&newNotebook.ID,
 		&newNotebook.Name,
@@ -1344,10 +1393,10 @@ func (c *PostgresClient) GetNotebook(ctx context.Context, id string) (*Notebook,
 	err := c.db.QueryRowContext(ctx, `
 		SELECT n.id, n.name, COALESCE(n.description, ''), n.time_range_type, n.time_range_start, n.time_range_end,
 		       n.max_results_per_section, COALESCE(n.fractal_id::text, ''), COALESCE(n.prism_id::text, ''),
-		       COALESCE(n.variables, '[]'), n.created_by, n.created_at, n.updated_at,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		       COALESCE(n.variables, '[]'), COALESCE(n.created_by, ''), n.created_at, n.updated_at,
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM notebooks n
-		JOIN users u ON n.created_by = u.username
+		LEFT JOIN users u ON n.created_by = u.username
 		WHERE n.id = $1
 	`, id).Scan(
 		&notebook.ID,
@@ -1386,7 +1435,7 @@ func (c *PostgresClient) GetNotebookByNameAndFractal(ctx context.Context, name, 
 	err := c.db.QueryRowContext(ctx, `
 		SELECT id, name, description, time_range_type, time_range_start, time_range_end,
 		       max_results_per_section, fractal_id, prism_id, COALESCE(variables, '[]'),
-		       created_by, created_at, updated_at
+		       COALESCE(created_by, ''), created_at, updated_at
 		FROM notebooks
 		WHERE name = $1 AND fractal_id = $2
 	`, name, fractalID).Scan(
@@ -1415,25 +1464,6 @@ func (c *PostgresClient) GetNotebookByNameAndFractal(ctx context.Context, name, 
 	return &notebook, nil
 }
 
-// DeleteNotebookByID deletes a notebook by ID without author check.
-// Caller must verify authorization before calling.
-func (c *PostgresClient) DeleteNotebookByID(ctx context.Context, id string) error {
-	result, err := c.db.ExecContext(ctx, `DELETE FROM notebooks WHERE id = $1`, id)
-	if err != nil {
-		return fmt.Errorf("failed to delete notebook: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return fmt.Errorf("notebook not found")
-	}
-
-	return nil
-}
 
 // GetNotebooksByFractal retrieves notebooks for a specific fractal with pagination
 func (c *PostgresClient) GetNotebooksByFractal(ctx context.Context, fractalID string, limit, offset int) ([]Notebook, int, error) {
@@ -1450,10 +1480,10 @@ func (c *PostgresClient) GetNotebooksByFractal(ctx context.Context, fractalID st
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT n.id, n.name, n.description, n.time_range_type, n.time_range_start, n.time_range_end,
 		       n.max_results_per_section, n.fractal_id, COALESCE(n.variables, '[]'),
-		       n.created_by, n.created_at, n.updated_at,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		       COALESCE(n.created_by, ''), n.created_at, n.updated_at,
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM notebooks n
-		JOIN users u ON n.created_by = u.username
+		LEFT JOIN users u ON n.created_by = u.username
 		WHERE n.fractal_id = $1
 		ORDER BY n.updated_at DESC
 		LIMIT $2 OFFSET $3
@@ -1504,10 +1534,10 @@ func (c *PostgresClient) GetNotebooksByPrism(ctx context.Context, prismID string
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT n.id, n.name, n.description, n.time_range_type, n.time_range_start, n.time_range_end,
 		       n.max_results_per_section, n.prism_id, COALESCE(n.variables, '[]'),
-		       n.created_by, n.created_at, n.updated_at,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		       COALESCE(n.created_by, ''), n.created_at, n.updated_at,
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM notebooks n
-		JOIN users u ON n.created_by = u.username
+		LEFT JOIN users u ON n.created_by = u.username
 		WHERE n.prism_id = $1
 		ORDER BY n.updated_at DESC
 		LIMIT $2 OFFSET $3
@@ -1546,7 +1576,7 @@ func (c *PostgresClient) GetNotebooksByPrism(ctx context.Context, prismID string
 }
 
 // UpdateNotebook updates a notebook's metadata
-func (c *PostgresClient) UpdateNotebook(ctx context.Context, id, username string, name, description, timeRangeType *string, timeRangeStart, timeRangeEnd *time.Time, maxResults *int) error {
+func (c *PostgresClient) UpdateNotebook(ctx context.Context, id string, name, description, timeRangeType *string, timeRangeStart, timeRangeEnd *time.Time, maxResults *int) error {
 	// Build dynamic query based on provided fields
 	setParts := []string{}
 	args := []interface{}{}
@@ -1587,13 +1617,12 @@ func (c *PostgresClient) UpdateNotebook(ctx context.Context, id, username string
 		return fmt.Errorf("no fields to update")
 	}
 
-	// Add WHERE clause arguments
-	args = append(args, id, username)
+	args = append(args, id)
 	query := fmt.Sprintf(`
 		UPDATE notebooks
 		SET %s, updated_at = NOW()
-		WHERE id = $%d AND created_by = $%d
-	`, strings.Join(setParts, ", "), argIndex, argIndex+1)
+		WHERE id = $%d
+	`, strings.Join(setParts, ", "), argIndex)
 
 	result, err := c.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -1612,22 +1641,22 @@ func (c *PostgresClient) UpdateNotebook(ctx context.Context, id, username string
 	return nil
 }
 
-func (c *PostgresClient) UpdateNotebookVariables(ctx context.Context, id, username string, variables json.RawMessage) error {
+func (c *PostgresClient) UpdateNotebookVariables(ctx context.Context, id string, variables json.RawMessage) error {
 	_, err := c.db.ExecContext(ctx, `
 		UPDATE notebooks SET variables = $1::jsonb, updated_at = NOW()
-		WHERE id = $2 AND created_by = $3
-	`, string(variables), id, username)
+		WHERE id = $2
+	`, string(variables), id)
 	if err != nil {
 		return fmt.Errorf("failed to update notebook variables: %w", err)
 	}
 	return nil
 }
 
-// DeleteNotebook deletes a notebook (author only)
-func (c *PostgresClient) DeleteNotebook(ctx context.Context, id, username string) error {
+// DeleteNotebook deletes a notebook by ID. Authorization is handled by the caller.
+func (c *PostgresClient) DeleteNotebook(ctx context.Context, id string) error {
 	result, err := c.db.ExecContext(ctx, `
-		DELETE FROM notebooks WHERE id = $1 AND created_by = $2
-	`, id, username)
+		DELETE FROM notebooks WHERE id = $1
+	`, id)
 
 	if err != nil {
 		return fmt.Errorf("failed to delete notebook: %w", err)
@@ -2103,7 +2132,7 @@ func (c *PostgresClient) InsertDashboard(ctx context.Context, d Dashboard) (*Das
 	err := c.db.QueryRowContext(ctx, `
 		INSERT INTO dashboards (name, description, time_range_type, time_range_start, time_range_end, fractal_id, prism_id, variables, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
-		RETURNING id, name, description, time_range_type, time_range_start, time_range_end, fractal_id, prism_id, COALESCE(variables, '[]'), created_by, created_at, updated_at
+		RETURNING id, name, description, time_range_type, time_range_start, time_range_end, fractal_id, prism_id, COALESCE(variables, '[]'), COALESCE(created_by, ''), created_at, updated_at
 	`, d.Name, d.Description, d.TimeRangeType, d.TimeRangeStart, d.TimeRangeEnd, fractalIDPtr, prismIDPtr, string(varsJSON), d.CreatedBy).Scan(
 		&nd.ID, &nd.Name, &nd.Description, &nd.TimeRangeType, &nd.TimeRangeStart, &nd.TimeRangeEnd,
 		&scanFractalID, &scanPrismID, &nd.Variables, &nd.CreatedBy, &nd.CreatedAt, &nd.UpdatedAt,
@@ -2128,10 +2157,10 @@ func (c *PostgresClient) GetDashboard(ctx context.Context, id string) (*Dashboar
 	var scanFractalID, scanPrismID sql.NullString
 	err := c.db.QueryRowContext(ctx, `
 		SELECT d.id, d.name, d.description, d.time_range_type, d.time_range_start, d.time_range_end,
-		       d.fractal_id, d.prism_id, COALESCE(d.variables, '[]'), d.created_by, d.created_at, d.updated_at,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		       d.fractal_id, d.prism_id, COALESCE(d.variables, '[]'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM dashboards d
-		JOIN users u ON d.created_by = u.username
+		LEFT JOIN users u ON d.created_by = u.username
 		WHERE d.id = $1
 	`, id).Scan(
 		&d.ID, &d.Name, &d.Description, &d.TimeRangeType, &d.TimeRangeStart, &d.TimeRangeEnd,
@@ -2158,10 +2187,10 @@ func (c *PostgresClient) GetDashboardsByFractal(ctx context.Context, fractalID s
 
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT d.id, d.name, d.description, d.time_range_type, d.time_range_start, d.time_range_end,
-		       d.fractal_id, COALESCE(d.variables, '[]'), d.created_by, d.created_at, d.updated_at,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		       d.fractal_id, COALESCE(d.variables, '[]'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM dashboards d
-		JOIN users u ON d.created_by = u.username
+		LEFT JOIN users u ON d.created_by = u.username
 		WHERE d.fractal_id = $1
 		ORDER BY d.updated_at DESC
 		LIMIT $2 OFFSET $3
@@ -2197,10 +2226,10 @@ func (c *PostgresClient) GetDashboardsByPrism(ctx context.Context, prismID strin
 
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT d.id, d.name, d.description, d.time_range_type, d.time_range_start, d.time_range_end,
-		       d.prism_id, COALESCE(d.variables, '[]'), d.created_by, d.created_at, d.updated_at,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		       d.prism_id, COALESCE(d.variables, '[]'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM dashboards d
-		JOIN users u ON d.created_by = u.username
+		LEFT JOIN users u ON d.created_by = u.username
 		WHERE d.prism_id = $1
 		ORDER BY d.updated_at DESC
 		LIMIT $2 OFFSET $3
@@ -2226,7 +2255,7 @@ func (c *PostgresClient) GetDashboardsByPrism(ctx context.Context, prismID strin
 	return dashboards, total, nil
 }
 
-func (c *PostgresClient) UpdateDashboard(ctx context.Context, id, username string, name, description, timeRangeType *string, timeRangeStart, timeRangeEnd *time.Time) error {
+func (c *PostgresClient) UpdateDashboard(ctx context.Context, id string, name, description, timeRangeType *string, timeRangeStart, timeRangeEnd *time.Time) error {
 	_, err := c.db.ExecContext(ctx, `
 		UPDATE dashboards SET
 			name = COALESCE($1, name),
@@ -2234,27 +2263,27 @@ func (c *PostgresClient) UpdateDashboard(ctx context.Context, id, username strin
 			time_range_type = COALESCE($3, time_range_type),
 			time_range_start = COALESCE($4, time_range_start),
 			time_range_end = COALESCE($5, time_range_end)
-		WHERE id = $6 AND created_by = $7
-	`, name, description, timeRangeType, timeRangeStart, timeRangeEnd, id, username)
+		WHERE id = $6
+	`, name, description, timeRangeType, timeRangeStart, timeRangeEnd, id)
 	if err != nil {
 		return fmt.Errorf("failed to update dashboard: %w", err)
 	}
 	return nil
 }
 
-func (c *PostgresClient) UpdateDashboardVariables(ctx context.Context, id, username string, variables json.RawMessage) error {
+func (c *PostgresClient) UpdateDashboardVariables(ctx context.Context, id string, variables json.RawMessage) error {
 	_, err := c.db.ExecContext(ctx, `
 		UPDATE dashboards SET variables = $1::jsonb, updated_at = NOW()
-		WHERE id = $2 AND created_by = $3
-	`, string(variables), id, username)
+		WHERE id = $2
+	`, string(variables), id)
 	if err != nil {
 		return fmt.Errorf("failed to update dashboard variables: %w", err)
 	}
 	return nil
 }
 
-func (c *PostgresClient) DeleteDashboard(ctx context.Context, id, username string) error {
-	_, err := c.db.ExecContext(ctx, `DELETE FROM dashboards WHERE id = $1 AND created_by = $2`, id, username)
+func (c *PostgresClient) DeleteDashboard(ctx context.Context, id string) error {
+	_, err := c.db.ExecContext(ctx, `DELETE FROM dashboards WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete dashboard: %w", err)
 	}
@@ -2382,7 +2411,7 @@ func (c *PostgresClient) CreateGroup(ctx context.Context, name, description, cre
 	err := c.db.QueryRowContext(ctx, `
 		INSERT INTO groups (name, description, created_by)
 		VALUES ($1, $2, $3)
-		RETURNING id, name, description, created_by, created_at, updated_at
+		RETURNING id, name, description, COALESCE(created_by, ''), created_at, updated_at
 	`, name, description, createdBy).Scan(
 		&g.ID, &g.Name, &g.Description, &g.CreatedBy, &g.CreatedAt, &g.UpdatedAt,
 	)
@@ -2395,7 +2424,7 @@ func (c *PostgresClient) CreateGroup(ctx context.Context, name, description, cre
 func (c *PostgresClient) GetGroup(ctx context.Context, id string) (*Group, error) {
 	g := &Group{}
 	err := c.db.QueryRowContext(ctx, `
-		SELECT g.id, g.name, g.description, g.created_by, g.created_at, g.updated_at,
+		SELECT g.id, g.name, g.description, COALESCE(g.created_by, ''), g.created_at, g.updated_at,
 		       (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) AS member_count
 		FROM groups g
 		WHERE g.id = $1
@@ -2413,7 +2442,7 @@ func (c *PostgresClient) GetGroup(ctx context.Context, id string) (*Group, error
 
 func (c *PostgresClient) ListGroups(ctx context.Context) ([]Group, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT g.id, g.name, g.description, g.created_by, g.created_at, g.updated_at,
+		SELECT g.id, g.name, g.description, COALESCE(g.created_by, ''), g.created_at, g.updated_at,
 		       (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) AS member_count
 		FROM groups g
 		ORDER BY g.name ASC
@@ -2439,7 +2468,7 @@ func (c *PostgresClient) UpdateGroup(ctx context.Context, id, name, description 
 	err := c.db.QueryRowContext(ctx, `
 		UPDATE groups SET name = $2, description = $3, updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, name, description, created_by, created_at, updated_at
+		RETURNING id, name, description, COALESCE(created_by, ''), created_at, updated_at
 	`, id, name, description).Scan(
 		&g.ID, &g.Name, &g.Description, &g.CreatedBy, &g.CreatedAt, &g.UpdatedAt,
 	)
@@ -2488,7 +2517,7 @@ func (c *PostgresClient) RemoveGroupMember(ctx context.Context, groupID, usernam
 
 func (c *PostgresClient) ListGroupMembers(ctx context.Context, groupID string) ([]GroupMember, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT gm.group_id, gm.username, gm.added_by, gm.added_at,
+		SELECT gm.group_id, gm.username, COALESCE(gm.added_by, ''), gm.added_at,
 		       u.display_name, u.gravatar_color, u.gravatar_initial
 		FROM group_members gm
 		JOIN users u ON gm.username = u.username
@@ -2514,7 +2543,7 @@ func (c *PostgresClient) ListGroupMembers(ctx context.Context, groupID string) (
 
 func (c *PostgresClient) GetUserGroups(ctx context.Context, username string) ([]Group, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT g.id, g.name, g.description, g.created_by, g.created_at, g.updated_at,
+		SELECT g.id, g.name, g.description, COALESCE(g.created_by, ''), g.created_at, g.updated_at,
 		       (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) AS member_count
 		FROM groups g
 		JOIN group_members gm ON g.id = gm.group_id
@@ -2560,7 +2589,7 @@ func (c *PostgresClient) GrantFractalPermission(ctx context.Context, fractalID s
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (fractal_id, username) WHERE username IS NOT NULL
 			DO UPDATE SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by, updated_at = NOW()
-		RETURNING id, fractal_id, username, group_id, role, granted_by, created_at, updated_at
+		RETURNING id, fractal_id, username, group_id, role, COALESCE(granted_by, ''), created_at, updated_at
 	`, fractalID, username, groupID, role, grantedBy).Scan(
 		&fp.ID, &fp.FractalID, &fp.Username, &fp.GroupID, &fp.Role, &fp.GrantedBy, &fp.CreatedAt, &fp.UpdatedAt,
 	)
@@ -2572,7 +2601,7 @@ func (c *PostgresClient) GrantFractalPermission(ctx context.Context, fractalID s
 				VALUES ($1, $2, $3, $4, $5)
 				ON CONFLICT (fractal_id, group_id) WHERE group_id IS NOT NULL
 					DO UPDATE SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by, updated_at = NOW()
-				RETURNING id, fractal_id, username, group_id, role, granted_by, created_at, updated_at
+				RETURNING id, fractal_id, username, group_id, role, COALESCE(granted_by, ''), created_at, updated_at
 			`, fractalID, username, groupID, role, grantedBy).Scan(
 				&fp.ID, &fp.FractalID, &fp.Username, &fp.GroupID, &fp.Role, &fp.GrantedBy, &fp.CreatedAt, &fp.UpdatedAt,
 			)
@@ -2614,7 +2643,7 @@ func (c *PostgresClient) UpdateFractalPermissionRole(ctx context.Context, id, ro
 
 func (c *PostgresClient) ListFractalPermissions(ctx context.Context, fractalID string) ([]FractalPermission, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT fp.id, fp.fractal_id, fp.username, fp.group_id, fp.role, fp.granted_by,
+		SELECT fp.id, fp.fractal_id, fp.username, fp.group_id, fp.role, COALESCE(fp.granted_by, ''),
 		       fp.created_at, fp.updated_at,
 		       COALESCE(u.display_name, g.name, '') AS display_name
 		FROM fractal_permissions fp
@@ -2643,7 +2672,7 @@ func (c *PostgresClient) ListFractalPermissions(ctx context.Context, fractalID s
 func (c *PostgresClient) GetFractalPermission(ctx context.Context, id string) (*FractalPermission, error) {
 	fp := &FractalPermission{}
 	err := c.db.QueryRowContext(ctx, `
-		SELECT fp.id, fp.fractal_id, fp.username, fp.group_id, fp.role, fp.granted_by,
+		SELECT fp.id, fp.fractal_id, fp.username, fp.group_id, fp.role, COALESCE(fp.granted_by, ''),
 		       fp.created_at, fp.updated_at,
 		       COALESCE(u.display_name, g.name, '') AS display_name
 		FROM fractal_permissions fp
@@ -2659,4 +2688,127 @@ func (c *PostgresClient) GetFractalPermission(ctx context.Context, id string) (*
 		return nil, fmt.Errorf("failed to get fractal permission: %w", err)
 	}
 	return fp, nil
+}
+
+// ============================
+// Prism Permissions
+// ============================
+
+type PrismPermission struct {
+	ID          string    `json:"id"`
+	PrismID     string    `json:"prism_id"`
+	Username    *string   `json:"username,omitempty"`
+	GroupID     *string   `json:"group_id,omitempty"`
+	Role        string    `json:"role"`
+	GrantedBy   string    `json:"granted_by"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	DisplayName string    `json:"display_name,omitempty"`
+}
+
+func (c *PostgresClient) GrantPrismPermission(ctx context.Context, prismID string, username *string, groupID *string, role, grantedBy string) (*PrismPermission, error) {
+	pp := &PrismPermission{}
+	err := c.db.QueryRowContext(ctx, `
+		INSERT INTO prism_permissions (prism_id, username, group_id, role, granted_by)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (prism_id, username) WHERE username IS NOT NULL
+			DO UPDATE SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by, updated_at = NOW()
+		RETURNING id, prism_id, username, group_id, role, COALESCE(granted_by, ''), created_at, updated_at
+	`, prismID, username, groupID, role, grantedBy).Scan(
+		&pp.ID, &pp.PrismID, &pp.Username, &pp.GroupID, &pp.Role, &pp.GrantedBy, &pp.CreatedAt, &pp.UpdatedAt,
+	)
+	if err != nil {
+		if groupID != nil {
+			err2 := c.db.QueryRowContext(ctx, `
+				INSERT INTO prism_permissions (prism_id, username, group_id, role, granted_by)
+				VALUES ($1, $2, $3, $4, $5)
+				ON CONFLICT (prism_id, group_id) WHERE group_id IS NOT NULL
+					DO UPDATE SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by, updated_at = NOW()
+				RETURNING id, prism_id, username, group_id, role, COALESCE(granted_by, ''), created_at, updated_at
+			`, prismID, username, groupID, role, grantedBy).Scan(
+				&pp.ID, &pp.PrismID, &pp.Username, &pp.GroupID, &pp.Role, &pp.GrantedBy, &pp.CreatedAt, &pp.UpdatedAt,
+			)
+			if err2 != nil {
+				return nil, fmt.Errorf("failed to grant prism permission: %w", err2)
+			}
+			return pp, nil
+		}
+		return nil, fmt.Errorf("failed to grant prism permission: %w", err)
+	}
+	return pp, nil
+}
+
+func (c *PostgresClient) RevokePrismPermission(ctx context.Context, id string) error {
+	result, err := c.db.ExecContext(ctx, `DELETE FROM prism_permissions WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("failed to revoke prism permission: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("permission not found")
+	}
+	return nil
+}
+
+func (c *PostgresClient) UpdatePrismPermissionRole(ctx context.Context, id, role string) error {
+	result, err := c.db.ExecContext(ctx, `
+		UPDATE prism_permissions SET role = $2, updated_at = NOW() WHERE id = $1
+	`, id, role)
+	if err != nil {
+		return fmt.Errorf("failed to update prism permission: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("permission not found")
+	}
+	return nil
+}
+
+func (c *PostgresClient) ListPrismPermissions(ctx context.Context, prismID string) ([]PrismPermission, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT pp.id, pp.prism_id, pp.username, pp.group_id, pp.role, COALESCE(pp.granted_by, ''),
+		       pp.created_at, pp.updated_at,
+		       COALESCE(u.display_name, g.name, '') AS display_name
+		FROM prism_permissions pp
+		LEFT JOIN users u ON pp.username = u.username
+		LEFT JOIN groups g ON pp.group_id = g.id
+		WHERE pp.prism_id = $1
+		ORDER BY pp.created_at ASC
+	`, prismID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list prism permissions: %w", err)
+	}
+	defer rows.Close()
+
+	var perms []PrismPermission
+	for rows.Next() {
+		var pp PrismPermission
+		if err := rows.Scan(&pp.ID, &pp.PrismID, &pp.Username, &pp.GroupID, &pp.Role,
+			&pp.GrantedBy, &pp.CreatedAt, &pp.UpdatedAt, &pp.DisplayName); err != nil {
+			return nil, fmt.Errorf("failed to scan prism permission: %w", err)
+		}
+		perms = append(perms, pp)
+	}
+	return perms, rows.Err()
+}
+
+func (c *PostgresClient) GetPrismPermission(ctx context.Context, id string) (*PrismPermission, error) {
+	pp := &PrismPermission{}
+	err := c.db.QueryRowContext(ctx, `
+		SELECT pp.id, pp.prism_id, pp.username, pp.group_id, pp.role, COALESCE(pp.granted_by, ''),
+		       pp.created_at, pp.updated_at,
+		       COALESCE(u.display_name, g.name, '') AS display_name
+		FROM prism_permissions pp
+		LEFT JOIN users u ON pp.username = u.username
+		LEFT JOIN groups g ON pp.group_id = g.id
+		WHERE pp.id = $1
+	`, id).Scan(&pp.ID, &pp.PrismID, &pp.Username, &pp.GroupID, &pp.Role,
+		&pp.GrantedBy, &pp.CreatedAt, &pp.UpdatedAt, &pp.DisplayName)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("permission not found")
+		}
+		return nil, fmt.Errorf("failed to get prism permission: %w", err)
+	}
+	return pp, nil
 }

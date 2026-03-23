@@ -32,6 +32,7 @@ import (
 	"bifract/pkg/query"
 	"bifract/pkg/contextlinks"
 	"bifract/pkg/feeds"
+	"bifract/pkg/instructions"
 	"bifract/pkg/groups"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/maxmind"
@@ -397,7 +398,8 @@ func main() {
 	}
 
 	// Initialize fractal handler with auth support for session management
-	prismHandler := prisms.NewHandler(prismManager, authHandler)
+	prismHandler := prisms.NewHandler(prismManager, pg, authHandler)
+	prismHandler.SetRBACResolver(authHandler.RBACResolver())
 	fractalHandler := fractals.NewHandler(fractalManager, authHandler, prismManager)
 	fractalHandler.SetRBAC(pg, authHandler.RBACResolver())
 
@@ -410,6 +412,7 @@ func main() {
 	groupHandler := groups.NewHandler(pg)
 
 	commentHandler := comments.NewCommentHandlerWithFractals(pg, db, fractalManager)
+	commentHandler.SetPrismResolver(prismManager)
 	notebookHandler := notebooks.NewNotebookHandler(pg, db, fractalManager, config.LiteLLMURL, config.LiteLLMMasterKey)
 	notebookHandler.SetRBACResolver(authHandler.RBACResolver())
 	dashboardHandler := dashboards.NewDashboardHandler(pg, fractalManager)
@@ -422,6 +425,7 @@ func main() {
 	chatHandler := chat.NewHandler(chatManager, fractalManager, rbacAdapter)
 	savedQueryHandler := savedqueries.NewHandler(pg, fractalManager)
 	savedQueryHandler.SetRBACResolver(rbacAdapter)
+	savedQueryHandler.SetRBACFull(authHandler.RBACResolver())
 	contextLinkManager := contextlinks.NewManager(pg)
 	contextLinkHandler := contextlinks.NewHandler(contextLinkManager)
 
@@ -431,6 +435,15 @@ func main() {
 	feedHandler := feeds.NewHandler(feedManager, alertManager, fractalManager, feedSyncer)
 	feedSyncer.Start()
 	log.Println("Feed sync system initialized")
+
+	// Initialize instruction library system
+	instructionManager := instructions.NewManager(pg)
+	instructionSyncer := instructions.NewSyncer(instructionManager)
+	instructionHandler := instructions.NewHandler(instructionManager, fractalManager, instructionSyncer)
+	instructionHandler.SetRBACResolver(authHandler.RBACResolver())
+	instructionSyncer.Start()
+	chatManager.SetInstructionManager(instructionManager)
+	log.Println("Instruction library system initialized")
 
 	// Initialize archive system
 	var archiveManager *archives.Manager
@@ -673,6 +686,10 @@ func main() {
 			r.Post("/prisms/{id}/select", prismHandler.HandleSelectPrism)
 			r.Post("/prisms/{id}/members", prismHandler.HandleAddMember)
 			r.Delete("/prisms/{id}/members/{fractalID}", prismHandler.HandleRemoveMember)
+			r.Get("/prisms/{id}/permissions", prismHandler.HandleListPrismPermissions)
+			r.Post("/prisms/{id}/permissions", prismHandler.HandleGrantPrismPermission)
+			r.Put("/prisms/{id}/permissions/{permId}", prismHandler.HandleUpdatePrismPermission)
+			r.Delete("/prisms/{id}/permissions/{permId}", prismHandler.HandleRevokePrismPermission)
 
 			// Fractal management
 			r.Get("/fractals", fractalHandler.HandleListFractals)
@@ -764,7 +781,8 @@ func main() {
 			r.Get("/chat/conversations/{id}/messages", chatHandler.HandleGetMessages)
 			r.Delete("/chat/conversations/{id}/messages", chatHandler.HandleClearMessages)
 			r.Post("/chat/conversations/{id}/stream", chatHandler.HandleStream)
-			r.Patch("/chat/conversations/{id}/instruction", chatHandler.HandleSetConversationInstruction)
+			r.Patch("/chat/conversations/{id}/libraries", chatHandler.HandleSetConversationLibraries)
+			r.Get("/chat/conversations/{id}/libraries", chatHandler.HandleGetConversationLibraries)
 			r.Delete("/chat/conversations", chatHandler.HandleDeleteAllConversations)
 			r.Get("/chat/instructions", chatHandler.HandleListInstructions)
 			r.Post("/chat/instructions", chatHandler.HandleCreateInstruction)
@@ -780,6 +798,19 @@ func main() {
 			r.Delete("/context-links/{id}", contextLinkHandler.HandleDelete)
 
 			// Alert Feeds
+			// Instruction Libraries
+			r.Get("/instruction-libraries", instructionHandler.HandleListLibraries)
+			r.Post("/instruction-libraries", instructionHandler.HandleCreateLibrary)
+			r.Get("/instruction-libraries/{id}", instructionHandler.HandleGetLibrary)
+			r.Put("/instruction-libraries/{id}", instructionHandler.HandleUpdateLibrary)
+			r.Delete("/instruction-libraries/{id}", instructionHandler.HandleDeleteLibrary)
+			r.Get("/instruction-libraries/{id}/pages", instructionHandler.HandleListPages)
+			r.Post("/instruction-libraries/{id}/pages", instructionHandler.HandleCreatePage)
+			r.Get("/instruction-libraries/{id}/pages/{pageId}", instructionHandler.HandleGetPage)
+			r.Put("/instruction-libraries/{id}/pages/{pageId}", instructionHandler.HandleUpdatePage)
+			r.Delete("/instruction-libraries/{id}/pages/{pageId}", instructionHandler.HandleDeletePage)
+			r.Post("/instruction-libraries/{id}/sync", instructionHandler.HandleSyncLibrary)
+
 			r.Get("/feeds", feedHandler.HandleListFeeds)
 			r.Post("/feeds", feedHandler.HandleCreateFeed)
 			r.Get("/feeds/{id}", feedHandler.HandleGetFeed)
@@ -897,6 +928,9 @@ func main() {
 
 	// Stop the feed syncer
 	feedSyncer.Stop()
+
+	// Stop the instruction library syncer
+	instructionSyncer.Stop()
 
 	// Stop MaxMind refresh
 	if maxmindManager != nil {

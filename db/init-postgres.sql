@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     throttle_field VARCHAR(255),
     labels TEXT[] DEFAULT '{}',
     "references" TEXT[] DEFAULT '{}',
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     updated_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS webhook_actions (
     retry_count INTEGER DEFAULT 3,
     include_alert_link BOOLEAN DEFAULT true,
     enabled BOOLEAN DEFAULT true,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -228,7 +228,7 @@ CREATE TABLE IF NOT EXISTS fractals (
     description TEXT,
     is_default BOOLEAN DEFAULT FALSE,
     is_system BOOLEAN DEFAULT FALSE,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
 
@@ -287,7 +287,7 @@ CREATE TABLE IF NOT EXISTS groups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL UNIQUE,
     description TEXT DEFAULT '',
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -303,7 +303,7 @@ CREATE TRIGGER update_groups_updated_at BEFORE UPDATE ON groups
 CREATE TABLE IF NOT EXISTS group_members (
     group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     username VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-    added_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    added_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     added_at TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (group_id, username)
 );
@@ -319,7 +319,7 @@ CREATE TABLE IF NOT EXISTS fractal_permissions (
     username VARCHAR(50) REFERENCES users(username) ON DELETE CASCADE,
     group_id UUID REFERENCES groups(id) ON DELETE CASCADE,
     role VARCHAR(20) NOT NULL CHECK (role IN ('viewer', 'analyst', 'admin')),
-    granted_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    granted_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     CONSTRAINT exactly_one_grantee CHECK (
@@ -361,7 +361,7 @@ CREATE TABLE IF NOT EXISTS fractal_actions (
 
     -- Status and metadata
     enabled BOOLEAN DEFAULT true,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -406,7 +406,7 @@ CREATE TABLE IF NOT EXISTS dictionaries (
     columns JSONB NOT NULL DEFAULT '[]',  -- Array of {name, type} objects
     row_count BIGINT DEFAULT 0,
     is_global BOOLEAN NOT NULL DEFAULT false,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     UNIQUE(fractal_id, name)
@@ -428,7 +428,7 @@ CREATE TABLE IF NOT EXISTS dictionary_actions (
     dictionary_name VARCHAR(255) NOT NULL DEFAULT '',  -- Target dictionary name (auto-created if missing)
     max_logs_per_trigger INTEGER DEFAULT 1000,
     enabled BOOLEAN DEFAULT true,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -494,7 +494,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
     -- Index and user relationships
     fractal_id UUID NOT NULL REFERENCES fractals(id) ON DELETE CASCADE,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
 
     -- Expiration and status
     expires_at TIMESTAMP,                       -- NULL = never expires
@@ -537,7 +537,7 @@ CREATE TABLE IF NOT EXISTS notebooks (
     max_results_per_section INTEGER DEFAULT 1000,
     fractal_id UUID NOT NULL REFERENCES fractals(id) ON DELETE CASCADE,
     variables JSONB DEFAULT '[]',
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -609,7 +609,7 @@ CREATE TABLE IF NOT EXISTS dashboards (
     time_range_end TIMESTAMP,
     fractal_id UUID NOT NULL REFERENCES fractals(id) ON DELETE CASCADE,
     variables JSONB DEFAULT '[]',
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -661,7 +661,7 @@ CREATE TABLE IF NOT EXISTS dictionaries (
     columns JSONB NOT NULL DEFAULT '[]',
     row_count BIGINT DEFAULT 0,
     is_global BOOLEAN NOT NULL DEFAULT false,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     UNIQUE(fractal_id, name)
@@ -684,7 +684,7 @@ CREATE TABLE IF NOT EXISTS dictionary_actions (
     dictionary_name VARCHAR(255) NOT NULL DEFAULT '',
     max_logs_per_trigger INTEGER DEFAULT 1000,
     enabled BOOLEAN DEFAULT true,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -743,6 +743,32 @@ DROP TRIGGER IF EXISTS update_prisms_updated_at ON prisms;
 CREATE TRIGGER update_prisms_updated_at BEFORE UPDATE ON prisms
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Per-prism permissions for users and groups (mirrors fractal_permissions)
+CREATE TABLE IF NOT EXISTS prism_permissions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    prism_id UUID NOT NULL REFERENCES prisms(id) ON DELETE CASCADE,
+    username VARCHAR(50) REFERENCES users(username) ON DELETE CASCADE,
+    group_id UUID REFERENCES groups(id) ON DELETE CASCADE,
+    role VARCHAR(20) NOT NULL CHECK (role IN ('viewer', 'analyst', 'admin')),
+    granted_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT prism_exactly_one_grantee CHECK (
+        (username IS NOT NULL AND group_id IS NULL) OR
+        (username IS NULL AND group_id IS NOT NULL)
+    ),
+    UNIQUE(prism_id, username),
+    UNIQUE(prism_id, group_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prism_permissions_prism_id ON prism_permissions(prism_id);
+CREATE INDEX IF NOT EXISTS idx_prism_permissions_username ON prism_permissions(username) WHERE username IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_prism_permissions_group_id ON prism_permissions(group_id) WHERE group_id IS NOT NULL;
+
+DROP TRIGGER IF EXISTS update_prism_permissions_updated_at ON prism_permissions;
+CREATE TRIGGER update_prism_permissions_updated_at BEFORE UPDATE ON prism_permissions
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- ============================
 -- Chat System Tables
 -- ============================
@@ -751,7 +777,7 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     fractal_id UUID NOT NULL REFERENCES fractals(id) ON DELETE CASCADE,
     title VARCHAR(255) NOT NULL DEFAULT 'New conversation',
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -787,21 +813,25 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS schedule_cron VARCHAR(100) DEFAULT N
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS query_window_seconds INTEGER DEFAULT NULL;
 
 -- Extend scoped feature tables to support prism ownership
-ALTER TABLE alerts       ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
-ALTER TABLE notebooks    ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
-ALTER TABLE dashboards   ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
-ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE alerts        ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE notebooks     ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE dashboards    ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE dictionaries  ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
 
 -- Allow fractal_id to be null for prism-owned rows (existing rows keep their fractal_id)
-ALTER TABLE alerts       ALTER COLUMN fractal_id DROP NOT NULL;
-ALTER TABLE notebooks    ALTER COLUMN fractal_id DROP NOT NULL;
-ALTER TABLE dashboards   ALTER COLUMN fractal_id DROP NOT NULL;
-ALTER TABLE dictionaries ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE alerts        ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE notebooks     ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE dashboards    ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE dictionaries  ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE saved_queries ALTER COLUMN fractal_id DROP NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_alerts_prism_id       ON alerts(prism_id)       WHERE prism_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_notebooks_prism_id    ON notebooks(prism_id)    WHERE prism_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_dashboards_prism_id   ON dashboards(prism_id)   WHERE prism_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_dictionaries_prism_id ON dictionaries(prism_id) WHERE prism_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_alerts_prism_id        ON alerts(prism_id)        WHERE prism_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_notebooks_prism_id     ON notebooks(prism_id)     WHERE prism_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dashboards_prism_id    ON dashboards(prism_id)    WHERE prism_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dictionaries_prism_id  ON dictionaries(prism_id)  WHERE prism_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_saved_queries_prism_id ON saved_queries(prism_id) WHERE prism_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_queries_prism_name ON saved_queries(prism_id, name) WHERE prism_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionaries_prism_name ON dictionaries(prism_id, name) WHERE prism_id IS NOT NULL;
 
 -- Global dictionaries: available to all fractals/prisms
@@ -819,7 +849,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_presence_conversation_id ON chat_presence(co
 CREATE INDEX IF NOT EXISTS idx_chat_presence_last_seen ON chat_presence(last_seen_at);
 
 -- ============================
--- Chat Instructions
+-- Chat Instructions (legacy, kept for migration compatibility)
 -- ============================
 
 CREATE TABLE IF NOT EXISTS chat_instructions (
@@ -828,7 +858,7 @@ CREATE TABLE IF NOT EXISTS chat_instructions (
     name VARCHAR(255) NOT NULL,
     content TEXT NOT NULL DEFAULT '',
     is_default BOOLEAN NOT NULL DEFAULT false,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -842,6 +872,90 @@ CREATE TRIGGER update_chat_instructions_updated_at BEFORE UPDATE ON chat_instruc
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS instruction_id UUID REFERENCES chat_instructions(id) ON DELETE SET NULL;
+
+-- ============================
+-- Instruction Libraries
+-- ============================
+
+CREATE TABLE IF NOT EXISTS instruction_libraries (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    is_default BOOLEAN NOT NULL DEFAULT false,
+    fractal_id UUID REFERENCES fractals(id) ON DELETE CASCADE,
+    prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE,
+    source VARCHAR(20) NOT NULL DEFAULT 'manual',
+    repo_url TEXT NOT NULL DEFAULT '',
+    branch VARCHAR(255) NOT NULL DEFAULT 'main',
+    path TEXT NOT NULL DEFAULT '',
+    auth_token TEXT NOT NULL DEFAULT '',
+    sync_schedule VARCHAR(50) NOT NULL DEFAULT 'never',
+    last_synced_at TIMESTAMP,
+    last_sync_status TEXT NOT NULL DEFAULT '',
+    last_sync_page_count INTEGER NOT NULL DEFAULT 0,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT il_scope CHECK (
+        (fractal_id IS NOT NULL AND prism_id IS NULL) OR
+        (fractal_id IS NULL AND prism_id IS NOT NULL)
+    )
+);
+
+ALTER TABLE instruction_libraries ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'manual';
+ALTER TABLE instruction_libraries ADD COLUMN IF NOT EXISTS repo_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE instruction_libraries ADD COLUMN IF NOT EXISTS branch VARCHAR(255) NOT NULL DEFAULT 'main';
+ALTER TABLE instruction_libraries ADD COLUMN IF NOT EXISTS path TEXT NOT NULL DEFAULT '';
+ALTER TABLE instruction_libraries ADD COLUMN IF NOT EXISTS auth_token TEXT NOT NULL DEFAULT '';
+ALTER TABLE instruction_libraries ADD COLUMN IF NOT EXISTS sync_schedule VARCHAR(50) NOT NULL DEFAULT 'never';
+ALTER TABLE instruction_libraries ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMP;
+ALTER TABLE instruction_libraries ADD COLUMN IF NOT EXISTS last_sync_status TEXT NOT NULL DEFAULT '';
+ALTER TABLE instruction_libraries ADD COLUMN IF NOT EXISTS last_sync_page_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE instruction_libraries ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_il_default_fractal ON instruction_libraries(fractal_id) WHERE is_default = true;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_il_default_prism ON instruction_libraries(prism_id) WHERE is_default = true;
+CREATE INDEX IF NOT EXISTS idx_il_fractal ON instruction_libraries(fractal_id);
+CREATE INDEX IF NOT EXISTS idx_il_prism ON instruction_libraries(prism_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_il_name_scope ON instruction_libraries(name, COALESCE(fractal_id, prism_id));
+
+DROP TRIGGER IF EXISTS update_instruction_libraries_updated_at ON instruction_libraries;
+CREATE TRIGGER update_instruction_libraries_updated_at BEFORE UPDATE ON instruction_libraries
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TABLE IF NOT EXISTS instruction_pages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    library_id UUID NOT NULL REFERENCES instruction_libraries(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    always_include BOOLEAN NOT NULL DEFAULT false,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    source_path TEXT NOT NULL DEFAULT '',
+    source_hash TEXT NOT NULL DEFAULT '',
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT ip_unique_name UNIQUE (library_id, name)
+);
+
+ALTER TABLE instruction_pages ADD COLUMN IF NOT EXISTS source_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE instruction_pages ADD COLUMN IF NOT EXISTS source_hash TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_ip_library ON instruction_pages(library_id);
+
+DROP TRIGGER IF EXISTS update_instruction_pages_updated_at ON instruction_pages;
+CREATE TRIGGER update_instruction_pages_updated_at BEFORE UPDATE ON instruction_pages
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TABLE IF NOT EXISTS conversation_libraries (
+    conversation_id UUID NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    library_id UUID NOT NULL REFERENCES instruction_libraries(id) ON DELETE CASCADE,
+    PRIMARY KEY (conversation_id, library_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cl_conversation ON conversation_libraries(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_cl_library ON conversation_libraries(library_id);
 
 -- Presence tracking for dashboards
 CREATE TABLE IF NOT EXISTS dashboard_presence (
@@ -865,7 +979,7 @@ CREATE TABLE IF NOT EXISTS normalizers (
     field_mappings JSONB NOT NULL DEFAULT '[]',
     timestamp_fields JSONB NOT NULL DEFAULT '[]',
     is_default BOOLEAN NOT NULL DEFAULT false,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -924,7 +1038,7 @@ CREATE TABLE IF NOT EXISTS ingest_tokens (
     timestamp_fields JSONB DEFAULT '[]',
     is_active BOOLEAN DEFAULT true,
     is_default BOOLEAN DEFAULT false,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     last_used_at TIMESTAMP,
@@ -956,7 +1070,7 @@ CREATE TABLE IF NOT EXISTS saved_queries (
     query_text TEXT NOT NULL,
     tags TEXT[] DEFAULT '{}',
     fractal_id UUID NOT NULL REFERENCES fractals(id) ON DELETE CASCADE,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     UNIQUE(fractal_id, name)
@@ -983,7 +1097,7 @@ CREATE TABLE IF NOT EXISTS context_links (
     redirect_warning BOOLEAN DEFAULT true,
     enabled BOOLEAN DEFAULT true,
     is_default BOOLEAN DEFAULT false,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -1082,7 +1196,7 @@ CREATE TABLE IF NOT EXISTS archives (
     time_range_end TIMESTAMP,
     status VARCHAR(20) NOT NULL DEFAULT 'in_progress',
     error_message TEXT,
-    created_by VARCHAR(50) NOT NULL REFERENCES users(username),
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     archive_type VARCHAR(20) NOT NULL DEFAULT 'adhoc',
     format_version INTEGER NOT NULL DEFAULT 0,
@@ -1125,3 +1239,147 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions(username);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
+-- ============================
+-- Fix FK constraints: created_by/added_by/granted_by on shared resources
+-- should SET NULL on user deletion, not CASCADE (which would destroy shared data).
+-- ============================
+DO $$ BEGIN
+  -- fractals.created_by
+  ALTER TABLE fractals DROP CONSTRAINT IF EXISTS fractals_created_by_fkey;
+  ALTER TABLE fractals ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE fractals ADD CONSTRAINT fractals_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- alerts.created_by
+  ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_created_by_fkey;
+  ALTER TABLE alerts ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE alerts ADD CONSTRAINT alerts_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- webhook_actions.created_by
+  ALTER TABLE webhook_actions DROP CONSTRAINT IF EXISTS webhook_actions_created_by_fkey;
+  ALTER TABLE webhook_actions ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE webhook_actions ADD CONSTRAINT webhook_actions_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- groups.created_by
+  ALTER TABLE groups DROP CONSTRAINT IF EXISTS groups_created_by_fkey;
+  ALTER TABLE groups ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE groups ADD CONSTRAINT groups_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- group_members.added_by
+  ALTER TABLE group_members DROP CONSTRAINT IF EXISTS group_members_added_by_fkey;
+  ALTER TABLE group_members ALTER COLUMN added_by DROP NOT NULL;
+  ALTER TABLE group_members ADD CONSTRAINT group_members_added_by_fkey
+    FOREIGN KEY (added_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- fractal_permissions.granted_by
+  ALTER TABLE fractal_permissions DROP CONSTRAINT IF EXISTS fractal_permissions_granted_by_fkey;
+  ALTER TABLE fractal_permissions ALTER COLUMN granted_by DROP NOT NULL;
+  ALTER TABLE fractal_permissions ADD CONSTRAINT fractal_permissions_granted_by_fkey
+    FOREIGN KEY (granted_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- fractal_actions.created_by
+  ALTER TABLE fractal_actions DROP CONSTRAINT IF EXISTS fractal_actions_created_by_fkey;
+  ALTER TABLE fractal_actions ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE fractal_actions ADD CONSTRAINT fractal_actions_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- dictionaries.created_by
+  ALTER TABLE dictionaries DROP CONSTRAINT IF EXISTS dictionaries_created_by_fkey;
+  ALTER TABLE dictionaries ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE dictionaries ADD CONSTRAINT dictionaries_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- dictionary_actions.created_by
+  ALTER TABLE dictionary_actions DROP CONSTRAINT IF EXISTS dictionary_actions_created_by_fkey;
+  ALTER TABLE dictionary_actions ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE dictionary_actions ADD CONSTRAINT dictionary_actions_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- api_keys.created_by
+  ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_created_by_fkey;
+  ALTER TABLE api_keys ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE api_keys ADD CONSTRAINT api_keys_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- notebooks.created_by
+  ALTER TABLE notebooks DROP CONSTRAINT IF EXISTS notebooks_created_by_fkey;
+  ALTER TABLE notebooks ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE notebooks ADD CONSTRAINT notebooks_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- dashboards.created_by
+  ALTER TABLE dashboards DROP CONSTRAINT IF EXISTS dashboards_created_by_fkey;
+  ALTER TABLE dashboards ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE dashboards ADD CONSTRAINT dashboards_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- normalizers.created_by
+  ALTER TABLE normalizers DROP CONSTRAINT IF EXISTS normalizers_created_by_fkey;
+  ALTER TABLE normalizers ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE normalizers ADD CONSTRAINT normalizers_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- ingest_tokens.created_by
+  ALTER TABLE ingest_tokens DROP CONSTRAINT IF EXISTS ingest_tokens_created_by_fkey;
+  ALTER TABLE ingest_tokens ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE ingest_tokens ADD CONSTRAINT ingest_tokens_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- saved_queries.created_by
+  ALTER TABLE saved_queries DROP CONSTRAINT IF EXISTS saved_queries_created_by_fkey;
+  ALTER TABLE saved_queries ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE saved_queries ADD CONSTRAINT saved_queries_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- context_links.created_by
+  ALTER TABLE context_links DROP CONSTRAINT IF EXISTS context_links_created_by_fkey;
+  ALTER TABLE context_links ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE context_links ADD CONSTRAINT context_links_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- chat_conversations.created_by
+  ALTER TABLE chat_conversations DROP CONSTRAINT IF EXISTS chat_conversations_created_by_fkey;
+  ALTER TABLE chat_conversations ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE chat_conversations ADD CONSTRAINT chat_conversations_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- chat_instructions.created_by
+  ALTER TABLE chat_instructions DROP CONSTRAINT IF EXISTS chat_instructions_created_by_fkey;
+  ALTER TABLE chat_instructions ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE chat_instructions ADD CONSTRAINT chat_instructions_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- instruction_libraries.created_by
+  ALTER TABLE instruction_libraries DROP CONSTRAINT IF EXISTS instruction_libraries_created_by_fkey;
+  ALTER TABLE instruction_libraries ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE instruction_libraries ADD CONSTRAINT instruction_libraries_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- instruction_pages.created_by
+  ALTER TABLE instruction_pages DROP CONSTRAINT IF EXISTS instruction_pages_created_by_fkey;
+  ALTER TABLE instruction_pages ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE instruction_pages ADD CONSTRAINT instruction_pages_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- archives.created_by
+  ALTER TABLE archives DROP CONSTRAINT IF EXISTS archives_created_by_fkey;
+  ALTER TABLE archives ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE archives ADD CONSTRAINT archives_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- alert_feeds.created_by (already SET NULL, ensure constraint name matches)
+  ALTER TABLE alert_feeds DROP CONSTRAINT IF EXISTS alert_feeds_created_by_fkey;
+  ALTER TABLE alert_feeds ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE alert_feeds ADD CONSTRAINT alert_feeds_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+
+  -- prisms.created_by (ensure constraint is correct for pre-existing installs)
+  ALTER TABLE prisms DROP CONSTRAINT IF EXISTS prisms_created_by_fkey;
+  ALTER TABLE prisms ALTER COLUMN created_by DROP NOT NULL;
+  ALTER TABLE prisms ADD CONSTRAINT prisms_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+END $$;

@@ -6,7 +6,8 @@
 const Chat = {
     currentConversationId: null,
     conversations: [],
-    instructions: [],
+    instructionLibraries: [],
+    currentChatSubTab: 'chat',
     isStreaming: false,
     currentReader: null,
     loadingInterval: null,
@@ -38,6 +39,26 @@ const Chat = {
         if (this.initialized) return;
         this.initialized = true;
         this.bindEvents();
+    },
+
+    switchSubTab(tab) {
+        this.currentChatSubTab = tab;
+        const tabBar = document.getElementById('chatSubTabs');
+        if (tabBar) {
+            tabBar.querySelectorAll('.alerts-sub-tab').forEach(btn => btn.classList.remove('active'));
+            const activeBtn = tabBar.querySelector(`.alerts-sub-tab[data-subtab="${tab}"]`);
+            if (activeBtn) activeBtn.classList.add('active');
+        }
+        const chatPanel = document.getElementById('chatSubTabChat');
+        const libPanel = document.getElementById('chatSubTabLibraries');
+        if (tab === 'chat') {
+            if (chatPanel) chatPanel.style.display = '';
+            if (libPanel) libPanel.style.display = 'none';
+        } else {
+            if (chatPanel) chatPanel.style.display = 'none';
+            if (libPanel) libPanel.style.display = '';
+            if (window.InstructionLibraries) InstructionLibraries.show();
+        }
     },
 
     bindEvents() {
@@ -112,7 +133,7 @@ const Chat = {
         this.destroyCharts();
         this.currentConversationId = null;
         this.conversations = [];
-        this.instructions = [];
+        this.instructionLibraries = [];
         this.showEmptyState();
         if (window.FractalContext?.currentFractal) {
             this.loadConversations();
@@ -229,9 +250,8 @@ const Chat = {
         const titleEl = document.getElementById('chatConversationTitle');
         if (titleEl && conv) titleEl.textContent = conv.title;
 
-        // Sync instruction selector
-        const sel = document.getElementById('chatInstructionSelect');
-        if (sel && conv) sel.value = conv.instruction_id || '';
+        // Sync library selector with conversation
+        this.syncLibrarySelect();
     },
 
     renderConversationList() {
@@ -1040,11 +1060,11 @@ const Chat = {
 
     async loadInstructions() {
         try {
-            const res = await HttpUtils.safeFetch('/api/v1/chat/instructions', { credentials: 'include' });
-            this.instructions = res.data?.instructions || [];
+            const res = await HttpUtils.safeFetch('/api/v1/instruction-libraries', { credentials: 'include' });
+            this.instructionLibraries = res.data || [];
             this.renderInstructionSelect();
         } catch (err) {
-            console.error('[Chat] Failed to load instructions:', err);
+            console.error('[Chat] Failed to load instruction libraries:', err);
         }
     },
 
@@ -1052,43 +1072,58 @@ const Chat = {
         const sel = document.getElementById('chatInstructionSelect');
         if (!sel) return;
 
-        const defaultInst = this.instructions.find(i => i.is_default);
-        const defaultLabel = defaultInst ? `Default (${defaultInst.name})` : 'Default';
+        const libs = this.instructionLibraries || [];
+        const defaultLib = libs.find(l => l.is_default);
+        const defaultLabel = defaultLib ? `Default (${defaultLib.name})` : 'Default (none)';
 
         sel.innerHTML = `<option value="">${Utils.escapeHtml(defaultLabel)}</option>` +
-            this.instructions.map(inst =>
-                `<option value="${Utils.escapeHtml(inst.id)}">${Utils.escapeHtml(inst.name)}${inst.is_default ? ' *' : ''}</option>`
+            libs.map(lib =>
+                `<option value="${Utils.escapeHtml(lib.id)}">${Utils.escapeHtml(lib.name)} (${lib.page_count} pages)${lib.is_default ? ' *' : ''}</option>`
             ).join('');
 
-        // Sync with current conversation
-        const conv = this.conversations.find(c => c.id === this.currentConversationId);
-        if (conv) sel.value = conv.instruction_id || '';
+        // Sync with current conversation libraries
+        this.syncLibrarySelect();
+    },
+
+    async syncLibrarySelect() {
+        const sel = document.getElementById('chatInstructionSelect');
+        if (!sel || !this.currentConversationId) return;
+
+        try {
+            const res = await HttpUtils.safeFetch(`/api/v1/chat/conversations/${this.currentConversationId}/libraries`, { credentials: 'include' });
+            const libs = res.data || [];
+            if (libs.length > 0) {
+                sel.value = libs[0].id;
+            } else {
+                sel.value = '';
+            }
+        } catch (err) {
+            sel.value = '';
+        }
     },
 
     async onInstructionSelectChange() {
         if (!this.currentConversationId) return;
         const sel = document.getElementById('chatInstructionSelect');
         if (!sel) return;
-        const instructionId = sel.value || null;
+        const libraryId = sel.value;
+        const libraryIds = libraryId ? [libraryId] : [];
 
         try {
-            await HttpUtils.safeFetch(`/api/v1/chat/conversations/${this.currentConversationId}/instruction`, {
+            await HttpUtils.safeFetch(`/api/v1/chat/conversations/${this.currentConversationId}/libraries`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ instruction_id: instructionId }),
+                body: JSON.stringify({ library_ids: libraryIds }),
                 credentials: 'include',
             });
-            // Update local state
-            const conv = this.conversations.find(c => c.id === this.currentConversationId);
-            if (conv) conv.instruction_id = instructionId;
         } catch (err) {
-            console.error('[Chat] Failed to set instruction:', err);
-            if (window.Toast) Toast.error('Chat', 'Failed to update instruction');
+            console.error('[Chat] Failed to set conversation libraries:', err);
+            if (window.Toast) Toast.error('Chat', 'Failed to update libraries');
         }
     },
 
     showInstructionsPanel() {
-        // Create panel overlay inside chat-main
+        // Create panel overlay inside chat-main showing the current library's pages
         const main = document.querySelector('.chat-main');
         if (!main) return;
 
@@ -1098,146 +1133,70 @@ const Chat = {
 
         const panel = document.createElement('div');
         panel.className = 'chat-instructions-panel';
+
+        // Find the selected library
+        const sel = document.getElementById('chatInstructionSelect');
+        const selectedId = sel?.value;
+        const libs = this.instructionLibraries || [];
+        const selectedLib = selectedId ? libs.find(l => l.id === selectedId) : libs.find(l => l.is_default);
+
+        let content = '';
+        if (!selectedLib) {
+            content = '<div class="chat-instructions-empty">No instruction library selected.<br>Create libraries in the Manage > Instructions tab.</div>';
+        } else {
+            content = `<div class="chat-instructions-list" id="chatInstructionsList"><div class="chat-instructions-empty">Loading pages...</div></div>`;
+        }
+
         panel.innerHTML = `
             <div class="chat-instructions-panel-header">
-                <h3>Instructions</h3>
+                <h3>Instruction Library${selectedLib ? ': ' + Utils.escapeHtml(selectedLib.name) : ''}</h3>
                 <button class="chat-instructions-close-btn" title="Close">&times;</button>
             </div>
-            <div class="chat-instructions-list" id="chatInstructionsList"></div>
+            ${content}
             <div class="chat-instructions-panel-footer">
-                <button class="chat-instructions-add-btn" id="chatAddInstructionBtn">+ New instruction</button>
+                <button class="chat-instructions-add-btn" id="chatManageLibrariesBtn">Manage Libraries</button>
             </div>
         `;
 
         main.appendChild(panel);
         panel.querySelector('.chat-instructions-close-btn').addEventListener('click', () => panel.remove());
-        panel.querySelector('#chatAddInstructionBtn').addEventListener('click', () => this.showInstructionEditor(panel));
-        this.renderInstructionCards(panel);
+        panel.querySelector('#chatManageLibrariesBtn').addEventListener('click', () => {
+            panel.remove();
+            this.switchSubTab('libraries');
+        });
+
+        if (selectedLib) {
+            this.loadLibraryPages(panel, selectedLib.id);
+        }
     },
 
-    renderInstructionCards(panel) {
+    async loadLibraryPages(panel, libraryId) {
         const list = panel.querySelector('#chatInstructionsList');
         if (!list) return;
-
-        if (this.instructions.length === 0) {
-            list.innerHTML = '<div class="chat-instructions-empty">No custom instructions yet.<br>Create one to customize how the AI assistant behaves for this fractal.</div>';
-            return;
-        }
-
-        list.innerHTML = this.instructions.map(inst => `
-            <div class="chat-instruction-card" data-id="${Utils.escapeHtml(inst.id)}">
-                <div class="chat-instruction-card-header">
-                    <span class="chat-instruction-card-name">
-                        ${Utils.escapeHtml(inst.name)}
-                        ${inst.is_default ? '<span class="chat-instruction-default-badge">default</span>' : ''}
-                    </span>
-                    <div class="chat-instruction-card-actions">
-                        <button class="edit-btn" title="Edit">Edit</button>
-                        <button class="danger delete-btn" title="Delete">Delete</button>
-                    </div>
-                </div>
-                <div class="chat-instruction-card-preview">${Utils.escapeHtml(inst.content || '(empty)')}</div>
-            </div>
-        `).join('');
-
-        list.querySelectorAll('.edit-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const id = e.target.closest('.chat-instruction-card').dataset.id;
-                const inst = this.instructions.find(i => i.id === id);
-                if (inst) this.showInstructionEditor(panel, inst);
-            });
-        });
-
-        list.querySelectorAll('.delete-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const id = e.target.closest('.chat-instruction-card').dataset.id;
-                this.deleteInstruction(panel, id);
-            });
-        });
-    },
-
-    showInstructionEditor(panel, existing = null) {
-        const list = panel.querySelector('#chatInstructionsList');
-        const footer = panel.querySelector('.chat-instructions-panel-footer');
-        if (!list) return;
-
-        if (footer) footer.style.display = 'none';
-
-        list.innerHTML = `
-            <div class="chat-instruction-editor">
-                <label>Name</label>
-                <input type="text" id="instEditorName" placeholder="e.g. Security Analyst" value="${existing ? Utils.escapeHtml(existing.name) : ''}" />
-                <label>Instructions</label>
-                <textarea id="instEditorContent" placeholder="Tell the AI how to behave, what to focus on, what format to use...">${existing ? Utils.escapeHtml(existing.content) : ''}</textarea>
-                <label class="chat-instruction-default-toggle">
-                    <input type="checkbox" id="instEditorDefault" ${existing?.is_default ? 'checked' : ''} />
-                    Use as default for new conversations
-                </label>
-                <div class="chat-instruction-editor-actions">
-                    <button class="chat-instruction-cancel-btn" id="instEditorCancel">Cancel</button>
-                    <button class="chat-instruction-save-btn" id="instEditorSave">${existing ? 'Save' : 'Create'}</button>
-                </div>
-            </div>
-        `;
-
-        panel.querySelector('#instEditorCancel').addEventListener('click', () => {
-            if (footer) footer.style.display = '';
-            this.renderInstructionCards(panel);
-        });
-
-        panel.querySelector('#instEditorSave').addEventListener('click', () => {
-            this.saveInstruction(panel, existing?.id);
-        });
-    },
-
-    async saveInstruction(panel, existingId = null) {
-        const name = document.getElementById('instEditorName')?.value.trim();
-        const content = document.getElementById('instEditorContent')?.value.trim();
-        const isDefault = document.getElementById('instEditorDefault')?.checked || false;
-
-        if (!name) {
-            if (window.Toast) Toast.error('Chat', 'Instruction name is required');
-            return;
-        }
 
         try {
-            if (existingId) {
-                await HttpUtils.safeFetch(`/api/v1/chat/instructions/${existingId}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, content, is_default: isDefault }),
-                    credentials: 'include',
-                });
-            } else {
-                await HttpUtils.safeFetch('/api/v1/chat/instructions', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, content, is_default: isDefault }),
-                    credentials: 'include',
-                });
+            const res = await HttpUtils.safeFetch(`/api/v1/instruction-libraries/${libraryId}/pages`, { credentials: 'include' });
+            const pages = res.data || [];
+
+            if (pages.length === 0) {
+                list.innerHTML = '<div class="chat-instructions-empty">No pages in this library yet.</div>';
+                return;
             }
-            await this.loadInstructions();
-            const footer = panel.querySelector('.chat-instructions-panel-footer');
-            if (footer) footer.style.display = '';
-            this.renderInstructionCards(panel);
-        } catch (err) {
-            console.error('[Chat] Failed to save instruction:', err);
-            if (window.Toast) Toast.error('Chat', 'Failed to save instruction');
-        }
-    },
 
-    async deleteInstruction(panel, id) {
-        if (!confirm('Delete this instruction?')) return;
-        try {
-            await HttpUtils.safeFetch(`/api/v1/chat/instructions/${id}`, {
-                method: 'DELETE',
-                credentials: 'include',
-            });
-            await this.loadInstructions();
-            this.renderInstructionCards(panel);
+            list.innerHTML = pages.map(page => `
+                <div class="chat-instruction-card">
+                    <div class="chat-instruction-card-header">
+                        <span class="chat-instruction-card-name">
+                            ${Utils.escapeHtml(page.name)}
+                            ${page.always_include ? '<span class="chat-instruction-default-badge">pinned</span>' : '<span class="chat-instruction-ondemand-badge">on-demand</span>'}
+                        </span>
+                    </div>
+                    ${page.description ? `<div class="chat-instruction-card-preview">${Utils.escapeHtml(page.description)}</div>` : ''}
+                </div>
+            `).join('');
         } catch (err) {
-            console.error('[Chat] Failed to delete instruction:', err);
-            if (window.Toast) Toast.error('Chat', 'Failed to delete instruction');
+            console.error('[Chat] Failed to load library pages:', err);
+            list.innerHTML = '<div class="chat-instructions-empty">Failed to load pages.</div>';
         }
     },
 

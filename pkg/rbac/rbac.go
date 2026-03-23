@@ -60,6 +60,14 @@ func RoleFromContext(ctx context.Context) Role {
 	return RoleNone
 }
 
+// PrismRoleFromContext extracts the prism role from a request context.
+func PrismRoleFromContext(ctx context.Context) Role {
+	if r, ok := ctx.Value("prism_role").(string); ok {
+		return Role(r)
+	}
+	return RoleNone
+}
+
 // Resolver loads RBAC data from PostgreSQL.
 type Resolver struct {
 	pg *storage.PostgresClient
@@ -163,6 +171,109 @@ func (r *Resolver) ResolveRole(ctx context.Context, user *storage.User, fractalI
 		return RoleNone
 	}
 	role, err := r.ResolveFractalRole(ctx, user.Username, fractalID)
+	if err != nil {
+		return RoleNone
+	}
+	return role
+}
+
+// PrismAccess pairs a prism ID with the user's effective role.
+type PrismAccess struct {
+	PrismID string `json:"prism_id"`
+	Role    Role   `json:"role"`
+}
+
+// ResolvePrismRole returns the effective role for a user on a prism.
+// Checks both direct and group-based grants, returning the highest.
+func (r *Resolver) ResolvePrismRole(ctx context.Context, username, prismID string) (Role, error) {
+	var role string
+	err := r.pg.QueryRow(ctx, `
+		SELECT COALESCE(
+			(SELECT role FROM (
+				SELECT role, CASE role
+					WHEN 'admin' THEN 3
+					WHEN 'analyst' THEN 2
+					WHEN 'viewer' THEN 1
+					ELSE 0
+				END AS weight
+				FROM prism_permissions
+				WHERE prism_id = $1 AND username = $2
+
+				UNION ALL
+
+				SELECT pp.role, CASE pp.role
+					WHEN 'admin' THEN 3
+					WHEN 'analyst' THEN 2
+					WHEN 'viewer' THEN 1
+					ELSE 0
+				END AS weight
+				FROM prism_permissions pp
+				JOIN group_members gm ON gm.group_id = pp.group_id
+				WHERE pp.prism_id = $1 AND gm.username = $2
+			) sub
+			ORDER BY weight DESC
+			LIMIT 1),
+		'')
+	`, prismID, username).Scan(&role)
+	if err != nil {
+		return RoleNone, err
+	}
+	return Role(role), nil
+}
+
+// GetAccessiblePrisms returns all prism IDs the user has any access to,
+// with their effective role on each.
+func (r *Resolver) GetAccessiblePrisms(ctx context.Context, username string) ([]PrismAccess, error) {
+	rows, err := r.pg.Query(ctx, `
+		SELECT prism_id,
+			(ARRAY['', 'viewer', 'analyst', 'admin'])[
+				MAX(CASE role
+					WHEN 'admin' THEN 4
+					WHEN 'analyst' THEN 3
+					WHEN 'viewer' THEN 2
+					ELSE 1
+				END)
+			] AS effective_role
+		FROM (
+			SELECT prism_id, role FROM prism_permissions WHERE username = $1
+			UNION ALL
+			SELECT pp.prism_id, pp.role
+			FROM prism_permissions pp
+			JOIN group_members gm ON gm.group_id = pp.group_id
+			WHERE gm.username = $1
+		) perms
+		GROUP BY prism_id
+	`, username)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []PrismAccess
+	for rows.Next() {
+		var pa PrismAccess
+		var roleStr string
+		if err := rows.Scan(&pa.PrismID, &roleStr); err != nil {
+			return nil, err
+		}
+		pa.Role = Role(roleStr)
+		result = append(result, pa)
+	}
+	return result, rows.Err()
+}
+
+// ResolvePrismRole resolves a user's role on a specific prism, handling tenant admin bypass.
+func (r *Resolver) ResolvePrismRoleWithAdmin(ctx context.Context, user *storage.User, prismID string) Role {
+	if user == nil {
+		return RoleNone
+	}
+	if user.IsAdmin {
+		return RoleAdmin
+	}
+	if prismID == "" {
+		return RoleNone
+	}
+	role, err := r.ResolvePrismRole(ctx, user.Username, prismID)
 	if err != nil {
 		return RoleNone
 	}

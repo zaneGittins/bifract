@@ -18,10 +18,21 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// PrismMemberResolver resolves prism member fractal IDs.
+type PrismMemberResolver interface {
+	GetMemberFractalIDs(ctx context.Context, prismID string) ([]string, error)
+}
+
 type CommentHandler struct {
 	pg             *storage.PostgresClient
 	ch             *storage.ClickHouseClient
 	fractalManager *fractals.Manager
+	prismResolver  PrismMemberResolver
+}
+
+// SetPrismResolver sets the prism member resolver for prism context support.
+func (h *CommentHandler) SetPrismResolver(resolver PrismMemberResolver) {
+	h.prismResolver = resolver
 }
 
 type CreateCommentRequest struct {
@@ -65,7 +76,8 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 	user := r.Context().Value("user").(*storage.User)
 
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
@@ -449,16 +461,8 @@ func (h *CommentHandler) HandleGetCommentedLogs(w http.ResponseWriter, r *http.R
 	})
 }
 
-// HandleGetFlatComments returns individual comments (not grouped by log) for the current fractal.
+// HandleGetFlatComments returns individual comments (not grouped by log) for the current fractal or prism.
 func (h *CommentHandler) HandleGetFlatComments(w http.ResponseWriter, r *http.Request) {
-	selectedFractal, err := h.getSelectedFractal(r)
-	if err != nil {
-		log.Printf("[Comments] Failed to get selected fractal: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to determine fractal context"})
-		return
-	}
-
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
 
@@ -476,7 +480,28 @@ func (h *CommentHandler) HandleGetFlatComments(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	comments, total, err := h.pg.GetAllCommentsByFractal(r.Context(), selectedFractal, limit, offset)
+	// In prism context, fetch comments across all member fractals
+	var comments []storage.Comment
+	var total int
+	var err error
+
+	if prismID, _ := r.Context().Value("selected_prism").(string); prismID != "" && h.prismResolver != nil {
+		fractalIDs, resolveErr := h.prismResolver.GetMemberFractalIDs(r.Context(), prismID)
+		if resolveErr != nil || len(fractalIDs) == 0 {
+			comments = []storage.Comment{}
+		} else {
+			comments, total, err = h.pg.GetAllCommentsByFractalIDs(r.Context(), fractalIDs, limit, offset)
+		}
+	} else {
+		selectedFractal, fractalErr := h.getSelectedFractal(r)
+		if fractalErr != nil {
+			log.Printf("[Comments] Failed to get selected fractal: %v", fractalErr)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to determine fractal context"})
+			return
+		}
+		comments, total, err = h.pg.GetAllCommentsByFractal(r.Context(), selectedFractal, limit, offset)
+	}
 	if err != nil {
 		log.Printf("[Comments] Failed to get flat comments: %v", err)
 		w.Header().Set("Content-Type", "application/json")
@@ -509,7 +534,8 @@ func (h *CommentHandler) HandleBulkAddTag(w http.ResponseWriter, r *http.Request
 	}
 
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Analyst access required"})
@@ -564,7 +590,8 @@ func (h *CommentHandler) HandleBulkRemoveTag(w http.ResponseWriter, r *http.Requ
 	}
 
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Analyst access required"})
@@ -620,7 +647,8 @@ func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http
 	}
 
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Analyst access required"})
@@ -698,7 +726,8 @@ func (h *CommentHandler) HandleDeleteCommentsByLogID(w http.ResponseWriter, r *h
 	}
 
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAdmin) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAdmin) && !rbac.HasAccess(user, prismRole, rbac.RoleAdmin) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Admin access required"})

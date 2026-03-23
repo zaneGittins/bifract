@@ -21,7 +21,7 @@ func NewStorage(pg *storage.PostgresClient) *Storage {
 
 // archiveColumns is the standard column list used in SELECT queries.
 const archiveColumns = `id, fractal_id, filename, storage_type, storage_path, size_bytes, log_count,
-	time_range_start, time_range_end, status, error_message, created_by, created_at, archive_type,
+	time_range_start, time_range_end, status, error_message, COALESCE(created_by, ''), created_at, archive_type,
 	format_version, archive_end_ts, cursor_ts, cursor_id, COALESCE(checksum, ''),
 	restore_lines_sent, COALESCE(restore_error, '')`
 

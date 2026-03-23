@@ -92,7 +92,7 @@ func (s *Storage) CreateToken(ctx context.Context, req CreateTokenRequest, fract
 			parser_type, normalizer_id,
 			(SELECT n.name FROM normalizers n WHERE n.id = ingest_tokens.normalizer_id),
 			timestamp_fields, is_active, is_default,
-			created_by, created_at, updated_at, last_used_at, usage_count, log_count
+			COALESCE(created_by, ''), created_at, updated_at, last_used_at, usage_count, log_count
 	`, req.Name, req.Description, prefix, tokenHash, fullToken, fractalID,
 		parserType, normalizerID, string(tsFieldsJSON), username,
 	).Scan(
@@ -136,7 +136,7 @@ func (s *Storage) CreateDefaultToken(ctx context.Context, fractalID, fractalName
 			parser_type, normalizer_id,
 			(SELECT n.name FROM normalizers n WHERE n.id = ingest_tokens.normalizer_id),
 			timestamp_fields, is_active, is_default,
-			created_by, created_at, updated_at, last_used_at, usage_count, log_count
+			COALESCE(created_by, ''), created_at, updated_at, last_used_at, usage_count, log_count
 	`, "Default", fmt.Sprintf("Default ingest token for %s", fractalName),
 		prefix, tokenHash, fullToken, fractalID, defaultNormID, username,
 	).Scan(
@@ -175,7 +175,11 @@ func (s *Storage) EnsureDefaultTokens(ctx context.Context, fm *fractals.Manager)
 			continue
 		}
 		if count == 0 {
-			_, _, err := s.CreateDefaultToken(ctx, f.ID, f.Name, f.CreatedBy)
+			creator := f.CreatedBy
+			if creator == "" {
+				creator = "admin"
+			}
+			_, _, err := s.CreateDefaultToken(ctx, f.ID, f.Name, creator)
 			if err != nil {
 				log.Printf("[IngestTokens] failed to create default token for fractal %s: %v", f.Name, err)
 			} else {
@@ -222,7 +226,7 @@ func (s *Storage) ListTokens(ctx context.Context, fractalID string) ([]IngestTok
 		SELECT t.id, t.name, t.description, t.token_prefix, t.token_value, t.fractal_id,
 			t.parser_type, t.normalizer_id, n.name,
 			t.timestamp_fields, t.is_active, t.is_default,
-			t.created_by, t.created_at, t.updated_at, t.last_used_at, t.usage_count, t.log_count
+			COALESCE(t.created_by, ''), t.created_at, t.updated_at, t.last_used_at, t.usage_count, t.log_count
 		FROM ingest_tokens t
 		LEFT JOIN normalizers n ON t.normalizer_id = n.id
 		WHERE t.fractal_id = $1
@@ -267,7 +271,7 @@ func (s *Storage) GetToken(ctx context.Context, tokenID, fractalID string) (*Ing
 		SELECT t.id, t.name, t.description, t.token_prefix, t.token_value, t.fractal_id,
 			t.parser_type, t.normalizer_id, n.name,
 			t.timestamp_fields, t.is_active, t.is_default,
-			t.created_by, t.created_at, t.updated_at, t.last_used_at, t.usage_count, t.log_count
+			COALESCE(t.created_by, ''), t.created_at, t.updated_at, t.last_used_at, t.usage_count, t.log_count
 		FROM ingest_tokens t
 		LEFT JOIN normalizers n ON t.normalizer_id = n.id
 		WHERE t.id = $1 AND t.fractal_id = $2

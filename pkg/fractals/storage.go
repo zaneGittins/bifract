@@ -30,7 +30,7 @@ func (s *Storage) CreateFractal(ctx context.Context, req CreateFractalRequest, c
 	query := `
 		INSERT INTO fractals (name, description, created_by)
 		VALUES ($1, $2, $3)
-		RETURNING id, name, description, is_default, is_system, created_by, created_at, updated_at,
+		RETURNING id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
 		          retention_days, archive_schedule, max_archives, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 	`
 
@@ -54,7 +54,7 @@ func (s *Storage) GetFractal(ctx context.Context, fractalID string) (*Fractal, e
 	fractal := &Fractal{}
 
 	query := `
-		SELECT id, name, description, is_default, is_system, created_by, created_at, updated_at,
+		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
 		       retention_days, archive_schedule, max_archives, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		WHERE id = $1
@@ -80,7 +80,7 @@ func (s *Storage) GetFractalByName(ctx context.Context, name string) (*Fractal, 
 	fractal := &Fractal{}
 
 	query := `
-		SELECT id, name, description, is_default, is_system, created_by, created_at, updated_at,
+		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
 		       retention_days, archive_schedule, max_archives, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		WHERE name = $1
@@ -106,7 +106,7 @@ func (s *Storage) GetDefaultFractal(ctx context.Context) (*Fractal, error) {
 	fractal := &Fractal{}
 
 	query := `
-		SELECT id, name, description, is_default, is_system, created_by, created_at, updated_at,
+		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
 		       retention_days, archive_schedule, max_archives, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		WHERE is_default = true
@@ -131,7 +131,7 @@ func (s *Storage) GetDefaultFractal(ctx context.Context) (*Fractal, error) {
 // ListFractals retrieves all fractals with optional filtering
 func (s *Storage) ListFractals(ctx context.Context) ([]*Fractal, error) {
 	query := `
-		SELECT id, name, description, is_default, is_system, created_by, created_at, updated_at,
+		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
 		       retention_days, archive_schedule, max_archives, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		ORDER BY is_default DESC, name ASC
@@ -168,7 +168,7 @@ func (s *Storage) UpdateFractal(ctx context.Context, fractalID string, req Updat
 		UPDATE fractals
 		SET name = $2, description = $3, updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, name, description, is_default, is_system, created_by, created_at, updated_at,
+		RETURNING id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
 		          retention_days, archive_schedule, max_archives, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 	`
 

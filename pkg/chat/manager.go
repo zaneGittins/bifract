@@ -16,6 +16,7 @@ import (
 	"github.com/lib/pq"
 
 	"bifract/pkg/fractals"
+	"bifract/pkg/instructions"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/parser"
 	"bifract/pkg/storage"
@@ -98,6 +99,7 @@ type Manager struct {
 	ch                  *storage.ClickHouseClient
 	fractalManager      *fractals.Manager
 	normalizerManager   *normalizers.Manager
+	instructionManager  *instructions.Manager
 	litellmURL          string
 	litellmKey          string
 	httpClient          *http.Client
@@ -122,26 +124,41 @@ func NewManager(
 	}
 }
 
+// SetInstructionManager sets the instruction library manager for AI context resolution.
+func (m *Manager) SetInstructionManager(im *instructions.Manager) {
+	m.instructionManager = im
+}
+
 // ---- Conversation CRUD ----
 
-func (m *Manager) CreateConversation(ctx context.Context, fractalID, title, username string, instructionID *string) (*Conversation, error) {
+func (m *Manager) CreateConversation(ctx context.Context, fractalID, title, username string, libraryIDs []string) (*Conversation, error) {
 	if title == "" {
 		title = "New conversation"
 	}
 	conv := &Conversation{}
 	err := m.pg.QueryRow(ctx, `
-		INSERT INTO chat_conversations (fractal_id, title, created_by, instruction_id)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, fractal_id, title, instruction_id, created_by, created_at, updated_at
-	`, fractalID, title, username, instructionID).Scan(
-		&conv.ID, &conv.FractalID, &conv.Title, &conv.InstructionID, &conv.CreatedBy, &conv.CreatedAt, &conv.UpdatedAt,
+		INSERT INTO chat_conversations (fractal_id, title, created_by)
+		VALUES ($1, $2, $3)
+		RETURNING id, fractal_id, title, COALESCE(created_by, ''), created_at, updated_at
+	`, fractalID, title, username).Scan(
+		&conv.ID, &conv.FractalID, &conv.Title, &conv.CreatedBy, &conv.CreatedAt, &conv.UpdatedAt,
 	)
-	return conv, err
+	if err != nil {
+		return nil, err
+	}
+
+	// Link libraries to the conversation
+	if m.instructionManager != nil && len(libraryIDs) > 0 {
+		if err := m.instructionManager.SetConversationLibraries(ctx, conv.ID, libraryIDs); err != nil {
+			log.Printf("[Chat] Failed to set conversation libraries: %v", err)
+		}
+	}
+	return conv, nil
 }
 
 func (m *Manager) ListConversations(ctx context.Context, fractalID, username string) ([]*Conversation, error) {
 	rows, err := m.pg.Query(ctx, `
-		SELECT id, fractal_id, title, instruction_id, created_by, created_at, updated_at
+		SELECT id, fractal_id, title, COALESCE(created_by, ''), created_at, updated_at
 		FROM chat_conversations
 		WHERE fractal_id = $1 AND created_by = $2
 		ORDER BY updated_at DESC
@@ -155,7 +172,7 @@ func (m *Manager) ListConversations(ctx context.Context, fractalID, username str
 	var convs []*Conversation
 	for rows.Next() {
 		c := &Conversation{}
-		if err := rows.Scan(&c.ID, &c.FractalID, &c.Title, &c.InstructionID, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.FractalID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		convs = append(convs, c)
@@ -166,9 +183,9 @@ func (m *Manager) ListConversations(ctx context.Context, fractalID, username str
 func (m *Manager) GetConversation(ctx context.Context, id string) (*Conversation, error) {
 	c := &Conversation{}
 	err := m.pg.QueryRow(ctx, `
-		SELECT id, fractal_id, title, instruction_id, created_by, created_at, updated_at
+		SELECT id, fractal_id, title, COALESCE(created_by, ''), created_at, updated_at
 		FROM chat_conversations WHERE id = $1
-	`, id).Scan(&c.ID, &c.FractalID, &c.Title, &c.InstructionID, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
+	`, id).Scan(&c.ID, &c.FractalID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("conversation not found")
 	}
@@ -180,8 +197,8 @@ func (m *Manager) RenameConversation(ctx context.Context, id, title string) (*Co
 	err := m.pg.QueryRow(ctx, `
 		UPDATE chat_conversations SET title = $1
 		WHERE id = $2
-		RETURNING id, fractal_id, title, instruction_id, created_by, created_at, updated_at
-	`, title, id).Scan(&c.ID, &c.FractalID, &c.Title, &c.InstructionID, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
+		RETURNING id, fractal_id, title, COALESCE(created_by, ''), created_at, updated_at
+	`, title, id).Scan(&c.ID, &c.FractalID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("conversation not found")
 	}
@@ -203,17 +220,18 @@ func (m *Manager) DeleteAllConversations(ctx context.Context, fractalID, usernam
 	return err
 }
 
-func (m *Manager) SetConversationInstruction(ctx context.Context, id string, instructionID *string) (*Conversation, error) {
-	c := &Conversation{}
-	err := m.pg.QueryRow(ctx, `
-		UPDATE chat_conversations SET instruction_id = $1
-		WHERE id = $2
-		RETURNING id, fractal_id, title, instruction_id, created_by, created_at, updated_at
-	`, instructionID, id).Scan(&c.ID, &c.FractalID, &c.Title, &c.InstructionID, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("conversation not found")
+func (m *Manager) SetConversationLibraries(ctx context.Context, conversationID string, libraryIDs []string) error {
+	if m.instructionManager == nil {
+		return fmt.Errorf("instruction manager not configured")
 	}
-	return c, err
+	return m.instructionManager.SetConversationLibraries(ctx, conversationID, libraryIDs)
+}
+
+func (m *Manager) GetConversationLibraries(ctx context.Context, conversationID string) ([]*instructions.Library, error) {
+	if m.instructionManager == nil {
+		return nil, nil
+	}
+	return m.instructionManager.GetConversationLibraries(ctx, conversationID)
 }
 
 // ---- Instruction CRUD ----
@@ -227,7 +245,7 @@ func (m *Manager) CreateInstruction(ctx context.Context, fractalID, name, conten
 	err := m.pg.QueryRow(ctx, `
 		INSERT INTO chat_instructions (fractal_id, name, content, is_default, created_by)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, fractal_id, name, content, is_default, created_by, created_at, updated_at
+		RETURNING id, fractal_id, name, content, is_default, COALESCE(created_by, ''), created_at, updated_at
 	`, fractalID, name, content, isDefault, username).Scan(
 		&inst.ID, &inst.FractalID, &inst.Name, &inst.Content, &inst.IsDefault, &inst.CreatedBy, &inst.CreatedAt, &inst.UpdatedAt,
 	)
@@ -236,7 +254,7 @@ func (m *Manager) CreateInstruction(ctx context.Context, fractalID, name, conten
 
 func (m *Manager) ListInstructions(ctx context.Context, fractalID string) ([]*Instruction, error) {
 	rows, err := m.pg.Query(ctx, `
-		SELECT id, fractal_id, name, content, is_default, created_by, created_at, updated_at
+		SELECT id, fractal_id, name, content, is_default, COALESCE(created_by, ''), created_at, updated_at
 		FROM chat_instructions
 		WHERE fractal_id = $1
 		ORDER BY is_default DESC, name ASC
@@ -260,7 +278,7 @@ func (m *Manager) ListInstructions(ctx context.Context, fractalID string) ([]*In
 func (m *Manager) GetInstruction(ctx context.Context, id string) (*Instruction, error) {
 	inst := &Instruction{}
 	err := m.pg.QueryRow(ctx, `
-		SELECT id, fractal_id, name, content, is_default, created_by, created_at, updated_at
+		SELECT id, fractal_id, name, content, is_default, COALESCE(created_by, ''), created_at, updated_at
 		FROM chat_instructions WHERE id = $1
 	`, id).Scan(&inst.ID, &inst.FractalID, &inst.Name, &inst.Content, &inst.IsDefault, &inst.CreatedBy, &inst.CreatedAt, &inst.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -282,7 +300,7 @@ func (m *Manager) UpdateInstruction(ctx context.Context, id, name, content strin
 	err := m.pg.QueryRow(ctx, `
 		UPDATE chat_instructions SET name = $1, content = $2, is_default = $3
 		WHERE id = $4
-		RETURNING id, fractal_id, name, content, is_default, created_by, created_at, updated_at
+		RETURNING id, fractal_id, name, content, is_default, COALESCE(created_by, ''), created_at, updated_at
 	`, name, content, isDefault, id).Scan(
 		&inst.ID, &inst.FractalID, &inst.Name, &inst.Content, &inst.IsDefault, &inst.CreatedBy, &inst.CreatedAt, &inst.UpdatedAt,
 	)
@@ -300,7 +318,7 @@ func (m *Manager) DeleteInstruction(ctx context.Context, id string) error {
 func (m *Manager) GetDefaultInstruction(ctx context.Context, fractalID string) (*Instruction, error) {
 	inst := &Instruction{}
 	err := m.pg.QueryRow(ctx, `
-		SELECT id, fractal_id, name, content, is_default, created_by, created_at, updated_at
+		SELECT id, fractal_id, name, content, is_default, COALESCE(created_by, ''), created_at, updated_at
 		FROM chat_instructions
 		WHERE fractal_id = $1 AND is_default = true
 	`, fractalID).Scan(&inst.ID, &inst.FractalID, &inst.Name, &inst.Content, &inst.IsDefault, &inst.CreatedBy, &inst.CreatedAt, &inst.UpdatedAt)
@@ -399,26 +417,30 @@ func (m *Manager) StreamResponse(ctx context.Context, w io.Writer, flusher http.
 		return fmt.Errorf("failed to load history: %w", err)
 	}
 
-	// Resolve custom instructions: explicit on conversation, or fractal default
-	var customInstructions string
-	if conv.InstructionID != nil {
-		if inst, err := m.GetInstruction(ctx, *conv.InstructionID); err == nil && inst != nil {
-			customInstructions = inst.Content
+	// Resolve instruction libraries for this conversation
+	var pinnedPages []*instructions.Page
+	var pageIndex []instructions.PageSummary
+	var activeLibraryIDs []string
+	if m.instructionManager != nil {
+		libIDs, err := m.instructionManager.ResolveLibraryIDs(ctx, conv.ID, conv.FractalID)
+		if err != nil {
+			log.Printf("[Chat] Failed to resolve libraries: %v", err)
 		}
-	} else {
-		if inst, err := m.GetDefaultInstruction(ctx, conv.FractalID); err == nil && inst != nil {
-			customInstructions = inst.Content
+		activeLibraryIDs = libIDs
+		if len(libIDs) > 0 {
+			pinnedPages, _ = m.instructionManager.GetPinnedPages(ctx, libIDs)
+			pageIndex, _ = m.instructionManager.GetPageIndex(ctx, libIDs)
 		}
 	}
 
 	recentQueries := m.getRecentSuccessfulQueries(ctx, conv.FractalID, conv.ID)
 	normalizerHints := m.getNormalizerHints(ctx)
-	systemPrompt := m.buildSystemPrompt(fractal, recentQueries, customInstructions, normalizerHints)
+	systemPrompt := m.buildSystemPrompt(fractal, recentQueries, pinnedPages, pageIndex, normalizerHints)
 	history = m.trimHistory(history)
 	messages := m.buildLLMMessages(systemPrompt, history)
 
-	// Tool definitions
-	tools := m.toolDefinitions()
+	// Tool definitions (include read_instruction_page if there are indexed pages)
+	tools := m.toolDefinitions(len(pageIndex) > 0)
 
 	// Stream loop - may iterate multiple times if tool calls are made
 	const maxToolRounds = 15
@@ -513,7 +535,7 @@ func (m *Manager) StreamResponse(ctx context.Context, w io.Writer, flusher http.
 				continue
 			}
 
-			result, toolErr := m.executeTool(ctx, conv.FractalID, tc, timeRange)
+			result, toolErr := m.executeTool(ctx, conv.FractalID, tc, timeRange, activeLibraryIDs)
 			if toolErr != nil {
 				result = map[string]interface{}{"error": toolErr.Error()}
 			}
@@ -679,7 +701,7 @@ func (m *Manager) streamFromLiteLLM(ctx context.Context, w io.Writer, flusher ht
 }
 
 // executeTool runs a tool call and returns the result.
-func (m *Manager) executeTool(ctx context.Context, fractalID string, tc llmToolCall, userTimeRange string) (interface{}, error) {
+func (m *Manager) executeTool(ctx context.Context, fractalID string, tc llmToolCall, userTimeRange string, libraryIDs []string) (interface{}, error) {
 	switch tc.Function.Name {
 	case "run_query":
 		var args runQueryArgs
@@ -713,6 +735,24 @@ func (m *Manager) executeTool(ctx context.Context, fractalID string, tc llmToolC
 			return nil, fmt.Errorf("invalid search_alerts args: %w", err)
 		}
 		return m.searchAlerts(ctx, fractalID, args.Search)
+	case "read_instruction_page":
+		var args struct {
+			PageName string `json:"page_name"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return nil, fmt.Errorf("invalid read_instruction_page args: %w", err)
+		}
+		if m.instructionManager == nil || len(libraryIDs) == 0 {
+			return nil, fmt.Errorf("no instruction libraries available")
+		}
+		page, err := m.instructionManager.GetPageByName(ctx, libraryIDs, args.PageName)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"name":    page.Name,
+			"content": page.Content,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", tc.Function.Name)
 	}
@@ -1262,7 +1302,7 @@ func (m *Manager) getRecentSuccessfulQueries(ctx context.Context, fractalID, cur
 }
 
 // buildSystemPrompt constructs the system prompt for the LLM.
-func (m *Manager) buildSystemPrompt(fractal *fractals.Fractal, recentQueries []string, customInstructions string, normalizerHints string) string {
+func (m *Manager) buildSystemPrompt(fractal *fractals.Fractal, recentQueries []string, pinnedPages []*instructions.Page, pageIndex []instructions.PageSummary, normalizerHints string) string {
 	prompt := fmt.Sprintf(`You are an intelligent assistant embedded in the Bifract log management and collaboration platform.
 
 You are currently analyzing the fractal named "%s" (ID: %s).
@@ -1315,8 +1355,24 @@ present_results guidelines:
 		}
 	}
 
-	if customInstructions != "" {
-		prompt += "\n\nADDITIONAL INSTRUCTIONS FROM THE USER (follow these carefully):\n" + customInstructions + "\n"
+	// Pinned instruction pages (always in context)
+	if len(pinnedPages) > 0 {
+		prompt += "\n\nINSTRUCTION PAGES (always active, follow these carefully):\n"
+		for _, p := range pinnedPages {
+			prompt += fmt.Sprintf("--- %s ---\n%s\n\n", p.Name, p.Content)
+		}
+	}
+
+	// Index of available pages (loaded on demand via tool)
+	if len(pageIndex) > 0 {
+		prompt += "\nAVAILABLE INSTRUCTION PAGES (use read_instruction_page tool to load when relevant):\n"
+		for _, p := range pageIndex {
+			desc := p.Description
+			if desc == "" {
+				desc = "(no description)"
+			}
+			prompt += fmt.Sprintf("- \"%s\" - %s\n", p.Name, desc)
+		}
 	}
 
 	return prompt
@@ -1495,8 +1551,8 @@ func (m *Manager) buildLLMMessages(systemPrompt string, history []*Message) []ll
 }
 
 // toolDefinitions returns the tool definitions passed to LiteLLM.
-func (m *Manager) toolDefinitions() []llmTool {
-	return []llmTool{
+func (m *Manager) toolDefinitions(hasInstructionPages bool) []llmTool {
+	tools := []llmTool{
 		{
 			Type: "function",
 			Function: llmFunction{
@@ -1686,6 +1742,28 @@ func (m *Manager) toolDefinitions() []llmTool {
 			},
 		},
 	}
+
+	if hasInstructionPages {
+		tools = append(tools, llmTool{
+			Type: "function",
+			Function: llmFunction{
+				Name:        "read_instruction_page",
+				Description: "Load the full content of an instruction page by name. Use when you need specific guidance from a page listed in AVAILABLE INSTRUCTION PAGES. This is a zero-cost operation (no database query).",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"page_name": map[string]interface{}{
+							"type":        "string",
+							"description": "Exact page name from the available instruction pages index.",
+						},
+					},
+					"required": []string{"page_name"},
+				},
+			},
+		})
+	}
+
+	return tools
 }
 
 // sendSSEEvent writes a single SSE data line.

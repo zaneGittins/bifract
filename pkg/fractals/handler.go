@@ -83,7 +83,7 @@ func (h *Handler) HandleListFractals(w http.ResponseWriter, r *http.Request) {
 		visibleFractals = []*Fractal{}
 	}
 
-	// Filter prisms: user must have access to at least one member fractal
+	// Filter prisms: user must have an explicit prism_permissions grant
 	var prismList []*prisms.Prism
 	if h.prismManager != nil {
 		allPrisms, err := h.prismManager.ListPrisms(r.Context())
@@ -94,17 +94,16 @@ func (h *Handler) HandleListFractals(w http.ResponseWriter, r *http.Request) {
 		}
 		if user != nil && user.IsAdmin {
 			prismList = allPrisms
-		} else {
-			// Build set of accessible fractal IDs
-			accessibleSet := make(map[string]bool, len(visibleFractals))
-			for _, f := range visibleFractals {
-				accessibleSet[f.ID] = true
-			}
-			for _, p := range allPrisms {
-				for _, m := range p.Members {
-					if accessibleSet[m.FractalID] {
+		} else if user != nil && h.rbacResolver != nil {
+			accessiblePrisms, err := h.rbacResolver.GetAccessiblePrisms(r.Context(), user.Username)
+			if err == nil {
+				prismAccessSet := make(map[string]bool, len(accessiblePrisms))
+				for _, pa := range accessiblePrisms {
+					prismAccessSet[pa.PrismID] = true
+				}
+				for _, p := range allPrisms {
+					if prismAccessSet[p.ID] {
 						prismList = append(prismList, p)
-						break
 					}
 				}
 			}

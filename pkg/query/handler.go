@@ -130,7 +130,8 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleViewer) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleViewer) && !rbac.HasAccess(user, prismRole, rbac.RoleViewer) {
 		respondJSON(w, http.StatusForbidden, QueryResponse{
 			Success: false,
 			Error:   "Insufficient permissions",
@@ -260,27 +261,32 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	selectedPrismID, _ := r.Context().Value("selected_prism").(string)
 	isPrismContext := selectedPrismID != "" && req.FractalID == ""
 	if isPrismContext {
+		// Verify user has at least viewer access on this prism
+		hasAccess := false
+		if user, ok := r.Context().Value("user").(*storage.User); ok {
+			if user.IsAdmin {
+				hasAccess = true
+			} else if h.rbacResolver != nil {
+				if role, err := h.rbacResolver.ResolvePrismRole(r.Context(), user.Username, selectedPrismID); err == nil {
+					hasAccess = role.Satisfies(rbac.RoleViewer)
+				}
+			} else {
+				hasAccess = rbac.PrismRoleFromContext(r.Context()).Satisfies(rbac.RoleViewer)
+			}
+		}
+		if !hasAccess {
+			respondJSON(w, http.StatusOK, QueryResponse{
+				Success:    true,
+				Results:    []map[string]interface{}{},
+				Count:      0,
+				Query:      req.Query,
+				FieldOrder: []string{},
+			})
+			return
+		}
+		// Prism access grants query access to all member fractals
 		if h.prismManager != nil {
 			prismFractalIDs, _ = h.prismManager.GetMemberFractalIDs(r.Context(), selectedPrismID)
-		}
-		// Filter prism fractal IDs to only fractals the user can access
-		if h.rbacResolver != nil {
-			if user, ok := r.Context().Value("user").(*storage.User); ok && !user.IsAdmin {
-				accessList, err := h.rbacResolver.GetAccessibleFractals(r.Context(), user.Username)
-				if err == nil {
-					accessSet := make(map[string]bool, len(accessList))
-					for _, a := range accessList {
-						accessSet[a.FractalID] = true
-					}
-					var filtered []string
-					for _, id := range prismFractalIDs {
-						if accessSet[id] {
-							filtered = append(filtered, id)
-						}
-					}
-					prismFractalIDs = filtered
-				}
-			}
 		}
 		if len(prismFractalIDs) == 0 {
 			respondJSON(w, http.StatusOK, QueryResponse{

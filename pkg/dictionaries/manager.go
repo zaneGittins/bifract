@@ -61,11 +61,11 @@ func (m *Manager) ListDictionaries(ctx context.Context, fractalID, prismID strin
 	var q string
 	var arg string
 	if prismID != "" {
-		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, created_by, created_at, updated_at
+		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at
 		     FROM dictionaries WHERE prism_id = $1 OR is_global = true ORDER BY name ASC`
 		arg = prismID
 	} else {
-		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, created_by, created_at, updated_at
+		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at
 		     FROM dictionaries WHERE fractal_id = $1 OR is_global = true ORDER BY name ASC`
 		arg = fractalID
 	}
@@ -98,7 +98,7 @@ func (m *Manager) GetDictionary(ctx context.Context, id string) (*Dictionary, er
 	d := &Dictionary{}
 	var colsJSON []byte
 	err := m.pg.QueryRow(ctx,
-		`SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, created_by, created_at, updated_at
+		`SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at
 		 FROM dictionaries WHERE id = $1`, id).
 		Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
 			&colsJSON, &d.RowCount, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
@@ -121,11 +121,11 @@ func (m *Manager) GetDictionaryByName(ctx context.Context, fractalID, prismID, n
 	var q string
 	var arg string
 	if prismID != "" {
-		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, created_by, created_at, updated_at
+		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at
 		     FROM dictionaries WHERE prism_id = $1 AND name = $2`
 		arg = prismID
 	} else {
-		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, created_by, created_at, updated_at
+		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at
 		     FROM dictionaries WHERE fractal_id = $1 AND name = $2`
 		arg = fractalID
 	}
@@ -767,7 +767,7 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 func (m *Manager) ListDictionaryActions(ctx context.Context) ([]*DictionaryAction, error) {
 	rows, err := m.pg.Query(ctx,
 		`SELECT da.id, da.name, da.description, da.dictionary_name,
-		        da.max_logs_per_trigger, da.enabled, da.created_by, da.created_at, da.updated_at
+		        da.max_logs_per_trigger, da.enabled, COALESCE(da.created_by, ''), da.created_at, da.updated_at
 		 FROM dictionary_actions da
 		 ORDER BY da.name ASC`)
 	if err != nil {
@@ -782,7 +782,7 @@ func (m *Manager) GetDictionaryAction(ctx context.Context, id string) (*Dictiona
 	a := &DictionaryAction{}
 	err := m.pg.QueryRow(ctx,
 		`SELECT da.id, da.name, da.description, da.dictionary_name,
-		        da.max_logs_per_trigger, da.enabled, da.created_by, da.created_at, da.updated_at
+		        da.max_logs_per_trigger, da.enabled, COALESCE(da.created_by, ''), da.created_at, da.updated_at
 		 FROM dictionary_actions da
 		 WHERE da.id = $1`, id).
 		Scan(&a.ID, &a.Name, &a.Description, &a.DictionaryName,
@@ -835,7 +835,7 @@ func (m *Manager) DeleteDictionaryAction(ctx context.Context, id string) error {
 func (m *Manager) GetDictionaryActionsByAlertID(ctx context.Context, alertID string) ([]*DictionaryAction, error) {
 	rows, err := m.pg.Query(ctx,
 		`SELECT da.id, da.name, da.description, da.dictionary_name,
-		        da.max_logs_per_trigger, da.enabled, da.created_by, da.created_at, da.updated_at
+		        da.max_logs_per_trigger, da.enabled, COALESCE(da.created_by, ''), da.created_at, da.updated_at
 		 FROM dictionary_actions da
 		 JOIN alert_dictionary_actions ada ON ada.dictionary_action_id = da.id
 		 WHERE ada.alert_id = $1`, alertID)
@@ -885,7 +885,11 @@ func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *Dictionar
 		for _, c := range colOrder {
 			cols = append(cols, DictionaryColumn{Name: c, Type: "string"})
 		}
-		dict, err = m.CreateDictionary(ctx, fractalID, prismID, action.DictionaryName, "", keyCol, cols, action.CreatedBy, false)
+		creator := action.CreatedBy
+		if creator == "" {
+			creator = "admin"
+		}
+		dict, err = m.CreateDictionary(ctx, fractalID, prismID, action.DictionaryName, "", keyCol, cols, creator, false)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create dictionary %q: %w", action.DictionaryName, err)
 		}

@@ -52,13 +52,45 @@ func (h *DashboardHandler) requireRoleOnFractal(r *http.Request, fractalID strin
 	return rbac.HasAccess(user, role, required)
 }
 
-// getDashboardFractalID fetches a dashboard and returns its fractal ID. Used for IDOR checks.
-func (h *DashboardHandler) getDashboardFractalID(ctx context.Context, dashboardID string) (string, error) {
+// requireRoleOnPrism checks the user has the required role on a specific prism.
+func (h *DashboardHandler) requireRoleOnPrism(r *http.Request, prismID string, required rbac.Role) bool {
+	user, ok := r.Context().Value("user").(*storage.User)
+	if !ok || user == nil {
+		return false
+	}
+	if user.IsAdmin {
+		return true
+	}
+	if h.rbacResolver == nil {
+		prismRole := rbac.PrismRoleFromContext(r.Context())
+		return rbac.HasAccess(user, prismRole, required)
+	}
+	return rbac.HasAccess(user, h.rbacResolver.ResolvePrismRoleWithAdmin(r.Context(), user, prismID), required)
+}
+
+// getDashboardScope fetches a dashboard and returns its fractal ID and prism ID.
+func (h *DashboardHandler) getDashboardScope(ctx context.Context, dashboardID string) (fractalID, prismID string, err error) {
 	d, err := h.pg.GetDashboard(ctx, dashboardID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return d.FractalID, nil
+	return d.FractalID, d.PrismID, nil
+}
+
+// requireDashboardRole checks the user has the required role on the dashboard's scope (fractal or prism).
+func (h *DashboardHandler) requireDashboardRole(w http.ResponseWriter, r *http.Request, fractalID, prismID string, required rbac.Role) bool {
+	if fractalID != "" {
+		if !h.requireRoleOnFractal(r, fractalID, required) {
+			jsonForbidden(w)
+			return false
+		}
+	} else if prismID != "" {
+		if !h.requireRoleOnPrism(r, prismID, required) {
+			jsonForbidden(w)
+			return false
+		}
+	}
+	return true
 }
 
 func NewDashboardHandler(pg *storage.PostgresClient, fractalManager *fractals.Manager) *DashboardHandler {
@@ -118,7 +150,8 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 	user := r.Context().Value("user").(*storage.User)
 
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
 		jsonError(w, "Insufficient permissions")
 		return
 	}
@@ -187,7 +220,7 @@ func (h *DashboardHandler) HandleGetDashboard(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if dashboard.FractalID != "" && !h.requireRoleOnFractal(r, dashboard.FractalID, rbac.RoleViewer) {
+	if (dashboard.FractalID != "" && !h.requireRoleOnFractal(r, dashboard.FractalID, rbac.RoleViewer)) || (dashboard.PrismID != "" && !h.requireRoleOnPrism(r, dashboard.PrismID, rbac.RoleViewer)) {
 		jsonForbidden(w)
 		return
 	}
@@ -208,15 +241,13 @@ func (h *DashboardHandler) HandleGetDashboard(w http.ResponseWriter, r *http.Req
 
 func (h *DashboardHandler) HandleUpdateDashboard(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	user := r.Context().Value("user").(*storage.User)
 
-	fractalID, err := h.getDashboardFractalID(r.Context(), id)
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
 		jsonError(w, "Dashboard not found")
 		return
 	}
-	if fractalID != "" && !h.requireRoleOnFractal(r, fractalID, rbac.RoleAnalyst) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
 		return
 	}
 
@@ -226,7 +257,7 @@ func (h *DashboardHandler) HandleUpdateDashboard(w http.ResponseWriter, r *http.
 		return
 	}
 
-	err = h.pg.UpdateDashboard(r.Context(), id, user.Username, req.Name, req.Description, req.TimeRangeType, req.TimeRangeStart, req.TimeRangeEnd)
+	err = h.pg.UpdateDashboard(r.Context(), id, req.Name, req.Description, req.TimeRangeType, req.TimeRangeStart, req.TimeRangeEnd)
 	if err != nil {
 		jsonError(w, "Failed to update dashboard")
 		return
@@ -238,19 +269,17 @@ func (h *DashboardHandler) HandleUpdateDashboard(w http.ResponseWriter, r *http.
 
 func (h *DashboardHandler) HandleDeleteDashboard(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	user := r.Context().Value("user").(*storage.User)
 
-	fractalID, err := h.getDashboardFractalID(r.Context(), id)
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
 		jsonError(w, "Dashboard not found")
 		return
 	}
-	if fractalID != "" && !h.requireRoleOnFractal(r, fractalID, rbac.RoleAnalyst) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
 		return
 	}
 
-	err = h.pg.DeleteDashboard(r.Context(), id, user.Username)
+	err = h.pg.DeleteDashboard(r.Context(), id)
 	if err != nil {
 		jsonError(w, "Failed to delete dashboard")
 		return
@@ -263,13 +292,12 @@ func (h *DashboardHandler) HandleDeleteDashboard(w http.ResponseWriter, r *http.
 func (h *DashboardHandler) HandleCreateWidget(w http.ResponseWriter, r *http.Request) {
 	dashboardID := chi.URLParam(r, "id")
 
-	fractalID, err := h.getDashboardFractalID(r.Context(), dashboardID)
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
 		jsonError(w, "Dashboard not found")
 		return
 	}
-	if fractalID != "" && !h.requireRoleOnFractal(r, fractalID, rbac.RoleAnalyst) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
 		return
 	}
 
@@ -314,13 +342,12 @@ func (h *DashboardHandler) HandleUpdateWidget(w http.ResponseWriter, r *http.Req
 	dashboardID := chi.URLParam(r, "id")
 	widgetID := chi.URLParam(r, "widget_id")
 
-	fractalID, err := h.getDashboardFractalID(r.Context(), dashboardID)
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
 		jsonError(w, "Dashboard not found")
 		return
 	}
-	if fractalID != "" && !h.requireRoleOnFractal(r, fractalID, rbac.RoleAnalyst) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
 		return
 	}
 
@@ -353,13 +380,12 @@ func (h *DashboardHandler) HandleUpdateWidgetResults(w http.ResponseWriter, r *h
 	dashboardID := chi.URLParam(r, "id")
 	widgetID := chi.URLParam(r, "widget_id")
 
-	fractalID, err := h.getDashboardFractalID(r.Context(), dashboardID)
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
 		jsonError(w, "Dashboard not found")
 		return
 	}
-	if fractalID != "" && !h.requireRoleOnFractal(r, fractalID, rbac.RoleAnalyst) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
 		return
 	}
 
@@ -383,13 +409,12 @@ func (h *DashboardHandler) HandleUpdateWidgetLayout(w http.ResponseWriter, r *ht
 	dashboardID := chi.URLParam(r, "id")
 	widgetID := chi.URLParam(r, "widget_id")
 
-	fractalID, err := h.getDashboardFractalID(r.Context(), dashboardID)
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
 		jsonError(w, "Dashboard not found")
 		return
 	}
-	if fractalID != "" && !h.requireRoleOnFractal(r, fractalID, rbac.RoleAnalyst) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
 		return
 	}
 
@@ -413,13 +438,12 @@ func (h *DashboardHandler) HandleDeleteWidget(w http.ResponseWriter, r *http.Req
 	dashboardID := chi.URLParam(r, "id")
 	widgetID := chi.URLParam(r, "widget_id")
 
-	fractalID, err := h.getDashboardFractalID(r.Context(), dashboardID)
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
 		jsonError(w, "Dashboard not found")
 		return
 	}
-	if fractalID != "" && !h.requireRoleOnFractal(r, fractalID, rbac.RoleAnalyst) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
 		return
 	}
 
@@ -457,13 +481,12 @@ func (h *DashboardHandler) HandleUpdatePresence(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	fractalID, err := h.getDashboardFractalID(r.Context(), id)
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
 		jsonError(w, "Dashboard not found")
 		return
 	}
-	if fractalID != "" && !h.requireRoleOnFractal(r, fractalID, rbac.RoleViewer) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleViewer) {
 		return
 	}
 
@@ -478,13 +501,12 @@ func (h *DashboardHandler) HandleUpdatePresence(w http.ResponseWriter, r *http.R
 func (h *DashboardHandler) HandleGetPresence(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	fractalID, err := h.getDashboardFractalID(r.Context(), id)
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
 		jsonError(w, "Dashboard not found")
 		return
 	}
-	if fractalID != "" && !h.requireRoleOnFractal(r, fractalID, rbac.RoleViewer) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleViewer) {
 		return
 	}
 
@@ -502,15 +524,13 @@ func (h *DashboardHandler) HandleGetPresence(w http.ResponseWriter, r *http.Requ
 
 func (h *DashboardHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	user := r.Context().Value("user").(*storage.User)
 
-	fractalID, err := h.getDashboardFractalID(r.Context(), id)
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
 		jsonError(w, "Dashboard not found")
 		return
 	}
-	if fractalID != "" && !h.requireRoleOnFractal(r, fractalID, rbac.RoleAnalyst) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
 		return
 	}
 
@@ -524,7 +544,7 @@ func (h *DashboardHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.
 		req.Variables = json.RawMessage("[]")
 	}
 
-	if err = h.pg.UpdateDashboardVariables(r.Context(), id, user.Username, req.Variables); err != nil {
+	if err = h.pg.UpdateDashboardVariables(r.Context(), id, req.Variables); err != nil {
 		jsonError(w, "Failed to update variables")
 		return
 	}
@@ -581,7 +601,7 @@ func (h *DashboardHandler) HandleExportDashboard(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if dashboard.FractalID != "" && !h.requireRoleOnFractal(r, dashboard.FractalID, rbac.RoleViewer) {
+	if (dashboard.FractalID != "" && !h.requireRoleOnFractal(r, dashboard.FractalID, rbac.RoleViewer)) || (dashboard.PrismID != "" && !h.requireRoleOnPrism(r, dashboard.PrismID, rbac.RoleViewer)) {
 		jsonForbidden(w)
 		return
 	}
@@ -643,14 +663,16 @@ func (h *DashboardHandler) HandleExportDashboard(w http.ResponseWriter, r *http.
 func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(*storage.User)
 	fractalRole := rbac.RoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) {
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
 		jsonForbidden(w)
 		return
 	}
 
-	selectedFractal, err := h.getSelectedFractal(r)
-	if err != nil {
-		jsonError(w, "No fractal selected")
+	selectedFractal, _ := h.getSelectedFractal(r)
+	selectedPrism, _ := r.Context().Value("selected_prism").(string)
+	if selectedFractal == "" && selectedPrism == "" {
+		jsonError(w, "No fractal or prism selected")
 		return
 	}
 
@@ -686,9 +708,13 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 		Name:          imported.Name,
 		Description:   imported.Description,
 		TimeRangeType: imported.TimeRange,
-		FractalID:     selectedFractal,
 		Variables:     varsJSON,
 		CreatedBy:     user.Username,
+	}
+	if selectedPrism != "" {
+		d.PrismID = selectedPrism
+	} else {
+		d.FractalID = selectedFractal
 	}
 
 	created, err := h.pg.InsertDashboard(r.Context(), d)
