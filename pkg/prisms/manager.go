@@ -39,6 +39,15 @@ func (m *Manager) CreatePrism(ctx context.Context, name, description, createdBy 
 }
 
 // GetPrism retrieves a prism by ID, including its members.
+// GetPrismInfo returns basic prism details (satisfies chat.PrismResolver interface).
+func (m *Manager) GetPrismInfo(ctx context.Context, prismID string) (id, name, description string, err error) {
+	p, err := m.GetPrism(ctx, prismID)
+	if err != nil {
+		return "", "", "", err
+	}
+	return p.ID, p.Name, p.Description, nil
+}
+
 func (m *Manager) GetPrism(ctx context.Context, id string) (*Prism, error) {
 	p := &Prism{}
 	err := m.pg.QueryRow(ctx, `

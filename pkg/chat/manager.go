@@ -94,15 +94,26 @@ RULES:
 `
 
 // Manager handles chat conversation persistence and LLM communication.
+// PrismFractalResolver resolves prism member fractal IDs for tool execution.
+type PrismFractalResolver interface {
+	GetMemberFractalIDs(ctx context.Context, prismID string) ([]string, error)
+}
+
 type Manager struct {
 	pg                  *storage.PostgresClient
 	ch                  *storage.ClickHouseClient
 	fractalManager      *fractals.Manager
 	normalizerManager   *normalizers.Manager
 	instructionManager  *instructions.Manager
+	prismFractalResolver PrismFractalResolver
 	litellmURL          string
 	litellmKey          string
 	httpClient          *http.Client
+}
+
+// SetPrismFractalResolver sets the resolver for prism member fractals.
+func (m *Manager) SetPrismFractalResolver(resolver PrismFractalResolver) {
+	m.prismFractalResolver = resolver
 }
 
 // NewManager creates a new chat manager.
@@ -131,17 +142,26 @@ func (m *Manager) SetInstructionManager(im *instructions.Manager) {
 
 // ---- Conversation CRUD ----
 
-func (m *Manager) CreateConversation(ctx context.Context, fractalID, title, username string, libraryIDs []string) (*Conversation, error) {
+func (m *Manager) CreateConversation(ctx context.Context, fractalID, prismID, title, username string, libraryIDs []string) (*Conversation, error) {
 	if title == "" {
 		title = "New conversation"
 	}
+
+	var fractalIDPtr, prismIDPtr interface{}
+	if fractalID != "" {
+		fractalIDPtr = fractalID
+	}
+	if prismID != "" {
+		prismIDPtr = prismID
+	}
+
 	conv := &Conversation{}
 	err := m.pg.QueryRow(ctx, `
-		INSERT INTO chat_conversations (fractal_id, title, created_by)
-		VALUES ($1, $2, $3)
-		RETURNING id, fractal_id, title, COALESCE(created_by, ''), created_at, updated_at
-	`, fractalID, title, username).Scan(
-		&conv.ID, &conv.FractalID, &conv.Title, &conv.CreatedBy, &conv.CreatedAt, &conv.UpdatedAt,
+		INSERT INTO chat_conversations (fractal_id, prism_id, title, created_by)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at
+	`, fractalIDPtr, prismIDPtr, title, username).Scan(
+		&conv.ID, &conv.FractalID, &conv.PrismID, &conv.Title, &conv.CreatedBy, &conv.CreatedAt, &conv.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -156,14 +176,19 @@ func (m *Manager) CreateConversation(ctx context.Context, fractalID, title, user
 	return conv, nil
 }
 
-func (m *Manager) ListConversations(ctx context.Context, fractalID, username string) ([]*Conversation, error) {
-	rows, err := m.pg.Query(ctx, `
-		SELECT id, fractal_id, title, COALESCE(created_by, ''), created_at, updated_at
-		FROM chat_conversations
-		WHERE fractal_id = $1 AND created_by = $2
-		ORDER BY updated_at DESC
-		LIMIT 100
-	`, fractalID, username)
+func (m *Manager) ListConversations(ctx context.Context, fractalID, prismID, username string) ([]*Conversation, error) {
+	var query string
+	var scopeArg interface{}
+	if prismID != "" {
+		query = `SELECT id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at
+			FROM chat_conversations WHERE prism_id = $1 AND created_by = $2 ORDER BY updated_at DESC LIMIT 100`
+		scopeArg = prismID
+	} else {
+		query = `SELECT id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at
+			FROM chat_conversations WHERE fractal_id = $1 AND created_by = $2 ORDER BY updated_at DESC LIMIT 100`
+		scopeArg = fractalID
+	}
+	rows, err := m.pg.Query(ctx, query, scopeArg, username)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +197,7 @@ func (m *Manager) ListConversations(ctx context.Context, fractalID, username str
 	var convs []*Conversation
 	for rows.Next() {
 		c := &Conversation{}
-		if err := rows.Scan(&c.ID, &c.FractalID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.FractalID, &c.PrismID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		convs = append(convs, c)
@@ -183,9 +208,9 @@ func (m *Manager) ListConversations(ctx context.Context, fractalID, username str
 func (m *Manager) GetConversation(ctx context.Context, id string) (*Conversation, error) {
 	c := &Conversation{}
 	err := m.pg.QueryRow(ctx, `
-		SELECT id, fractal_id, title, COALESCE(created_by, ''), created_at, updated_at
+		SELECT id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at
 		FROM chat_conversations WHERE id = $1
-	`, id).Scan(&c.ID, &c.FractalID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
+	`, id).Scan(&c.ID, &c.FractalID, &c.PrismID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("conversation not found")
 	}
@@ -197,8 +222,8 @@ func (m *Manager) RenameConversation(ctx context.Context, id, title string) (*Co
 	err := m.pg.QueryRow(ctx, `
 		UPDATE chat_conversations SET title = $1
 		WHERE id = $2
-		RETURNING id, fractal_id, title, COALESCE(created_by, ''), created_at, updated_at
-	`, title, id).Scan(&c.ID, &c.FractalID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
+		RETURNING id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at
+	`, title, id).Scan(&c.ID, &c.FractalID, &c.PrismID, &c.Title, &c.CreatedBy, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("conversation not found")
 	}
@@ -215,7 +240,11 @@ func (m *Manager) ClearMessages(ctx context.Context, conversationID string) erro
 	return err
 }
 
-func (m *Manager) DeleteAllConversations(ctx context.Context, fractalID, username string) error {
+func (m *Manager) DeleteAllConversations(ctx context.Context, fractalID, prismID, username string) error {
+	if prismID != "" {
+		_, err := m.pg.Exec(ctx, `DELETE FROM chat_conversations WHERE prism_id = $1 AND created_by = $2`, prismID, username)
+		return err
+	}
 	_, err := m.pg.Exec(ctx, `DELETE FROM chat_conversations WHERE fractal_id = $1 AND created_by = $2`, fractalID, username)
 	return err
 }
@@ -535,7 +564,7 @@ func (m *Manager) StreamResponse(ctx context.Context, w io.Writer, flusher http.
 				continue
 			}
 
-			result, toolErr := m.executeTool(ctx, conv.FractalID, tc, timeRange, activeLibraryIDs)
+			result, toolErr := m.executeTool(ctx, conv.FractalID, conv.PrismID, tc, timeRange, activeLibraryIDs)
 			if toolErr != nil {
 				result = map[string]interface{}{"error": toolErr.Error()}
 			}
@@ -701,7 +730,13 @@ func (m *Manager) streamFromLiteLLM(ctx context.Context, w io.Writer, flusher ht
 }
 
 // executeTool runs a tool call and returns the result.
-func (m *Manager) executeTool(ctx context.Context, fractalID string, tc llmToolCall, userTimeRange string, libraryIDs []string) (interface{}, error) {
+func (m *Manager) executeTool(ctx context.Context, fractalID, prismID string, tc llmToolCall, userTimeRange string, libraryIDs []string) (interface{}, error) {
+	// In prism context, resolve member fractal IDs for queries
+	var prismFractalIDs []string
+	if fractalID == "" && prismID != "" && m.prismFractalResolver != nil {
+		prismFractalIDs, _ = m.prismFractalResolver.GetMemberFractalIDs(ctx, prismID)
+	}
+
 	switch tc.Function.Name {
 	case "run_query":
 		var args runQueryArgs
@@ -712,13 +747,13 @@ func (m *Manager) executeTool(ctx context.Context, fractalID string, tc llmToolC
 		args.TimeRange = userTimeRange
 		args.StartTime = ""
 		args.EndTime = ""
-		return m.executeQuery(ctx, fractalID, args)
+		return m.executeQuery(ctx, fractalID, prismFractalIDs, args)
 	case "get_fields":
 		var args struct {
 			Filter string `json:"filter"`
 		}
 		json.Unmarshal([]byte(tc.Function.Arguments), &args)
-		return m.getFields(ctx, fractalID, args.Filter)
+		return m.getFields(ctx, fractalID, prismFractalIDs, args.Filter)
 	case "validate_bql":
 		var args struct {
 			Query string `json:"query"`
@@ -777,7 +812,7 @@ func (m *Manager) validateBQL(query string) (interface{}, error) {
 // getFields discovers available field names in the fractal's logs along with
 // sample values and cardinality. This "field fingerprinting" gives the AI
 // semantic understanding of each field so it can write accurate queries.
-func (m *Manager) getFields(ctx context.Context, fractalID string, filter string) (interface{}, error) {
+func (m *Manager) getFields(ctx context.Context, fractalID string, prismFractalIDs []string, filter string) (interface{}, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
@@ -788,10 +823,21 @@ func (m *Manager) getFields(ctx context.Context, fractalID string, filter string
 		}
 	}
 
-	safeFractalID := strings.ReplaceAll(strings.ReplaceAll(fractalID, "\\", "\\\\"), "'", "\\'")
-	fractalClause := "fractal_id = '" + safeFractalID + "'"
-	if includeEmptyFractalID {
-		fractalClause = "fractal_id IN ('" + safeFractalID + "', '')"
+	var fractalClause string
+	if len(prismFractalIDs) > 0 {
+		// Prism context: query across all member fractals
+		quoted := make([]string, len(prismFractalIDs))
+		for i, id := range prismFractalIDs {
+			safe := strings.ReplaceAll(strings.ReplaceAll(id, "\\", "\\\\"), "'", "\\'")
+			quoted[i] = "'" + safe + "'"
+		}
+		fractalClause = "fractal_id IN (" + strings.Join(quoted, ", ") + ")"
+	} else {
+		safeFractalID := strings.ReplaceAll(strings.ReplaceAll(fractalID, "\\", "\\\\"), "'", "\\'")
+		fractalClause = "fractal_id = '" + safeFractalID + "'"
+		if includeEmptyFractalID {
+			fractalClause = "fractal_id IN ('" + safeFractalID + "', '')"
+		}
 	}
 
 	filterClause := ""
@@ -843,7 +889,7 @@ func (m *Manager) getFields(ctx context.Context, fractalID string, filter string
 	rows, err := m.ch.Query(queryCtx, sqlStr)
 	if err != nil {
 		// Fall back to the simpler field-names-only query if fingerprinting fails
-		return m.getFieldsSimple(ctx, fractalID, filter)
+		return m.getFieldsSimple(ctx, fractalID, prismFractalIDs, filter)
 	}
 
 	type fieldInfo struct {
@@ -888,7 +934,7 @@ func (m *Manager) getFields(ctx context.Context, fractalID string, filter string
 }
 
 // getFieldsSimple is the fallback field discovery that only returns names and counts.
-func (m *Manager) getFieldsSimple(ctx context.Context, fractalID string, filter string) (interface{}, error) {
+func (m *Manager) getFieldsSimple(ctx context.Context, fractalID string, prismFractalIDs []string, filter string) (interface{}, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -899,10 +945,20 @@ func (m *Manager) getFieldsSimple(ctx context.Context, fractalID string, filter 
 		}
 	}
 
-	safeFractalID := strings.ReplaceAll(strings.ReplaceAll(fractalID, "\\", "\\\\"), "'", "\\'")
-	fractalClause := "fractal_id = '" + safeFractalID + "'"
-	if includeEmptyFractalID {
-		fractalClause = "fractal_id IN ('" + safeFractalID + "', '')"
+	var fractalClause string
+	if len(prismFractalIDs) > 0 {
+		quoted := make([]string, len(prismFractalIDs))
+		for i, id := range prismFractalIDs {
+			safe := strings.ReplaceAll(strings.ReplaceAll(id, "\\", "\\\\"), "'", "\\'")
+			quoted[i] = "'" + safe + "'"
+		}
+		fractalClause = "fractal_id IN (" + strings.Join(quoted, ", ") + ")"
+	} else {
+		safeFractalID := strings.ReplaceAll(strings.ReplaceAll(fractalID, "\\", "\\\\"), "'", "\\'")
+		fractalClause = "fractal_id = '" + safeFractalID + "'"
+		if includeEmptyFractalID {
+			fractalClause = "fractal_id IN ('" + safeFractalID + "', '')"
+		}
 	}
 
 	filterClause := ""
@@ -1101,7 +1157,7 @@ func (m *Manager) searchAlerts(ctx context.Context, fractalID string, search str
 }
 
 // executeQuery runs a BQL query against ClickHouse for the given fractal.
-func (m *Manager) executeQuery(ctx context.Context, fractalID string, args runQueryArgs) (interface{}, error) {
+func (m *Manager) executeQuery(ctx context.Context, fractalID string, prismFractalIDs []string, args runQueryArgs) (interface{}, error) {
 	end := time.Now()
 	start := end.Add(-24 * time.Hour)
 
@@ -1162,6 +1218,7 @@ func (m *Manager) executeQuery(ctx context.Context, fractalID string, args runQu
 		EndTime:               end,
 		MaxRows:               20,
 		FractalID:             fractalID,
+		FractalIDs:            prismFractalIDs,
 		IncludeEmptyFractalID: includeEmptyFractalID,
 		TableName:             tableName,
 	}

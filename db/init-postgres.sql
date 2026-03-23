@@ -478,6 +478,7 @@ CREATE INDEX IF NOT EXISTS idx_comments_fractal_id ON comments(fractal_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_fractal_id ON alerts(fractal_id);
 CREATE INDEX IF NOT EXISTS idx_alert_executions_fractal_id ON alert_executions(fractal_id);
 
+
 -- ============================
 -- API Keys System Tables
 -- ============================
@@ -811,28 +812,6 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS window_duration INTEGER DEFAULT NULL
 -- Scheduled alert fields (cron-based evaluation with configurable query window)
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS schedule_cron VARCHAR(100) DEFAULT NULL;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS query_window_seconds INTEGER DEFAULT NULL;
-
--- Extend scoped feature tables to support prism ownership
-ALTER TABLE alerts        ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
-ALTER TABLE notebooks     ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
-ALTER TABLE dashboards    ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
-ALTER TABLE dictionaries  ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
-ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
-
--- Allow fractal_id to be null for prism-owned rows (existing rows keep their fractal_id)
-ALTER TABLE alerts        ALTER COLUMN fractal_id DROP NOT NULL;
-ALTER TABLE notebooks     ALTER COLUMN fractal_id DROP NOT NULL;
-ALTER TABLE dashboards    ALTER COLUMN fractal_id DROP NOT NULL;
-ALTER TABLE dictionaries  ALTER COLUMN fractal_id DROP NOT NULL;
-ALTER TABLE saved_queries ALTER COLUMN fractal_id DROP NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_alerts_prism_id        ON alerts(prism_id)        WHERE prism_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_notebooks_prism_id     ON notebooks(prism_id)     WHERE prism_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_dashboards_prism_id    ON dashboards(prism_id)    WHERE prism_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_dictionaries_prism_id  ON dictionaries(prism_id)  WHERE prism_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_saved_queries_prism_id ON saved_queries(prism_id) WHERE prism_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_queries_prism_name ON saved_queries(prism_id, name) WHERE prism_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionaries_prism_name ON dictionaries(prism_id, name) WHERE prism_id IS NOT NULL;
 
 -- Global dictionaries: available to all fractals/prisms
 ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS is_global BOOLEAN NOT NULL DEFAULT false;
@@ -1383,3 +1362,43 @@ DO $$ BEGIN
   ALTER TABLE prisms ADD CONSTRAINT prisms_created_by_fkey
     FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
 END $$;
+
+-- ============================
+-- Prism Scoping for All Feature Tables
+-- (must be after ALL tables are created)
+-- ============================
+ALTER TABLE alerts              ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE notebooks           ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE dashboards          ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE dictionaries        ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE saved_queries       ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE comments            ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+ALTER TABLE chat_conversations  ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+
+ALTER TABLE alerts              ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE notebooks           ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE dashboards          ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE dictionaries        ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE saved_queries       ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE comments            ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE chat_conversations  ALTER COLUMN fractal_id DROP NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_alerts_prism_id              ON alerts(prism_id)              WHERE prism_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_notebooks_prism_id           ON notebooks(prism_id)           WHERE prism_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dashboards_prism_id          ON dashboards(prism_id)          WHERE prism_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dictionaries_prism_id        ON dictionaries(prism_id)        WHERE prism_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_saved_queries_prism_id       ON saved_queries(prism_id)       WHERE prism_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_comments_prism_id            ON comments(prism_id)            WHERE prism_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_chat_conversations_prism_id  ON chat_conversations(prism_id)  WHERE prism_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionaries_prism_name   ON dictionaries(prism_id, name)  WHERE prism_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_queries_prism_name  ON saved_queries(prism_id, name) WHERE prism_id IS NOT NULL;
+
+ALTER TABLE comments DROP CONSTRAINT IF EXISTS comments_scope_check;
+ALTER TABLE comments ADD CONSTRAINT comments_scope_check CHECK (
+    fractal_id IS NOT NULL OR prism_id IS NOT NULL
+);
+ALTER TABLE chat_conversations DROP CONSTRAINT IF EXISTS chat_conversations_scope_check;
+ALTER TABLE chat_conversations ADD CONSTRAINT chat_conversations_scope_check CHECK (
+    (fractal_id IS NOT NULL AND prism_id IS NULL) OR
+    (fractal_id IS NULL AND prism_id IS NOT NULL)
+);

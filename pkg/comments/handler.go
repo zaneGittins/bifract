@@ -18,21 +18,10 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// PrismMemberResolver resolves prism member fractal IDs.
-type PrismMemberResolver interface {
-	GetMemberFractalIDs(ctx context.Context, prismID string) ([]string, error)
-}
-
 type CommentHandler struct {
 	pg             *storage.PostgresClient
 	ch             *storage.ClickHouseClient
 	fractalManager *fractals.Manager
-	prismResolver  PrismMemberResolver
-}
-
-// SetPrismResolver sets the prism member resolver for prism context support.
-func (h *CommentHandler) SetPrismResolver(resolver PrismMemberResolver) {
-	h.prismResolver = resolver
 }
 
 type CreateCommentRequest struct {
@@ -42,6 +31,7 @@ type CreateCommentRequest struct {
 	Tags         []string `json:"tags,omitempty"`
 	Query        string   `json:"query,omitempty"`
 	FractalID    string   `json:"fractal_id,omitempty"`
+	PrismID      string   `json:"prism_id,omitempty"`
 }
 
 type UpdateCommentRequest struct {
@@ -151,7 +141,7 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		// information leakage via log_id probing.
 		lookupFractal := req.FractalID
 		if lookupFractal == "" {
-			lookupFractal, _ = h.getSelectedFractal(r)
+			lookupFractal, _ = h.getScope(r)
 		}
 		logEntry, err := h.ch.GetLogByTimestamp(r.Context(), time.Time{}, req.LogID, lookupFractal)
 		if err != nil || logEntry == nil {
@@ -189,21 +179,18 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// Determine fractal: prefer the log's own fractal_id from the request
-	// (sourced from ClickHouse log data), fall back to session fractal.
+	// Determine scope: prefer explicit request fields, fall back to session context.
+	// For prism comments, we store BOTH prism_id (visibility scope) and fractal_id
+	// (which fractal the log lives in) so the log can be looked up later.
 	fractalID := req.FractalID
-	if fractalID == "" {
-		var err error
-		fractalID, err = h.getSelectedFractal(r)
-		if err != nil {
-			log.Printf("[Comments] Failed to get selected fractal: %v", err)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{
-				Success: false,
-				Error:   "Failed to determine fractal context",
-			})
-			return
-		}
+	prismID := req.PrismID
+	if fractalID == "" && prismID == "" {
+		fractalID, prismID = h.getScope(r)
+	}
+	if fractalID == "" && prismID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "No fractal or prism context"})
+		return
 	}
 
 	// For API key auth, attribute the comment to the key's creator (a real
@@ -215,7 +202,7 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// Create comment
+	// Create comment scoped to fractal or prism
 	comment := storage.Comment{
 		LogID:        req.LogID,
 		LogTimestamp: logTimestamp,
@@ -224,6 +211,7 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		Tags:         req.Tags,
 		Query:        req.Query,
 		FractalID:    fractalID,
+		PrismID:      prismID,
 	}
 
 	newComment, err := h.pg.InsertComment(r.Context(), comment)
@@ -258,9 +246,11 @@ func (h *CommentHandler) HandleGetComment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Verify the caller has access to the comment's fractal
-	selectedFractal, err := h.getSelectedFractal(r)
-	if err != nil || (comment.FractalID != "" && selectedFractal != comment.FractalID) {
+	// Verify the caller's scope matches the comment's scope
+	scopeFractal, scopePrism := h.getScope(r)
+	scopeMatch := (comment.FractalID != "" && comment.FractalID == scopeFractal) ||
+		(comment.PrismID != "" && comment.PrismID == scopePrism)
+	if !scopeMatch {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(Response{
@@ -368,19 +358,15 @@ func (h *CommentHandler) HandleDeleteComment(w http.ResponseWriter, r *http.Requ
 func (h *CommentHandler) HandleGetLogComments(w http.ResponseWriter, r *http.Request) {
 	logID := chi.URLParam(r, "log_id")
 
-	// Get selected fractal for comment isolation
-	selectedFractal, err := h.getSelectedFractal(r)
-	if err != nil {
-		log.Printf("[Comments] Failed to get selected fractal: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to determine fractal context",
-		})
-		return
-	}
+	scopeFractal, scopePrism := h.getScope(r)
 
-	comments, err := h.pg.GetCommentsByLogIDAndFractal(r.Context(), logID, selectedFractal)
+	var comments []storage.Comment
+	var err error
+	if scopePrism != "" {
+		comments, err = h.pg.GetCommentsByLogIDAndPrism(r.Context(), logID, scopePrism)
+	} else {
+		comments, err = h.pg.GetCommentsByLogIDAndFractal(r.Context(), logID, scopeFractal)
+	}
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{
@@ -404,23 +390,12 @@ func (h *CommentHandler) HandleGetLogComments(w http.ResponseWriter, r *http.Req
 
 // HandleGetCommentedLogs gets all logs that have comments
 func (h *CommentHandler) HandleGetCommentedLogs(w http.ResponseWriter, r *http.Request) {
-	// Get selected fractal for comment isolation
-	selectedFractal, err := h.getSelectedFractal(r)
-	if err != nil {
-		log.Printf("[Comments] Failed to get selected fractal: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to determine fractal context",
-		})
-		return
-	}
+	scopeFractal, scopePrism := h.getScope(r)
 
-	// Parse optional limit and offset for pagination
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
 
-	limit := 50 // Default limit
+	limit := 50
 	offset := 0
 
 	if limitStr != "" {
@@ -435,8 +410,14 @@ func (h *CommentHandler) HandleGetCommentedLogs(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Get commented logs filtered by fractal
-	logs, total, err := h.pg.GetAllCommentedLogsByFractal(r.Context(), selectedFractal, limit, offset)
+	var logs []map[string]interface{}
+	var total int
+	var err error
+	if scopePrism != "" {
+		logs, total, err = h.pg.GetAllCommentedLogsByPrism(r.Context(), scopePrism, limit, offset)
+	} else {
+		logs, total, err = h.pg.GetAllCommentedLogsByFractal(r.Context(), scopeFractal, limit, offset)
+	}
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{
@@ -480,27 +461,15 @@ func (h *CommentHandler) HandleGetFlatComments(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	// In prism context, fetch comments across all member fractals
+	scopeFractal, scopePrism := h.getScope(r)
+
 	var comments []storage.Comment
 	var total int
 	var err error
-
-	if prismID, _ := r.Context().Value("selected_prism").(string); prismID != "" && h.prismResolver != nil {
-		fractalIDs, resolveErr := h.prismResolver.GetMemberFractalIDs(r.Context(), prismID)
-		if resolveErr != nil || len(fractalIDs) == 0 {
-			comments = []storage.Comment{}
-		} else {
-			comments, total, err = h.pg.GetAllCommentsByFractalIDs(r.Context(), fractalIDs, limit, offset)
-		}
+	if scopePrism != "" {
+		comments, total, err = h.pg.GetAllCommentsByPrism(r.Context(), scopePrism, limit, offset)
 	} else {
-		selectedFractal, fractalErr := h.getSelectedFractal(r)
-		if fractalErr != nil {
-			log.Printf("[Comments] Failed to get selected fractal: %v", fractalErr)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to determine fractal context"})
-			return
-		}
-		comments, total, err = h.pg.GetAllCommentsByFractal(r.Context(), selectedFractal, limit, offset)
+		comments, total, err = h.pg.GetAllCommentsByFractal(r.Context(), scopeFractal, limit, offset)
 	}
 	if err != nil {
 		log.Printf("[Comments] Failed to get flat comments: %v", err)
@@ -685,16 +654,17 @@ func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http
 	})
 }
 
-// HandleGetTags returns distinct tags used in comments for the current fractal.
+// HandleGetTags returns distinct tags used in comments for the current scope.
 func (h *CommentHandler) HandleGetTags(w http.ResponseWriter, r *http.Request) {
-	selectedFractal, err := h.getSelectedFractal(r)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to determine fractal context"})
-		return
-	}
+	scopeFractal, scopePrism := h.getScope(r)
 
-	tags, err := h.pg.GetDistinctTagsByFractal(r.Context(), selectedFractal)
+	var tags []string
+	var err error
+	if scopePrism != "" {
+		tags, err = h.pg.GetDistinctTagsByPrism(r.Context(), scopePrism)
+	} else {
+		tags, err = h.pg.GetDistinctTagsByFractal(r.Context(), scopeFractal)
+	}
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to fetch tags"})
@@ -780,37 +750,25 @@ func (h *CommentHandler) DeleteAllComments(ctx context.Context) error {
 	return h.pg.DeleteAllComments(ctx)
 }
 
-// getSelectedFractal retrieves the selected fractal for the current user session
-func (h *CommentHandler) getSelectedFractal(r *http.Request) (string, error) {
-	// First try to get the selected fractal from the request context (set by auth middleware)
-	if selectedFractal := r.Context().Value("selected_fractal"); selectedFractal != nil {
-		if fractalID, ok := selectedFractal.(string); ok && fractalID != "" {
-			return fractalID, nil
+// getScope returns the fractalID and prismID from context. Exactly one will be non-empty.
+func (h *CommentHandler) getScope(r *http.Request) (fractalID, prismID string) {
+	if pid, _ := r.Context().Value("selected_prism").(string); pid != "" {
+		return "", pid
+	}
+	if fid, _ := r.Context().Value("selected_fractal").(string); fid != "" {
+		return fid, ""
+	}
+	if h.fractalManager != nil {
+		if df, err := h.fractalManager.GetDefaultFractal(r.Context()); err == nil {
+			return df.ID, ""
 		}
 	}
-
-	// If no fractal manager is available, use default behavior (backwards compatibility)
-	if h.fractalManager == nil {
-		return "", nil
-	}
-
-	// Fall back to default fractal if none selected in session
-	defaultFractal, err := h.fractalManager.GetDefaultFractal(r.Context())
-	if err != nil {
-		return "", fmt.Errorf("failed to get default fractal: %w", err)
-	}
-
-	return defaultFractal.ID, nil
+	return "", ""
 }
 
 // HandleGetLogFields batch-fetches parsed field data for multiple logs.
 func (h *CommentHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request) {
-	selectedFractal, err := h.getSelectedFractal(r)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to determine fractal context"})
-		return
-	}
+	selectedFractal, _ := h.getScope(r)
 
 	var req struct {
 		LogIDs []string `json:"log_ids"`

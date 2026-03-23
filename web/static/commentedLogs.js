@@ -50,9 +50,6 @@ const CommentedLogs = {
 
         try {
             let url = '/api/v1/comments/flat?limit=5000';
-            if (window.FractalContext && window.FractalContext.currentFractal) {
-                url += `&fractal_id=${window.FractalContext.currentFractal.id}`;
-            }
 
             const response = await fetch(url, { credentials: 'include' });
             const data = await response.json();
@@ -523,12 +520,11 @@ const CommentedLogs = {
                 log_id: logId
             };
 
-            // Use the comment's own fractal_id (the fractal the log belongs to),
-            // not the current context which may be a prism or different fractal.
+            // Use the comment's own fractal_id if available.
+            // For prism-scoped comments, fractal_id is empty - omit it
+            // so the backend searches across all fractals by log_id.
             if (fractalId) {
                 requestBody.fractal_id = fractalId;
-            } else if (window.FractalContext && window.FractalContext.currentFractal) {
-                requestBody.fractal_id = window.FractalContext.currentFractal.id;
             }
 
             const response = await fetch('/api/v1/logs/by-timestamp', {

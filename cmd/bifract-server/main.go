@@ -412,7 +412,6 @@ func main() {
 	groupHandler := groups.NewHandler(pg)
 
 	commentHandler := comments.NewCommentHandlerWithFractals(pg, db, fractalManager)
-	commentHandler.SetPrismResolver(prismManager)
 	notebookHandler := notebooks.NewNotebookHandler(pg, db, fractalManager, config.LiteLLMURL, config.LiteLLMMasterKey)
 	notebookHandler.SetRBACResolver(authHandler.RBACResolver())
 	dashboardHandler := dashboards.NewDashboardHandler(pg, fractalManager)
@@ -423,6 +422,7 @@ func main() {
 	chatManager := chat.NewManager(pg, db, fractalManager, normalizerManager, config.LiteLLMURL, config.LiteLLMMasterKey)
 	rbacAdapter := &fractalAccessAdapter{resolver: authHandler.RBACResolver()}
 	chatHandler := chat.NewHandler(chatManager, fractalManager, rbacAdapter)
+	chatHandler.SetPrismResolver(prismManager)
 	savedQueryHandler := savedqueries.NewHandler(pg, fractalManager)
 	savedQueryHandler.SetRBACResolver(rbacAdapter)
 	savedQueryHandler.SetRBACFull(authHandler.RBACResolver())
@@ -443,6 +443,7 @@ func main() {
 	instructionHandler.SetRBACResolver(authHandler.RBACResolver())
 	instructionSyncer.Start()
 	chatManager.SetInstructionManager(instructionManager)
+	chatManager.SetPrismFractalResolver(prismManager)
 	log.Println("Instruction library system initialized")
 
 	// Initialize archive system

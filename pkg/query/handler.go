@@ -340,9 +340,9 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		hasCommentFilter = true
 		var err error
 		if isPrismContext {
-			commentLogIDs, err = h.pg.GetCommentedLogIDsFiltered(r.Context(), "", prismFractalIDs, startTime, endTime, commentTags, commentKeyword)
+			commentLogIDs, err = h.pg.GetCommentedLogIDsFiltered(r.Context(), "", selectedPrismID, startTime, endTime, commentTags, commentKeyword)
 		} else {
-			commentLogIDs, err = h.pg.GetCommentedLogIDsFiltered(r.Context(), selectedIndex, nil, startTime, endTime, commentTags, commentKeyword)
+			commentLogIDs, err = h.pg.GetCommentedLogIDsFiltered(r.Context(), selectedIndex, "", startTime, endTime, commentTags, commentKeyword)
 		}
 		if err != nil {
 			log.Printf("[QueryHandler] Failed to fetch comment log IDs: %v", err)

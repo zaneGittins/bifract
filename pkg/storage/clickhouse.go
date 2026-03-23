@@ -743,9 +743,17 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 		return nil, fmt.Errorf("too many log IDs (max 500, got %d)", len(logIDs))
 	}
 
-	rows, err := c.conn.Query(ctx,
-		fmt.Sprintf("SELECT log_id, toString(fields) AS fields FROM %s WHERE log_id IN (?) AND fractal_id = ?", c.ReadTable()),
-		logIDs, fractalID)
+	var rows driver.Rows
+	var err error
+	if fractalID != "" {
+		rows, err = c.conn.Query(ctx,
+			fmt.Sprintf("SELECT log_id, toString(fields) AS fields FROM %s WHERE log_id IN (?) AND fractal_id = ?", c.ReadTable()),
+			logIDs, fractalID)
+	} else {
+		rows, err = c.conn.Query(ctx,
+			fmt.Sprintf("SELECT log_id, toString(fields) AS fields FROM %s WHERE log_id IN (?)", c.ReadTable()),
+			logIDs)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query logs by IDs: %w", err)
 	}

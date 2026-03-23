@@ -415,8 +415,12 @@ const Comments = {
             text: String(text),                  // Ensure it's a string
             tags: this.pendingTags.slice(),
             query: currentQuery,
-            fractal_id: this.currentLogData.fractal_id || ''
+            fractal_id: this.currentLogData.fractal_id || '',
         };
+        // In prism context, also set prism_id for visibility scoping
+        if (window.FractalContext && window.FractalContext.currentItemType === 'prism' && window.FractalContext.currentFractal) {
+            requestBody.prism_id = window.FractalContext.currentFractal.id;
+        }
 
         console.log('[Comments] Saving comment with body:', requestBody);
         console.log('[Comments] Types:', {

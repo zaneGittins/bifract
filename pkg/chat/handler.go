@@ -17,11 +17,22 @@ type Handler struct {
 	manager        *Manager
 	fractalManager *fractals.Manager
 	rbacResolver   RBACResolver
+	prismResolver  PrismResolver
 }
 
 // RBACResolver checks whether a user has any access to a fractal.
 type RBACResolver interface {
 	HasFractalAccess(ctx context.Context, user *storage.User, fractalID string) bool
+}
+
+// PrismResolver resolves prism details for chat context.
+type PrismResolver interface {
+	GetPrismInfo(ctx context.Context, prismID string) (id, name, description string, err error)
+}
+
+// SetPrismResolver sets the prism resolver for prism-scoped chat context.
+func (h *Handler) SetPrismResolver(resolver PrismResolver) {
+	h.prismResolver = resolver
 }
 
 type apiResponse struct {
@@ -64,14 +75,14 @@ func (h *Handler) verifyConversationOwner(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) HandleListConversations(w http.ResponseWriter, r *http.Request) {
-	fractalID, err := h.getRequiredFractalID(r)
+	fractalID, prismID, err := h.getScope(r)
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	username := h.getUsername(r)
 
-	convs, err := h.manager.ListConversations(r.Context(), fractalID, username)
+	convs, err := h.manager.ListConversations(r.Context(), fractalID, prismID, username)
 	if err != nil {
 		log.Printf("[Chat] Failed to list conversations: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to load conversations")
@@ -84,7 +95,7 @@ func (h *Handler) HandleListConversations(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) HandleCreateConversation(w http.ResponseWriter, r *http.Request) {
-	fractalID, err := h.getRequiredFractalID(r)
+	fractalID, prismID, err := h.getScope(r)
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -100,7 +111,7 @@ func (h *Handler) HandleCreateConversation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	conv, err := h.manager.CreateConversation(r.Context(), fractalID, req.Title, username, req.LibraryIDs)
+	conv, err := h.manager.CreateConversation(r.Context(), fractalID, prismID, req.Title, username, req.LibraryIDs)
 	if err != nil {
 		log.Printf("[Chat] Failed to create conversation: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to create conversation")
@@ -183,14 +194,14 @@ func (h *Handler) HandleClearMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleDeleteAllConversations(w http.ResponseWriter, r *http.Request) {
-	fractalID, err := h.getRequiredFractalID(r)
+	fractalID, prismID, err := h.getScope(r)
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	username := h.getUsername(r)
 
-	if err := h.manager.DeleteAllConversations(r.Context(), fractalID, username); err != nil {
+	if err := h.manager.DeleteAllConversations(r.Context(), fractalID, prismID, username); err != nil {
 		log.Printf("[Chat] Failed to delete all conversations: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to delete conversations")
 		return
@@ -239,9 +250,14 @@ func (h *Handler) HandleGetConversationLibraries(w http.ResponseWriter, r *http.
 // ---- Instruction Handlers ----
 
 func (h *Handler) HandleListInstructions(w http.ResponseWriter, r *http.Request) {
-	fractalID, err := h.getRequiredFractalID(r)
+	fractalID, prismID, err := h.getScope(r)
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if prismID != "" {
+		// Legacy instructions are fractal-scoped; use instruction libraries for prism context
+		h.respondSuccess(w, map[string]interface{}{"instructions": []*Instruction{}, "count": 0})
 		return
 	}
 
@@ -258,9 +274,13 @@ func (h *Handler) HandleListInstructions(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) HandleCreateInstruction(w http.ResponseWriter, r *http.Request) {
-	fractalID, err := h.getRequiredFractalID(r)
+	fractalID, prismID, err := h.getScope(r)
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if prismID != "" {
+		h.respondError(w, http.StatusBadRequest, "Legacy instructions are not available in prism context. Use instruction libraries instead.")
 		return
 	}
 	username := h.getUsername(r)
@@ -345,18 +365,33 @@ func (h *Handler) HandleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the user has access to this conversation's fractal
+	// Verify the user has access to this conversation's scope
 	user, _ := r.Context().Value("user").(*storage.User)
-	if h.rbacResolver != nil && user != nil {
+	if h.rbacResolver != nil && user != nil && conv.FractalID != "" {
 		if !h.rbacResolver.HasFractalAccess(r.Context(), user, conv.FractalID) {
 			h.respondError(w, http.StatusForbidden, "access denied")
 			return
 		}
 	}
 
-	fractal, err := h.fractalManager.GetFractal(r.Context(), conv.FractalID)
-	if err != nil {
-		h.respondError(w, http.StatusInternalServerError, "failed to get fractal info")
+	// Get context for the AI system prompt
+	var fractal *fractals.Fractal
+	if conv.FractalID != "" {
+		var err error
+		fractal, err = h.fractalManager.GetFractal(r.Context(), conv.FractalID)
+		if err != nil {
+			h.respondError(w, http.StatusInternalServerError, "failed to get fractal info")
+			return
+		}
+	} else if conv.PrismID != "" && h.prismResolver != nil {
+		id, name, desc, err := h.prismResolver.GetPrismInfo(r.Context(), conv.PrismID)
+		if err != nil {
+			h.respondError(w, http.StatusInternalServerError, "failed to get prism info")
+			return
+		}
+		fractal = &fractals.Fractal{ID: id, Name: name, Description: desc}
+	} else {
+		h.respondError(w, http.StatusBadRequest, "conversation has no scope")
 		return
 	}
 
@@ -379,12 +414,14 @@ func (h *Handler) HandleStream(w http.ResponseWriter, r *http.Request) {
 
 // ---- Helpers ----
 
-func (h *Handler) getRequiredFractalID(r *http.Request) (string, error) {
-	fractalID, _ := r.Context().Value("selected_fractal").(string)
-	if fractalID == "" {
-		return "", fmt.Errorf("no fractal selected")
+func (h *Handler) getScope(r *http.Request) (fractalID, prismID string, err error) {
+	if pid, _ := r.Context().Value("selected_prism").(string); pid != "" {
+		return "", pid, nil
 	}
-	return fractalID, nil
+	if fid, _ := r.Context().Value("selected_fractal").(string); fid != "" {
+		return fid, "", nil
+	}
+	return "", "", fmt.Errorf("no fractal or prism selected")
 }
 
 func (h *Handler) getUsername(r *http.Request) string {

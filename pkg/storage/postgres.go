@@ -43,7 +43,8 @@ type Comment struct {
 	Query                 string    `json:"query"`
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`
-	FractalID             string    `json:"fractal_id"` // Fractal UUID for multi-tenant isolation
+	FractalID             string    `json:"fractal_id,omitempty"` // Fractal UUID for multi-tenant isolation
+	PrismID               string    `json:"prism_id,omitempty"`   // Prism UUID (mutually exclusive with FractalID)
 }
 
 func (c *PostgresClient) Initialize(ctx context.Context, initSQL string) error {
@@ -432,11 +433,21 @@ func (c *PostgresClient) InsertComment(ctx context.Context, comment Comment) (*C
 	}
 
 	var newComment Comment
+
+	var fractalIDPtr, prismIDPtr interface{}
+	if comment.FractalID != "" {
+		fractalIDPtr = comment.FractalID
+	}
+	if comment.PrismID != "" {
+		prismIDPtr = comment.PrismID
+	}
+
 	err := c.db.QueryRowContext(ctx, `
-		INSERT INTO comments (log_id, log_timestamp, text, author, tags, query, fractal_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, log_id, log_timestamp, text, author, tags, query, created_at, updated_at, fractal_id
-	`, comment.LogID, comment.LogTimestamp, comment.Text, comment.Author, tags, comment.Query, comment.FractalID).Scan(
+		INSERT INTO comments (log_id, log_timestamp, text, author, tags, query, fractal_id, prism_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, log_id, log_timestamp, text, author, tags, query, created_at, updated_at,
+		          COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '')
+	`, comment.LogID, comment.LogTimestamp, comment.Text, comment.Author, tags, comment.Query, fractalIDPtr, prismIDPtr).Scan(
 		&newComment.ID,
 		&newComment.LogID,
 		&newComment.LogTimestamp,
@@ -447,6 +458,7 @@ func (c *PostgresClient) InsertComment(ctx context.Context, comment Comment) (*C
 		&newComment.CreatedAt,
 		&newComment.UpdatedAt,
 		&newComment.FractalID,
+		&newComment.PrismID,
 	)
 
 	if err != nil {
@@ -467,10 +479,11 @@ func (c *PostgresClient) InsertComment(ctx context.Context, comment Comment) (*C
 func (c *PostgresClient) GetComment(ctx context.Context, id string) (*Comment, error) {
 	comment := &Comment{}
 	err := c.db.QueryRowContext(ctx, `
-		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query, c.created_at, c.updated_at, c.fractal_id,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query, c.created_at, c.updated_at,
+		       COALESCE(c.fractal_id::text, ''), COALESCE(c.prism_id::text, ''),
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM comments c
-		JOIN users u ON c.author = u.username
+		LEFT JOIN users u ON c.author = u.username
 		WHERE c.id = $1
 	`, id).Scan(
 		&comment.ID,
@@ -483,6 +496,7 @@ func (c *PostgresClient) GetComment(ctx context.Context, id string) (*Comment, e
 		&comment.CreatedAt,
 		&comment.UpdatedAt,
 		&comment.FractalID,
+		&comment.PrismID,
 		&comment.AuthorDisplayName,
 		&comment.AuthorGravatarColor,
 		&comment.AuthorGravatarInitial,
@@ -500,10 +514,11 @@ func (c *PostgresClient) GetComment(ctx context.Context, id string) (*Comment, e
 
 func (c *PostgresClient) GetCommentsByLogID(ctx context.Context, logID string) ([]Comment, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query, c.created_at, c.updated_at, c.fractal_id,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query, c.created_at, c.updated_at,
+		       COALESCE(c.fractal_id::text, ''), COALESCE(c.prism_id::text, ''),
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM comments c
-		JOIN users u ON c.author = u.username
+		LEFT JOIN users u ON c.author = u.username
 		WHERE c.log_id = $1
 		ORDER BY c.created_at ASC
 	`, logID)
@@ -526,6 +541,7 @@ func (c *PostgresClient) GetCommentsByLogID(ctx context.Context, logID string) (
 			&comment.CreatedAt,
 			&comment.UpdatedAt,
 			&comment.FractalID,
+			&comment.PrismID,
 			&comment.AuthorDisplayName,
 			&comment.AuthorGravatarColor,
 			&comment.AuthorGravatarInitial,
@@ -542,10 +558,11 @@ func (c *PostgresClient) GetCommentsByLogID(ctx context.Context, logID string) (
 // GetCommentsByLogIDAndFractal gets comments for a log within a specific fractal
 func (c *PostgresClient) GetCommentsByLogIDAndFractal(ctx context.Context, logID, fractalID string) ([]Comment, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query, c.created_at, c.updated_at, c.fractal_id,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query, c.created_at, c.updated_at,
+		       COALESCE(c.fractal_id::text, ''), COALESCE(c.prism_id::text, ''),
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM comments c
-		JOIN users u ON c.author = u.username
+		LEFT JOIN users u ON c.author = u.username
 		WHERE c.log_id = $1 AND c.fractal_id = $2
 		ORDER BY c.created_at ASC
 	`, logID, fractalID)
@@ -568,6 +585,7 @@ func (c *PostgresClient) GetCommentsByLogIDAndFractal(ctx context.Context, logID
 			&comment.CreatedAt,
 			&comment.UpdatedAt,
 			&comment.FractalID,
+			&comment.PrismID,
 			&comment.AuthorDisplayName,
 			&comment.AuthorGravatarColor,
 			&comment.AuthorGravatarInitial,
@@ -581,13 +599,49 @@ func (c *PostgresClient) GetCommentsByLogIDAndFractal(ctx context.Context, logID
 	return comments, nil
 }
 
+// GetCommentsByLogIDAndPrism gets comments for a log within a specific prism.
+func (c *PostgresClient) GetCommentsByLogIDAndPrism(ctx context.Context, logID, prismID string) ([]Comment, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query, c.created_at, c.updated_at,
+		       COALESCE(c.fractal_id::text, ''), COALESCE(c.prism_id::text, ''),
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
+		FROM comments c
+		LEFT JOIN users u ON c.author = u.username
+		WHERE c.log_id = $1 AND c.prism_id = $2
+		ORDER BY c.created_at ASC
+	`, logID, prismID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get comments by log ID and prism: %w", err)
+	}
+	defer rows.Close()
+
+	var comments []Comment
+	for rows.Next() {
+		var comment Comment
+		err := rows.Scan(
+			&comment.ID, &comment.LogID, &comment.LogTimestamp, &comment.Text,
+			&comment.Author, pq.Array(&comment.Tags), &comment.Query,
+			&comment.CreatedAt, &comment.UpdatedAt,
+			&comment.FractalID, &comment.PrismID,
+			&comment.AuthorDisplayName, &comment.AuthorGravatarColor, &comment.AuthorGravatarInitial,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan comment: %w", err)
+		}
+		comments = append(comments, comment)
+	}
+
+	return comments, nil
+}
+
 // GetCommentsByTagAndFractal returns all comments with the given tag in a fractal, ordered by log event time.
 func (c *PostgresClient) GetCommentsByTagAndFractal(ctx context.Context, fractalID, tag string) ([]Comment, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query, c.created_at, c.updated_at, c.fractal_id,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query, c.created_at, c.updated_at,
+		       COALESCE(c.fractal_id::text, ''), COALESCE(c.prism_id::text, ''),
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM comments c
-		JOIN users u ON c.author = u.username
+		LEFT JOIN users u ON c.author = u.username
 		WHERE c.fractal_id = $1 AND c.tags @> ARRAY[$2]::text[]
 		ORDER BY c.log_timestamp ASC, c.created_at ASC
 	`, fractalID, tag)
@@ -610,6 +664,7 @@ func (c *PostgresClient) GetCommentsByTagAndFractal(ctx context.Context, fractal
 			&comment.CreatedAt,
 			&comment.UpdatedAt,
 			&comment.FractalID,
+			&comment.PrismID,
 			&comment.AuthorDisplayName,
 			&comment.AuthorGravatarColor,
 			&comment.AuthorGravatarInitial,
@@ -631,6 +686,30 @@ func (c *PostgresClient) GetDistinctTagsByFractal(ctx context.Context, fractalID
 		WHERE fractal_id = $1 AND tags IS NOT NULL AND array_length(tags, 1) > 0
 		ORDER BY tag
 	`, fractalID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct tags: %w", err)
+	}
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, fmt.Errorf("failed to scan tag: %w", err)
+		}
+		tags = append(tags, tag)
+	}
+	return tags, nil
+}
+
+// GetDistinctTagsByPrism returns all unique tags used in comments for a prism.
+func (c *PostgresClient) GetDistinctTagsByPrism(ctx context.Context, prismID string) ([]string, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT DISTINCT unnest(tags) AS tag
+		FROM comments
+		WHERE prism_id = $1 AND tags IS NOT NULL AND array_length(tags, 1) > 0
+		ORDER BY tag
+	`, prismID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get distinct tags: %w", err)
 	}
@@ -821,15 +900,15 @@ func (c *PostgresClient) GetCommentedLogIDs(ctx context.Context, start, end time
 
 // GetCommentedLogIDsFiltered returns distinct log_ids matching the given comment filters.
 // Used by the comment() BQL function to resolve log_ids at query time.
-func (c *PostgresClient) GetCommentedLogIDsFiltered(ctx context.Context, fractalID string, fractalIDs []string, start, end time.Time, tags []string, keyword string) ([]string, error) {
+func (c *PostgresClient) GetCommentedLogIDsFiltered(ctx context.Context, fractalID, prismID string, start, end time.Time, tags []string, keyword string) ([]string, error) {
 	query := "SELECT DISTINCT log_id FROM comments WHERE log_timestamp >= $1 AND log_timestamp <= $2"
 	args := []interface{}{start, end}
 	argIdx := 3
 
-	// Fractal scoping
-	if len(fractalIDs) > 0 {
-		query += fmt.Sprintf(" AND fractal_id = ANY($%d)", argIdx)
-		args = append(args, pq.Array(fractalIDs))
+	// Scope filtering: prism or fractal
+	if prismID != "" {
+		query += fmt.Sprintf(" AND prism_id = $%d", argIdx)
+		args = append(args, prismID)
 		argIdx++
 	} else if fractalID != "" {
 		query += fmt.Sprintf(" AND fractal_id = $%d", argIdx)
@@ -903,7 +982,7 @@ func (c *PostgresClient) GetAllCommentedLogs(ctx context.Context, limit, offset 
 				'updated_at', c.updated_at
 			) ORDER BY c.created_at ASC) as comments
 		FROM comments c
-		JOIN users u ON c.author = u.username
+		LEFT JOIN users u ON c.author = u.username
 		GROUP BY c.log_id, c.log_timestamp
 		ORDER BY c.log_timestamp DESC
 		LIMIT $1 OFFSET $2
@@ -964,7 +1043,7 @@ func (c *PostgresClient) GetAllCommentedLogsByFractal(ctx context.Context, fract
 				'updated_at', c.updated_at
 			) ORDER BY c.created_at ASC) as comments
 		FROM comments c
-		JOIN users u ON c.author = u.username
+		LEFT JOIN users u ON c.author = u.username
 		WHERE c.fractal_id = $1
 		GROUP BY c.log_id, c.log_timestamp
 		ORDER BY c.log_timestamp DESC
@@ -1001,6 +1080,70 @@ func (c *PostgresClient) GetAllCommentedLogsByFractal(ctx context.Context, fract
 	return results, total, nil
 }
 
+// GetAllCommentedLogsByPrism gets all logs that have comments within a specific prism.
+func (c *PostgresClient) GetAllCommentedLogsByPrism(ctx context.Context, prismID string, limit, offset int) ([]map[string]interface{}, int, error) {
+	var total int
+	err := c.db.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT log_id) FROM comments WHERE prism_id = $1
+	`, prismID).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get total count: %w", err)
+	}
+
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT
+			c.log_id,
+			c.log_timestamp,
+			json_agg(json_build_object(
+				'id', c.id,
+				'text', c.text,
+				'author', c.author,
+				'author_display_name', COALESCE(u.display_name, ''),
+				'author_gravatar_color', COALESCE(u.gravatar_color, ''),
+				'author_gravatar_initial', COALESCE(u.gravatar_initial, ''),
+				'tags', c.tags,
+				'query', c.query,
+				'created_at', c.created_at,
+				'updated_at', c.updated_at
+			) ORDER BY c.created_at ASC) as comments
+		FROM comments c
+		LEFT JOIN users u ON c.author = u.username
+		WHERE c.prism_id = $1
+		GROUP BY c.log_id, c.log_timestamp
+		ORDER BY c.log_timestamp DESC
+		LIMIT $2 OFFSET $3
+	`, prismID, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get commented logs: %w", err)
+	}
+	defer rows.Close()
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		var logID string
+		var logTimestamp time.Time
+		var commentsJSON []byte
+
+		err := rows.Scan(&logID, &logTimestamp, &commentsJSON)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan commented log: %w", err)
+		}
+
+		results = append(results, map[string]interface{}{
+			"log_id":        logID,
+			"log_timestamp": logTimestamp,
+			"comments_json": string(commentsJSON),
+			"tags":          []string{},
+		})
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to iterate commented logs: %w", err)
+	}
+
+	return results, total, nil
+}
+
 // GetAllCommentsByFractal returns individual comments for a fractal with author display info.
 func (c *PostgresClient) GetAllCommentsByFractal(ctx context.Context, fractalID string, limit, offset int) ([]Comment, int, error) {
 	var total int
@@ -1013,10 +1156,10 @@ func (c *PostgresClient) GetAllCommentsByFractal(ctx context.Context, fractalID 
 
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query,
-		       c.created_at, c.updated_at, c.fractal_id,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		       c.created_at, c.updated_at, COALESCE(c.fractal_id::text, ''), COALESCE(c.prism_id::text, ''),
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM comments c
-		JOIN users u ON c.author = u.username
+		LEFT JOIN users u ON c.author = u.username
 		WHERE c.fractal_id = $1
 		ORDER BY c.created_at DESC
 		LIMIT $2 OFFSET $3
@@ -1033,7 +1176,7 @@ func (c *PostgresClient) GetAllCommentsByFractal(ctx context.Context, fractalID 
 		err := rows.Scan(
 			&comment.ID, &comment.LogID, &comment.LogTimestamp, &comment.Text,
 			&comment.Author, &tags, &comment.Query,
-			&comment.CreatedAt, &comment.UpdatedAt, &comment.FractalID,
+			&comment.CreatedAt, &comment.UpdatedAt, &comment.FractalID, &comment.PrismID,
 			&comment.AuthorDisplayName, &comment.AuthorGravatarColor, &comment.AuthorGravatarInitial,
 		)
 		if err != nil {
@@ -1050,26 +1193,26 @@ func (c *PostgresClient) GetAllCommentsByFractal(ctx context.Context, fractalID 
 	return comments, total, nil
 }
 
-// GetAllCommentsByFractalIDs returns comments across multiple fractals (for prism context).
-func (c *PostgresClient) GetAllCommentsByFractalIDs(ctx context.Context, fractalIDs []string, limit, offset int) ([]Comment, int, error) {
+// GetAllCommentsByPrism returns comments scoped to a specific prism.
+func (c *PostgresClient) GetAllCommentsByPrism(ctx context.Context, prismID string, limit, offset int) ([]Comment, int, error) {
 	var total int
 	err := c.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM comments WHERE fractal_id = ANY($1)
-	`, pq.Array(fractalIDs)).Scan(&total)
+		SELECT COUNT(*) FROM comments WHERE prism_id = $1
+	`, prismID).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get total count: %w", err)
 	}
 
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query,
-		       c.created_at, c.updated_at, c.fractal_id,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
+		       c.created_at, c.updated_at, COALESCE(c.fractal_id::text, ''), COALESCE(c.prism_id::text, ''),
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM comments c
 		LEFT JOIN users u ON c.author = u.username
-		WHERE c.fractal_id = ANY($1)
+		WHERE c.prism_id = $1
 		ORDER BY c.created_at DESC
 		LIMIT $2 OFFSET $3
-	`, pq.Array(fractalIDs), limit, offset)
+	`, prismID, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get comments: %w", err)
 	}
@@ -1082,7 +1225,7 @@ func (c *PostgresClient) GetAllCommentsByFractalIDs(ctx context.Context, fractal
 		err := rows.Scan(
 			&comment.ID, &comment.LogID, &comment.LogTimestamp, &comment.Text,
 			&comment.Author, &tags, &comment.Query,
-			&comment.CreatedAt, &comment.UpdatedAt, &comment.FractalID,
+			&comment.CreatedAt, &comment.UpdatedAt, &comment.FractalID, &comment.PrismID,
 			&comment.AuthorDisplayName, &comment.AuthorGravatarColor, &comment.AuthorGravatarInitial,
 		)
 		if err != nil {
