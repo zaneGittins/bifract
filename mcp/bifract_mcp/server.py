@@ -12,8 +12,9 @@ mcp = FastMCP(
     instructions=(
         "You are connected to a Bifract log management instance. "
         "Use the provided tools to query logs with BQL, manage alerts, "
-        "and investigate security events. Start by calling get_bql_reference "
-        "and get_fields to understand the available query syntax and log fields."
+        "manage notebooks, and investigate security events. Start by calling "
+        "get_bql_reference and get_fields to understand the available query "
+        "syntax and log fields."
     ),
 )
 
@@ -495,6 +496,285 @@ async def list_saved_queries() -> str:
 
     try:
         result = await _get("/saved-queries")
+    except httpx.HTTPStatusError as e:
+        return f"Failed ({e.response.status_code}): {e.response.text}"
+
+    return json.dumps(result, indent=2, default=str)
+
+
+# ---------------------------------------------------------------------------
+# Tools: Notebooks
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def list_notebooks(limit: int = 20, offset: int = 0) -> str:
+    """
+    List notebooks in the fractal with pagination.
+
+    Args:
+        limit: Max notebooks to return (1-100, default 20).
+        offset: Pagination offset (default 0).
+
+    Returns:
+        Paginated list of notebooks with their metadata.
+    """
+    if (err := _check_config()):
+        return err
+
+    params = {"limit": str(max(1, min(limit, 100))), "offset": str(max(0, offset))}
+
+    try:
+        result = await _get("/notebooks", params)
+    except httpx.HTTPStatusError as e:
+        return f"Failed ({e.response.status_code}): {e.response.text}"
+
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+async def get_notebook(notebook_id: str) -> str:
+    """
+    Get a notebook by ID, including all its sections.
+
+    Args:
+        notebook_id: The notebook UUID.
+
+    Returns:
+        Full notebook details with all sections.
+    """
+    if (err := _check_config()):
+        return err
+
+    try:
+        result = await _get(f"/notebooks/{notebook_id}")
+    except httpx.HTTPStatusError as e:
+        return f"Failed ({e.response.status_code}): {e.response.text}"
+
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+async def create_notebook(
+    name: str,
+    time_range_type: str = "24h",
+    description: str = "",
+    max_results_per_section: int = 1000,
+) -> str:
+    """
+    Create a new notebook in the fractal.
+
+    Args:
+        name: Notebook name (e.g. 'Incident Investigation 2025-03-22').
+        time_range_type: Time range for queries in the notebook.
+                         One of: '1h', '24h', '7d', '30d', 'all', 'custom'.
+                         Default '24h'.
+        description: Optional description of the notebook's purpose.
+        max_results_per_section: Max query results per section (default 1000).
+
+    Returns:
+        The created notebook details including its ID.
+    """
+    if (err := _check_config()):
+        return err
+
+    body: dict = {
+        "name": name,
+        "description": description,
+        "time_range_type": time_range_type,
+        "max_results_per_section": max_results_per_section,
+    }
+
+    try:
+        result = await _post("/notebooks", body)
+    except httpx.HTTPStatusError as e:
+        return f"Failed ({e.response.status_code}): {e.response.text}"
+
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+async def add_notebook_section(
+    notebook_id: str,
+    section_type: str,
+    content: str,
+    title: str = "",
+    order_index: int = -1,
+) -> str:
+    """
+    Add a new section to an existing notebook.
+
+    Args:
+        notebook_id: The notebook UUID to add the section to.
+        section_type: Type of section - 'markdown' for text/notes or 'query' for
+                      a BQL query that can be executed within the notebook.
+        content: Section content. For 'markdown' sections this is the markdown text.
+                 For 'query' sections this is the BQL query string.
+        title: Optional section title.
+        order_index: Position in the notebook (0-based). Use -1 to append at the end.
+
+    Returns:
+        The created section details including its ID.
+    """
+    if (err := _check_config()):
+        return err
+
+    # If appending, fetch existing sections to determine next index
+    if order_index < 0:
+        try:
+            nb = await _get(f"/notebooks/{notebook_id}")
+            notebook = nb.get("notebook", nb)
+            sections = notebook.get("sections", [])
+            order_index = len(sections)
+        except httpx.HTTPStatusError:
+            order_index = 0
+
+    body: dict = {
+        "section_type": section_type,
+        "content": content,
+        "order_index": order_index,
+    }
+    if title:
+        body["title"] = title
+
+    try:
+        result = await _post(f"/notebooks/{notebook_id}/sections", body)
+    except httpx.HTTPStatusError as e:
+        return f"Failed ({e.response.status_code}): {e.response.text}"
+
+    return json.dumps(result, indent=2, default=str)
+
+
+# ---------------------------------------------------------------------------
+# Tools: AI Instructions
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def list_instructions() -> str:
+    """
+    List all AI instructions configured for this fractal.
+
+    AI instructions are reusable system prompts that guide the Bifract AI chat.
+    They can be collaboratively created and refined. One instruction can be
+    marked as the default for the fractal.
+
+    Returns:
+        List of instructions with their names, content, and default status.
+    """
+    if (err := _check_config()):
+        return err
+
+    try:
+        result = await _get("/chat/instructions")
+    except httpx.HTTPStatusError as e:
+        return f"Failed ({e.response.status_code}): {e.response.text}"
+
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+async def get_instruction(instruction_id: str) -> str:
+    """
+    Get a specific AI instruction by ID to view its full content.
+
+    Args:
+        instruction_id: The instruction UUID.
+
+    Returns:
+        Full instruction details including name, content, and default status.
+    """
+    if (err := _check_config()):
+        return err
+
+    # The API doesn't have a dedicated GET by ID endpoint,
+    # so list all and filter client-side.
+    try:
+        result = await _get("/chat/instructions")
+    except httpx.HTTPStatusError as e:
+        return f"Failed ({e.response.status_code}): {e.response.text}"
+
+    instructions = result.get("instructions", [])
+    for inst in instructions:
+        if inst.get("id") == instruction_id:
+            return json.dumps(inst, indent=2, default=str)
+
+    return f"Instruction {instruction_id} not found."
+
+
+@mcp.tool()
+async def create_instruction(
+    name: str,
+    content: str,
+    is_default: bool = False,
+) -> str:
+    """
+    Create a new AI instruction for the fractal.
+
+    AI instructions are system prompts that guide the Bifract AI chat assistant.
+    Use them to customize how the AI responds for this fractal's domain
+    (e.g. security-focused analysis, compliance checks, incident response).
+
+    Args:
+        name: Instruction name (e.g. 'Security Analyst', 'Compliance Reviewer').
+        content: The instruction content / system prompt text. This will be
+                 injected into the AI chat's context to guide its responses.
+        is_default: If true, this becomes the default instruction for the fractal.
+                    Only one instruction can be default at a time.
+
+    Returns:
+        The created instruction details.
+    """
+    if (err := _check_config()):
+        return err
+
+    body = {
+        "name": name,
+        "content": content,
+        "is_default": is_default,
+    }
+
+    try:
+        result = await _post("/chat/instructions", body)
+    except httpx.HTTPStatusError as e:
+        return f"Failed ({e.response.status_code}): {e.response.text}"
+
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+async def update_instruction(
+    instruction_id: str,
+    name: str,
+    content: str,
+    is_default: bool = False,
+) -> str:
+    """
+    Update an existing AI instruction.
+
+    Use this to refine and improve instructions over time based on how well
+    they guide the AI chat assistant.
+
+    Args:
+        instruction_id: The instruction UUID to update.
+        name: Updated instruction name.
+        content: Updated instruction content / system prompt text.
+        is_default: Whether this should be the default instruction for the fractal.
+
+    Returns:
+        The updated instruction details.
+    """
+    if (err := _check_config()):
+        return err
+
+    body = {
+        "name": name,
+        "content": content,
+        "is_default": is_default,
+    }
+
+    try:
+        result = await _put(f"/chat/instructions/{instruction_id}", body)
     except httpx.HTTPStatusError as e:
         return f"Failed ({e.response.status_code}): {e.response.text}"
 

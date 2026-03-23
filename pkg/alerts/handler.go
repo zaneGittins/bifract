@@ -936,8 +936,18 @@ func (h *Handler) requireRoleOnFractal(w http.ResponseWriter, r *http.Request, f
 	if user.IsAdmin {
 		return true
 	}
+	// API key users have their role pre-resolved by the auth middleware;
+	// querying fractal_permissions would fail because the synthetic
+	// "apikey_<id>" username has no DB entries.
+	if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
+		fractalRole := rbac.RoleFromContext(r.Context())
+		if !rbac.HasAccess(user, fractalRole, required) {
+			h.respondError(w, http.StatusForbidden, "Insufficient permissions")
+			return false
+		}
+		return true
+	}
 	if h.rbacResolver == nil {
-		// No resolver: fall back to session role check
 		return h.requireRole(w, r, required)
 	}
 	role := h.rbacResolver.ResolveRole(r.Context(), user, fractalID)

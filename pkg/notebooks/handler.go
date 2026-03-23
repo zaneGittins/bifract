@@ -43,6 +43,13 @@ func (h *NotebookHandler) requireRoleOnFractal(r *http.Request, fractalID string
 	if user.IsAdmin {
 		return true
 	}
+	// API key users have their role pre-resolved by the auth middleware;
+	// querying fractal_permissions would fail because the synthetic
+	// "apikey_<id>" username has no DB entries.
+	if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
+		fractalRole := rbac.RoleFromContext(r.Context())
+		return rbac.HasAccess(user, fractalRole, required)
+	}
 	if h.rbacResolver == nil {
 		fractalRole := rbac.RoleFromContext(r.Context())
 		return rbac.HasAccess(user, fractalRole, required)
