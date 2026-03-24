@@ -10,6 +10,7 @@ type Config struct {
 	LicenseKey string
 	AccountID  string
 	EditionIDs []string // e.g. ["GeoLite2-City-CSV", "GeoLite2-ASN-CSV"]
+	DataDir    string   // persistent directory for cached downloads (default: /data/maxmind)
 }
 
 // LoadConfigFromEnv returns a MaxMind config if MAXMIND_LICENSE_KEY is set,
@@ -36,9 +37,15 @@ func LoadConfigFromEnv() *Config {
 		}
 	}
 
+	dataDir := os.Getenv("MAXMIND_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "/data/maxmind"
+	}
+
 	return &Config{
 		LicenseKey: licenseKey,
 		AccountID:  accountID,
 		EditionIDs: editionIDs,
+		DataDir:    dataDir,
 	}
 }

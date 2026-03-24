@@ -533,7 +533,8 @@ func (h *CommentHandler) HandleBulkAddTag(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	count, err := h.pg.BulkAddTagToComments(r.Context(), req.CommentIDs, req.Tag, user.Username, user.IsAdmin)
+	scopeFractal, scopePrism := h.getScope(r)
+	count, err := h.pg.BulkAddTagToComments(r.Context(), req.CommentIDs, req.Tag, user.Username, user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk add tag failed: %v", err)
 		w.Header().Set("Content-Type", "application/json")
@@ -589,7 +590,8 @@ func (h *CommentHandler) HandleBulkRemoveTag(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	count, err := h.pg.BulkRemoveTagFromComments(r.Context(), req.CommentIDs, req.Tag, user.Username, user.IsAdmin)
+	scopeFractal, scopePrism := h.getScope(r)
+	count, err := h.pg.BulkRemoveTagFromComments(r.Context(), req.CommentIDs, req.Tag, user.Username, user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk remove tag failed: %v", err)
 		w.Header().Set("Content-Type", "application/json")
@@ -639,7 +641,8 @@ func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http
 		return
 	}
 
-	count, err := h.pg.BulkDeleteComments(r.Context(), req.CommentIDs, user.Username, user.IsAdmin)
+	scopeFractal, scopePrism := h.getScope(r)
+	count, err := h.pg.BulkDeleteComments(r.Context(), req.CommentIDs, user.Username, user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk delete failed: %v", err)
 		w.Header().Set("Content-Type", "application/json")

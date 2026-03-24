@@ -11304,6 +11304,74 @@ div.vis-tooltip {
     background: rgba(255, 107, 107, 0.25);
 }
 
+.archive-create-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.archive-split-select {
+    width: auto !important;
+    min-width: 120px;
+    font-size: 0.8125rem;
+    padding: 0.3rem 0.5rem;
+}
+
+.archive-group-header {
+    cursor: pointer;
+}
+
+.archive-group-header td {
+    background: rgba(156, 106, 222, 0.04);
+    border-left: 2px solid var(--accent-secondary, #9c6ade);
+}
+
+.archive-group-header:hover td {
+    background: rgba(156, 106, 222, 0.1) !important;
+}
+
+.archive-group-toggle {
+    font-size: 0.625rem;
+    color: var(--text-muted);
+    text-align: center !important;
+    user-select: none;
+}
+
+.archive-group-child td {
+    padding-left: 0.75rem;
+    font-size: 0.7875rem;
+    color: var(--text-muted);
+}
+
+.archive-group-child td:first-child {
+    border-left: 2px solid rgba(156, 106, 222, 0.2);
+}
+
+.archive-period-label {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.75rem;
+}
+
+.archive-badge-warning {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+    cursor: help;
+}
+
+.archive-pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+    padding-top: 0.5rem;
+}
+
+.archive-page-info {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
 /* Field Statistics Bottom Drawer */
 .fs-drawer {
     flex-shrink: 0;

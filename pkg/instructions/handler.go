@@ -68,6 +68,39 @@ func (h *Handler) getScope(r *http.Request) (string, string) {
 	return f.ID, ""
 }
 
+// getLibraryScoped fetches a library by ID and verifies it belongs to the
+// caller's current scope. Returns nil and writes an error response if the
+// library is not found or not in scope.
+func (h *Handler) getLibraryScoped(w http.ResponseWriter, r *http.Request, id string) *Library {
+	lib, err := h.manager.GetLibrary(r.Context(), id)
+	if err != nil {
+		h.respond(w, http.StatusNotFound, nil, "library not found")
+		return nil
+	}
+	fractalID, prismID := h.getScope(r)
+	if (lib.FractalID != "" && lib.FractalID == fractalID) ||
+		(lib.PrismID != "" && lib.PrismID == prismID) {
+		return lib
+	}
+	h.respond(w, http.StatusNotFound, nil, "library not found")
+	return nil
+}
+
+// getPageScoped fetches a page by ID and verifies its parent library belongs
+// to the caller's current scope.
+func (h *Handler) getPageScoped(w http.ResponseWriter, r *http.Request, pageID string) *Page {
+	page, err := h.manager.GetPage(r.Context(), pageID)
+	if err != nil {
+		h.respond(w, http.StatusNotFound, nil, "page not found")
+		return nil
+	}
+	lib := h.getLibraryScoped(w, r, page.LibraryID)
+	if lib == nil {
+		return nil
+	}
+	return page
+}
+
 func (h *Handler) requireRole(w http.ResponseWriter, r *http.Request, required rbac.Role) bool {
 	user := h.getCurrentUser(r)
 	if user == nil {
@@ -114,9 +147,8 @@ func (h *Handler) HandleGetLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	lib, err := h.manager.GetLibrary(r.Context(), id)
-	if err != nil {
-		h.respond(w, http.StatusNotFound, nil, "library not found")
+	lib := h.getLibraryScoped(w, r, id)
+	if lib == nil {
 		return
 	}
 
@@ -172,6 +204,9 @@ func (h *Handler) HandleUpdateLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
+	if h.getLibraryScoped(w, r, id) == nil {
+		return
+	}
 
 	var req UpdateLibraryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -201,6 +236,9 @@ func (h *Handler) HandleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
+	if h.getLibraryScoped(w, r, id) == nil {
+		return
+	}
 	if err := h.manager.DeleteLibrary(r.Context(), id); err != nil {
 		log.Printf("[Instructions] Failed to delete library %s: %v", id, err)
 		h.respond(w, http.StatusInternalServerError, nil, "failed to delete library")
@@ -217,6 +255,9 @@ func (h *Handler) HandleListPages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	libraryID := chi.URLParam(r, "id")
+	if h.getLibraryScoped(w, r, libraryID) == nil {
+		return
+	}
 	pages, err := h.manager.ListPages(r.Context(), libraryID)
 	if err != nil {
 		log.Printf("[Instructions] Failed to list pages for library %s: %v", libraryID, err)
@@ -232,9 +273,8 @@ func (h *Handler) HandleGetPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pageID := chi.URLParam(r, "pageId")
-	page, err := h.manager.GetPage(r.Context(), pageID)
-	if err != nil {
-		h.respond(w, http.StatusNotFound, nil, "page not found")
+	page := h.getPageScoped(w, r, pageID)
+	if page == nil {
 		return
 	}
 	h.respond(w, http.StatusOK, page, "")
@@ -247,6 +287,9 @@ func (h *Handler) HandleCreatePage(w http.ResponseWriter, r *http.Request) {
 	}
 	user := h.getCurrentUser(r)
 	libraryID := chi.URLParam(r, "id")
+	if h.getLibraryScoped(w, r, libraryID) == nil {
+		return
+	}
 
 	var req CreatePageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -269,6 +312,9 @@ func (h *Handler) HandleUpdatePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pageID := chi.URLParam(r, "pageId")
+	if h.getPageScoped(w, r, pageID) == nil {
+		return
+	}
 
 	var req UpdatePageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -291,6 +337,9 @@ func (h *Handler) HandleDeletePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pageID := chi.URLParam(r, "pageId")
+	if h.getPageScoped(w, r, pageID) == nil {
+		return
+	}
 	if err := h.manager.DeletePage(r.Context(), pageID); err != nil {
 		log.Printf("[Instructions] Failed to delete page %s: %v", pageID, err)
 		h.respond(w, http.StatusInternalServerError, nil, "failed to delete page")
@@ -308,9 +357,8 @@ func (h *Handler) HandleSyncLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chi.URLParam(r, "id")
 
-	lib, err := h.manager.GetLibrary(r.Context(), id)
-	if err != nil {
-		h.respond(w, http.StatusNotFound, nil, "library not found")
+	lib := h.getLibraryScoped(w, r, id)
+	if lib == nil {
 		return
 	}
 	if lib.Source != SourceRepo {

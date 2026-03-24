@@ -808,6 +808,14 @@ const App = {
             }
         }
 
+        // Disconnect SSE when switching away from notebooks/dashboards
+        if (tab !== 'notebooks' && window.Notebooks) {
+            Notebooks.disconnectSSE();
+        }
+        if (tab !== 'dashboards' && window.Dashboards) {
+            Dashboards.disconnectSSE();
+        }
+
         // Close alert details panel when switching away from alerts tab
         if (tab !== 'alerts' && window.Alerts) {
             Alerts.closeAlertDetailsPanel();

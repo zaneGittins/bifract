@@ -33,6 +33,12 @@ const FractalManageTab = {
                 this.updateLifecycleSummary();
             });
         }
+        const archiveSplitSelect = document.getElementById('manageFractalArchiveSplit');
+        if (archiveSplitSelect) {
+            archiveSplitSelect.addEventListener('change', () => {
+                this.saveArchiveSchedule();
+            });
+        }
 
         // Quota action select - show/hide rollover warning
         const quotaActionSelect = document.getElementById('manageFractalQuotaAction');
@@ -343,6 +349,15 @@ const FractalManageTab = {
         if (maxArchivesSelect) {
             maxArchivesSelect.value = fractal.max_archives != null ? String(fractal.max_archives) : '';
         }
+        const archiveSplitSelect = document.getElementById('manageFractalArchiveSplit');
+        if (archiveSplitSelect) {
+            archiveSplitSelect.value = fractal.archive_split || 'none';
+        }
+        // Show/hide split setting based on schedule
+        const splitRow = document.getElementById('archiveSplitSettingRow');
+        if (splitRow) {
+            splitRow.style.display = (fractal.archive_schedule && fractal.archive_schedule !== 'never') ? '' : 'none';
+        }
 
         // Populate disk quota fields
         const quotaInput = document.getElementById('manageFractalQuotaInput');
@@ -488,11 +503,19 @@ const FractalManageTab = {
 
         const scheduleSelect = document.getElementById('manageFractalArchiveSchedule');
         const maxSelect = document.getElementById('manageFractalMaxArchives');
+        const splitSelect = document.getElementById('manageFractalArchiveSplit');
         if (!scheduleSelect) return;
+
+        // Show/hide split setting based on schedule
+        const splitRow = document.getElementById('archiveSplitSettingRow');
+        if (splitRow) {
+            splitRow.style.display = (scheduleSelect.value && scheduleSelect.value !== 'never') ? '' : 'none';
+        }
 
         const body = {
             archive_schedule: scheduleSelect.value,
-            max_archives: maxSelect && maxSelect.value !== '' ? parseInt(maxSelect.value, 10) : null
+            max_archives: maxSelect && maxSelect.value !== '' ? parseInt(maxSelect.value, 10) : null,
+            archive_split: splitSelect ? splitSelect.value : 'none'
         };
 
         try {
@@ -508,6 +531,7 @@ const FractalManageTab = {
 
             this.currentFractal.archive_schedule = body.archive_schedule;
             this.currentFractal.max_archives = body.max_archives;
+            this.currentFractal.archive_split = body.archive_split;
             if (window.FractalContext) FractalContext.currentFractal = this.currentFractal;
 
             if (window.Toast) {

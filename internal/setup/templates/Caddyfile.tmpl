@@ -61,6 +61,7 @@
 	@blocked not remote_ip {{range .AllowedIPs}}{{.}} {{end}}
 {{- end}}
 	@ingest_blocked path /api/v1/ingest* /_bulk
+	@sse path */events */stream
 
 	route {
 		respond /api/v1/internal/* 403
@@ -68,6 +69,17 @@
 		respond @blocked 403
 {{- end}}
 		respond @ingest_blocked 403
+		# SSE/streaming endpoints need immediate flushing and no response timeout
+		reverse_proxy @sse bifract-app:8080 {
+			flush_interval -1
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 0
+			}
+		}
 		reverse_proxy bifract-app:8080 {
 			header_up X-Real-IP {remote_host}
 			header_up X-Forwarded-For {remote_host}

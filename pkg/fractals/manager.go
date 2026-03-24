@@ -205,8 +205,8 @@ func (m *Manager) SetRetention(ctx context.Context, fractalID string, days *int)
 	return m.storage.SetRetention(ctx, fractalID, days)
 }
 
-// SetArchiveSchedule sets the archive schedule and max archives for a fractal.
-func (m *Manager) SetArchiveSchedule(ctx context.Context, fractalID, schedule string, maxArchives *int) error {
+// SetArchiveSchedule sets the archive schedule, max archives, and split granularity for a fractal.
+func (m *Manager) SetArchiveSchedule(ctx context.Context, fractalID, schedule string, maxArchives *int, archiveSplit string) error {
 	if fractalID == "" {
 		return fmt.Errorf("fractal ID is required")
 	}
@@ -217,7 +217,11 @@ func (m *Manager) SetArchiveSchedule(ctx context.Context, fractalID, schedule st
 	if maxArchives != nil && *maxArchives < 1 {
 		return fmt.Errorf("max_archives must be at least 1")
 	}
-	return m.storage.SetArchiveSchedule(ctx, fractalID, schedule, maxArchives)
+	validSplits := map[string]bool{"none": true, "hour": true, "day": true, "week": true}
+	if archiveSplit != "" && !validSplits[archiveSplit] {
+		return fmt.Errorf("invalid archive split: must be none, hour, day, or week")
+	}
+	return m.storage.SetArchiveSchedule(ctx, fractalID, schedule, maxArchives, archiveSplit)
 }
 
 // SetDiskQuota sets the disk quota and enforcement action for a fractal.

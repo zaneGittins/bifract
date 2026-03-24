@@ -105,6 +105,7 @@ services:
       MAXMIND_EDITION_IDS: ${MAXMIND_EDITION_IDS:-GeoLite2-City-CSV,GeoLite2-ASN-CSV}
     volumes:
       - bifract-archives:/archives
+      - bifract-maxmind:/data/maxmind
     depends_on:
       postgres:
         condition: service_healthy
@@ -119,6 +120,7 @@ volumes:
   caddy-data:
   caddy-config:
   bifract-archives:
+  bifract-maxmind:
 
 networks:
   bifract-network:

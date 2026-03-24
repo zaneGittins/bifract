@@ -1244,7 +1244,7 @@ func (c *PostgresClient) GetAllCommentsByPrism(ctx context.Context, prismID stri
 
 // BulkAddTagToComments adds a tag to multiple comments by ID.
 // Non-admin users can only modify comments they authored.
-func (c *PostgresClient) BulkAddTagToComments(ctx context.Context, commentIDs []string, tag string, authorUsername string, isAdmin bool) (int64, error) {
+func (c *PostgresClient) BulkAddTagToComments(ctx context.Context, commentIDs []string, tag string, authorUsername string, isAdmin bool, fractalID, prismID string) (int64, error) {
 	var result sql.Result
 	var err error
 	if isAdmin {
@@ -1252,13 +1252,15 @@ func (c *PostgresClient) BulkAddTagToComments(ctx context.Context, commentIDs []
 			UPDATE comments
 			SET tags = array_append(tags, $1), updated_at = NOW()
 			WHERE id = ANY($2) AND NOT ($1 = ANY(COALESCE(tags, '{}')))
-		`, tag, pq.Array(commentIDs))
+			  AND (($3 != '' AND fractal_id = $3::uuid) OR ($4 != '' AND prism_id = $4::uuid))
+		`, tag, pq.Array(commentIDs), fractalID, prismID)
 	} else {
 		result, err = c.db.ExecContext(ctx, `
 			UPDATE comments
 			SET tags = array_append(tags, $1), updated_at = NOW()
 			WHERE id = ANY($2) AND author = $3 AND NOT ($1 = ANY(COALESCE(tags, '{}')))
-		`, tag, pq.Array(commentIDs), authorUsername)
+			  AND (($4 != '' AND fractal_id = $4::uuid) OR ($5 != '' AND prism_id = $5::uuid))
+		`, tag, pq.Array(commentIDs), authorUsername, fractalID, prismID)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to bulk add tag: %w", err)
@@ -1268,7 +1270,8 @@ func (c *PostgresClient) BulkAddTagToComments(ctx context.Context, commentIDs []
 
 // BulkRemoveTagFromComments removes a tag from multiple comments by ID.
 // Non-admin users can only modify comments they authored.
-func (c *PostgresClient) BulkRemoveTagFromComments(ctx context.Context, commentIDs []string, tag string, authorUsername string, isAdmin bool) (int64, error) {
+// Operations are scoped to the given fractal or prism.
+func (c *PostgresClient) BulkRemoveTagFromComments(ctx context.Context, commentIDs []string, tag string, authorUsername string, isAdmin bool, fractalID, prismID string) (int64, error) {
 	var result sql.Result
 	var err error
 	if isAdmin {
@@ -1276,13 +1279,15 @@ func (c *PostgresClient) BulkRemoveTagFromComments(ctx context.Context, commentI
 			UPDATE comments
 			SET tags = array_remove(tags, $1), updated_at = NOW()
 			WHERE id = ANY($2)
-		`, tag, pq.Array(commentIDs))
+			  AND (($3 != '' AND fractal_id = $3::uuid) OR ($4 != '' AND prism_id = $4::uuid))
+		`, tag, pq.Array(commentIDs), fractalID, prismID)
 	} else {
 		result, err = c.db.ExecContext(ctx, `
 			UPDATE comments
 			SET tags = array_remove(tags, $1), updated_at = NOW()
 			WHERE id = ANY($2) AND author = $3
-		`, tag, pq.Array(commentIDs), authorUsername)
+			  AND (($4 != '' AND fractal_id = $4::uuid) OR ($5 != '' AND prism_id = $5::uuid))
+		`, tag, pq.Array(commentIDs), authorUsername, fractalID, prismID)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to bulk remove tag: %w", err)
@@ -1292,17 +1297,20 @@ func (c *PostgresClient) BulkRemoveTagFromComments(ctx context.Context, commentI
 
 // BulkDeleteComments deletes multiple comments by ID.
 // Non-admin users can only delete comments they authored.
-func (c *PostgresClient) BulkDeleteComments(ctx context.Context, commentIDs []string, authorUsername string, isAdmin bool) (int64, error) {
+// Operations are scoped to the given fractal or prism.
+func (c *PostgresClient) BulkDeleteComments(ctx context.Context, commentIDs []string, authorUsername string, isAdmin bool, fractalID, prismID string) (int64, error) {
 	var result sql.Result
 	var err error
 	if isAdmin {
 		result, err = c.db.ExecContext(ctx, `
 			DELETE FROM comments WHERE id = ANY($1)
-		`, pq.Array(commentIDs))
+			  AND (($2 != '' AND fractal_id = $2::uuid) OR ($3 != '' AND prism_id = $3::uuid))
+		`, pq.Array(commentIDs), fractalID, prismID)
 	} else {
 		result, err = c.db.ExecContext(ctx, `
 			DELETE FROM comments WHERE id = ANY($1) AND author = $2
-		`, pq.Array(commentIDs), authorUsername)
+			  AND (($3 != '' AND fractal_id = $3::uuid) OR ($4 != '' AND prism_id = $4::uuid))
+		`, pq.Array(commentIDs), authorUsername, fractalID, prismID)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to bulk delete comments: %w", err)
@@ -2079,6 +2087,14 @@ func (c *PostgresClient) UpdateNotebookPresence(ctx context.Context, notebookID,
 	return nil
 }
 
+// DeleteNotebookPresence removes a user's presence from a notebook.
+func (c *PostgresClient) DeleteNotebookPresence(ctx context.Context, notebookID, username string) error {
+	_, err := c.db.ExecContext(ctx, `
+		DELETE FROM notebook_presence WHERE notebook_id = $1 AND username = $2
+	`, notebookID, username)
+	return err
+}
+
 // GetNotebookPresence gets active users for a notebook (seen within 30 seconds)
 func (c *PostgresClient) GetNotebookPresence(ctx context.Context, notebookID string) ([]NotebookPresence, error) {
 	rows, err := c.db.QueryContext(ctx, `
@@ -2181,6 +2197,14 @@ func (c *PostgresClient) UpdateDashboardPresence(ctx context.Context, dashboardI
 		VALUES ($1, $2, NOW())
 		ON CONFLICT (dashboard_id, username)
 		DO UPDATE SET last_seen_at = NOW()
+	`, dashboardID, username)
+	return err
+}
+
+// DeleteDashboardPresence removes a user's presence from a dashboard.
+func (c *PostgresClient) DeleteDashboardPresence(ctx context.Context, dashboardID, username string) error {
+	_, err := c.db.ExecContext(ctx, `
+		DELETE FROM dashboard_presence WHERE dashboard_id = $1 AND username = $2
 	`, dashboardID, username)
 	return err
 }

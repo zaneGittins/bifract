@@ -92,10 +92,8 @@ func (h *Handler) HandleCreateDictionary(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) HandleGetDictionary(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	dict, err := h.manager.GetDictionary(r.Context(), id)
-	if err != nil {
-		h.respondError(w, http.StatusNotFound, "Dictionary not found")
+	dict := h.getDictionaryScoped(w, r)
+	if dict == nil {
 		return
 	}
 	h.respondSuccess(w, dict)
@@ -105,7 +103,11 @@ func (h *Handler) HandleUpdateDictionary(w http.ResponseWriter, r *http.Request)
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	id := chi.URLParam(r, "id")
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	id := existing.ID
 
 	var req struct {
 		Name        string `json:"name"`
@@ -130,7 +132,11 @@ func (h *Handler) HandleDeleteDictionary(w http.ResponseWriter, r *http.Request)
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	id := chi.URLParam(r, "id")
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	id := existing.ID
 	if err := h.manager.DeleteDictionary(r.Context(), id); err != nil {
 		log.Printf("[Dictionaries] Failed to delete dictionary %s: %v", id, err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to delete dictionary")
@@ -145,7 +151,11 @@ func (h *Handler) HandleAddColumn(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	id := chi.URLParam(r, "id")
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	id := existing.ID
 
 	var req struct {
 		Name string `json:"name"`
@@ -172,7 +182,11 @@ func (h *Handler) HandleRemoveColumn(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	id := chi.URLParam(r, "id")
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	id := existing.ID
 	colName := chi.URLParam(r, "name")
 
 	dict, err := h.manager.RemoveColumn(r.Context(), id, colName)
@@ -188,7 +202,11 @@ func (h *Handler) HandleSetColumnKey(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	id := chi.URLParam(r, "id")
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	id := existing.ID
 	colName := chi.URLParam(r, "name")
 
 	dict, err := h.manager.SetColumnKey(r.Context(), id, colName)
@@ -204,7 +222,11 @@ func (h *Handler) HandleUnsetColumnKey(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	id := chi.URLParam(r, "id")
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	id := existing.ID
 	colName := chi.URLParam(r, "name")
 
 	dict, err := h.manager.UnsetColumnKey(r.Context(), id, colName)
@@ -219,7 +241,11 @@ func (h *Handler) HandleUnsetColumnKey(w http.ResponseWriter, r *http.Request) {
 // ---- Data (rows) ----
 
 func (h *Handler) HandleGetRows(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	id := existing.ID
 	search := r.URL.Query().Get("search")
 
 	limit := 100
@@ -256,7 +282,11 @@ func (h *Handler) HandleUpsertRows(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	id := chi.URLParam(r, "id")
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	id := existing.ID
 
 	var req struct {
 		Rows []DictionaryRow `json:"rows"`
@@ -278,7 +308,11 @@ func (h *Handler) HandleDeleteRow(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	id := chi.URLParam(r, "id")
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	id := existing.ID
 	key := chi.URLParam(r, "key")
 
 	if err := h.manager.DeleteRow(r.Context(), id, key); err != nil {
@@ -295,7 +329,11 @@ func (h *Handler) HandleImportCSV(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	id := chi.URLParam(r, "id")
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	id := existing.ID
 
 	var csvReader io.Reader
 
@@ -330,7 +368,11 @@ func (h *Handler) HandleReloadDictionary(w http.ResponseWriter, r *http.Request)
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	id := chi.URLParam(r, "id")
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	id := existing.ID
 	if err := h.manager.ReloadDictionary(r.Context(), id); err != nil {
 		log.Printf("[Dictionaries] Failed to reload dictionary %s: %v", id, err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to reload dictionary")
@@ -459,6 +501,33 @@ func (h *Handler) HandleDeleteDictionaryAction(w http.ResponseWriter, r *http.Re
 }
 
 // ---- Helpers ----
+
+// getDictionaryScoped fetches a dictionary by ID and verifies it belongs to the
+// caller's current scope (fractal or prism). Returns nil and writes an error
+// response if the dictionary is not found or not in scope. Global dictionaries
+// are accessible from any scope.
+func (h *Handler) getDictionaryScoped(w http.ResponseWriter, r *http.Request) *Dictionary {
+	id := chi.URLParam(r, "id")
+	dict, err := h.manager.GetDictionary(r.Context(), id)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "Dictionary not found")
+		return nil
+	}
+	if dict.IsGlobal {
+		return dict
+	}
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		return nil
+	}
+	if (dict.FractalID != "" && dict.FractalID == fractalID) ||
+		(dict.PrismID != "" && dict.PrismID == prismID) {
+		return dict
+	}
+	h.respondError(w, http.StatusNotFound, "Dictionary not found")
+	return nil
+}
 
 func (h *Handler) getScope(r *http.Request) (fractalID, prismID string, err error) {
 	if pid, ok := r.Context().Value("selected_prism").(string); ok && pid != "" {

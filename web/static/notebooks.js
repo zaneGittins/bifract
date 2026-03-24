@@ -7,6 +7,8 @@ const Notebooks = {
     currentNotebook: null,
     activeUsers: new Set(),
     presenceInterval: null,
+    eventSource: null,
+    sseClientId: null,
     currentPage: 0,
     pageSize: 20,
     totalNotebooks: 0,
@@ -1937,7 +1939,7 @@ const Notebooks = {
         try {
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/${sectionId}/results`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this.sseHeaders(),
                 credentials: 'include',
                 body: JSON.stringify({
                     last_executed_at: lastExecutedAt,
@@ -1954,71 +1956,274 @@ const Notebooks = {
     },
 
     /**
-     * Start presence tracking
+     * Connect SSE for live updates and presence
      */
-    startPresenceTracking() {
-        if (!this.currentNotebook || this.presenceInterval) return;
+    connectSSE() {
+        if (!this.currentNotebook || this.eventSource) return;
 
-        // Initial presence update
-        this.updatePresence();
+        // Immediate presence update and fetch
+        fetch(`/api/v1/notebooks/${this.currentNotebook.id}/presence`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({})
+        }).catch(() => {});
+        this.onPresenceChanged();
 
-        // Set up polling every 5 seconds (like RealTimeComments)
+        this.eventSource = new EventSource(
+            `/api/v1/notebooks/${this.currentNotebook.id}/events`,
+            { withCredentials: true }
+        );
+
+        this.eventSource.onmessage = (e) => {
+            try {
+                const event = JSON.parse(e.data);
+                this.handleSSEEvent(event);
+            } catch (err) {
+                // Ignore parse errors (e.g. keepalive comments)
+            }
+        };
+
+        this.eventSource.onerror = () => {
+            // EventSource auto-reconnects. No action needed.
+        };
+
+        // Lightweight DB heartbeat so presence table stays fresh (must be
+        // shorter than the 30s DB expiry window)
         this.presenceInterval = setInterval(() => {
-            this.updatePresence();
-            this.refreshActiveUsers();
-        }, 5000);
-
-        // console.log('[Notebooks] Started presence tracking');
+            if (this.currentNotebook) {
+                fetch(`/api/v1/notebooks/${this.currentNotebook.id}/presence`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({})
+                }).catch(() => {});
+            }
+        }, 15000);
     },
 
     /**
-     * Stop presence tracking
+     * Disconnect SSE
      */
-    stopPresenceTracking() {
+    disconnectSSE() {
+        if (this.eventSource) {
+            this.eventSource.close();
+            this.eventSource = null;
+            this.sseClientId = null;
+        }
         if (this.presenceInterval) {
             clearInterval(this.presenceInterval);
             this.presenceInterval = null;
-            // console.log('[Notebooks] Stopped presence tracking');
+        }
+    },
+
+    // Keep old names as aliases for any callers
+    startPresenceTracking() { this.connectSSE(); },
+    stopPresenceTracking() { this.disconnectSSE(); },
+
+    /**
+     * Get SSE headers for mutation requests
+     */
+    sseHeaders() {
+        const headers = { 'Content-Type': 'application/json' };
+        if (this.sseClientId) {
+            headers['X-SSE-Client-ID'] = this.sseClientId;
+        }
+        return headers;
+    },
+
+    /**
+     * Handle incoming SSE event
+     */
+    handleSSEEvent(event) {
+        switch (event.type) {
+            case 'connected':
+                this.sseClientId = event.data.client_id;
+                break;
+            case 'section_added':
+                this.onRemoteSectionAdded(event.data);
+                break;
+            case 'section_removed':
+                this.onRemoteSectionRemoved(event.data);
+                break;
+            case 'section_updated':
+                this.onRemoteSectionUpdated(event.data);
+                break;
+            case 'section_results_updated':
+                this.onRemoteSectionResultsUpdated(event.data);
+                break;
+            case 'sections_reordered':
+                this.onRemoteSectionsReordered(event.data);
+                break;
+            case 'presence_joined':
+            case 'presence_left':
+                this.onPresenceChanged();
+                break;
         }
     },
 
     /**
-     * Update user presence
+     * Handle remote section added
      */
-    async updatePresence() {
+    onRemoteSectionAdded(section) {
+        if (!this.currentNotebook) return;
+        if (!this.currentNotebook.sections) {
+            this.currentNotebook.sections = [];
+        }
+
+        // Avoid duplicate if we already have this section
+        if (this.currentNotebook.sections.find(s => s.id === section.id)) return;
+
+        this.currentNotebook.sections.push(section);
+
+        // Insert DOM element at correct position instead of full re-render
+        const container = document.getElementById('notebookSections');
+        if (!container) return;
+
+        // Remove empty state if present
+        const emptyState = container.querySelector('.notebook-empty');
+        if (emptyState) emptyState.remove();
+
+        const sectionHtml = this.renderSection(section);
+        const temp = document.createElement('div');
+        temp.innerHTML = sectionHtml;
+        const newEl = temp.firstElementChild;
+
+        // Find insertion point based on order_index
+        const sorted = this.currentNotebook.sections.sort((a, b) => a.order_index - b.order_index);
+        const idx = sorted.findIndex(s => s.id === section.id);
+        const existingSections = container.querySelectorAll('.notebook-section');
+
+        if (idx >= 0 && idx < existingSections.length) {
+            container.insertBefore(newEl, existingSections[idx]);
+        } else {
+            container.appendChild(newEl);
+        }
+
+        // Brief highlight animation
+        newEl.style.transition = 'background-color 0.5s ease';
+        newEl.style.backgroundColor = 'var(--accent-primary-transparent, rgba(156, 106, 222, 0.1))';
+        setTimeout(() => { newEl.style.backgroundColor = ''; }, 1500);
+
+        this.bindSectionEvents();
+    },
+
+    /**
+     * Handle remote section removed
+     */
+    onRemoteSectionRemoved(data) {
         if (!this.currentNotebook) return;
 
-        try {
-            await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/presence`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({})
-            });
-        } catch (error) {
-            // console.warn('[Notebooks] Error updating presence:', error);
+        const sectionId = data.id;
+        const el = document.querySelector(`[data-section-id="${sectionId}"]`);
+
+        // If user is editing this section, warn them
+        if (el && el.classList.contains('editing')) {
+            this.showError('This section was deleted by another user');
+            this.cancelEditSection(sectionId);
+        }
+
+        this.currentNotebook.sections = this.currentNotebook.sections.filter(s => s.id !== sectionId);
+        if (el) el.remove();
+
+        // Show empty state if no sections left
+        if (this.currentNotebook.sections.length === 0) {
+            const container = document.getElementById('notebookSections');
+            if (container) {
+                container.innerHTML = `
+                    <div class="notebook-empty">
+                        <p style="text-align: center; color: var(--text-muted); margin: 40px 0;">This notebook is empty. Add your first section to get started!</p>
+                    </div>
+                `;
+            }
         }
     },
 
     /**
-     * Refresh active users
+     * Handle remote section updated
      */
-    async refreshActiveUsers() {
+    onRemoteSectionUpdated(data) {
         if (!this.currentNotebook) return;
 
+        const section = this.currentNotebook.sections.find(s => s.id === data.id);
+        if (!section) return;
+
+        // Don't overwrite if user is currently editing this section
+        const el = document.querySelector(`[data-section-id="${data.id}"]`);
+        if (el && el.classList.contains('editing')) return;
+
+        // Update local data
+        if (data.title !== undefined) section.title = data.title;
+        if (data.content !== undefined) section.content = data.content;
+        if (data.chart_config !== undefined) section.chart_config = data.chart_config;
+
+        // Re-render just this section's content
+        const contentEl = document.getElementById(`section-content-${data.id}`);
+        if (contentEl) {
+            contentEl.innerHTML = this.renderSectionContent(section);
+        }
+    },
+
+    /**
+     * Handle remote section results updated (query executed)
+     */
+    onRemoteSectionResultsUpdated(data) {
+        if (!this.currentNotebook) return;
+
+        const section = this.currentNotebook.sections.find(s => s.id === data.id);
+        if (!section) return;
+
+        // Update local data
+        if (data.last_executed_at) section.last_executed_at = data.last_executed_at;
+        if (data.last_results) section.last_results = data.last_results;
+
+        // Re-render the section content to show new results
+        const contentEl = document.getElementById(`section-content-${data.id}`);
+        if (contentEl) {
+            contentEl.innerHTML = this.renderSectionContent(section);
+        }
+    },
+
+    /**
+     * Handle remote sections reordered
+     */
+    onRemoteSectionsReordered(data) {
+        if (!this.currentNotebook || !data.section_order) return;
+
+        // Update order_index values
+        const order = data.section_order;
+        for (let i = 0; i < order.length; i++) {
+            const section = this.currentNotebook.sections.find(s => s.id === order[i]);
+            if (section) section.order_index = i;
+        }
+
+        // Reorder DOM elements
+        const container = document.getElementById('notebookSections');
+        if (!container) return;
+
+        const sorted = [...this.currentNotebook.sections].sort((a, b) => a.order_index - b.order_index);
+        for (const section of sorted) {
+            const el = container.querySelector(`[data-section-id="${section.id}"]`);
+            if (el) container.appendChild(el);
+        }
+    },
+
+    /**
+     * Handle presence change via SSE
+     */
+    async onPresenceChanged() {
+        if (!this.currentNotebook) return;
         try {
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/presence`, {
                 method: 'GET',
                 credentials: 'include'
             });
-
             const data = await response.json();
-
             if (data.success && data.data) {
                 this.renderPresenceIndicators(data.data);
             }
         } catch (error) {
-            // console.warn('[Notebooks] Error refreshing active users:', error);
+            // Ignore presence fetch errors
         }
     },
 
@@ -2029,12 +2234,13 @@ const Notebooks = {
         const container = document.getElementById('notebookPresence');
         if (!container) return;
 
-        // Deduplicate by username to prevent showing the same user twice
+        // Filter out self and deduplicate by username
+        const currentUsername = window.Auth && Auth.currentUser ? Auth.currentUser.username : null;
         const seen = new Set();
         const unique = presenceData.filter(user => {
-            const key = user.username;
-            if (seen.has(key)) return false;
-            seen.add(key);
+            if (user.username === currentUsername) return false;
+            if (seen.has(user.username)) return false;
+            seen.add(user.username);
             return true;
         });
 
@@ -2285,10 +2491,7 @@ const Notebooks = {
 
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                },
+                headers: { ...this.sseHeaders(), 'Accept': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify(sectionData)
             });
@@ -2509,10 +2712,7 @@ const Notebooks = {
 
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/${sectionId}`, {
                 method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                },
+                headers: { ...this.sseHeaders(), 'Accept': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify(data)
             });
@@ -2716,6 +2916,7 @@ const Notebooks = {
         try {
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/${sectionId}`, {
                 method: 'DELETE',
+                headers: this.sseHeaders(),
                 credentials: 'include'
             });
 
@@ -3300,10 +3501,7 @@ const Notebooks = {
 
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/reorder`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                },
+                headers: { ...this.sseHeaders(), 'Accept': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify({ section_order: sectionOrder })
             });
@@ -3387,10 +3585,7 @@ const Notebooks = {
 
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/reorder`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                },
+                headers: { ...this.sseHeaders(), 'Accept': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify({ section_order: sectionOrder })
             });
@@ -3449,10 +3644,7 @@ const Notebooks = {
 
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/reorder`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                },
+                headers: { ...this.sseHeaders(), 'Accept': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify({ section_order: sectionOrder })
             });

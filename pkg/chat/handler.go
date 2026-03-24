@@ -52,7 +52,8 @@ func (h *Handler) SetRBACResolver(resolver RBACResolver) {
 }
 
 // verifyConversationOwner loads a conversation and verifies the requesting user
-// is the owner. Returns the conversation or writes an error response.
+// is the owner and the conversation belongs to the caller's current scope.
+// Returns the conversation or writes an error response.
 func (h *Handler) verifyConversationOwner(w http.ResponseWriter, r *http.Request, convID string) *Conversation {
 	username := h.getUsername(r)
 	if username == "" {
@@ -68,6 +69,15 @@ func (h *Handler) verifyConversationOwner(w http.ResponseWriter, r *http.Request
 
 	if conv.CreatedBy != username {
 		h.respondError(w, http.StatusForbidden, "access denied")
+		return nil
+	}
+
+	// Verify the conversation belongs to the caller's current scope.
+	fractalID, prismID, _ := h.getScope(r)
+	scopeMatch := (conv.FractalID != "" && conv.FractalID == fractalID) ||
+		(conv.PrismID != "" && conv.PrismID == prismID)
+	if !scopeMatch {
+		h.respondError(w, http.StatusNotFound, "conversation not found")
 		return nil
 	}
 
@@ -311,6 +321,18 @@ func (h *Handler) HandleCreateInstruction(w http.ResponseWriter, r *http.Request
 func (h *Handler) HandleUpdateInstruction(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "instructionId")
 
+	// Verify instruction belongs to current scope
+	inst, err := h.manager.GetInstruction(r.Context(), id)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "instruction not found")
+		return
+	}
+	fractalID, _, _ := h.getScope(r)
+	if inst.FractalID != fractalID {
+		h.respondError(w, http.StatusNotFound, "instruction not found")
+		return
+	}
+
 	var req struct {
 		Name      string `json:"name"`
 		Content   string `json:"content"`
@@ -325,17 +347,29 @@ func (h *Handler) HandleUpdateInstruction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	inst, err := h.manager.UpdateInstruction(r.Context(), id, req.Name, req.Content, req.IsDefault)
+	updated, err := h.manager.UpdateInstruction(r.Context(), id, req.Name, req.Content, req.IsDefault)
 	if err != nil {
 		log.Printf("[Chat] Failed to update instruction %s: %v", id, err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to update instruction")
 		return
 	}
-	h.respondSuccess(w, inst)
+	h.respondSuccess(w, updated)
 }
 
 func (h *Handler) HandleDeleteInstruction(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "instructionId")
+
+	// Verify instruction belongs to current scope
+	inst, err := h.manager.GetInstruction(r.Context(), id)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "instruction not found")
+		return
+	}
+	fractalID, _, _ := h.getScope(r)
+	if inst.FractalID != fractalID {
+		h.respondError(w, http.StatusNotFound, "instruction not found")
+		return
+	}
 
 	if err := h.manager.DeleteInstruction(r.Context(), id); err != nil {
 		log.Printf("[Chat] Failed to delete instruction %s: %v", id, err)

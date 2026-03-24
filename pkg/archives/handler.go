@@ -56,14 +56,27 @@ func (h *Handler) HandleCreateArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get fractal to check retention
+	var req CreateArchiveRequest
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	split := req.Split
+	if split == "" {
+		split = SplitNone
+	}
+	if !ValidSplitGranularity(split) {
+		h.sendError(w, http.StatusBadRequest, "Invalid split granularity")
+		return
+	}
+
 	fractal, err := h.fractalManager.GetFractal(r.Context(), fractalID)
 	if err != nil {
 		h.sendError(w, http.StatusNotFound, "Fractal not found")
 		return
 	}
 
-	archiveID, err := h.manager.CreateArchive(r.Context(), fractalID, user.Username, fractal.RetentionDays, ArchiveTypeAdhoc)
+	groupID, err := h.manager.CreateArchiveGroup(r.Context(), fractalID, user.Username, fractal.RetentionDays, ArchiveTypeAdhoc, split)
 	if err != nil {
 		log.Printf("[Archives] Failed to create archive for fractal %s: %v", fractalID, err)
 		status := http.StatusInternalServerError
@@ -77,11 +90,11 @@ func (h *Handler) HandleCreateArchive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.sendSuccess(w, "Archive creation started", map[string]string{
-		"archive_id": archiveID,
+		"group_id": groupID,
 	})
 }
 
-// HandleListArchives returns all archives for a fractal.
+// HandleListArchives returns all archives for a fractal, grouped by archive group.
 func (h *Handler) HandleListArchives(w http.ResponseWriter, r *http.Request) {
 	if h.manager == nil {
 		h.sendError(w, http.StatusServiceUnavailable, "Archive system not available")
@@ -106,7 +119,7 @@ func (h *Handler) HandleListArchives(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	archives, err := h.manager.ListArchives(r.Context(), fractalID)
+	items, err := h.manager.ListArchiveItems(r.Context(), fractalID)
 	if err != nil {
 		log.Printf("[Archives] Failed to list archives for fractal %s: %v", fractalID, err)
 		h.sendError(w, http.StatusInternalServerError, "Failed to list archives")
@@ -114,7 +127,7 @@ func (h *Handler) HandleListArchives(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.sendSuccess(w, "Archives retrieved", map[string]interface{}{
-		"archives": archives,
+		"items": items,
 	})
 }
 
@@ -154,10 +167,7 @@ func (h *Handler) HandleGetArchive(w http.ResponseWriter, r *http.Request) {
 	h.sendSuccess(w, "Archive retrieved", archive)
 }
 
-// HandleRestoreArchive starts a restore operation from an archive.
-// The target fractal is derived from the provided ingest token, which is
-// validated server-side. Cross-fractal restore is supported by providing
-// a token scoped to the desired target fractal.
+// HandleRestoreArchive starts a restore operation from a single archive.
 func (h *Handler) HandleRestoreArchive(w http.ResponseWriter, r *http.Request) {
 	if h.manager == nil {
 		h.sendError(w, http.StatusServiceUnavailable, "Archive system not available")
@@ -173,14 +183,12 @@ func (h *Handler) HandleRestoreArchive(w http.ResponseWriter, r *http.Request) {
 	fractalID := chi.URLParam(r, "id")
 	archiveID := chi.URLParam(r, "archiveId")
 
-	// Must be admin on the source fractal (owns the archive)
 	role := h.resolveFractalRole(r, fractalID)
 	if !rbac.HasAccess(user, role, rbac.RoleAdmin) {
 		h.sendError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
-	// Verify archive belongs to the source fractal
 	archive, err := h.manager.GetArchive(r.Context(), archiveID)
 	if err != nil {
 		h.sendError(w, http.StatusNotFound, "Archive not found")
@@ -201,7 +209,6 @@ func (h *Handler) HandleRestoreArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the ingest token and derive the target fractal from it.
 	validated, err := h.tokenStorage.ValidateToken(r.Context(), req.IngestToken)
 	if err != nil {
 		h.sendError(w, http.StatusBadRequest, "Invalid ingest token")
@@ -209,7 +216,6 @@ func (h *Handler) HandleRestoreArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	targetFractalID := validated.FractalID
 
-	// Must also be admin on the target fractal
 	if targetFractalID != fractalID {
 		targetRole := h.resolveFractalRole(r, targetFractalID)
 		if !rbac.HasAccess(user, targetRole, rbac.RoleAdmin) {
@@ -299,7 +305,6 @@ func (h *Handler) HandleDeleteArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify archive belongs to this fractal
 	archive, err := h.manager.GetArchive(r.Context(), archiveID)
 	if err != nil {
 		h.sendError(w, http.StatusNotFound, "Archive not found")
@@ -319,7 +324,170 @@ func (h *Handler) HandleDeleteArchive(w http.ResponseWriter, r *http.Request) {
 	h.sendSuccess(w, "Archive deleted", nil)
 }
 
+// ========================================================================
+// Archive Group Handlers
+// ========================================================================
+
+// HandleRestoreGroup starts a sequential restore of all archives in a group.
+func (h *Handler) HandleRestoreGroup(w http.ResponseWriter, r *http.Request) {
+	if h.manager == nil {
+		h.sendError(w, http.StatusServiceUnavailable, "Archive system not available")
+		return
+	}
+
+	user := h.getCurrentUser(r)
+	if user == nil {
+		h.sendError(w, http.StatusUnauthorized, "Authentication required")
+		return
+	}
+
+	fractalID := chi.URLParam(r, "id")
+	groupID := chi.URLParam(r, "groupId")
+
+	role := h.resolveFractalRole(r, fractalID)
+	if !rbac.HasAccess(user, role, rbac.RoleAdmin) {
+		h.sendError(w, http.StatusForbidden, "Insufficient permissions")
+		return
+	}
+
+	group, err := h.manager.GetArchiveGroup(r.Context(), groupID)
+	if err != nil {
+		h.sendError(w, http.StatusNotFound, "Archive group not found")
+		return
+	}
+	if group.FractalID != fractalID {
+		h.sendError(w, http.StatusNotFound, "Archive group not found")
+		return
+	}
+
+	var req RestoreArchiveRequest
+	if r.Body != nil {
+		json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	if req.IngestToken == "" {
+		h.sendError(w, http.StatusBadRequest, "ingest_token is required for restore")
+		return
+	}
+
+	validated, err := h.tokenStorage.ValidateToken(r.Context(), req.IngestToken)
+	if err != nil {
+		h.sendError(w, http.StatusBadRequest, "Invalid ingest token")
+		return
+	}
+	targetFractalID := validated.FractalID
+
+	if targetFractalID != fractalID {
+		targetRole := h.resolveFractalRole(r, targetFractalID)
+		if !rbac.HasAccess(user, targetRole, rbac.RoleAdmin) {
+			h.sendError(w, http.StatusForbidden, "Insufficient permissions on target fractal")
+			return
+		}
+	}
+
+	if err := h.manager.RestoreGroup(r.Context(), groupID, targetFractalID, req.IngestToken, req.ClearExisting); err != nil {
+		log.Printf("[Archives] Failed to start group restore %s: %v", groupID, err)
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "already in progress") || strings.Contains(err.Error(), "active operation") {
+			status = http.StatusConflict
+		} else if strings.Contains(err.Error(), "not configured") {
+			status = http.StatusServiceUnavailable
+		}
+		h.sendError(w, status, err.Error())
+		return
+	}
+
+	h.sendSuccess(w, "Group restore started", map[string]string{
+		"group_id":          groupID,
+		"target_fractal_id": targetFractalID,
+	})
+}
+
+// HandleCancelGroup cancels a running archive group operation.
+func (h *Handler) HandleCancelGroup(w http.ResponseWriter, r *http.Request) {
+	if h.manager == nil {
+		h.sendError(w, http.StatusServiceUnavailable, "Archive system not available")
+		return
+	}
+
+	user := h.getCurrentUser(r)
+	if user == nil {
+		h.sendError(w, http.StatusUnauthorized, "Authentication required")
+		return
+	}
+
+	fractalID := chi.URLParam(r, "id")
+	groupID := chi.URLParam(r, "groupId")
+
+	role := h.resolveFractalRole(r, fractalID)
+	if !rbac.HasAccess(user, role, rbac.RoleAdmin) {
+		h.sendError(w, http.StatusForbidden, "Insufficient permissions")
+		return
+	}
+
+	group, err := h.manager.GetArchiveGroup(r.Context(), groupID)
+	if err != nil {
+		h.sendError(w, http.StatusNotFound, "Archive group not found")
+		return
+	}
+	if group.FractalID != fractalID {
+		h.sendError(w, http.StatusNotFound, "Archive group not found")
+		return
+	}
+
+	if err := h.manager.CancelGroup(r.Context(), groupID); err != nil {
+		log.Printf("[Archives] Failed to cancel group %s: %v", groupID, err)
+		h.sendError(w, http.StatusInternalServerError, "Failed to cancel group operation")
+		return
+	}
+
+	h.sendSuccess(w, "Group operation cancelled", nil)
+}
+
+// HandleDeleteGroup deletes an archive group and all its child archives.
+func (h *Handler) HandleDeleteGroup(w http.ResponseWriter, r *http.Request) {
+	if h.manager == nil {
+		h.sendError(w, http.StatusServiceUnavailable, "Archive system not available")
+		return
+	}
+
+	user := h.getCurrentUser(r)
+	if user == nil {
+		h.sendError(w, http.StatusUnauthorized, "Authentication required")
+		return
+	}
+
+	fractalID := chi.URLParam(r, "id")
+	groupID := chi.URLParam(r, "groupId")
+
+	role := h.resolveFractalRole(r, fractalID)
+	if !rbac.HasAccess(user, role, rbac.RoleAdmin) {
+		h.sendError(w, http.StatusForbidden, "Insufficient permissions")
+		return
+	}
+
+	group, err := h.manager.GetArchiveGroup(r.Context(), groupID)
+	if err != nil {
+		h.sendError(w, http.StatusNotFound, "Archive group not found")
+		return
+	}
+	if group.FractalID != fractalID {
+		h.sendError(w, http.StatusNotFound, "Archive group not found")
+		return
+	}
+
+	if err := h.manager.DeleteGroup(r.Context(), groupID); err != nil {
+		log.Printf("[Archives] Failed to delete group %s: %v", groupID, err)
+		h.sendError(w, http.StatusInternalServerError, "Failed to delete archive group")
+		return
+	}
+
+	h.sendSuccess(w, "Archive group deleted", nil)
+}
+
+// ========================================================================
 // Helper methods
+// ========================================================================
 
 func (h *Handler) getCurrentUser(r *http.Request) *storage.User {
 	if user := r.Context().Value("user"); user != nil {

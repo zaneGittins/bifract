@@ -27,6 +27,17 @@
 	# Block external access to internal-only endpoints
 	respond /api/v1/internal/* 403
 
+	# SSE endpoints need immediate flushing (no response buffering)
+	@sse path */events */stream
+	handle @sse {
+		reverse_proxy bifract-app:8080 {
+			flush_interval -1
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
 	handle {
 		reverse_proxy bifract-app:8080 {
 			header_up X-Real-IP {remote_host}

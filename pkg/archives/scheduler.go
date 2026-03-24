@@ -84,8 +84,12 @@ func (s *Scheduler) checkAndArchive() {
 			continue
 		}
 
-		log.Printf("[Archives] Scheduler: creating scheduled archive for fractal %s (schedule: %s)", fractal.Name, fractal.ArchiveSchedule)
-		_, err = s.manager.CreateArchive(ctx, fractal.ID, "admin", fractal.RetentionDays, ArchiveTypeScheduled)
+		split := fractal.ArchiveSplit
+		if split == "" {
+			split = SplitNone
+		}
+		log.Printf("[Archives] Scheduler: creating scheduled archive for fractal %s (schedule: %s, split: %s)", fractal.Name, fractal.ArchiveSchedule, split)
+		_, err = s.manager.CreateArchiveGroup(ctx, fractal.ID, "admin", fractal.RetentionDays, ArchiveTypeScheduled, split)
 		if err != nil {
 			log.Printf("[Archives] Scheduler: failed to create archive for %s: %v", fractal.Name, err)
 			continue
@@ -107,20 +111,33 @@ func (s *Scheduler) isDue(ctx context.Context, fractal *fractals.Fractal, now ti
 		return false
 	}
 
+	// Check groups first (most archives now go through groups).
+	groups, err := s.manager.ListArchiveGroups(ctx, fractal.ID)
+	if err != nil {
+		log.Printf("[Archives] Scheduler: failed to list archive groups for %s: %v", fractal.Name, err)
+		return false
+	}
+
+	for _, g := range groups {
+		if g.Status == StatusCompleted || g.Status == StatusPartial {
+			return now.After(g.CreatedAt.Add(interval))
+		}
+	}
+
+	// Fall back to standalone archives for backwards compatibility.
 	archives, err := s.manager.ListArchives(ctx, fractal.ID)
 	if err != nil {
 		log.Printf("[Archives] Scheduler: failed to list archives for %s: %v", fractal.Name, err)
 		return false
 	}
 
-	// Find the most recent completed archive (list is ordered by created_at DESC)
 	for _, a := range archives {
-		if a.Status == StatusCompleted {
+		if a.GroupID == nil && a.Status == StatusCompleted {
 			return now.After(a.CreatedAt.Add(interval))
 		}
 	}
 
-	// No completed archives, so it's due
+	// No completed archives or groups, so it's due
 	return true
 }
 

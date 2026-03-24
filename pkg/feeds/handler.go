@@ -63,6 +63,24 @@ func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) *storage.
 	return user
 }
 
+// getFeedScoped fetches a feed by ID and verifies it belongs to the caller's
+// current scope (fractal or prism). Returns nil and writes an error response
+// if the feed is not found or not in scope.
+func (h *Handler) getFeedScoped(w http.ResponseWriter, r *http.Request, id string) *Feed {
+	feed, err := h.manager.Get(r.Context(), id)
+	if err != nil {
+		h.respond(w, http.StatusNotFound, nil, "Feed not found")
+		return nil
+	}
+	fractalID, prismID := h.getScope(r)
+	if (feed.FractalID != "" && feed.FractalID == fractalID) ||
+		(feed.PrismID != "" && feed.PrismID == prismID) {
+		return feed
+	}
+	h.respond(w, http.StatusNotFound, nil, "Feed not found")
+	return nil
+}
+
 func (h *Handler) getScope(r *http.Request) (string, string) {
 	if prismID, ok := r.Context().Value("selected_prism").(string); ok && prismID != "" {
 		return "", prismID
@@ -97,10 +115,8 @@ func (h *Handler) HandleListFeeds(w http.ResponseWriter, r *http.Request) {
 // HandleGetFeed returns a single feed.
 func (h *Handler) HandleGetFeed(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	feed, err := h.manager.Get(r.Context(), id)
-	if err != nil {
-		log.Printf("[Feeds] Failed to get feed %s: %v", id, err)
-		h.respond(w, http.StatusNotFound, nil, "Feed not found")
+	feed := h.getFeedScoped(w, r, id)
+	if feed == nil {
 		return
 	}
 	h.respond(w, http.StatusOK, feed, "")
@@ -142,6 +158,9 @@ func (h *Handler) HandleUpdateFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := chi.URLParam(r, "id")
+	if h.getFeedScoped(w, r, id) == nil {
+		return
+	}
 	var req UpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respond(w, http.StatusBadRequest, nil, "invalid request body")
@@ -165,6 +184,9 @@ func (h *Handler) HandleDeleteFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := chi.URLParam(r, "id")
+	if h.getFeedScoped(w, r, id) == nil {
+		return
+	}
 	if err := h.manager.Delete(r.Context(), id); err != nil {
 		log.Printf("[Feeds] Failed to delete feed %s: %v", id, err)
 		h.respond(w, http.StatusNotFound, nil, "Failed to delete feed")
@@ -181,10 +203,8 @@ func (h *Handler) HandleSyncFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := chi.URLParam(r, "id")
-	feed, err := h.manager.Get(r.Context(), id)
-	if err != nil {
-		log.Printf("[Feeds] Failed to get feed %s for sync: %v", id, err)
-		h.respond(w, http.StatusNotFound, nil, "Feed not found")
+	feed := h.getFeedScoped(w, r, id)
+	if feed == nil {
 		return
 	}
 
@@ -208,6 +228,9 @@ func (h *Handler) HandleGetFeedAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := chi.URLParam(r, "id")
+	if h.getFeedScoped(w, r, id) == nil {
+		return
+	}
 	alertsList, err := h.alertManager.ListFeedAlerts(r.Context(), id)
 	if err != nil {
 		log.Printf("[Feeds] Failed to list alerts for feed %s: %v", id, err)
@@ -225,6 +248,9 @@ func (h *Handler) HandleEnableAllAlerts(w http.ResponseWriter, r *http.Request) 
 	}
 
 	id := chi.URLParam(r, "id")
+	if h.getFeedScoped(w, r, id) == nil {
+		return
+	}
 	if err := h.alertManager.EnableFeedAlerts(r.Context(), id, true, user.Username); err != nil {
 		log.Printf("[Feeds] Failed to enable alerts for feed %s: %v", id, err)
 		h.respond(w, http.StatusInternalServerError, nil, "Failed to enable feed alerts")
@@ -241,6 +267,9 @@ func (h *Handler) HandleDisableAllAlerts(w http.ResponseWriter, r *http.Request)
 	}
 
 	id := chi.URLParam(r, "id")
+	if h.getFeedScoped(w, r, id) == nil {
+		return
+	}
 	if err := h.alertManager.EnableFeedAlerts(r.Context(), id, false, user.Username); err != nil {
 		log.Printf("[Feeds] Failed to disable alerts for feed %s: %v", id, err)
 		h.respond(w, http.StatusInternalServerError, nil, "Failed to disable feed alerts")

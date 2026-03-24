@@ -17,6 +17,7 @@ type Fractal struct {
 	RetentionDays   *int   `json:"retention_days" db:"retention_days"`
 	ArchiveSchedule string `json:"archive_schedule" db:"archive_schedule"`
 	MaxArchives     *int   `json:"max_archives" db:"max_archives"`
+	ArchiveSplit    string `json:"archive_split" db:"archive_split"`
 	DiskQuotaBytes  *int64 `json:"disk_quota_bytes" db:"disk_quota_bytes"`
 	DiskQuotaAction string `json:"disk_quota_action" db:"disk_quota_action"`
 
@@ -82,6 +83,7 @@ type UpdateRetentionRequest struct {
 type UpdateArchiveScheduleRequest struct {
 	ArchiveSchedule string `json:"archive_schedule"` // never, daily, weekly, monthly
 	MaxArchives     *int   `json:"max_archives"`     // nil = unlimited
+	ArchiveSplit    string `json:"archive_split"`    // none, hour, day, week
 }
 
 // UpdateDiskQuotaRequest sets the disk quota for a fractal

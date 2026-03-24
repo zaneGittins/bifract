@@ -62,6 +62,12 @@ func (h *Handler) requirePrismRole(w http.ResponseWriter, r *http.Request, prism
 }
 
 func (h *Handler) HandleListPrisms(w http.ResponseWriter, r *http.Request) {
+	user := getCurrentUser(r)
+	if user == nil {
+		respondError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
 	prisms, err := h.manager.ListPrisms(r.Context())
 	if err != nil {
 		log.Printf("[Prisms] Failed to list prisms: %v", err)
@@ -71,6 +77,28 @@ func (h *Handler) HandleListPrisms(w http.ResponseWriter, r *http.Request) {
 	if prisms == nil {
 		prisms = []*Prism{}
 	}
+
+	// Admins see all prisms; non-admins see only prisms they have access to.
+	if !user.IsAdmin && h.rbacResolver != nil {
+		accessList, err := h.rbacResolver.GetAccessiblePrisms(r.Context(), user.Username)
+		if err != nil {
+			log.Printf("[Prisms] Failed to get accessible prisms for %s: %v", user.Username, err)
+			respondError(w, http.StatusInternalServerError, "Failed to load prisms")
+			return
+		}
+		allowed := make(map[string]bool, len(accessList))
+		for _, pa := range accessList {
+			allowed[pa.PrismID] = true
+		}
+		filtered := make([]*Prism, 0, len(prisms))
+		for _, p := range prisms {
+			if allowed[p.ID] {
+				filtered = append(filtered, p)
+			}
+		}
+		prisms = filtered
+	}
+
 	respondSuccess(w, map[string]interface{}{"prisms": prisms, "count": len(prisms)})
 }
 
@@ -181,6 +209,16 @@ func (h *Handler) HandleAddMember(w http.ResponseWriter, r *http.Request) {
 	if req.FractalID == "" {
 		respondError(w, http.StatusBadRequest, "fractal_id is required")
 		return
+	}
+
+	// Non-admin users must have access to the fractal they're adding.
+	user := getCurrentUser(r)
+	if user != nil && !user.IsAdmin && h.rbacResolver != nil {
+		role := h.rbacResolver.ResolveRole(r.Context(), user, req.FractalID)
+		if !rbac.HasAccess(user, role, rbac.RoleViewer) {
+			respondError(w, http.StatusForbidden, "You do not have access to this fractal")
+			return
+		}
 	}
 
 	if err := h.manager.AddMember(r.Context(), id, req.FractalID); err != nil {

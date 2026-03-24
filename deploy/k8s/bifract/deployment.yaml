@@ -170,6 +170,8 @@ spec:
           volumeMounts:
             - name: archives
               mountPath: /archives
+            - name: maxmind-data
+              mountPath: /data/maxmind
           resources:
             requests:
               cpu: 500m
@@ -180,6 +182,21 @@ spec:
       volumes:
         - name: archives
           emptyDir: {}
+        - name: maxmind-data
+          persistentVolumeClaim:
+            claimName: bifract-maxmind
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bifract-maxmind
+  namespace: bifract
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
 ---
 apiVersion: v1
 kind: Service

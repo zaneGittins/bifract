@@ -40,6 +40,7 @@ import (
 	"bifract/pkg/rbac"
 	"bifract/pkg/savedqueries"
 	"bifract/pkg/settings"
+	"bifract/pkg/sse"
 	"bifract/pkg/storage"
 
 	"github.com/go-chi/chi/v5"
@@ -358,7 +359,7 @@ func main() {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 			defer cancel()
-			if err := maxmindManager.LoadAll(ctx); err != nil {
+			if err := maxmindManager.LoadAllInitial(ctx); err != nil {
 				log.Printf("Warning: MaxMind GeoIP initialization failed: %v", err)
 				log.Println("GeoIP lookups will be unavailable until next daily refresh")
 			} else {
@@ -417,6 +418,11 @@ func main() {
 	notebookHandler.SetRBACResolver(authHandler.RBACResolver())
 	dashboardHandler := dashboards.NewDashboardHandler(pg, fractalManager)
 	dashboardHandler.SetRBACResolver(authHandler.RBACResolver())
+
+	// SSE hub for live updates in notebooks and dashboards
+	sseHub := sse.NewHub()
+	notebookHandler.SetSSEHub(sseHub)
+	dashboardHandler.SetSSEHub(sseHub)
 	alertHandler := alerts.NewHandlerWithFractals(alertManager, fractalManager)
 	alertHandler.SetRBACResolver(authHandler.RBACResolver())
 
@@ -476,7 +482,17 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Timeout(60 * time.Second))
+	// Timeout middleware, bypassed for SSE and chat streaming endpoints.
+	r.Use(func(next http.Handler) http.Handler {
+		timeoutHandler := middleware.Timeout(60 * time.Second)(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/events") || strings.HasSuffix(r.URL.Path, "/stream") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			timeoutHandler.ServeHTTP(w, r)
+		})
+	})
 
 	// Security headers
 	secureCookies := os.Getenv("BIFRACT_SECURE_COOKIES") == "true"
@@ -508,7 +524,7 @@ func main() {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   corsOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-API-Key"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-API-Key", "X-SSE-Client-ID"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -629,6 +645,7 @@ func main() {
 				r.Post("/notebooks/{id}/presence", notebookHandler.HandleUpdatePresence)
 				r.Get("/notebooks/{id}/presence", notebookHandler.HandleGetPresence)
 				r.Get("/notebooks/{id}/export", notebookHandler.HandleExportNotebook)
+				r.Get("/notebooks/{id}/events", notebookHandler.HandleSSE)
 			})
 
 			// Dashboards (API keys require "dashboard" permission)
@@ -649,6 +666,7 @@ func main() {
 				r.Get("/dashboards/{id}/presence", dashboardHandler.HandleGetPresence)
 				r.Get("/dashboards/{id}/export", dashboardHandler.HandleExportDashboard)
 				r.Post("/dashboards/import", dashboardHandler.HandleImportDashboard)
+				r.Get("/dashboards/{id}/events", dashboardHandler.HandleSSE)
 			})
 
 			// Alert management (API keys require "alert_manage" permission)
@@ -713,6 +731,11 @@ func main() {
 			r.Post("/fractals/{id}/archives/{archiveId}/restore", archiveHandler.HandleRestoreArchive)
 			r.Post("/fractals/{id}/archives/{archiveId}/cancel", archiveHandler.HandleCancelOperation)
 			r.Delete("/fractals/{id}/archives/{archiveId}", archiveHandler.HandleDeleteArchive)
+
+			// Archive groups
+			r.Post("/fractals/{id}/archive-groups/{groupId}/restore", archiveHandler.HandleRestoreGroup)
+			r.Post("/fractals/{id}/archive-groups/{groupId}/cancel", archiveHandler.HandleCancelGroup)
+			r.Delete("/fractals/{id}/archive-groups/{groupId}", archiveHandler.HandleDeleteGroup)
 
 			// Fractal permissions (fractal admin or tenant admin, checked in handler)
 			r.Get("/fractals/{id}/permissions", fractalHandler.HandleListPermissions)
@@ -904,7 +927,7 @@ func main() {
 		Addr:         fmt.Sprintf(":%d", config.Port),
 		Handler:      r,
 		ReadTimeout:  120 * time.Second,
-		WriteTimeout: 120 * time.Second,
+		WriteTimeout: 0, // Disabled for SSE/streaming; chi timeout middleware covers regular endpoints
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -922,6 +945,7 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down server...")
+	sseHub.Close()
 
 	// Stop accepting new HTTP connections
 	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)

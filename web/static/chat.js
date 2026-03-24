@@ -95,8 +95,6 @@ const Chat = {
         const deleteAllBtn = document.getElementById('deleteAllChatsBtn');
         if (deleteAllBtn) deleteAllBtn.addEventListener('click', () => this.deleteAllConversations());
 
-        const instructionsBtn = document.getElementById('chatInstructionsBtn');
-        if (instructionsBtn) instructionsBtn.addEventListener('click', () => this.showInstructionsPanel());
 
         const instructionSelect = document.getElementById('chatInstructionSelect');
         if (instructionSelect) instructionSelect.addEventListener('change', () => this.onInstructionSelectChange());
@@ -1119,84 +1117,6 @@ const Chat = {
         } catch (err) {
             console.error('[Chat] Failed to set conversation libraries:', err);
             if (window.Toast) Toast.error('Chat', 'Failed to update libraries');
-        }
-    },
-
-    showInstructionsPanel() {
-        // Create panel overlay inside chat-main showing the current library's pages
-        const main = document.querySelector('.chat-main');
-        if (!main) return;
-
-        // Remove existing panel if open
-        const existing = main.querySelector('.chat-instructions-panel');
-        if (existing) { existing.remove(); return; }
-
-        const panel = document.createElement('div');
-        panel.className = 'chat-instructions-panel';
-
-        // Find the selected library
-        const sel = document.getElementById('chatInstructionSelect');
-        const selectedId = sel?.value;
-        const libs = this.instructionLibraries || [];
-        const selectedLib = selectedId ? libs.find(l => l.id === selectedId) : libs.find(l => l.is_default);
-
-        let content = '';
-        if (!selectedLib) {
-            content = '<div class="chat-instructions-empty">No instruction library selected.<br>Create libraries in the Manage > Instructions tab.</div>';
-        } else {
-            content = `<div class="chat-instructions-list" id="chatInstructionsList"><div class="chat-instructions-empty">Loading pages...</div></div>`;
-        }
-
-        panel.innerHTML = `
-            <div class="chat-instructions-panel-header">
-                <h3>Instruction Library${selectedLib ? ': ' + Utils.escapeHtml(selectedLib.name) : ''}</h3>
-                <button class="chat-instructions-close-btn" title="Close">&times;</button>
-            </div>
-            ${content}
-            <div class="chat-instructions-panel-footer">
-                <button class="chat-instructions-add-btn" id="chatManageLibrariesBtn">Manage Libraries</button>
-            </div>
-        `;
-
-        main.appendChild(panel);
-        panel.querySelector('.chat-instructions-close-btn').addEventListener('click', () => panel.remove());
-        panel.querySelector('#chatManageLibrariesBtn').addEventListener('click', () => {
-            panel.remove();
-            this.switchSubTab('libraries');
-        });
-
-        if (selectedLib) {
-            this.loadLibraryPages(panel, selectedLib.id);
-        }
-    },
-
-    async loadLibraryPages(panel, libraryId) {
-        const list = panel.querySelector('#chatInstructionsList');
-        if (!list) return;
-
-        try {
-            const res = await HttpUtils.safeFetch(`/api/v1/instruction-libraries/${libraryId}/pages`, { credentials: 'include' });
-            const pages = res.data || [];
-
-            if (pages.length === 0) {
-                list.innerHTML = '<div class="chat-instructions-empty">No pages in this library yet.</div>';
-                return;
-            }
-
-            list.innerHTML = pages.map(page => `
-                <div class="chat-instruction-card">
-                    <div class="chat-instruction-card-header">
-                        <span class="chat-instruction-card-name">
-                            ${Utils.escapeHtml(page.name)}
-                            ${page.always_include ? '<span class="chat-instruction-default-badge">pinned</span>' : '<span class="chat-instruction-ondemand-badge">on-demand</span>'}
-                        </span>
-                    </div>
-                    ${page.description ? `<div class="chat-instruction-card-preview">${Utils.escapeHtml(page.description)}</div>` : ''}
-                </div>
-            `).join('');
-        } catch (err) {
-            console.error('[Chat] Failed to load library pages:', err);
-            list.innerHTML = '<div class="chat-instructions-empty">Failed to load pages.</div>';
         }
     },
 

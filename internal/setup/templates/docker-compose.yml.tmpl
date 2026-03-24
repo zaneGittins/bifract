@@ -125,6 +125,7 @@ services:
 {{- end}}
     volumes:
       - bifract-archives:/archives
+      - bifract-maxmind:/data/maxmind
 {{- if eq .IPAccess "mtls-app"}}
       - ./caddy/client-ca:/client-ca:ro
 {{- end}}
@@ -149,6 +150,7 @@ volumes:
   caddy-data:
   caddy-config:
   bifract-archives:
+  bifract-maxmind:
 
 networks:
   bifract-network:

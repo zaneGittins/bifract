@@ -19,6 +19,14 @@
 		reverse_proxy bifract-app:8080
 	}
 
+	# SSE endpoints need immediate flushing
+	@sse path */events */stream
+	handle @sse {
+		reverse_proxy bifract-app:8080 {
+			flush_interval -1
+		}
+	}
+
 	handle {
 		reverse_proxy bifract-app:8080
 	}

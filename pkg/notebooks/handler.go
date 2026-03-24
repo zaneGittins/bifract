@@ -14,6 +14,7 @@ import (
 
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
+	"bifract/pkg/sse"
 	"bifract/pkg/storage"
 
 	"github.com/go-chi/chi/v5"
@@ -25,6 +26,7 @@ type NotebookHandler struct {
 	ch             *storage.ClickHouseClient
 	fractalManager *fractals.Manager
 	rbacResolver   *rbac.Resolver
+	sseHub         *sse.Hub
 	litellmURL     string
 	litellmKey     string
 }
@@ -32,6 +34,68 @@ type NotebookHandler struct {
 // SetRBACResolver sets the RBAC resolver for fractal-level access checks.
 func (h *NotebookHandler) SetRBACResolver(resolver *rbac.Resolver) {
 	h.rbacResolver = resolver
+}
+
+// SetSSEHub sets the SSE hub for live update broadcasting.
+func (h *NotebookHandler) SetSSEHub(hub *sse.Hub) {
+	h.sseHub = hub
+}
+
+// broadcastSSE sends an SSE event to all clients viewing this notebook,
+// excluding the originator identified by X-SSE-Client-ID.
+func (h *NotebookHandler) broadcastSSE(r *http.Request, notebookID string, event sse.Event) {
+	if h.sseHub == nil {
+		return
+	}
+	h.sseHub.Broadcast("notebook:"+notebookID, event, r.Header.Get("X-SSE-Client-ID"))
+}
+
+// HandleSSE establishes an SSE connection for live notebook updates.
+func (h *NotebookHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
+	notebookID := chi.URLParam(r, "id")
+
+	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
+	if err != nil {
+		http.Error(w, "Notebook not found", http.StatusNotFound)
+		return
+	}
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
+		http.Error(w, "Insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	user := r.Context().Value("user").(*storage.User)
+	info := sse.ClientInfo{
+		Username:        user.Username,
+		DisplayName:     user.DisplayName,
+		GravatarColor:   user.GravatarColor,
+		GravatarInitial: user.GravatarInitial,
+	}
+
+	// Update presence in DB so polling-based clients also see this user.
+	_ = h.pg.UpdateNotebookPresence(r.Context(), notebookID, user.Username)
+
+	room := "notebook:" + notebookID
+
+	// Notify existing clients that this user joined.
+	h.sseHub.Broadcast(room, sse.Event{
+		Type: sse.PresenceJoined,
+		Data: info,
+	}, "")
+
+	// Blocks until disconnect.
+	client := h.sseHub.ServeSSE(w, r, room, info)
+	if client == nil {
+		return
+	}
+
+	// Clean up presence in DB and notify remaining clients.
+	_ = h.pg.DeleteNotebookPresence(context.Background(), notebookID, user.Username)
+
+	h.sseHub.Broadcast(room, sse.Event{
+		Type: sse.PresenceLeft,
+		Data: map[string]string{"username": user.Username},
+	}, client.ID)
 }
 
 // requireRoleOnFractal checks the user has the required role on a specific fractal.
@@ -556,6 +620,8 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 		Message: "Section created successfully",
 		Data:    newSection,
 	})
+
+	h.broadcastSSE(r, notebookID, sse.Event{Type: sse.SectionAdded, Data: newSection})
 }
 
 // HandleUpdateSection updates a notebook section
@@ -612,6 +678,16 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 		Success: true,
 		Message: "Section updated successfully",
 	})
+
+	h.broadcastSSE(r, notebookID, sse.Event{
+		Type: sse.SectionUpdated,
+		Data: map[string]interface{}{
+			"id":         sectionID,
+			"title":      req.Title,
+			"content":    req.Content,
+			"chart_config": req.ChartConfig,
+		},
+	})
 }
 
 // HandleDeleteSection deletes a notebook section
@@ -652,6 +728,11 @@ func (h *NotebookHandler) HandleDeleteSection(w http.ResponseWriter, r *http.Req
 	json.NewEncoder(w).Encode(Response{
 		Success: true,
 		Message: "Section deleted successfully",
+	})
+
+	h.broadcastSSE(r, section.NotebookID, sse.Event{
+		Type: sse.SectionRemoved,
+		Data: map[string]string{"id": sectionID, "notebook_id": section.NotebookID},
 	})
 }
 
@@ -802,6 +883,11 @@ func (h *NotebookHandler) HandleReorderSections(w http.ResponseWriter, r *http.R
 		Success: true,
 		Message: "Sections reordered successfully",
 	})
+
+	h.broadcastSSE(r, notebookID, sse.Event{
+		Type: sse.SectionsReordered,
+		Data: map[string]interface{}{"section_order": req.SectionOrder},
+	})
 }
 
 // HandleUpdateSectionResults updates query section results
@@ -864,6 +950,15 @@ func (h *NotebookHandler) HandleUpdateSectionResults(w http.ResponseWriter, r *h
 	json.NewEncoder(w).Encode(Response{
 		Success: true,
 		Message: "Section results updated successfully",
+	})
+
+	h.broadcastSSE(r, section.NotebookID, sse.Event{
+		Type: sse.SectionResultsUpdated,
+		Data: map[string]interface{}{
+			"id":               sectionID,
+			"last_executed_at": req.LastExecutedAt,
+			"last_results":     req.LastResults,
+		},
 	})
 }
 

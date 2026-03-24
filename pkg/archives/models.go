@@ -25,6 +25,25 @@ type Archive struct {
 	CursorID         *string    `json:"-"`
 	RestoreLinesSent int64      `json:"restore_lines_sent"`
 	RestoreError     string     `json:"restore_error,omitempty"`
+	GroupID          *string    `json:"group_id,omitempty"`
+	PeriodLabel      string     `json:"period_label,omitempty"`
+}
+
+// ArchiveGroup represents a set of period-split archives created together.
+type ArchiveGroup struct {
+	ID               string     `json:"id"`
+	FractalID        string     `json:"fractal_id"`
+	SplitGranularity string     `json:"split_granularity"`
+	Status           string     `json:"status"`
+	ErrorMessage     string     `json:"error_message,omitempty"`
+	TotalLogCount    int64      `json:"total_log_count"`
+	TotalSizeBytes   int64      `json:"total_size_bytes"`
+	ArchiveCount     int        `json:"archive_count"`
+	CompletedCount   int        `json:"completed_count"`
+	ArchiveType      string     `json:"archive_type"`
+	CreatedBy        string     `json:"created_by"`
+	CreatedAt        time.Time  `json:"created_at"`
+	Archives         []*Archive `json:"archives,omitempty"`
 }
 
 const (
@@ -32,10 +51,25 @@ const (
 	StatusCompleted  = "completed"
 	StatusFailed     = "failed"
 	StatusRestoring  = "restoring"
+	StatusPartial    = "partial"
 
 	ArchiveTypeAdhoc     = "adhoc"
 	ArchiveTypeScheduled = "scheduled"
+
+	SplitNone = "none"
+	SplitHour = "hour"
+	SplitDay  = "day"
+	SplitWeek = "week"
 )
+
+// ValidSplitGranularity returns true if the split value is recognized.
+func ValidSplitGranularity(s string) bool {
+	switch s {
+	case SplitNone, SplitHour, SplitDay, SplitWeek:
+		return true
+	}
+	return false
+}
 
 // APIResponse is the standard response format for archive endpoints.
 type APIResponse struct {
@@ -46,7 +80,9 @@ type APIResponse struct {
 }
 
 // CreateArchiveRequest is the request body for creating an archive.
-type CreateArchiveRequest struct{}
+type CreateArchiveRequest struct {
+	Split string `json:"split"` // none, hour, day, week
+}
 
 // RestoreArchiveRequest is the request body for restoring an archive.
 // The target fractal is derived from the ingest token (tokens are scoped
@@ -55,4 +91,11 @@ type CreateArchiveRequest struct{}
 type RestoreArchiveRequest struct {
 	ClearExisting bool   `json:"clear_existing"`
 	IngestToken   string `json:"ingest_token"`
+}
+
+// ArchiveListItem wraps either a group or a standalone archive for the list response.
+type ArchiveListItem struct {
+	Type    string        `json:"type"` // "group" or "archive"
+	Group   *ArchiveGroup `json:"group,omitempty"`
+	Archive *Archive      `json:"archive,omitempty"`
 }

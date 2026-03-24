@@ -11,6 +11,7 @@ import (
 
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
+	"bifract/pkg/sse"
 	"bifract/pkg/storage"
 
 	"github.com/go-chi/chi/v5"
@@ -21,11 +22,75 @@ type DashboardHandler struct {
 	pg             *storage.PostgresClient
 	fractalManager *fractals.Manager
 	rbacResolver   *rbac.Resolver
+	sseHub         *sse.Hub
 }
 
 // SetRBACResolver sets the RBAC resolver for fractal-level access checks.
 func (h *DashboardHandler) SetRBACResolver(resolver *rbac.Resolver) {
 	h.rbacResolver = resolver
+}
+
+// SetSSEHub sets the SSE hub for live update broadcasting.
+func (h *DashboardHandler) SetSSEHub(hub *sse.Hub) {
+	h.sseHub = hub
+}
+
+// broadcastSSE sends an SSE event to all clients viewing this dashboard,
+// excluding the originator identified by X-SSE-Client-ID.
+func (h *DashboardHandler) broadcastSSE(r *http.Request, dashboardID string, event sse.Event) {
+	if h.sseHub == nil {
+		return
+	}
+	h.sseHub.Broadcast("dashboard:"+dashboardID, event, r.Header.Get("X-SSE-Client-ID"))
+}
+
+// HandleSSE establishes an SSE connection for live dashboard updates.
+func (h *DashboardHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
+	dashboardID := chi.URLParam(r, "id")
+
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
+	if err != nil {
+		http.Error(w, "Dashboard not found", http.StatusNotFound)
+		return
+	}
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleViewer) {
+		return
+	}
+
+	user, _ := r.Context().Value("user").(*storage.User)
+	if user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	info := sse.ClientInfo{
+		Username:        user.Username,
+		DisplayName:     user.DisplayName,
+		GravatarColor:   user.GravatarColor,
+		GravatarInitial: user.GravatarInitial,
+	}
+
+	_ = h.pg.UpdateDashboardPresence(r.Context(), dashboardID, user.Username)
+
+	room := "dashboard:" + dashboardID
+
+	h.sseHub.Broadcast(room, sse.Event{
+		Type: sse.PresenceJoined,
+		Data: info,
+	}, "")
+
+	client := h.sseHub.ServeSSE(w, r, room, info)
+	if client == nil {
+		return
+	}
+
+	// Clean up presence in DB and notify remaining clients.
+	_ = h.pg.DeleteDashboardPresence(context.Background(), dashboardID, user.Username)
+
+	h.sseHub.Broadcast(room, sse.Event{
+		Type: sse.PresenceLeft,
+		Data: map[string]string{"username": user.Username},
+	}, client.ID)
 }
 
 // requireRoleOnFractal checks the user has the required role on a specific fractal.
@@ -336,6 +401,8 @@ func (h *DashboardHandler) HandleCreateWidget(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Response{Success: true, Message: "Widget created successfully", Data: newWidget})
+
+	h.broadcastSSE(r, dashboardID, sse.Event{Type: sse.WidgetAdded, Data: newWidget})
 }
 
 func (h *DashboardHandler) HandleUpdateWidget(w http.ResponseWriter, r *http.Request) {
@@ -374,6 +441,17 @@ func (h *DashboardHandler) HandleUpdateWidget(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Response{Success: true, Message: "Widget updated successfully"})
+
+	h.broadcastSSE(r, dashboardID, sse.Event{
+		Type: sse.WidgetUpdated,
+		Data: map[string]interface{}{
+			"id":            widgetID,
+			"title":         req.Title,
+			"query_content": req.QueryContent,
+			"chart_type":    req.ChartType,
+			"chart_config":  req.ChartConfig,
+		},
+	})
 }
 
 func (h *DashboardHandler) HandleUpdateWidgetResults(w http.ResponseWriter, r *http.Request) {
@@ -403,6 +481,15 @@ func (h *DashboardHandler) HandleUpdateWidgetResults(w http.ResponseWriter, r *h
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Response{Success: true, Message: "Widget results updated"})
+
+	h.broadcastSSE(r, dashboardID, sse.Event{
+		Type: sse.WidgetResultsUpdated,
+		Data: map[string]interface{}{
+			"id":           widgetID,
+			"last_results": req.LastResults,
+			"chart_type":   req.ChartType,
+		},
+	})
 }
 
 func (h *DashboardHandler) HandleUpdateWidgetLayout(w http.ResponseWriter, r *http.Request) {
@@ -432,6 +519,17 @@ func (h *DashboardHandler) HandleUpdateWidgetLayout(w http.ResponseWriter, r *ht
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Response{Success: true, Message: "Widget layout updated"})
+
+	h.broadcastSSE(r, dashboardID, sse.Event{
+		Type: sse.WidgetLayoutUpdated,
+		Data: map[string]interface{}{
+			"id":     widgetID,
+			"pos_x":  req.PosX,
+			"pos_y":  req.PosY,
+			"width":  req.Width,
+			"height": req.Height,
+		},
+	})
 }
 
 func (h *DashboardHandler) HandleDeleteWidget(w http.ResponseWriter, r *http.Request) {
@@ -455,6 +553,11 @@ func (h *DashboardHandler) HandleDeleteWidget(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Response{Success: true, Message: "Widget deleted successfully"})
+
+	h.broadcastSSE(r, dashboardID, sse.Event{
+		Type: sse.WidgetRemoved,
+		Data: map[string]string{"id": widgetID, "dashboard_id": dashboardID},
+	})
 }
 
 func (h *DashboardHandler) getSelectedFractal(r *http.Request) (string, error) {

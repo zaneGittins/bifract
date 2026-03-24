@@ -15,6 +15,8 @@ const Dashboards = {
     dragState: null,
     resizeState: null,
     presenceInterval: null,
+    eventSource: null,
+    sseClientId: null,
 
     // Grid config: 12 columns, row height in px
     GRID_COLS: 12,
@@ -216,18 +218,53 @@ const Dashboards = {
         }
     },
 
-    // ---- Presence ----
+    // ---- SSE & Presence ----
 
-    startPresenceTracking() {
-        if (!this.currentDashboard || this.presenceInterval) return;
-        this.updatePresence();
+    connectSSE() {
+        if (!this.currentDashboard || this.eventSource) return;
+
+        // Immediate presence update and fetch
+        fetch(`/api/v1/dashboards/${this.currentDashboard.id}/presence`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({})
+        }).catch(() => {});
+        this.onPresenceChanged();
+
+        this.eventSource = new EventSource(
+            `/api/v1/dashboards/${this.currentDashboard.id}/events`,
+            { withCredentials: true }
+        );
+
+        this.eventSource.onmessage = (e) => {
+            try {
+                const event = JSON.parse(e.data);
+                this.handleSSEEvent(event);
+            } catch (err) {}
+        };
+
+        this.eventSource.onerror = () => {};
+
+        // Lightweight DB heartbeat (must be shorter than the 30s DB expiry window)
         this.presenceInterval = setInterval(() => {
-            this.updatePresence();
-            this.refreshPresence();
-        }, 5000);
+            if (this.currentDashboard) {
+                fetch(`/api/v1/dashboards/${this.currentDashboard.id}/presence`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({})
+                }).catch(() => {});
+            }
+        }, 15000);
     },
 
-    stopPresenceTracking() {
+    disconnectSSE() {
+        if (this.eventSource) {
+            this.eventSource.close();
+            this.eventSource = null;
+            this.sseClientId = null;
+        }
         if (this.presenceInterval) {
             clearInterval(this.presenceInterval);
             this.presenceInterval = null;
@@ -236,19 +273,143 @@ const Dashboards = {
         if (el) el.innerHTML = '';
     },
 
-    async updatePresence() {
+    startPresenceTracking() { this.connectSSE(); },
+    stopPresenceTracking() { this.disconnectSSE(); },
+
+    sseHeaders() {
+        const headers = { 'Content-Type': 'application/json' };
+        if (this.sseClientId) {
+            headers['X-SSE-Client-ID'] = this.sseClientId;
+        }
+        return headers;
+    },
+
+    handleSSEEvent(event) {
+        switch (event.type) {
+            case 'connected':
+                this.sseClientId = event.data.client_id;
+                break;
+            case 'widget_added':
+                this.onRemoteWidgetAdded(event.data);
+                break;
+            case 'widget_removed':
+                this.onRemoteWidgetRemoved(event.data);
+                break;
+            case 'widget_updated':
+                this.onRemoteWidgetUpdated(event.data);
+                break;
+            case 'widget_results_updated':
+                this.onRemoteWidgetResultsUpdated(event.data);
+                break;
+            case 'widget_layout_updated':
+                this.onRemoteWidgetLayoutUpdated(event.data);
+                break;
+            case 'presence_joined':
+            case 'presence_left':
+                this.onPresenceChanged();
+                break;
+        }
+    },
+
+    onRemoteWidgetAdded(widget) {
         if (!this.currentDashboard) return;
+        if (!this.currentDashboard.widgets) this.currentDashboard.widgets = [];
+        if (this.currentDashboard.widgets.find(w => w.id === widget.id)) return;
+
+        this.currentDashboard.widgets.push(widget);
+
+        const grid = document.getElementById('dashboardGrid');
+        if (grid) {
+            const el = this.createWidgetElement(widget);
+            // Brief highlight
+            el.style.transition = 'box-shadow 0.5s ease';
+            el.style.boxShadow = '0 0 0 2px var(--accent-primary)';
+            setTimeout(() => { el.style.boxShadow = ''; }, 1500);
+            grid.appendChild(el);
+            this.expandGridIfNeeded();
+            this.initDragAndDrop();
+            this.executeWidget(widget.id);
+        }
+    },
+
+    onRemoteWidgetRemoved(data) {
+        if (!this.currentDashboard) return;
+        const widgetId = data.id;
+        this.currentDashboard.widgets = this.currentDashboard.widgets.filter(w => w.id !== widgetId);
+        const el = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
+        if (el) el.remove();
+    },
+
+    onRemoteWidgetUpdated(data) {
+        if (!this.currentDashboard) return;
+        const widget = this.currentDashboard.widgets.find(w => w.id === data.id);
+        if (!widget) return;
+
+        // Skip if user is editing this widget
+        const contentEl = document.getElementById(`wc-${data.id}`);
+        if (contentEl && contentEl._editingWidget) return;
+
+        if (data.title !== undefined) widget.title = data.title;
+        if (data.query_content !== undefined) widget.query_content = data.query_content;
+        if (data.chart_type !== undefined) widget.chart_type = data.chart_type;
+        if (data.chart_config !== undefined) widget.chart_config = data.chart_config;
+
+        // Update title in header
+        const widgetEl = document.querySelector(`.dashboard-widget[data-widget-id="${data.id}"]`);
+        if (widgetEl) {
+            const titleSpan = widgetEl.querySelector('.widget-title');
+            if (titleSpan) titleSpan.textContent = widget.title || 'Widget';
+        }
+    },
+
+    onRemoteWidgetResultsUpdated(data) {
+        if (!this.currentDashboard) return;
+        const widget = this.currentDashboard.widgets.find(w => w.id === data.id);
+        if (!widget) return;
+
+        // Skip if user is editing this widget
+        const contentEl = document.getElementById(`wc-${data.id}`);
+        if (contentEl && contentEl._editingWidget) return;
+
+        if (data.last_results) widget.last_results = data.last_results;
+        if (data.chart_type) widget.chart_type = data.chart_type;
+
+        // Re-render results
         try {
-            await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/presence`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({})
-            });
+            const resultData = JSON.parse(widget.last_results);
+            this.renderWidgetResults(data.id, resultData);
         } catch (_) {}
     },
 
-    async refreshPresence() {
+    onRemoteWidgetLayoutUpdated(data) {
+        if (!this.currentDashboard) return;
+        const widget = this.currentDashboard.widgets.find(w => w.id === data.id);
+        if (!widget) return;
+
+        // Skip if user is currently dragging/resizing this widget
+        if ((this.dragState && this.dragState.widgetId === data.id) ||
+            (this.resizeState && this.resizeState.widgetId === data.id)) return;
+
+        widget.pos_x = data.pos_x;
+        widget.pos_y = data.pos_y;
+        widget.width = data.width;
+        widget.height = data.height;
+
+        const el = document.querySelector(`.dashboard-widget[data-widget-id="${data.id}"]`);
+        if (el) {
+            const grid = document.getElementById('dashboardGrid');
+            const containerWidth = grid ? grid.offsetWidth : window.innerWidth - 40;
+            const colWidth = containerWidth / this.GRID_COLS;
+            el.style.left = `${data.pos_x * colWidth}px`;
+            el.style.top = `${data.pos_y * this.ROW_HEIGHT}px`;
+            el.style.width = `${data.width * colWidth}px`;
+            el.style.height = `${data.height * this.ROW_HEIGHT}px`;
+        }
+
+        this.expandGridIfNeeded();
+    },
+
+    async onPresenceChanged() {
         if (!this.currentDashboard) return;
         try {
             const resp = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/presence`, {
@@ -265,9 +426,11 @@ const Dashboards = {
         const el = document.getElementById('dashboardPresence');
         if (!el) return;
         const escHtml = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-        // Deduplicate by username
+        // Filter out self and deduplicate by username
+        const currentUsername = window.Auth && Auth.currentUser ? Auth.currentUser.username : null;
         const seen = new Set();
         const unique = users.filter(u => {
+            if (u.username === currentUsername) return false;
             if (seen.has(u.username)) return false;
             seen.add(u.username);
             return true;
@@ -375,7 +538,7 @@ const Dashboards = {
                 start: timeRange.start,
                 end: timeRange.end
             };
-            if (window.FractalContext && window.FractalContext.currentFractal) {
+            if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
                 requestBody.fractal_id = window.FractalContext.currentFractal.id;
             }
 
@@ -409,7 +572,7 @@ const Dashboards = {
             const chartType = data.chart_type || widget.chart_type || 'table';
             fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets/${widgetId}/results`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this.sseHeaders(),
                 credentials: 'include',
                 body: JSON.stringify({ last_results: widget.last_results, chart_type: chartType })
             }).catch(() => {});
@@ -883,7 +1046,7 @@ const Dashboards = {
         try {
             await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets/${widgetId}/layout`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this.sseHeaders(),
                 credentials: 'include',
                 body: JSON.stringify({ pos_x: posX, pos_y: posY, width, height })
             });
@@ -907,7 +1070,7 @@ const Dashboards = {
         try {
             const response = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this.sseHeaders(),
                 credentials: 'include',
                 body: JSON.stringify({
                     title: 'New Widget',
@@ -1013,7 +1176,7 @@ const Dashboards = {
         try {
             const response = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets/${widgetId}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this.sseHeaders(),
                 credentials: 'include',
                 body: JSON.stringify({ title, query_content: query })
             });
@@ -1052,6 +1215,7 @@ const Dashboards = {
         try {
             const response = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets/${widgetId}`, {
                 method: 'DELETE',
+                headers: this.sseHeaders(),
                 credentials: 'include'
             });
             const data = await response.json();

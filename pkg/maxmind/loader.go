@@ -71,7 +71,33 @@ func (m *Manager) Stop() {
 }
 
 // LoadAll downloads all configured editions and loads them into ClickHouse.
+// On startup (initial=true), it skips the download if ClickHouse already has
+// GeoIP data from a previous run, and just ensures dictionaries exist.
 func (m *Manager) LoadAll(ctx context.Context) error {
+	return m.loadAll(ctx, false)
+}
+
+// LoadAllInitial is like LoadAll but skips downloading if ClickHouse already
+// has GeoIP data, avoiding unnecessary MaxMind API calls on restart.
+func (m *Manager) LoadAllInitial(ctx context.Context) error {
+	return m.loadAll(ctx, true)
+}
+
+func (m *Manager) loadAll(ctx context.Context, initial bool) error {
+	// On startup, check if ClickHouse already has data from a previous run.
+	// If so, just ensure the dictionaries exist and skip the download entirely.
+	if initial && m.hasExistingData(ctx) {
+		log.Println("[MaxMind] ClickHouse already has GeoIP data, ensuring dictionaries exist...")
+		if err := m.ensureDictionaries(ctx); err != nil {
+			log.Printf("[MaxMind] Failed to ensure dictionaries, will do full reload: %v", err)
+		} else {
+			m.mu.Lock()
+			m.loaded = true
+			m.mu.Unlock()
+			return nil
+		}
+	}
+
 	for _, edition := range m.cfg.EditionIDs {
 		log.Printf("[MaxMind] Downloading %s...", edition)
 		csvDir, err := Download(m.cfg, edition)
@@ -97,6 +123,28 @@ func (m *Manager) LoadAll(ctx context.Context) error {
 	m.loaded = true
 	m.mu.Unlock()
 	return nil
+}
+
+// hasExistingData checks if both geoip_city and geoip_asn tables exist and
+// have rows from a previous load.
+func (m *Manager) hasExistingData(ctx context.Context) bool {
+	for _, table := range []string{"geoip_city", "geoip_asn"} {
+		var count uint64
+		row := m.ch.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM %s", table))
+		if err := row.Scan(&count); err != nil || count == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// ensureDictionaries creates the IP_TRIE dictionaries if they don't already
+// exist. This is used on startup when the backing tables already have data.
+func (m *Manager) ensureDictionaries(ctx context.Context) error {
+	if err := m.createCityDictionary(ctx); err != nil {
+		return err
+	}
+	return m.createASNDictionary(ctx)
 }
 
 // cityLocation holds denormalized location data keyed by geoname_id.

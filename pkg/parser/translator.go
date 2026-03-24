@@ -472,6 +472,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 				source.Layer.Selects = []SelectExpr{
 					{Expr: "timestamp"},
 					{Expr: "log_id"},
+					{Expr: "fractal_id"},
 				}
 				for field := range fields {
 					safe := fmt.Sprintf("%s AS `%s`", jsonFieldRef(field), field)
@@ -481,14 +482,14 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 			}
 		}
 		source.Layer.Selects = []SelectExpr{
-			{Expr: "timestamp"}, {Expr: "raw_log"}, {Expr: "log_id"}, {Expr: "toString(fields) AS fields"},
+			{Expr: "timestamp"}, {Expr: "raw_log"}, {Expr: "log_id"}, {Expr: "toString(fields) AS fields"}, {Expr: "fractal_id"},
 		}
 		return
 	}
 
 	// No commands but has assignments
 	if len(ctx.Pipeline.Commands) == 0 && len(ctx.Pipeline.Assignments) > 0 {
-		source.Layer.Selects = []SelectExpr{{Expr: "timestamp"}, {Expr: "raw_log"}, {Expr: "log_id"}}
+		source.Layer.Selects = []SelectExpr{{Expr: "timestamp"}, {Expr: "raw_log"}, {Expr: "log_id"}, {Expr: "fractal_id"}}
 		for _, af := range assignmentFields {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: af})
 		}

@@ -230,6 +230,8 @@ spec:
           volumeMounts:
             - name: archives
               mountPath: /archives
+            - name: maxmind-data
+              mountPath: /data/maxmind
 {{- if .MTLSEnabled}}
             - name: client-ca
               mountPath: /client-ca
@@ -245,6 +247,9 @@ spec:
       volumes:
         - name: archives
           emptyDir: {}
+        - name: maxmind-data
+          persistentVolumeClaim:
+            claimName: bifract-maxmind
 {{- if .MTLSEnabled}}
         - name: client-ca
           secret:

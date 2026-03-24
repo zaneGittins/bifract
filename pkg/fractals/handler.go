@@ -366,7 +366,7 @@ func (h *Handler) HandleSetArchiveSchedule(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := h.manager.SetArchiveSchedule(r.Context(), fractalID, req.ArchiveSchedule, req.MaxArchives); err != nil {
+	if err := h.manager.SetArchiveSchedule(r.Context(), fractalID, req.ArchiveSchedule, req.MaxArchives, req.ArchiveSplit); err != nil {
 		log.Printf("[Fractals] Failed to set archive schedule for %s: %v", fractalID, err)
 		h.sendError(w, http.StatusBadRequest, err.Error())
 		return

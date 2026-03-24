@@ -989,13 +989,6 @@
                             </div>
                             <div id="conversationList" class="conversation-list"></div>
                             <div class="chat-sidebar-footer">
-                                <button id="chatInstructionsBtn" class="chat-instructions-btn" title="Manage instructions">
-                                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path d="M8 10a2 2 0 100-4 2 2 0 000 4z" stroke="currentColor" stroke-width="1.5"/>
-                                        <path d="M13.4 10a1.2 1.2 0 00.24 1.32l.04.04a1.45 1.45 0 11-2.06 2.06l-.04-.04a1.2 1.2 0 00-1.32-.24 1.2 1.2 0 00-.72 1.1v.12a1.45 1.45 0 11-2.9 0v-.06a1.2 1.2 0 00-.78-1.1 1.2 1.2 0 00-1.32.24l-.04.04a1.45 1.45 0 11-2.06-2.06l.04-.04a1.2 1.2 0 00.24-1.32 1.2 1.2 0 00-1.1-.72h-.12a1.45 1.45 0 010-2.9h.06a1.2 1.2 0 001.1-.78 1.2 1.2 0 00-.24-1.32l-.04-.04a1.45 1.45 0 112.06-2.06l.04.04a1.2 1.2 0 001.32.24h.06a1.2 1.2 0 00.72-1.1v-.12a1.45 1.45 0 012.9 0v.06a1.2 1.2 0 00.72 1.1 1.2 1.2 0 001.32-.24l.04-.04a1.45 1.45 0 112.06 2.06l-.04.04a1.2 1.2 0 00-.24 1.32v.06a1.2 1.2 0 001.1.72h.12a1.45 1.45 0 010 2.9h-.06a1.2 1.2 0 00-1.1.72z" stroke="currentColor" stroke-width="1.5"/>
-                                    </svg>
-                                    Instructions
-                                </button>
                                 <button id="deleteAllChatsBtn" class="chat-delete-all-btn" title="Delete all conversations">Clear all</button>
                             </div>
                         </div>
@@ -1630,6 +1623,19 @@
                             </select>
                         </div>
 
+                        <div class="setting-item fractal-admin-only" id="archiveSplitSettingRow" style="display:none;">
+                            <div class="setting-info">
+                                <label for="manageFractalArchiveSplit" class="setting-label">Split granularity</label>
+                                <p class="setting-description">Split each scheduled backup into smaller archives by time period.</p>
+                            </div>
+                            <select id="manageFractalArchiveSplit" class="setting-select">
+                                <option value="none">No Split</option>
+                                <option value="day">Daily</option>
+                                <option value="hour">Hourly</option>
+                                <option value="week">Weekly</option>
+                            </select>
+                        </div>
+
                         <div class="setting-item fractal-admin-only">
                             <div class="setting-info">
                                 <label for="manageFractalMaxArchives" class="setting-label">Max backups to keep</label>
@@ -1683,7 +1689,15 @@
                                 <h3>Archives</h3>
                                 <p class="section-description">Create encrypted archives of this fractal's log data, or restore from a previous archive.</p>
                             </div>
-                            <button id="createArchiveBtn" class="btn-primary btn-sm" onclick="Archives.createArchive()">Create Archive</button>
+                            <div class="archive-create-controls">
+                                <select id="archiveSplitGranularity" class="setting-select archive-split-select">
+                                    <option value="none">No Split</option>
+                                    <option value="day">Split by Day</option>
+                                    <option value="hour">Split by Hour</option>
+                                    <option value="week">Split by Week</option>
+                                </select>
+                                <button id="createArchiveBtn" class="btn-primary btn-sm" onclick="Archives.createArchive()">Create Archive</button>
+                            </div>
                         </div>
                         <div id="archivesList"></div>
                         <div id="archiveRestoreDialog" class="archive-restore-dialog" style="display:none;">

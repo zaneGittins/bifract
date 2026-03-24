@@ -69,8 +69,8 @@ func NewManager(pg *storage.PostgresClient, ch *storage.ClickHouseClient, store 
 	}
 }
 
-// RecoverInterrupted marks any archives left in an active state as failed.
-// This handles the case where the server crashed mid-archive.
+// RecoverInterrupted marks any archives left in an active state as failed
+// and recovers interrupted groups. Called on startup after crashes.
 func (m *Manager) RecoverInterrupted(ctx context.Context) {
 	count, err := m.archives.FailInterruptedArchives(ctx)
 	if err != nil {
@@ -79,6 +79,15 @@ func (m *Manager) RecoverInterrupted(ctx context.Context) {
 	}
 	if count > 0 {
 		log.Printf("[Archives] Marked %d interrupted archive(s) as failed", count)
+	}
+
+	groupCount, err := m.archives.RecoverInterruptedGroups(ctx)
+	if err != nil {
+		log.Printf("[Archives] Failed to recover interrupted groups: %v", err)
+		return
+	}
+	if groupCount > 0 {
+		log.Printf("[Archives] Recovered %d interrupted archive group(s)", groupCount)
 	}
 }
 
@@ -129,6 +138,254 @@ func (m *Manager) CreateArchive(ctx context.Context, fractalID, createdBy string
 	return archive.ID, nil
 }
 
+// CreateArchiveGroup starts an asynchronous archive operation that splits the
+// fractal's logs by time period. Each period produces a separate archive file.
+func (m *Manager) CreateArchiveGroup(ctx context.Context, fractalID, createdBy string, retentionDays *int, archiveType, splitGranularity string) (string, error) {
+	if m.store == nil {
+		return "", fmt.Errorf("archive storage not configured")
+	}
+	if len(m.key) == 0 {
+		return "", fmt.Errorf("backup encryption key not configured")
+	}
+	if !ValidSplitGranularity(splitGranularity) {
+		return "", fmt.Errorf("invalid split granularity: %s", splitGranularity)
+	}
+
+	active, err := m.archives.HasActiveOperation(ctx, fractalID)
+	if err != nil {
+		return "", fmt.Errorf("check active operation: %w", err)
+	}
+	if active {
+		return "", fmt.Errorf("an archive operation is already in progress for this fractal")
+	}
+
+	// For "none" split, delegate to the original single-archive path wrapped in a group.
+	group, err := m.archives.CreateArchiveGroup(ctx, fractalID, splitGranularity, archiveType, createdBy, 0)
+	if err != nil {
+		return "", fmt.Errorf("create archive group: %w", err)
+	}
+
+	groupCtx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.running[group.ID] = cancel
+	m.mu.Unlock()
+
+	m.wg.Add(1)
+	go m.runArchiveGroup(groupCtx, group, fractalID, createdBy, retentionDays, archiveType, splitGranularity)
+
+	return group.ID, nil
+}
+
+// archivePeriod represents a single time window for a split archive.
+type archivePeriod struct {
+	Start time.Time
+	End   time.Time
+	Label string
+}
+
+// computePeriods splits the time range [minTS, maxTS] into periods based on granularity.
+func computePeriods(minTS, maxTS time.Time, granularity string) []archivePeriod {
+	if granularity == SplitNone {
+		return nil
+	}
+
+	var periods []archivePeriod
+	var cursor time.Time
+
+	switch granularity {
+	case SplitHour:
+		cursor = minTS.Truncate(time.Hour)
+	case SplitDay:
+		cursor = time.Date(minTS.Year(), minTS.Month(), minTS.Day(), 0, 0, 0, 0, time.UTC)
+	case SplitWeek:
+		// Truncate to Monday 00:00 UTC.
+		weekday := int(minTS.Weekday())
+		if weekday == 0 {
+			weekday = 7
+		}
+		cursor = time.Date(minTS.Year(), minTS.Month(), minTS.Day()-(weekday-1), 0, 0, 0, 0, time.UTC)
+	}
+
+	for cursor.Before(maxTS) || cursor.Equal(maxTS) {
+		var next time.Time
+		var label string
+
+		switch granularity {
+		case SplitHour:
+			next = cursor.Add(time.Hour)
+			label = cursor.Format("2006-01-02 15:00")
+		case SplitDay:
+			next = cursor.AddDate(0, 0, 1)
+			label = cursor.Format("2006-01-02")
+		case SplitWeek:
+			next = cursor.AddDate(0, 0, 7)
+			endLabel := next.AddDate(0, 0, -1)
+			label = cursor.Format("2006-01-02") + " to " + endLabel.Format("2006-01-02")
+		}
+
+		periods = append(periods, archivePeriod{Start: cursor, End: next, Label: label})
+		cursor = next
+	}
+
+	return periods
+}
+
+// getTimeRange queries ClickHouse for the min and max timestamps in a fractal
+// using the native driver.
+func (m *Manager) getTimeRange(ctx context.Context, fractalID string, retentionDays *int, archiveEndTS time.Time) (*time.Time, *time.Time, error) {
+	query := fmt.Sprintf(
+		`SELECT min(timestamp), max(timestamp) FROM %s WHERE fractal_id = '%s' AND toUnixTimestamp64Milli(timestamp) <= %d`,
+		m.ch.ReadTable(), escapeCHString(fractalID), archiveEndTS.UnixMilli())
+
+	if retentionDays != nil && *retentionDays > 0 {
+		query += fmt.Sprintf(` AND timestamp >= now() - toIntervalDay(%d)`, *retentionDays)
+	}
+
+	row := m.ch.QueryRow(ctx, query)
+	var minTS, maxTS time.Time
+	if err := row.Scan(&minTS, &maxTS); err != nil {
+		return nil, nil, fmt.Errorf("query time range: %w", err)
+	}
+	// ClickHouse returns zero time for empty result sets.
+	if minTS.IsZero() || maxTS.IsZero() {
+		return nil, nil, nil
+	}
+	return &minTS, &maxTS, nil
+}
+
+func (m *Manager) runArchiveGroup(ctx context.Context, group *ArchiveGroup, fractalID, createdBy string, retentionDays *int, archiveType, splitGranularity string) {
+	defer m.wg.Done()
+	defer func() {
+		m.mu.Lock()
+		delete(m.running, group.ID)
+		m.mu.Unlock()
+	}()
+
+	log.Printf("[Archives] Starting archive group %s for fractal %s (split=%s)", group.ID, fractalID, splitGranularity)
+
+	storageType := "disk"
+	if _, ok := m.store.(*backup.S3Storage); ok {
+		storageType = "s3"
+	}
+
+	archiveEndTS := time.Now()
+
+	if splitGranularity == SplitNone {
+		// Single archive, no splitting.
+		m.archives.SetArchiveGroupArchiveCount(context.Background(), group.ID, 1)
+
+		timestamp := archiveEndTS.Format("20060102-150405")
+		filename := fmt.Sprintf("%s-%s.bifract-archive", fractalID, timestamp)
+		storagePath := fmt.Sprintf("archives/%s/%s", fractalID, filename)
+
+		archive, err := m.archives.CreateArchiveInGroup(ctx, fractalID, filename, storageType, storagePath, createdBy, archiveType, group.ID, "", archiveEndTS)
+		if err != nil {
+			log.Printf("[Archives] Group %s: failed to create archive record: %v", group.ID, err)
+			m.archives.SetArchiveGroupStatus(context.Background(), group.ID, StatusFailed, err.Error())
+			return
+		}
+
+		if err := m.executeArchive(ctx, archive, retentionDays, storagePath, nil, nil); err != nil {
+			log.Printf("[Archives] Group %s: archive %s failed: %v", group.ID, archive.ID, err)
+			m.archives.SetArchiveStatusWithError(context.Background(), archive.ID, StatusFailed, err.Error())
+			m.archives.SetArchiveGroupStatus(context.Background(), group.ID, StatusFailed, err.Error())
+			return
+		}
+
+		// Reload archive to get final size/count.
+		final, _ := m.archives.GetArchive(context.Background(), archive.ID)
+		if final != nil {
+			m.archives.UpdateArchiveGroupProgress(context.Background(), group.ID, final.LogCount, final.SizeBytes)
+		}
+		m.archives.SetArchiveGroupStatus(context.Background(), group.ID, StatusCompleted, "")
+		log.Printf("[Archives] Group %s completed (single archive)", group.ID)
+		return
+	}
+
+	// Determine time range for period splitting.
+	minTS, maxTS, err := m.getTimeRange(ctx, fractalID, retentionDays, archiveEndTS)
+	if err != nil || minTS == nil || maxTS == nil {
+		msg := "no logs found to archive"
+		if err != nil {
+			msg = err.Error()
+		}
+		m.archives.SetArchiveGroupStatus(context.Background(), group.ID, StatusFailed, msg)
+		log.Printf("[Archives] Group %s: %s", group.ID, msg)
+		return
+	}
+
+	periods := computePeriods(*minTS, *maxTS, splitGranularity)
+	if len(periods) == 0 {
+		m.archives.SetArchiveGroupStatus(context.Background(), group.ID, StatusCompleted, "")
+		log.Printf("[Archives] Group %s: no periods to archive", group.ID)
+		return
+	}
+
+	m.archives.SetArchiveGroupArchiveCount(context.Background(), group.ID, len(periods))
+	log.Printf("[Archives] Group %s: archiving %d %s periods", group.ID, len(periods), splitGranularity)
+
+	var completedCount int
+	var failedCount int
+
+	for i, period := range periods {
+		if ctx.Err() != nil {
+			log.Printf("[Archives] Group %s: cancelled at period %d/%d", group.ID, i+1, len(periods))
+			break
+		}
+
+		timestamp := time.Now().Format("20060102-150405")
+		safeLabel := strings.ReplaceAll(period.Label, " ", "_")
+		safeLabel = strings.ReplaceAll(safeLabel, ":", "")
+		filename := fmt.Sprintf("%s-%s-%s.bifract-archive", fractalID, safeLabel, timestamp)
+		storagePath := fmt.Sprintf("archives/%s/%s", fractalID, filename)
+
+		archive, err := m.archives.CreateArchiveInGroup(ctx, fractalID, filename, storageType, storagePath, createdBy, archiveType, group.ID, period.Label, archiveEndTS)
+		if err != nil {
+			log.Printf("[Archives] Group %s: failed to create archive record for period %s: %v", group.ID, period.Label, err)
+			failedCount++
+			continue
+		}
+
+		periodStart := period.Start
+		periodEnd := period.End
+		if err := m.executeArchive(ctx, archive, retentionDays, storagePath, &periodStart, &periodEnd); err != nil {
+			log.Printf("[Archives] Group %s: period %s failed: %v", group.ID, period.Label, err)
+			m.archives.SetArchiveStatusWithError(context.Background(), archive.ID, StatusFailed, err.Error())
+			failedCount++
+			continue
+		}
+
+		completedCount++
+		final, _ := m.archives.GetArchive(context.Background(), archive.ID)
+		if final != nil {
+			m.archives.UpdateArchiveGroupProgress(context.Background(), group.ID, final.LogCount, final.SizeBytes)
+		}
+		log.Printf("[Archives] Group %s: period %d/%d (%s) completed", group.ID, i+1, len(periods), period.Label)
+	}
+
+	// Determine final group status.
+	groupStatus := StatusCompleted
+	groupErr := ""
+	if completedCount == 0 && failedCount > 0 {
+		groupStatus = StatusFailed
+		groupErr = fmt.Sprintf("all %d periods failed", failedCount)
+	} else if failedCount > 0 {
+		groupStatus = StatusPartial
+		groupErr = fmt.Sprintf("%d of %d periods failed", failedCount, len(periods))
+	} else if ctx.Err() != nil {
+		if completedCount > 0 {
+			groupStatus = StatusPartial
+			groupErr = "cancelled by user"
+		} else {
+			groupStatus = StatusFailed
+			groupErr = "cancelled by user"
+		}
+	}
+
+	m.archives.SetArchiveGroupStatus(context.Background(), group.ID, groupStatus, groupErr)
+	log.Printf("[Archives] Group %s finished: %d completed, %d failed, status=%s", group.ID, completedCount, failedCount, groupStatus)
+}
+
 func (m *Manager) runArchive(ctx context.Context, archive *Archive, retentionDays *int, storagePath string) {
 	defer m.wg.Done()
 	defer func() {
@@ -139,7 +396,7 @@ func (m *Manager) runArchive(ctx context.Context, archive *Archive, retentionDay
 
 	log.Printf("[Archives] Starting archive %s for fractal %s", archive.ID, archive.FractalID)
 
-	if err := m.executeArchive(ctx, archive, retentionDays, storagePath); err != nil {
+	if err := m.executeArchive(ctx, archive, retentionDays, storagePath, nil, nil); err != nil {
 		log.Printf("[Archives] Archive %s failed: %v", archive.ID, err)
 		// Use SetArchiveStatus to preserve the cursor checkpoint and log_count
 		// recorded by UpdateArchiveCursor during archiving. UpdateArchiveStatus
@@ -151,7 +408,7 @@ func (m *Manager) runArchive(ctx context.Context, archive *Archive, retentionDay
 	log.Printf("[Archives] Archive %s completed", archive.ID)
 }
 
-func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentionDays *int, storagePath string) error {
+func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentionDays *int, storagePath string, periodStart, periodEnd *time.Time) error {
 	archiveEndTS := archive.ArchiveEndTS
 	if archiveEndTS == nil {
 		now := time.Now()
@@ -240,7 +497,7 @@ func (m *Manager) executeArchive(ctx context.Context, archive *Archive, retentio
 			return fmt.Errorf("archive exceeded max duration of %v (%d logs archived)", maxArchiveDuration, logCount)
 		}
 
-		rowsRead, streamErr := m.streamArchiveHTTP(ctx, archive.FractalID, retentionDays, firstQuery, cursorTS, cursorID, *archiveEndTS, archiveWriter, &logCount, &cursorTS, &cursorID, &timeStart, &timeEnd)
+		rowsRead, streamErr := m.streamArchiveHTTP(ctx, archive.FractalID, retentionDays, firstQuery, cursorTS, cursorID, *archiveEndTS, periodStart, periodEnd, archiveWriter, &logCount, &cursorTS, &cursorID, &timeStart, &timeEnd)
 
 		if streamErr != nil {
 			if !isTransientClickHouseError(streamErr) {
@@ -362,13 +619,14 @@ func (m *Manager) streamArchiveHTTP(
 	cursorTS time.Time,
 	cursorID string,
 	archiveEndTS time.Time,
+	periodStart, periodEnd *time.Time,
 	w *bufio.Writer,
 	logCount *int64,
 	outCursorTS *time.Time,
 	outCursorID *string,
 	timeStart, timeEnd **time.Time,
 ) (int64, error) {
-	query := m.buildArchiveQuery(fractalID, retentionDays, firstQuery, cursorTS, cursorID, archiveEndTS)
+	query := m.buildArchiveQuery(fractalID, retentionDays, firstQuery, cursorTS, cursorID, archiveEndTS, periodStart, periodEnd)
 
 	chAddr := m.ch.HTTPAddr()
 	maxMem := getArchiveMaxMemory()
@@ -489,7 +747,8 @@ func reformatToV1(line []byte) ([]byte, time.Time, string, error) {
 }
 
 // buildArchiveQuery constructs the SQL for streaming archive data.
-func (m *Manager) buildArchiveQuery(fractalID string, retentionDays *int, firstQuery bool, cursorTS time.Time, cursorID string, archiveEndTS time.Time) string {
+// periodStart and periodEnd are optional time bounds for split archives.
+func (m *Manager) buildArchiveQuery(fractalID string, retentionDays *int, firstQuery bool, cursorTS time.Time, cursorID string, archiveEndTS time.Time, periodStart, periodEnd *time.Time) string {
 	query := fmt.Sprintf(
 		`SELECT timestamp, raw_log, log_id, fractal_id, ingest_timestamp FROM %s WHERE fractal_id = '%s'`,
 		m.ch.ReadTable(), escapeCHString(fractalID))
@@ -500,6 +759,13 @@ func (m *Manager) buildArchiveQuery(fractalID string, retentionDays *int, firstQ
 	}
 
 	query += fmt.Sprintf(` AND toUnixTimestamp64Milli(timestamp) <= %d`, archiveEndTS.UnixMilli())
+
+	if periodStart != nil {
+		query += fmt.Sprintf(` AND toUnixTimestamp64Milli(timestamp) >= %d`, periodStart.UnixMilli())
+	}
+	if periodEnd != nil {
+		query += fmt.Sprintf(` AND toUnixTimestamp64Milli(timestamp) < %d`, periodEnd.UnixMilli())
+	}
 
 	if retentionDays != nil && *retentionDays > 0 {
 		query += fmt.Sprintf(` AND timestamp >= now() - toIntervalDay(%d)`, *retentionDays)
@@ -1077,9 +1343,78 @@ func (m *Manager) GetArchive(ctx context.Context, archiveID string) (*Archive, e
 	return m.archives.GetArchive(ctx, archiveID)
 }
 
+// GetArchiveGroup returns an archive group by ID.
+func (m *Manager) GetArchiveGroup(ctx context.Context, groupID string) (*ArchiveGroup, error) {
+	return m.archives.GetArchiveGroup(ctx, groupID)
+}
+
 // ListArchives returns all archives for a fractal.
 func (m *Manager) ListArchives(ctx context.Context, fractalID string) ([]*Archive, error) {
 	return m.archives.ListArchives(ctx, fractalID)
+}
+
+// ListArchiveGroups returns all archive groups for a fractal.
+func (m *Manager) ListArchiveGroups(ctx context.Context, fractalID string) ([]*ArchiveGroup, error) {
+	return m.archives.ListArchiveGroups(ctx, fractalID)
+}
+
+// ListArchivesByGroup returns archives belonging to a specific group.
+func (m *Manager) ListArchivesByGroup(ctx context.Context, groupID string) ([]*Archive, error) {
+	return m.archives.ListArchivesByGroup(ctx, groupID)
+}
+
+// ListArchiveItems returns a combined list of groups (with children) and
+// standalone archives for the UI, sorted by created_at descending.
+func (m *Manager) ListArchiveItems(ctx context.Context, fractalID string) ([]ArchiveListItem, error) {
+	groups, err := m.archives.ListArchiveGroups(ctx, fractalID)
+	if err != nil {
+		return nil, err
+	}
+	archives, err := m.archives.ListArchives(ctx, fractalID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Index archives by group_id.
+	grouped := make(map[string][]*Archive)
+	var standalone []*Archive
+	for _, a := range archives {
+		if a.GroupID != nil {
+			grouped[*a.GroupID] = append(grouped[*a.GroupID], a)
+		} else {
+			standalone = append(standalone, a)
+		}
+	}
+
+	// Build items: groups with their children, then standalone archives.
+	// Both are already sorted by created_at DESC from the DB.
+	var items []ArchiveListItem
+
+	gi, si := 0, 0
+	for gi < len(groups) || si < len(standalone) {
+		var groupTime, standaloneTime time.Time
+		if gi < len(groups) {
+			groupTime = groups[gi].CreatedAt
+		}
+		if si < len(standalone) {
+			standaloneTime = standalone[si].CreatedAt
+		}
+
+		if gi < len(groups) && (si >= len(standalone) || !groupTime.Before(standaloneTime)) {
+			g := groups[gi]
+			g.Archives = grouped[g.ID]
+			if g.Archives == nil {
+				g.Archives = []*Archive{}
+			}
+			items = append(items, ArchiveListItem{Type: "group", Group: g})
+			gi++
+		} else {
+			items = append(items, ArchiveListItem{Type: "archive", Archive: standalone[si]})
+			si++
+		}
+	}
+
+	return items, nil
 }
 
 // CancelOperation stops a running archive or restore. For restores, the archive
@@ -1138,14 +1473,193 @@ func (m *Manager) DeleteArchive(ctx context.Context, archiveID string) error {
 	return m.archives.DeleteArchive(ctx, archiveID)
 }
 
-// EnforceMaxArchives deletes the oldest completed archives that exceed the limit.
-func (m *Manager) EnforceMaxArchives(ctx context.Context, fractalID string, maxArchives int) error {
-	ids, err := m.archives.GetOldestCompletedArchives(ctx, fractalID, maxArchives)
+// CancelGroup stops a running archive group operation.
+func (m *Manager) CancelGroup(ctx context.Context, groupID string) error {
+	m.mu.Lock()
+	if cancel, ok := m.running[groupID]; ok {
+		cancel()
+	}
+	m.mu.Unlock()
+
+	// The runArchiveGroup goroutine will detect ctx cancellation and set
+	// the group status to partial/failed.
+	return nil
+}
+
+// DeleteGroup deletes an archive group and all its child archives + storage files.
+func (m *Manager) DeleteGroup(ctx context.Context, groupID string) error {
+	// Cancel any running operation for this group.
+	m.mu.Lock()
+	if cancel, ok := m.running[groupID]; ok {
+		cancel()
+	}
+	m.mu.Unlock()
+
+	children, err := m.archives.ListArchivesByGroup(ctx, groupID)
+	if err != nil {
+		return fmt.Errorf("list group archives: %w", err)
+	}
+
+	for _, child := range children {
+		if child.Status == StatusInProgress || child.Status == StatusRestoring {
+			m.mu.Lock()
+			if cancel, ok := m.running[child.ID]; ok {
+				cancel()
+			}
+			m.mu.Unlock()
+		}
+		if m.store != nil {
+			if err := m.store.Delete(ctx, child.StoragePath); err != nil {
+				log.Printf("[Archives] Warning: failed to delete archive file %s: %v", child.StoragePath, err)
+			}
+		}
+	}
+
+	return m.archives.DeleteArchiveGroup(ctx, groupID)
+}
+
+// RestoreGroup starts a sequential restore of all completed archives in a group.
+func (m *Manager) RestoreGroup(ctx context.Context, groupID, targetFractalID, ingestToken string, clearExisting bool) error {
+	if m.store == nil {
+		return fmt.Errorf("archive storage not configured")
+	}
+	if len(m.key) == 0 {
+		return fmt.Errorf("backup encryption key not configured")
+	}
+	if ingestToken == "" {
+		return fmt.Errorf("ingest token is required for restore")
+	}
+
+	group, err := m.archives.GetArchiveGroup(ctx, groupID)
 	if err != nil {
 		return err
 	}
-	for _, id := range ids {
-		log.Printf("[Archives] Enforcing max_archives: deleting archive %s for fractal %s", id, fractalID)
+
+	if group.Status == StatusInProgress || group.Status == StatusRestoring {
+		return fmt.Errorf("group has an active operation")
+	}
+
+	children, err := m.archives.ListArchivesByGroup(ctx, groupID)
+	if err != nil {
+		return err
+	}
+
+	// Collect restorable archives (completed ones, in chronological order).
+	var restorable []*Archive
+	for _, a := range children {
+		if a.Status == StatusCompleted {
+			restorable = append(restorable, a)
+		}
+	}
+	if len(restorable) == 0 {
+		return fmt.Errorf("no completed archives to restore in this group")
+	}
+
+	active, err := m.archives.HasActiveOperation(ctx, group.FractalID)
+	if err != nil {
+		return fmt.Errorf("check active operation: %w", err)
+	}
+	if active {
+		return fmt.Errorf("an archive operation is already in progress for this fractal")
+	}
+	if targetFractalID != group.FractalID {
+		active, err = m.archives.HasActiveOperation(ctx, targetFractalID)
+		if err != nil {
+			return fmt.Errorf("check active operation on target: %w", err)
+		}
+		if active {
+			return fmt.Errorf("an archive operation is already in progress for the target fractal")
+		}
+	}
+
+	if err := m.archives.SetArchiveGroupStatus(ctx, groupID, StatusRestoring, ""); err != nil {
+		return err
+	}
+
+	restoreCtx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.running[groupID] = cancel
+	m.mu.Unlock()
+
+	m.wg.Add(1)
+	go m.runGroupRestore(restoreCtx, group, restorable, targetFractalID, ingestToken, clearExisting)
+
+	return nil
+}
+
+func (m *Manager) runGroupRestore(ctx context.Context, group *ArchiveGroup, archives []*Archive, targetFractalID, ingestToken string, clearExisting bool) {
+	defer m.wg.Done()
+	defer func() {
+		m.mu.Lock()
+		delete(m.running, group.ID)
+		m.mu.Unlock()
+	}()
+
+	log.Printf("[Archives] Starting group restore %s: %d archives into fractal %s", group.ID, len(archives), targetFractalID)
+
+	for i, archive := range archives {
+		if ctx.Err() != nil {
+			log.Printf("[Archives] Group restore %s cancelled at archive %d/%d", group.ID, i+1, len(archives))
+			m.archives.SetArchiveGroupStatus(context.Background(), group.ID, StatusCompleted, "restore cancelled by user")
+			return
+		}
+
+		log.Printf("[Archives] Group restore %s: restoring archive %d/%d (%s)", group.ID, i+1, len(archives), archive.PeriodLabel)
+
+		// Only clear existing data for the first archive.
+		shouldClear := clearExisting && i == 0
+
+		var skipLines int64
+		if shouldClear {
+			m.archives.ClearRestoreState(context.Background(), archive.ID)
+		} else if archive.RestoreLinesSent > 0 && !shouldClear {
+			skipLines = archive.RestoreLinesSent
+		}
+
+		m.archives.SetArchiveStatus(context.Background(), archive.ID, StatusRestoring)
+
+		if err := m.executeRestore(ctx, archive, targetFractalID, ingestToken, skipLines); err != nil {
+			log.Printf("[Archives] Group restore %s: archive %s failed: %v", group.ID, archive.ID, err)
+			m.archives.SetRestoreError(context.Background(), archive.ID, err.Error())
+			m.archives.SetArchiveGroupStatus(context.Background(), group.ID, StatusCompleted, fmt.Sprintf("restore failed at archive %d/%d: %s", i+1, len(archives), err.Error()))
+			return
+		}
+
+		m.archives.ClearRestoreState(context.Background(), archive.ID)
+		m.archives.SetArchiveStatus(context.Background(), archive.ID, StatusCompleted)
+		log.Printf("[Archives] Group restore %s: archive %d/%d completed", group.ID, i+1, len(archives))
+	}
+
+	m.archives.SetArchiveGroupStatus(context.Background(), group.ID, StatusCompleted, "")
+	log.Printf("[Archives] Group restore %s completed: all %d archives restored", group.ID, len(archives))
+}
+
+// EnforceMaxArchives deletes the oldest completed groups and standalone archives
+// that exceed the limit. Groups count as one unit.
+func (m *Manager) EnforceMaxArchives(ctx context.Context, fractalID string, maxArchives int) error {
+	// Delete oldest groups.
+	groupIDs, err := m.archives.GetOldestCompletedGroups(ctx, fractalID, maxArchives)
+	if err != nil {
+		return err
+	}
+	for _, id := range groupIDs {
+		log.Printf("[Archives] Enforcing max_archives: deleting group %s for fractal %s", id, fractalID)
+		if err := m.DeleteGroup(ctx, id); err != nil {
+			log.Printf("[Archives] Failed to delete excess group %s: %v", id, err)
+		}
+	}
+
+	// Also clean up standalone archives (without groups).
+	remaining := maxArchives - len(groupIDs)
+	if remaining < 0 {
+		remaining = 0
+	}
+	archiveIDs, err := m.archives.GetOldestCompletedArchives(ctx, fractalID, remaining)
+	if err != nil {
+		return err
+	}
+	for _, id := range archiveIDs {
+		log.Printf("[Archives] Enforcing max_archives: deleting standalone archive %s for fractal %s", id, fractalID)
 		if err := m.DeleteArchive(ctx, id); err != nil {
 			log.Printf("[Archives] Failed to delete excess archive %s: %v", id, err)
 		}

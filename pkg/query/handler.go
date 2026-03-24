@@ -789,7 +789,7 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 
 	// Run logs query and histogram query in parallel
 	readTbl := h.queryTableName()
-	logsSQL := fmt.Sprintf("SELECT timestamp, toString(fields) AS fields, log_id FROM %s %s ORDER BY timestamp DESC LIMIT 50", readTbl, whereClause)
+	logsSQL := fmt.Sprintf("SELECT timestamp, toString(fields) AS fields, log_id, fractal_id FROM %s %s ORDER BY timestamp DESC LIMIT 50", readTbl, whereClause)
 	histogramSQL := fmt.Sprintf("SELECT toStartOfInterval(timestamp, INTERVAL 15 MINUTE) AS bucket, count() AS cnt FROM %s %s GROUP BY bucket ORDER BY bucket", readTbl, whereClause)
 
 	type logsResult struct {
