@@ -1,10 +1,6 @@
-# Bifract Documentation
+# Welcome to Bifract
 
-Bifract is an open source log management, detection, and collaboration platform built for security teams.
-
-![Bifract search view](images/homepage.png)
-
-It leverages ClickHouse for log storage, PostgreSQL for configuration, and provides a pipe-based query language that is well suited for security investigations.
+Bifract is an open source log management, detection, and collaboration platform. 
 
 ## Where to Start
 

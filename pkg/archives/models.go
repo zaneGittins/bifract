@@ -85,12 +85,12 @@ type CreateArchiveRequest struct {
 }
 
 // RestoreArchiveRequest is the request body for restoring an archive.
-// The target fractal is derived from the ingest token (tokens are scoped
-// to a single fractal). Cross-fractal restore is done by providing a
-// token for the desired target fractal.
+// Provide either target_fractal_id (preferred) or ingest_token (legacy).
+// When target_fractal_id is used, the backend resolves the ingest token automatically.
 type RestoreArchiveRequest struct {
-	ClearExisting bool   `json:"clear_existing"`
-	IngestToken   string `json:"ingest_token"`
+	ClearExisting   bool   `json:"clear_existing"`
+	IngestToken     string `json:"ingest_token,omitempty"`
+	TargetFractalID string `json:"target_fractal_id,omitempty"`
 }
 
 // ArchiveListItem wraps either a group or a standalone archive for the list response.

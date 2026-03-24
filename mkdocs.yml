@@ -6,6 +6,7 @@ repo_name: zaneGittins/bifract
 
 theme:
   name: material
+  custom_dir: docs/overrides
   palette:
     - media: "(prefers-color-scheme: dark)"
       scheme: slate

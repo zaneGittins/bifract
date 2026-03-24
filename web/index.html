@@ -1705,9 +1705,11 @@
                                 <h4>Restore Archive</h4>
                                 <p class="section-description" id="archiveRestoreInfo"></p>
                                 <div class="form-group" style="margin: 0.75rem 0;">
-                                    <label for="archiveRestoreToken">Ingest API Key</label>
-                                    <input type="text" id="archiveRestoreToken" class="form-input" placeholder="Ingest token for the target fractal" autocomplete="off">
-                                    <p class="section-description" style="margin-top: 0.25rem;">The token determines which fractal logs are restored into. To restore into a different fractal, use a token from that fractal.</p>
+                                    <label for="archiveRestoreTarget">Restore into</label>
+                                    <select id="archiveRestoreTarget" class="form-select">
+                                        <option value="">Loading fractals...</option>
+                                    </select>
+                                    <p class="section-description" style="margin-top: 0.25rem;">Select the fractal to restore logs into.</p>
                                 </div>
                                 <div class="archive-restore-actions">
                                     <button class="btn-secondary btn-sm" onclick="Archives.cancelRestore()">Cancel</button>

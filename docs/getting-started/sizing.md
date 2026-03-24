@@ -4,14 +4,14 @@ The `--install-k8s` wizard includes six resource profiles. Choose the one that m
 
 ## Resource Profiles
 
-| Profile | Use Case | Ingest | Nodes | CH Shards x Replicas | CH CPU (per pod) | CH Memory (per pod) |
-|---|---|---|---|---|---|---|
-| Dev | Testing | ~1-10 GB/day | 3x 4vCPU/8GB | 1x2 | 2 / 3 | 4Gi / 5Gi |
-| X-Small | Staging | ~10-50 GB/day | 3x 8vCPU/16GB | 1x2 | 6 / 8 | 8Gi / 12Gi |
-| Small | Light prod | ~50-200 GB/day | 3x 16vCPU/32GB | 1x2 | 10 / 12 | 12Gi / 24Gi |
-| Medium | Production | ~200-500 GB/day | 3x 24vCPU/48GB | 2x2 | 8 / 12 | 12Gi / 24Gi |
-| Large | High-volume | ~500 GB-2 TB/day | 3x 32vCPU/96GB | 3x2 | 8 / 16 | 16Gi / 32Gi |
-| X-Large | Very high-volume | ~2-10 TB/day | 6x 32vCPU/96GB | 6x2 | 8 / 16 | 16Gi / 32Gi |
+| Profile | Ingest | Nodes | CH Shards x Replicas | CH CPU (per pod) | CH Memory (per pod) |
+|---|---|---|---|---|---|
+| Dev | ~1-10 GB/day | 3x 4vCPU/8GB | 1x2 | 2 / 3 | 4Gi / 5Gi |
+| X-Small | ~10-50 GB/day | 3x 8vCPU/16GB | 1x2 | 6 / 8 | 8Gi / 12Gi |
+| Small | ~50-200 GB/day | 3x 16vCPU/32GB | 1x2 | 10 / 12 | 12Gi / 24Gi |
+| Medium | ~200-500 GB/day | 3x 24vCPU/48GB | 2x2 | 8 / 12 | 12Gi / 24Gi |
+| Large | ~500 GB-2 TB/day | 3x 32vCPU/96GB | 3x2 | 8 / 16 | 16Gi / 32Gi |
+| X-Large | ~2-10 TB/day | 6x 32vCPU/96GB | 6x2 | 8 / 16 | 16Gi / 32Gi |
 
 All CPU/memory values shown as request / limit. Medium and above per-pod resources decrease as sharding distributes the work across more pods. Full resource details for all components (Bifract, PostgreSQL, Caddy, LiteLLM, Keeper) are defined in the generated manifests.
 

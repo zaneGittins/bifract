@@ -204,27 +204,13 @@ func (h *Handler) HandleRestoreArchive(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&req)
 	}
 
-	if req.IngestToken == "" {
-		h.sendError(w, http.StatusBadRequest, "ingest_token is required for restore")
+	targetFractalID, ingestToken, status, errMsg := h.resolveRestoreTarget(r, user, fractalID, req)
+	if errMsg != "" {
+		h.sendError(w, status, errMsg)
 		return
 	}
 
-	validated, err := h.tokenStorage.ValidateToken(r.Context(), req.IngestToken)
-	if err != nil {
-		h.sendError(w, http.StatusBadRequest, "Invalid ingest token")
-		return
-	}
-	targetFractalID := validated.FractalID
-
-	if targetFractalID != fractalID {
-		targetRole := h.resolveFractalRole(r, targetFractalID)
-		if !rbac.HasAccess(user, targetRole, rbac.RoleAdmin) {
-			h.sendError(w, http.StatusForbidden, "Insufficient permissions on target fractal")
-			return
-		}
-	}
-
-	if err := h.manager.RestoreArchive(r.Context(), archiveID, targetFractalID, req.IngestToken, req.ClearExisting); err != nil {
+	if err := h.manager.RestoreArchive(r.Context(), archiveID, targetFractalID, ingestToken, req.ClearExisting); err != nil {
 		log.Printf("[Archives] Failed to start restore for archive %s: %v", archiveID, err)
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "already in progress") || strings.Contains(err.Error(), "can only restore completed") {
@@ -365,27 +351,13 @@ func (h *Handler) HandleRestoreGroup(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&req)
 	}
 
-	if req.IngestToken == "" {
-		h.sendError(w, http.StatusBadRequest, "ingest_token is required for restore")
+	targetFractalID, ingestToken, status, errMsg := h.resolveRestoreTarget(r, user, fractalID, req)
+	if errMsg != "" {
+		h.sendError(w, status, errMsg)
 		return
 	}
 
-	validated, err := h.tokenStorage.ValidateToken(r.Context(), req.IngestToken)
-	if err != nil {
-		h.sendError(w, http.StatusBadRequest, "Invalid ingest token")
-		return
-	}
-	targetFractalID := validated.FractalID
-
-	if targetFractalID != fractalID {
-		targetRole := h.resolveFractalRole(r, targetFractalID)
-		if !rbac.HasAccess(user, targetRole, rbac.RoleAdmin) {
-			h.sendError(w, http.StatusForbidden, "Insufficient permissions on target fractal")
-			return
-		}
-	}
-
-	if err := h.manager.RestoreGroup(r.Context(), groupID, targetFractalID, req.IngestToken, req.ClearExisting); err != nil {
+	if err := h.manager.RestoreGroup(r.Context(), groupID, targetFractalID, ingestToken, req.ClearExisting); err != nil {
 		log.Printf("[Archives] Failed to start group restore %s: %v", groupID, err)
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "already in progress") || strings.Contains(err.Error(), "active operation") {
@@ -488,6 +460,61 @@ func (h *Handler) HandleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 // ========================================================================
 // Helper methods
 // ========================================================================
+
+// resolveRestoreTarget resolves the target fractal ID and ingest token from
+// the request. Accepts either target_fractal_id (preferred) or ingest_token (legacy).
+func (h *Handler) resolveRestoreTarget(r *http.Request, user *storage.User, sourceFractalID string, req RestoreArchiveRequest) (targetFractalID, ingestToken string, httpStatus int, errMsg string) {
+	if req.TargetFractalID != "" {
+		// Resolve token from fractal ID.
+		targetFractalID = req.TargetFractalID
+
+		// Check admin access on target fractal.
+		if targetFractalID != sourceFractalID {
+			targetRole := h.resolveFractalRole(r, targetFractalID)
+			if !rbac.HasAccess(user, targetRole, rbac.RoleAdmin) {
+				return "", "", http.StatusForbidden, "Insufficient permissions on target fractal"
+			}
+		}
+
+		// Find an active ingest token for the target fractal.
+		tokens, err := h.tokenStorage.ListTokens(r.Context(), targetFractalID)
+		if err != nil {
+			return "", "", http.StatusInternalServerError, "Failed to look up ingest tokens"
+		}
+
+		for _, t := range tokens {
+			if t.IsActive {
+				ingestToken = t.TokenValue
+				break
+			}
+		}
+		if ingestToken == "" {
+			return "", "", http.StatusBadRequest, "No active ingest token found for the target fractal"
+		}
+
+		return targetFractalID, ingestToken, 0, ""
+	}
+
+	if req.IngestToken != "" {
+		// Legacy path: validate the provided token.
+		validated, err := h.tokenStorage.ValidateToken(r.Context(), req.IngestToken)
+		if err != nil {
+			return "", "", http.StatusBadRequest, "Invalid ingest token"
+		}
+		targetFractalID = validated.FractalID
+
+		if targetFractalID != sourceFractalID {
+			targetRole := h.resolveFractalRole(r, targetFractalID)
+			if !rbac.HasAccess(user, targetRole, rbac.RoleAdmin) {
+				return "", "", http.StatusForbidden, "Insufficient permissions on target fractal"
+			}
+		}
+
+		return targetFractalID, req.IngestToken, 0, ""
+	}
+
+	return "", "", http.StatusBadRequest, "Either target_fractal_id or ingest_token is required"
+}
 
 func (h *Handler) getCurrentUser(r *http.Request) *storage.User {
 	if user := r.Context().Value("user"); user != nil {

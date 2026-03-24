@@ -49,12 +49,12 @@ Bifract is supported on **Linux x86_64** (amd64). The installer and pre-built bi
 
 Recommended hardware for single-node Docker Compose deployments based on daily raw log volume.
 
-| Daily Ingest | CPU Cores | RAM    | Profile                          |
-|--------------|-----------|--------|----------------------------------|
-| 10 GB        | 4         | 8 GB   | Small team, single application   |
-| 50 GB        | 8         | 16 GB  | Multiple applications            |
-| 100 GB       | 16        | 32 GB  | Department-level collection      |
-| 250 GB       | 16        | 64 GB  | Multi-team or business unit      |
-| 500 GB       | 32        | 128 GB | Enterprise-wide collection       |
+| Daily Ingest | CPU Cores | RAM    |
+|--------------|-----------|--------|
+| 10 GB        | 4         | 8 GB   |
+| 50 GB        | 8         | 16 GB  |
+| 100 GB       | 16        | 32 GB  |
+| 250 GB       | 16        | 64 GB  |
+| 500 GB       | 32        | 128 GB |
 
 For disk, plan roughly 60 GB of storage per 10 GB/day ingested at 30-day retention. ClickHouse typically achieves 7-10x compression on structured log data. SSD minimum, NVMe recommended.

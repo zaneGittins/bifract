@@ -9,9 +9,7 @@ const Archives = {
     pageSize: 20,
     allItems: [],
 
-    init() {
-        // Button uses onclick in HTML, no addEventListener needed
-    },
+    init() {},
 
     async loadArchives(fractalId) {
         this.currentFractalId = fractalId;
@@ -27,7 +25,7 @@ const Archives = {
             const data = await response.json();
 
             if (!data.success) {
-                container.innerHTML = `<p class="text-muted">Unable to load archives.</p>`;
+                container.innerHTML = '<p class="text-muted">Unable to load archives.</p>';
                 return;
             }
 
@@ -40,17 +38,15 @@ const Archives = {
                 }
                 return item.archive && (item.archive.status === 'in_progress' || item.archive.status === 'restoring');
             });
-            if (hasActive) {
-                this.startPolling();
-            }
-        } catch (err) {
-            container.innerHTML = `<p class="text-muted">Unable to load archives.</p>`;
+            if (hasActive) this.startPolling();
+        } catch {
+            container.innerHTML = '<p class="text-muted">Unable to load archives.</p>';
         }
     },
 
     renderItems(container) {
         if (!this.allItems || this.allItems.length === 0) {
-            container.innerHTML = `<p class="text-muted" style="margin-top: 0.75rem;">No archives yet.</p>`;
+            container.innerHTML = '<p class="text-muted" style="margin-top: 0.75rem;">No archives yet.</p>';
             return;
         }
 
@@ -58,240 +54,227 @@ const Archives = {
         const start = this.currentPage * this.pageSize;
         const pageItems = this.allItems.slice(start, start + this.pageSize);
 
-        let rows = '';
+        let cards = '';
         for (const item of pageItems) {
             if (item.type === 'group') {
-                rows += this.renderGroup(item.group);
+                cards += this.renderGroup(item.group);
             } else if (item.archive) {
-                rows += this.renderStandaloneArchive(item.archive);
+                cards += this.renderStandaloneArchive(item.archive);
             }
         }
 
-        let html = `
-            <table class="archives-table">
-                <thead>
-                    <tr>
-                        <th style="width:2rem;"></th>
-                        <th>Status</th>
-                        <th>Type</th>
-                        <th>Period</th>
-                        <th>Logs</th>
-                        <th>Size</th>
-                        <th>Created</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>${rows}</tbody>
-            </table>`;
-
+        let html = `<div class="archive-list">${cards}</div>`;
         if (totalPages > 1) {
             html += this.renderPagination(totalPages);
         }
-
         container.innerHTML = html;
     },
+
+    // ── Group rendering ──────────────────────────────────────────────
 
     renderGroup(group) {
         const isExpanded = this.expandedGroups.has(group.id) ||
             group.status === 'in_progress' || group.status === 'restoring';
-        const chevron = isExpanded ? '&#9660;' : '&#9654;';
-        const statusBadge = this.renderGroupStatus(group);
-        const splitLabel = this.splitLabel(group.split_granularity);
         const archiveCount = group.archive_count || 0;
-        const completedCount = group.completed_count || 0;
         const totalLogs = group.total_log_count || 0;
         const totalSize = group.total_size_bytes || 0;
-        const date = new Date(group.created_at).toLocaleDateString('en-US', {
-            year: 'numeric', month: 'short', day: 'numeric',
-            hour: '2-digit', minute: '2-digit'
-        });
-        const typeBadge = group.archive_type === 'scheduled'
-            ? '<span class="archive-badge archive-badge-info">Scheduled</span>'
-            : '<span class="archive-badge">Manual</span>';
-
-        let info = splitLabel;
-        if (archiveCount > 0) {
-            if (group.status === 'in_progress') {
-                info += ` - ${completedCount} of ${archiveCount}`;
-            } else {
-                info += ` - ${archiveCount} archive${archiveCount !== 1 ? 's' : ''}`;
-            }
-        }
-
+        const date = this.formatDate(group.created_at);
+        const statusBadge = this.renderGroupStatus(group);
         const actions = this.renderGroupActions(group);
 
-        let html = `<tr class="archive-group-header" onclick="Archives.toggleGroup('${group.id}')">
-            <td class="archive-group-toggle">${chevron}</td>
-            <td>${statusBadge}</td>
-            <td>${typeBadge}</td>
-            <td>${Utils.escapeHtml(info)}</td>
-            <td>${totalLogs > 0 ? totalLogs.toLocaleString() : '-'}</td>
-            <td>${totalSize > 0 ? this.formatBytes(totalSize) : '-'}</td>
-            <td>${date}</td>
-            <td onclick="event.stopPropagation()">${actions}</td>
-        </tr>`;
+        // Build a concise summary line.
+        const countLabel = archiveCount === 1 ? '1 archive' : `${archiveCount} archives`;
+        const splitWord = this.splitWord(group.split_granularity);
+        let summary = splitWord ? `${countLabel}, ${splitWord}` : countLabel;
+        if (group.status === 'in_progress') {
+            const done = group.completed_count || 0;
+            summary = `${done} / ${archiveCount} archives`;
+        }
+
+        const chevronClass = isExpanded ? 'archive-chevron expanded' : 'archive-chevron';
+
+        let html = `<div class="archive-card${isExpanded ? ' expanded' : ''}">
+            <div class="archive-card-header" onclick="Archives.toggleGroup('${group.id}')">
+                <div class="archive-card-left">
+                    <span class="${chevronClass}">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                    </span>
+                    ${statusBadge}
+                    <span class="archive-card-summary">${Utils.escapeHtml(summary)}</span>
+                </div>
+                <div class="archive-card-right">
+                    <span class="archive-card-meta">${totalLogs > 0 ? this.formatCount(totalLogs) + ' logs' : ''}</span>
+                    <span class="archive-card-meta">${totalSize > 0 ? this.formatBytes(totalSize) : ''}</span>
+                    <span class="archive-card-meta">${date}</span>
+                    <span class="archive-card-actions" onclick="event.stopPropagation()">${actions}</span>
+                </div>
+            </div>`;
 
         if (isExpanded && group.archives && group.archives.length > 0) {
+            html += '<div class="archive-children">';
             for (const archive of group.archives) {
                 html += this.renderGroupChild(archive);
             }
+            html += '</div>';
         }
 
+        html += '</div>';
         return html;
     },
 
     renderGroupChild(archive) {
         const statusBadge = this.renderStatus(archive);
-        const size = this.formatBytes(archive.size_bytes);
-        const label = archive.period_label || Utils.escapeHtml(archive.filename);
+        const label = archive.period_label || archive.filename;
         const actions = this.renderActions(archive);
 
-        return `<tr class="archive-group-child">
-            <td></td>
-            <td>${statusBadge}</td>
-            <td></td>
-            <td class="archive-period-label">${Utils.escapeHtml(label)}</td>
-            <td>${archive.log_count > 0 ? archive.log_count.toLocaleString() : '-'}</td>
-            <td>${archive.size_bytes > 0 ? size : '-'}</td>
-            <td></td>
-            <td>${actions}</td>
-        </tr>`;
+        return `<div class="archive-child-row">
+            <div class="archive-card-left">
+                ${statusBadge}
+                <span class="archive-child-label">${Utils.escapeHtml(label)}</span>
+            </div>
+            <div class="archive-card-right">
+                <span class="archive-card-meta">${archive.log_count > 0 ? this.formatCount(archive.log_count) + ' logs' : '-'}</span>
+                <span class="archive-card-meta">${archive.size_bytes > 0 ? this.formatBytes(archive.size_bytes) : '-'}</span>
+                <span class="archive-card-meta"></span>
+                <span class="archive-card-actions">${actions}</span>
+            </div>
+        </div>`;
     },
+
+    // ── Standalone archive rendering ─────────────────────────────────
 
     renderStandaloneArchive(a) {
         const statusBadge = this.renderStatus(a);
-        const size = this.formatBytes(a.size_bytes);
-        const date = new Date(a.created_at).toLocaleDateString('en-US', {
-            year: 'numeric', month: 'short', day: 'numeric',
-            hour: '2-digit', minute: '2-digit'
-        });
-        const timeRange = this.formatTimeRange(a);
+        const date = this.formatDate(a.created_at);
         const actions = this.renderActions(a);
-        const typeBadge = a.archive_type === 'scheduled'
-            ? '<span class="archive-badge archive-badge-info">Scheduled</span>'
-            : '<span class="archive-badge">Manual</span>';
 
-        return `<tr>
-            <td></td>
-            <td>${statusBadge}</td>
-            <td>${typeBadge}</td>
-            <td title="${Utils.escapeHtml(timeRange)}">${Utils.escapeHtml(a.filename)}</td>
-            <td>${a.log_count.toLocaleString()}</td>
-            <td>${size}</td>
-            <td>${date}</td>
-            <td>${actions}</td>
-        </tr>`;
+        return `<div class="archive-card">
+            <div class="archive-card-header">
+                <div class="archive-card-left">
+                    <span class="archive-chevron-spacer"></span>
+                    ${statusBadge}
+                    <span class="archive-card-summary">${Utils.escapeHtml(a.filename)}</span>
+                </div>
+                <div class="archive-card-right">
+                    <span class="archive-card-meta">${a.log_count > 0 ? this.formatCount(a.log_count) + ' logs' : '-'}</span>
+                    <span class="archive-card-meta">${a.size_bytes > 0 ? this.formatBytes(a.size_bytes) : '-'}</span>
+                    <span class="archive-card-meta">${date}</span>
+                    <span class="archive-card-actions">${actions}</span>
+                </div>
+            </div>
+        </div>`;
     },
 
+    // ── Status badges ────────────────────────────────────────────────
+
     renderGroupStatus(group) {
-        const { status, error_message: errorMessage, completed_count, archive_count } = group;
+        const { status, error_message: err, completed_count, archive_count } = group;
         switch (status) {
             case 'completed':
-                return `<span class="archive-badge archive-badge-success">&#x2713; Completed</span>`;
-            case 'in_progress': {
-                const progress = archive_count > 0 ? ` ${completed_count}/${archive_count}` : '';
-                return `<span class="archive-badge archive-badge-active"><span class="spinner-sm"></span> Archiving${progress}</span>`;
-            }
+                return '<span class="archive-badge archive-badge-success">Completed</span>';
+            case 'in_progress':
+                return `<span class="archive-badge archive-badge-active"><span class="spinner-sm"></span> Archiving</span>`;
             case 'restoring':
                 return `<span class="archive-badge archive-badge-active"><span class="spinner-sm"></span> Restoring</span>`;
             case 'partial':
-                return `<span class="archive-badge archive-badge-warning" title="${Utils.escapeHtml(errorMessage || '')}">Partial</span>`;
+                return `<span class="archive-badge archive-badge-warning" title="${Utils.escapeHtml(err || '')}">Partial</span>`;
             case 'failed':
-                return `<span class="archive-badge archive-badge-error" title="${Utils.escapeHtml(errorMessage || '')}">Failed</span>`;
+                return `<span class="archive-badge archive-badge-error" title="${Utils.escapeHtml(err || '')}">Failed</span>`;
             default:
                 return `<span class="archive-badge">${Utils.escapeHtml(status)}</span>`;
         }
     },
 
     renderStatus(archive) {
-        const { status, error_message: errorMessage, log_count: logCount, checksum,
-                restore_lines_sent: restoreLinesSent, restore_error: restoreError } = archive;
+        const { status, error_message: err, log_count: logCount, checksum,
+                restore_lines_sent: sent, restore_error: restoreErr } = archive;
         switch (status) {
             case 'completed': {
-                const verified = checksum ? ' title="SHA-256 verified"' : ' title="No checksum (created before integrity verification was added)"';
-                const icon = checksum ? '&#x2713; ' : '';
-                let badge = `<span class="archive-badge archive-badge-success"${verified}>${icon}Completed</span>`;
-                if (restoreError) {
-                    const resumeInfo = restoreLinesSent > 0
-                        ? ` (${this.formatCount(restoreLinesSent)} / ${this.formatCount(logCount)} logs restored)`
-                        : '';
-                    badge += `<br><span class="archive-badge archive-badge-error" title="${Utils.escapeHtml(restoreError)}" style="margin-top:0.25rem">Restore failed${resumeInfo}</span>`;
+                let badge = `<span class="archive-badge archive-badge-success"${checksum ? ' title="SHA-256 verified"' : ''}>Completed</span>`;
+                if (restoreErr) {
+                    const info = sent > 0 ? ` ${this.formatCount(sent)}/${this.formatCount(logCount)}` : '';
+                    badge += ` <span class="archive-badge archive-badge-error" title="${Utils.escapeHtml(restoreErr)}">Restore failed${info}</span>`;
                 }
                 return badge;
             }
             case 'in_progress': {
-                const progress = logCount > 0 ? ` ${this.formatCount(logCount)} logs` : '';
-                return `<span class="archive-badge archive-badge-active"><span class="spinner-sm"></span> Archiving${progress}</span>`;
+                const info = logCount > 0 ? ` ${this.formatCount(logCount)}` : '';
+                return `<span class="archive-badge archive-badge-active"><span class="spinner-sm"></span> Archiving${info}</span>`;
             }
             case 'restoring': {
-                let progress = '';
-                if (restoreLinesSent > 0 && logCount > 0) {
-                    const pct = Math.min(99, Math.round((restoreLinesSent / logCount) * 100));
-                    progress = ` ${pct}% (${this.formatCount(restoreLinesSent)} / ${this.formatCount(logCount)})`;
-                } else if (restoreLinesSent > 0) {
-                    progress = ` ${this.formatCount(restoreLinesSent)} logs`;
+                let info = '';
+                if (sent > 0 && logCount > 0) {
+                    const pct = Math.min(99, Math.round((sent / logCount) * 100));
+                    info = ` ${pct}%`;
                 }
-                return `<span class="archive-badge archive-badge-active"><span class="spinner-sm"></span> Restoring${progress}</span>`;
+                return `<span class="archive-badge archive-badge-active"><span class="spinner-sm"></span> Restoring${info}</span>`;
             }
             case 'failed':
-                return `<span class="archive-badge archive-badge-error" title="${Utils.escapeHtml(errorMessage || '')}">Failed</span>`;
+                return `<span class="archive-badge archive-badge-error" title="${Utils.escapeHtml(err || '')}">Failed</span>`;
             default:
                 return `<span class="archive-badge">${Utils.escapeHtml(status)}</span>`;
         }
     },
 
+    // ── Action buttons ───────────────────────────────────────────────
+
     renderGroupActions(group) {
         if (group.status === 'in_progress' || group.status === 'restoring') {
-            return `<button class="btn-danger-sm btn-xs" onclick="Archives.confirmCancelGroup('${group.id}')">Cancel</button>`;
+            return this.actionBtn('Cancel', 'danger', `Archives.confirmCancelGroup('${group.id}')`);
         }
-
-        let actions = '';
+        let html = '';
         if (group.status === 'completed' || group.status === 'partial') {
-            actions += `<button class="btn-secondary btn-xs" onclick="Archives.confirmRestoreGroup('${group.id}')">Restore All</button> `;
+            html += this.actionBtn('Restore', 'secondary', `Archives.confirmRestoreGroup('${group.id}')`) + ' ';
         }
-        actions += `<button class="btn-danger-sm btn-xs" onclick="Archives.confirmDeleteGroup('${group.id}')">Delete</button>`;
-        return actions;
+        html += this.actionBtn('Delete', 'danger', `Archives.confirmDeleteGroup('${group.id}')`);
+        return html;
     },
 
     renderActions(archive) {
         if (archive.status === 'in_progress' || archive.status === 'restoring') {
-            return `<button class="btn-danger-sm btn-xs" onclick="Archives.confirmCancel('${archive.id}')">Cancel</button>`;
+            return this.actionBtn('Cancel', 'danger', `Archives.confirmCancel('${archive.id}')`);
         }
-
-        let actions = '';
+        let html = '';
         if (archive.status === 'completed') {
-            const hasPartialRestore = archive.restore_lines_sent > 0 && !!archive.restore_error;
-            const label = hasPartialRestore ? 'Resume' : 'Restore';
-            actions += `<button class="btn-secondary btn-xs" onclick="Archives.confirmRestore('${archive.id}', ${hasPartialRestore})">${label}</button> `;
+            const partial = archive.restore_lines_sent > 0 && !!archive.restore_error;
+            const label = partial ? 'Resume' : 'Restore';
+            html += this.actionBtn(label, 'secondary', `Archives.confirmRestore('${archive.id}', ${partial})`) + ' ';
         }
-        actions += `<button class="btn-danger-sm btn-xs" onclick="Archives.confirmDelete('${archive.id}')">Delete</button>`;
-        return actions;
+        html += this.actionBtn('Delete', 'danger', `Archives.confirmDelete('${archive.id}')`);
+        return html;
     },
 
+    actionBtn(label, style, onclick) {
+        const cls = style === 'danger' ? 'archive-action-btn archive-action-danger' : 'archive-action-btn';
+        return `<button class="${cls}" onclick="${onclick}">${label}</button>`;
+    },
+
+    // ── Pagination ───────────────────────────────────────────────────
+
     renderPagination(totalPages) {
-        const prevDisabled = this.currentPage === 0 ? ' disabled' : '';
-        const nextDisabled = this.currentPage >= totalPages - 1 ? ' disabled' : '';
+        const prevDis = this.currentPage === 0 ? ' disabled' : '';
+        const nextDis = this.currentPage >= totalPages - 1 ? ' disabled' : '';
         return `<div class="archive-pagination">
-            <button class="btn-secondary btn-xs"${prevDisabled} onclick="Archives.prevPage()">Prev</button>
+            <button class="archive-action-btn"${prevDis} onclick="Archives.prevPage()">Prev</button>
             <span class="archive-page-info">${this.currentPage + 1} / ${totalPages}</span>
-            <button class="btn-secondary btn-xs"${nextDisabled} onclick="Archives.nextPage()">Next</button>
+            <button class="archive-action-btn"${nextDis} onclick="Archives.nextPage()">Next</button>
         </div>`;
     },
 
     prevPage() {
         if (this.currentPage > 0) {
             this.currentPage--;
-            const container = document.getElementById('archivesList');
-            if (container) this.renderItems(container);
+            const c = document.getElementById('archivesList');
+            if (c) this.renderItems(c);
         }
     },
 
     nextPage() {
-        const totalPages = Math.ceil(this.allItems.length / this.pageSize);
-        if (this.currentPage < totalPages - 1) {
+        const total = Math.ceil(this.allItems.length / this.pageSize);
+        if (this.currentPage < total - 1) {
             this.currentPage++;
-            const container = document.getElementById('archivesList');
-            if (container) this.renderItems(container);
+            const c = document.getElementById('archivesList');
+            if (c) this.renderItems(c);
         }
     },
 
@@ -301,25 +284,25 @@ const Archives = {
         } else {
             this.expandedGroups.add(groupId);
         }
-        const container = document.getElementById('archivesList');
-        if (container) this.renderItems(container);
+        const c = document.getElementById('archivesList');
+        if (c) this.renderItems(c);
     },
 
-    splitLabel(granularity) {
-        switch (granularity) {
-            case 'hour': return 'Hourly Split';
-            case 'day': return 'Daily Split';
-            case 'week': return 'Weekly Split';
-            case 'none': return 'Single Archive';
-            default: return granularity || 'Archive';
+    // ── Formatting helpers ───────────────────────────────────────────
+
+    splitWord(g) {
+        switch (g) {
+            case 'hour': return 'hourly';
+            case 'day': return 'daily';
+            case 'week': return 'weekly';
+            default: return '';
         }
     },
 
-    formatTimeRange(archive) {
-        if (!archive.time_range_start || !archive.time_range_end) return 'N/A';
-        const start = new Date(archive.time_range_start).toLocaleString();
-        const end = new Date(archive.time_range_end).toLocaleString();
-        return `${start} to ${end}`;
+    formatDate(ts) {
+        return new Date(ts).toLocaleDateString('en-US', {
+            month: 'short', day: 'numeric', year: 'numeric'
+        });
     },
 
     formatCount(n) {
@@ -335,6 +318,8 @@ const Archives = {
         const i = Math.floor(Math.log(bytes) / Math.log(1024));
         return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
     },
+
+    // ── Create archive ───────────────────────────────────────────────
 
     async createArchive() {
         if (!this.currentFractalId && window.FractalContext && FractalContext.currentFractal) {
@@ -380,7 +365,35 @@ const Archives = {
         }
     },
 
-    // Single archive restore
+    // ── Restore flow ─────────────────────────────────────────────────
+
+    async populateRestoreDropdown() {
+        const select = document.getElementById('archiveRestoreTarget');
+        if (!select) return;
+
+        select.innerHTML = '<option value="">Loading...</option>';
+
+        try {
+            const response = await fetch('/api/v1/fractals', { credentials: 'include' });
+            const data = await response.json();
+            if (!data.success || !data.data || !data.data.fractals) {
+                select.innerHTML = '<option value="">Failed to load fractals</option>';
+                return;
+            }
+
+            select.innerHTML = '';
+            for (const f of data.data.fractals) {
+                const opt = document.createElement('option');
+                opt.value = f.id;
+                opt.textContent = f.name;
+                if (f.id === this.currentFractalId) opt.selected = true;
+                select.appendChild(opt);
+            }
+        } catch {
+            select.innerHTML = '<option value="">Failed to load fractals</option>';
+        }
+    },
+
     async confirmRestore(archiveId, isResume) {
         if (!this.currentFractalId && window.FractalContext && FractalContext.currentFractal) {
             this.currentFractalId = FractalContext.currentFractal.id;
@@ -393,15 +406,13 @@ const Archives = {
         const info = document.getElementById('archiveRestoreInfo');
         if (!dialog) return;
 
-        if (isResume) {
-            info.textContent = 'A previous restore was interrupted. Provide the same ingest API key to resume from where it left off.';
-        } else {
-            info.textContent = 'Provide an ingest API key for the target fractal. The token determines which fractal logs are restored into.';
-        }
+        await this.populateRestoreDropdown();
+        info.textContent = isResume
+            ? 'A previous restore was interrupted. It will resume from where it left off.'
+            : 'Select which fractal to restore logs into.';
         dialog.style.display = '';
     },
 
-    // Group restore
     async confirmRestoreGroup(groupId) {
         if (!this.currentFractalId && window.FractalContext && FractalContext.currentFractal) {
             this.currentFractalId = FractalContext.currentFractal.id;
@@ -414,7 +425,8 @@ const Archives = {
         const info = document.getElementById('archiveRestoreInfo');
         if (!dialog) return;
 
-        info.textContent = 'Provide an ingest API key for the target fractal. All archives in this group will be restored sequentially.';
+        await this.populateRestoreDropdown();
+        info.textContent = 'All archives in this group will be restored sequentially.';
         dialog.style.display = '';
     },
 
@@ -424,8 +436,6 @@ const Archives = {
         this.pendingRestoreIsResume = false;
         const dialog = document.getElementById('archiveRestoreDialog');
         if (dialog) dialog.style.display = 'none';
-        const tokenInput = document.getElementById('archiveRestoreToken');
-        if (tokenInput) tokenInput.value = '';
     },
 
     async executeRestore() {
@@ -434,11 +444,11 @@ const Archives = {
         if (!id || !this.currentFractalId) return;
 
         const confirmBtn = document.getElementById('archiveRestoreConfirmBtn');
-        const tokenInput = document.getElementById('archiveRestoreToken');
+        const targetSelect = document.getElementById('archiveRestoreTarget');
+        const targetFractalId = targetSelect ? targetSelect.value : '';
 
-        const ingestToken = tokenInput ? tokenInput.value.trim() : '';
-        if (!ingestToken) {
-            Toast.error('Missing Token', 'An ingest API key is required to restore an archive.');
+        if (!targetFractalId) {
+            Toast.error('No Target', 'Please select a target fractal.');
             return;
         }
 
@@ -457,7 +467,7 @@ const Archives = {
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    ingest_token: ingestToken,
+                    target_fractal_id: targetFractalId,
                     clear_existing: !this.pendingRestoreIsResume
                 })
             });
@@ -481,48 +491,34 @@ const Archives = {
         }
     },
 
+    // ── Cancel / Delete ──────────────────────────────────────────────
+
     async confirmCancel(archiveId) {
         if (!confirm('Cancel this operation?')) return;
-
         try {
             const response = await fetch(
                 `/api/v1/fractals/${this.currentFractalId}/archives/${archiveId}/cancel`,
                 { method: 'POST', credentials: 'include' }
             );
             const data = await response.json();
-
-            if (!data.success) {
-                Toast.error('Cancel Failed', data.error || 'Failed to cancel operation');
-                return;
-            }
-
-            Toast.success('Operation Cancelled', 'The operation has been stopped.');
+            if (!data.success) { Toast.error('Cancel Failed', data.error); return; }
+            Toast.success('Cancelled', 'The operation has been stopped.');
             this.loadArchives(this.currentFractalId);
-        } catch (err) {
-            Toast.error('Cancel Failed', err.message);
-        }
+        } catch (err) { Toast.error('Cancel Failed', err.message); }
     },
 
     async confirmCancelGroup(groupId) {
         if (!confirm('Cancel this group operation?')) return;
-
         try {
             const response = await fetch(
                 `/api/v1/fractals/${this.currentFractalId}/archive-groups/${groupId}/cancel`,
                 { method: 'POST', credentials: 'include' }
             );
             const data = await response.json();
-
-            if (!data.success) {
-                Toast.error('Cancel Failed', data.error || 'Failed to cancel operation');
-                return;
-            }
-
-            Toast.success('Operation Cancelled', 'The group operation has been stopped.');
+            if (!data.success) { Toast.error('Cancel Failed', data.error); return; }
+            Toast.success('Cancelled', 'The group operation has been stopped.');
             this.loadArchives(this.currentFractalId);
-        } catch (err) {
-            Toast.error('Cancel Failed', err.message);
-        }
+        } catch (err) { Toast.error('Cancel Failed', err.message); }
     },
 
     confirmDelete(archiveId) {
@@ -537,17 +533,10 @@ const Archives = {
                 { method: 'DELETE', credentials: 'include' }
             );
             const data = await response.json();
-
-            if (!data.success) {
-                Toast.error('Delete Failed', data.error || 'Failed to delete archive');
-                return;
-            }
-
-            Toast.success('Archive Deleted', 'Archive has been removed.');
+            if (!data.success) { Toast.error('Delete Failed', data.error); return; }
+            Toast.success('Deleted', 'Archive has been removed.');
             this.loadArchives(this.currentFractalId);
-        } catch (err) {
-            Toast.error('Delete Failed', err.message);
-        }
+        } catch (err) { Toast.error('Delete Failed', err.message); }
     },
 
     confirmDeleteGroup(groupId) {
@@ -562,26 +551,19 @@ const Archives = {
                 { method: 'DELETE', credentials: 'include' }
             );
             const data = await response.json();
-
-            if (!data.success) {
-                Toast.error('Delete Failed', data.error || 'Failed to delete archive group');
-                return;
-            }
-
-            Toast.success('Group Deleted', 'Archive group and all archives have been removed.');
+            if (!data.success) { Toast.error('Delete Failed', data.error); return; }
+            Toast.success('Deleted', 'Archive group has been removed.');
             this.expandedGroups.delete(groupId);
             this.loadArchives(this.currentFractalId);
-        } catch (err) {
-            Toast.error('Delete Failed', err.message);
-        }
+        } catch (err) { Toast.error('Delete Failed', err.message); }
     },
+
+    // ── Polling ──────────────────────────────────────────────────────
 
     startPolling() {
         this.stopPolling();
         this.pollInterval = setInterval(() => {
-            if (this.currentFractalId) {
-                this.loadArchives(this.currentFractalId);
-            }
+            if (this.currentFractalId) this.loadArchives(this.currentFractalId);
         }, 3000);
     },
 
