@@ -4,6 +4,8 @@
     padding: 1rem;
     max-height: calc(100vh - 160px);
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
 }
 
 .il-header {
@@ -213,6 +215,107 @@
     color: var(--accent-secondary);
 }
 
+/* Page toolbar: search + count */
+
+.il-page-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+
+.il-page-search {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.375rem 0.625rem;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    font-family: inherit;
+    flex: 1;
+    max-width: 300px;
+    transition: var(--transition);
+}
+
+.il-page-search:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.il-page-search::placeholder {
+    color: var(--text-muted);
+}
+
+.il-page-count {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* Pagination */
+
+.il-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+}
+
+.il-pagination-info {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.il-pagination button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+/* Page editor: two-column layout */
+
+.il-page-editor {
+    display: flex;
+    gap: 1.25rem;
+    min-height: 0;
+    flex: 1;
+}
+
+.il-page-editor-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.il-page-editor-main .il-form-group-grow {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    margin-bottom: 0;
+}
+
+.il-page-editor-main .il-form-group-grow textarea {
+    flex: 1;
+    min-height: 300px;
+    resize: vertical;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.il-page-editor-sidebar {
+    flex: 0 0 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.il-header-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
 /* Forms */
 
 .il-form {
@@ -239,6 +342,7 @@
 .il-form-group input[type="password"],
 .il-form-group input[type="number"],
 .il-form-group select,
+.il-page-editor-main textarea,
 .il-form-group textarea {
     background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
@@ -254,6 +358,7 @@
 .il-form-group input[type="password"]:focus,
 .il-form-group input[type="number"]:focus,
 .il-form-group select:focus,
+.il-page-editor-main textarea:focus,
 .il-form-group textarea:focus {
     outline: none;
     border-color: var(--accent-primary);

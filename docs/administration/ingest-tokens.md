@@ -24,6 +24,4 @@ Each API key has granular permissions that control what it can access. Follow th
 
 Permissions are set during key creation and can be updated via the API. The overview table shows each key's active permissions at a glance.
 
-When a permission is disabled, the API key receives a `403 Forbidden` response for that operation. Permissions are enforced server-side regardless of how the key is used.
-
 For details on using API keys for ingestion, see the [API Reference](../api/ingestion.md).

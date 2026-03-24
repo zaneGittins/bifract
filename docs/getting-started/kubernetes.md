@@ -49,8 +49,6 @@ graph TB
     ch0r0 & ch0r1 & ch1r0 & ch1r1 --> keeper
 ```
 
-Traffic flow is enforced by NetworkPolicies: only Caddy accepts external traffic, only Caddy can reach Bifract, only Bifract can reach the databases and LiteLLM. A log shipper sidecar in the Caddy pod ships access logs to the Bifract system fractal for audit visibility.
-
 ## Step 1: Install ClickHouse Operator
 
 Bifract uses the [official ClickHouse Kubernetes Operator](https://clickhouse.com/docs/clickhouse-operator/overview) to manage ClickHouse and Keeper clusters.
@@ -159,25 +157,15 @@ kubectl -n bifract get networkpolicies
 
 ## Scaling ClickHouse
 
-The default deployment creates 1 shard with 2 replicas. Both shard and replica counts can be configured during `--install-k8s`. Replicas provide high availability within a shard. Shards distribute data across multiple nodes for increased storage capacity and query throughput.
+Shard and replica counts are set during `--install-k8s` and can be changed at any time with `--reconfigure-k8s`. Replicas provide high availability within a shard. Shards distribute data across multiple nodes for increased storage capacity and query throughput.
 
-**Adding replicas** (HA within a shard): edit the `ClickHouseCluster` resource and increase `replicas`. Then update the `CLICKHOUSE_HOSTS` env var in the Bifract deployment to include the new replica hostnames. Hostnames follow the pattern `bifract-ch-clickhouse-{shard}-{replica}-0.bifract-ch-clickhouse-headless`.
-
-**Adding shards** (horizontal scaling): edit the `ClickHouseCluster` resource and increase `shards`:
-
-```yaml
-spec:
-  shards: 2
-  replicas: 2
+```bash
+# Scale to 2 shards with 3 replicas each (6 total ClickHouse pods)
+bifract --reconfigure-k8s --dir ./bifract-k8s --shards 2 --replicas 3
+kubectl apply -k ./bifract-k8s
 ```
 
-This creates 2 shards with 2 replicas each (4 total ClickHouse pods). Update `CLICKHOUSE_HOSTS` to include all hosts:
-
-```
-bifract-ch-clickhouse-0-0-0.bifract-ch-clickhouse-headless,bifract-ch-clickhouse-0-1-0.bifract-ch-clickhouse-headless,bifract-ch-clickhouse-1-0-0.bifract-ch-clickhouse-headless,bifract-ch-clickhouse-1-1-0.bifract-ch-clickhouse-headless
-```
-
-Bifract's Distributed table automatically routes queries across all shards and distributes writes evenly using random sharding.
+This regenerates the ClickHouse cluster manifest and updates `CLICKHOUSE_HOSTS` automatically. Bifract's Distributed table routes queries across all shards and distributes writes evenly.
 
 ## Post-Deploy Configuration
 
@@ -209,11 +197,8 @@ The command will:
 2. Check that the new version's container image is available
 3. Back up all manifests to `.backups/<timestamp>/`
 4. Re-render manifests with the new version
-5. Print `kubectl apply -k` instructions
 
-PVCs are not modified. Existing data is preserved across upgrades.
-
-If the binary is already the same version as the deployed manifests, the command exits with "Already up to date".
+Apply the changes with `kubectl apply -k`. PVCs are not modified. Existing data is preserved across upgrades.
 
 ## Reconfiguring
 
@@ -240,6 +225,8 @@ Available override flags:
 | `--ip-access` | IP access control mode | `all`, `restrict-app`, `restrict-all`, `mtls-app` |
 | `--allowed-ips` | Allowed CIDRs (comma-separated) | `10.0.0.0/8,192.168.1.0/24` |
 | `--domain` | Domain name | `bifract.example.com` |
+| `--shards` | ClickHouse shard count | `1`, `2`, ... |
+| `--replicas` | ClickHouse replicas per shard | `1`, `2`, ... |
 
 Like `--upgrade-k8s`, a backup is created before writing. All secrets and resource profiles are preserved. After reconfiguring, apply the changes:
 
@@ -251,50 +238,8 @@ kubectl apply -k ./bifract-k8s
 
 **Bifract pods crash-looping:** Check logs with `kubectl -n bifract logs <pod>`. Usually means the databases are still starting. The pods will self-recover once PostgreSQL and ClickHouse are ready.
 
-**ClickHouse pods stuck in Pending:** Run `kubectl -n bifract describe pod <pod>` and check for PVC/storage class issues. Most managed Kubernetes providers have a default storage class that works automatically.
-
 **SSL errors / Let's Encrypt not issuing cert:** Verify DNS is pointing to the load balancer IP and that ports 80/443 are reachable. Check Caddy logs with `kubectl -n bifract logs -l app=caddy`. If Caddy attempted certificate issuance before DNS was ready, it may have cached a failed state. Restart the Caddy pod to retry:
 
 ```bash
 kubectl rollout restart deployment caddy -n bifract
-```
-
-**ClickHouse `KEEPER_EXCEPTION` or connection timeouts:** Usually a network policy issue. Verify the policies are applied and that pod labels match:
-
-```bash
-kubectl -n bifract get networkpolicies
-kubectl -n bifract get pods --show-labels
-```
-
-The ClickHouse pods should have `app.kubernetes.io/instance=bifract-ch-clickhouse` and Keeper pods should have `app.kubernetes.io/instance=bifract-keeper-keeper`.
-
-**Client IPs showing as internal addresses:** The Caddy Service uses `externalTrafficPolicy: Local` to preserve client source IPs. If you see internal 10.x.x.x addresses in logs, verify this setting is present on the `caddy` Service. Note that `externalTrafficPolicy: Local` requires at least one Caddy pod running on a node that receives traffic from the load balancer.
-
-**Password mismatch after regenerating manifests:** If you re-run `--install-k8s` (which generates new passwords) but the databases still have data from a previous deployment, the credentials will not match. Delete the database PVCs and reapply:
-
-```bash
-# PostgreSQL
-kubectl -n bifract delete statefulset postgres
-kubectl -n bifract delete pvc postgres-data-postgres-0
-# ClickHouse
-kubectl -n bifract delete clickhousecluster bifract-ch
-kubectl -n bifract delete pvc -l app.kubernetes.io/instance=bifract-ch-clickhouse
-# Keeper
-kubectl -n bifract delete keepercluster bifract-keeper
-kubectl -n bifract delete pvc -l app.kubernetes.io/instance=bifract-keeper-keeper
-# Reapply
-kubectl apply -k ./bifract-k8s
-```
-
-## Cleanup
-
-```bash
-kubectl delete -k ./bifract-k8s
-```
-
-This removes all Bifract resources but preserves PersistentVolumeClaims. To fully clean up storage:
-
-```bash
-kubectl -n bifract delete pvc --all
-kubectl delete namespace bifract
 ```

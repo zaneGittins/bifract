@@ -4,6 +4,9 @@ const InstructionLibraries = {
     currentPages: [],
     view: 'list', // 'list' or 'detail' or 'editLibrary' or 'editPage'
     editingPage: null,
+    pageSearch: '',
+    pageOffset: 0,
+    pageLimit: 20,
 
     init() {
         // No-op until shown
@@ -112,11 +115,52 @@ const InstructionLibraries = {
         return html;
     },
 
+    filterPagesInPlace() {
+        const q = this.pageSearch.toLowerCase();
+        const rows = document.querySelectorAll('.il-page-row');
+        let visible = 0;
+        rows.forEach(row => {
+            const name = (row.dataset.name || '').toLowerCase();
+            const desc = (row.dataset.desc || '').toLowerCase();
+            const match = !q || name.includes(q) || desc.includes(q);
+            row.style.display = match ? '' : 'none';
+            if (match) visible++;
+        });
+        const count = document.querySelector('.il-page-count');
+        if (count) {
+            count.textContent = visible + ' page' + (visible !== 1 ? 's' : '') + (q ? ' matched' : '');
+        }
+        const pageList = document.querySelector('.il-page-list');
+        const emptyMsg = document.querySelector('.il-page-empty');
+        if (visible === 0 && q) {
+            if (!emptyMsg) {
+                const el = document.createElement('div');
+                el.className = 'il-empty il-page-empty';
+                el.textContent = 'No pages match your search.';
+                pageList.parentNode.insertBefore(el, pageList.nextSibling);
+            }
+            if (pageList) pageList.style.display = 'none';
+        } else {
+            if (emptyMsg) emptyMsg.remove();
+            if (pageList) pageList.style.display = '';
+        }
+    },
+
+    setPageSearch(val) {
+        this.pageSearch = val;
+        this.filterPagesInPlace();
+    },
+
+    setPageOffset(offset) {
+        this.pageOffset = offset;
+        this.render();
+    },
+
     renderDetailView() {
         const lib = this.currentLibrary;
         if (!lib) return '<div class="il-empty">Library not found.</div>';
 
-        const pages = this.currentPages;
+        const allPages = this.currentPages;
         let html = `
             <div class="il-header">
                 <div class="il-header-left">
@@ -132,20 +176,29 @@ const InstructionLibraries = {
             html += `<p class="il-description">${this.esc(lib.description)}</p>`;
         }
 
-        if (pages.length === 0) {
+        if (allPages.length === 0) {
             html += '<div class="il-empty">No pages yet. Add a page to provide instructions to the AI.</div>';
             return html;
         }
 
+        const total = allPages.length;
+
+        html += `
+            <div class="il-page-toolbar">
+                <input type="text" class="il-page-search" placeholder="Search pages..." value="${this.esc(this.pageSearch)}" oninput="InstructionLibraries.setPageSearch(this.value)" />
+                <span class="il-page-count">${total} page${total !== 1 ? 's' : ''}</span>
+            </div>
+        `;
+
         html += '<div class="il-page-list">';
-        for (const page of pages) {
+        for (const page of allPages) {
             const pinIcon = page.always_include
                 ? '<span class="il-pin il-pin-active" title="Always included in context">pinned</span>'
                 : '<span class="il-pin" title="Available on demand">on-demand</span>';
             const desc = page.description ? `<span class="il-page-desc">${this.esc(page.description)}</span>` : '';
 
             html += `
-                <div class="il-page-row">
+                <div class="il-page-row" data-name="${this.esc(page.name)}" data-desc="${this.esc(page.description || '')}">
                     <div class="il-page-info">
                         <div class="il-page-name">${pinIcon} ${this.esc(page.name)}</div>
                         ${desc}
@@ -159,6 +212,7 @@ const InstructionLibraries = {
             `;
         }
         html += '</div>';
+
         return html;
     },
 
@@ -261,33 +315,35 @@ const InstructionLibraries = {
                     <button class="btn-secondary btn-xs" onclick="InstructionLibraries.openLibrary('${this.currentLibrary.id}')">Back</button>
                     <h3>${title}</h3>
                 </div>
+                <div class="il-header-actions">
+                    <button class="btn-secondary" onclick="InstructionLibraries.openLibrary('${this.currentLibrary.id}')">Cancel</button>
+                    <button class="btn-primary" onclick="InstructionLibraries.savePage()">${isEdit ? 'Save' : 'Create'}</button>
+                </div>
             </div>
-            <div class="il-form">
-                <div class="il-form-row">
-                    <div class="il-form-group" style="flex:2">
+            <div class="il-page-editor">
+                <div class="il-page-editor-main">
+                    <div class="il-form-group il-form-group-grow">
+                        <label>Content</label>
+                        <textarea id="ilPageContent" placeholder="Instructions for the AI...">${content}</textarea>
+                    </div>
+                </div>
+                <div class="il-page-editor-sidebar">
+                    <div class="il-form-group">
                         <label>Name</label>
                         <input type="text" id="ilPageName" value="${name}" placeholder="e.g. Incident Response" />
                     </div>
-                    <div class="il-form-group" style="flex:0 0 80px">
+                    <div class="il-form-group">
+                        <label>Description <span class="il-hint">(shown in the AI's page index)</span></label>
+                        <input type="text" id="ilPageDesc" value="${desc}" placeholder="Brief description for AI context" />
+                    </div>
+                    <div class="il-form-group">
                         <label>Order</label>
                         <input type="number" id="ilPageOrder" value="${sortOrder}" min="0" />
                     </div>
-                </div>
-                <div class="il-form-group">
-                    <label>Description <span class="il-hint">(shown in the AI's page index)</span></label>
-                    <input type="text" id="ilPageDesc" value="${desc}" placeholder="Brief description for AI context" />
-                </div>
-                <div class="il-form-group">
-                    <label>Content</label>
-                    <textarea id="ilPageContent" rows="16" placeholder="Instructions for the AI...">${content}</textarea>
-                </div>
-                <div class="il-form-group">
-                    <label class="il-checkbox-label"><input type="checkbox" id="ilPagePin" ${alwaysInclude ? 'checked' : ''} /> Always include in context (pinned)</label>
-                    <span class="il-hint">Pinned pages are always in the AI's system prompt. Non-pinned pages appear in an index and are loaded on demand.</span>
-                </div>
-                <div class="il-form-actions">
-                    <button class="btn-secondary" onclick="InstructionLibraries.openLibrary('${this.currentLibrary.id}')">Cancel</button>
-                    <button class="btn-primary" onclick="InstructionLibraries.savePage()">${isEdit ? 'Save' : 'Create'}</button>
+                    <div class="il-form-group">
+                        <label class="il-checkbox-label"><input type="checkbox" id="ilPagePin" ${alwaysInclude ? 'checked' : ''} /> Always include (pinned)</label>
+                        <span class="il-hint">Pinned pages are always in the AI's system prompt. Non-pinned pages appear in an index and are loaded on demand.</span>
+                    </div>
                 </div>
             </div>
         `;
@@ -315,6 +371,8 @@ const InstructionLibraries = {
 
     async openLibrary(id) {
         await this.loadLibraryDetail(id);
+        this.pageSearch = '';
+        this.pageOffset = 0;
         this.view = 'detail';
         this.render();
     },

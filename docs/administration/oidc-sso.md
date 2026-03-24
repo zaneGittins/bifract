@@ -26,7 +26,7 @@ Register Bifract as an application in your identity provider with these settings
 
 ## User Provisioning
 
-When a user signs in via OIDC for the first time, Bifract automatically creates their account (JIT provisioning). The username is derived from their email prefix. OIDC-provisioned users cannot sign in with a password.
+When a user signs in via OIDC for the first time, Bifract automatically creates their account. OIDC-provisioned users cannot sign in with a password.
 
 ## Environment Variables
 

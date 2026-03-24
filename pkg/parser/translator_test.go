@@ -23,7 +23,7 @@ func TestBasicQueries(t *testing.T) {
 			name:  "Simple wildcard",
 			query: "*",
 			wantContain: []string{
-				"SELECT timestamp, raw_log, log_id, toString(fields) AS fields FROM logs",
+				"SELECT timestamp, raw_log, log_id, toString(fields) AS fields, fractal_id FROM logs",
 				"ORDER BY timestamp DESC",
 			},
 		},

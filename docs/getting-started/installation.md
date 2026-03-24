@@ -57,4 +57,4 @@ Recommended hardware for single-node Docker Compose deployments based on daily r
 | 250 GB       | 16        | 64 GB  |
 | 500 GB       | 32        | 128 GB |
 
-For disk, plan roughly 60 GB of storage per 10 GB/day ingested at 30-day retention. ClickHouse typically achieves 7-10x compression on structured log data. SSD minimum, NVMe recommended.
+For disk, ClickHouse typically achieves 7-10x compression on structured log data, so 10 GB/day of raw logs compresses to roughly 1-1.5 GB/day on disk.

@@ -27,6 +27,8 @@ type K8sReconfigureOpts struct {
 	IPAccess    string
 	AllowedIPs  string
 	SizeProfile string
+	Shards      int
+	Replicas    int
 }
 
 // RunReconfigureK8s re-renders K8s manifests from existing secrets and settings.
@@ -100,6 +102,14 @@ func RunReconfigureK8s(dir string, opts K8sReconfigureOpts) error {
 		cfg.SizeProfile = profile
 		cfg.CHShards = profile.CHShards
 		cfg.CHReplicas = profile.CHReplicas
+	}
+	if opts.Shards > 0 && opts.Shards != cfg.CHShards {
+		changes = append(changes, fmt.Sprintf("CH Shards: %d -> %d", cfg.CHShards, opts.Shards))
+		cfg.CHShards = opts.Shards
+	}
+	if opts.Replicas > 0 && opts.Replicas != cfg.CHReplicas {
+		changes = append(changes, fmt.Sprintf("CH Replicas: %d -> %d", cfg.CHReplicas, opts.Replicas))
+		cfg.CHReplicas = opts.Replicas
 	}
 	if opts.Domain != "" && opts.Domain != cfg.Domain {
 		changes = append(changes, fmt.Sprintf("Domain: %s -> %s", cfg.Domain, opts.Domain))

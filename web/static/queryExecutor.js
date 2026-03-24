@@ -547,14 +547,14 @@ const QueryExecutor = {
         let fields = [];
         if (this.fieldOrder && this.fieldOrder.length > 0) {
             // Use the field order provided by the backend
-            fields = this.fieldOrder;
+            fields = this.fieldOrder.filter(f => f !== 'fractal_id');
             console.log('Using backend field order:', fields);
         } else if (results.length > 0) {
             // Fall back to extracting from first result
             const firstResult = results[0];
             console.log('First result keys order:', Object.keys(firstResult));
             for (const key of Object.keys(firstResult)) {
-                if (key !== 'raw_log' && key !== '_all_fields') {
+                if (key !== 'raw_log' && key !== '_all_fields' && key !== 'fractal_id') {
                     fields.push(key);
                 }
             }
@@ -1050,11 +1050,11 @@ const QueryExecutor = {
         // Use field order from backend if available
         let fields = [];
         if (fieldOrder && fieldOrder.length > 0) {
-            fields = fieldOrder;
+            fields = fieldOrder.filter(f => f !== 'fractal_id');
         } else if (results.length > 0) {
             const firstResult = results[0];
             for (const key of Object.keys(firstResult)) {
-                if (key !== 'raw_log' && key !== '_all_fields') {
+                if (key !== 'raw_log' && key !== '_all_fields' && key !== 'fractal_id') {
                     fields.push(key);
                 }
             }

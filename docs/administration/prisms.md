@@ -15,11 +15,3 @@ Admins create prisms from **Settings > Fractals**. Provide a name and optional d
 ## Managing Members
 
 Add or remove fractals from a prism at any time. Changes take effect immediately for all users.
-
-## Access
-
-Users can see a prism if they have access to at least one of its member fractals. Switching to a prism works the same as switching fractals via the selector in the UI.
-
-## Scope
-
-Dictionaries, dashboards, and notebooks can be scoped to a prism instead of a single fractal. Alerts remain per-fractal.

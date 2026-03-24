@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 
 	"bifract/internal/ingestcli"
 	"bifract/internal/setup"
@@ -35,6 +36,7 @@ func main() {
 	var startMode, stopMode, statusMode bool
 	var restoreFile, certName, certPassword string
 	var ipAccess, allowedIPs, domain, sizeProfile string
+	var shards, replicas int
 	dir := "/opt/bifract"
 
 	for i := 0; i < len(args); i++ {
@@ -87,6 +89,32 @@ func main() {
 				sizeProfile = args[i]
 			} else {
 				fmt.Fprintln(os.Stderr, "Error: --size requires a value (dev, x-small, small, medium, large, x-large)")
+				os.Exit(1)
+			}
+		case "--shards":
+			if i+1 < len(args) {
+				i++
+				v, err := strconv.Atoi(args[i])
+				if err != nil || v < 1 {
+					fmt.Fprintln(os.Stderr, "Error: --shards requires a positive integer")
+					os.Exit(1)
+				}
+				shards = v
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --shards requires a value")
+				os.Exit(1)
+			}
+		case "--replicas":
+			if i+1 < len(args) {
+				i++
+				v, err := strconv.Atoi(args[i])
+				if err != nil || v < 1 {
+					fmt.Fprintln(os.Stderr, "Error: --replicas requires a positive integer")
+					os.Exit(1)
+				}
+				replicas = v
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --replicas requires a value")
 				os.Exit(1)
 			}
 		case "--gen-client-cert":
@@ -236,6 +264,8 @@ func main() {
 			IPAccess:    ipAccess,
 			AllowedIPs:  allowedIPs,
 			SizeProfile: sizeProfile,
+			Shards:      shards,
+			Replicas:    replicas,
 		}
 		if err := setup.RunReconfigureK8s(dir, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "\n%s %v\n", setup.ErrorStyle.Render("Error:"), err)
@@ -321,6 +351,8 @@ func printUsage() {
 	fmt.Println("  --password PASS    Password for .p12 bundle (required with --gen-client-cert)")
 	fmt.Println("  --domain DOMAIN    Override domain (with --reconfigure-k8s)")
 	fmt.Println("  --size PROFILE     Override size profile: dev, x-small, small, medium, large, x-large")
+	fmt.Println("  --shards N         Override ClickHouse shard count (with --reconfigure-k8s)")
+	fmt.Println("  --replicas N       Override ClickHouse replicas per shard (with --reconfigure-k8s)")
 	fmt.Println("  --ip-access MODE   Override IP access mode: all, restrict-app, restrict-all, mtls-app")
 	fmt.Println("  --allowed-ips IPs  Override allowed IPs (comma-separated CIDRs)")
 	fmt.Println("  --non-interactive  Skip confirmation prompts (for cron/scripts)")

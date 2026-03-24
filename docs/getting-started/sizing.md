@@ -20,9 +20,3 @@ All CPU/memory values shown as request / limit. Medium and above per-pod resourc
 ClickHouse shards distribute data horizontally. Each shard holds a subset of the data, and queries fan out across all shards in parallel. Replicas within a shard provide high availability.
 
 Dev through Small use a single shard. Medium introduces 2 shards to distribute write load. Large and X-Large add more shards for higher throughput. The wizard pre-fills shard and replica counts based on the selected profile, but you can adjust them before generating manifests.
-
-## Choosing a Profile
-
-Start with **Dev** for local development or CI. For production, match the tier to your expected daily ingest volume and scale up if you see resource pressure. Key factors beyond raw volume: concurrent queries, alert count, query complexity, and log cardinality.
-
-You can adjust resource limits in the generated manifests without re-running the wizard.
