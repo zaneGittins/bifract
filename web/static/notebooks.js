@@ -3681,29 +3681,29 @@ const Notebooks = {
         if (!markdown) return '';
 
         try {
-            if (typeof marked !== 'undefined') {
-                // Configure marked.js options for better rendering
+            if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
                 marked.setOptions({
-                    breaks: true,           // Convert \n to <br>
-                    gfm: true,             // GitHub Flavored Markdown
-                    tables: true,          // Enable tables
-                    headerIds: false,      // Don't add IDs to headers for security
-                    mangle: false,         // Don't mangle email addresses
-                    sanitize: false,       // We'll handle sanitization ourselves
-                    silent: true,          // Don't throw on error
-                    pedantic: false,       // Don't conform to original markdown.pl
-                    smartypants: false     // Don't use smart quotes
+                    breaks: true,
+                    gfm: true,
+                    tables: true,
+                    headerIds: false,
+                    mangle: false,
+                    silent: true,
+                    pedantic: false,
+                    smartypants: false
                 });
 
-                let html = marked.parse(markdown);
-
-                // Basic XSS protection
-                html = html
-                    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-                    .replace(/javascript:/gi, '')
-                    .replace(/on\w+\s*=/gi, '');
-
-                return html;
+                const html = marked.parse(markdown);
+                return DOMPurify.sanitize(html, {
+                    ALLOWED_TAGS: [
+                        'p', 'br', 'strong', 'b', 'em', 'i', 'del', 's',
+                        'code', 'pre', 'a', 'ul', 'ol', 'li', 'blockquote',
+                        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                        'table', 'thead', 'tbody', 'tr', 'th', 'td',
+                        'hr', 'img', 'span', 'div', 'sup', 'sub',
+                    ],
+                    ALLOWED_ATTR: ['href', 'target', 'rel', 'src', 'alt', 'title', 'class'],
+                });
             }
         } catch (error) {
             console.warn('[Notebooks] Error rendering markdown:', error);
