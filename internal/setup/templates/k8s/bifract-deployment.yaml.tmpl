@@ -1,0 +1,281 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifract
+  namespace: bifract
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bifract
+  template:
+    metadata:
+      labels:
+        app: bifract
+    spec:
+{{- if .ImagePullSecrets}}
+      imagePullSecrets:
+{{- range .ImagePullSecrets}}
+        - name: {{.}}
+{{- end}}
+{{- end}}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: bifract
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bifract
+          image: ghcr.io/zanegittins/bifract:{{.ImageTag}}
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: POSTGRES_HOST
+              value: postgres
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: bifract
+            - name: POSTGRES_USER
+              value: bifract
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: POSTGRES_PASSWORD
+            - name: CLICKHOUSE_HOSTS
+              value: "{{.CHHostsList}}"
+            - name: CLICKHOUSE_PORT
+              value: "9000"
+            - name: CLICKHOUSE_DB
+              value: logs
+            - name: CLICKHOUSE_USER
+              value: default
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: CLICKHOUSE_PASSWORD
+            - name: CLICKHOUSE_CLUSTER
+              value: default
+            - name: BIFRACT_PORT
+              value: "8080"
+            - name: BIFRACT_SECURE_COOKIES
+              value: "true"
+            - name: BIFRACT_DOMAIN
+              value: "{{.Domain}}"
+            - name: BIFRACT_BASE_URL
+              value: "https://{{.Domain}}"
+            - name: BIFRACT_PASSWORD_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: PASSWORD_PEPPER
+            - name: BIFRACT_FEED_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: FEED_ENCRYPTION_KEY
+            - name: BIFRACT_BACKUP_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: BACKUP_ENCRYPTION_KEY
+            - name: BIFRACT_ADMIN_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ADMIN_PASSWORD_HASH
+            - name: BIFRACT_CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: bifract-config
+                  key: CORS_ORIGINS
+            - name: LITELLM_URL
+              value: http://litellm:8000
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: LITELLM_MASTER_KEY
+            # Query limits
+            - name: BIFRACT_MAX_QUERY_ROWS
+              value: "250"
+            # S3 (for backups/archives)
+            - name: BIFRACT_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_ENDPOINT
+                  optional: true
+            - name: BIFRACT_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_BUCKET
+                  optional: true
+            - name: BIFRACT_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_ACCESS_KEY
+                  optional: true
+            - name: BIFRACT_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_SECRET_KEY
+                  optional: true
+            - name: BIFRACT_S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: S3_REGION
+                  optional: true
+            # MaxMind GeoIP
+            - name: MAXMIND_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: MAXMIND_LICENSE_KEY
+                  optional: true
+            - name: MAXMIND_ACCOUNT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: MAXMIND_ACCOUNT_ID
+                  optional: true
+            - name: MAXMIND_EDITION_IDS
+              value: "GeoLite2-City-CSV,GeoLite2-ASN-CSV"
+            # OIDC / SSO
+            - name: BIFRACT_OIDC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_ISSUER_URL
+                  optional: true
+            - name: BIFRACT_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_CLIENT_ID
+                  optional: true
+            - name: BIFRACT_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_CLIENT_SECRET
+                  optional: true
+            - name: BIFRACT_OIDC_REDIRECT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_REDIRECT_URL
+                  optional: true
+            - name: BIFRACT_OIDC_SCOPES
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_SCOPES
+                  optional: true
+            - name: BIFRACT_OIDC_DEFAULT_ROLE
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_DEFAULT_ROLE
+                  optional: true
+            - name: BIFRACT_OIDC_ALLOWED_DOMAINS
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_ALLOWED_DOMAINS
+                  optional: true
+            - name: BIFRACT_OIDC_BUTTON_TEXT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: OIDC_BUTTON_TEXT
+                  optional: true
+{{- if .MTLSEnabled}}
+            - name: BIFRACT_CLIENT_CA_DIR
+              value: /client-ca
+{{- end}}
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: archives
+              mountPath: /archives
+            - name: maxmind-data
+              mountPath: /data/maxmind
+{{- if .MTLSEnabled}}
+            - name: client-ca
+              mountPath: /client-ca
+              readOnly: true
+{{- end}}
+          resources:
+            requests:
+              cpu: {{.BifractRes.CPURequest}}
+              memory: {{.BifractRes.MemRequest}}
+            limits:
+              cpu: "{{.BifractRes.CPULimit}}"
+              memory: {{.BifractRes.MemLimit}}
+      volumes:
+        - name: archives
+          emptyDir: {}
+        - name: maxmind-data
+          persistentVolumeClaim:
+            claimName: bifract-maxmind
+{{- if .MTLSEnabled}}
+        - name: client-ca
+          secret:
+            secretName: bifract-mtls-ca
+{{- end}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bifract-maxmind
+  namespace: bifract
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifract
+  namespace: bifract
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app: bifract

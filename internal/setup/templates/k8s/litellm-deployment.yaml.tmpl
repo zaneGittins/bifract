@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: bifract
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm
+  template:
+    metadata:
+      labels:
+        app: litellm
+    spec:
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:main-v1.81.14-stable
+          args: ["--config", "/app/config.yaml", "--port", "8000"]
+          ports:
+            - containerPort: 8000
+          env:
+            - name: LITELLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: LITELLM_API_KEY
+                  optional: true
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: LITELLM_MASTER_KEY
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: {{.LiteLLMRes.CPURequest}}
+              memory: {{.LiteLLMRes.MemRequest}}
+            limits:
+              cpu: "{{.LiteLLMRes.CPULimit}}"
+              memory: {{.LiteLLMRes.MemLimit}}
+      volumes:
+        - name: config
+          configMap:
+            name: litellm-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+  namespace: bifract
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+  selector:
+    app: litellm

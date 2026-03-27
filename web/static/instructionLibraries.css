@@ -1,0 +1,511 @@
+/* Instruction Libraries */
+
+#instructionLibrariesView {
+    padding: 1rem;
+    max-height: calc(100vh - 160px);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.il-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+.il-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.il-header-left {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.il-description {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    margin: 0 0 1rem 0;
+    line-height: 1.4;
+}
+
+.il-empty {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    padding: 2rem;
+    text-align: center;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border: 1px dashed var(--border-color);
+}
+
+/* Library Cards */
+
+.il-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.il-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 0.875rem 1rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.il-card:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent-primary);
+}
+
+.il-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.375rem;
+}
+
+.il-card-title {
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+}
+
+.il-card-badges {
+    display: flex;
+    gap: 0.375rem;
+}
+
+.il-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.il-card-desc {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    line-height: 1.3;
+}
+
+.il-card-meta {
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.25rem;
+}
+
+.il-meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.il-card-actions {
+    display: flex;
+    gap: 0.375rem;
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border-color);
+}
+
+/* Badges */
+
+.il-badge {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: 10px;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.il-badge-manual {
+    background: rgba(156, 106, 222, 0.15);
+    color: var(--accent-secondary);
+}
+
+.il-badge-repo {
+    background: rgba(96, 165, 250, 0.15);
+    color: var(--info);
+}
+
+.il-badge-default {
+    background: rgba(74, 222, 128, 0.15);
+    color: var(--success);
+}
+
+/* Page List */
+
+.il-page-list {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.il-page-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.625rem 1rem;
+    border-bottom: 1px solid var(--border-color);
+    transition: var(--transition);
+}
+
+.il-page-row:last-child {
+    border-bottom: none;
+}
+
+.il-page-row:hover {
+    background: var(--bg-hover);
+}
+
+.il-page-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    min-width: 0;
+    flex: 1;
+}
+
+.il-page-name {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.il-page-desc {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    padding-left: calc(0.5rem + 60px);
+}
+
+.il-page-actions {
+    display: flex;
+    gap: 0.375rem;
+    flex-shrink: 0;
+}
+
+.il-pin {
+    font-size: 0.6875rem;
+    padding: 0.0625rem 0.375rem;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    min-width: 60px;
+    text-align: center;
+}
+
+.il-pin-active {
+    background: rgba(156, 106, 222, 0.2);
+    color: var(--accent-secondary);
+}
+
+/* Page toolbar: search + count */
+
+.il-page-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+
+.il-page-search {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.375rem 0.625rem;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    font-family: inherit;
+    flex: 1;
+    max-width: 300px;
+    transition: var(--transition);
+}
+
+.il-page-search:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.il-page-search::placeholder {
+    color: var(--text-muted);
+}
+
+.il-page-count {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* Pagination */
+
+.il-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+}
+
+.il-pagination-info {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.il-pagination button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+/* Page editor: two-column layout */
+
+.il-page-editor {
+    display: flex;
+    gap: 1.25rem;
+    min-height: 0;
+    flex: 1;
+}
+
+.il-page-editor-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.il-page-editor-main .il-form-group-grow {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    margin-bottom: 0;
+}
+
+.il-page-editor-main .il-form-group-grow textarea {
+    flex: 1;
+    min-height: 300px;
+    resize: vertical;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.il-page-editor-sidebar {
+    flex: 0 0 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.il-header-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+/* Forms */
+
+.il-form {
+    max-width: 640px;
+}
+
+.il-form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-bottom: 0.75rem;
+}
+
+.il-form-group > label {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+}
+
+.il-form-group input[type="text"],
+.il-form-group input[type="password"],
+.il-form-group input[type="number"],
+.il-form-group select,
+.il-page-editor-main textarea,
+.il-form-group textarea {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    font-family: inherit;
+    transition: var(--transition);
+}
+
+.il-form-group input[type="text"]:focus,
+.il-form-group input[type="password"]:focus,
+.il-form-group input[type="number"]:focus,
+.il-form-group select:focus,
+.il-page-editor-main textarea:focus,
+.il-form-group textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+/* Number input: hide native spinner arrows, use themed ones */
+.il-form-group input[type="number"] {
+    -moz-appearance: textfield;
+}
+
+.il-form-group input[type="number"]::-webkit-inner-spin-button,
+.il-form-group input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+/* Select dropdown arrow */
+.il-form-group select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%236e7491' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.625rem center;
+    padding-right: 2rem;
+}
+
+[data-theme="light"] .il-form-group select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%237a7268' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+}
+
+.il-form-group textarea {
+    resize: vertical;
+    min-height: 120px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.il-form-row {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.il-form-row .il-form-group {
+    flex: 1;
+}
+
+.il-form-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.il-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+/* Custom checkbox: matches alerts table pattern */
+
+.il-form-group input[type="checkbox"],
+.il-checkbox {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 15px;
+    height: 15px;
+    border: 1.5px solid var(--border-color);
+    border-radius: 3px;
+    background: var(--bg-primary);
+    cursor: pointer;
+    position: relative;
+    flex-shrink: 0;
+    vertical-align: middle;
+    transition: background 0.15s, border-color 0.15s;
+    margin: 0;
+}
+
+.il-form-group input[type="checkbox"]:hover {
+    border-color: var(--accent-primary);
+}
+
+.il-form-group input[type="checkbox"]:checked {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+.il-form-group input[type="checkbox"]:checked::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 4px;
+    height: 8px;
+    border: solid #fff;
+    border-width: 0 1.5px 1.5px 0;
+    transform: rotate(45deg);
+}
+
+/* Checkbox label: inline layout */
+.il-checkbox-label {
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 0.5rem !important;
+    cursor: pointer;
+    user-select: none;
+}
+
+/* Button helpers */
+
+.btn-danger-text {
+    color: var(--error) !important;
+}
+
+.btn-danger-text:hover {
+    background: rgba(248, 113, 113, 0.1) !important;
+    border-color: var(--error) !important;
+}
+
+/* Chat panel on-demand badge (used in chat.js instruction panel) */
+
+.chat-instruction-ondemand-badge {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+}
+
+/* Light theme badge adjustments */
+
+[data-theme="light"] .il-badge-manual {
+    background: rgba(37, 99, 181, 0.1);
+}
+
+[data-theme="light"] .il-badge-repo {
+    background: rgba(37, 99, 181, 0.1);
+}
+
+[data-theme="light"] .il-badge-default {
+    background: rgba(22, 163, 74, 0.1);
+}
+
+[data-theme="light"] .il-pin-active {
+    background: rgba(37, 99, 181, 0.12);
+    color: var(--accent-primary);
+}

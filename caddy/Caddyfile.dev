@@ -1,0 +1,33 @@
+:8080 {
+	# JSON access logging for log shipper
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50MiB
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format json
+	}
+
+	# Block external access to internal-only endpoints
+	respond /api/v1/internal/* 403
+
+	# Skip access logging for high-volume ingest endpoints
+	@ingest path /api/v1/ingest* /_bulk
+	handle @ingest {
+		skip_log
+		reverse_proxy bifract-app:8080
+	}
+
+	# SSE endpoints need immediate flushing
+	@sse path */events */stream
+	handle @sse {
+		reverse_proxy bifract-app:8080 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy bifract-app:8080
+	}
+}

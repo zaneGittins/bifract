@@ -1,0 +1,141 @@
+{{- if eq .SSLMode "self-signed"}}
+:443 {
+	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem{{if eq .IPAccess "mtls-app"}} {
+		client_auth {
+			mode require_and_verify
+			trust_pool file {
+				pem_file /etc/caddy/client-ca/ca.pem
+			}
+		}
+	}{{end}}
+{{- else if eq .SSLMode "letsencrypt"}}
+{{.Domain}} {
+	tls {{.SSLEmail}}{{if eq .IPAccess "mtls-app"}} {
+		client_auth {
+			mode require_and_verify
+			trust_pool file {
+				pem_file /etc/caddy/client-ca/ca.pem
+			}
+		}
+	}{{end}}
+{{- else if eq .SSLMode "custom"}}
+{{.Domain}} {
+	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem{{if eq .IPAccess "mtls-app"}} {
+		client_auth {
+			mode require_and_verify
+			trust_pool file {
+				pem_file /etc/caddy/client-ca/ca.pem
+			}
+		}
+	}{{end}}
+{{- end}}
+
+	# Security headers
+	header {
+{{- if ne .SSLMode "self-signed"}}
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+{{- end}}
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		X-XSS-Protection "1; mode=block"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Match Bifract max body size
+	request_body {
+		max_size 200MiB
+	}
+
+	# JSON access logging for log shipper
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50MiB
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format json
+	}
+{{- if and (or (eq .IPAccess "restrict-all") (eq .IPAccess "restrict-app")) .AllowedIPs}}
+
+	@blocked not remote_ip {{range .AllowedIPs}}{{.}} {{end}}
+{{- end}}
+	@ingest_blocked path /api/v1/ingest* /_bulk
+	@sse path */events */stream
+
+	route {
+		respond /api/v1/internal/* 403
+{{- if and (or (eq .IPAccess "restrict-all") (eq .IPAccess "restrict-app")) .AllowedIPs}}
+		respond @blocked 403
+{{- end}}
+		respond @ingest_blocked 403
+		# SSE/streaming endpoints need immediate flushing and no response timeout
+		reverse_proxy @sse bifract-app:8080 {
+			flush_interval -1
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 0
+			}
+		}
+		reverse_proxy bifract-app:8080 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 120s
+			}
+		}
+	}
+}
+
+# Ingest-only listener on dedicated port.
+# Agents and log shippers send to port 8443 instead of 443.
+:8443 {
+{{- if eq .SSLMode "self-signed"}}
+	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+{{- else if eq .SSLMode "letsencrypt"}}
+	tls {{.SSLEmail}}
+{{- else if eq .SSLMode "custom"}}
+	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+{{- end}}
+
+	request_body {
+		max_size 200MiB
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50MiB
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format json
+	}
+{{- if and (eq .IPAccess "restrict-all") .AllowedIPs}}
+
+	@blocked_ingest not remote_ip {{range .AllowedIPs}}{{.}} {{end}}
+{{- end}}
+	@ingest path /api/v1/ingest* /_bulk
+	@not_ingest not path /api/v1/ingest* /_bulk
+
+	route {
+{{- if and (eq .IPAccess "restrict-all") .AllowedIPs}}
+		respond @blocked_ingest 403
+{{- end}}
+		respond @not_ingest 403
+		log_skip
+		reverse_proxy bifract-app:8080 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 120s
+			}
+		}
+	}
+}

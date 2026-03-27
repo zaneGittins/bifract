@@ -1,0 +1,1 @@
+-- Placeholder to satisfy go:embed. New migrations start at 001.

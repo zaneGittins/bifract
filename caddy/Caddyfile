@@ -1,0 +1,73 @@
+{$BIFRACT_DOMAIN:localhost} {
+	# Security headers
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		X-XSS-Protection "1; mode=block"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Match Bifract max body size
+	request_body {
+		max_size 200MiB
+	}
+
+	# JSON access logging for log shipper
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50MiB
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format json
+	}
+
+	# Block external access to internal-only endpoints
+	respond /api/v1/internal/* 403
+
+	# SSE endpoints need immediate flushing (no response buffering)
+	@sse path */events */stream
+	handle @sse {
+		reverse_proxy bifract-app:8080 {
+			flush_interval -1
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	handle {
+		reverse_proxy bifract-app:8080 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+}
+
+# Ingest-only port for agents and log shippers
+:8443 {
+	header {
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	request_body {
+		max_size 200MiB
+	}
+
+	# Only ingest endpoints are allowed on this port
+	@ingest path /api/v1/ingest* /_bulk
+	handle @ingest {
+		reverse_proxy bifract-app:8080 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Block everything else
+	respond 403
+}

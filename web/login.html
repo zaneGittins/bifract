@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In - Bifract</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <script>
+        if (localStorage.getItem('bifract-theme') === 'light') {
+            document.documentElement.setAttribute('data-theme', 'light');
+        }
+    </script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-main);
+            background: var(--bg-primary);
+            transition: background 0.2s ease;
+        }
+
+        .login-wrapper {
+            width: 100%;
+            max-width: 380px;
+            padding: 1.5rem;
+        }
+
+        .login-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 2.5rem 2rem 2rem;
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .login-logo {
+            width: 66px;
+            height: 66px;
+            margin-bottom: 0.1rem;
+        }
+
+        .login-title {
+            color: var(--text-primary);
+            font-size: 1.35rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+        }
+
+        .login-subtitle {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            margin-top: 0.35rem;
+            font-weight: 400;
+        }
+
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+
+        .form-group label {
+            display: block;
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            font-weight: 500;
+            margin-bottom: 0.4rem;
+            letter-spacing: 0.04em;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 0.6rem 0.75rem;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-size: 0.88rem;
+            font-family: var(--font-main);
+            transition: border-color 0.15s ease;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
+
+        .form-input::placeholder {
+            color: var(--text-muted);
+            opacity: 0.6;
+        }
+
+        .login-button {
+            width: 100%;
+            padding: 0.7rem 1rem;
+            background: var(--accent-primary);
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            font-family: var(--font-main);
+            cursor: pointer;
+            transition: opacity 0.15s ease;
+            margin-top: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .login-button:hover {
+            opacity: 0.88;
+        }
+
+        .login-button:active {
+            opacity: 0.76;
+        }
+
+        .login-button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .error-message {
+            background: rgba(248, 113, 113, 0.08);
+            border: 1px solid rgba(248, 113, 113, 0.2);
+            border-radius: 4px;
+            padding: 0.6rem 0.75rem;
+            color: var(--error);
+            font-size: 0.8rem;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .success-message {
+            background: rgba(74, 222, 128, 0.08);
+            border: 1px solid rgba(74, 222, 128, 0.2);
+            border-radius: 4px;
+            padding: 0.6rem 0.75rem;
+            color: var(--success);
+            font-size: 0.8rem;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 13px;
+            height: 13px;
+            border: 1.5px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.75s linear infinite;
+            flex-shrink: 0;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .theme-toggle {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            width: 34px;
+            height: 34px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--text-muted);
+            transition: color 0.15s ease, border-color 0.15s ease;
+        }
+
+        .theme-toggle:hover {
+            color: var(--text-primary);
+            border-color: var(--text-muted);
+        }
+
+        .theme-toggle svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        .sso-divider {
+            display: flex;
+            align-items: center;
+            margin: 1.25rem 0;
+            gap: 0.75rem;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
+        .sso-divider::before,
+        .sso-divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border-color);
+        }
+
+        .sso-button {
+            width: 100%;
+            padding: 0.7rem 1rem;
+            background: var(--bg-primary);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            font-family: var(--font-main);
+            cursor: pointer;
+            transition: border-color 0.15s ease, color 0.15s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            text-decoration: none;
+        }
+
+        .sso-button:hover {
+            border-color: var(--accent-primary);
+            color: var(--text-primary);
+        }
+
+        .sso-button svg {
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+        }
+
+        @media (max-width: 480px) {
+            .login-wrapper {
+                padding: 1rem;
+            }
+            .login-card {
+                padding: 2rem 1.5rem 1.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <button class="theme-toggle" id="themeToggle" title="Toggle theme">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+    </button>
+
+    <div class="login-wrapper">
+        <div class="login-card" id="loginCard">
+            <div class="login-header">
+                <img src="/static/logo.png" alt="Bifract" class="login-logo">
+                <h1 class="login-title">Sign In</h1>
+            </div>
+
+            <div id="ssoSection" style="display: none;">
+                <a href="/api/v1/auth/oidc/login" class="sso-button" id="ssoButton">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+                        <polyline points="10 17 15 12 10 7"/>
+                        <line x1="15" y1="12" x2="3" y2="12"/>
+                    </svg>
+                    <span id="ssoButtonText">Sign in with SSO</span>
+                </a>
+                <div class="sso-divider">or</div>
+            </div>
+
+            <form id="loginForm">
+                <div id="loginError" class="error-message"></div>
+
+                <div class="form-group">
+                    <label for="loginUsername">Username</label>
+                    <input
+                        type="text"
+                        id="loginUsername"
+                        class="form-input"
+                        placeholder="Enter your username"
+                        required
+                        autocomplete="username"
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="loginPassword">Password</label>
+                    <input
+                        type="password"
+                        id="loginPassword"
+                        class="form-input"
+                        placeholder="Enter your password"
+                        required
+                        autocomplete="current-password"
+                    >
+                </div>
+
+                <button type="submit" class="login-button" id="loginBtn">
+                    <span id="loginBtnText">Sign In</span>
+                </button>
+            </form>
+        </div>
+
+        <!-- Forced Password Change Card (shown when login returns force_password_change) -->
+        <div class="login-card" id="forceChangeCard" style="display: none;">
+            <div class="login-header">
+                <img src="/static/logo.png" alt="Bifract" class="login-logo">
+                <h1 class="login-title">bifract</h1>
+                <p class="login-subtitle">Password change required</p>
+            </div>
+
+            <p style="color: var(--text-secondary); font-size: 0.82rem; margin-bottom: 1.25rem; line-height: 1.5;">
+                You are using a default password. Please set a new password to continue.
+            </p>
+
+            <form id="forceChangeForm">
+                <div id="forceChangeError" class="error-message"></div>
+                <div id="forceChangeSuccess" class="success-message" style="display: none;"></div>
+
+                <input type="hidden" id="forceChangeCurrentPassword">
+
+                <div class="form-group">
+                    <label for="forceChangeNewPassword">New Password</label>
+                    <input
+                        type="password"
+                        id="forceChangeNewPassword"
+                        class="form-input"
+                        placeholder="Choose a new password (min 12 characters)"
+                        required
+                        autocomplete="new-password"
+                        minlength="12"
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="forceChangeConfirmPassword">Confirm Password</label>
+                    <input
+                        type="password"
+                        id="forceChangeConfirmPassword"
+                        class="form-input"
+                        placeholder="Confirm your new password"
+                        required
+                        autocomplete="new-password"
+                        minlength="12"
+                    >
+                </div>
+
+                <button type="submit" class="login-button" id="forceChangeBtn">
+                    <span id="forceChangeBtnText">Set New Password</span>
+                </button>
+            </form>
+        </div>
+
+        <!-- Invite Setup Card (hidden by default, shown when ?invite= param present) -->
+        <div class="login-card" id="inviteCard" style="display: none;">
+            <div class="login-header">
+                <img src="/static/logo.png" alt="Bifract" class="login-logo">
+                <h1 class="login-title">bifract</h1>
+                <p class="login-subtitle">Set up your account</p>
+            </div>
+
+            <form id="inviteForm">
+                <div id="inviteError" class="error-message"></div>
+                <div id="inviteSuccess" class="success-message" style="display: none;"></div>
+
+                <div class="form-group">
+                    <label for="inviteUsername">Username</label>
+                    <input
+                        type="text"
+                        id="inviteUsername"
+                        class="form-input"
+                        readonly
+                        style="opacity: 0.7;"
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="invitePassword">Password</label>
+                    <input
+                        type="password"
+                        id="invitePassword"
+                        class="form-input"
+                        placeholder="Choose a password (min 12 characters)"
+                        required
+                        autocomplete="new-password"
+                        minlength="12"
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="invitePasswordConfirm">Confirm Password</label>
+                    <input
+                        type="password"
+                        id="invitePasswordConfirm"
+                        class="form-input"
+                        placeholder="Confirm your password"
+                        required
+                        autocomplete="new-password"
+                        minlength="12"
+                    >
+                </div>
+
+                <button type="submit" class="login-button" id="inviteBtn">
+                    <span id="inviteBtnText">Set Password</span>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script src="/static/utils.js"></script>
+    <script>
+        // Theme toggle
+        (function() {
+            const btn = document.getElementById('themeToggle');
+            const icon = document.getElementById('themeIcon');
+
+            const moonPath = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+            const sunPath = '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>';
+
+            function update() {
+                const light = document.documentElement.getAttribute('data-theme') === 'light';
+                icon.innerHTML = light ? sunPath : moonPath;
+            }
+
+            update();
+
+            btn.addEventListener('click', function() {
+                const light = document.documentElement.getAttribute('data-theme') === 'light';
+                if (light) {
+                    document.documentElement.removeAttribute('data-theme');
+                    localStorage.removeItem('bifract-theme');
+                } else {
+                    document.documentElement.setAttribute('data-theme', 'light');
+                    localStorage.setItem('bifract-theme', 'light');
+                }
+                update();
+            });
+        })();
+
+        // Login page authentication
+        const LoginPage = {
+            inviteToken: null,
+
+            async init() {
+                const params = new URLSearchParams(window.location.search);
+                const inviteToken = params.get('invite');
+
+                if (inviteToken) {
+                    await this.initInviteFlow(inviteToken);
+                    return;
+                }
+
+                // Show OIDC error messages from callback redirect
+                const error = params.get('error');
+                if (error === 'oidc_denied') {
+                    this.showError('Authentication was denied by the identity provider.');
+                } else if (error === 'oidc_failed') {
+                    this.showError('Authentication failed. Please try again or contact your administrator.');
+                } else if (error === 'oidc_domain') {
+                    this.showError('Your email domain is not authorized for this application.');
+                }
+
+                // Check OIDC availability
+                try {
+                    const oidcResp = await fetch('/api/v1/auth/oidc/config');
+                    if (oidcResp.ok) {
+                        const oidcData = await oidcResp.json();
+                        if (oidcData.enabled) {
+                            document.getElementById('ssoSection').style.display = 'block';
+                            document.getElementById('ssoButtonText').textContent = oidcData.button_text;
+                        }
+                    }
+                } catch (e) {
+                    // OIDC config not available, keep SSO hidden
+                }
+
+                try {
+                    const response = await fetch('/api/v1/auth/user', {
+                        credentials: 'include'
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success && data.user) {
+                            if (data.user.force_password_change) {
+                                // User is authenticated but must change password first.
+                                // We need the current password from the form, so just show the login form.
+                                this.setupLoginForm();
+                                return;
+                            }
+                            window.location.href = '/';
+                            return;
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error checking auth status:', error);
+                }
+                this.setupLoginForm();
+            },
+
+            async initInviteFlow(token) {
+                this.inviteToken = token;
+                document.getElementById('loginCard').style.display = 'none';
+                document.getElementById('inviteCard').style.display = 'block';
+
+                try {
+                    const response = await fetch('/api/v1/auth/invite/validate?token=' + encodeURIComponent(token));
+                    const data = await response.json();
+
+                    if (data.success) {
+                        document.getElementById('inviteUsername').value = data.data.username;
+                        this.setupInviteForm();
+                    } else {
+                        this.showInviteError('This invite link is invalid or has expired. Please contact your administrator for a new link.');
+                        document.getElementById('inviteForm').querySelector('button').disabled = true;
+                    }
+                } catch (error) {
+                    console.error('Error validating invite:', error);
+                    this.showInviteError('Could not validate invite link. Please try again.');
+                }
+            },
+
+            setupInviteForm() {
+                const form = document.getElementById('inviteForm');
+                const btn = document.getElementById('inviteBtn');
+                const btnText = document.getElementById('inviteBtnText');
+
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+
+                    const password = document.getElementById('invitePassword').value;
+                    const confirm = document.getElementById('invitePasswordConfirm').value;
+
+                    if (password.length < 12) {
+                        this.showInviteError('Password must be at least 12 characters');
+                        return;
+                    }
+
+                    if (password !== confirm) {
+                        this.showInviteError('Passwords do not match');
+                        return;
+                    }
+
+                    btn.disabled = true;
+                    btnText.innerHTML = '<span class="loading-spinner"></span>Setting password...';
+                    this.hideInviteError();
+
+                    try {
+                        const response = await fetch('/api/v1/auth/invite/accept', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ token: this.inviteToken, password })
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            const formGroups = form.querySelectorAll('.form-group');
+                            formGroups.forEach(g => g.style.display = 'none');
+                            btn.style.display = 'none';
+
+                            const successDiv = document.getElementById('inviteSuccess');
+                            successDiv.textContent = 'Password set successfully! Redirecting to sign in...';
+                            successDiv.style.display = 'block';
+
+                            setTimeout(() => {
+                                window.location.href = '/login.html';
+                            }, 2000);
+                        } else {
+                            this.showInviteError(data.error || 'Failed to set password');
+                        }
+                    } catch (error) {
+                        console.error('Error accepting invite:', error);
+                        this.showInviteError('Network error. Please try again.');
+                    } finally {
+                        btn.disabled = false;
+                        btnText.textContent = 'Set Password';
+                    }
+                });
+            },
+
+            setupLoginForm() {
+                const form = document.getElementById('loginForm');
+                const loginBtn = document.getElementById('loginBtn');
+                const loginBtnText = document.getElementById('loginBtnText');
+
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+
+                    const username = document.getElementById('loginUsername').value.trim();
+                    const password = document.getElementById('loginPassword').value;
+
+                    if (!username || !password) {
+                        this.showError('Please enter both username and password');
+                        return;
+                    }
+
+                    loginBtn.disabled = true;
+                    loginBtnText.innerHTML = '<span class="loading-spinner"></span>Signing in...';
+                    this.hideError();
+
+                    try {
+                        const response = await fetch('/api/v1/auth/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify({ username, password })
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            if (data.user && data.user.force_password_change) {
+                                this.showForceChangeFlow(password);
+                            } else {
+                                window.location.href = '/';
+                            }
+                        } else {
+                            this.showError(data.error || 'Login failed');
+                        }
+                    } catch (error) {
+                        console.error('Login error:', error);
+                        this.showError('Network error. Please try again.');
+                    } finally {
+                        loginBtn.disabled = false;
+                        loginBtnText.textContent = 'Sign In';
+                    }
+                });
+            },
+
+            showForceChangeFlow(currentPassword) {
+                document.getElementById('loginCard').style.display = 'none';
+                document.getElementById('forceChangeCard').style.display = 'block';
+                document.getElementById('forceChangeCurrentPassword').value = currentPassword;
+                document.getElementById('forceChangeNewPassword').focus();
+                this.setupForceChangeForm();
+            },
+
+            setupForceChangeForm() {
+                const form = document.getElementById('forceChangeForm');
+                const btn = document.getElementById('forceChangeBtn');
+                const btnText = document.getElementById('forceChangeBtnText');
+
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+
+                    const currentPassword = document.getElementById('forceChangeCurrentPassword').value;
+                    const newPassword = document.getElementById('forceChangeNewPassword').value;
+                    const confirm = document.getElementById('forceChangeConfirmPassword').value;
+
+                    if (newPassword.length < 12) {
+                        this.showForceChangeError('Password must be at least 12 characters');
+                        return;
+                    }
+
+                    if (newPassword !== confirm) {
+                        this.showForceChangeError('Passwords do not match');
+                        return;
+                    }
+
+                    btn.disabled = true;
+                    btnText.innerHTML = '<span class="loading-spinner"></span>Updating...';
+                    this.hideForceChangeError();
+
+                    try {
+                        const response = await fetch('/api/v1/auth/change-password', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify({
+                                current_password: currentPassword,
+                                new_password: newPassword
+                            })
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            const formGroups = form.querySelectorAll('.form-group');
+                            formGroups.forEach(g => g.style.display = 'none');
+                            btn.style.display = 'none';
+
+                            const successDiv = document.getElementById('forceChangeSuccess');
+                            successDiv.textContent = 'Password updated. Redirecting...';
+                            successDiv.style.display = 'block';
+
+                            setTimeout(() => {
+                                window.location.href = '/';
+                            }, 1500);
+                        } else {
+                            this.showForceChangeError(data.error || 'Failed to change password');
+                        }
+                    } catch (error) {
+                        console.error('Error changing password:', error);
+                        this.showForceChangeError('Network error. Please try again.');
+                    } finally {
+                        btn.disabled = false;
+                        btnText.textContent = 'Set New Password';
+                    }
+                });
+            },
+
+            showForceChangeError(message) {
+                const errorDiv = document.getElementById('forceChangeError');
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block';
+            },
+
+            hideForceChangeError() {
+                document.getElementById('forceChangeError').style.display = 'none';
+            },
+
+            showError(message) {
+                const errorDiv = document.getElementById('loginError');
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block';
+            },
+
+            hideError() {
+                document.getElementById('loginError').style.display = 'none';
+            },
+
+            showInviteError(message) {
+                const errorDiv = document.getElementById('inviteError');
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block';
+            },
+
+            hideInviteError() {
+                document.getElementById('inviteError').style.display = 'none';
+            }
+        };
+
+        document.addEventListener('DOMContentLoaded', () => LoginPage.init());
+    </script>
+</body>
+</html>

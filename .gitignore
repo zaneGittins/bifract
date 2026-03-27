@@ -1,0 +1,63 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Build output
+/bifract
+/bifract-server
+/cmd/bifract/bifract
+/cmd/bifract-server/bifract-server
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+
+# Backup files
+*.backup
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+
+# Code assistants
+CLAUDE.md
+.claude/
+.mcp.json
+reset_tags.md
+todo.md
+
+# Temporary cookies for testing
+cookies.txt
+
+# MkDocs build output
+site/

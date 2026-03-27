@@ -1,0 +1,23 @@
+services:
+  bifract:
+    build: .
+    image: bifract-dev
+
+  caddy:
+    volumes:
+      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile
+      - ./caddy/ship-logs.sh:/usr/local/bin/ship-logs.sh
+      - ./caddy/entrypoint.sh:/usr/local/bin/entrypoint.sh
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "8080:8080"
+
+  postgres:
+    ports:
+      - "5432:5432"
+
+  clickhouse:
+    ports:
+      - "8123:8123"
+      - "9000:9000"
