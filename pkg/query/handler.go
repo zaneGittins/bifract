@@ -73,6 +73,27 @@ type QueryResponse struct {
 	LimitHit     string                   `json:"limit_hit,omitempty"` // "bloom", "search", "truncated", or empty
 	ChartType    string                   `json:"chart_type,omitempty"`    // "piechart", "barchart", "" for table
 	ChartConfig  map[string]interface{}   `json:"chart_config,omitempty"`  // Chart-specific configuration
+	Histogram    []int                    `json:"histogram,omitempty"`     // Time-bucketed counts for timeline
+	TimeStart    string                   `json:"time_start,omitempty"`    // Query time range start (RFC3339)
+	TimeEnd      string                   `json:"time_end,omitempty"`      // Query time range end (RFC3339)
+}
+
+// histogramBucketSeconds returns the bucket interval and total bucket count
+// for a histogram query, adapting granularity to the query time range.
+func histogramBucketSeconds(start, end time.Time) (bucketSec int, bucketCount int) {
+	dur := end.Sub(start)
+	switch {
+	case dur <= time.Hour:
+		bucketSec = 30
+	case dur <= 24*time.Hour:
+		bucketSec = 900 // 15 minutes
+	case dur <= 7*24*time.Hour:
+		bucketSec = 3600 // 1 hour
+	default:
+		bucketSec = 10800 // 3 hours
+	}
+	bucketCount = int(dur.Seconds())/bucketSec + 1
+	return
 }
 
 func NewQueryHandler(db *storage.ClickHouseClient, maxRows int) *QueryHandler {
@@ -402,10 +423,22 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Execute main query with timeout
+	// Build histogram query for non-aggregated raw log queries
+	needsHistogram := !isAggregated && chartType == ""
+	var histogramSQL string
+	var histBucketSec, histBucketCount int
+	if needsHistogram {
+		histBucketSec, histBucketCount = histogramBucketSeconds(startTime, endTime)
+		histogramSQL, err = parser.BuildHistogramSQL(pipeline, opts, histBucketSec)
+		if err != nil {
+			log.Printf("[QueryHandler] Failed to build histogram SQL: %v", err)
+			needsHistogram = false
+		}
+	}
+
+	// Execute main query (and histogram if needed) with timeout
 	queryStart := time.Now()
 
-	// Apply configurable query timeout from admin settings (0 = unlimited)
 	queryTimeoutSec := settings.Get().QueryTimeoutSeconds
 	var queryCtx context.Context
 	var cancel context.CancelFunc
@@ -416,8 +449,39 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cancel()
 
-	results, err := h.db.Query(queryCtx, sql)
+	type mainResult struct {
+		rows []map[string]interface{}
+		err  error
+	}
+	type histResult struct {
+		rows []map[string]interface{}
+		err  error
+	}
+
+	mainCh := make(chan mainResult, 1)
+	histCh := make(chan histResult, 1)
+
+	go func() {
+		raw, qErr := h.db.Query(queryCtx, sql)
+		mainCh <- mainResult{rows: raw, err: qErr}
+	}()
+
+	if needsHistogram {
+		go func() {
+			raw, qErr := h.db.Query(queryCtx, histogramSQL)
+			histCh <- histResult{rows: raw, err: qErr}
+		}()
+	}
+
+	mainRes := <-mainCh
+	var histRes histResult
+	if needsHistogram {
+		histRes = <-histCh
+	}
 	executionTime := time.Since(queryStart).Milliseconds()
+
+	results := mainRes.rows
+	err = mainRes.err
 
 	if err != nil {
 		// Client disconnected; nothing to write back.
@@ -443,6 +507,44 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 			ExecutionMs: executionTime,
 		})
 		return
+	}
+
+	// Process histogram into bucketed array
+	var histogram []int
+	if needsHistogram && histRes.err == nil {
+		histogram = make([]int, histBucketCount)
+		for _, row := range histRes.rows {
+			bucketVal, bOk := row["bucket"]
+			cntVal, cOk := row["cnt"]
+			if !bOk || !cOk {
+				continue
+			}
+			var bucketTime time.Time
+			switch b := bucketVal.(type) {
+			case time.Time:
+				bucketTime = b
+			case string:
+				bucketTime, _ = time.Parse("2006-01-02 15:04:05", b)
+			}
+			if bucketTime.IsZero() {
+				continue
+			}
+			idx := int(bucketTime.Sub(startTime).Seconds()) / histBucketSec
+			if idx >= 0 && idx < histBucketCount {
+				switch c := cntVal.(type) {
+				case uint64:
+					histogram[idx] = int(c)
+				case int64:
+					histogram[idx] = int(c)
+				case float64:
+					histogram[idx] = int(c)
+				case int:
+					histogram[idx] = c
+				}
+			}
+		}
+	} else if needsHistogram && histRes.err != nil {
+		log.Printf("[QueryHandler] Histogram query failed (non-critical): %v", histRes.err)
 	}
 
 	// Check if result set is too large for efficient JSON handling
@@ -484,6 +586,11 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 					IsAggregated: isAggregated,
 					LimitHit:     "truncated",
 					Error:        "Warning: Result set was very large and has been truncated to 1000 rows. Consider adding more specific filters or using head() to limit results.",
+					Histogram:    histogram,
+				}
+				if histogram != nil {
+					response.TimeStart = startTime.Format(time.RFC3339)
+					response.TimeEnd = endTime.Format(time.RFC3339)
 				}
 
 				response.SQL = sql
@@ -514,6 +621,11 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		LimitHit:     limitHit,
 		ChartType:    chartType,
 		ChartConfig:  chartConfig,
+		Histogram:    histogram,
+	}
+	if histogram != nil {
+		response.TimeStart = startTime.Format(time.RFC3339)
+		response.TimeEnd = endTime.Format(time.RFC3339)
 	}
 
 	response.SQL = sql
