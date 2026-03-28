@@ -28,6 +28,8 @@ const Normalizers = {
         { label: 'ANSIC',                        value: 'Mon Jan _2 15:04:05 2006' },
         { label: 'Syslog (BSD)',                 value: 'Jan _2 15:04:05' },
         { label: 'Syslog (ISO)',                 value: '2006-01-02T15:04:05.000000+00:00' },
+        { label: 'US Date + Time (12h)',           value: '1/2/2006 3:04:05 PM' },
+        { label: 'US Date + Time (24h)',           value: '1/2/2006 15:04:05' },
         { label: 'Apache Common Log',            value: '02/Jan/2006:15:04:05 -0700' },
         { label: 'Windows FileTime (ticks)',     value: 'unixnano' },
     ],

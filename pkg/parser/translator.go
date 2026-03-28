@@ -171,6 +171,54 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	return finalizePlan(ctx, assignmentFields, deferredAssignments)
 }
 
+// BuildHistogramSQL generates a lightweight COUNT(*) GROUP BY time-bucket query
+// using only the filter portion of a BQL pipeline (ignoring pipe commands like
+// head, sort, groupby, etc.). This produces an accurate time distribution of
+// all matching logs, independent of any row LIMIT on the main query.
+func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds int) (string, error) {
+	plan := NewQueryPlan()
+	addBaseConditions(plan, opts)
+
+	// Apply user's filter conditions (the WHERE portion of their BQL query)
+	if pipeline.Filter != nil {
+		whereSQL, err := buildWhereClause(pipeline.Filter.Conditions)
+		if err != nil {
+			return "", err
+		}
+		if whereSQL != "" {
+			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, whereSQL)
+		}
+	}
+
+	// Apply comment() filter if present in the pipeline
+	if opts.HasCommentFilter {
+		if len(opts.CommentLogIDs) == 0 {
+			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, "1 = 0")
+		} else {
+			quoted := make([]string, len(opts.CommentLogIDs))
+			for i, id := range opts.CommentLogIDs {
+				quoted[i] = fmt.Sprintf("'%s'", escapeString(id))
+			}
+			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where,
+				fmt.Sprintf("log_id IN (%s)", strings.Join(quoted, ", ")))
+		}
+	}
+
+	where := strings.Join(plan.SourceStage().Layer.Where, " AND ")
+	tbl := opts.EffectiveTableName()
+
+	tsCol := "timestamp"
+	if opts.UseIngestTimestamp {
+		tsCol = "ingest_timestamp"
+	}
+
+	sql := fmt.Sprintf(
+		"SELECT toStartOfInterval(%s, INTERVAL %d SECOND) AS bucket, count() AS cnt FROM %s WHERE %s GROUP BY bucket ORDER BY bucket",
+		tsCol, bucketSeconds, tbl, where,
+	)
+	return sql, nil
+}
+
 // addBaseConditions adds time range and fractal isolation conditions.
 func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 	source := plan.SourceStage()

@@ -315,6 +315,7 @@ func readCSV(path string, batchSize, limit int, batchCh chan<- Batch, stats *Sta
 	r := csv.NewReader(f)
 	r.LazyQuotes = true
 	r.TrimLeadingSpace = true
+	r.FieldsPerRecord = -1 // Allow variable field counts per row
 
 	// TSV support
 	if strings.ToLower(filepath.Ext(path)) == ".tsv" {
@@ -325,6 +326,11 @@ func readCSV(path string, batchSize, limit int, batchCh chan<- Batch, stats *Sta
 	headers, err := r.Read()
 	if err != nil {
 		return fmt.Errorf("read CSV headers: %w", err)
+	}
+
+	// Normalize header names: replace spaces with underscores
+	for i, h := range headers {
+		headers[i] = strings.ReplaceAll(strings.TrimSpace(h), " ", "_")
 	}
 
 	batch := make([]map[string]interface{}, 0, batchSize)

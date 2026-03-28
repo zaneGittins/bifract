@@ -348,7 +348,16 @@ const QueryExecutor = {
             // Defer timeline to next frame so the table paints first
             const shouldShowTimeline = !this.fieldOrder || this.fieldOrder.includes('timestamp');
             if (window.Timeline) {
-                if (shouldShowTimeline) {
+                if (shouldShowTimeline && data.histogram) {
+                    // Use server-provided histogram for accurate counts
+                    const histTimeRange = {
+                        start: data.time_start || this.currentTimeRange.start,
+                        end: data.time_end || this.currentTimeRange.end
+                    };
+                    requestAnimationFrame(() => {
+                        Timeline.renderFromHistogram(data.histogram, histTimeRange);
+                    });
+                } else if (shouldShowTimeline) {
                     requestAnimationFrame(() => {
                         Timeline.render(this.currentResults, this.currentTimeRange);
                     });
