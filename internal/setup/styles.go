@@ -1,6 +1,11 @@
 package setup
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 var (
 	Purple = lipgloss.Color("#9c6ade")
@@ -85,4 +90,33 @@ var (
 	// Unselected item in a list
 	UnselectedStyle = lipgloss.NewStyle().
 			Foreground(Gray)
+
+	// Description box shown beside option lists
+	DescBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(Dim).
+			Foreground(Gray).
+			Padding(0, 2).
+			Width(44)
 )
+
+// RenderOptionList renders a list of choices with a description box to the right
+// showing the description for the currently selected item.
+func RenderOptionList(choices, descriptions []string, cursor int) string {
+	var list strings.Builder
+	for i, choice := range choices {
+		if i == cursor {
+			list.WriteString(fmt.Sprintf("  %s %s\n", SelectedStyle.Render(">"), SelectedStyle.Render(choice)))
+		} else {
+			list.WriteString(fmt.Sprintf("    %s\n", UnselectedStyle.Render(choice)))
+		}
+	}
+
+	desc := ""
+	if cursor >= 0 && cursor < len(descriptions) {
+		desc = descriptions[cursor]
+	}
+	descBox := DescBoxStyle.Render(desc)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, list.String(), "  ", descBox)
+}
