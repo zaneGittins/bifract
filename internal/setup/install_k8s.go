@@ -158,6 +158,21 @@ const (
 	k8sStepDone
 )
 
+// Steps that show in the k8s progress bar (excludes conditional sub-steps)
+var k8sStepLabels = []struct {
+	step  k8sStep
+	label string
+}{
+	{k8sStepWelcome, "Welcome"},
+	{k8sStepDomain, "Domain"},
+	{k8sStepSSL, "SSL"},
+	{k8sStepIPAccess, "IP Access"},
+	{k8sStepSizeProfile, "Resources"},
+	{k8sStepCHShards, "Cluster"},
+	{k8sStepOutputDir, "Output"},
+	{k8sStepConfirm, "Confirm"},
+}
+
 type k8sWizardModel struct {
 	step   k8sStep
 	config *K8sConfig
@@ -454,115 +469,214 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m k8sWizardModel) View() string {
-	var b strings.Builder
+func (m k8sWizardModel) renderProgress() string {
+	var parts []string
+	for i, sl := range k8sStepLabels {
+		var style lipgloss.Style
+		var marker string
+		// Map sub-steps to their parent for active highlighting
+		current := m.step
+		if current == k8sStepAllowedIPs {
+			current = k8sStepIPAccess
+		} else if current == k8sStepCHReplicas || current == k8sStepCHStorage {
+			current = k8sStepCHShards
+		}
+		if current == sl.step {
+			marker = ">"
+			style = StepActiveStyle
+		} else if current > sl.step {
+			marker = "*"
+			style = StepDoneStyle
+		} else {
+			marker = "."
+			style = StepPendingStyle
+		}
+		label := fmt.Sprintf(" %s %s", marker, sl.label)
+		parts = append(parts, style.Render(label))
+		if i < len(k8sStepLabels)-1 {
+			parts = append(parts, StepPendingStyle.Render(" --"))
+		}
+	}
+	return strings.Join(parts, "")
+}
 
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(Green).
-		Render("  Bifract Kubernetes Setup")
-	b.WriteString(title + "\n\n")
+func (m k8sWizardModel) View() string {
+	var content string
+	var hint string
 
 	switch m.step {
 	case k8sStepWelcome:
-		b.WriteString("  This wizard generates Kubernetes manifests with secure defaults.\n")
-		b.WriteString("  You will need the official ClickHouse Operator and cert-manager installed.\n\n")
-		b.WriteString(DimStyle.Render("  Press Enter to continue, q to quit"))
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("Bifract Kubernetes Setup"))
+		b.WriteString("\n\n")
+		b.WriteString("This wizard generates Kubernetes manifests with secure defaults.\n")
+		b.WriteString("You will need the official ClickHouse Operator and cert-manager installed.")
+		content = b.String()
+		hint = "Enter to continue  |  q to quit"
 
 	case k8sStepDomain:
-		b.WriteString(PromptStyle.Render("  Domain name: "))
-		b.WriteString(m.domainInput.View())
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("Domain"))
 		b.WriteString("\n\n")
-		b.WriteString(DimStyle.Render("  e.g. bifract.example.com"))
+		b.WriteString("Enter your domain name.\n\n")
+		b.WriteString(LabelStyle.Render("  Domain"))
+		b.WriteString("\n")
+		b.WriteString("  " + m.domainInput.View())
+		content = b.String()
+		hint = "Enter to confirm  |  Esc to go back"
 
 	case k8sStepSSL:
-		b.WriteString(PromptStyle.Render("  SSL mode:\n\n"))
-		for i, choice := range m.sslChoices {
-			cursor := "  "
-			if i == m.sslCursor {
-				cursor = "> "
-				b.WriteString(lipgloss.NewStyle().Foreground(Green).Render(cursor+choice) + "\n")
-			} else {
-				b.WriteString(DimStyle.Render(cursor+choice) + "\n")
-			}
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("SSL/TLS Configuration"))
+		b.WriteString("\n\n")
+		b.WriteString("How should Bifract handle HTTPS?\n\n")
+		sslDescriptions := []string{
+			"Caddy obtains a trusted certificate from Let's Encrypt. Requires a public domain.",
+			"Provide your own certificate and key files.",
 		}
+		b.WriteString(RenderOptionList(m.sslChoices, sslDescriptions, m.sslCursor))
+		content = b.String()
+		hint = "Up/Down to select  |  Enter to confirm  |  Esc to go back"
 
 	case k8sStepIPAccess:
-		b.WriteString(PromptStyle.Render("  IP access control:\n\n"))
-		for i, choice := range m.ipChoices {
-			cursor := "  "
-			if i == m.ipCursor {
-				cursor = "> "
-				b.WriteString(lipgloss.NewStyle().Foreground(Green).Render(cursor+choice) + "\n")
-			} else {
-				b.WriteString(DimStyle.Render(cursor+choice) + "\n")
-			}
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("IP Access Control"))
+		b.WriteString("\n\n")
+		b.WriteString("Restrict IP access to Bifract.\n")
+		b.WriteString(DimStyle.Render("Non-allowed IPs are rejected by Caddy before reaching the application."))
+		b.WriteString("\n\n")
+		ipDescriptions := []string{
+			"No restrictions. All traffic is allowed through.",
+			"Only allowed IPs can access the UI and API. Ingest endpoints remain open to all.",
+			"Only allowed IPs can access anything, including ingest endpoints.",
+			"Require client certificates for UI and API. Ingest endpoints remain open.",
 		}
+		b.WriteString(RenderOptionList(m.ipChoices, ipDescriptions, m.ipCursor))
+		content = b.String()
+		hint = "Up/Down to select  |  Enter to confirm  |  Esc to go back"
 
 	case k8sStepAllowedIPs:
-		b.WriteString(PromptStyle.Render("  Allowed IPs/CIDRs (comma-separated): "))
-		b.WriteString(m.allowedIPsInput.View())
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("Allowed IP Addresses"))
+		b.WriteString("\n\n")
+		b.WriteString("Enter the IPs or CIDR ranges that should be allowed, separated by commas.\n")
+		b.WriteString(DimStyle.Render("Example: 10.0.0.0/8, 192.168.1.0/24, 203.0.113.5"))
+		b.WriteString("\n\n")
+		b.WriteString(LabelStyle.Render("  Allowed IPs"))
+		b.WriteString("\n")
+		b.WriteString("  " + m.allowedIPsInput.View())
 		if m.ipValidationErr != "" {
-			b.WriteString("\n  " + ErrorStyle.Render(m.ipValidationErr))
+			b.WriteString("\n\n")
+			b.WriteString(ErrorStyle.Render("  " + m.ipValidationErr))
 		}
+		content = b.String()
+		hint = "Enter to confirm  |  Esc to go back"
 
 	case k8sStepSizeProfile:
-		b.WriteString(PromptStyle.Render("  Resource profile:\n\n"))
-		for i, profile := range sizeProfiles {
-			cursor := "  "
-			if i == m.sizeCursor {
-				cursor = "> "
-				b.WriteString(lipgloss.NewStyle().Foreground(Green).Render(cursor+profile.Name) + "\n")
-				b.WriteString(lipgloss.NewStyle().Foreground(Green).Render("    "+profile.Description) + "\n")
-			} else {
-				b.WriteString(DimStyle.Render(cursor+profile.Name) + "\n")
-				b.WriteString(DimStyle.Render("    "+profile.Description) + "\n")
-			}
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("Resource Profile"))
+		b.WriteString("\n\n")
+		b.WriteString("Select a resource profile for your cluster.\n\n")
+		var profileNames, profileDescs []string
+		for _, p := range sizeProfiles {
+			profileNames = append(profileNames, p.Name)
+			profileDescs = append(profileDescs, p.Description)
 		}
-		b.WriteString("\n")
-		b.WriteString(DimStyle.Render("  Shard and replica counts can be adjusted in the next steps."))
+		b.WriteString(RenderOptionList(profileNames, profileDescs, m.sizeCursor))
+		b.WriteString("\n\n")
+		b.WriteString(DimStyle.Render("Shard and replica counts can be adjusted in the next steps."))
+		content = b.String()
+		hint = "Up/Down to select  |  Enter to confirm  |  Esc to go back"
 
 	case k8sStepCHShards:
-		b.WriteString(PromptStyle.Render("  ClickHouse shards: "))
-		b.WriteString(m.shardsInput.View())
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("ClickHouse Shards"))
 		b.WriteString("\n\n")
-		b.WriteString(DimStyle.Render("  Shards distribute data horizontally. 1 is fine for most workloads."))
+		b.WriteString(LabelStyle.Render("  Shards"))
+		b.WriteString("\n")
+		b.WriteString("  " + m.shardsInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(DimStyle.Render("Shards distribute data horizontally. 1 is fine for most workloads."))
+		content = b.String()
+		hint = "Enter to confirm  |  Esc to go back"
 
 	case k8sStepCHReplicas:
-		b.WriteString(PromptStyle.Render("  ClickHouse replicas per shard: "))
-		b.WriteString(m.replicasInput.View())
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("ClickHouse Replicas"))
 		b.WriteString("\n\n")
-		b.WriteString(DimStyle.Render("  Minimum 2 for HA"))
+		b.WriteString(LabelStyle.Render("  Replicas per shard"))
+		b.WriteString("\n")
+		b.WriteString("  " + m.replicasInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(DimStyle.Render("Minimum 2 for HA."))
+		content = b.String()
+		hint = "Enter to confirm  |  Esc to go back"
 
 	case k8sStepCHStorage:
-		b.WriteString(PromptStyle.Render("  ClickHouse storage per replica (GB): "))
-		b.WriteString(m.storageInput.View())
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("ClickHouse Storage"))
+		b.WriteString("\n\n")
+		b.WriteString(LabelStyle.Render("  Storage per replica (GB)"))
+		b.WriteString("\n")
+		b.WriteString("  " + m.storageInput.View())
+		content = b.String()
+		hint = "Enter to confirm  |  Esc to go back"
 
 	case k8sStepOutputDir:
-		b.WriteString(PromptStyle.Render("  Output directory: "))
-		b.WriteString(m.outputDirInput.View())
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("Output Directory"))
+		b.WriteString("\n\n")
+		b.WriteString(LabelStyle.Render("  Directory"))
+		b.WriteString("\n")
+		b.WriteString("  " + m.outputDirInput.View())
+		content = b.String()
+		hint = "Enter to confirm  |  Esc to go back"
 
 	case k8sStepConfirm:
-		b.WriteString(PromptStyle.Render("  Configuration Summary\n\n"))
-		b.WriteString(fmt.Sprintf("  Domain:             %s\n", ValueStyle.Render(m.config.Domain)))
-		b.WriteString(fmt.Sprintf("  SSL:                %s\n", ValueStyle.Render(string(m.config.SSLMode))))
-		b.WriteString(fmt.Sprintf("  IP Access:          %s\n", ValueStyle.Render(string(m.config.IPAccess))))
-		b.WriteString(fmt.Sprintf("  Resource Profile:   %s\n", ValueStyle.Render(m.config.SizeProfile.Name)))
-		b.WriteString(fmt.Sprintf("  CH Shards:          %s\n", ValueStyle.Render(fmt.Sprintf("%d", m.config.CHShards))))
-		b.WriteString(fmt.Sprintf("  CH Replicas/Shard:  %s\n", ValueStyle.Render(fmt.Sprintf("%d", m.config.CHReplicas))))
-		b.WriteString(fmt.Sprintf("  CH Storage:         %s\n", ValueStyle.Render(fmt.Sprintf("%dGi per replica", m.config.CHStorageGB))))
-		b.WriteString(fmt.Sprintf("  Output:             %s\n", ValueStyle.Render(m.config.OutputDir)))
-		b.WriteString("\n")
-		b.WriteString(DimStyle.Render("  Press Enter to generate manifests"))
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("Ready to Generate"))
+		b.WriteString("\n\n")
+		row := func(label, value string) string {
+			return fmt.Sprintf("  %s  %s\n", PromptStyle.Render(label), ValueStyle.Render(value))
+		}
+		b.WriteString(row("Domain:           ", m.config.Domain))
+		b.WriteString(row("SSL:              ", string(m.config.SSLMode)))
+		b.WriteString(row("IP Access:        ", string(m.config.IPAccess)))
+		b.WriteString(row("Resource Profile: ", m.config.SizeProfile.Name))
+		b.WriteString(row("CH Shards:        ", fmt.Sprintf("%d", m.config.CHShards)))
+		b.WriteString(row("CH Replicas/Shard:", fmt.Sprintf("%d", m.config.CHReplicas)))
+		b.WriteString(row("CH Storage:       ", fmt.Sprintf("%dGi per replica", m.config.CHStorageGB)))
+		b.WriteString(row("Output:           ", m.config.OutputDir))
+		content = b.String()
+		hint = "Enter to generate  |  Esc to go back  |  q to quit"
 	}
 
-	return b.String()
+	if m.step == k8sStepDone {
+		return "\n"
+	}
+
+	var out strings.Builder
+	out.WriteString(TitleStyle.Render(bannerArt))
+	out.WriteString("\n")
+	out.WriteString(SubtitleStyle.Render("Log Management, Detection, and Collaboration"))
+	out.WriteString("  ")
+	out.WriteString(DimStyle.Render(Version))
+	out.WriteString("\n")
+
+	if m.step != k8sStepWelcome {
+		out.WriteString("\n")
+		out.WriteString(m.renderProgress())
+		out.WriteString("\n")
+	}
+
+	out.WriteString(PanelStyle.Render(content))
+	out.WriteString("\n")
+	out.WriteString(HintStyle.Render("  " + hint))
+	return out.String()
 }
 
 // RunInstallK8s runs the Kubernetes installation wizard and generates manifests.
 func RunInstallK8s() error {
-	PrintBanner()
-
 	model := newK8sWizardModel()
 	p := tea.NewProgram(model)
 	finalModel, err := p.Run()

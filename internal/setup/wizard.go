@@ -413,14 +413,7 @@ func (m WizardModel) viewSSL() string {
 		"Provide your own certificate and key files.",
 	}
 
-	for i, choice := range m.sslChoices {
-		if i == m.sslCursor {
-			s.WriteString(fmt.Sprintf("  %s %s\n", SelectedStyle.Render(">"), SelectedStyle.Render(choice)))
-			s.WriteString(fmt.Sprintf("    %s\n", DimStyle.Render(descriptions[i])))
-		} else {
-			s.WriteString(fmt.Sprintf("    %s\n", UnselectedStyle.Render(choice)))
-		}
-	}
+	s.WriteString(RenderOptionList(m.sslChoices, descriptions, m.sslCursor))
 	return s.String()
 }
 
@@ -482,19 +475,7 @@ func (m WizardModel) viewConfirm() string {
 	}
 	s.WriteString(row("Image:    ", m.config.ImageTag))
 	s.WriteString("\n")
-
-	passBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Yellow).
-		Padding(0, 2).
-		Render(fmt.Sprintf(
-			"%s  %s",
-			WarningStyle.Render("Admin Password:"),
-			lipgloss.NewStyle().Foreground(White).Bold(true).Render(m.config.AdminPassword),
-		))
-	s.WriteString(passBox)
-	s.WriteString("\n\n")
-	s.WriteString(WarningStyle.Render("  Save this password now. It will not be shown again."))
+	s.WriteString(DimStyle.Render("  Press Enter to begin installation, q to quit."))
 	return s.String()
 }
 
@@ -649,14 +630,7 @@ func (m WizardModel) viewIPAccess() string {
 		"No restrictions. All traffic is allowed through.",
 	}
 
-	for i, choice := range m.ipAccessChoices {
-		if i == m.ipAccessCursor {
-			s.WriteString(fmt.Sprintf("  %s %s\n", SelectedStyle.Render(">"), SelectedStyle.Render(choice)))
-			s.WriteString(fmt.Sprintf("    %s\n", DimStyle.Render(descriptions[i])))
-		} else {
-			s.WriteString(fmt.Sprintf("    %s\n", UnselectedStyle.Render(choice)))
-		}
-	}
+	s.WriteString(RenderOptionList(m.ipAccessChoices, descriptions, m.ipAccessCursor))
 	return s.String()
 }
 
