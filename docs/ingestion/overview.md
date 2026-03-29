@@ -15,7 +15,7 @@ Ingest tokens are scoped per-fractal and carry per-token configuration (parser t
 3. Include it in the `Authorization` header:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/ingest \
+curl -X POST http://localhost:8443/api/v1/ingest \
   -H "Authorization: Bearer bifract_ingest_abc123..." \
   -H "Content-Type: application/json" \
   -d '[{"event":"login","user":"admin"}]'
@@ -36,7 +36,7 @@ All formats are sent to `POST /api/v1/ingest`.
 
 **JSON array** (multiple logs in one request):
 ```bash
-curl -X POST http://localhost:8080/api/v1/ingest \
+curl -X POST http://localhost:8443/api/v1/ingest \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '[{"event":"login","user":"admin"},{"event":"logout","user":"admin"}]'
@@ -44,7 +44,7 @@ curl -X POST http://localhost:8080/api/v1/ingest \
 
 **Single object:**
 ```bash
-curl -X POST http://localhost:8080/api/v1/ingest \
+curl -X POST http://localhost:8443/api/v1/ingest \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"message":"user login","source_ip":"10.0.0.1"}'
@@ -52,7 +52,7 @@ curl -X POST http://localhost:8080/api/v1/ingest \
 
 **NDJSON** (newline-delimited JSON):
 ```bash
-curl -X POST http://localhost:8080/api/v1/ingest \
+curl -X POST http://localhost:8443/api/v1/ingest \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   --data-binary @logs.ndjson
@@ -67,7 +67,7 @@ Bifract also accepts `POST /_bulk` and `PUT /_bulk` for compatibility with Elast
 Bifract accepts OTLP/HTTP log exports at `POST /v1/logs`, the standard OTLP endpoint path. Both protobuf (`application/x-protobuf`) and JSON (`application/json`) content types are supported.
 
 ```bash
-curl -X POST http://localhost:8080/v1/logs \
+curl -X POST http://localhost:8443/v1/logs \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

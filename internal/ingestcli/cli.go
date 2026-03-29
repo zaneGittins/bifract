@@ -13,7 +13,7 @@ import (
 // It accepts the raw args slice after "--ingest" has been consumed.
 func RunIngest(args []string) error {
 	cfg := &Config{
-		URL: "http://localhost:8080",
+		URL: "http://localhost:8443",
 	}
 
 	var showHelp, recursive bool
@@ -195,7 +195,7 @@ func PrintIngestUsage() {
 
 %s
   --token, -t     Bifract ingest token (required)
-  --url, -u       Bifract server URL (default: http://localhost:8080)
+  --url, -u       Bifract server URL (default: http://localhost:8443)
   --batch-size, -b  Logs per batch (default: auto, 5000)
   --workers, -w   Concurrent workers (default: auto, based on CPU cores)
   --limit, -l     Max logs per file (default: unlimited)
