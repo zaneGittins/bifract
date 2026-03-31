@@ -59,7 +59,7 @@
 	}
 
 	# Only ingest endpoints are allowed on this port
-	@ingest path /api/v1/ingest* /_bulk
+	@ingest path /api/v1/ingest* /_bulk /v1/logs
 	handle @ingest {
 		reverse_proxy bifract-app:8080 {
 			header_up X-Real-IP {remote_host}
