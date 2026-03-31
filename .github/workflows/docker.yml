@@ -51,8 +51,8 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          mkdir -p "$TMPDIR/digests"
-          touch "$TMPDIR/digests/${DIGEST#sha256:}"
+          mkdir -p "${{ runner.temp }}/digests"
+          touch "${{ runner.temp }}/digests/${DIGEST#sha256:}"
 
       - name: Upload digest
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
