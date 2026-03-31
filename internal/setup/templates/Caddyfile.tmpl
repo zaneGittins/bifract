@@ -60,7 +60,7 @@
 
 	@blocked not remote_ip {{range .AllowedIPs}}{{.}} {{end}}
 {{- end}}
-	@ingest_blocked path /api/v1/ingest* /_bulk
+	@ingest_blocked path /api/v1/ingest* /_bulk /v1/logs
 	@sse path */events */stream
 
 	route {
@@ -119,8 +119,8 @@
 
 	@blocked_ingest not remote_ip {{range .AllowedIPs}}{{.}} {{end}}
 {{- end}}
-	@ingest path /api/v1/ingest* /_bulk
-	@not_ingest not path /api/v1/ingest* /_bulk
+	@ingest path /api/v1/ingest* /_bulk /v1/logs
+	@not_ingest not path /api/v1/ingest* /_bulk /v1/logs
 
 	route {
 {{- if and (eq .IPAccess "restrict-all") .AllowedIPs}}
