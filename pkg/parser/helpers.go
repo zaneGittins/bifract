@@ -287,20 +287,23 @@ func qualifyColumnRefs(sql, alias string) string {
 		rest := sql[i:]
 		replaced := false
 
-		// fields.` - JSON subcolumn reference; find the closing backtick to prefix the whole ref
+		// fields.`...` - JSON subcolumn reference; may have multiple backtick-quoted
+		// segments for nested paths (e.g. fields.`event`.`name`.:String)
 		if strings.HasPrefix(rest, "fields.`") && (i == 0 || !isWordByte(sql[i-1])) {
-			// Scan past the backtick-quoted identifier (handle escaped backticks ``)
-			end := 8 // len("fields.`")
-			for end < len(rest) {
-				if rest[end] == '`' {
-					if end+1 < len(rest) && rest[end+1] == '`' {
-						end += 2 // escaped backtick
+			end := 6 // len("fields") - start scanning from the first dot
+			for end < len(rest) && rest[end] == '.' && end+1 < len(rest) && rest[end+1] == '`' {
+				end += 2 // skip .`
+				for end < len(rest) {
+					if rest[end] == '`' {
+						if end+1 < len(rest) && rest[end+1] == '`' {
+							end += 2 // escaped backtick
+						} else {
+							end++ // closing backtick
+							break
+						}
 					} else {
-						end++ // closing backtick
-						break
+						end++
 					}
-				} else {
-					end++
 				}
 			}
 			// Include .:String type suffix if present
