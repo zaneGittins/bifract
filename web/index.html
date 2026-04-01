@@ -1263,7 +1263,6 @@
                         <button class="alerts-sub-tab active" data-subtab="overview" onclick="FractalManageTab.switchPrismSubTab('overview')">Overview</button>
                         <button class="alerts-sub-tab" data-subtab="members" onclick="FractalManageTab.switchPrismSubTab('members')">Members</button>
                         <button class="alerts-sub-tab" data-subtab="access" onclick="FractalManageTab.switchPrismSubTab('access')">Access</button>
-                        <button class="alerts-sub-tab" data-subtab="apikeys" onclick="FractalManageTab.switchPrismSubTab('apikeys')">API Keys</button>
                         <button class="alerts-sub-tab" data-subtab="danger" onclick="FractalManageTab.switchPrismSubTab('danger')">Danger Zone</button>
                     </div>
 
@@ -1324,65 +1323,117 @@
 
                     <!-- Prism Access Sub-Tab -->
                     <div id="prismSubTabAccess" class="prism-sub-panel" style="display:none;">
-                    <div class="fractal-permissions-section">
-                        <div class="section-header">
-                            <h3>Permissions</h3>
-                            <button id="grantPrismPermissionBtn" class="btn-primary btn-sm" onclick="GroupsView.showPrismGrantForm()">+ Grant Access</button>
-                        </div>
-                        <p class="section-description">Control which users and groups can access this prism and their role level.</p>
+                    <div class="access-panel">
 
-                        <div id="prismPermissionsList" class="permissions-list">
-                            <div class="loading">Loading permissions...</div>
+                        <!-- Permissions Card -->
+                        <div class="access-card">
+                            <div class="access-card-header">
+                                <div class="access-card-title">
+                                    <h3>Permissions</h3>
+                                    <span class="access-card-subtitle">Control which users and groups can access this prism and their role level.</span>
+                                </div>
+                                <button id="grantPrismPermissionBtn" class="btn-ghost btn-sm" onclick="GroupsView.showPrismGrantForm()">+ Grant Access</button>
+                            </div>
+
+                            <div id="prismPermissionsList" class="permissions-list">
+                                <div class="loading">Loading permissions...</div>
+                            </div>
+
+                            <!-- Grant Permission Form -->
+                            <div id="grantPrismPermissionForm" class="access-grant-form" style="display: none;">
+                                <div class="access-grant-form-inner">
+                                    <div class="access-grant-form-fields">
+                                        <div class="form-group">
+                                            <label for="prismPermGrantType">Grant to</label>
+                                            <select id="prismPermGrantType" class="setting-select" onchange="GroupsView.togglePrismGrantType()">
+                                                <option value="user">User</option>
+                                                <option value="group">Group</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group" id="prismPermUserSelectGroup">
+                                            <label for="prismPermUserSelect">User</label>
+                                            <select id="prismPermUserSelect" class="setting-select">
+                                                <option value="">Select user...</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group" id="prismPermGroupSelectGroup" style="display: none;">
+                                            <label for="prismPermGroupSelect">Group</label>
+                                            <select id="prismPermGroupSelect" class="setting-select">
+                                                <option value="">Select group...</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="prismPermRoleSelect">Role</label>
+                                            <select id="prismPermRoleSelect" class="setting-select">
+                                                <option value="viewer">Viewer</option>
+                                                <option value="analyst">Analyst</option>
+                                                <option value="admin">Admin</option>
+                                            </select>
+                                            <span class="help-text">Viewer: query/view. Analyst: create content. Admin: manage prism settings.</span>
+                                        </div>
+                                    </div>
+                                    <div class="form-actions">
+                                        <button class="btn-ghost btn-sm" onclick="GroupsView.hidePrismGrantForm()">Cancel</button>
+                                        <button class="btn-primary btn-sm" onclick="GroupsView.grantPrismPermission()">Grant</button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
-                        <div id="grantPrismPermissionForm" style="display: none;">
-                            <h4>Grant Access</h4>
-                            <div class="form-group">
-                                <label for="prismPermGrantType">Grant to</label>
-                                <select id="prismPermGrantType" class="setting-select" onchange="GroupsView.togglePrismGrantType()">
-                                    <option value="user">User</option>
-                                    <option value="group">Group</option>
-                                </select>
+                        <!-- API Keys Card -->
+                        <div class="access-card">
+                            <div class="access-card-header">
+                                <div class="access-card-title">
+                                    <h3>API Keys</h3>
+                                    <span class="access-card-subtitle">Manage programmatic access to this prism. Prism API keys can query across all member fractals.</span>
+                                </div>
+                                <button id="createPrismAPIKeyInlineBtn" class="btn-ghost btn-sm">+ Create Key</button>
                             </div>
-                            <div class="form-group" id="prismPermUserSelectGroup">
-                                <label for="prismPermUserSelect">User</label>
-                                <select id="prismPermUserSelect" class="setting-select">
-                                    <option value="">Select user...</option>
-                                </select>
+
+                            <div id="prismInlineAPIKeysList" class="api-keys-inline-list">
+                                <div class="loading">Loading API keys...</div>
                             </div>
-                            <div class="form-group" id="prismPermGroupSelectGroup" style="display: none;">
-                                <label for="prismPermGroupSelect">Group</label>
-                                <select id="prismPermGroupSelect" class="setting-select">
-                                    <option value="">Select group...</option>
-                                </select>
+
+                            <!-- Inline Create Form -->
+                            <div id="prismInlineCreateAPIKeyForm" class="access-grant-form" style="display: none;">
+                                <div class="access-grant-form-inner">
+                                    <form id="prismInlineCreateAPIKeyFormEl">
+                                        <div class="access-grant-form-fields">
+                                            <div class="form-group">
+                                                <label for="prismInlineApiKeyName">Name *</label>
+                                                <input type="text" id="prismInlineApiKeyName" name="name" required placeholder="Key name">
+                                            </div>
+                                            <div class="form-group">
+                                                <label for="prismInlineApiKeyExpires">Expires</label>
+                                                <input type="text" id="prismInlineApiKeyExpires" name="expires_at" placeholder="YYYY-MM-DD HH:mm">
+                                                <div class="checkbox-group" style="margin-top: 0.375rem;">
+                                                    <label><input type="checkbox" id="prismInlineApiKeyNeverExpires" name="never_expires"> Never expires</label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="form-group" style="margin-top: 0.75rem;">
+                                            <label>Permissions</label>
+                                            <div class="inline-perm-toggles">
+                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermAll"> All</label>
+                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermQuery" checked> Query</label>
+                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermComment" checked> Comments</label>
+                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermAlertManage"> Alerts</label>
+                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermNotebook"> Notebooks</label>
+                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermDashboard"> Dashboards</label>
+                                            </div>
+                                        </div>
+                                        <div class="form-actions">
+                                            <button type="button" id="prismCancelInlineCreateBtn" class="btn-ghost btn-sm">Cancel</button>
+                                            <button type="button" id="prismSubmitInlineCreateBtn" class="btn-primary btn-sm">Create</button>
+                                        </div>
+                                    </form>
+                                </div>
                             </div>
-                            <div class="form-group">
-                                <label for="prismPermRoleSelect">Role</label>
-                                <select id="prismPermRoleSelect" class="setting-select">
-                                    <option value="viewer">Viewer</option>
-                                    <option value="analyst">Analyst</option>
-                                    <option value="admin">Admin</option>
-                                </select>
-                                <p class="help-text">Viewer: query/view. Analyst: create content. Admin: manage prism settings.</p>
-                            </div>
-                            <div class="form-actions">
-                                <button class="btn-primary" onclick="GroupsView.grantPrismPermission()">Grant</button>
-                                <button class="btn-secondary" onclick="GroupsView.hidePrismGrantForm()">Cancel</button>
-                            </div>
+
                         </div>
+
                     </div>
                     </div><!-- end prismSubTabAccess -->
-
-                    <!-- Prism API Keys Sub-Tab -->
-                    <div id="prismSubTabApikeys" class="prism-sub-panel" style="display:none;">
-                    <div class="fractal-permissions-section">
-                        <div class="section-header">
-                            <h3>API Keys</h3>
-                            <button class="btn-primary btn-sm" onclick="FractalManageTab.showPrismAPIKeys()">Manage API Keys</button>
-                        </div>
-                        <p class="section-description">Create and manage API keys for programmatic access to this prism. Prism API keys can query across all member fractals.</p>
-                    </div>
-                    </div><!-- end prismSubTabApikeys -->
 
                     <!-- Prism Danger Zone Sub-Tab -->
                     <div id="prismSubTabDanger" class="prism-sub-panel" style="display:none;">

@@ -20,6 +20,18 @@ const APIKeys = {
         return `/api/v1/fractals/${this.currentScope.id}/api-keys`;
     },
 
+    // Returns the DOM ID prefix for inline elements based on current scope
+    _inlinePrefix() {
+        return this.currentScope?.type === 'prism' ? 'prism' : '';
+    },
+
+    // Gets an inline element by base ID, applying the scope prefix
+    _inlineEl(baseId) {
+        const prefix = this._inlinePrefix();
+        const id = prefix ? prefix + baseId.charAt(0).toUpperCase() + baseId.slice(1) : baseId;
+        return document.getElementById(id);
+    },
+
     setupEventListeners() {
         // Modal triggers and form handlers
         document.addEventListener('click', (e) => {
@@ -50,12 +62,15 @@ const APIKeys = {
                 this.switchToTab('overview');
             }
 
-            // Inline create form
-            else if (e.target.id === 'createAPIKeyInlineBtn') {
+            // Inline create form (fractal and prism)
+            else if (e.target.id === 'createAPIKeyInlineBtn' || e.target.id === 'createPrismAPIKeyInlineBtn') {
+                if (e.target.id === 'createPrismAPIKeyInlineBtn' && window.FractalContext?.currentFractal) {
+                    this.currentScope = { type: 'prism', id: FractalContext.currentFractal.id, name: FractalContext.currentFractal.name };
+                }
                 this.showInlineCreateForm();
-            } else if (e.target.id === 'cancelInlineCreateBtn') {
+            } else if (e.target.id === 'cancelInlineCreateBtn' || e.target.id === 'prismCancelInlineCreateBtn') {
                 this.hideInlineCreateForm();
-            } else if (e.target.id === 'submitInlineCreateBtn') {
+            } else if (e.target.id === 'submitInlineCreateBtn' || e.target.id === 'prismSubmitInlineCreateBtn') {
                 this.createInlineAPIKey();
             } else if (e.target.id === 'createdKeyCopyBtn') {
                 const input = document.getElementById('createdKeyDisplay');
@@ -75,8 +90,9 @@ const APIKeys = {
                 }
             }
 
-            if (e.target.id === 'inlineApiKeyNeverExpires') {
-                const expiresAtInput = document.getElementById('inlineApiKeyExpires');
+            if (e.target.id === 'inlineApiKeyNeverExpires' || e.target.id === 'prismInlineApiKeyNeverExpires') {
+                const prefix = e.target.id.startsWith('prism') ? 'prismInlineApiKeyExpires' : 'inlineApiKeyExpires';
+                const expiresAtInput = document.getElementById(prefix);
                 if (expiresAtInput) {
                     expiresAtInput.disabled = e.target.checked;
                     if (e.target.checked) expiresAtInput.value = '';
@@ -93,10 +109,19 @@ const APIKeys = {
                 });
             }
 
-            // "All Permissions" toggle (inline)
+            // "All Permissions" toggle (inline fractal)
             if (e.target.id === 'inlinePermAll') {
                 const checked = e.target.checked;
                 ['inlinePermQuery', 'inlinePermComment', 'inlinePermAlertManage', 'inlinePermNotebook', 'inlinePermDashboard'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.checked = checked;
+                });
+            }
+
+            // "All Permissions" toggle (inline prism)
+            if (e.target.id === 'prismInlinePermAll') {
+                const checked = e.target.checked;
+                ['prismInlinePermQuery', 'prismInlinePermComment', 'prismInlinePermAlertManage', 'prismInlinePermNotebook', 'prismInlinePermDashboard'].forEach(id => {
                     const el = document.getElementById(id);
                     if (el) el.checked = checked;
                 });
@@ -111,12 +136,21 @@ const APIKeys = {
                 }
             }
 
-            // Sync "All" toggle when individual permissions change (inline)
+            // Sync "All" toggle when individual permissions change (inline fractal)
             const inlinePermIds = ['inlinePermQuery', 'inlinePermComment', 'inlinePermAlertManage', 'inlinePermNotebook', 'inlinePermDashboard'];
             if (inlinePermIds.includes(e.target.id)) {
                 const allToggle = document.getElementById('inlinePermAll');
                 if (allToggle) {
                     allToggle.checked = inlinePermIds.every(id => document.getElementById(id)?.checked);
+                }
+            }
+
+            // Sync "All" toggle when individual permissions change (inline prism)
+            const prismInlinePermIds = ['prismInlinePermQuery', 'prismInlinePermComment', 'prismInlinePermAlertManage', 'prismInlinePermNotebook', 'prismInlinePermDashboard'];
+            if (prismInlinePermIds.includes(e.target.id)) {
+                const allToggle = document.getElementById('prismInlinePermAll');
+                if (allToggle) {
+                    allToggle.checked = prismInlinePermIds.every(id => document.getElementById(id)?.checked);
                 }
             }
         });
@@ -707,13 +741,13 @@ const APIKeys = {
             }
         } catch (error) {
             console.error('Failed to load inline API keys:', error);
-            const container = document.getElementById('inlineAPIKeysList');
+            const container = this._inlineEl('inlineAPIKeysList');
             if (container) container.innerHTML = '<div class="access-empty-state">Failed to load API keys.</div>';
         }
     },
 
     renderInlineAPIKeys() {
-        const container = document.getElementById('inlineAPIKeysList');
+        const container = this._inlineEl('inlineAPIKeysList');
         if (!container) return;
 
         if (this.currentKeys.length === 0) {
@@ -749,62 +783,62 @@ const APIKeys = {
     },
 
     showInlineCreateForm() {
-        const form = document.getElementById('inlineCreateAPIKeyForm');
+        const form = this._inlineEl('inlineCreateAPIKeyForm');
         if (form) {
             form.style.display = '';
             // Set default expiration
             const defaultExpiry = new Date();
             defaultExpiry.setDate(defaultExpiry.getDate() + 30);
-            const expiresInput = document.getElementById('inlineApiKeyExpires');
+            const expiresInput = this._inlineEl('inlineApiKeyExpires');
             if (expiresInput) {
                 expiresInput.value = defaultExpiry.toISOString().slice(0, 16).replace('T', ' ');
                 expiresInput.disabled = false;
             }
-            const neverExpires = document.getElementById('inlineApiKeyNeverExpires');
+            const neverExpires = this._inlineEl('inlineApiKeyNeverExpires');
             if (neverExpires) neverExpires.checked = false;
-            const nameInput = document.getElementById('inlineApiKeyName');
+            const nameInput = this._inlineEl('inlineApiKeyName');
             if (nameInput) { nameInput.value = ''; nameInput.focus(); }
             // Reset permissions
             ['inlinePermAll', 'inlinePermAlertManage', 'inlinePermNotebook', 'inlinePermDashboard'].forEach(id => {
-                const el = document.getElementById(id);
+                const el = this._inlineEl(id);
                 if (el) el.checked = false;
             });
             ['inlinePermQuery', 'inlinePermComment'].forEach(id => {
-                const el = document.getElementById(id);
+                const el = this._inlineEl(id);
                 if (el) el.checked = true;
             });
         }
     },
 
     hideInlineCreateForm() {
-        const form = document.getElementById('inlineCreateAPIKeyForm');
+        const form = this._inlineEl('inlineCreateAPIKeyForm');
         if (form) form.style.display = 'none';
     },
 
     async createInlineAPIKey() {
-        const name = document.getElementById('inlineApiKeyName')?.value?.trim();
+        const name = this._inlineEl('inlineApiKeyName')?.value?.trim();
         if (!name) {
             if (window.Toast) Toast.error('Validation', 'API key name is required');
             return;
         }
 
-        const neverExpires = document.getElementById('inlineApiKeyNeverExpires')?.checked;
-        const expiresAt = neverExpires ? null : document.getElementById('inlineApiKeyExpires')?.value;
+        const neverExpires = this._inlineEl('inlineApiKeyNeverExpires')?.checked;
+        const expiresAt = neverExpires ? null : this._inlineEl('inlineApiKeyExpires')?.value;
 
         const request = {
             name,
             description: '',
             expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
             permissions: {
-                query: document.getElementById('inlinePermQuery')?.checked ?? true,
-                comment: document.getElementById('inlinePermComment')?.checked ?? true,
-                alert_manage: document.getElementById('inlinePermAlertManage')?.checked ?? false,
-                notebook: document.getElementById('inlinePermNotebook')?.checked ?? false,
-                dashboard: document.getElementById('inlinePermDashboard')?.checked ?? false
+                query: this._inlineEl('inlinePermQuery')?.checked ?? true,
+                comment: this._inlineEl('inlinePermComment')?.checked ?? true,
+                alert_manage: this._inlineEl('inlinePermAlertManage')?.checked ?? false,
+                notebook: this._inlineEl('inlinePermNotebook')?.checked ?? false,
+                dashboard: this._inlineEl('inlinePermDashboard')?.checked ?? false
             }
         };
 
-        const btn = document.getElementById('submitInlineCreateBtn');
+        const btn = this._inlineEl('submitInlineCreateBtn');
         try {
             if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
 

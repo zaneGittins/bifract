@@ -753,6 +753,12 @@ const FractalManageTab = {
         document.querySelectorAll('.prism-sub-panel').forEach(panel => panel.style.display = 'none');
         const panel = document.getElementById('prismSubTab' + tabName.charAt(0).toUpperCase() + tabName.slice(1));
         if (panel) panel.style.display = '';
+
+        // Load inline API keys when switching to access tab
+        if (tabName === 'access' && window.APIKeys && this.currentFractal) {
+            APIKeys.currentScope = { type: 'prism', id: this.currentFractal.id, name: this.currentFractal.name };
+            APIKeys.loadInlineAPIKeys();
+        }
     },
 
     showAPIKeysModal() {
