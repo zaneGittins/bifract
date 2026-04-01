@@ -30,11 +30,11 @@ func TestBasicFieldEquals(t *testing.T) {
 			},
 		},
 		{
-			name:    "field with dot",
+			name:    "field with dot (nested path)",
 			query:   "source.ip=192.168.1.1",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`source%2Eip`.:String = '192.168.1.1'")
+				return containsSubstr([]string{sql}, "fields.`source`.`ip`.:String = '192.168.1.1'")
 			},
 		},
 		{

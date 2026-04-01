@@ -869,7 +869,7 @@ func (m *Manager) getFields(ctx context.Context, fractalID string, prismFractalI
 			groupUniqArraySample(5)(field_value) AS samples
 		FROM (
 			SELECT
-				replaceAll(p, '%%2E', '.') AS field_name,
+				p AS field_name,
 				JSON_VALUE(fields, concat('$.', p)) AS field_value
 			FROM (
 				SELECT fields
@@ -982,7 +982,7 @@ func (m *Manager) getFieldsSimple(ctx context.Context, fractalID string, prismFr
 	sqlStr := fmt.Sprintf(`
 		SELECT field_name, count() AS freq
 		FROM (
-			SELECT replaceAll(arrayJoin(JSONAllPaths(fields)), '%%2E', '.') AS field_name
+			SELECT arrayJoin(JSONAllPaths(fields)) AS field_name
 			FROM logs
 			WHERE %s AND timestamp >= now() - INTERVAL 7 DAY
 		)

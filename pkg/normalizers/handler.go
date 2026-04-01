@@ -176,7 +176,7 @@ func flattenPreview(obj map[string]interface{}, prefix string, fields map[string
 	for key, value := range obj {
 		fullPath := key
 		if prefix != "" {
-			fullPath = prefix + "." + key
+			fullPath = prefix + "_" + key
 		}
 		switch v := value.(type) {
 		case map[string]interface{}:
@@ -184,9 +184,7 @@ func flattenPreview(obj map[string]interface{}, prefix string, fields map[string
 		default:
 			outKey := fullPath
 			if hasFlatten {
-				if idx := strings.LastIndex(fullPath, "."); idx >= 0 {
-					outKey = fullPath[idx+1:]
-				}
+				outKey = key
 			}
 			normalized := outKey
 			if norm != nil {
@@ -220,7 +218,7 @@ func buildPreviewResults(obj map[string]interface{}, prefix string, norm *Compil
 	for key, value := range obj {
 		fullPath := key
 		if prefix != "" {
-			fullPath = prefix + "." + key
+			fullPath = prefix + "_" + key
 		}
 		switch v := value.(type) {
 		case map[string]interface{}:
@@ -228,9 +226,7 @@ func buildPreviewResults(obj map[string]interface{}, prefix string, norm *Compil
 		default:
 			outKey := fullPath
 			if hasFlatten {
-				if idx := strings.LastIndex(fullPath, "."); idx >= 0 {
-					outKey = fullPath[idx+1:]
-				}
+				outKey = key
 			}
 			normalized := outKey
 			if norm != nil {

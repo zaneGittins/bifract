@@ -415,8 +415,9 @@ const maxFlattenDepth = 64
 const maxFlattenFields = 1000
 
 // flattenJSON recursively flattens nested JSON objects.
-// If the normalizer has "flatten_leaf" enabled, only the last dot-segment is used as field name.
-// Otherwise, dot notation is used (e.g. "data.field.name").
+// If the normalizer has "flatten_leaf" enabled, only the raw leaf key is used as field name.
+// Otherwise, underscore-joined notation is used (e.g. "data_field_name").
+// Underscores prevent ClickHouse's JSON column from re-nesting dot-separated keys.
 func (h *IngestHandler) flattenJSON(obj map[string]interface{}, prefix string, fields map[string]string, norm *normalizers.CompiledNormalizer) {
 	h.flattenJSONDepth(obj, prefix, fields, norm, 0)
 }
@@ -439,7 +440,7 @@ func (h *IngestHandler) flattenJSONDepth(obj map[string]interface{}, prefix stri
 		}
 		fieldName := key
 		if prefix != "" {
-			fieldName = prefix + "." + key
+			fieldName = prefix + "_" + key
 		}
 
 		switch v := value.(type) {
@@ -448,10 +449,10 @@ func (h *IngestHandler) flattenJSONDepth(obj map[string]interface{}, prefix stri
 		default:
 			outKey := fieldName
 			if hasFlatten {
-				outKey = lastSegment(fieldName)
+				outKey = key
 			}
 			normalized := normalizeField(outKey, norm)
-			// On collision, fall back to the full dot-notation path
+			// On collision, fall back to the full underscore-joined path
 			if _, exists := fields[normalized]; exists && hasFlatten {
 				normalized = normalizeField(fieldName, norm)
 			}
@@ -477,13 +478,6 @@ func stringifyValue(v interface{}) string {
 	}
 }
 
-// lastSegment returns the part after the last dot, or the whole string if no dot.
-func lastSegment(s string) string {
-	if idx := strings.LastIndex(s, "."); idx >= 0 {
-		return s[idx+1:]
-	}
-	return s
-}
 
 // extractTimestamp tries per-token fields, then normalizer fields, then global settings, then common field names.
 func (h *IngestHandler) extractTimestamp(fields map[string]string, tsFields []ingesttokens.TsField, norm *normalizers.CompiledNormalizer) time.Time {
