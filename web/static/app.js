@@ -127,6 +127,7 @@ const App = {
         }
 
         this.setupEventListeners();
+        this._initPopState();
         this.checkStatus();
 
         // Check status every 30 seconds
@@ -164,7 +165,7 @@ const App = {
         });
     },
 
-    // One-time route from the URL hash on page load. No popstate/pushState.
+    // Route from the URL hash on page load and handle browser back/forward.
     routeFromHash() {
         const hash = window.location.hash.replace(/^#/, '');
         if (!hash || hash === 'fractalListing') {
@@ -187,6 +188,23 @@ const App = {
             return;
         }
         this.showMainView('fractalListing');
+    },
+
+    // Push a history entry so the browser back button navigates within the app.
+    _pushHash(hash) {
+        const target = hash ? '#' + hash : '#fractalListing';
+        if (window.location.hash !== target) {
+            history.pushState(null, '', target);
+        }
+    },
+
+    // Listen for popstate (browser back/forward) and route accordingly.
+    _initPopState() {
+        window.addEventListener('popstate', () => {
+            this._navigatingFromPopState = true;
+            this.routeFromHash();
+            this._navigatingFromPopState = false;
+        });
     },
 
     setupEventListeners() {
@@ -616,6 +634,10 @@ const App = {
     showMainView(tab = 'fractalListing') {
         console.log('[App] Showing main view, tab:', tab);
 
+        if (!this._navigatingFromPopState) {
+            this._pushHash(tab === 'fractalListing' ? '' : tab);
+        }
+
         this.currentViewLevel = 'main';
         this.currentView = tab;
 
@@ -761,6 +783,10 @@ const App = {
     // Show the fractal view (search / comments / alerts / reference)
     showFractalView(tab = 'search') {
         console.log('[App] Showing fractal view, tab:', tab);
+
+        if (!this._navigatingFromPopState) {
+            this._pushHash(tab);
+        }
 
         this.currentViewLevel = 'fractal';
         this.currentView = tab;

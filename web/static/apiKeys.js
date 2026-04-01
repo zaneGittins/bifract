@@ -43,8 +43,15 @@ const APIKeys = {
                 this.confirmDeleteAPIKey(e.target.dataset.keyId);
             } else if (e.target.classList.contains('toggle-api-key-btn')) {
                 this.toggleAPIKey(e.target.dataset.keyId);
-            } else if (e.target.classList.contains('copy-key-btn')) {
-                this.copyToClipboard(e.target.dataset.key);
+            } else if (e.target.id === 'copyAPIKeyBtn' || e.target.closest('#copyAPIKeyBtn')) {
+                const input = document.getElementById('apiKeyDisplay');
+                if (input) this.copyToClipboard(input.value);
+            } else if (e.target.id === 'createdKeyCopyBtn' || e.target.closest('#createdKeyCopyBtn')) {
+                const input = document.getElementById('createdKeyDisplay');
+                if (input) this.copyToClipboard(input.value);
+            } else if (e.target.classList.contains('copy-key-btn') || e.target.closest('.copy-key-btn')) {
+                const btn = e.target.closest('.copy-key-btn') || e.target;
+                this.copyToClipboard(btn.dataset.key);
             }
 
             // Tab navigation
