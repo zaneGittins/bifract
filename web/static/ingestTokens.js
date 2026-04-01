@@ -257,6 +257,7 @@ const IngestTokens = {
                 </td>
                 <td>${tokenCell}</td>
                 <td><span class="token-parser-badge">${this.esc(t.parser_type)}</span></td>
+                <td><span class="token-normalizer-name">${t.normalizer_name ? this.esc(t.normalizer_name) : 'None'}</span></td>
                 <td>
                     <div class="token-usage-info">
                         <span class="token-usage-count">${this.formatNumber(t.usage_count)} req / ${this.formatNumber(t.log_count)} logs</span>
@@ -429,7 +430,8 @@ const IngestTokens = {
         const name = document.getElementById('ingestTokenName')?.value?.trim();
         const description = document.getElementById('ingestTokenDesc')?.value?.trim() || '';
         const parserType = document.getElementById('ingestTokenParser')?.value || 'json';
-        const normalizerId = document.getElementById('ingestTokenNormalizer')?.value || null;
+        const normalizerSelect = document.getElementById('ingestTokenNormalizer');
+        const normalizerId = normalizerSelect?.value || null;
 
         if (!name) {
             if (window.Toast) Toast.error('Token name is required');
@@ -440,7 +442,13 @@ const IngestTokens = {
         if (!fractal) return;
 
         const payload = { name, description, parser_type: parserType };
-        if (normalizerId) payload.normalizer_id = normalizerId;
+        if (normalizerId) {
+            payload.normalizer_id = normalizerId;
+        } else if (normalizerSelect && normalizerSelect.value === '') {
+            // User explicitly selected "None (no normalization)"
+            payload.clear_normalizer = true;
+        }
+        // If neither, backend uses the default normalizer
 
         try {
             const resp = await fetch(`/api/v1/fractals/${fractal.id}/ingest-tokens`, {

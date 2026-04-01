@@ -6,6 +6,7 @@ type Transform string
 
 const (
 	TransformFlattenLeaf Transform = "flatten_leaf"
+	TransformFlattenFull Transform = "flatten_full"
 	TransformLowercase   Transform = "lowercase"
 	TransformUppercase   Transform = "uppercase"
 	TransformSnakeCase   Transform = "snake_case"
@@ -16,6 +17,7 @@ const (
 
 var ValidTransforms = map[Transform]bool{
 	TransformFlattenLeaf: true,
+	TransformFlattenFull: true,
 	TransformLowercase:   true,
 	TransformUppercase:   true,
 	TransformSnakeCase:   true,
@@ -48,11 +50,20 @@ type Normalizer struct {
 	UpdatedAt       time.Time        `json:"updated_at"`
 }
 
+// FlattenMode indicates which flatten strategy the normalizer uses.
+type FlattenMode string
+
+const (
+	FlattenNone FlattenMode = ""
+	FlattenLeaf FlattenMode = "leaf"
+	FlattenFull FlattenMode = "full"
+)
+
 // CompiledNormalizer is the hot-path version with pre-built lookup maps.
 type CompiledNormalizer struct {
 	Transforms      []Transform
 	FieldMappingMap map[string]string // source -> target for O(1) lookup
-	HasFlatten      bool
+	Flatten         FlattenMode
 	TimestampFields []TimestampField
 }
 
@@ -64,8 +75,11 @@ func (n *Normalizer) Compile() *CompiledNormalizer {
 		TimestampFields: n.TimestampFields,
 	}
 	for _, t := range n.Transforms {
-		if t == TransformFlattenLeaf {
-			c.HasFlatten = true
+		switch t {
+		case TransformFlattenLeaf:
+			c.Flatten = FlattenLeaf
+		case TransformFlattenFull:
+			c.Flatten = FlattenFull
 		}
 	}
 	for _, fm := range n.FieldMappings {

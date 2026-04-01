@@ -3,36 +3,71 @@ package normalizers
 import (
 	"strings"
 	"unicode"
-
-	"bifract/pkg/settings"
 )
 
-// ApplyFieldName applies all transforms (except flatten, which is structural)
-// to a field name, then checks field mappings.
+// ApplyFieldName applies all per-name transforms (skipping flatten, which is
+// structural and handled by ApplyTransforms) then checks field mappings.
 func (c *CompiledNormalizer) ApplyFieldName(field string) string {
 	result := field
 	for _, t := range c.Transforms {
 		switch t {
-		case TransformFlattenLeaf:
-			// Flatten leaf is handled structurally during JSON parsing
+		case TransformFlattenLeaf, TransformFlattenFull:
 			continue
-		case TransformLowercase:
-			result = strings.ToLower(result)
-		case TransformUppercase:
-			result = strings.ToUpper(result)
-		case TransformSnakeCase:
-			result = settings.ToSnakeCase(result)
-		case TransformCamelCase:
-			result = toCamelCase(result)
-		case TransformPascalCase:
-			result = toPascalCase(result)
-		case TransformDedot:
-			result = strings.ReplaceAll(result, ".", "_")
+		default:
+			result = applyFieldNameTransform(result, t)
 		}
 	}
 	if target, ok := c.FieldMappingMap[result]; ok {
 		return target
 	}
+	return result
+}
+
+// ApplyTransforms applies all transforms in order to the full field map.
+// Flatten transforms expand JSON-string values; other transforms rename keys.
+// Field mappings are applied last.
+func (c *CompiledNormalizer) ApplyTransforms(fields map[string]string) map[string]string {
+	return c.ApplyTransformsWithNested(fields, nil)
+}
+
+// ApplyTransformsWithNested is like ApplyTransforms but accepts a set of keys
+// that are known to contain serialized nested objects. Only these keys will be
+// expanded by flatten transforms, preventing string values that happen to
+// contain valid JSON from being incorrectly flattened.
+func (c *CompiledNormalizer) ApplyTransformsWithNested(fields map[string]string, nestedKeys map[string]bool) map[string]string {
+	result := fields
+	for _, t := range c.Transforms {
+		switch t {
+		case TransformFlattenLeaf:
+			result = FlattenFields(result, FlattenLeaf, nestedKeys)
+			nestedKeys = nil // after first flatten, nested tracking no longer applies
+		case TransformFlattenFull:
+			result = FlattenFields(result, FlattenFull, nestedKeys)
+			nestedKeys = nil
+		default:
+			// Per-key name transform: build a new map with renamed keys.
+			renamed := make(map[string]string, len(result))
+			for k, v := range result {
+				newKey := applyFieldNameTransform(k, t)
+				renamed[newKey] = v
+			}
+			result = renamed
+		}
+	}
+
+	// Apply field mappings last.
+	if len(c.FieldMappingMap) > 0 {
+		mapped := make(map[string]string, len(result))
+		for k, v := range result {
+			if target, ok := c.FieldMappingMap[k]; ok {
+				mapped[target] = v
+			} else {
+				mapped[k] = v
+			}
+		}
+		result = mapped
+	}
+
 	return result
 }
 

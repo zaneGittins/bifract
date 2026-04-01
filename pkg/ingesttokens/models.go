@@ -48,6 +48,7 @@ type CreateTokenRequest struct {
 	Description     string    `json:"description,omitempty"`
 	ParserType      string    `json:"parser_type,omitempty"`
 	NormalizerID    *string   `json:"normalizer_id,omitempty"`
+	ClearNormalizer bool      `json:"clear_normalizer,omitempty"`
 	TimestampFields []TsField `json:"timestamp_fields,omitempty"`
 }
 

@@ -68,9 +68,11 @@ func (s *Storage) CreateToken(ctx context.Context, req CreateTokenRequest, fract
 		return nil, "", fmt.Errorf("invalid parser_type: must be 'json', 'kv', or 'syslog'")
 	}
 
-	// Determine normalizer_id: use provided, or default to the default normalizer
+	// Determine normalizer_id: use provided, explicitly none, or default
 	var normalizerID *string
-	if req.NormalizerID != nil {
+	if req.ClearNormalizer {
+		normalizerID = nil
+	} else if req.NormalizerID != nil {
 		normalizerID = req.NormalizerID
 	} else {
 		normalizerID = s.getDefaultNormalizerID(ctx)

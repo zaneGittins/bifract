@@ -280,9 +280,7 @@ func (h *IngestHandler) parseJSONLogsWithConfig(data []byte, norm *normalizers.C
 }
 
 func (h *IngestHandler) parseLogObjectWithConfig(obj map[string]interface{}, norm *normalizers.CompiledNormalizer, tsFields []ingesttokens.TsField) (storage.LogEntry, error) {
-	entry := storage.LogEntry{
-		Fields: make(map[string]string),
-	}
+	entry := storage.LogEntry{}
 
 	rawBytes, err := json.Marshal(obj)
 	if err != nil {
@@ -290,7 +288,14 @@ func (h *IngestHandler) parseLogObjectWithConfig(obj map[string]interface{}, nor
 	}
 	entry.RawLog = string(rawBytes)
 
-	h.flattenJSON(obj, "", entry.Fields, norm)
+	// Build flat fields without any structural transforms.
+	built := normalizers.BuildFieldsWithNested(obj)
+	entry.Fields = built.Fields
+
+	// Apply normalizer transforms (flatten, snake_case, lowercase, etc.)
+	if norm != nil {
+		entry.Fields = norm.ApplyTransformsWithNested(entry.Fields, built.NestedKeys)
+	}
 
 	ingestTime := time.Now()
 	entry.Timestamp = h.extractTimestamp(entry.Fields, tsFields, norm)
@@ -323,7 +328,12 @@ func (h *IngestHandler) parseKVLogs(data []byte, token *ingesttokens.ValidatedTo
 			Fields: make(map[string]string),
 		}
 
-		h.parseKVLine(line, entry.Fields, token.Normalizer)
+		h.parseKVLine(line, entry.Fields)
+
+		// Apply normalizer transforms
+		if token.Normalizer != nil {
+			entry.Fields = token.Normalizer.ApplyTransforms(entry.Fields)
+		}
 
 		ingestTime := time.Now()
 		entry.Timestamp = h.extractTimestamp(entry.Fields, token.TimestampFields, token.Normalizer)
@@ -346,7 +356,8 @@ func (h *IngestHandler) parseKVLogs(data []byte, token *ingesttokens.ValidatedTo
 
 // parseKVLine parses a single key=value line into the fields map.
 // Supports: key=value, key="quoted value", key='quoted value'
-func (h *IngestHandler) parseKVLine(line string, fields map[string]string, norm *normalizers.CompiledNormalizer) {
+// Field names are stored as-is; normalization is applied separately.
+func (h *IngestHandler) parseKVLine(line string, fields map[string]string) {
 	i := 0
 	for i < len(line) {
 		// Skip whitespace
@@ -373,7 +384,7 @@ func (h *IngestHandler) parseKVLine(line string, fields map[string]string, norm 
 		i++ // skip '='
 
 		if i >= len(line) {
-			fields[normalizeField(key, norm)] = ""
+			fields[key] = ""
 			break
 		}
 
@@ -398,85 +409,11 @@ func (h *IngestHandler) parseKVLine(line string, fields map[string]string, norm 
 			value = line[valStart:i]
 		}
 
-		fields[normalizeField(key, norm)] = value
+		fields[key] = value
 	}
 }
 
-// normalizeField applies the compiled normalizer to a field name.
-// If norm is nil, the field name is returned unchanged.
-func normalizeField(field string, norm *normalizers.CompiledNormalizer) string {
-	if norm == nil {
-		return field
-	}
-	return norm.ApplyFieldName(field)
-}
 
-const maxFlattenDepth = 64
-const maxFlattenFields = 1000
-
-// flattenJSON recursively flattens nested JSON objects.
-// If the normalizer has "flatten_leaf" enabled, only the raw leaf key is used as field name.
-// Otherwise, underscore-joined notation is used (e.g. "data_field_name").
-// Underscores prevent ClickHouse's JSON column from re-nesting dot-separated keys.
-func (h *IngestHandler) flattenJSON(obj map[string]interface{}, prefix string, fields map[string]string, norm *normalizers.CompiledNormalizer) {
-	h.flattenJSONDepth(obj, prefix, fields, norm, 0)
-}
-
-func (h *IngestHandler) flattenJSONDepth(obj map[string]interface{}, prefix string, fields map[string]string, norm *normalizers.CompiledNormalizer, depth int) {
-	if depth >= maxFlattenDepth {
-		if _, set := fields["_bifract_truncated"]; !set {
-			fields["_bifract_truncated"] = "true"
-			fields["_bifract_truncation_reason"] = "max_depth"
-		}
-		return
-	}
-	hasFlatten := norm != nil && norm.HasFlatten
-
-	for key, value := range obj {
-		if len(fields) >= maxFlattenFields {
-			fields["_bifract_truncated"] = "true"
-			fields["_bifract_truncation_reason"] = "max_fields"
-			return
-		}
-		fieldName := key
-		if prefix != "" {
-			fieldName = prefix + "_" + key
-		}
-
-		switch v := value.(type) {
-		case map[string]interface{}:
-			h.flattenJSONDepth(v, fieldName, fields, norm, depth+1)
-		default:
-			outKey := fieldName
-			if hasFlatten {
-				outKey = key
-			}
-			normalized := normalizeField(outKey, norm)
-			// On collision, fall back to the full underscore-joined path
-			if _, exists := fields[normalized]; exists && hasFlatten {
-				normalized = normalizeField(fieldName, norm)
-			}
-			fields[normalized] = stringifyValue(v)
-		}
-	}
-}
-
-// stringifyValue converts an arbitrary JSON value to its string representation.
-func stringifyValue(v interface{}) string {
-	switch val := v.(type) {
-	case string:
-		return val
-	case float64:
-		return fmt.Sprintf("%v", val)
-	case bool:
-		return fmt.Sprintf("%v", val)
-	case nil:
-		return ""
-	default:
-		b, _ := json.Marshal(val)
-		return string(b)
-	}
-}
 
 
 // extractTimestamp tries per-token fields, then normalizer fields, then global settings, then common field names.

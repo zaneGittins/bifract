@@ -4,11 +4,12 @@ const Normalizers = {
     currentTransforms: [],
 
     TRANSFORMS: {
-        flatten_leaf: { label: 'flatten_leaf', desc: 'Flatten nested keys to leaf name only (user.profile.name -> name)', conflicts: ['dedot'] },
+        flatten_leaf: { label: 'flatten_leaf', desc: 'Flatten nested keys to leaf name only (user.profile.name -> name)', conflicts: ['flatten_full', 'dedot'] },
+        flatten_full: { label: 'flatten_full', desc: 'Flatten nested keys with full path (user.profile.name -> user_profile_name)', conflicts: ['flatten_leaf', 'dedot'] },
         snake_case:   { label: 'snake_case',   desc: 'Convert field names to snake_case',              conflicts: ['camelCase', 'PascalCase'] },
         camelCase:    { label: 'camelCase',     desc: 'Convert field names to camelCase',               conflicts: ['snake_case', 'PascalCase'] },
         PascalCase:   { label: 'PascalCase',    desc: 'Convert field names to PascalCase',              conflicts: ['snake_case', 'camelCase'] },
-        dedot:        { label: 'dedot',         desc: 'Replace dots with underscores (a.b.c -> a_b_c)', conflicts: ['flatten_leaf'] },
+        dedot:        { label: 'dedot',         desc: 'Replace dots with underscores (a.b.c -> a_b_c)', conflicts: ['flatten_leaf', 'flatten_full'] },
         lowercase:  { label: 'lowercase',  desc: 'Lowercase all field names',                      conflicts: ['uppercase'] },
         uppercase:  { label: 'uppercase',  desc: 'Uppercase all field names',                      conflicts: ['lowercase'] }
     },
