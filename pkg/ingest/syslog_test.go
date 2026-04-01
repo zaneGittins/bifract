@@ -74,7 +74,7 @@ func TestParseRFC5424(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fields := make(map[string]string)
-			ok := tryParseRFC5424(tt.input, fields, nil)
+			ok := tryParseRFC5424(tt.input, fields)
 			if !ok {
 				t.Fatalf("expected RFC 5424 parse to succeed")
 			}
@@ -141,7 +141,7 @@ func TestParseRFC3164(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fields := make(map[string]string)
-			ok := tryParseRFC3164(tt.input, fields, nil)
+			ok := tryParseRFC3164(tt.input, fields)
 			if !ok {
 				t.Fatalf("expected RFC 3164 parse to succeed")
 			}
@@ -161,7 +161,7 @@ func TestParseSyslogLine_Fallback(t *testing.T) {
 	// RFC 5424 first, then RFC 3164, then raw fallback
 	t.Run("unparseable falls back to message", func(t *testing.T) {
 		fields := make(map[string]string)
-		parseSyslogLine("this is not syslog at all", fields, nil)
+		parseSyslogLine("this is not syslog at all", fields)
 		if msg, ok := fields["message"]; !ok || msg != "this is not syslog at all" {
 			t.Errorf("expected raw message fallback, got fields: %v", fields)
 		}
@@ -169,7 +169,7 @@ func TestParseSyslogLine_Fallback(t *testing.T) {
 
 	t.Run("rfc5424 preferred over rfc3164", func(t *testing.T) {
 		fields := make(map[string]string)
-		parseSyslogLine(`<134>1 2024-02-28T10:15:30Z host app 123 - - Test`, fields, nil)
+		parseSyslogLine(`<134>1 2024-02-28T10:15:30Z host app 123 - - Test`, fields)
 		if _, ok := fields["version"]; !ok {
 			t.Error("expected RFC 5424 parse (version field present)")
 		}
@@ -193,7 +193,7 @@ func TestDecodePriority(t *testing.T) {
 	for _, tt := range tests {
 		t.Run("pri_"+tt.wantFacilityName+"_"+tt.wantSeverityName, func(t *testing.T) {
 			fields := make(map[string]string)
-			decodePriority(tt.pri, fields, nil)
+			decodePriority(tt.pri, fields)
 			if fields["facility"] != tt.wantFacility {
 				t.Errorf("facility = %q, want %q", fields["facility"], tt.wantFacility)
 			}
@@ -257,12 +257,13 @@ func TestExtractStructuredData(t *testing.T) {
 }
 
 func TestSyslogWithNormalizer(t *testing.T) {
-	norm := &normalizers.CompiledNormalizer{
+	norm := (&normalizers.Normalizer{
 		Transforms: []normalizers.Transform{normalizers.TransformUppercase},
-	}
+	}).Compile()
 
 	fields := make(map[string]string)
-	parseSyslogLine(`<134>1 2024-02-28T10:15:30Z host app 123 - - Test message`, fields, norm)
+	parseSyslogLine(`<134>1 2024-02-28T10:15:30Z host app 123 - - Test message`, fields)
+	fields = norm.ApplyTransforms(fields)
 
 	if _, ok := fields["HOSTNAME"]; !ok {
 		t.Error("expected uppercase field names from normalizer")

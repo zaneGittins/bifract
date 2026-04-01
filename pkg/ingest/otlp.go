@@ -151,10 +151,10 @@ func (h *OTLPHandler) parseOTLPRequest(req *collectorlogs.ExportLogsServiceReque
 	var logs []storage.LogEntry
 
 	for _, rl := range req.GetResourceLogs() {
-		resourceAttrs := kvListToMap(rl.GetResource().GetAttributes(), "resource.", norm)
+		resourceAttrs := kvListToMapRaw(rl.GetResource().GetAttributes(), "resource.")
 
 		for _, sl := range rl.GetScopeLogs() {
-			scopeAttrs := h.buildScopeAttrs(sl.GetScope(), norm)
+			scopeAttrs := buildScopeAttrsRaw(sl.GetScope())
 
 			for _, lr := range sl.GetLogRecords() {
 				entry := h.convertLogRecord(lr, rl.GetResource(), sl.GetScope(), resourceAttrs, scopeAttrs, norm, tsFields)
@@ -191,8 +191,8 @@ func (h *OTLPHandler) convertLogRecord(
 		entry.Timestamp = ingestTime
 	}
 
-	// Populate fields from log record attributes
-	logAttrs := kvListToMap(lr.GetAttributes(), "", norm)
+	// Populate fields from log record attributes (raw keys, no normalization)
+	logAttrs := kvListToMapRaw(lr.GetAttributes(), "")
 	for k, v := range logAttrs {
 		entry.Fields[k] = v
 	}
@@ -207,41 +207,45 @@ func (h *OTLPHandler) convertLogRecord(
 		entry.Fields[k] = v
 	}
 
-	// Body -> "message" field (the primary log content)
+	// Body -> "message" field
 	if lr.GetBody() != nil {
-		entry.Fields[normalizeField("message", norm)] = anyValueToString(lr.GetBody())
+		entry.Fields["message"] = anyValueToString(lr.GetBody())
 	}
 
 	// Severity
 	if lr.GetSeverityText() != "" {
-		entry.Fields[normalizeField("severity_text", norm)] = lr.GetSeverityText()
+		entry.Fields["severity_text"] = lr.GetSeverityText()
 	}
 	if lr.GetSeverityNumber() != logspb.SeverityNumber_SEVERITY_NUMBER_UNSPECIFIED {
-		entry.Fields[normalizeField("severity_number", norm)] = fmt.Sprintf("%d", int32(lr.GetSeverityNumber()))
+		entry.Fields["severity_number"] = fmt.Sprintf("%d", int32(lr.GetSeverityNumber()))
 	}
 
 	// Trace context
 	if len(lr.GetTraceId()) > 0 {
-		entry.Fields[normalizeField("trace_id", norm)] = hex.EncodeToString(lr.GetTraceId())
+		entry.Fields["trace_id"] = hex.EncodeToString(lr.GetTraceId())
 	}
 	if len(lr.GetSpanId()) > 0 {
-		entry.Fields[normalizeField("span_id", norm)] = hex.EncodeToString(lr.GetSpanId())
+		entry.Fields["span_id"] = hex.EncodeToString(lr.GetSpanId())
 	}
 	if lr.GetFlags() != 0 {
-		entry.Fields[normalizeField("flags", norm)] = fmt.Sprintf("%d", lr.GetFlags())
+		entry.Fields["flags"] = fmt.Sprintf("%d", lr.GetFlags())
 	}
 
 	// Observed timestamp as a field
 	if lr.GetObservedTimeUnixNano() > 0 {
 		observed := time.Unix(0, int64(lr.GetObservedTimeUnixNano()))
-		entry.Fields[normalizeField("observed_timestamp", norm)] = observed.Format(time.RFC3339Nano)
+		entry.Fields["observed_timestamp"] = observed.Format(time.RFC3339Nano)
 	}
 
 	// Build RawLog: serialize the full OTLP context as JSON for the raw log viewer
 	entry.RawLog = h.buildRawLog(lr, resource, scope)
 
+	// Apply normalizer transforms (flatten, snake_case, lowercase, etc.)
+	if norm != nil {
+		entry.Fields = norm.ApplyTransforms(entry.Fields)
+	}
+
 	// If timestamp was not set from OTLP native fields, try the extraction pipeline
-	// (handles per-token timestamp field overrides)
 	if lr.GetTimeUnixNano() == 0 && lr.GetObservedTimeUnixNano() == 0 {
 		extracted := h.handler.extractTimestamp(entry.Fields, tsFields, norm)
 		if !extracted.IsZero() {
@@ -250,7 +254,7 @@ func (h *OTLPHandler) convertLogRecord(
 	}
 
 	entry.IngestTimestamp = ingestTime
-	entry.Fields[normalizeField("ingesttimestamp", norm)] = ingestTime.Format(time.RFC3339Nano)
+	entry.Fields["ingesttimestamp"] = ingestTime.Format(time.RFC3339Nano)
 	entry.LogID = storage.GenerateLogID(entry.Timestamp, entry.RawLog)
 
 	return entry
@@ -320,30 +324,31 @@ func (h *OTLPHandler) buildRawLog(lr *logspb.LogRecord, resource *resourcepb.Res
 	return string(b)
 }
 
-// buildScopeAttrs extracts scope name, version, and attributes as prefixed fields.
-func (h *OTLPHandler) buildScopeAttrs(scope *commonpb.InstrumentationScope, norm *normalizers.CompiledNormalizer) map[string]string {
+// buildScopeAttrsRaw extracts scope name, version, and attributes as prefixed fields
+// without applying normalization.
+func buildScopeAttrsRaw(scope *commonpb.InstrumentationScope) map[string]string {
 	attrs := make(map[string]string)
 	if scope == nil {
 		return attrs
 	}
 	if scope.GetName() != "" {
-		attrs[normalizeField("scope.name", norm)] = scope.GetName()
+		attrs["scope.name"] = scope.GetName()
 	}
 	if scope.GetVersion() != "" {
-		attrs[normalizeField("scope.version", norm)] = scope.GetVersion()
+		attrs["scope.version"] = scope.GetVersion()
 	}
-	for k, v := range kvListToMap(scope.GetAttributes(), "scope.", norm) {
+	for k, v := range kvListToMapRaw(scope.GetAttributes(), "scope.") {
 		attrs[k] = v
 	}
 	return attrs
 }
 
-// kvListToMap converts OTLP KeyValue pairs to a flat string map with an optional prefix.
-func kvListToMap(kvs []*commonpb.KeyValue, prefix string, norm *normalizers.CompiledNormalizer) map[string]string {
+// kvListToMapRaw converts OTLP KeyValue pairs to a flat string map with an optional prefix.
+// No normalization is applied; that is handled by the normalizer pipeline.
+func kvListToMapRaw(kvs []*commonpb.KeyValue, prefix string) map[string]string {
 	m := make(map[string]string, len(kvs))
 	for _, kv := range kvs {
-		key := normalizeField(prefix+kv.GetKey(), norm)
-		m[key] = anyValueToString(kv.GetValue())
+		m[prefix+kv.GetKey()] = anyValueToString(kv.GetValue())
 	}
 	return m
 }

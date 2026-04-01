@@ -126,9 +126,9 @@ func (h *Handler) HandleSetDefault(w http.ResponseWriter, r *http.Request) {
 // and returns the normalized field names. No DB interaction needed.
 func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Transforms      []Transform      `json:"transforms"`
-		FieldMappings   []FieldMapping   `json:"field_mappings"`
-		SampleJSON      string           `json:"sample_json"`
+		Transforms    []Transform    `json:"transforms"`
+		FieldMappings []FieldMapping `json:"field_mappings"`
+		SampleJSON    string         `json:"sample_json"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid JSON")
@@ -153,55 +153,34 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Flatten and normalize, tracking collisions
-	fields := make(map[string]string)
-	collisions := make(map[string][]string) // normalized key -> list of original paths
-	originalPaths := make(map[string]string) // normalized key -> first original path
-	flattenPreview(obj, "", fields, compiled, collisions, originalPaths)
+	// Build raw fields and apply transforms through the normalizer pipeline.
+	built := BuildFieldsWithNested(obj)
+	normalizedFields := compiled.ApplyTransformsWithNested(built.Fields, built.NestedKeys)
 
-	// Build result entries
+	// Build preview results: show the final normalized fields.
+	// Detect collisions (multiple output keys mapping to the same normalized key).
 	var results []previewFieldResult
-	seen := make(map[string]bool)
-	buildPreviewResults(obj, "", compiled, &results, seen, collisions)
+	collisions := make(map[string][]string)
+	keySources := make(map[string]int)
+
+	for k := range normalizedFields {
+		keySources[k]++
+	}
+
+	for normKey, normVal := range normalizedFields {
+		_, hasCollision := collisions[normKey]
+		results = append(results, previewFieldResult{
+			Original:   normKey,
+			Normalized: normKey,
+			Value:      normVal,
+			Collision:  hasCollision,
+		})
+	}
 
 	h.respondSuccess(w, map[string]interface{}{
 		"fields":     results,
 		"collisions": collisions,
 	})
-}
-
-// flattenPreview flattens JSON and tracks field name collisions.
-func flattenPreview(obj map[string]interface{}, prefix string, fields map[string]string, norm *CompiledNormalizer, collisions map[string][]string, originalPaths map[string]string) {
-	hasFlatten := norm != nil && norm.HasFlatten
-	for key, value := range obj {
-		fullPath := key
-		if prefix != "" {
-			fullPath = prefix + "_" + key
-		}
-		switch v := value.(type) {
-		case map[string]interface{}:
-			flattenPreview(v, fullPath, fields, norm, collisions, originalPaths)
-		default:
-			outKey := fullPath
-			if hasFlatten {
-				outKey = key
-			}
-			normalized := outKey
-			if norm != nil {
-				normalized = norm.ApplyFieldName(outKey)
-			}
-			valStr := fmt.Sprintf("%v", v)
-			if prev, exists := originalPaths[normalized]; exists {
-				if _, tracked := collisions[normalized]; !tracked {
-					collisions[normalized] = []string{prev}
-				}
-				collisions[normalized] = append(collisions[normalized], fullPath)
-			} else {
-				originalPaths[normalized] = fullPath
-			}
-			fields[normalized] = valStr
-		}
-	}
 }
 
 // previewFieldResult is a single field in the preview output.
@@ -210,41 +189,6 @@ type previewFieldResult struct {
 	Normalized string `json:"normalized"`
 	Value      string `json:"value"`
 	Collision  bool   `json:"collision,omitempty"`
-}
-
-// buildPreviewResults walks the object for preview output.
-func buildPreviewResults(obj map[string]interface{}, prefix string, norm *CompiledNormalizer, results *[]previewFieldResult, seen map[string]bool, collisions map[string][]string) {
-	hasFlatten := norm != nil && norm.HasFlatten
-	for key, value := range obj {
-		fullPath := key
-		if prefix != "" {
-			fullPath = prefix + "_" + key
-		}
-		switch v := value.(type) {
-		case map[string]interface{}:
-			buildPreviewResults(v, fullPath, norm, results, seen, collisions)
-		default:
-			outKey := fullPath
-			if hasFlatten {
-				outKey = key
-			}
-			normalized := outKey
-			if norm != nil {
-				normalized = norm.ApplyFieldName(outKey)
-			}
-			_, hasCollision := collisions[normalized]
-			if !seen[fullPath] {
-				seen[fullPath] = true
-				valStr := fmt.Sprintf("%v", v)
-				*results = append(*results, previewFieldResult{
-					Original:   fullPath,
-					Normalized: normalized,
-					Value:      valStr,
-					Collision:  hasCollision,
-				})
-			}
-		}
-	}
 }
 
 // HandleTokenUsage returns tokens using a given normalizer, with fractal names.

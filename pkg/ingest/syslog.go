@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"bifract/pkg/ingesttokens"
-	"bifract/pkg/normalizers"
 	"bifract/pkg/storage"
 )
 
@@ -58,7 +57,12 @@ func (h *IngestHandler) parseSyslogLogs(data []byte, token *ingesttokens.Validat
 			Fields: make(map[string]string),
 		}
 
-		parseSyslogLine(line, entry.Fields, token.Normalizer)
+		parseSyslogLine(line, entry.Fields)
+
+		// Apply normalizer transforms
+		if token.Normalizer != nil {
+			entry.Fields = token.Normalizer.ApplyTransforms(entry.Fields)
+		}
 
 		ingestTime := time.Now()
 		entry.Timestamp = h.extractTimestamp(entry.Fields, token.TimestampFields, token.Normalizer)
@@ -79,18 +83,17 @@ func (h *IngestHandler) parseSyslogLogs(data []byte, token *ingesttokens.Validat
 	return logs, nil
 }
 
-func parseSyslogLine(line string, fields map[string]string, norm *normalizers.CompiledNormalizer) {
-	if tryParseRFC5424(line, fields, norm) {
+func parseSyslogLine(line string, fields map[string]string) {
+	if tryParseRFC5424(line, fields) {
 		return
 	}
-	if tryParseRFC3164(line, fields, norm) {
+	if tryParseRFC3164(line, fields) {
 		return
 	}
-	// Unparseable line: store the whole thing as the message
-	fields[normalizeField("message", norm)] = line
+	fields["message"] = line
 }
 
-func tryParseRFC5424(line string, fields map[string]string, norm *normalizers.CompiledNormalizer) bool {
+func tryParseRFC5424(line string, fields map[string]string) bool {
 	m := rfc5424Re.FindStringSubmatch(line)
 	if m == nil {
 		return false
@@ -101,34 +104,34 @@ func tryParseRFC5424(line string, fields map[string]string, norm *normalizers.Co
 		return false
 	}
 
-	decodePriority(pri, fields, norm)
+	decodePriority(pri, fields)
 
-	fields[normalizeField("version", norm)] = m[2]
+	fields["version"] = m[2]
 
 	if ts := parseRFC5424Timestamp(m[3]); !ts.IsZero() {
-		fields[normalizeField("timestamp", norm)] = ts.Format(time.RFC3339Nano)
+		fields["timestamp"] = ts.Format(time.RFC3339Nano)
 	} else if m[3] != "-" {
-		fields[normalizeField("timestamp", norm)] = m[3]
+		fields["timestamp"] = m[3]
 	}
 
-	setIfNotNil(fields, "hostname", m[4], norm)
-	setIfNotNil(fields, "appname", m[5], norm)
-	setIfNotNil(fields, "procid", m[6], norm)
-	setIfNotNil(fields, "msgid", m[7], norm)
+	setIfNotNil(fields, "hostname", m[4])
+	setIfNotNil(fields, "appname", m[5])
+	setIfNotNil(fields, "procid", m[6])
+	setIfNotNil(fields, "msgid", m[7])
 
 	rest := m[8]
 	sd, msg := extractStructuredData(rest)
 	if sd != "" {
-		fields[normalizeField("structured_data", norm)] = sd
+		fields["structured_data"] = sd
 	}
 	if msg != "" {
-		fields[normalizeField("message", norm)] = msg
+		fields["message"] = msg
 	}
 
 	return true
 }
 
-func tryParseRFC3164(line string, fields map[string]string, norm *normalizers.CompiledNormalizer) bool {
+func tryParseRFC3164(line string, fields map[string]string) bool {
 	m := rfc3164Re.FindStringSubmatch(line)
 	if m == nil {
 		return false
@@ -139,63 +142,62 @@ func tryParseRFC3164(line string, fields map[string]string, norm *normalizers.Co
 		return false
 	}
 
-	decodePriority(pri, fields, norm)
+	decodePriority(pri, fields)
 
 	if ts := parseRFC3164Timestamp(m[2]); !ts.IsZero() {
-		fields[normalizeField("timestamp", norm)] = ts.Format(time.RFC3339Nano)
+		fields["timestamp"] = ts.Format(time.RFC3339Nano)
 	}
 
-	fields[normalizeField("hostname", norm)] = m[3]
+	fields["hostname"] = m[3]
 
 	// Split tag: message from the remainder
 	rest := m[4]
 	if idx := strings.Index(rest, ": "); idx != -1 {
 		tag := rest[:idx]
 		msg := rest[idx+2:]
-		// Tag may contain PID: "app[1234]"
 		if bi := strings.Index(tag, "["); bi != -1 && strings.HasSuffix(tag, "]") {
-			fields[normalizeField("appname", norm)] = tag[:bi]
-			fields[normalizeField("procid", norm)] = tag[bi+1 : len(tag)-1]
+			fields["appname"] = tag[:bi]
+			fields["procid"] = tag[bi+1 : len(tag)-1]
 		} else {
-			fields[normalizeField("appname", norm)] = tag
+			fields["appname"] = tag
 		}
-		fields[normalizeField("message", norm)] = msg
+		fields["message"] = msg
 	} else if idx := strings.Index(rest, ":"); idx != -1 {
 		tag := rest[:idx]
 		msg := strings.TrimLeft(rest[idx+1:], " ")
 		if bi := strings.Index(tag, "["); bi != -1 && strings.HasSuffix(tag, "]") {
-			fields[normalizeField("appname", norm)] = tag[:bi]
-			fields[normalizeField("procid", norm)] = tag[bi+1 : len(tag)-1]
+			fields["appname"] = tag[:bi]
+			fields["procid"] = tag[bi+1 : len(tag)-1]
 		} else {
-			fields[normalizeField("appname", norm)] = tag
+			fields["appname"] = tag
 		}
-		fields[normalizeField("message", norm)] = msg
+		fields["message"] = msg
 	} else {
-		fields[normalizeField("message", norm)] = rest
+		fields["message"] = rest
 	}
 
 	return true
 }
 
-func decodePriority(pri int, fields map[string]string, norm *normalizers.CompiledNormalizer) {
+func decodePriority(pri int, fields map[string]string) {
 	facility := pri / 8
 	severity := pri % 8
 
-	fields[normalizeField("priority", norm)] = strconv.Itoa(pri)
-	fields[normalizeField("facility", norm)] = strconv.Itoa(facility)
-	fields[normalizeField("severity", norm)] = strconv.Itoa(severity)
+	fields["priority"] = strconv.Itoa(pri)
+	fields["facility"] = strconv.Itoa(facility)
+	fields["severity"] = strconv.Itoa(severity)
 
 	if facility < len(facilityNames) {
-		fields[normalizeField("facility_name", norm)] = facilityNames[facility]
+		fields["facility_name"] = facilityNames[facility]
 	}
 	if severity < len(severityNames) {
-		fields[normalizeField("severity_name", norm)] = severityNames[severity]
+		fields["severity_name"] = severityNames[severity]
 	}
 }
 
-func setIfNotNil(fields map[string]string, key, val string, norm *normalizers.CompiledNormalizer) {
+func setIfNotNil(fields map[string]string, key, val string) {
 	if val != "-" && val != "" {
-		fields[normalizeField(key, norm)] = val
+		fields[key] = val
 	}
 }
 
