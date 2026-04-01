@@ -289,7 +289,6 @@ func openClickHouseConn(addrs []string, database, user, password string, pool Cl
 			"max_execution_time":     60,
 			"use_uncompressed_cache": 1,
 			"output_format_native_use_flattened_dynamic_and_json_serialization": 1,
-			"json_type_escape_dots_in_keys":                                     1,
 		},
 		DialTimeout:     pool.DialTimeout,
 		ReadTimeout:     0, // no TCP read deadline; server-side max_execution_time enforces query limits
@@ -563,7 +562,7 @@ func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[strin
 				if colName == "fields" || colName == "_all_fields" {
 					var m map[string]interface{}
 					if json.Unmarshal([]byte(val), &m) == nil {
-						row[colName] = decodeJSONFieldKeys(m)
+						row[colName] = m
 						continue
 					}
 				}
@@ -601,21 +600,6 @@ func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[strin
 	return results, nil
 }
 
-// decodeJSONFieldKeys decodes %2E back to '.' in JSON field keys so the
-// frontend sees original field names (ClickHouse escapes dots when
-// json_type_escape_dots_in_keys=1). Recurses into nested maps.
-func decodeJSONFieldKeys(m map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, len(m))
-	for k, v := range m {
-		decoded := strings.ReplaceAll(k, "%2E", ".")
-		if nested, ok := v.(map[string]interface{}); ok {
-			out[decoded] = decodeJSONFieldKeys(nested)
-		} else {
-			out[decoded] = v
-		}
-	}
-	return out
-}
 
 func (c *ClickHouseClient) CountLogs(ctx context.Context, startTime, endTime time.Time) (uint64, error) {
 	var count uint64
@@ -713,7 +697,7 @@ func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time
 				if colName == "fields" || colName == "_all_fields" {
 					var m map[string]interface{}
 					if json.Unmarshal([]byte(val), &m) == nil {
-						row[colName] = decodeJSONFieldKeys(m)
+						row[colName] = m
 						continue
 					}
 				}
@@ -777,7 +761,7 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 		entry := map[string]interface{}{"log_id": logID}
 		var m map[string]interface{}
 		if json.Unmarshal([]byte(fieldsStr), &m) == nil {
-			entry["fields"] = decodeJSONFieldKeys(m)
+			entry["fields"] = m
 		} else {
 			entry["fields"] = map[string]interface{}{}
 		}

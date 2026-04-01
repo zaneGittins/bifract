@@ -32,9 +32,7 @@ func buildAnalyzeFieldsSQL(
 	if len(fieldsList) > 0 {
 		var paths []string
 		for _, f := range fieldsList {
-			// Fields with dots are stored with %2E encoding
-			encoded := strings.ReplaceAll(f, ".", "%2E")
-			paths = append(paths, fmt.Sprintf("'%s'", escapeString(encoded)))
+			paths = append(paths, fmt.Sprintf("'%s'", escapeString(f)))
 		}
 		pathFilter = fmt.Sprintf(" WHERE kv.1 IN (%s)", strings.Join(paths, ", "))
 	}
@@ -61,7 +59,7 @@ func buildAnalyzeFieldsSQL(
 	// 1. Inner: explode each log row into (key, value) tuples
 	// 2. Outer: aggregate per-field statistics
 	sql.WriteString("SELECT field_name, _events, _distinct_vals, _mean, _min, _max, _stdev FROM (")
-	sql.WriteString("SELECT replaceAll(kv.1, '%2E', '.') AS field_name, ")
+	sql.WriteString("SELECT kv.1 AS field_name, ")
 	sql.WriteString("count() AS _events, ")
 	sql.WriteString("uniqExact(kv.2) AS _distinct_vals, ")
 	sql.WriteString("round(avg(toFloat64OrNull(kv.2)), 2) AS _mean, ")
@@ -289,20 +287,23 @@ func qualifyColumnRefs(sql, alias string) string {
 		rest := sql[i:]
 		replaced := false
 
-		// fields.` - JSON subcolumn reference; find the closing backtick to prefix the whole ref
+		// fields.`...` - JSON subcolumn reference; may have multiple backtick-quoted
+		// segments for nested paths (e.g. fields.`event`.`name`.:String)
 		if strings.HasPrefix(rest, "fields.`") && (i == 0 || !isWordByte(sql[i-1])) {
-			// Scan past the backtick-quoted identifier (handle escaped backticks ``)
-			end := 8 // len("fields.`")
-			for end < len(rest) {
-				if rest[end] == '`' {
-					if end+1 < len(rest) && rest[end+1] == '`' {
-						end += 2 // escaped backtick
+			end := 6 // len("fields") - start scanning from the first dot
+			for end < len(rest) && rest[end] == '.' && end+1 < len(rest) && rest[end+1] == '`' {
+				end += 2 // skip .`
+				for end < len(rest) {
+					if rest[end] == '`' {
+						if end+1 < len(rest) && rest[end+1] == '`' {
+							end += 2 // escaped backtick
+						} else {
+							end++ // closing backtick
+							break
+						}
 					} else {
-						end++ // closing backtick
-						break
+						end++
 					}
-				} else {
-					end++
 				}
 			}
 			// Include .:String type suffix if present
@@ -649,13 +650,22 @@ func sanitizeIdentifier(s string) (string, error) {
 }
 
 // jsonFieldRef returns the ClickHouse JSON subcolumn reference for a field name.
-// Uses backtick quoting and encodes dots as %2E (matching json_type_escape_dots_in_keys=1).
-// The .:String suffix casts the Variant/Dynamic subcolumn to String, which is
-// required for GROUP BY and avoids ambiguous type comparisons.
+// Dots in the field name are treated as nested path separators, producing
+// fields.`event`.`name`.:String for "event.name". The .:String suffix casts
+// the Variant/Dynamic subcolumn to String, which is required for GROUP BY
+// and avoids ambiguous type comparisons.
 func jsonFieldRef(field string) string {
-	escaped := strings.ReplaceAll(field, "`", "``")
-	escaped = strings.ReplaceAll(escaped, ".", "%2E")
-	return fmt.Sprintf("fields.`%s`.:String", escaped)
+	parts := strings.Split(field, ".")
+	var b strings.Builder
+	b.WriteString("fields")
+	for _, p := range parts {
+		escaped := strings.ReplaceAll(p, "`", "``")
+		b.WriteString(".`")
+		b.WriteString(escaped)
+		b.WriteString("`")
+	}
+	b.WriteString(".:String")
+	return b.String()
 }
 
 // validateNumeric ensures a value is a valid number, preventing SQL injection in numeric contexts.
@@ -793,16 +803,42 @@ func buildRegexMatchSQL(fieldRef string, pattern string, negate bool) string {
 }
 
 func extractFieldName(fieldRef string) string {
-	// Extract field name from JSON subcolumn ref: fields.`fieldname`.:String
+	// Extract field name from JSON subcolumn ref: fields.`a`.`b`.:String -> a.b
 	ref := fieldRef
 	ref = strings.TrimSuffix(ref, ".:String")
-	if strings.HasPrefix(ref, "fields.`") && strings.HasSuffix(ref, "`") {
-		name := ref[8 : len(ref)-1]
-		name = strings.ReplaceAll(name, "``", "`")
-		name = strings.ReplaceAll(name, "%2E", ".")
-		return name
+	if !strings.HasPrefix(ref, "fields.`") {
+		return fieldRef
 	}
-	return fieldRef
+	// Strip "fields." prefix, then split backtick-quoted segments
+	ref = ref[7:] // remove "fields."
+	var parts []string
+	for len(ref) > 0 {
+		if ref[0] != '`' {
+			return fieldRef
+		}
+		ref = ref[1:] // skip opening backtick
+		end := 0
+		for end < len(ref) {
+			if ref[end] == '`' {
+				if end+1 < len(ref) && ref[end+1] == '`' {
+					end += 2 // escaped backtick
+					continue
+				}
+				break
+			}
+			end++
+		}
+		if end >= len(ref) {
+			return fieldRef
+		}
+		part := strings.ReplaceAll(ref[:end], "``", "`")
+		parts = append(parts, part)
+		ref = ref[end+1:] // skip closing backtick
+		if len(ref) > 0 && ref[0] == '.' {
+			ref = ref[1:] // skip separator dot
+		}
+	}
+	return strings.Join(parts, ".")
 }
 
 func extractFieldAlias(selectField string) string {
