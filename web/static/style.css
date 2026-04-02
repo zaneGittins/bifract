@@ -4521,6 +4521,10 @@ body {
     display: none;
 }
 
+.rbac-hidden {
+    display: none !important;
+}
+
 .text-muted {
     color: var(--text-muted);
 }

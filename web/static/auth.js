@@ -267,12 +267,16 @@ const Auth = {
     },
 
     updateRBACVisibility() {
-        // Show/hide elements based on fractal role
+        // Toggle rbac-hidden class based on fractal role.
+        // Using a class instead of inline display avoids clobbering
+        // tab-switching logic that also controls display.
+        const isAdmin = this.hasFractalRole('admin');
         document.querySelectorAll('.fractal-admin-only').forEach(el => {
-            el.style.display = this.hasFractalRole('admin') ? '' : 'none';
+            el.classList.toggle('rbac-hidden', !isAdmin);
         });
+        const isAnalyst = this.hasFractalRole('analyst');
         document.querySelectorAll('.fractal-analyst-only').forEach(el => {
-            el.style.display = this.hasFractalRole('analyst') ? '' : 'none';
+            el.classList.toggle('rbac-hidden', !isAnalyst);
         });
     },
 
