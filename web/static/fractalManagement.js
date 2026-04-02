@@ -411,6 +411,11 @@ const FractalManagement = {
             return;
         }
 
+        if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) {
+            Toast.show('Name can only contain letters, numbers, hyphens, and underscores, and must start with a letter.', 'error');
+            return;
+        }
+
         try {
             const url = isPrism ? '/api/v1/prisms' : '/api/v1/fractals';
             const response = await fetch(url, {
@@ -484,6 +489,11 @@ const FractalManagement = {
 
         if (!fractalData.name) {
             Toast.show('Fractal name is required', 'error');
+            return;
+        }
+
+        if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(fractalData.name)) {
+            Toast.show('Name can only contain letters, numbers, hyphens, and underscores, and must start with a letter.', 'error');
             return;
         }
 
