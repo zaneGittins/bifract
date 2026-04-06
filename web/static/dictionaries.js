@@ -60,6 +60,12 @@ const Dictionaries = {
     },
 
     async loadDictionaries() {
+        const tableContainer = document.getElementById('dictsTableBody')?.closest('.dashboards-table-container');
+        const emptyEl = document.getElementById('dictsEmptyState');
+        const paginationEl = document.getElementById('dictsPrevBtn')?.parentElement;
+        if (tableContainer) tableContainer.style.display = 'none';
+        if (emptyEl) emptyEl.style.display = 'none';
+        if (paginationEl) paginationEl.style.display = 'none';
         try {
             const resp = await fetch('/api/v1/dictionaries', { credentials: 'include' });
             const data = await resp.json();

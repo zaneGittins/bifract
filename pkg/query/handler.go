@@ -795,8 +795,9 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Query ClickHouse for logs at this exact timestamp
-	logEntry, err := h.db.GetLogByTimestamp(r.Context(), timestamp, req.LogID, req.FractalID)
+	// Query ClickHouse by log_id without fractal scoping; the RBAC check
+	// below verifies the user has access to the log's actual fractal.
+	logEntry, err := h.db.GetLogByTimestamp(r.Context(), timestamp, req.LogID, "")
 	if err != nil {
 		log.Printf("[QueryHandler] Failed to fetch log: %v", err)
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{

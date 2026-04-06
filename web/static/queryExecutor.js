@@ -648,7 +648,8 @@ const QueryExecutor = {
                     detailData = {
                         ...logData._all_fields,
                         timestamp: logData.timestamp,
-                        log_id: logData.log_id
+                        log_id: logData.log_id,
+                        fractal_id: logData.fractal_id
                     };
                 }
 
@@ -1125,7 +1126,8 @@ const QueryExecutor = {
                             detailData = {
                                 ...logData._all_fields,
                                 timestamp: logData.timestamp,
-                                log_id: logData.log_id
+                                log_id: logData.log_id,
+                                fractal_id: logData.fractal_id
                             };
                         }
                         LogDetail.show(detailData, options.isAggregated || false);
