@@ -123,6 +123,12 @@ const Dashboards = {
     },
 
     async loadDashboards() {
+        const tableContainer = document.querySelector('.dashboards-table-container');
+        const emptyEl = document.getElementById('dashboardsEmptyState');
+        const paginationEl = document.getElementById('dashboardsPrevBtn')?.parentElement;
+        if (tableContainer) tableContainer.style.display = 'none';
+        if (emptyEl) emptyEl.style.display = 'none';
+        if (paginationEl) paginationEl.style.display = 'none';
         const offset = this.currentPage * this.pageSize;
         try {
             const response = await fetch(`/api/v1/dashboards?limit=${this.pageSize}&offset=${offset}`, {

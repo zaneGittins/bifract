@@ -625,106 +625,106 @@ func (c *ClickHouseClient) QueryRow(ctx context.Context, query string, args ...i
 	return c.conn.QueryRow(ctx, query, args...)
 }
 
-// GetLogByTimestamp fetches a log by log_id ONLY - no timestamp fallback
+// GetLogByTimestamp fetches a single log by log_id with an optional fractal_id
+// scope. When fractalID is non-empty the query is restricted to that fractal
+// (used by comment creation to prevent cross-fractal log_id probing). When
+// empty, the lookup is unscoped and the caller must enforce access control.
 func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time.Time, logID string, fractalID string) (map[string]interface{}, error) {
 	if logID == "" {
 		return nil, fmt.Errorf("log_id is required")
 	}
 
-	log.Printf("[GetLogByTimestamp] Searching for log_id: %s", logID)
-
-	// Build query using ordering key columns (fractal_id, timestamp, log_id) for efficient index usage.
-	query := fmt.Sprintf("SELECT timestamp, raw_log, log_id, toString(fields) AS fields, fractal_id, ingest_timestamp FROM %s WHERE log_id = ?", c.ReadTable())
+	query := fmt.Sprintf(
+		"SELECT timestamp, raw_log, log_id, toString(fields) AS fields, fractal_id, ingest_timestamp FROM %s WHERE log_id = ?",
+		c.ReadTable())
 	args := []interface{}{logID}
 
 	if fractalID != "" {
 		query += " AND fractal_id = ?"
 		args = append(args, fractalID)
 	}
-	if !timestamp.IsZero() {
-		// Use a window around the timestamp to account for precision differences
-		// between PostgreSQL and ClickHouse DateTime64(3). The log_id filter is
-		// the real unique key; this just helps narrow partition/index scanning.
-		query += " AND timestamp >= ? AND timestamp <= ?"
-		args = append(args, timestamp.Add(-5*time.Second), timestamp.Add(5*time.Second))
-	}
 	query += " LIMIT 1"
 
-	// Use explicit column list to avoid scan issues with the JSON column type (SELECT * would fail)
+	result, err := c.scanLogRow(ctx, query, args)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		log.Printf("[GetLogByTimestamp] No log found with log_id: %s", logID)
+	}
+	return result, nil
+}
+
+// scanLogRow executes a single-row log query and returns the result as a map.
+func (c *ClickHouseClient) scanLogRow(ctx context.Context, query string, args []interface{}) (map[string]interface{}, error) {
 	rows, err := c.conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query log: %w", err)
 	}
 	defer rows.Close()
 
-	var results []map[string]interface{}
 	columnTypes := rows.ColumnTypes()
-
-	for rows.Next() {
-		// Create typed destination variables based on column types
-		values := make([]interface{}, len(columnTypes))
-		for i, col := range columnTypes {
-			typeName := col.DatabaseTypeName()
-			switch {
-			case typeName == "String" || typeName == "Nullable(String)":
-				values[i] = new(string)
-			case typeName == "UInt64" || typeName == "Nullable(UInt64)":
-				values[i] = new(uint64)
-			case typeName == "Int64" || typeName == "Nullable(Int64)":
-				values[i] = new(int64)
-			case typeName == "Float64" || typeName == "Nullable(Float64)":
-				values[i] = new(float64)
-			case typeName == "DateTime64(3)" || typeName == "DateTime" || typeName == "Nullable(DateTime64(3))":
-				values[i] = new(time.Time)
-			case typeName == "Date" || typeName == "Nullable(Date)":
-				values[i] = new(time.Time)
-			default:
-				values[i] = new(string)
-			}
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			log.Printf("[scanLogRow] rows iteration error: %v", err)
+			return nil, fmt.Errorf("failed to iterate rows: %w", err)
 		}
-
-		if err := rows.Scan(values...); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		// Convert to map[string]interface{}
-		row := make(map[string]interface{})
-		for i, col := range columnTypes {
-			colName := col.Name()
-			switch v := values[i].(type) {
-			case *string:
-				val := *v
-				if colName == "fields" || colName == "_all_fields" {
-					var m map[string]interface{}
-					if json.Unmarshal([]byte(val), &m) == nil {
-						row[colName] = m
-						continue
-					}
-				}
-				row[colName] = val
-			case *uint64:
-				row[colName] = *v
-			case *int64:
-				row[colName] = *v
-			case *float64:
-				row[colName] = *v
-			case *time.Time:
-				row[colName] = v.Format("2006-01-02 15:04:05.000")
-			default:
-				row[colName] = v
-			}
-		}
-
-		results = append(results, row)
-	}
-
-	if len(results) == 0 {
-		log.Printf("[GetLogByTimestamp] No log found with log_id: %s", logID)
 		return nil, nil
 	}
 
-	log.Printf("[GetLogByTimestamp] Found log with %d fields", len(results[0]))
-	return results[0], nil
+	values := make([]interface{}, len(columnTypes))
+	for i, col := range columnTypes {
+		typeName := col.DatabaseTypeName()
+		switch {
+		case typeName == "String" || typeName == "Nullable(String)":
+			values[i] = new(string)
+		case typeName == "UInt64" || typeName == "Nullable(UInt64)":
+			values[i] = new(uint64)
+		case typeName == "Int64" || typeName == "Nullable(Int64)":
+			values[i] = new(int64)
+		case typeName == "Float64" || typeName == "Nullable(Float64)":
+			values[i] = new(float64)
+		case typeName == "DateTime64(3)" || typeName == "DateTime" || typeName == "Nullable(DateTime64(3))":
+			values[i] = new(time.Time)
+		case typeName == "Date" || typeName == "Nullable(Date)":
+			values[i] = new(time.Time)
+		default:
+			values[i] = new(string)
+		}
+	}
+
+	if err := rows.Scan(values...); err != nil {
+		return nil, fmt.Errorf("failed to scan row: %w", err)
+	}
+
+	row := make(map[string]interface{})
+	for i, col := range columnTypes {
+		colName := col.Name()
+		switch v := values[i].(type) {
+		case *string:
+			val := *v
+			if colName == "fields" || colName == "_all_fields" {
+				var m map[string]interface{}
+				if json.Unmarshal([]byte(val), &m) == nil {
+					row[colName] = m
+					continue
+				}
+			}
+			row[colName] = val
+		case *uint64:
+			row[colName] = *v
+		case *int64:
+			row[colName] = *v
+		case *float64:
+			row[colName] = *v
+		case *time.Time:
+			row[colName] = v.Format("2006-01-02 15:04:05.000")
+		default:
+			row[colName] = v
+		}
+	}
+
+	return row, nil
 }
 
 // GetLogFieldsByIDs batch-fetches parsed field data for multiple log_ids.

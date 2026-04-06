@@ -276,6 +276,9 @@ const Comments = {
             return;
         }
 
+        // Capture before closePanel clears it
+        const logID = this.currentLogID;
+
         // Close the comment panels
         this.closePanel();
         if (window.LogDetail) {
@@ -290,7 +293,10 @@ const Comments = {
         // Fill in the search query
         const queryInput = document.getElementById('queryInput');
         if (queryInput) {
-            queryInput.value = `@log_id="${this.currentLogID}"`;
+            queryInput.value = `log_id="${logID}"`;
+            if (window.SyntaxHighlight) {
+                SyntaxHighlight.updateHighlight('queryInput', 'queryHighlight');
+            }
 
             // Execute the search
             if (window.QueryExecutor && window.QueryExecutor.execute) {
@@ -301,7 +307,7 @@ const Comments = {
         }
 
         if (window.Toast) {
-            Toast.info('Searching', `Looking for log ID: ${this.currentLogID.substring(0, 8)}...`);
+            Toast.info('Searching', `Looking for log ID: ${logID.substring(0, 8)}...`);
         }
     },
 

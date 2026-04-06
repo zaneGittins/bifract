@@ -135,6 +135,12 @@ const Notebooks = {
      */
     async loadNotebooks() {
         try {
+            const tableContainer = document.querySelector('.notebooks-table-container');
+            const emptyEl = document.getElementById('notebooksEmptyState');
+            const paginationEl = document.querySelector('.notebooks-pagination');
+            if (tableContainer) tableContainer.style.display = 'none';
+            if (emptyEl) emptyEl.style.display = 'none';
+            if (paginationEl) paginationEl.style.display = 'none';
             document.getElementById('notebooksTableBody').innerHTML = '<tr><td colspan="6" class="notebook-loading">Loading notebooks...</td></tr>';
 
             const params = new URLSearchParams({
