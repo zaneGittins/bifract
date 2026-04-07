@@ -646,7 +646,7 @@ const App = {
         if (window.QueryExecutor && typeof window.QueryExecutor.clearSharedQueryState === 'function') {
             // Check if we have share parameters before clearing
             const urlParams = new URLSearchParams(window.location.search);
-            const hasShareParams = urlParams.has('q') && urlParams.has('tr') && urlParams.has('f');
+            const hasShareParams = urlParams.has('q') && urlParams.has('tr') && (urlParams.has('f') || urlParams.has('p'));
 
             if (!hasShareParams) {
                 console.log('[App] No share parameters, safe to clear shared query state');
@@ -824,7 +824,7 @@ const App = {
         if (tab !== 'search' && window.QueryExecutor && typeof window.QueryExecutor.clearSharedQueryState === 'function') {
             // Check if we have share parameters before clearing
             const urlParams = new URLSearchParams(window.location.search);
-            const hasShareParams = urlParams.has('q') && urlParams.has('tr') && urlParams.has('f');
+            const hasShareParams = urlParams.has('q') && urlParams.has('tr') && (urlParams.has('f') || urlParams.has('p'));
 
             if (!hasShareParams) {
                 console.log('[App] No share parameters, safe to clear shared query state');

@@ -322,12 +322,71 @@ const FractalSelector = {
             this.renderFractalMenu();
             this.selectCurrentFractal();
 
+            // Process share link params now that fractals/prisms are loaded.
+            this.processShareLinkIfPresent();
+
         } catch (error) {
             console.error('Failed to load fractals:', error);
             this.updateSelectorText('Error');
             this.showErrorInMenu(error.message);
         } finally {
             this.isLoading = false;
+        }
+    },
+
+    // Check URL for share link params and auto-select the target fractal/prism.
+    // Called after loadAvailableFractals so data is guaranteed ready.
+    processShareLinkIfPresent() {
+        if (!window.location.search) return;
+        const params = new URLSearchParams(window.location.search);
+        if (!params.has('q') || !params.has('tr')) return;
+
+        const fractalId = params.get('f');
+        const prismId = params.get('p');
+        if (!fractalId && !prismId) return;
+
+        let target = null;
+        let isPrism = false;
+
+        if (prismId) {
+            target = this.availablePrisms.find(p => p.id === prismId);
+            isPrism = true;
+        } else {
+            target = this.availableFractals.find(f => f.id === fractalId);
+        }
+
+        if (!target) {
+            console.warn('[FractalSelector] Share link target not found or no access');
+            return;
+        }
+
+        console.log('[FractalSelector] Share link detected, selecting', isPrism ? 'prism' : 'fractal', target.name);
+
+        // Cancel any deferred/polling share link processing from earlier
+        // attempts that ran before data was available. We handle it here.
+        if (window.QueryExecutor) {
+            window.QueryExecutor.hasLoadedShareLink = true;
+            window.QueryExecutor.deferredShareLink = null;
+            if (window.QueryExecutor.deferredPollingInterval) {
+                clearInterval(window.QueryExecutor.deferredPollingInterval);
+                window.QueryExecutor.deferredPollingInterval = null;
+            }
+        }
+
+        // Select the context (fires onFractalChange).
+        if (isPrism && window.FractalContext?.setCurrentPrism) {
+            window.FractalContext.setCurrentPrism(target);
+        } else if (window.FractalContext?.setCurrentFractal) {
+            window.FractalContext.setCurrentFractal(target);
+        }
+
+        // Navigate to the search view, then call loadFromShareLink.
+        // Data is guaranteed available since we just loaded it.
+        if (window.App?.showFractalView) {
+            window.App.showFractalView('search');
+        }
+        if (window.QueryExecutor?.loadFromShareLink) {
+            window.QueryExecutor.loadFromShareLink();
         }
     },
 
