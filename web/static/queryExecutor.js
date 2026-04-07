@@ -1215,41 +1215,23 @@ const QueryExecutor = {
                 return;
             }
 
-            // Check for deferred share links now that fractals are loaded
+            // Check for deferred share links now that data may be loaded
             if (this.deferredShareLink) {
-                console.log('[Share] Checking if fractals are available for deferred processing');
-
-                let hasFractals = false;
-                let selectorCount = 0;
-                let listingCount = 0;
-
-                try {
-                    // Safe checking with comprehensive null protection
-                    if (window.FractalSelector &&
-                        window.FractalSelector.availableFractals &&
-                        Array.isArray(window.FractalSelector.availableFractals)) {
-                        selectorCount = window.FractalSelector.availableFractals.length;
-                    }
-
-                    if (window.FractalListing &&
-                        window.FractalListing.fractals &&
-                        Array.isArray(window.FractalListing.fractals)) {
-                        listingCount = window.FractalListing.fractals.length;
-                    }
-
-                    hasFractals = selectorCount > 0 || listingCount > 0;
-                    console.log('[Share] Fractal availability check - Selector:', selectorCount, 'Listing:', listingCount, 'HasFractals:', hasFractals);
-                } catch (checkError) {
-                    console.warn('[Share] Error checking deferred fractals:', checkError);
-                    hasFractals = false;
+                let hasData;
+                if (this.deferredShareLink.isPrismShare) {
+                    hasData = (window.FractalSelector?.availablePrisms?.length > 0) ||
+                              (window.FractalListing?.prisms?.length > 0);
+                } else {
+                    hasData = (window.FractalSelector?.availableFractals?.length > 0) ||
+                              (window.FractalListing?.fractals?.length > 0);
                 }
 
-                if (hasFractals) {
-                    console.log('[Share] Processing deferred share link now that fractals are loaded');
+                if (hasData) {
+                    console.log('[Share] Processing deferred share link');
                     this.processDeferredShareLink();
                     return;
                 } else {
-                    console.log('[Share] Fractals still not available, keeping deferred');
+                    console.log('[Share] Data still not available, keeping deferred');
                 }
             }
 
@@ -2008,10 +1990,11 @@ const QueryExecutor = {
             const timeRangeSelect = document.getElementById('timeRange');
             const timeRangeValue = timeRangeSelect ? timeRangeSelect.value : '24h';
 
-            // Get current fractal ID
-            const fractalId = window.FractalContext?.currentFractal?.id;
-            if (!fractalId) {
-                console.error('[Share] No fractal selected');
+            // Get current fractal/prism ID
+            const ctx = window.FractalContext;
+            const contextId = ctx?.currentFractal?.id;
+            if (!contextId) {
+                console.error('[Share] No fractal or prism selected');
                 return;
             }
 
@@ -2019,7 +2002,11 @@ const QueryExecutor = {
             const urlParams = new URLSearchParams();
             urlParams.set('q', btoa(encodeURIComponent(rawQuery))); // Base64 encode the query
             urlParams.set('tr', timeRangeValue); // Time range type
-            urlParams.set('f', fractalId); // Fractal ID
+            if (ctx.isPrism()) {
+                urlParams.set('p', contextId); // Prism ID
+            } else {
+                urlParams.set('f', contextId); // Fractal ID
+            }
 
             // Add custom time range if applicable
             if (timeRangeValue === 'custom' && elements.customStart && elements.customEnd) {
@@ -2073,9 +2060,10 @@ const QueryExecutor = {
         const hasQuery = urlParams.has('q');
         const hasTimeRange = urlParams.has('tr');
         const hasFractal = urlParams.has('f');
+        const hasPrism = urlParams.has('p');
 
-        if (!hasQuery || !hasTimeRange || !hasFractal) {
-            console.log('[Share] No complete share parameters found (q:', hasQuery, ', tr:', hasTimeRange, ', f:', hasFractal, '), skipping');
+        if (!hasQuery || !hasTimeRange || (!hasFractal && !hasPrism)) {
+            console.log('[Share] No complete share parameters found (q:', hasQuery, ', tr:', hasTimeRange, ', f:', hasFractal, ', p:', hasPrism, '), skipping');
             return false; // No share parameters found
         }
 
@@ -2088,9 +2076,12 @@ const QueryExecutor = {
             const encodedQuery = urlParams.get('q');
             const timeRangeValue = urlParams.get('tr');
             const fractalId = urlParams.get('f');
+            const prismId = urlParams.get('p');
+            const contextId = fractalId || prismId;
+            const isPrismShare = !!prismId;
 
             // Validate the parameters before proceeding
-            if (!encodedQuery || !timeRangeValue || !fractalId) {
+            if (!encodedQuery || !timeRangeValue || !contextId) {
                 console.log('[Share] Share parameters are empty, skipping');
                 return false;
             }
@@ -2105,87 +2096,74 @@ const QueryExecutor = {
                 return false;
             }
 
-            // Safely check if fractals are loaded with comprehensive null checking
-            let hasFractals = false;
-            let selectorFractals = 0;
-            let listingFractals = 0;
-
+            // Check if the relevant data source (fractals or prisms) is loaded
+            let hasData = false;
             try {
-                // Check FractalSelector availability
-                if (window.FractalSelector &&
-                    window.FractalSelector.availableFractals &&
-                    Array.isArray(window.FractalSelector.availableFractals)) {
-                    selectorFractals = window.FractalSelector.availableFractals.length;
+                if (isPrismShare) {
+                    const selectorPrisms = window.FractalSelector?.availablePrisms?.length || 0;
+                    const listingPrisms = window.FractalListing?.prisms?.length || 0;
+                    hasData = selectorPrisms > 0 || listingPrisms > 0;
+                    console.log('[Share] Prism availability check - Selector:', selectorPrisms, 'Listing:', listingPrisms);
+                } else {
+                    const selectorFractals = window.FractalSelector?.availableFractals?.length || 0;
+                    const listingFractals = window.FractalListing?.fractals?.length || 0;
+                    hasData = selectorFractals > 0 || listingFractals > 0;
+                    console.log('[Share] Fractal availability check - Selector:', selectorFractals, 'Listing:', listingFractals);
                 }
-
-                // Check FractalListing availability
-                if (window.FractalListing &&
-                    window.FractalListing.fractals &&
-                    Array.isArray(window.FractalListing.fractals)) {
-                    listingFractals = window.FractalListing.fractals.length;
-                }
-
-                hasFractals = selectorFractals > 0 || listingFractals > 0;
-                console.log('[Share] Fractal availability check - Selector:', selectorFractals, 'Listing:', listingFractals, 'HasFractals:', hasFractals);
             } catch (selectorError) {
-                console.warn('[Share] Error checking fractal availability:', selectorError);
-                hasFractals = false;
+                console.warn('[Share] Error checking availability:', selectorError);
+                hasData = false;
             }
 
-            if (!hasFractals) {
+            if (!hasData) {
                 console.log('[Share] Fractals not loaded yet, deferring share link processing');
                 // Store the share link data to be processed when fractals are loaded
-                this.deferredShareLink = { encodedQuery, timeRangeValue, fractalId };
+                this.deferredShareLink = { encodedQuery, timeRangeValue, fractalId: contextId, isPrismShare };
 
                 // Start periodic check for fractals loading
                 this.startDeferredShareLinkPolling();
                 return true; // We are processing a share link, just deferred
             }
 
-            // Check if user has access to the shared fractal with comprehensive null checking
-            console.log('[Share] Checking access for fractal:', fractalId);
+            // Check if user has access to the shared fractal/prism
+            console.log('[Share] Checking access for', isPrismShare ? 'prism' : 'fractal', ':', contextId);
 
             let hasAccess = null;
             try {
-                // Check FractalSelector first
-                if (window.FractalSelector &&
-                    window.FractalSelector.availableFractals &&
-                    Array.isArray(window.FractalSelector.availableFractals) &&
-                    window.FractalSelector.availableFractals.length > 0) {
-
-                    console.log('[Share] Available fractals from FractalSelector:',
-                               window.FractalSelector.availableFractals.map(f => f?.id || 'unknown'));
-                    hasAccess = window.FractalSelector.availableFractals.find(f => f && f.id === fractalId);
-                }
-
-                // Also check FractalListing if FractalSelector doesn't have fractals
-                if (!hasAccess &&
-                    window.FractalListing &&
-                    window.FractalListing.fractals &&
-                    Array.isArray(window.FractalListing.fractals) &&
-                    window.FractalListing.fractals.length > 0) {
-
-                    console.log('[Share] Available fractals from FractalListing:',
-                               window.FractalListing.fractals.map(f => f?.id || 'unknown'));
-                    hasAccess = window.FractalListing.fractals.find(f => f && f.id === fractalId);
+                if (isPrismShare) {
+                    // Check prism access in FractalSelector and FractalListing
+                    if (window.FractalSelector?.availablePrisms?.length > 0) {
+                        hasAccess = window.FractalSelector.availablePrisms.find(p => p && p.id === contextId);
+                    }
+                    if (!hasAccess && window.FractalListing?.prisms?.length > 0) {
+                        hasAccess = window.FractalListing.prisms.find(p => p && p.id === contextId);
+                    }
+                } else {
+                    // Check fractal access in FractalSelector and FractalListing
+                    if (window.FractalSelector?.availableFractals?.length > 0) {
+                        hasAccess = window.FractalSelector.availableFractals.find(f => f && f.id === contextId);
+                    }
+                    if (!hasAccess && window.FractalListing?.fractals?.length > 0) {
+                        hasAccess = window.FractalListing.fractals.find(f => f && f.id === contextId);
+                    }
                 }
             } catch (accessError) {
-                console.error('[Share] Error checking fractal access:', accessError);
-                this.showError('Failed to verify fractal access: ' + accessError.message);
+                console.error('[Share] Error checking access:', accessError);
+                this.showError('Failed to verify access: ' + accessError.message);
                 return false;
             }
 
             if (!hasAccess) {
-                console.error('[Share] User does not have access to shared fractal:', fractalId);
+                console.error('[Share] User does not have access to shared', isPrismShare ? 'prism' : 'fractal', ':', contextId);
                 this.showError('Access denied: You do not have permission to view this shared query');
                 return false;
             }
 
-            // Switch to the shared fractal if it's not current
-            if (!window.FractalContext?.currentFractal || window.FractalContext.currentFractal.id !== fractalId) {
-                console.log('[Share] Switching to shared fractal:', hasAccess.name || 'Unknown');
+            // Switch to the shared fractal/prism if it's not current
+            if (!window.FractalContext?.currentFractal || window.FractalContext.currentFractal.id !== contextId) {
+                console.log('[Share] Switching to shared', isPrismShare ? 'prism' : 'fractal', ':', hasAccess.name || 'Unknown');
 
-                // Store the shared link data to be processed after fractal switch
+                // Store the shared link data to be processed after context switch
                 this.pendingShareData = {
                     query,
                     timeRangeValue,
@@ -2193,28 +2171,38 @@ const QueryExecutor = {
                     customEnd: urlParams.get('te')
                 };
 
-                // Try different fractal selection methods in order of preference
+                if (isPrismShare) {
+                    // Use prism selection methods
+                    if (window.FractalContext && typeof window.FractalContext.setCurrentPrism === 'function') {
+                        window.FractalContext.setCurrentPrism(hasAccess);
+                        return true;
+                    } else if (window.FractalSelector && typeof window.FractalSelector.selectPrism === 'function') {
+                        window.FractalSelector.selectPrism(contextId);
+                        return true;
+                    } else {
+                        console.error('[Share] No prism selection method available');
+                        this.showError('Unable to switch to shared prism');
+                        return false;
+                    }
+                }
+
+                // Fractal selection methods
                 if (window.FractalContext && typeof window.FractalContext.setCurrentFractal === 'function') {
-                    console.log('[Share] Using FractalContext.setCurrentFractal');
                     window.FractalContext.setCurrentFractal(hasAccess);
                     return true;
                 } else if (window.FractalSelector && typeof window.FractalSelector.setCurrentFractal === 'function') {
-                    console.log('[Share] Using FractalSelector.setCurrentFractal');
                     window.FractalSelector.setCurrentFractal(hasAccess);
                     return true;
                 } else if (window.FractalSelector && typeof window.FractalSelector.selectFractal === 'function') {
-                    console.log('[Share] Using FractalSelector.selectFractal');
-                    window.FractalSelector.selectFractal(fractalId, hasAccess.name);
+                    window.FractalSelector.selectFractal(contextId, hasAccess.name);
                     return true;
                 } else if (window.FractalContext && typeof window.FractalContext.selectFractalOnServer === 'function') {
-                    console.log('[Share] Using FractalContext.selectFractalOnServer');
-                    // Manually set current fractal first, then sync to server
                     window.FractalContext.currentFractal = hasAccess;
-                    window.FractalContext.selectFractalOnServer(fractalId);
+                    window.FractalContext.selectFractalOnServer(contextId);
                     return true;
                 } else {
                     console.error('[Share] No fractal selection method available');
-                    this.showError('Unable to switch to shared fractal: no selection methods available');
+                    this.showError('Unable to switch to shared fractal');
                     return false;
                 }
             }
@@ -2300,7 +2288,7 @@ const QueryExecutor = {
                     // Now clear URL parameters after everything is loaded
                     if (window.location.search) {
                         const urlParams = new URLSearchParams(window.location.search);
-                        if (urlParams.has('q') || urlParams.has('tr') || urlParams.has('f')) {
+                        if (urlParams.has('q') || urlParams.has('tr') || urlParams.has('f') || urlParams.has('p')) {
                             const cleanUrl = `${window.location.origin}${window.location.pathname}`;
                             window.history.replaceState({}, document.title, cleanUrl);
                             console.log('[Share] Cleared URL parameters after successful load');
@@ -2322,39 +2310,36 @@ const QueryExecutor = {
 
         this.deferredPollingInterval = setInterval(() => {
             attempts++;
-            console.log(`[Share] Polling for fractals (attempt ${attempts}/${maxAttempts})`);
+            const isPrism = this.deferredShareLink?.isPrismShare;
+            console.log(`[Share] Polling for ${isPrism ? 'prisms' : 'fractals'} (attempt ${attempts}/${maxAttempts})`);
 
-            let hasFractals = false;
+            let hasData = false;
             try {
-                // Comprehensive null checking for fractal availability
-                const selectorFractals = (window.FractalSelector &&
-                                        window.FractalSelector.availableFractals &&
-                                        Array.isArray(window.FractalSelector.availableFractals))
-                                        ? window.FractalSelector.availableFractals.length : 0;
-
-                const listingFractals = (window.FractalListing &&
-                                       window.FractalListing.fractals &&
-                                       Array.isArray(window.FractalListing.fractals))
-                                       ? window.FractalListing.fractals.length : 0;
-
-                hasFractals = selectorFractals > 0 || listingFractals > 0;
-                console.log(`[Share] Poll check - Selector: ${selectorFractals}, Listing: ${listingFractals}, Total: ${hasFractals}`);
+                if (isPrism) {
+                    const selectorPrisms = window.FractalSelector?.availablePrisms?.length || 0;
+                    const listingPrisms = window.FractalListing?.prisms?.length || 0;
+                    hasData = selectorPrisms > 0 || listingPrisms > 0;
+                } else {
+                    const selectorFractals = window.FractalSelector?.availableFractals?.length || 0;
+                    const listingFractals = window.FractalListing?.fractals?.length || 0;
+                    hasData = selectorFractals > 0 || listingFractals > 0;
+                }
             } catch (checkError) {
                 console.warn('[Share] Error during polling check:', checkError);
-                hasFractals = false;
+                hasData = false;
             }
 
-            if (hasFractals) {
-                console.log('[Share] Fractals now available, processing deferred share link');
+            if (hasData) {
+                console.log('[Share] Data now available, processing deferred share link');
                 clearInterval(this.deferredPollingInterval);
                 this.deferredPollingInterval = null;
                 this.processDeferredShareLink();
             } else if (attempts >= maxAttempts) {
-                console.error('[Share] Timeout waiting for fractals to load');
+                console.error('[Share] Timeout waiting for data to load');
                 clearInterval(this.deferredPollingInterval);
                 this.deferredPollingInterval = null;
-                this.deferredShareLink = null; // Clear the deferred data
-                this.showError('Failed to load shared query: timeout waiting for fractal data');
+                this.deferredShareLink = null;
+                this.showError('Failed to load shared query: timeout waiting for data');
             }
         }, 500);
     },
@@ -2362,15 +2347,21 @@ const QueryExecutor = {
     // Check for deferred share links when fractals are loaded
     checkDeferredShareLink() {
         if (this.deferredShareLink) {
-            console.log('[Share] Checking deferred share link after fractal load');
-            const hasFractals = (window.FractalSelector?.availableFractals?.length > 0) ||
-                              (window.FractalListing?.fractals?.length > 0);
+            console.log('[Share] Checking deferred share link after data load');
+            let hasData;
+            if (this.deferredShareLink.isPrismShare) {
+                hasData = (window.FractalSelector?.availablePrisms?.length > 0) ||
+                          (window.FractalListing?.prisms?.length > 0);
+            } else {
+                hasData = (window.FractalSelector?.availableFractals?.length > 0) ||
+                          (window.FractalListing?.fractals?.length > 0);
+            }
 
-            if (hasFractals) {
-                console.log('[Share] Fractals now available, processing deferred share link');
+            if (hasData) {
+                console.log('[Share] Data now available, processing deferred share link');
                 this.processDeferredShareLink();
             } else {
-                console.log('[Share] Fractals still not available');
+                console.log('[Share] Data still not available');
             }
         }
     },
@@ -2383,7 +2374,7 @@ const QueryExecutor = {
         }
 
         console.log('[Share] Processing deferred share link');
-        const { encodedQuery, timeRangeValue, fractalId } = this.deferredShareLink;
+        const { encodedQuery, timeRangeValue, fractalId, isPrismShare } = this.deferredShareLink;
 
         // Clear the deferred data and polling
         this.deferredShareLink = null;
@@ -2409,80 +2400,88 @@ const QueryExecutor = {
                 return;
             }
 
-            // Now fractals should be loaded, check access again with comprehensive null checking
+            // Now fractals/prisms should be loaded, check access
             let hasAccess = null;
             try {
-                // Check FractalSelector first
-                if (window.FractalSelector &&
-                    window.FractalSelector.availableFractals &&
-                    Array.isArray(window.FractalSelector.availableFractals)) {
-                    hasAccess = window.FractalSelector.availableFractals.find(f => f && f.id === fractalId);
-                }
-
-                // Also check FractalListing if FractalSelector doesn't have fractals
-                if (!hasAccess &&
-                    window.FractalListing &&
-                    window.FractalListing.fractals &&
-                    Array.isArray(window.FractalListing.fractals)) {
-                    hasAccess = window.FractalListing.fractals.find(f => f && f.id === fractalId);
+                if (isPrismShare) {
+                    if (window.FractalSelector?.availablePrisms?.length > 0) {
+                        hasAccess = window.FractalSelector.availablePrisms.find(p => p && p.id === fractalId);
+                    }
+                    if (!hasAccess && window.FractalListing?.prisms?.length > 0) {
+                        hasAccess = window.FractalListing.prisms.find(p => p && p.id === fractalId);
+                    }
+                } else {
+                    if (window.FractalSelector?.availableFractals?.length > 0) {
+                        hasAccess = window.FractalSelector.availableFractals.find(f => f && f.id === fractalId);
+                    }
+                    if (!hasAccess && window.FractalListing?.fractals?.length > 0) {
+                        hasAccess = window.FractalListing.fractals.find(f => f && f.id === fractalId);
+                    }
                 }
             } catch (accessCheckError) {
-                console.error('[Share] Error checking deferred fractal access:', accessCheckError);
-                this.showError('Failed to verify fractal access: ' + accessCheckError.message);
+                console.error('[Share] Error checking deferred access:', accessCheckError);
+                this.showError('Failed to verify access: ' + accessCheckError.message);
                 return;
             }
 
-            console.log('[Share] Deferred access check result:', !!hasAccess, 'for fractal:', fractalId);
+            console.log('[Share] Deferred access check result:', !!hasAccess, 'for', isPrismShare ? 'prism' : 'fractal', ':', fractalId);
             if (!hasAccess) {
-                console.error('[Share] User does not have access to deferred fractal:', fractalId);
+                console.error('[Share] User does not have access to deferred', isPrismShare ? 'prism' : 'fractal', ':', fractalId);
                 this.showError('Access denied: You do not have permission to view this shared query');
                 return;
             }
 
-            // Switch to the shared fractal if it's not current
+            // Switch to the shared fractal/prism if it's not current
             if (!window.FractalContext?.currentFractal || window.FractalContext.currentFractal.id !== fractalId) {
-                console.log('[Share] Switching to deferred shared fractal:', hasAccess.name || 'Unknown');
+                console.log('[Share] Switching to deferred shared', isPrismShare ? 'prism' : 'fractal', ':', hasAccess.name || 'Unknown');
 
-                // Store the shared link data to be processed after fractal switch
+                // Store the shared link data to be processed after context switch
                 this.pendingShareData = {
                     query,
                     timeRangeValue,
-                    customStart: null, // We don't have URL params in deferred processing
+                    customStart: null,
                     customEnd: null
                 };
 
-                // Try different fractal selection methods in order of preference
+                if (isPrismShare) {
+                    if (window.FractalContext && typeof window.FractalContext.setCurrentPrism === 'function') {
+                        window.FractalContext.setCurrentPrism(hasAccess);
+                        return;
+                    } else if (window.FractalSelector && typeof window.FractalSelector.selectPrism === 'function') {
+                        window.FractalSelector.selectPrism(fractalId);
+                        return;
+                    } else {
+                        console.error('[Share] No prism selection method available for deferred processing');
+                        this.showError('Unable to switch to shared prism');
+                        return;
+                    }
+                }
+
                 if (window.FractalContext && typeof window.FractalContext.setCurrentFractal === 'function') {
-                    console.log('[Share] Using FractalContext.setCurrentFractal for deferred');
                     window.FractalContext.setCurrentFractal(hasAccess);
                     return;
                 } else if (window.FractalSelector && typeof window.FractalSelector.setCurrentFractal === 'function') {
-                    console.log('[Share] Using FractalSelector.setCurrentFractal for deferred');
                     window.FractalSelector.setCurrentFractal(hasAccess);
                     return;
                 } else if (window.FractalSelector && typeof window.FractalSelector.selectFractal === 'function') {
-                    console.log('[Share] Using FractalSelector for deferred');
                     window.FractalSelector.selectFractal(fractalId, hasAccess.name);
                     return;
                 } else if (window.FractalContext && typeof window.FractalContext.selectFractalOnServer === 'function') {
-                    console.log('[Share] Using FractalContext.selectFractalOnServer for deferred');
-                    // Manually set current fractal first, then sync to server
                     window.FractalContext.currentFractal = hasAccess;
                     window.FractalContext.selectFractalOnServer(fractalId);
                     return;
                 } else if (window.FractalListing && typeof window.FractalListing.selectFractal === 'function') {
-                    console.log('[Share] Using FractalListing for deferred');
                     window.FractalListing.selectFractal(fractalId);
                     return;
                 } else {
                     console.error('[Share] No fractal selection method available for deferred processing');
-                    this.showError('Unable to switch to shared fractal: no selection methods available');
+                    this.showError('Unable to switch to shared fractal');
                     return;
                 }
             }
 
-            // Load directly if already in correct fractal
-            console.log('[Share] Already in correct fractal, loading query directly');
+            // Load directly if already in correct context
+            console.log('[Share] Already in correct context, loading query directly');
             this.loadShareDataIntoUI({
                 query,
                 timeRangeValue,
@@ -2515,7 +2514,7 @@ const QueryExecutor = {
         // Clear URL parameters if they exist
         if (window.location.search) {
             const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.has('q') || urlParams.has('tr') || urlParams.has('f')) {
+            if (urlParams.has('q') || urlParams.has('tr') || urlParams.has('f') || urlParams.has('p')) {
                 const cleanUrl = `${window.location.origin}${window.location.pathname}`;
                 window.history.replaceState({}, document.title, cleanUrl);
                 console.log('[Share] Cleared URL parameters');

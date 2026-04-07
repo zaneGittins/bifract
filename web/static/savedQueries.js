@@ -229,8 +229,14 @@ const SavedQueries = {
 
         try {
             const body = { name, query_text: queryText, tags };
-            const fractalId = window.FractalContext?.currentFractal?.id;
-            if (fractalId) body.fractal_id = fractalId;
+            const ctx = window.FractalContext;
+            if (ctx?.currentFractal?.id) {
+                if (ctx.isPrism()) {
+                    body.prism_id = ctx.currentFractal.id;
+                } else {
+                    body.fractal_id = ctx.currentFractal.id;
+                }
+            }
 
             const resp = await fetch('/api/v1/saved-queries', {
                 method: 'POST',
