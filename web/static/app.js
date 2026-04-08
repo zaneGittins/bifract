@@ -632,7 +632,6 @@ const App = {
 
     // Show the main view (fractal listing / settings / fractal management)
     showMainView(tab = 'fractalListing') {
-        console.log('[App] Showing main view, tab:', tab);
 
         if (!this._navigatingFromPopState) {
             this._pushHash(tab === 'fractalListing' ? '' : tab);
@@ -649,10 +648,8 @@ const App = {
             const hasShareParams = urlParams.has('q') && urlParams.has('tr') && (urlParams.has('f') || urlParams.has('p'));
 
             if (!hasShareParams) {
-                console.log('[App] No share parameters, safe to clear shared query state');
                 window.QueryExecutor.clearSharedQueryState();
             } else {
-                console.log('[App] Share parameters detected, skipping clear to allow processing');
             }
         }
 
@@ -782,7 +779,6 @@ const App = {
 
     // Show the fractal view (search / comments / alerts / reference)
     showFractalView(tab = 'search') {
-        console.log('[App] Showing fractal view, tab:', tab);
 
         if (!this._navigatingFromPopState) {
             this._pushHash(tab);
@@ -827,10 +823,8 @@ const App = {
             const hasShareParams = urlParams.has('q') && urlParams.has('tr') && (urlParams.has('f') || urlParams.has('p'));
 
             if (!hasShareParams) {
-                console.log('[App] No share parameters, safe to clear shared query state');
                 window.QueryExecutor.clearSharedQueryState();
             } else {
-                console.log('[App] Share parameters detected, skipping clear to allow processing');
             }
         }
 
@@ -933,21 +927,14 @@ const App = {
                 // No need to duplicate the call here as it causes race conditions
                 break;
             case 'comments':
-                console.log('[App] Showing comments tab');
-                console.log('[App] commentsContent:', commentsContent);
-                console.log('[App] commentedView:', commentedView);
                 if (commentsContent) {
                     commentsContent.style.display = 'block';
-                    console.log('[App] Set commentsContent display to block');
                 }
                 if (commentedView) {
                     commentedView.style.display = 'block';
-                    console.log('[App] Set commentedView display to block');
                 }
                 if (commentsTab) commentsTab.classList.add('active');
-                console.log('[App] window.CommentedLogs exists?', !!window.CommentedLogs);
                 if (window.CommentedLogs) {
-                    console.log('[App] Calling CommentedLogs.show()');
                     CommentedLogs.show();
                 }
                 if (window.RealTimeComments) {

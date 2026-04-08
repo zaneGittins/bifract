@@ -20,7 +20,6 @@ const Notebooks = {
      * Initialize the notebooks module
      */
     init() {
-        // console.log('[Notebooks] Initializing notebooks module');
 
         // Ensure we're starting fresh
         this.currentNotebook = null;
@@ -34,7 +33,6 @@ const Notebooks = {
      * Bind event listeners
      */
     bindEvents() {
-        // console.log('[Notebooks] Binding events');
 
         // Remove any existing event listeners to prevent duplicates
         this.unbindEvents();
@@ -42,9 +40,7 @@ const Notebooks = {
         // Notebook listing events
         const createBtn = document.getElementById('createNotebookBtn');
         if (createBtn) {
-            // console.log('[Notebooks] Binding create notebook button');
             createBtn.addEventListener('click', () => {
-                // console.log('[Notebooks] Create notebook button clicked');
                 this.showCreateNotebookModal();
             });
         } else {
@@ -104,7 +100,6 @@ const Notebooks = {
             document.addEventListener('keydown', this.keyboardHandler);
         }
 
-        // console.log('[Notebooks] Events bound successfully');
     },
 
     /**
@@ -121,7 +116,6 @@ const Notebooks = {
      * Show notebook listing view
      */
     async showNotebookListing() {
-        // console.log('[Notebooks] Showing notebook listing');
         document.getElementById('notebookListing').style.display = 'block';
         document.getElementById('notebookEditor').style.display = 'none';
 
@@ -418,7 +412,6 @@ const Notebooks = {
     async handleCreateNotebook(event) {
         event.preventDefault();
 
-        // console.log('[Notebooks] Form submission started');
 
         // Disable the submit button to prevent double submission
         const submitBtn = event.target.querySelector('button[type="submit"]');
@@ -437,13 +430,11 @@ const Notebooks = {
                 max_results_per_section: parseInt(formData.get('max_results_per_section')) || 1000
             };
 
-            // console.log('[Notebooks] Form data:', data);
 
             if (data.time_range_type === 'custom') {
                 const start = formData.get('time_range_start');
                 const end = formData.get('time_range_end');
 
-                // console.log('[Notebooks] Custom range values - Start:', start, 'End:', end);
 
                 if (!start || !end) {
                     this.showError('Start and end times are required for custom time range');
@@ -462,10 +453,8 @@ const Notebooks = {
                 data.time_range_start = startDate.toISOString();
                 data.time_range_end = endDate.toISOString();
 
-                // console.log('[Notebooks] Converted times - Start:', data.time_range_start, 'End:', data.time_range_end);
             }
 
-            // console.log('[Notebooks] Making API request to create notebook');
 
             const response = await fetch('/api/v1/notebooks', {
                 method: 'POST',
@@ -477,7 +466,6 @@ const Notebooks = {
                 body: JSON.stringify(data)
             });
 
-            // console.log('[Notebooks] Response status:', response.status);
 
             if (!response.ok) {
                 if (response.status === 401) {
@@ -490,7 +478,6 @@ const Notebooks = {
             }
 
             const result = await response.json();
-            // console.log('[Notebooks] Response data:', result);
 
             if (!result.success) {
                 throw new Error(result.error || 'Failed to create notebook');
@@ -524,7 +511,6 @@ const Notebooks = {
      */
     async openNotebook(notebookId) {
         try {
-            // console.log('[Notebooks] Opening notebook:', notebookId);
 
             if (!notebookId) {
                 throw new Error('No notebook ID provided');
@@ -537,7 +523,6 @@ const Notebooks = {
                 credentials: 'include'
             });
 
-            // console.log('[Notebooks] Response status:', response.status);
 
             if (!response.ok) {
                 if (response.status === 404) {
@@ -553,7 +538,6 @@ const Notebooks = {
             }
 
             const data = await response.json();
-            // console.log('[Notebooks] Notebook data received:', data);
 
             if (!data.success) {
                 throw new Error(data.error || 'Failed to load notebook');
@@ -564,7 +548,6 @@ const Notebooks = {
             }
 
             this.currentNotebook = data.data;
-            // console.log('[Notebooks] Current notebook set:', this.currentNotebook.name);
 
             this.showNotebookEditor();
             this.startPresenceTracking();
@@ -582,7 +565,6 @@ const Notebooks = {
      * Show notebook editor
      */
     showNotebookEditor() {
-        // console.log('[Notebooks] Showing notebook editor for:', this.currentNotebook?.name);
 
         // First hide the listing and show the editor
         const listingEl = document.getElementById('notebookListing');
@@ -626,11 +608,9 @@ const Notebooks = {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             const sectionsContainer = document.getElementById('notebookSections');
             if (sectionsContainer) {
-                // console.log('[Notebooks] Sections container found after', attempt * delay, 'ms');
                 return sectionsContainer;
             }
 
-            // console.log('[Notebooks] Waiting for sections container, attempt', attempt + 1);
             await new Promise(resolve => setTimeout(resolve, delay));
         }
 
@@ -1129,8 +1109,6 @@ const Notebooks = {
      * Render query section
      */
     renderQuerySection(section) {
-        // console.log('[Notebooks] renderQuerySection called for section:', section.id);
-        // console.log('[Notebooks] section.last_results:', section.last_results);
 
         const hasResults = section.last_results && section.last_results !== 'null' && section.last_results !== '';
         let results = null;
@@ -1384,14 +1362,11 @@ const Notebooks = {
 
         if (tableColumns && tableColumns.length > 0) {
             // Use ONLY the specified columns in the specified order
-            // console.log('[Notebooks] Using specified columns:', tableColumns);
             headers = tableColumns;
         } else {
-            // console.log('[Notebooks] No table columns specified, using filtered headers');
             // Fall back to all columns, but filter out system fields
             const systemFields = ['_all_fields', 'raw_log', 'log_id'];
             headers = Object.keys(results[0]).filter(header => !systemFields.includes(header));
-            // console.log('[Notebooks] Filtered headers:', headers);
         }
 
         const rules = (sectionConfig && sectionConfig.row_coloring_rules) || [];
@@ -1614,7 +1589,6 @@ const Notebooks = {
             button.innerHTML = '<span class="spinner"></span>';
             button.disabled = true;
 
-            // console.log('[Notebooks] Button clicked:', button.className, button.style.cssText.substring(0, 50));
 
             // Find the section to get the query
             const section = this.currentNotebook.sections.find(s => s.id === sectionId);
@@ -1643,7 +1617,6 @@ const Notebooks = {
                 requestBody.fractal_id = window.FractalContext.currentFractal.id;
             }
 
-            // console.log('[Notebooks] Executing query:', requestBody);
 
             // Execute query using main query API
             const response = await fetch('/api/v1/query', {
@@ -1653,17 +1626,13 @@ const Notebooks = {
                 body: JSON.stringify(requestBody)
             });
 
-            // console.log('[Notebooks] Query response status:', response.status);
-            // console.log('[Notebooks] Query response headers:', [...response.headers.entries()]);
 
             const data = await response.json();
-            // console.log('[Notebooks] Query response data:', data);
 
             if (!data.success) {
                 throw new Error(data.error || 'Query execution failed');
             }
 
-            // console.log('[Notebooks] Query results:', data);
 
             // Update section with results
             section.last_executed_at = new Date().toISOString();
@@ -1683,7 +1652,6 @@ const Notebooks = {
             };
             section.last_results = JSON.stringify(resultData);
 
-            // console.log('[Notebooks] Updated section with results:', {
             //     sectionId,
             //     resultCount: resultData.count,
             //     executionTime: resultData.execution_ms,
@@ -1697,13 +1665,10 @@ const Notebooks = {
             // Re-render just this section to show results
             const sectionContainer = document.querySelector(`[data-section-id="${sectionId}"]`);
             const contentContainer = document.getElementById(`section-content-${sectionId}`);
-            // console.log('[Notebooks] Found containers for re-render:', { sectionContainer: !!sectionContainer, contentContainer: !!contentContainer });
 
             if (sectionContainer && contentContainer) {
                 const newContent = this.renderSectionContent(section);
-                // console.log('[Notebooks] Generated new content length:', newContent.length);
                 contentContainer.innerHTML = newContent;
-                // console.log('[Notebooks] Section re-rendered successfully');
             } else {
                 console.error('[Notebooks] Could not find containers to re-render section');
             }
@@ -2368,7 +2333,6 @@ const Notebooks = {
             }
         }, 3000);
 
-        // console.log('[Notebooks]', message);
     },
 
     debounce(func, wait) {
@@ -2465,7 +2429,6 @@ const Notebooks = {
      * Add a new section to the current notebook
      */
     async addSection(sectionType) {
-        // console.log('[Notebooks] Adding section:', sectionType);
         this.closeAddSectionMenu();
 
         if (!this.currentNotebook) {
@@ -2499,7 +2462,6 @@ const Notebooks = {
                 order_index: orderIndex
             };
 
-            // console.log('[Notebooks] Creating section:', sectionData);
 
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections`, {
                 method: 'POST',
@@ -2513,14 +2475,12 @@ const Notebooks = {
             }
 
             const result = await response.json();
-            // console.log('[Notebooks] Section created:', result);
 
             if (!result.success) {
                 throw new Error(result.error || 'Failed to create section');
             }
 
             // Add the new section to the current notebook data and re-render
-            // console.log('[Notebooks] Section created successfully, adding to current notebook...');
             const newSection = result.data;
             if (newSection) {
                 // Add to the sections array
@@ -2544,7 +2504,6 @@ const Notebooks = {
      * Toggle edit mode for a section
      */
     async toggleEditSection(sectionId) {
-        // console.log('[Notebooks] Toggling edit mode for section:', sectionId);
 
         if (!this.currentNotebook) {
             this.showError('No notebook is currently open');
@@ -2691,7 +2650,6 @@ const Notebooks = {
      * Save section edit
      */
     async saveEditSection(sectionId) {
-        // console.log('[Notebooks] Saving section edit:', sectionId);
 
         if (!this.currentNotebook) {
             this.showError('No notebook is currently open');
@@ -2720,7 +2678,6 @@ const Notebooks = {
         }
 
         try {
-            // console.log('[Notebooks] Updating section:', sectionId, data);
 
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/${sectionId}`, {
                 method: 'PUT',
@@ -2773,7 +2730,6 @@ const Notebooks = {
      * Cancel section edit
      */
     cancelEditSection(sectionId) {
-        // console.log('[Notebooks] Canceling section edit:', sectionId);
         this.exitEditMode(sectionId);
     },
 
@@ -2841,7 +2797,6 @@ const Notebooks = {
      * Duplicate a section
      */
     async duplicateSection(sectionId) {
-        // console.log('[Notebooks] Duplicating section:', sectionId);
 
         if (!this.currentNotebook) {
             this.showError('No notebook is currently open');
@@ -2911,7 +2866,6 @@ const Notebooks = {
      * Delete a section
      */
     async deleteSection(sectionId) {
-        // console.log('[Notebooks] Deleting section:', sectionId);
 
         if (!this.currentNotebook) {
             this.showError('No notebook is currently open');
@@ -3039,7 +2993,6 @@ const Notebooks = {
         }
 
         try {
-            // console.log('[Notebooks] Deleting notebook:', notebookId);
 
             const response = await fetch(`/api/v1/notebooks/${notebookId}`, {
                 method: 'DELETE',
@@ -3087,7 +3040,6 @@ const Notebooks = {
             return;
         }
 
-        // console.log('[Notebooks] Showing notebook settings for:', this.currentNotebook.name);
 
         // Remove any existing settings modal first
         const existing = document.getElementById('notebookSettingsModal');
@@ -3230,7 +3182,6 @@ const Notebooks = {
             return;
         }
 
-        // console.log('[Notebooks] Updating notebook settings');
 
         // Disable the submit button to prevent double submission
         const submitBtn = event.target.querySelector('button[type="submit"]');
@@ -3249,7 +3200,6 @@ const Notebooks = {
                 max_results_per_section: parseInt(formData.get('max_results_per_section')) || 1000
             };
 
-            // console.log('[Notebooks] Update data:', data);
 
             if (data.time_range_type === 'custom') {
                 const start = formData.get('time_range_start');
@@ -3264,7 +3214,6 @@ const Notebooks = {
                 data.time_range_end = new Date(end).toISOString();
             }
 
-            // console.log('[Notebooks] Making API request to update notebook');
 
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}`, {
                 method: 'PUT',
@@ -3276,7 +3225,6 @@ const Notebooks = {
                 body: JSON.stringify(data)
             });
 
-            // console.log('[Notebooks] Response status:', response.status);
 
             if (!response.ok) {
                 if (response.status === 401) {
@@ -3292,7 +3240,6 @@ const Notebooks = {
             }
 
             const result = await response.json();
-            // console.log('[Notebooks] Response data:', result);
 
             if (!result.success) {
                 throw new Error(result.error || 'Failed to update notebook');
@@ -3324,11 +3271,9 @@ const Notebooks = {
     },
 
     saveCurrentNotebook() {
-        // console.log('[Notebooks] Save notebook - not yet implemented');
     },
 
     bindSectionEvents() {
-        // console.log('[Notebooks] Binding section drag/drop events');
 
         // Find all sections (not draggable themselves anymore)
         const sections = document.querySelectorAll('.notebook-section');
@@ -3409,7 +3354,6 @@ const Notebooks = {
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/html', this.draggedSection.outerHTML);
 
-        // console.log('[Notebooks] Drag started for section:', this.draggedSectionId);
     },
 
     /**
@@ -3474,7 +3418,6 @@ const Notebooks = {
             return; // Can't drop on itself
         }
 
-        // console.log('[Notebooks] Dropping section', this.draggedSectionId, this.dropPosition, 'target', dropTargetId);
 
         // Calculate new order
         const draggedIndex = this.currentNotebook.sections.findIndex(s => s.id === this.draggedSectionId);
@@ -3559,7 +3502,6 @@ const Notebooks = {
         this.dropTarget = null;
         this.dropPosition = null;
 
-        // console.log('[Notebooks] Drag ended');
     },
 
     /**
@@ -3782,7 +3724,6 @@ const Notebooks = {
             return;
         }
 
-        // console.log('[Notebooks] Initializing syntax highlighting for:', inputId);
 
         // Set up event listeners for real-time highlighting
         queryInput.addEventListener('input', () => this.updateQuerySyntaxHighlight(inputId, highlightId));

@@ -216,7 +216,6 @@ const Comments = {
 
         // For aggregated queries, silently disable comments (no error message)
         if (isAggregated) {
-            console.log('[Comments] Silently skipping comments for aggregated query');
             return;
         }
 
@@ -233,7 +232,6 @@ const Comments = {
         }
 
         this.currentLogID = String(logData.log_id);
-        console.log('[Comments] Using log_id from ClickHouse:', this.currentLogID);
 
         // Clear the input and tags
         const input = document.getElementById('commentInput');
@@ -248,9 +246,7 @@ const Comments = {
         await this.loadComments(logData);
 
         // Open the panel
-        console.log('[Comments] Adding "open" class to panel');
         panel.classList.add('open');
-        console.log('[Comments] Panel classes:', panel.className);
     },
 
     closePanel() {
@@ -362,8 +358,6 @@ const Comments = {
         }
 
         // Debug: Check what's in currentLogData
-        console.log('[Comments] DEBUG currentLogData keys:', Object.keys(this.currentLogData));
-        console.log('[Comments] DEBUG currentLogData.timestamp:', this.currentLogData.timestamp);
 
         // Ensure timestamp is in RFC3339 format
         let timestamp = this.currentLogData.timestamp;
@@ -428,13 +422,6 @@ const Comments = {
             requestBody.prism_id = window.FractalContext.currentFractal.id;
         }
 
-        console.log('[Comments] Saving comment with body:', requestBody);
-        console.log('[Comments] Types:', {
-            log_id: typeof requestBody.log_id,
-            log_timestamp: typeof requestBody.log_timestamp,
-            text: typeof requestBody.text
-        });
-
         try {
             const response = await fetch('/api/v1/comments', {
                 method: 'POST',
@@ -455,7 +442,6 @@ const Comments = {
                 // Add this log to the commented logs cache so highlighting appears immediately
                 if (this.currentLogID) {
                     this.commentedLogIds.add(this.currentLogID);
-                    console.log('[Comments] Added log to commented cache:', this.currentLogID);
 
                     // Update the specific row's highlighting without re-rendering everything
                     this.updateRowHighlighting(this.currentLogID, true);
@@ -567,19 +553,16 @@ const Comments = {
                     if (hasRemainingComments) {
                         // Still has comments, ensure it's in the cache
                         this.commentedLogIds.add(this.currentLogID);
-                        console.log('[Comments] Log still has comments, keeping in cache:', this.currentLogID);
                         this.updateRowHighlighting(this.currentLogID, true);
                     } else {
                         // No more comments, remove from cache
                         this.commentedLogIds.delete(this.currentLogID);
-                        console.log('[Comments] Log has no more comments, removed from cache:', this.currentLogID);
                         this.updateRowHighlighting(this.currentLogID, false);
                     }
                 }
 
                 // Refresh the commented logs table if it's currently visible
                 if (window.CommentedLogs) {
-                    console.log('[Comments] Refreshing CommentedLogs after comment deletion');
                     window.CommentedLogs.fetchLogs(window.CommentedLogs.currentPage);
                 }
             } else {
@@ -718,7 +701,6 @@ const Comments = {
                         this.commentedLogIds.add(log.log_id);
                     }
                 });
-                console.log('[Comments] Cached', this.commentedLogIds.size, 'commented log IDs');
             }
         } catch (error) {
             console.error('[Comments] Error fetching commented log IDs:', error);
@@ -773,7 +755,6 @@ const Comments = {
 
     // Update row highlighting in search results without full re-render
     updateRowHighlighting(logId, hasComments) {
-        console.log('[Comments] Updating row highlighting for log:', logId, 'hasComments:', hasComments);
 
         // Find all rows in the search results table
         const resultRows = document.querySelectorAll('.results-table tbody tr, .results-table .result-row');
@@ -785,10 +766,8 @@ const Comments = {
             if (rowLogId === logId) {
                 if (hasComments) {
                     row.classList.add('has-comments');
-                    console.log('[Comments] Added has-comments class to row via data attribute');
                 } else {
                     row.classList.remove('has-comments');
-                    console.log('[Comments] Removed has-comments class from row via data attribute');
                 }
                 return;
             }
@@ -811,17 +790,14 @@ const Comments = {
             if (foundMatch) {
                 if (hasComments) {
                     row.classList.add('has-comments');
-                    console.log('[Comments] Added has-comments class to row via content search');
                 } else {
                     row.classList.remove('has-comments');
-                    console.log('[Comments] Removed has-comments class from row via content search');
                 }
             }
         });
 
         // Also trigger a manual check by looking at QueryExecutor's current results
         if (window.QueryExecutor && window.QueryExecutor.lastResults) {
-            console.log('[Comments] Refreshing comment highlighting on current results');
             // Re-apply highlighting to all current results
             this.fetchCommentedLogIds();
         }
@@ -833,7 +809,6 @@ const Comments = {
 
     // Refresh commented log IDs cache when index context changes
     onFractalChange() {
-        console.log('[Comments] Fractal changed, refreshing commented log IDs cache');
         this.fetchCommentedLogIds();
     }
 };

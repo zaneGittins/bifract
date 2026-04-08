@@ -3643,7 +3643,6 @@ throttleField: ${alert.throttle_field}` : ''}`;
         // Only refresh if we're currently viewing the alerts view
         const alertsView = document.getElementById('alertsView');
         if (alertsView && alertsView.style.display !== 'none') {
-            console.log('[Alerts] Fractal changed, refreshing alerts');
             this.loadAlerts();
         }
     },

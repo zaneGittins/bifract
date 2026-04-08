@@ -105,7 +105,6 @@ const Auth = {
     loginModal: null,
 
     async init() {
-        console.log('[Auth] Initializing auth module...');
         await this.checkCurrentUser();
         // Close dropdown on outside click
         document.addEventListener('click', (e) => {
@@ -115,7 +114,6 @@ const Auth = {
                 menu.classList.remove('open');
             }
         });
-        console.log('[Auth] Auth module initialization complete');
     },
 
     async logout() {
@@ -214,16 +212,12 @@ const Auth = {
         }
 
         if (this.currentUser && this.currentUser.is_admin) {
-            console.log('[Auth] User is admin, showing admin-only elements');
             document.querySelectorAll('.admin-only').forEach(el => {
-                console.log('[Auth] Found admin-only element:', el.id, el.tagName);
                 if (el.id === 'settingsView') {
-                    console.log('[Auth] Skipping settingsView');
                     return;
                 }
                 el.classList.remove('admin-only');
                 el.removeAttribute('style');
-                console.log('[Auth] Showed element:', el.id);
             });
 
             if (window.UserManagement) {
@@ -431,24 +425,13 @@ const Auth = {
     },
 
     testLogin() {
-        console.log('[Auth] Testing login modal...');
-        console.log('[Auth] Modal exists:', !!this.loginModal);
-        console.log('[Auth] Modal visible:', this.loginModal && this.loginModal.classList.contains('show'));
 
         const usernameField = document.getElementById('loginUsername');
         const passwordField = document.getElementById('loginPassword');
 
-        console.log('[Auth] Form elements:', {
-            username: !!usernameField,
-            password: !!passwordField,
-            usernameValue: usernameField ? `"${usernameField.value}"` : 'N/A',
-            passwordValue: passwordField ? `"${passwordField.value}"` : 'N/A'
-        });
-
         if (usernameField) {
             usernameField.value = 'admin';
             passwordField.value = 'bifract';
-            console.log('[Auth] Set test values - try submitting now');
         }
     }
 };

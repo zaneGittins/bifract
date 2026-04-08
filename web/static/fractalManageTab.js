@@ -4,7 +4,6 @@ const FractalManageTab = {
     currentPrismData: null,
 
     init() {
-        console.log('[FractalManageTab] Initialized');
         this.setupEventListeners();
     },
 
@@ -65,7 +64,6 @@ const FractalManageTab = {
     },
 
     show() {
-        console.log('[FractalManageTab] Showing manage tab');
 
         if (window.FractalContext && window.FractalContext.currentFractal) {
             this.currentFractal = window.FractalContext.currentFractal;
@@ -426,7 +424,6 @@ const FractalManageTab = {
                 throw new Error(errorData.error || `Failed to delete fractal: ${response.status}`);
             }
 
-            console.log('[FractalManageTab] Fractal deleted successfully:', this.currentFractal.id);
 
 
             // Navigate back to main fractal listing
