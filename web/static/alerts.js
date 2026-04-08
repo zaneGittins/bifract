@@ -2371,8 +2371,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 end: timeRange.end
             };
 
-            // Include fractal context if FractalContext is available
-            if (window.FractalContext && window.FractalContext.currentFractal) {
+            if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
                 requestBody.fractal_id = window.FractalContext.currentFractal.id;
             }
 
@@ -3352,7 +3351,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const query = this.stripComments(formData.query_string);
             const timeRange = this.getTimeRange();
             const validateBody = { query, start: timeRange.start, end: timeRange.end };
-            if (window.FractalContext && window.FractalContext.currentFractal) {
+            if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
                 validateBody.fractal_id = window.FractalContext.currentFractal.id;
             }
             const validateResp = await fetch('/api/v1/query', {

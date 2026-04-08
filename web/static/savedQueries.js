@@ -88,10 +88,14 @@ const SavedQueries = {
         if (search) {
             params.set('search', search);
         }
-        // Include fractal_id to avoid session race conditions
-        const fractalId = window.FractalContext?.currentFractal?.id;
-        if (fractalId) {
-            params.set('fractal_id', fractalId);
+        // Include fractal_id or prism_id to avoid session race conditions
+        const ctx = window.FractalContext;
+        if (ctx?.currentFractal?.id) {
+            if (ctx.isPrism()) {
+                params.set('prism_id', ctx.currentFractal.id);
+            } else {
+                params.set('fractal_id', ctx.currentFractal.id);
+            }
         }
         const qs = params.toString();
         if (qs) url += '?' + qs;
