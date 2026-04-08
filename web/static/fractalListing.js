@@ -9,7 +9,6 @@ const FractalListing = {
     searchQuery: '',
 
     init() {
-        console.log('Initializing Fractal Listing...');
         this.setupEventListeners();
     },
 
@@ -62,7 +61,6 @@ const FractalListing = {
     },
 
     show() {
-        console.log('Showing Fractal Listing view...');
         this.loadFractals();
     },
 
@@ -85,7 +83,6 @@ const FractalListing = {
 
             const data = await response.json();
 
-            console.log('[FractalListing] API response:', data);
 
             // Response structure: { success: true, data: { fractals: [...], prisms: [...], total: N } }
             if (data.success && data.data) {
@@ -99,7 +96,6 @@ const FractalListing = {
                 this.prisms = [];
             }
 
-            console.log(`[FractalListing] Loaded ${this.fractals.length} fractals, ${this.prisms.length} prisms`);
             this.filterAndRenderFractals();
         } catch (error) {
             console.error('Failed to load fractals:', error);
@@ -243,7 +239,6 @@ const FractalListing = {
     },
 
     openFractal(fractalId, fractalName) {
-        console.log(`[FractalListing] Opening fractal: ${fractalName} (${fractalId})`);
 
         const fractal = this.fractals.find(idx => idx.id === fractalId);
         if (fractal && window.FractalContext) {
@@ -258,7 +253,6 @@ const FractalListing = {
     },
 
     openPrism(prismId, prismName) {
-        console.log(`[FractalListing] Opening prism: ${prismName} (${prismId})`);
 
         const prism = this.prisms.find(p => p.id === prismId);
         if (prism && window.FractalContext) {

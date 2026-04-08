@@ -8,7 +8,6 @@ const FractalManagement = {
     createType: 'fractal',
 
     init() {
-        console.log('Initializing Fractal Management...');
         this.setupEventListeners();
         // Don't load fractals immediately - only when view is shown
     },
@@ -104,7 +103,6 @@ const FractalManagement = {
     },
 
     show() {
-        console.log('Showing Fractal Management view...');
         // Load fractals when view is shown
         this.loadFractals();
     },
@@ -772,7 +770,6 @@ const FractalManagement = {
             }
 
             const data = await response.json();
-            console.log('[FractalManagement] Refreshed stats:', data);
 
             // Update the current fractal data
             const updatedFractal = { ...this.currentDetailFractal, ...data.data };
@@ -856,7 +853,6 @@ const FractalManagement = {
                 throw new Error(errorData.error || `Failed to delete fractal: ${response.status}`);
             }
 
-            console.log('[FractalManagement] Fractal deleted successfully:', fractalId);
 
             // Remove from local list
             this.fractals = this.fractals.filter(idx => idx.id !== fractalId);

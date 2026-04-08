@@ -7,7 +7,6 @@ const APIKeys = {
     currentPage: 1,
 
     init() {
-        console.log('[APIKeys] Initialized');
         this.setupEventListeners();
     },
 
@@ -173,7 +172,6 @@ const APIKeys = {
     },
 
     switchToTab(tabName) {
-        console.log('[APIKeys] Switching to tab:', tabName);
 
         // Update current tab
         this.currentTab = tabName;

@@ -516,6 +516,20 @@ func main() {
 		})
 	})
 
+	// Gzip compression for text-based responses (JS, CSS, HTML, JSON).
+	// Chi's Compress middleware automatically skips streaming responses
+	// (text/event-stream) and respects client Accept-Encoding headers.
+	compressor := middleware.NewCompressor(5, // level 5: good balance of speed and ratio
+		"text/html",
+		"text/css",
+		"text/plain",
+		"text/javascript",
+		"application/javascript",
+		"application/json",
+		"image/svg+xml",
+	)
+	r.Use(compressor.Handler)
+
 	// CORS middleware
 	corsOrigins := strings.Split(config.CORSOrigins, ",")
 	for i := range corsOrigins {

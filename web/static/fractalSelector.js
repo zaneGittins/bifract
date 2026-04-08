@@ -5,7 +5,6 @@ const FractalSelector = {
     isLoading: false,
 
     init() {
-        console.log('Initializing Fractal Selector...');
         this.createSelectorUI();
         this.loadAvailableFractals();
         this.setupEventListeners();
@@ -14,7 +13,6 @@ const FractalSelector = {
     createSelectorUI() {
         // Check if selector already exists
         if (document.getElementById('fractalSelectorContainer')) {
-            console.log('[FractalSelector] Selector already exists, skipping creation');
             return;
         }
 
@@ -196,7 +194,7 @@ const FractalSelector = {
             }
 
             .fractal-selector-item.current::after {
-                content: '\2713';
+                content: '\\2713';
                 float: right;
                 color: #fff;
             }
@@ -360,7 +358,6 @@ const FractalSelector = {
             return;
         }
 
-        console.log('[FractalSelector] Share link detected, selecting', isPrism ? 'prism' : 'fractal', target.name);
 
         // Cancel any deferred/polling share link processing from earlier
         // attempts that ran before data was available. We handle it here.
@@ -556,7 +553,6 @@ const FractalSelector = {
     setCurrentFractal(fractalObject) {
         this.currentFractal = fractalObject;
         this.updateSelectorText(fractalObject.name);
-        console.log(`Current fractal set to: ${fractalObject.name} (${fractalObject.id})`);
     },
 
     refreshCurrentView() {
@@ -589,7 +585,6 @@ const FractalSelector = {
 
                 default:
                     // For other views, trigger a general refresh
-                    console.log('Fractal changed, current view:', currentView);
                     break;
             }
         } catch (error) {

@@ -4,7 +4,6 @@ const FractalContext = {
     currentItemType: 'fractal', // 'fractal' or 'prism'
 
     init() {
-        console.log('[FractalContext] Initialized');
     },
 
     isPrism() {
@@ -21,7 +20,6 @@ const FractalContext = {
             if (!saved || !saved.id || !saved.name) return false;
             this.currentFractal = { id: saved.id, name: saved.name };
             this.currentItemType = saved.type || 'fractal';
-            console.log(`[FractalContext] Restored ${this.currentItemType} from storage: ${saved.name} (${saved.id})`);
 
             if (window.FractalSelector) {
                 FractalSelector.currentFractal = this.currentFractal;
@@ -65,7 +63,6 @@ const FractalContext = {
         this.currentFractal = fractal;
         this.currentItemType = 'fractal';
         this._saveToStorage();
-        console.log(`[FractalContext] Current fractal set to: ${fractal.name} (${fractal.id})`);
 
         // Keep FractalSelector in sync
         if (window.FractalSelector) {
@@ -88,7 +85,6 @@ const FractalContext = {
         this.currentFractal = prism; // stored here for compat with existing reads
         this.currentItemType = 'prism';
         this._saveToStorage();
-        console.log(`[FractalContext] Current prism set to: ${prism.name} (${prism.id})`);
 
         // Keep FractalSelector in sync
         if (window.FractalSelector) {
@@ -123,7 +119,6 @@ const FractalContext = {
                 throw new Error(errorData.error || `HTTP ${response.status}`);
             }
 
-            console.log(`[FractalContext] Server session updated to fractal: ${fractalId}`);
         } catch (error) {
             console.error('[FractalContext] Failed to select fractal on server:', error);
             if (window.Toast) {
@@ -149,7 +144,6 @@ const FractalContext = {
                 throw new Error(errorData.error || `HTTP ${response.status}`);
             }
 
-            console.log(`[FractalContext] Server session updated to prism: ${prismId}`);
         } catch (error) {
             console.error('[FractalContext] Failed to select prism on server:', error);
             if (window.Toast) {
@@ -165,13 +159,11 @@ const FractalContext = {
 
     // Clear search state when switching fractals
     clearSearchState() {
-        console.log('[FractalContext] Clearing search state for fractal switch');
 
         // Clear QueryExecutor state and cancel any pending requests
         if (window.QueryExecutor) {
             // Cancel any in-flight requests
             if (QueryExecutor.currentRequest) {
-                console.log('[FractalContext] Cancelling pending request due to fractal switch');
                 QueryExecutor.currentRequest.abort();
                 QueryExecutor.currentRequest = null;
             }
@@ -233,13 +225,11 @@ const FractalContext = {
             paginationControls.style.display = 'none';
         }
 
-        console.log('[FractalContext] Search state cleared');
     },
 
     // Clear the current fractal
     clearCurrentFractal() {
         this.currentFractal = null;
-        console.log('[FractalContext] Current fractal cleared');
 
         // Update time bar to show no fractal
         if (window.TimeBar) {
@@ -266,7 +256,6 @@ const FractalContext = {
         modulesWithFractalHandlers.forEach(moduleName => {
             if (window[moduleName] && typeof window[moduleName].onFractalChange === 'function') {
                 try {
-                    console.log(`[FractalContext] Notifying ${moduleName} of fractal change`);
                     window[moduleName].onFractalChange();
                 } catch (error) {
                     console.error(`[FractalContext] Error notifying ${moduleName} of fractal change:`, error);

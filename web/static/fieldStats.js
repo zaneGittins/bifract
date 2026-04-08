@@ -138,6 +138,14 @@ const FieldStats = {
         const filterLower = this.filterText.toLowerCase();
 
         let html = '';
+
+        // Show approximate indicator on drawer label
+        const drawerLabel = document.querySelector('.fs-drawer-label');
+        if (drawerLabel) {
+            const isApprox = window.QueryExecutor && QueryExecutor.limitHit;
+            drawerLabel.textContent = isApprox ? 'Fields ~' : 'Fields';
+            drawerLabel.title = isApprox ? 'Stats based on returned results only' : '';
+        }
         for (const field of fields) {
             if (filterLower && !field.toLowerCase().includes(filterLower)) continue;
 

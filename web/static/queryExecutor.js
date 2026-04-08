@@ -7,6 +7,7 @@ const QueryExecutor = {
     columnWidths: {},
     columnOrder: null,
     isAggregated: false,
+    limitHit: null,
     chartType: '',
     chartConfig: {},
     currentChart: null, // Store current chart instance
@@ -58,12 +59,10 @@ const QueryExecutor = {
 
     // Load recent logs sample for initial fractal exploration
     async loadRecentLogsSample(config = null) {
-        console.log('[QueryExecutor] loadRecentLogsSample called, current fractal:', window.FractalContext?.currentFractal?.name || 'none');
         const elements = this.getElements(config);
 
         // Cancel any previous request
         if (this.currentRequest) {
-            console.log('[QueryExecutor] Cancelling previous request for recent logs');
             this.currentRequest.abort();
         }
 
@@ -100,7 +99,6 @@ const QueryExecutor = {
             // Validate that we're still on the same fractal (prevent race conditions)
             const currentFractalId = window.FractalContext?.currentFractal?.id || null;
             if (this.currentFractalId !== currentFractalId) {
-                console.log('[QueryExecutor] Fractal changed during recent logs fetch, discarding results');
                 return;
             }
 
@@ -162,12 +160,10 @@ const QueryExecutor = {
                 });
             }
 
-            console.log(`[QueryExecutor] Loaded ${this.currentResults.length} recent logs (last 24h)`);
 
         } catch (error) {
             // Don't show error if request was cancelled (fractal switch)
             if (error.name === 'AbortError') {
-                console.log('[QueryExecutor] Recent logs request cancelled due to fractal switch');
                 return;
             }
 
@@ -199,7 +195,6 @@ const QueryExecutor = {
 
         // Cancel any previous request
         if (this.currentRequest) {
-            console.log('[QueryExecutor] Cancelling previous request');
             this.currentRequest.abort();
         }
 
@@ -262,7 +257,6 @@ const QueryExecutor = {
             // Validate that we're still on the same fractal (prevent race conditions)
             const currentFractalId = window.FractalContext?.currentFractal?.id || null;
             if (this.currentFractalId !== currentFractalId) {
-                console.log('[QueryExecutor] Fractal changed during query, discarding results');
                 return;
             }
 
@@ -275,6 +269,7 @@ const QueryExecutor = {
             this.currentResults = data.results || [];
             this.fieldOrder = data.field_order || null;
             this.isAggregated = data.is_aggregated || false;
+            this.limitHit = data.limit_hit || null;
             this.chartType = data.chart_type || '';
             this.chartConfig = data.chart_config || {};
 
@@ -376,7 +371,6 @@ const QueryExecutor = {
         } catch (error) {
             // Don't show error if request was cancelled (fractal switch)
             if (error.name === 'AbortError') {
-                console.log('[QueryExecutor] Request cancelled due to fractal switch');
                 return;
             }
 
@@ -557,17 +551,14 @@ const QueryExecutor = {
         if (this.fieldOrder && this.fieldOrder.length > 0) {
             // Use the field order provided by the backend
             fields = this.fieldOrder.filter(f => f !== 'fractal_id');
-            console.log('Using backend field order:', fields);
         } else if (results.length > 0) {
             // Fall back to extracting from first result
             const firstResult = results[0];
-            console.log('First result keys order:', Object.keys(firstResult));
             for (const key of Object.keys(firstResult)) {
                 if (key !== 'raw_log' && key !== '_all_fields' && key !== 'fractal_id') {
                     fields.push(key);
                 }
             }
-            console.log('Fields array after filtering:', fields);
         }
 
         // Apply custom column order if available
@@ -1201,15 +1192,9 @@ const QueryExecutor = {
             this.restoreTimeRangeFromStorage();
 
             const elements = this.getElements();
-            console.log('[QueryExecutor] onFractalChange - elements check:', {
-                queryInput: !!elements.queryInput,
-                resultsTable: !!elements.resultsTable,
-                currentView: window.App?.currentView || 'unknown'
-            });
 
             // If we have pending share data from fractal switch, process it now
             if (this.pendingShareData) {
-                console.log('[Share] Processing pending share data after fractal switch');
                 this.loadShareDataIntoUI(this.pendingShareData);
                 this.pendingShareData = null;
                 return;
@@ -1227,57 +1212,44 @@ const QueryExecutor = {
                 }
 
                 if (hasData) {
-                    console.log('[Share] Processing deferred share link');
                     this.processDeferredShareLink();
                     return;
-                } else {
-                    console.log('[Share] Data still not available, keeping deferred');
                 }
             }
 
-            // On first fractal change, check for shared links
-            if (!this.hasLoadedShareLink) {
+            // Check for shared links on fractal change if URL has share params
+            const urlHasShareParams = window.location.search && new URLSearchParams(window.location.search).has('q');
+            if (!this.hasLoadedShareLink || urlHasShareParams) {
                 this.hasLoadedShareLink = true;
-                console.log('[QueryExecutor] First fractal change, checking for share link');
                 const loadedShareLink = this.loadFromShareLink();
-                console.log('[QueryExecutor] Share link check result:', loadedShareLink);
                 if (loadedShareLink) {
-                    console.log('[QueryExecutor] Share link was processed, stopping here');
                     return; // Share link was processed, stop here
                 }
-                console.log('[QueryExecutor] No share link found, continuing with default behavior');
             }
 
             // Only attempt to execute or load logs if we're in the search view
             const searchView = document.getElementById('searchView');
             if (!searchView || searchView.style.display === 'none') {
-                console.log('[QueryExecutor] Not in search view, skipping query execution');
                 return;
             }
 
             // Check if we're in the search view and elements are available
             if (!elements.queryInput || !elements.resultsTable) {
                 if (retryCount < 5) { // Max 5 retries (1 second total)
-                    console.log(`[QueryExecutor] Search view elements not available yet, will retry (${retryCount + 1}/5)`);
                     // Retry after view has had time to initialize
                     setTimeout(() => this.onFractalChange(retryCount + 1), 200);
                     return;
                 } else {
-                    console.log('[QueryExecutor] Search view elements still not available after retries, giving up');
                     return;
                 }
             }
 
             // If we have a current query, re-execute it for the new fractal
             if (elements.queryInput && elements.queryInput.value.trim()) {
-                console.log('[QueryExecutor] Fractal changed, re-executing current query');
                 this.execute();
             } else if (!this.isProcessingSharedQuery) {
                 // If no query is present and no shared query is loading, load recent logs sample
-                console.log('[QueryExecutor] Fractal changed, no query present, loading recent logs sample');
                 this.loadRecentLogsSample();
-            } else {
-                console.log('[QueryExecutor] Skipping recent logs, shared query is being processed');
             }
         }, 100);
     },
@@ -2021,7 +1993,6 @@ const QueryExecutor = {
 
             // Copy to clipboard
             await navigator.clipboard.writeText(shareUrl);
-            console.log('[Share] Link copied to clipboard:', shareUrl);
 
         } catch (error) {
             console.error('[Share] Failed to generate/copy link:', error);
@@ -2047,10 +2018,8 @@ const QueryExecutor = {
 
     // Load query from URL parameters on page load
     loadFromShareLink() {
-        console.log('[Share] loadFromShareLink called, checking URL:', window.location.search);
         // First, check if we even have a search string to avoid unnecessary processing
         if (!window.location.search) {
-            console.log('[Share] No URL parameters found, skipping share link check');
             return false;
         }
 
@@ -2063,11 +2032,9 @@ const QueryExecutor = {
         const hasPrism = urlParams.has('p');
 
         if (!hasQuery || !hasTimeRange || (!hasFractal && !hasPrism)) {
-            console.log('[Share] No complete share parameters found (q:', hasQuery, ', tr:', hasTimeRange, ', f:', hasFractal, ', p:', hasPrism, '), skipping');
             return false; // No share parameters found
         }
 
-        console.log('[Share] Found complete share parameters, processing...');
 
         // Set flag to prevent clearing shared state during processing
         this.isProcessingSharedQuery = true;
@@ -2082,7 +2049,6 @@ const QueryExecutor = {
 
             // Validate the parameters before proceeding
             if (!encodedQuery || !timeRangeValue || !contextId) {
-                console.log('[Share] Share parameters are empty, skipping');
                 return false;
             }
 
@@ -2103,12 +2069,10 @@ const QueryExecutor = {
                     const selectorPrisms = window.FractalSelector?.availablePrisms?.length || 0;
                     const listingPrisms = window.FractalListing?.prisms?.length || 0;
                     hasData = selectorPrisms > 0 || listingPrisms > 0;
-                    console.log('[Share] Prism availability check - Selector:', selectorPrisms, 'Listing:', listingPrisms);
                 } else {
                     const selectorFractals = window.FractalSelector?.availableFractals?.length || 0;
                     const listingFractals = window.FractalListing?.fractals?.length || 0;
                     hasData = selectorFractals > 0 || listingFractals > 0;
-                    console.log('[Share] Fractal availability check - Selector:', selectorFractals, 'Listing:', listingFractals);
                 }
             } catch (selectorError) {
                 console.warn('[Share] Error checking availability:', selectorError);
@@ -2116,7 +2080,6 @@ const QueryExecutor = {
             }
 
             if (!hasData) {
-                console.log('[Share] Fractals not loaded yet, deferring share link processing');
                 // Store the share link data to be processed when fractals are loaded
                 this.deferredShareLink = { encodedQuery, timeRangeValue, fractalId: contextId, isPrismShare };
 
@@ -2126,7 +2089,6 @@ const QueryExecutor = {
             }
 
             // Check if user has access to the shared fractal/prism
-            console.log('[Share] Checking access for', isPrismShare ? 'prism' : 'fractal', ':', contextId);
 
             let hasAccess = null;
             try {
@@ -2161,7 +2123,6 @@ const QueryExecutor = {
 
             // Switch to the shared fractal/prism if it's not current
             if (!window.FractalContext?.currentFractal || window.FractalContext.currentFractal.id !== contextId) {
-                console.log('[Share] Switching to shared', isPrismShare ? 'prism' : 'fractal', ':', hasAccess.name || 'Unknown');
 
                 // Store the shared link data to be processed after context switch
                 this.pendingShareData = {
@@ -2207,7 +2168,6 @@ const QueryExecutor = {
                 }
             }
 
-            console.log('[Share] Loading shared query:', { query, timeRangeValue, fractalId });
 
             // Load the shared data into UI
             this.loadShareDataIntoUI({
@@ -2234,11 +2194,9 @@ const QueryExecutor = {
 
         // Set flag to prevent clearing shared state during processing
         this.isProcessingSharedQuery = true;
-        console.log('[Share] Starting shared query processing');
 
         // Navigate to the search view within the fractal
         if (window.App && typeof window.App.showFractalView === 'function') {
-            console.log('[Share] Navigating to fractal search view');
             window.App.showFractalView('search');
         }
 
@@ -2284,14 +2242,12 @@ const QueryExecutor = {
                 // Clear processing flag after execution starts
                 setTimeout(() => {
                     this.isProcessingSharedQuery = false;
-                    console.log('[Share] Finished shared query processing');
                     // Now clear URL parameters after everything is loaded
                     if (window.location.search) {
                         const urlParams = new URLSearchParams(window.location.search);
                         if (urlParams.has('q') || urlParams.has('tr') || urlParams.has('f') || urlParams.has('p')) {
                             const cleanUrl = `${window.location.origin}${window.location.pathname}`;
                             window.history.replaceState({}, document.title, cleanUrl);
-                            console.log('[Share] Cleared URL parameters after successful load');
                         }
                     }
                 }, 1000); // Wait a second for the query to fully execute
@@ -2311,7 +2267,6 @@ const QueryExecutor = {
         this.deferredPollingInterval = setInterval(() => {
             attempts++;
             const isPrism = this.deferredShareLink?.isPrismShare;
-            console.log(`[Share] Polling for ${isPrism ? 'prisms' : 'fractals'} (attempt ${attempts}/${maxAttempts})`);
 
             let hasData = false;
             try {
@@ -2330,7 +2285,6 @@ const QueryExecutor = {
             }
 
             if (hasData) {
-                console.log('[Share] Data now available, processing deferred share link');
                 clearInterval(this.deferredPollingInterval);
                 this.deferredPollingInterval = null;
                 this.processDeferredShareLink();
@@ -2347,7 +2301,6 @@ const QueryExecutor = {
     // Check for deferred share links when fractals are loaded
     checkDeferredShareLink() {
         if (this.deferredShareLink) {
-            console.log('[Share] Checking deferred share link after data load');
             let hasData;
             if (this.deferredShareLink.isPrismShare) {
                 hasData = (window.FractalSelector?.availablePrisms?.length > 0) ||
@@ -2358,10 +2311,7 @@ const QueryExecutor = {
             }
 
             if (hasData) {
-                console.log('[Share] Data now available, processing deferred share link');
                 this.processDeferredShareLink();
-            } else {
-                console.log('[Share] Data still not available');
             }
         }
     },
@@ -2369,11 +2319,9 @@ const QueryExecutor = {
     // Process deferred share link once fractals are loaded
     processDeferredShareLink() {
         if (!this.deferredShareLink) {
-            console.log('[Share] No deferred share link to process');
             return;
         }
 
-        console.log('[Share] Processing deferred share link');
         const { encodedQuery, timeRangeValue, fractalId, isPrismShare } = this.deferredShareLink;
 
         // Clear the deferred data and polling
@@ -2424,7 +2372,6 @@ const QueryExecutor = {
                 return;
             }
 
-            console.log('[Share] Deferred access check result:', !!hasAccess, 'for', isPrismShare ? 'prism' : 'fractal', ':', fractalId);
             if (!hasAccess) {
                 console.error('[Share] User does not have access to deferred', isPrismShare ? 'prism' : 'fractal', ':', fractalId);
                 this.showError('Access denied: You do not have permission to view this shared query');
@@ -2433,7 +2380,6 @@ const QueryExecutor = {
 
             // Switch to the shared fractal/prism if it's not current
             if (!window.FractalContext?.currentFractal || window.FractalContext.currentFractal.id !== fractalId) {
-                console.log('[Share] Switching to deferred shared', isPrismShare ? 'prism' : 'fractal', ':', hasAccess.name || 'Unknown');
 
                 // Store the shared link data to be processed after context switch
                 this.pendingShareData = {
@@ -2481,7 +2427,6 @@ const QueryExecutor = {
             }
 
             // Load directly if already in correct context
-            console.log('[Share] Already in correct context, loading query directly');
             this.loadShareDataIntoUI({
                 query,
                 timeRangeValue,
@@ -2498,7 +2443,6 @@ const QueryExecutor = {
 
     // Clear shared query state and URL parameters
     clearSharedQueryState() {
-        console.log('[Share] Clearing shared query state');
 
         // Clear pending and deferred share data
         this.pendingShareData = null;
@@ -2517,7 +2461,6 @@ const QueryExecutor = {
             if (urlParams.has('q') || urlParams.has('tr') || urlParams.has('f') || urlParams.has('p')) {
                 const cleanUrl = `${window.location.origin}${window.location.pathname}`;
                 window.history.replaceState({}, document.title, cleanUrl);
-                console.log('[Share] Cleared URL parameters');
             }
         }
     },
