@@ -23,7 +23,7 @@ const Timeline = {
                 end: timeRange.end
             };
 
-            if (window.FractalContext && window.FractalContext.currentFractal) {
+            if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
                 requestBody.fractal_id = window.FractalContext.currentFractal.id;
             }
 
