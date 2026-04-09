@@ -618,31 +618,59 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 		return nil, err
 	}
 
-	// Check if arguments are in array format [field1, field2]
+	// Check if arguments are in array format [field1, field2] with no trailing args
 	if p.current().Type == TokenLBracket {
+		// Peek ahead: if after the ], there's a comma or more args, use the regular
+		// argument path which handles inline [...] arrays alongside key=value params.
+		useInlinePath := false
+		saved := p.pos
 		p.advance() // skip [
-
-		// Parse array elements
-		for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
-			argTok := p.current()
-			if argTok.Type == TokenField || argTok.Type == TokenString || argTok.Type == TokenValue {
-				cmd.Arguments = append(cmd.Arguments, argTok.Value)
-				p.advance()
-			} else {
-				return nil, fmt.Errorf("unexpected token in array: %s", argTok.Type)
+		depth := 1
+		for depth > 0 && p.current().Type != TokenEOF {
+			if p.current().Type == TokenLBracket {
+				depth++
+			} else if p.current().Type == TokenRBracket {
+				depth--
 			}
-
-			// Check for comma
+			if depth > 0 {
+				p.advance()
+			}
+		}
+		if p.current().Type == TokenRBracket {
+			p.advance() // skip ]
 			if p.current().Type == TokenComma {
-				p.advance()
+				useInlinePath = true
 			}
 		}
+		p.pos = saved // restore position
 
-		// Expect ]
-		if _, err := p.expect(TokenRBracket); err != nil {
-			return nil, err
+		if !useInlinePath {
+			p.advance() // skip [
+
+			// Parse array elements
+			for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
+				argTok := p.current()
+				if argTok.Type == TokenField || argTok.Type == TokenString || argTok.Type == TokenValue {
+					cmd.Arguments = append(cmd.Arguments, argTok.Value)
+					p.advance()
+				} else {
+					return nil, fmt.Errorf("unexpected token in array: %s", argTok.Type)
+				}
+
+				// Check for comma
+				if p.current().Type == TokenComma {
+					p.advance()
+				}
+			}
+
+			// Expect ]
+			if _, err := p.expect(TokenRBracket); err != nil {
+				return nil, err
+			}
 		}
-	} else {
+	}
+
+	if len(cmd.Arguments) == 0 {
 		// Parse regular arguments (field1, field2, parameter=value, or function calls)
 		for p.current().Type != TokenRParen && p.current().Type != TokenEOF {
 			if err := p.checkIterationLimit(); err != nil {
