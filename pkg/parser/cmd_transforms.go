@@ -340,42 +340,66 @@ func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
-// concatHandler handles concat([field1,field2,...], output_field)
+// concatHandler handles concat([field1,field2,...], as=alias)
 type concatHandler struct{}
 
 func (h *concatHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	outputField := "_concat"
-	if len(cmd.Arguments) > 1 {
-		outputField = cmd.Arguments[1]
+	alias := "_concat"
+	for _, arg := range cmd.Arguments {
+		arg = strings.TrimSpace(arg)
+		if strings.HasPrefix(arg, "as=") {
+			alias = strings.TrimPrefix(arg, "as=")
+		}
 	}
-	ctx.Registry.Register(outputField, FieldKindPerRow, outputField, ctx.CmdIndex)
+	ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
 	return nil
 }
 
 func (h *concatHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		outputField := "_concat"
-		var fields []string
-		fieldList := strings.Split(cmd.Arguments[0], ",")
-		for _, field := range fieldList {
-			field = strings.TrimSpace(field)
-			if field == "timestamp" {
+	if len(cmd.Arguments) == 0 {
+		return fmt.Errorf("concat() requires at least one argument with fields in brackets, e.g. concat([field1,field2])")
+	}
+	alias := "_concat"
+	var fields []string
+	for _, arg := range cmd.Arguments {
+		arg = strings.TrimSpace(arg)
+		if strings.HasPrefix(arg, "as=") {
+			alias = strings.TrimPrefix(arg, "as=")
+			continue
+		}
+		// Handle bracket syntax: [field1,field2,...]
+		if strings.HasPrefix(arg, "[") && strings.HasSuffix(arg, "]") {
+			inner := strings.Trim(arg, "[]")
+			for _, f := range strings.Split(inner, ",") {
+				f = strings.TrimSpace(f)
+				if f == "" {
+					continue
+				}
+				if f == "timestamp" {
+					fields = append(fields, "toString(timestamp)")
+				} else {
+					fields = append(fields, jsonFieldRef(f))
+				}
+			}
+		} else {
+			// Single field without brackets
+			if arg == "timestamp" {
 				fields = append(fields, "toString(timestamp)")
 			} else {
-				fields = append(fields, jsonFieldRef(field))
+				fields = append(fields, jsonFieldRef(arg))
 			}
 		}
-		if len(cmd.Arguments) > 1 {
-			outputField = cmd.Arguments[1]
-		}
-		safeOutput, err := sanitizeIdentifier(outputField)
-		if err != nil {
-			return fmt.Errorf("concat(): invalid output field: %w", err)
-		}
-		expr := fmt.Sprintf("concat(%s) AS %s", strings.Join(fields, ", "), safeOutput)
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
-		ctx.Registry.SetResolveExpr(outputField, expr)
 	}
+	if len(fields) == 0 {
+		return fmt.Errorf("concat() requires at least one field")
+	}
+	safeOutput, err := sanitizeIdentifier(alias)
+	if err != nil {
+		return fmt.Errorf("concat(): invalid output field: %w", err)
+	}
+	expr := fmt.Sprintf("concat(%s) AS %s", strings.Join(fields, ", "), safeOutput)
+	ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+	ctx.Registry.SetResolveExpr(alias, expr)
 	return nil
 }
 

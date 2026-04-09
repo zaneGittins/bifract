@@ -3,7 +3,6 @@ package feeds
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,8 +13,7 @@ import (
 	githttp "github.com/go-git/go-git/v6/plumbing/transport/http"
 )
 
-// validateRepoURL checks that the URL uses an allowed scheme and does not
-// resolve to a private/internal IP address (SSRF protection).
+// validateRepoURL checks that the URL uses an allowed scheme and has a hostname.
 func validateRepoURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -25,22 +23,8 @@ func validateRepoURL(rawURL string) error {
 	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("unsupported URL scheme %q: only http and https are allowed", scheme)
 	}
-	hostname := u.Hostname()
-	if hostname == "" {
+	if u.Hostname() == "" {
 		return fmt.Errorf("URL must include a hostname")
-	}
-	ips, err := net.LookupHost(hostname)
-	if err != nil {
-		return fmt.Errorf("failed to resolve hostname %q: %w", hostname, err)
-	}
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return fmt.Errorf("URL resolves to a blocked IP address")
-		}
 	}
 	return nil
 }

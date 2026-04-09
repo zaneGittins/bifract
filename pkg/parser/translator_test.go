@@ -1715,7 +1715,7 @@ func TestComputedFieldPipedConditions(t *testing.T) {
 	})
 
 	t.Run("concat with piped condition", func(t *testing.T) {
-		pipeline, err := ParseQuery(`* | concat(host) | _concat != ""`)
+		pipeline, err := ParseQuery(`* | concat([host,port]) | _concat != ""`)
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -1729,7 +1729,7 @@ func TestComputedFieldPipedConditions(t *testing.T) {
 	})
 
 	t.Run("concat custom alias with piped condition", func(t *testing.T) {
-		pipeline, err := ParseQuery(`* | concat(host, _addr) | _addr != ""`)
+		pipeline, err := ParseQuery(`* | concat([host,port], as=_addr) | _addr != ""`)
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}

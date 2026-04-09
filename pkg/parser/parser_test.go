@@ -1149,7 +1149,7 @@ func TestStringFunctions(t *testing.T) {
 		},
 		{
 			name:    "concat function basic",
-			query:   `* | concat("user,host")`,
+			query:   `* | concat([user,host])`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "concat(") &&

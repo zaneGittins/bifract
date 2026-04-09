@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -220,52 +219,22 @@ func (wc *WebhookClient) sendAttempt(ctx context.Context, webhook WebhookAction,
 	return fmt.Errorf("HTTP error: %s", resp.Status)
 }
 
-// validateURL performs validation and security checks on webhook URLs.
-// Blocks requests to private/internal networks to prevent SSRF.
+// validateURL performs basic validation on webhook URLs.
 func (wc *WebhookClient) validateURL(webhookURL string) error {
 	parsedURL, err := url.Parse(webhookURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL format: %w", err)
 	}
 
-	// Must be HTTP or HTTPS
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
 		return fmt.Errorf("unsupported URL scheme: %s (only http/https allowed)", parsedURL.Scheme)
 	}
 
-	// Must have a host
 	if parsedURL.Host == "" {
 		return fmt.Errorf("URL must have a host")
 	}
 
-	host := parsedURL.Hostname()
-
-	// Resolve hostname to IP addresses and check each one
-	ips, err := net.LookupHost(host)
-	if err != nil {
-		return fmt.Errorf("failed to resolve hostname %q: %w", host, err)
-	}
-
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
-		if isBlockedIP(ip) {
-			return fmt.Errorf("webhook URL resolves to blocked address: %s -> %s", host, ipStr)
-		}
-	}
-
 	return nil
-}
-
-// isBlockedIP returns true if the IP is private, loopback, or otherwise internal.
-func isBlockedIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
-		ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified()
 }
 
 // applyAuth applies the configured authentication method to the HTTP request

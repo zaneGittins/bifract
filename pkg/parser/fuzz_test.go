@@ -127,7 +127,7 @@ var bqlSeeds = []string{
 	// Transform commands
 	`* | regex(message, "error: (?P<code>\d+)")`,
 	`* | replace(message, "error", "warning")`,
-	`* | concat(host, ":", port)`,
+	`* | concat([host,port])`,
 	`* | lowercase(message)`,
 	`* | uppercase(level)`,
 	`* | hash(user, algo=sha256)`,
