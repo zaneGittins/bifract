@@ -70,26 +70,72 @@ func NewWebhookClient(baseURL string) *WebhookClient {
 	}
 }
 
-// buildAlertLink constructs a share link URL for the alert query results
-func (wc *WebhookClient) buildAlertLink(alert *Alert) string {
-	encoded := base64.StdEncoding.EncodeToString([]byte(url.QueryEscape(alert.QueryString)))
+// encodeQueryForShareLink mirrors JavaScript encodeURIComponent then base64-encodes
+// the result. The frontend decodes via decodeURIComponent(atob(...)), which only
+// understands %XX sequences, so url.QueryEscape (which encodes spaces as '+') would
+// leave stray '+' in the decoded query. Replacing '+' with '%20' fixes the mismatch.
+func encodeQueryForShareLink(query string) string {
+	escaped := strings.ReplaceAll(url.QueryEscape(query), "+", "%20")
+	return base64.StdEncoding.EncodeToString([]byte(escaped))
+}
+
+// shareLinkWindow is the half-width of the time window centered on the alert
+// trigger time. A ±1h window gives users context before and after the event.
+const shareLinkWindow = time.Hour
+
+// buildShareLink constructs a share link URL for the alert query results.
+// It handles both fractal-scoped alerts (sets 'f') and prism-scoped alerts
+// (sets 'p'). The time range is a ±1h custom window centered on triggeredAt
+// so the link remains valid regardless of when the recipient clicks it.
+// Returns an empty string if baseURL is empty or neither scope is set.
+func buildShareLink(baseURL string, alert *Alert, triggeredAt time.Time) string {
+	if baseURL == "" {
+		return ""
+	}
+	if alert.FractalID == "" && alert.PrismID == "" {
+		return ""
+	}
 	params := url.Values{}
-	params.Set("q", encoded)
-	params.Set("tr", "1h")
-	params.Set("f", alert.FractalID)
-	return wc.baseURL + "/?" + params.Encode()
+	params.Set("q", encodeQueryForShareLink(alert.QueryString))
+
+	if triggeredAt.IsZero() {
+		// Fallback: no trigger time available, use a relative window.
+		params.Set("tr", "1h")
+	} else {
+		// Custom ±1h window centered on the trigger time. Format matches
+		// what the frontend produces via JavaScript Date.toISOString()
+		// (RFC 3339 with millisecond precision and 'Z' suffix).
+		start := triggeredAt.Add(-shareLinkWindow).UTC()
+		end := triggeredAt.Add(shareLinkWindow).UTC()
+		params.Set("tr", "custom")
+		params.Set("ts", start.Format("2006-01-02T15:04:05.000Z"))
+		params.Set("te", end.Format("2006-01-02T15:04:05.000Z"))
+	}
+
+	if alert.PrismID != "" {
+		params.Set("p", alert.PrismID)
+	} else {
+		params.Set("f", alert.FractalID)
+	}
+	return baseURL + "/?" + params.Encode()
+}
+
+// buildAlertLink constructs a share link URL for the alert query results
+func (wc *WebhookClient) buildAlertLink(alert *Alert, triggeredAt time.Time) string {
+	return buildShareLink(wc.baseURL, alert, triggeredAt)
 }
 
 // Send delivers a webhook payload to the configured endpoint with retry logic.
 // resolvedName is the alert name with any {{field}} templates replaced.
 func (wc *WebhookClient) Send(ctx context.Context, webhook WebhookAction, alert *Alert, resolvedName string, results []map[string]interface{}) WebhookResult {
+	triggeredAt := time.Now()
 	payload := WebhookPayload{
 		AlertName:   resolvedName,
 		AlertID:     alert.ID,
 		Description: alert.Description,
 		Severity:    alert.Severity,
 		Labels:      alert.Labels,
-		TriggeredAt: time.Now(),
+		TriggeredAt: triggeredAt,
 		QueryString: alert.QueryString,
 		MatchCount:  len(results),
 		Results:     results,
@@ -98,8 +144,8 @@ func (wc *WebhookClient) Send(ctx context.Context, webhook WebhookAction, alert 
 		payload.OriginalName = alert.Name
 	}
 
-	if webhook.IncludeAlertLink && wc.baseURL != "" && alert.FractalID != "" {
-		payload.AlertLink = wc.buildAlertLink(alert)
+	if webhook.IncludeAlertLink && wc.baseURL != "" && (alert.FractalID != "" || alert.PrismID != "") {
+		payload.AlertLink = wc.buildAlertLink(alert, triggeredAt)
 	}
 
 	result := WebhookResult{

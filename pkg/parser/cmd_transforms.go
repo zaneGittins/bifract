@@ -367,26 +367,18 @@ func (h *concatHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			alias = strings.TrimPrefix(arg, "as=")
 			continue
 		}
-		// Handle bracket syntax: [field1,field2,...]
-		if strings.HasPrefix(arg, "[") && strings.HasSuffix(arg, "]") {
-			inner := strings.Trim(arg, "[]")
-			for _, f := range strings.Split(inner, ",") {
-				f = strings.TrimSpace(f)
-				if f == "" {
-					continue
-				}
-				if f == "timestamp" {
-					fields = append(fields, "toString(timestamp)")
-				} else {
-					fields = append(fields, jsonFieldRef(f))
-				}
+		// Strip brackets if present, then split on commas to handle
+		// both bracket syntax [field1,field2] and bare comma-separated fields.
+		inner := strings.Trim(arg, "[]")
+		for _, f := range strings.Split(inner, ",") {
+			f = strings.TrimSpace(f)
+			if f == "" {
+				continue
 			}
-		} else {
-			// Single field without brackets
-			if arg == "timestamp" {
+			if f == "timestamp" {
 				fields = append(fields, "toString(timestamp)")
 			} else {
-				fields = append(fields, jsonFieldRef(arg))
+				fields = append(fields, jsonFieldRef(f))
 			}
 		}
 	}
