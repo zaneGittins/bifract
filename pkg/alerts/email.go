@@ -3,13 +3,11 @@ package alerts
 import (
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html"
 	"net"
 	"net/smtp"
-	"net/url"
 	"strings"
 	"time"
 
@@ -88,13 +86,14 @@ func (ec *EmailClient) loadSMTPConfig(ctx context.Context) (*SMTPConfig, error) 
 
 // Send delivers an email notification with retry logic.
 func (ec *EmailClient) Send(ctx context.Context, action EmailAction, alert *Alert, resolvedName string, results []map[string]interface{}) EmailResult {
+	triggeredAt := time.Now()
 	result := EmailResult{
 		EmailActionID:   action.ID,
 		EmailActionName: action.Name,
-		Timestamp:       time.Now(),
+		Timestamp:       triggeredAt,
 	}
 
-	start := time.Now()
+	start := triggeredAt
 	defer func() {
 		result.Duration = time.Since(start)
 	}()
@@ -105,14 +104,14 @@ func (ec *EmailClient) Send(ctx context.Context, action EmailAction, alert *Aler
 		return result
 	}
 
-	subject := ec.resolveTemplate(action.SubjectTemplate, alert, resolvedName, results)
-	body := ec.resolveTemplate(action.BodyTemplate, alert, resolvedName, results)
+	subject := ec.resolveTemplate(action.SubjectTemplate, alert, resolvedName, results, triggeredAt)
+	body := ec.resolveTemplate(action.BodyTemplate, alert, resolvedName, results, triggeredAt)
 
 	if subject == "" {
 		subject = fmt.Sprintf("[Bifract Alert] %s", resolvedName)
 	}
 	if body == "" {
-		body = ec.defaultBody(alert, resolvedName, results)
+		body = ec.defaultBody(alert, resolvedName, results, triggeredAt)
 	}
 
 	// Retry with exponential backoff (max 3 attempts)
@@ -247,20 +246,12 @@ func (ec *EmailClient) buildMIMEMessage(from string, to []string, subject, body 
 }
 
 // resolveTemplate replaces {{placeholders}} in email templates
-func (ec *EmailClient) resolveTemplate(tmpl string, alert *Alert, resolvedName string, results []map[string]interface{}) string {
+func (ec *EmailClient) resolveTemplate(tmpl string, alert *Alert, resolvedName string, results []map[string]interface{}, triggeredAt time.Time) string {
 	if tmpl == "" {
 		return ""
 	}
 
-	alertLink := ""
-	if ec.baseURL != "" && alert.FractalID != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(url.QueryEscape(alert.QueryString)))
-		params := url.Values{}
-		params.Set("q", encoded)
-		params.Set("tr", "1h")
-		params.Set("f", alert.FractalID)
-		alertLink = ec.baseURL + "/?" + params.Encode()
-	}
+	alertLink := buildShareLink(ec.baseURL, alert, triggeredAt)
 
 	replacements := map[string]string{
 		"{{alert_name}}":  html.EscapeString(resolvedName),
@@ -281,16 +272,8 @@ func (ec *EmailClient) resolveTemplate(tmpl string, alert *Alert, resolvedName s
 }
 
 // defaultBody generates an HTML email body when no template is configured
-func (ec *EmailClient) defaultBody(alert *Alert, resolvedName string, results []map[string]interface{}) string {
-	alertLink := ""
-	if ec.baseURL != "" && alert.FractalID != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(url.QueryEscape(alert.QueryString)))
-		params := url.Values{}
-		params.Set("q", encoded)
-		params.Set("tr", "1h")
-		params.Set("f", alert.FractalID)
-		alertLink = ec.baseURL + "/?" + params.Encode()
-	}
+func (ec *EmailClient) defaultBody(alert *Alert, resolvedName string, results []map[string]interface{}, triggeredAt time.Time) string {
+	alertLink := buildShareLink(ec.baseURL, alert, triggeredAt)
 
 	severityColor := map[string]string{
 		"critical": "#ef4444",
