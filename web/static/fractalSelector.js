@@ -432,15 +432,55 @@ const FractalSelector = {
     },
 
     selectCurrentFractal() {
-        // Select the default fractal if no fractal is currently selected
-        if (!this.currentFractal && this.availableFractals.length > 0) {
-            const defaultFractal = this.availableFractals.find(fractal => fractal.is_default);
-            const firstFractal = this.availableFractals[0];
-            const targetFractal = defaultFractal || firstFractal;
+        if (this.currentFractal) return;
 
+        // Source of truth for which scope we should render is the server
+        // session, exposed via Auth.currentUser.{selected_fractal,selected_prism}.
+        // Without this, the client silently falls back to "default" while the
+        // server session may still be on a prism, producing a split-brain where
+        // listings in the default fractal leak prism-scoped data.
+        const sessionPrismID   = window.Auth?.currentUser?.selected_prism || '';
+        const sessionFractalID = window.Auth?.currentUser?.selected_fractal || '';
+
+        if (sessionPrismID) {
+            const prism = this.availablePrisms.find(p => p.id === sessionPrismID);
+            if (prism) {
+                this.currentFractal = prism;
+                this.updateSelectorText(prism.name);
+                if (window.FractalContext) {
+                    FractalContext.currentFractal = prism;
+                    FractalContext.currentItemType = 'prism';
+                }
+                return;
+            }
+        }
+
+        if (sessionFractalID) {
+            const fractal = this.availableFractals.find(f => f.id === sessionFractalID);
+            if (fractal) {
+                this.currentFractal = fractal;
+                this.updateSelectorText(fractal.name);
+                if (window.FractalContext) {
+                    FractalContext.currentFractal = fractal;
+                    FractalContext.currentItemType = 'fractal';
+                }
+                return;
+            }
+        }
+
+        // No scope in session -> pick a default and persist it so the server
+        // session is no longer stale from a prior visit.
+        if (this.availableFractals.length > 0) {
+            const defaultFractal = this.availableFractals.find(fractal => fractal.is_default);
+            const targetFractal = defaultFractal || this.availableFractals[0];
             if (targetFractal) {
                 this.currentFractal = targetFractal;
                 this.updateSelectorText(targetFractal.name);
+                if (window.FractalContext) {
+                    FractalContext.currentFractal = targetFractal;
+                    FractalContext.currentItemType = 'fractal';
+                    FractalContext.selectFractalOnServer(targetFractal.id);
+                }
             }
         }
     },

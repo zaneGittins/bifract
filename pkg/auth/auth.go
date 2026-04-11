@@ -644,6 +644,11 @@ func (h *AuthHandler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) 
 	if role, ok := r.Context().Value("prism_role").(string); ok {
 		prismRole = role
 	}
+	// Expose the server's session scope so the UI can render the correct
+	// current fractal/prism on page load without a split-brain between
+	// client localStorage and the server session.
+	selectedFractal, _ := r.Context().Value("selected_fractal").(string)
+	selectedPrism, _ := r.Context().Value("selected_prism").(string)
 
 	userData := map[string]interface{}{
 		"username":         user.Username,
@@ -653,6 +658,8 @@ func (h *AuthHandler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) 
 		"is_admin":         user.IsAdmin,
 		"fractal_role":     fractalRole,
 		"prism_role":       prismRole,
+		"selected_fractal": selectedFractal,
+		"selected_prism":   selectedPrism,
 	}
 	if user.ForcePasswordChange {
 		userData["force_password_change"] = true

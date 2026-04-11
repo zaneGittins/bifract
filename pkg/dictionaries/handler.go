@@ -406,7 +406,13 @@ func (h *Handler) HandleListDictionaryNames(w http.ResponseWriter, r *http.Reque
 // ---- Dictionary Actions ----
 
 func (h *Handler) HandleListDictionaryActions(w http.ResponseWriter, r *http.Request) {
-	actions, err := h.manager.ListDictionaryActions(r.Context())
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Dictionaries] Failed to get scope for dictionary actions: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+		return
+	}
+	actions, err := h.manager.ListDictionaryActions(r.Context(), fractalID, prismID)
 	if err != nil {
 		log.Printf("[Dictionaries] Failed to list dictionary actions: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to load dictionary actions")
@@ -438,9 +444,16 @@ func (h *Handler) HandleCreateDictionaryAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Dictionaries] Failed to get scope for dictionary action create: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+		return
+	}
+
 	username := h.getCurrentUser(r)
 	action, err := h.manager.CreateDictionaryAction(r.Context(), req.Name, req.Description,
-		req.DictionaryName, req.MaxLogsPerTrigger, req.Enabled, username)
+		req.DictionaryName, req.MaxLogsPerTrigger, req.Enabled, username, fractalID, prismID)
 	if err != nil {
 		log.Printf("[Dictionaries] Failed to create dictionary action: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to create dictionary action")
@@ -456,6 +469,9 @@ func (h *Handler) HandleGetDictionaryAction(w http.ResponseWriter, r *http.Reque
 		h.respondError(w, http.StatusNotFound, "Dictionary action not found")
 		return
 	}
+	if !h.requireDictionaryActionInScope(w, r, action) {
+		return
+	}
 	h.respondSuccess(w, action)
 }
 
@@ -464,6 +480,15 @@ func (h *Handler) HandleUpdateDictionaryAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 	id := chi.URLParam(r, "id")
+
+	existing, err := h.manager.GetDictionaryAction(r.Context(), id)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "Dictionary action not found")
+		return
+	}
+	if !h.requireDictionaryActionInScope(w, r, existing) {
+		return
+	}
 
 	var req struct {
 		Name              string `json:"name"`
@@ -492,12 +517,38 @@ func (h *Handler) HandleDeleteDictionaryAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 	id := chi.URLParam(r, "id")
+	existing, err := h.manager.GetDictionaryAction(r.Context(), id)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "Dictionary action not found")
+		return
+	}
+	if !h.requireDictionaryActionInScope(w, r, existing) {
+		return
+	}
 	if err := h.manager.DeleteDictionaryAction(r.Context(), id); err != nil {
 		log.Printf("[Dictionaries] Failed to delete dictionary action %s: %v", id, err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to delete dictionary action")
 		return
 	}
 	h.respondSuccess(w, map[string]bool{"deleted": true})
+}
+
+// requireDictionaryActionInScope verifies the action belongs to the caller's current
+// session scope. Writes a 404 and returns false on mismatch.
+func (h *Handler) requireDictionaryActionInScope(w http.ResponseWriter, r *http.Request, action *DictionaryAction) bool {
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Dictionaries] Failed to get scope: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+		return false
+	}
+	inScope := (prismID != "" && action.PrismID == prismID) ||
+		(fractalID != "" && action.FractalID == fractalID)
+	if !inScope {
+		h.respondError(w, http.StatusNotFound, "Dictionary action not found")
+		return false
+	}
+	return true
 }
 
 // ---- Helpers ----

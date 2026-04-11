@@ -768,13 +768,23 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 
 // ---- Dictionary Actions ----
 
-// ListDictionaryActions returns all dictionary actions.
-func (m *Manager) ListDictionaryActions(ctx context.Context) ([]*DictionaryAction, error) {
-	rows, err := m.pg.Query(ctx,
-		`SELECT da.id, da.name, da.description, da.dictionary_name,
-		        da.max_logs_per_trigger, da.enabled, COALESCE(da.created_by, ''), da.created_at, da.updated_at
-		 FROM dictionary_actions da
-		 ORDER BY da.name ASC`)
+// ListDictionaryActions returns dictionary actions scoped to the given fractal or prism.
+// Pass exactly one of fractalID or prismID.
+func (m *Manager) ListDictionaryActions(ctx context.Context, fractalID, prismID string) ([]*DictionaryAction, error) {
+	base := `SELECT da.id, da.name, da.description, da.dictionary_name,
+	               da.max_logs_per_trigger, da.enabled, COALESCE(da.created_by, ''), da.created_at, da.updated_at,
+	               COALESCE(da.fractal_id::text, ''), COALESCE(da.prism_id::text, '')
+	         FROM dictionary_actions da`
+	var args []interface{}
+	var where string
+	if prismID != "" {
+		where = " WHERE da.prism_id = $1"
+		args = append(args, prismID)
+	} else if fractalID != "" {
+		where = " WHERE da.fractal_id = $1"
+		args = append(args, fractalID)
+	}
+	rows, err := m.pg.Query(ctx, base+where+" ORDER BY da.name ASC", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -787,28 +797,41 @@ func (m *Manager) GetDictionaryAction(ctx context.Context, id string) (*Dictiona
 	a := &DictionaryAction{}
 	err := m.pg.QueryRow(ctx,
 		`SELECT da.id, da.name, da.description, da.dictionary_name,
-		        da.max_logs_per_trigger, da.enabled, COALESCE(da.created_by, ''), da.created_at, da.updated_at
+		        da.max_logs_per_trigger, da.enabled, COALESCE(da.created_by, ''), da.created_at, da.updated_at,
+		        COALESCE(da.fractal_id::text, ''), COALESCE(da.prism_id::text, '')
 		 FROM dictionary_actions da
 		 WHERE da.id = $1`, id).
 		Scan(&a.ID, &a.Name, &a.Description, &a.DictionaryName,
 			&a.MaxLogsPerTrigger, &a.Enabled,
-			&a.CreatedBy, &a.CreatedAt, &a.UpdatedAt)
+			&a.CreatedBy, &a.CreatedAt, &a.UpdatedAt,
+			&a.FractalID, &a.PrismID)
 	if err != nil {
 		return nil, err
 	}
 	return a, nil
 }
 
-// CreateDictionaryAction creates a new dictionary action.
-func (m *Manager) CreateDictionaryAction(ctx context.Context, name, description, dictName string, maxLogs int, enabled bool, createdBy string) (*DictionaryAction, error) {
+// CreateDictionaryAction creates a new dictionary action scoped to the given fractal or prism.
+// Pass exactly one of fractalID or prismID.
+func (m *Manager) CreateDictionaryAction(ctx context.Context, name, description, dictName string, maxLogs int, enabled bool, createdBy, fractalID, prismID string) (*DictionaryAction, error) {
+	if (fractalID == "") == (prismID == "") {
+		return nil, fmt.Errorf("exactly one of fractal_id or prism_id must be set")
+	}
 	if maxLogs <= 0 {
 		maxLogs = 1000
 	}
+	var fPtr, pPtr interface{}
+	if fractalID != "" {
+		fPtr = fractalID
+	}
+	if prismID != "" {
+		pPtr = prismID
+	}
 	var id string
 	err := m.pg.QueryRow(ctx,
-		`INSERT INTO dictionary_actions (name, description, dictionary_name, max_logs_per_trigger, enabled, created_by)
-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		name, description, dictName, maxLogs, enabled, createdBy).Scan(&id)
+		`INSERT INTO dictionary_actions (name, description, dictionary_name, max_logs_per_trigger, enabled, created_by, fractal_id, prism_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+		name, description, dictName, maxLogs, enabled, createdBy, fPtr, pPtr).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -840,7 +863,8 @@ func (m *Manager) DeleteDictionaryAction(ctx context.Context, id string) error {
 func (m *Manager) GetDictionaryActionsByAlertID(ctx context.Context, alertID string) ([]*DictionaryAction, error) {
 	rows, err := m.pg.Query(ctx,
 		`SELECT da.id, da.name, da.description, da.dictionary_name,
-		        da.max_logs_per_trigger, da.enabled, COALESCE(da.created_by, ''), da.created_at, da.updated_at
+		        da.max_logs_per_trigger, da.enabled, COALESCE(da.created_by, ''), da.created_at, da.updated_at,
+		        COALESCE(da.fractal_id::text, ''), COALESCE(da.prism_id::text, '')
 		 FROM dictionary_actions da
 		 JOIN alert_dictionary_actions ada ON ada.dictionary_action_id = da.id
 		 WHERE ada.alert_id = $1`, alertID)
@@ -998,13 +1022,16 @@ func collectLogColumns(logs []map[string]interface{}) []string {
 }
 
 // scanDictionaryActions scans sql.Rows into a slice of DictionaryAction.
+// Expects SELECT columns in this order: id, name, description, dictionary_name,
+// max_logs_per_trigger, enabled, created_by, created_at, updated_at, fractal_id, prism_id.
 func scanDictionaryActions(rows *sql.Rows) ([]*DictionaryAction, error) {
 	var actions []*DictionaryAction
 	for rows.Next() {
 		a := &DictionaryAction{}
 		if err := rows.Scan(&a.ID, &a.Name, &a.Description, &a.DictionaryName,
 			&a.MaxLogsPerTrigger, &a.Enabled,
-			&a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			&a.CreatedBy, &a.CreatedAt, &a.UpdatedAt,
+			&a.FractalID, &a.PrismID); err != nil {
 			return nil, err
 		}
 		actions = append(actions, a)
