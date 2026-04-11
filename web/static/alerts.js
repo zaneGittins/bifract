@@ -3638,11 +3638,9 @@ throttleField: ${alert.throttle_field}` : ''}`;
     // Fractal Context Management
     // ============================
 
-    // Re-load alerts when index context changes
     onFractalChange() {
-        // Only refresh if we're currently viewing the alerts view
         const alertsView = document.getElementById('alertsView');
-        if (alertsView && alertsView.style.display !== 'none') {
+        if (alertsView && alertsView.offsetParent !== null) {
             this.loadAlerts();
         }
     },

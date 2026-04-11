@@ -49,9 +49,16 @@ const App = {
             Auth.init();
         }
 
-        // Initialize fractal management (selector will be initialized after login)
+        // Initialize fractal management
         if (window.FractalManagement) {
             FractalManagement.init();
+        }
+
+        // Initialize the top-bar fractal/prism selector. createSelectorUI()
+        // is idempotent, so this is safe to call even if a future code path
+        // also initializes it (e.g. post-login).
+        if (window.FractalSelector) {
+            FractalSelector.init();
         }
 
         // Initialize toast notifications

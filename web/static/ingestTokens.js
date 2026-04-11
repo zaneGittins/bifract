@@ -64,7 +64,7 @@ const IngestTokens = {
         const searchInput = document.getElementById('ingestTokenSearchInput');
         if (searchInput) searchInput.value = '';
         const container = document.getElementById('fractalIngestTabContent');
-        if (container && container.style.display !== 'none') {
+        if (container && container.offsetParent !== null) {
             this.loadTokens();
         }
     },

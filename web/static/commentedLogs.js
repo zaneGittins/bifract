@@ -552,7 +552,7 @@ const CommentedLogs = {
 
     onFractalChange() {
         const commentedView = document.getElementById('commentedView');
-        if (commentedView && commentedView.style.display !== 'none') {
+        if (commentedView && commentedView.offsetParent !== null) {
             this.fetchComments();
         }
     },

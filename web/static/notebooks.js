@@ -27,6 +27,23 @@ const Notebooks = {
 
         this.bindEvents();
         this.showNotebookListing();
+        if (window.FractalContext && typeof FractalContext.subscribe === 'function') {
+            FractalContext.subscribe('Notebooks', () => this.onFractalChange());
+        }
+    },
+
+    onFractalChange() {
+        // If the user was editing a notebook, drop state: it belongs to the
+        // previous scope. showNotebookListing() below also closes the editor.
+        this.currentNotebook = null;
+        this.isEditing = false;
+        this.stopPresenceTracking();
+        this.currentPage = 0;
+        this.searchQuery = '';
+        const view = document.getElementById('notebooksView');
+        if (view && view.offsetParent !== null) {
+            this.showNotebookListing();
+        }
     },
 
     /**
@@ -146,12 +163,14 @@ const Notebooks = {
                 params.append('search', this.searchQuery);
             }
 
+            const token = window.FractalContext?.scopeToken?.();
             const response = await fetch(`/api/v1/notebooks?${params.toString()}`, {
                 method: 'GET',
                 credentials: 'include'
             });
 
             const data = await response.json();
+            if (window.FractalContext?.isScopeStale?.(token)) return;
 
             if (!data.success) {
                 throw new Error(data.error || 'Failed to load notebooks');

@@ -21,6 +21,20 @@ const Dictionaries = {
         this.rowSearch = '';
         this.totalRows = 0;
         this._csvFile = null;
+        if (window.FractalContext && typeof FractalContext.subscribe === 'function') {
+            FractalContext.subscribe('Dictionaries', () => this.onFractalChange());
+        }
+    },
+
+    onFractalChange() {
+        this.currentDictionary = null;
+        this.allDictionaries = [];
+        this.filteredDictionaries = [];
+        this.currentPage = 0;
+        const view = document.getElementById('dictionariesView');
+        if (view && view.offsetParent !== null) {
+            this.showListing();
+        }
     },
 
     show() {
@@ -66,14 +80,17 @@ const Dictionaries = {
         if (tableContainer) tableContainer.style.display = 'none';
         if (emptyEl) emptyEl.style.display = 'none';
         if (paginationEl) paginationEl.style.display = 'none';
+        const token = window.FractalContext?.scopeToken?.();
         try {
             const resp = await fetch('/api/v1/dictionaries', { credentials: 'include' });
             const data = await resp.json();
+            if (window.FractalContext?.isScopeStale?.(token)) return;
             if (data.success) {
                 this.allDictionaries = data.data.dictionaries || [];
                 this.filterDictionaries(document.getElementById('dictSearchInput')?.value || '');
             }
         } catch (e) {
+            if (window.FractalContext?.isScopeStale?.(token)) return;
             console.error('Failed to load dictionaries:', e);
         }
     },

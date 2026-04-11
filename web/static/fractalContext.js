@@ -3,7 +3,55 @@ const FractalContext = {
     currentFractal: null,
     currentItemType: 'fractal', // 'fractal' or 'prism'
 
+    // Subscribers registered at init time that want to be notified on scope change.
+    // See notifyFractalChange() below. Prefer subscribe() over adding to the static
+    // list in notifyFractalChange() for new modules.
+    _subscribers: [],
+
+    // Monotonic counter bumped on every scope change. Modules can capture this
+    // before starting an async fetch and compare on completion to discard any
+    // result that belongs to a stale scope. See scopeToken() / isScopeStale().
+    _scopeGeneration: 0,
+
+    // Return a token representing the current scope. An async operation that
+    // loads scope-dependent data should capture this before starting, then
+    // check isScopeStale(token) before applying the result.
+    scopeToken() {
+        return this._scopeGeneration;
+    },
+
+    // True if the given token no longer represents the current scope, i.e.
+    // the scope has changed since the token was issued and the caller should
+    // discard any in-flight result.
+    isScopeStale(token) {
+        return token !== this._scopeGeneration;
+    },
+
     init() {
+    },
+
+    // subscribe registers a callback that fires every time the current fractal/prism
+    // scope changes. The callback should invalidate any cached data that was scoped
+    // to the previous selection and re-load it if the module is currently visible.
+    //
+    // Modules that load scoped data MUST either:
+    //   - call FractalContext.subscribe('ModuleName', () => Module.onFractalChange()) at init, or
+    //   - expose a global onFractalChange method and be listed in notifyFractalChange()'s
+    //     fallback module list.
+    //
+    // Failure to do either causes stale cross-scope data to linger in the UI after
+    // the user switches fractals/prisms.
+    subscribe(name, callback) {
+        if (typeof callback !== 'function') return;
+        // Idempotent: replace any existing subscriber with the same name. This
+        // makes it safe to call subscribe() from module init functions that run
+        // more than once (e.g. lazy-init on tab open).
+        const existing = this._subscribers.findIndex(s => s.name === name);
+        if (existing >= 0) {
+            this._subscribers[existing] = { name, callback };
+        } else {
+            this._subscribers.push({ name, callback });
+        }
     },
 
     isPrism() {
@@ -240,28 +288,65 @@ const FractalContext = {
         this.notifyFractalChange();
     },
 
-    // Notify all modules that the fractal has changed
+    // Notify all modules that the fractal has changed.
+    //
+    // This is the ONLY supported way to signal a scope change to the rest of the UI.
+    // Both the subscribe() registry and the static fallback list below are iterated,
+    // so modules can opt in via either mechanism. Every module that loads scoped data
+    // (anything per-fractal or per-prism) MUST have a handler here — otherwise the
+    // UI will silently show stale cross-scope data after a switch.
+    //
+    // When adding a new scoped module, prefer FractalContext.subscribe() in its init.
+    // The fallback list is kept for legacy modules that don't have an init phase.
     notifyFractalChange() {
-        const modulesWithFractalHandlers = [
+        // Bump the scope generation so any in-flight async load from the old
+        // scope can be discarded by modules that cooperate via scopeToken().
+        this._scopeGeneration++;
+
+        // All known scoped modules. Listing them all (even the ones that already use
+        // subscribe()) is intentional: the `typeof ... === 'function'` guard makes it
+        // a cheap no-op for modules that aren't loaded, and being explicit here is
+        // the canonical audit point for "does this module react to scope changes?".
+        const fallbackModules = [
             'Alerts',
+            'AlertFeeds',
             'Chat',
             'CommentedLogs',
-            'CommentGraph',
             'Comments',
+            'Dashboards',
+            'Dictionaries',
             'IngestTokens',
+            'InstructionLibraries',
+            'Notebooks',
             'QueryExecutor',
             'SavedQueries'
         ];
 
-        modulesWithFractalHandlers.forEach(moduleName => {
-            if (window[moduleName] && typeof window[moduleName].onFractalChange === 'function') {
+        const invoked = new Set();
+
+        // Subscribed listeners fire first (new preferred pattern).
+        for (const sub of this._subscribers) {
+            try {
+                sub.callback();
+                invoked.add(sub.name);
+            } catch (error) {
+                console.error(`[FractalContext] Error notifying subscriber ${sub.name}:`, error);
+            }
+        }
+
+        // Fallback: legacy modules with a global onFractalChange method. Skipped if
+        // the module already received the notification via subscribe().
+        for (const moduleName of fallbackModules) {
+            if (invoked.has(moduleName)) continue;
+            const mod = window[moduleName];
+            if (mod && typeof mod.onFractalChange === 'function') {
                 try {
-                    window[moduleName].onFractalChange();
+                    mod.onFractalChange();
                 } catch (error) {
                     console.error(`[FractalContext] Error notifying ${moduleName} of fractal change:`, error);
                 }
             }
-        });
+        }
     }
 };
 
