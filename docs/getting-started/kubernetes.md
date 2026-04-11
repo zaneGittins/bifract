@@ -1,6 +1,6 @@
 # Kubernetes Deployment
 
-ClickHouse scales vertically on a single node exceptionally well, but when you need high availability or have outgrown the resources of a single machine, Bifract supports deploying across a Kubernetes cluster. This guide walks through deploying to a managed Kubernetes provider such as DigitalOcean DOKS, AWS EKS, or GKE.
+ClickHouse scales vertically on a single node exceptionally well, but when you need high availability or have outgrown the resources of a single machine, Bifract supports deploying across a Kubernetes cluster. This guide walks through deploying to a managed Kubernetes provider such as AWS EKS, Azure AKS, or GKE.
 
 Docker Compose remains the primary and simplest deployment method. See [Installation](installation.md) for the standard setup.
 

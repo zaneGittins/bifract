@@ -6,6 +6,7 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "scripts/install.sh"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -29,6 +30,9 @@ jobs:
           python-version: "3.x"
 
       - run: pip install mkdocs-material==9.7.6
+
+      - name: Stage install script for docs site
+        run: cp scripts/install.sh docs/install.sh
 
       - run: mkdocs build --strict
 

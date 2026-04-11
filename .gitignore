@@ -61,3 +61,6 @@ cookies.txt
 
 # MkDocs build output
 site/
+
+# Staged during docs CI build, not committed
+docs/install.sh
