@@ -23,6 +23,7 @@ const InstructionLibraries = {
         this.pageSearch = '';
         this.pageOffset = 0;
         const container = document.getElementById('instructionLibrariesView');
+        if (container) container.innerHTML = '';
         if (container && container.offsetParent !== null) {
             this.show();
         }

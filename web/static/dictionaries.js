@@ -31,6 +31,9 @@ const Dictionaries = {
         this.allDictionaries = [];
         this.filteredDictionaries = [];
         this.currentPage = 0;
+        const tbody = document.getElementById('dictsTableBody');
+        if (tbody) tbody.innerHTML = '';
+
         const view = document.getElementById('dictionariesView');
         if (view && view.offsetParent !== null) {
             this.showListing();

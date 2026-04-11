@@ -490,21 +490,16 @@ DROP TRIGGER IF EXISTS update_email_actions_updated_at ON email_actions;
 CREATE TRIGGER update_email_actions_updated_at BEFORE UPDATE ON email_actions
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- Add fractal_id foreign keys to existing tables (safely handle existing data)
--- First add nullable columns
-ALTER TABLE comments ADD COLUMN IF NOT EXISTS fractal_id UUID REFERENCES fractals(id) ON DELETE CASCADE;
-ALTER TABLE alerts ADD COLUMN IF NOT EXISTS fractal_id UUID REFERENCES fractals(id) ON DELETE CASCADE;
+-- Add fractal_id foreign keys to existing tables.
+-- NOTE: The previous version of this section backfilled rows with fractal_id IS NULL
+-- to the default fractal on every startup. After prism support was added, that backfill
+-- became actively harmful: it clobbered prism-scoped rows (which legitimately have
+-- fractal_id=NULL, prism_id=X) by setting fractal_id=default on them, making them
+-- visible in BOTH scopes. Never re-introduce it. The scope CHECK constraints added
+-- further below now enforce exactly-one-of at the DB layer.
+ALTER TABLE comments         ADD COLUMN IF NOT EXISTS fractal_id UUID REFERENCES fractals(id) ON DELETE CASCADE;
+ALTER TABLE alerts           ADD COLUMN IF NOT EXISTS fractal_id UUID REFERENCES fractals(id) ON DELETE CASCADE;
 ALTER TABLE alert_executions ADD COLUMN IF NOT EXISTS fractal_id UUID REFERENCES fractals(id) ON DELETE CASCADE;
-
--- Update existing records to use the default fractal
-UPDATE comments SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL;
-UPDATE alerts SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL;
-UPDATE alert_executions SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL;
-
--- Now make the columns NOT NULL (only after all existing records have values)
-ALTER TABLE comments ALTER COLUMN fractal_id SET NOT NULL;
-ALTER TABLE alerts ALTER COLUMN fractal_id SET NOT NULL;
-ALTER TABLE alert_executions ALTER COLUMN fractal_id SET NOT NULL;
 
 -- Add performance indexes for fractal_id foreign keys
 CREATE INDEX IF NOT EXISTS idx_comments_fractal_id ON comments(fractal_id);
@@ -1464,6 +1459,10 @@ ALTER TABLE dictionaries        ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCE
 ALTER TABLE saved_queries       ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
 ALTER TABLE comments            ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
 ALTER TABLE chat_conversations  ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
+-- alert_executions is the audit trail for every alert trigger. Before prism
+-- support this table only had fractal_id, so prism-scoped alerts silently
+-- failed to record executions (NOT NULL constraint rejects empty fractal_id).
+ALTER TABLE alert_executions    ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCES prisms(id) ON DELETE CASCADE;
 
 ALTER TABLE alerts              ALTER COLUMN fractal_id DROP NOT NULL;
 ALTER TABLE notebooks           ALTER COLUMN fractal_id DROP NOT NULL;
@@ -1472,6 +1471,7 @@ ALTER TABLE dictionaries        ALTER COLUMN fractal_id DROP NOT NULL;
 ALTER TABLE saved_queries       ALTER COLUMN fractal_id DROP NOT NULL;
 ALTER TABLE comments            ALTER COLUMN fractal_id DROP NOT NULL;
 ALTER TABLE chat_conversations  ALTER COLUMN fractal_id DROP NOT NULL;
+ALTER TABLE alert_executions    ALTER COLUMN fractal_id DROP NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_alerts_prism_id              ON alerts(prism_id)              WHERE prism_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_notebooks_prism_id           ON notebooks(prism_id)           WHERE prism_id IS NOT NULL;
@@ -1487,15 +1487,86 @@ ALTER TABLE api_keys            ADD COLUMN IF NOT EXISTS prism_id UUID REFERENCE
 ALTER TABLE api_keys            ALTER COLUMN fractal_id DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_api_keys_prism_id             ON api_keys(prism_id)             WHERE prism_id IS NOT NULL;
 
+-- Strict exactly-one-of(fractal_id, prism_id) CHECK constraints for every
+-- scoped table. Required to prevent rows with BOTH scopes set (would leak
+-- across scopes) or NEITHER set (would be invisible everywhere). Before
+-- installing the constraints we normalize any existing bad rows: if both
+-- scopes are set we trust prism (the fractal was likely a stale backfill
+-- from the pre-prism era); if neither is set we fall back to the default
+-- fractal so the row stays accessible.
+
+-- Normalization pass: run BEFORE installing the constraints so ALTER CHECK
+-- doesn't reject existing corrupted rows.
+--
+-- NOTE: alert_executions is tricky. A running install may have execution
+-- records that were rejected or silently mis-scoped in the past; we fall
+-- back to the parent alert's current scope for any rows that have neither
+-- set, rather than defaulting them all to the default fractal.
+UPDATE alerts            SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+UPDATE comments          SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+UPDATE notebooks         SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+UPDATE dashboards        SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+UPDATE dictionaries      SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+UPDATE saved_queries     SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+UPDATE chat_conversations SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+UPDATE alert_executions  SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+
+UPDATE alerts            SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL AND prism_id IS NULL;
+UPDATE comments          SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL AND prism_id IS NULL;
+UPDATE notebooks         SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL AND prism_id IS NULL;
+UPDATE dashboards        SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL AND prism_id IS NULL;
+UPDATE dictionaries      SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL AND prism_id IS NULL;
+UPDATE saved_queries     SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL AND prism_id IS NULL;
+UPDATE chat_conversations SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL AND prism_id IS NULL;
+
+-- alert_executions: inherit scope from the parent alert for rows that have
+-- neither set. This handles rows that were previously rejected/orphaned.
+UPDATE alert_executions ae
+SET fractal_id = a.fractal_id, prism_id = a.prism_id
+FROM alerts a
+WHERE ae.alert_id = a.id AND ae.fractal_id IS NULL AND ae.prism_id IS NULL;
+
+ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_scope_check;
+ALTER TABLE alerts ADD CONSTRAINT alerts_scope_check CHECK (
+    (fractal_id IS NOT NULL AND prism_id IS NULL) OR
+    (fractal_id IS NULL AND prism_id IS NOT NULL)
+);
 ALTER TABLE comments DROP CONSTRAINT IF EXISTS comments_scope_check;
 ALTER TABLE comments ADD CONSTRAINT comments_scope_check CHECK (
-    fractal_id IS NOT NULL OR prism_id IS NOT NULL
+    (fractal_id IS NOT NULL AND prism_id IS NULL) OR
+    (fractal_id IS NULL AND prism_id IS NOT NULL)
+);
+ALTER TABLE notebooks DROP CONSTRAINT IF EXISTS notebooks_scope_check;
+ALTER TABLE notebooks ADD CONSTRAINT notebooks_scope_check CHECK (
+    (fractal_id IS NOT NULL AND prism_id IS NULL) OR
+    (fractal_id IS NULL AND prism_id IS NOT NULL)
+);
+ALTER TABLE dashboards DROP CONSTRAINT IF EXISTS dashboards_scope_check;
+ALTER TABLE dashboards ADD CONSTRAINT dashboards_scope_check CHECK (
+    (fractal_id IS NOT NULL AND prism_id IS NULL) OR
+    (fractal_id IS NULL AND prism_id IS NOT NULL)
+);
+ALTER TABLE dictionaries DROP CONSTRAINT IF EXISTS dictionaries_scope_check;
+ALTER TABLE dictionaries ADD CONSTRAINT dictionaries_scope_check CHECK (
+    (fractal_id IS NOT NULL AND prism_id IS NULL) OR
+    (fractal_id IS NULL AND prism_id IS NOT NULL)
+);
+ALTER TABLE saved_queries DROP CONSTRAINT IF EXISTS saved_queries_scope_check;
+ALTER TABLE saved_queries ADD CONSTRAINT saved_queries_scope_check CHECK (
+    (fractal_id IS NOT NULL AND prism_id IS NULL) OR
+    (fractal_id IS NULL AND prism_id IS NOT NULL)
 );
 ALTER TABLE chat_conversations DROP CONSTRAINT IF EXISTS chat_conversations_scope_check;
 ALTER TABLE chat_conversations ADD CONSTRAINT chat_conversations_scope_check CHECK (
     (fractal_id IS NOT NULL AND prism_id IS NULL) OR
     (fractal_id IS NULL AND prism_id IS NOT NULL)
 );
+ALTER TABLE alert_executions DROP CONSTRAINT IF EXISTS alert_executions_scope_check;
+ALTER TABLE alert_executions ADD CONSTRAINT alert_executions_scope_check CHECK (
+    (fractal_id IS NOT NULL AND prism_id IS NULL) OR
+    (fractal_id IS NULL AND prism_id IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_alert_executions_prism_id ON alert_executions(prism_id) WHERE prism_id IS NOT NULL;
 ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_scope_check;
 ALTER TABLE api_keys ADD CONSTRAINT api_keys_scope_check CHECK (
     (fractal_id IS NOT NULL AND prism_id IS NULL) OR
@@ -1514,7 +1585,15 @@ ALTER TABLE dictionary_actions ADD COLUMN IF NOT EXISTS prism_id   UUID REFERENC
 ALTER TABLE email_actions      ADD COLUMN IF NOT EXISTS fractal_id UUID REFERENCES fractals(id) ON DELETE CASCADE;
 ALTER TABLE email_actions      ADD COLUMN IF NOT EXISTS prism_id   UUID REFERENCES prisms(id)   ON DELETE CASCADE;
 
--- Backfill existing unscoped action rows into the default fractal
+-- Normalize corrupted action rows BEFORE installing CHECK constraints so
+-- ALTER CHECK doesn't reject existing bad rows and block server startup.
+-- Trust prism when both are set (matches the repair rule for other tables).
+UPDATE webhook_actions    SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+UPDATE fractal_actions    SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+UPDATE dictionary_actions SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+UPDATE email_actions      SET fractal_id = NULL WHERE fractal_id IS NOT NULL AND prism_id IS NOT NULL;
+
+-- Backfill unscoped action rows into the default fractal
 UPDATE webhook_actions    SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL AND prism_id IS NULL;
 UPDATE fractal_actions    SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL AND prism_id IS NULL;
 UPDATE dictionary_actions SET fractal_id = (SELECT id FROM fractals WHERE is_default = true LIMIT 1) WHERE fractal_id IS NULL AND prism_id IS NULL;

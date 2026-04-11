@@ -26,6 +26,13 @@ const AlertFeeds = {
         this.feedAlerts = [];
         this.filteredAlerts = [];
         this.alertsPage = 1;
+        // Clear rendered DOM unconditionally so the previous scope's feeds
+        // and feed alerts never flash into view on tab re-entry.
+        const feedAlertsList = document.getElementById('feedAlertsList');
+        if (feedAlertsList) feedAlertsList.innerHTML = '';
+        const feedManageList = document.getElementById('feedManageList');
+        if (feedManageList) feedManageList.innerHTML = '';
+
         const view = document.getElementById('feedAlertsView');
         if (view && view.offsetParent !== null) {
             this.show();

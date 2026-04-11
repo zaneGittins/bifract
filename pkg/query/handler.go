@@ -760,10 +760,7 @@ func (h *QueryHandler) getSelectedIndex(r *http.Request) (string, error) {
 
 // HandleGetLogByTimestamp fetches a specific log by timestamp and optional log_id
 func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Request) {
-	log.Println("[HandleGetLogByTimestamp] Request received")
-
 	if r.Method != http.MethodPost {
-		log.Printf("[HandleGetLogByTimestamp] Wrong method: %s", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -771,11 +768,8 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 	var req struct {
 		Timestamp string `json:"timestamp"`
 		LogID     string `json:"log_id,omitempty"`
-		FractalID string `json:"fractal_id,omitempty"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("[HandleGetLogByTimestamp] Decode error: %v", err)
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"success": false,
 			"error":   "Invalid request body",
@@ -783,9 +777,6 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	log.Printf("[HandleGetLogByTimestamp] Timestamp: %s, LogID: %s", req.Timestamp, req.LogID)
-
-	// Parse timestamp
 	timestamp, err := time.Parse(time.RFC3339, req.Timestamp)
 	if err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -795,8 +786,34 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Query ClickHouse by log_id without fractal scoping; the RBAC check
-	// below verifies the user has access to the log's actual fractal.
+	// Resolve the set of fractal IDs the caller is allowed to read from based
+	// on the SESSION scope - never trust the request body. Admins fall through
+	// without a scope filter; all other users see a log if and only if the
+	// log's fractal_id is in their accessible set. This prevents both
+	// cross-fractal probing via crafted log_ids and the legacy "empty
+	// fractal_id = public" bypass the old code path had.
+	user, _ := r.Context().Value("user").(*storage.User)
+	accessible, err := h.accessibleFractalIDs(r)
+	if err != nil {
+		log.Printf("[QueryHandler] Failed to resolve accessible fractals: %v", err)
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"success": false,
+			"error":   "Failed to determine scope",
+		})
+		return
+	}
+
+	// Fetch without a scope filter so we can read the log's fractal_id for
+	// verification. Callers with no accessible fractals short-circuit here.
+	isAdmin := user != nil && user.IsAdmin
+	if !isAdmin && len(accessible) == 0 {
+		respondJSON(w, http.StatusNotFound, map[string]interface{}{
+			"success": false,
+			"error":   "Log not found",
+		})
+		return
+	}
+
 	logEntry, err := h.db.GetLogByTimestamp(r.Context(), timestamp, req.LogID, "")
 	if err != nil {
 		log.Printf("[QueryHandler] Failed to fetch log: %v", err)
@@ -806,7 +823,6 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 		})
 		return
 	}
-
 	if logEntry == nil {
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{
 			"success": false,
@@ -815,17 +831,28 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Verify the user has access to the log's fractal
-	if logFractalID, ok := logEntry["fractal_id"].(string); ok && logFractalID != "" {
-		if user, ok := r.Context().Value("user").(*storage.User); ok && !user.IsAdmin && h.rbacResolver != nil {
-			role := h.rbacResolver.ResolveRole(r.Context(), user, logFractalID)
-			if !rbac.HasAccess(user, role, rbac.RoleViewer) {
-				respondJSON(w, http.StatusNotFound, map[string]interface{}{
-					"success": false,
-					"error":   "Log not found",
-				})
-				return
+	if !isAdmin {
+		logFractalID, _ := logEntry["fractal_id"].(string)
+		// Legacy rows with empty fractal_id belong to the default fractal -
+		// treat them as such for the access check rather than fail-open.
+		if logFractalID == "" && h.fractalManager != nil {
+			if def, err := h.fractalManager.GetDefaultFractal(r.Context()); err == nil {
+				logFractalID = def.ID
 			}
+		}
+		allowed := false
+		for _, id := range accessible {
+			if id == logFractalID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			respondJSON(w, http.StatusNotFound, map[string]interface{}{
+				"success": false,
+				"error":   "Log not found",
+			})
+			return
 		}
 	}
 
@@ -833,6 +860,32 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 		"success": true,
 		"log":     logEntry,
 	})
+}
+
+// accessibleFractalIDs returns the list of fractal IDs the current session is
+// scoped to: a single ID for a fractal session, the member fractal IDs for a
+// prism session, or an empty list if no scope is set. Admin bypass is handled
+// by callers.
+func (h *QueryHandler) accessibleFractalIDs(r *http.Request) ([]string, error) {
+	if prismID, _ := r.Context().Value("selected_prism").(string); prismID != "" {
+		if h.prismManager == nil {
+			return nil, nil
+		}
+		return h.prismManager.GetMemberFractalIDs(r.Context(), prismID)
+	}
+	if fractalID, _ := r.Context().Value("selected_fractal").(string); fractalID != "" {
+		return []string{fractalID}, nil
+	}
+	// No session scope: fall back to the default fractal so single-fractal
+	// callers still work.
+	if h.fractalManager != nil {
+		def, err := h.fractalManager.GetDefaultFractal(r.Context())
+		if err != nil {
+			return nil, err
+		}
+		return []string{def.ID}, nil
+	}
+	return nil, nil
 }
 
 // HandleGetRecentLogs returns a sample of recent logs (last 24h) for a fractal

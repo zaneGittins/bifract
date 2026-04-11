@@ -246,7 +246,7 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 				continue
 			}
 
-			err = s.alertManager.UpdateFeedAlert(ctx, existing.ID, name, description, queryString, alertType, mapLevelToSeverity(level), labels, references, hash, feed.CreatedBy)
+			err = s.alertManager.UpdateFeedAlert(ctx, existing.ID, name, description, queryString, alertType, mapLevelToSeverity(level), labels, references, hash, feed.CreatedBy, feed.FractalID, feed.PrismID)
 			if err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("%s: update error: %v", filePath, err))
 			} else {

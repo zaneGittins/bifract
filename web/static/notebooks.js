@@ -33,13 +33,16 @@ const Notebooks = {
     },
 
     onFractalChange() {
-        // If the user was editing a notebook, drop state: it belongs to the
-        // previous scope. showNotebookListing() below also closes the editor.
         this.currentNotebook = null;
         this.isEditing = false;
         this.stopPresenceTracking();
         this.currentPage = 0;
         this.searchQuery = '';
+        // Clear rendered DOM unconditionally so stale notebooks from the
+        // previous scope don't flash on tab re-entry.
+        const tbody = document.getElementById('notebooksTableBody');
+        if (tbody) tbody.innerHTML = '';
+
         const view = document.getElementById('notebooksView');
         if (view && view.offsetParent !== null) {
             this.showNotebookListing();
