@@ -39,6 +39,9 @@ const Dashboards = {
         this.stopDragResize();
         this.currentPage = 0;
         this.searchQuery = '';
+        const tbody = document.getElementById('dashboardsTableBody');
+        if (tbody) tbody.innerHTML = '';
+
         const view = document.getElementById('dashboardsView');
         if (view && view.offsetParent !== null) {
             this.showDashboardListing();

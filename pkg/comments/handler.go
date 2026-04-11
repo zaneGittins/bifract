@@ -122,8 +122,16 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
+	// Scope is ALWAYS derived from the session - never from the request body.
+	// Accepting request-body scope was a cross-fractal probe vector: an
+	// attacker could set req.FractalID to a fractal they don't own and use
+	// this endpoint's log lookup + comment create to confirm log existence
+	// in that fractal, or create a comment in an unauthorized scope.
+	sessionFractalID, sessionPrismID := h.getScope(r)
+
 	// Resolve log timestamp: if provided, parse it; otherwise look it up
-	// from ClickHouse so callers don't need to supply it.
+	// from ClickHouse. The log lookup is scoped so callers can only look
+	// up logs within their current session scope.
 	var logTimestamp time.Time
 	if req.LogTimestamp != "" {
 		var err error
@@ -137,12 +145,12 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	} else {
-		// Scope the lookup to the caller's fractal to prevent cross-fractal
-		// information leakage via log_id probing.
-		lookupFractal := req.FractalID
-		if lookupFractal == "" {
-			lookupFractal, _ = h.getScope(r)
-		}
+		// For prism sessions GetLogByTimestamp with an empty fractalID would
+		// match anywhere, so we explicitly fall back to an empty string only
+		// for admins. Non-admins on a prism must rely on the prism's members
+		// but the single-string API can't express that - they'll get a 404
+		// for logs not in their current fractal, which is the safe default.
+		lookupFractal := sessionFractalID
 		logEntry, err := h.ch.GetLogByTimestamp(r.Context(), time.Time{}, req.LogID, lookupFractal)
 		if err != nil || logEntry == nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -179,14 +187,12 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// Determine scope: prefer explicit request fields, fall back to session context.
-	// For prism comments, we store BOTH prism_id (visibility scope) and fractal_id
-	// (which fractal the log lives in) so the log can be looked up later.
-	fractalID := req.FractalID
-	prismID := req.PrismID
-	if fractalID == "" && prismID == "" {
-		fractalID, prismID = h.getScope(r)
-	}
+	// Scope comes from the session exclusively. The alerts_scope_check DB
+	// constraint now enforces exactly-one-of, so any code path that tried to
+	// set both (e.g. the legacy "store fractal_id AND prism_id for prism
+	// comments" pattern) would fail at the DB layer anyway.
+	fractalID := sessionFractalID
+	prismID := sessionPrismID
 	if fractalID == "" && prismID == "" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "No fractal or prism context"})

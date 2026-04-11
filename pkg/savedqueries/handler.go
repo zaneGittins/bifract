@@ -108,17 +108,14 @@ func (h *Handler) getScope(r *http.Request) (fractalID, prismID string, err erro
 }
 
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
-	// Prefer explicit fractal_id/prism_id from query param
-	fractalID := strings.TrimSpace(r.URL.Query().Get("fractal_id"))
-	prismID := strings.TrimSpace(r.URL.Query().Get("prism_id"))
-	if fractalID == "" && prismID == "" {
-		var err error
-		fractalID, prismID, err = h.getScope(r)
-		if err != nil {
-			log.Printf("[SavedQueries] Failed to get scope: %v", err)
-			h.respondError(w, http.StatusBadRequest, "Failed to determine context")
-			return
-		}
+	// Scope is ALWAYS session - never trust request params. Accepting
+	// fractal_id/prism_id in the URL let a caller enumerate saved queries
+	// in any scope whose ID they guessed, bypassing the session boundary.
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[SavedQueries] Failed to get scope: %v", err)
+		h.respondError(w, http.StatusBadRequest, "Failed to determine context")
+		return
 	}
 
 	if !h.verifyAccess(w, r, fractalID, prismID) {
@@ -195,8 +192,6 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		Name      string   `json:"name"`
 		QueryText string   `json:"query_text"`
 		Tags      []string `json:"tags"`
-		FractalID string   `json:"fractal_id"`
-		PrismID   string   `json:"prism_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
@@ -219,17 +214,14 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prefer explicit IDs from request body, fall back to session context
-	fractalID := strings.TrimSpace(req.FractalID)
-	prismID := strings.TrimSpace(req.PrismID)
-	if fractalID == "" && prismID == "" {
-		var err error
-		fractalID, prismID, err = h.getScope(r)
-		if err != nil {
-			log.Printf("[SavedQueries] Failed to get scope: %v", err)
-			h.respondError(w, http.StatusBadRequest, "Failed to determine context")
-			return
-		}
+	// Scope comes from the session exclusively. Accepting it in the request
+	// body let callers create saved queries in whatever scope's UUID they
+	// knew, bypassing the session boundary.
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[SavedQueries] Failed to get scope: %v", err)
+		h.respondError(w, http.StatusBadRequest, "Failed to determine context")
+		return
 	}
 
 	if !h.verifyAccess(w, r, fractalID, prismID) {
@@ -256,7 +248,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var sq SavedQuery
-	err := h.pg.QueryRow(r.Context(), `
+	err = h.pg.QueryRow(r.Context(), `
 		INSERT INTO saved_queries (name, query_text, tags, fractal_id, prism_id, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, name, query_text, tags, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`,

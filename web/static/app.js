@@ -185,11 +185,17 @@ const App = {
         }
         if (this._fractalTabs.has(hash)) {
             if (!FractalContext.currentFractal && window.FractalContext) {
-                const restored = FractalContext.restoreFromStorage();
-                if (!restored) {
-                    this.showMainView('fractalListing');
-                    return;
-                }
+                // restoreFromStorage is async (it awaits the server /select
+                // call to avoid racing the tab show() handlers against a
+                // stale session). Wrap the follow-up navigation in .then().
+                FractalContext.restoreFromStorage().then(restored => {
+                    if (restored) {
+                        this.showFractalView(hash);
+                    } else {
+                        this.showMainView('fractalListing');
+                    }
+                });
+                return;
             }
             this.showFractalView(hash);
             return;

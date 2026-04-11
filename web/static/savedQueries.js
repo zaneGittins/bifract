@@ -83,22 +83,11 @@ const SavedQueries = {
     },
 
     async loadAndRender(search) {
+        // Scope is read from the session on the backend - don't send it as a
+        // query param (it was the old workaround for a scope-switch race that
+        // is now fixed at the architecture level via async setCurrentFractal).
         let url = '/api/v1/saved-queries';
-        const params = new URLSearchParams();
-        if (search) {
-            params.set('search', search);
-        }
-        // Include fractal_id or prism_id to avoid session race conditions
-        const ctx = window.FractalContext;
-        if (ctx?.currentFractal?.id) {
-            if (ctx.isPrism()) {
-                params.set('prism_id', ctx.currentFractal.id);
-            } else {
-                params.set('fractal_id', ctx.currentFractal.id);
-            }
-        }
-        const qs = params.toString();
-        if (qs) url += '?' + qs;
+        if (search) url += '?search=' + encodeURIComponent(search);
 
         try {
             const resp = await fetch(url, { credentials: 'include' });
@@ -233,14 +222,6 @@ const SavedQueries = {
 
         try {
             const body = { name, query_text: queryText, tags };
-            const ctx = window.FractalContext;
-            if (ctx?.currentFractal?.id) {
-                if (ctx.isPrism()) {
-                    body.prism_id = ctx.currentFractal.id;
-                } else {
-                    body.fractal_id = ctx.currentFractal.id;
-                }
-            }
 
             const resp = await fetch('/api/v1/saved-queries', {
                 method: 'POST',

@@ -238,29 +238,27 @@ const FractalListing = {
         }
     },
 
-    openFractal(fractalId, fractalName) {
-
+    async openFractal(fractalId, fractalName) {
         const fractal = this.fractals.find(idx => idx.id === fractalId);
-        if (fractal && window.FractalContext) {
-            FractalContext.setCurrentFractal(fractal);
-        } else {
+        if (!fractal || !window.FractalContext) {
             console.error('[FractalListing] Fractal not found or FractalContext not available');
+            return;
         }
-
+        // Await so the server session is actually on the new fractal BEFORE
+        // any tab show() handler fires a scoped list request.
+        await FractalContext.setCurrentFractal(fractal);
         if (window.App) {
             App.showFractalView();
         }
     },
 
-    openPrism(prismId, prismName) {
-
+    async openPrism(prismId, prismName) {
         const prism = this.prisms.find(p => p.id === prismId);
-        if (prism && window.FractalContext) {
-            FractalContext.setCurrentPrism(prism);
-        } else {
+        if (!prism || !window.FractalContext) {
             console.error('[FractalListing] Prism not found or FractalContext not available');
+            return;
         }
-
+        await FractalContext.setCurrentPrism(prism);
         if (window.App) {
             App.showFractalView();
         }

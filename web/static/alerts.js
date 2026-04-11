@@ -3639,6 +3639,14 @@ throttleField: ${alert.throttle_field}` : ''}`;
     // ============================
 
     onFractalChange() {
+        // Clear the rendered list unconditionally so when the user navigates
+        // back to this tab after a scope switch they never see the previous
+        // scope's alerts flashing before the new load resolves.
+        const alertsList = document.getElementById('alertsList');
+        if (alertsList) alertsList.innerHTML = '';
+        this.filteredAlerts = [];
+        this.alertsCurrentPage = 1;
+
         const alertsView = document.getElementById('alertsView');
         if (alertsView && alertsView.offsetParent !== null) {
             this.loadAlerts();

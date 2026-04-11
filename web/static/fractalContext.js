@@ -59,8 +59,9 @@ const FractalContext = {
     },
 
     // Restore the current fractal/prism from localStorage (for new-tab hash routing).
-    // Returns true if restored successfully, false otherwise.
-    restoreFromStorage() {
+    // Returns true if restored successfully, false otherwise. Same race rules
+    // as setCurrentFractal: await the server /select before notifying modules.
+    async restoreFromStorage() {
         try {
             const raw = localStorage.getItem('bifract_current_context');
             if (!raw) return false;
@@ -77,12 +78,10 @@ const FractalContext = {
                 TimeBar.updateFractalName(saved.name);
             }
 
-            // Sync server session
-            if (this.currentItemType === 'prism') {
-                this.selectPrismOnServer(saved.id);
-            } else {
-                this.selectFractalOnServer(saved.id);
-            }
+            const ok = this.currentItemType === 'prism'
+                ? await this.selectPrismOnServer(saved.id)
+                : await this.selectFractalOnServer(saved.id);
+            if (!ok) return false;
             this.notifyFractalChange();
             return true;
         } catch (e) {
@@ -106,51 +105,61 @@ const FractalContext = {
         }
     },
 
-    // Set the current fractal
-    setCurrentFractal(fractal) {
+    // Set the current fractal. MUST await the server /select call before
+    // firing notifyFractalChange, otherwise modules reload with the old
+    // session still active and display cross-scope data under the new label.
+    async setCurrentFractal(fractal) {
         this.currentFractal = fractal;
         this.currentItemType = 'fractal';
         this._saveToStorage();
 
-        // Keep FractalSelector in sync
         if (window.FractalSelector) {
             FractalSelector.currentFractal = fractal;
             FractalSelector.updateSelectorText(fractal.name);
         }
-
+        if (window.Auth && Auth.currentUser) {
+            Auth.currentUser.selected_fractal = fractal.id;
+            Auth.currentUser.selected_prism = '';
+        }
         this.clearSearchState();
-
         if (window.TimeBar) {
             TimeBar.updateFractalName(fractal.name);
         }
 
-        this.selectFractalOnServer(fractal.id);
+        const ok = await this.selectFractalOnServer(fractal.id);
+        if (!ok) return;
         this.notifyFractalChange();
     },
 
-    // Set the current prism context
-    setCurrentPrism(prism) {
+    // Set the current prism context. Same contract as setCurrentFractal:
+    // await the server session update before firing notifications so modules
+    // never read from the old session.
+    async setCurrentPrism(prism) {
         this.currentFractal = prism; // stored here for compat with existing reads
         this.currentItemType = 'prism';
         this._saveToStorage();
 
-        // Keep FractalSelector in sync
         if (window.FractalSelector) {
             FractalSelector.currentFractal = prism;
             FractalSelector.updateSelectorText(prism.name);
         }
-
+        if (window.Auth && Auth.currentUser) {
+            Auth.currentUser.selected_prism = prism.id;
+            Auth.currentUser.selected_fractal = '';
+        }
         this.clearSearchState();
-
         if (window.TimeBar) {
             TimeBar.updateFractalName(prism.name);
         }
 
-        this.selectPrismOnServer(prism.id);
+        const ok = await this.selectPrismOnServer(prism.id);
+        if (!ok) return;
         this.notifyFractalChange();
     },
 
-    // Select fractal on server (updates session)
+    // Update the server session to the given fractal. Returns true on success.
+    // Callers MUST await this before firing notifyFractalChange, otherwise
+    // scoped-list requests race the session update and return old-scope data.
     async selectFractalOnServer(fractalId) {
         try {
             const response = await fetch(`/api/v1/fractals/${fractalId}/select`, {
@@ -161,21 +170,20 @@ const FractalContext = {
                 },
                 credentials: 'include'
             });
-
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
                 throw new Error(errorData.error || `HTTP ${response.status}`);
             }
-
+            return true;
         } catch (error) {
             console.error('[FractalContext] Failed to select fractal on server:', error);
             if (window.Toast) {
                 Toast.error('Failed to select fractal', error.message);
             }
+            return false;
         }
     },
 
-    // Select prism on server (updates session)
     async selectPrismOnServer(prismId) {
         try {
             const response = await fetch(`/api/v1/prisms/${prismId}/select`, {
@@ -186,17 +194,17 @@ const FractalContext = {
                 },
                 credentials: 'include'
             });
-
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
                 throw new Error(errorData.error || `HTTP ${response.status}`);
             }
-
+            return true;
         } catch (error) {
             console.error('[FractalContext] Failed to select prism on server:', error);
             if (window.Toast) {
                 Toast.error('Failed to select prism', error.message);
             }
+            return false;
         }
     },
 

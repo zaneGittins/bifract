@@ -1829,9 +1829,17 @@ func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryS
 	return &Alert{ID: alertID, Name: name}, nil
 }
 
-// UpdateFeedAlert updates an alert that belongs to a feed (content + hash only).
+// UpdateFeedAlert updates an alert that belongs to a feed. In addition to the
+// rule content, it also re-asserts the alert's scope from the owning feed's
+// current scope - so if an alert's scope somehow drifted from its feed, the
+// next sync puts it back where it belongs. fractalID and prismID must come
+// from the parent feed and exactly one must be set.
 func (m *Manager) UpdateFeedAlert(ctx context.Context, alertID, name, description, queryString, alertType, severity string,
-	labels, references []string, ruleHash, updatedBy string) error {
+	labels, references []string, ruleHash, updatedBy, fractalID, prismID string) error {
+
+	if (fractalID == "") == (prismID == "") {
+		return fmt.Errorf("exactly one of fractal_id or prism_id must be set")
+	}
 
 	_, err := parser.ParseQuery(queryString)
 	if err != nil {
@@ -1845,13 +1853,23 @@ func (m *Manager) UpdateFeedAlert(ctx context.Context, alertID, name, descriptio
 		severity = "medium"
 	}
 
+	var fractalIDPtr, prismIDPtr interface{}
+	if fractalID != "" {
+		fractalIDPtr = fractalID
+	}
+	if prismID != "" {
+		prismIDPtr = prismID
+	}
+
 	_, err = m.pg.Exec(ctx, `
 		UPDATE alerts
 		SET name = $2, description = $3, query_string = $4, alert_type = $5,
-		    severity = $6, labels = $7, "references" = $8, feed_rule_hash = $9, updated_by = $10
+		    severity = $6, labels = $7, "references" = $8, feed_rule_hash = $9, updated_by = $10,
+		    fractal_id = $11, prism_id = $12
 		WHERE id = $1 AND feed_id IS NOT NULL
 	`, alertID, name, description, queryString, alertType, severity,
-		pq.Array(labels), pq.Array(references), ruleHash, updatedBy)
+		pq.Array(labels), pq.Array(references), ruleHash, updatedBy,
+		fractalIDPtr, prismIDPtr)
 	if err != nil {
 		return fmt.Errorf("update feed alert: %w", err)
 	}

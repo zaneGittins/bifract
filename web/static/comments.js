@@ -409,18 +409,16 @@ const Comments = {
         const queryInput = document.getElementById('queryInput');
         const currentQuery = queryInput ? queryInput.value.trim() : '';
 
+        // Scope is derived server-side from the session; don't send it in
+        // the body (the backend now rejects it, and sending it was also a
+        // cross-scope probe vector historically).
         const requestBody = {
-            log_id: String(this.currentLogID),  // Ensure it's a string
-            log_timestamp: String(timestamp),    // Ensure it's a string
-            text: String(text),                  // Ensure it's a string
+            log_id: String(this.currentLogID),
+            log_timestamp: String(timestamp),
+            text: String(text),
             tags: this.pendingTags.slice(),
             query: currentQuery,
-            fractal_id: this.currentLogData.fractal_id || '',
         };
-        // In prism context, also set prism_id for visibility scoping
-        if (window.FractalContext && window.FractalContext.currentItemType === 'prism' && window.FractalContext.currentFractal) {
-            requestBody.prism_id = window.FractalContext.currentFractal.id;
-        }
 
         try {
             const response = await fetch('/api/v1/comments', {

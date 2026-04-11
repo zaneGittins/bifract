@@ -626,7 +626,7 @@ func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results 
 		if err := e.updateLastTriggered(ctx, alert.ID); err != nil {
 			log.Printf("[Alert Engine] Failed to update last triggered for throttled alert %s: %v", alert.Name, err)
 		}
-		return e.recordExecution(ctx, alert.ID, alert.FractalID, len(results), true, throttleKey, executionTimeMs, []WebhookResult{}, []FractalResult{}, []EmailResult{})
+		return e.recordExecution(ctx, alert.ID, alert.FractalID, alert.PrismID, len(results), true, throttleKey, executionTimeMs, []WebhookResult{}, []FractalResult{}, []EmailResult{})
 	}
 
 	resolvedName := ResolveTemplateName(alert.Name, results)
@@ -740,7 +740,7 @@ func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results 
 		log.Printf("[Alert Engine] Failed to update last triggered for alert %s: %v", alert.Name, err)
 	}
 
-	return e.recordExecution(ctx, alert.ID, alert.FractalID, len(results), false, throttleKey, executionTimeMs, webhookResults, fractalResults, emailResults)
+	return e.recordExecution(ctx, alert.ID, alert.FractalID, alert.PrismID, len(results), false, throttleKey, executionTimeMs, webhookResults, fractalResults, emailResults)
 }
 
 // ---------------------------------------------------------------------------
@@ -991,7 +991,10 @@ func (e *Engine) getAlertsFractalID(ctx context.Context) string {
 	return e.alertsFractalID
 }
 
-func (e *Engine) recordExecution(ctx context.Context, alertID string, fractalID string, logCount int, throttled bool, throttleKey string, executionTimeMs int, webhookResults []WebhookResult, fractalResults []FractalResult, emailResults []EmailResult) error {
+// recordExecution writes an alert execution audit row. Exactly one of fractalID
+// or prismID must be non-empty - this mirrors the parent alert's scope. Passing
+// both or neither will be rejected by alert_executions_scope_check.
+func (e *Engine) recordExecution(ctx context.Context, alertID string, fractalID string, prismID string, logCount int, throttled bool, throttleKey string, executionTimeMs int, webhookResults []WebhookResult, fractalResults []FractalResult, emailResults []EmailResult) error {
 	webhookResultsJSON, err := json.Marshal(webhookResults)
 	if err != nil {
 		return fmt.Errorf("failed to marshal webhook results: %w", err)
@@ -1007,10 +1010,18 @@ func (e *Engine) recordExecution(ctx context.Context, alertID string, fractalID 
 		return fmt.Errorf("failed to marshal email results: %w", err)
 	}
 
+	var fractalIDPtr, prismIDPtr interface{}
+	if fractalID != "" {
+		fractalIDPtr = fractalID
+	}
+	if prismID != "" {
+		prismIDPtr = prismID
+	}
+
 	_, err = e.pg.Exec(ctx,
-		`INSERT INTO alert_executions (alert_id, fractal_id, log_count, throttled, throttle_key, execution_time_ms, webhook_results, fractal_results, email_results)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		alertID, fractalID, logCount, throttled, throttleKey, executionTimeMs, string(webhookResultsJSON), string(fractalResultsJSON), string(emailResultsJSON),
+		`INSERT INTO alert_executions (alert_id, fractal_id, prism_id, log_count, throttled, throttle_key, execution_time_ms, webhook_results, fractal_results, email_results)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		alertID, fractalIDPtr, prismIDPtr, logCount, throttled, throttleKey, executionTimeMs, string(webhookResultsJSON), string(fractalResultsJSON), string(emailResultsJSON),
 	)
 	if err != nil {
 		var pgErr *pq.Error
