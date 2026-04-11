@@ -525,7 +525,7 @@ func (h *Handler) HandleGetExecutions(w http.ResponseWriter, r *http.Request) {
 // Webhook Management Endpoints
 // ============================
 
-// HandleListWebhooks retrieves all webhook actions
+// HandleListWebhooks retrieves webhook actions in the current fractal/prism scope
 func (h *Handler) HandleListWebhooks(w http.ResponseWriter, r *http.Request) {
 	user := h.getUserObj(r)
 	if user == nil || !user.IsAdmin {
@@ -535,9 +535,16 @@ func (h *Handler) HandleListWebhooks(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Alerts] Failed to get scope for webhooks: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+		return
+	}
+
 	enabledOnly := r.URL.Query().Get("enabled") == "true"
 
-	webhooks, err := h.manager.ListWebhookActions(ctx, enabledOnly)
+	webhooks, err := h.manager.ListWebhookActions(ctx, enabledOnly, fractalID, prismID)
 	if err != nil {
 		log.Printf("[Alerts] Failed to list webhooks: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to load webhooks")
@@ -577,10 +584,17 @@ func (h *Handler) HandleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	webhook, err := h.manager.CreateWebhookAction(ctx, req, username)
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Alerts] Failed to get scope for webhook create: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+		return
+	}
+
+	webhook, err := h.manager.CreateWebhookAction(ctx, req, username, fractalID, prismID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "already exists") {
-			h.respondError(w, http.StatusConflict, "Webhook name already exists")
+			h.respondError(w, http.StatusConflict, "Webhook name already exists in this scope")
 		} else {
 			log.Printf("[Alerts] Failed to create webhook: %v", err)
 			h.respondError(w, http.StatusInternalServerError, "Failed to create webhook")
@@ -620,6 +634,10 @@ func (h *Handler) HandleGetWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.requireActionInScope(w, r, webhook.FractalID, webhook.PrismID, "Webhook") {
+		return
+	}
+
 	h.respondSuccess(w, map[string]interface{}{
 		"webhook": webhook,
 	})
@@ -638,6 +656,15 @@ func (h *Handler) HandleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 
 	if webhookID == "" {
 		h.respondError(w, http.StatusBadRequest, "Webhook ID is required")
+		return
+	}
+
+	existing, err := h.manager.GetWebhookAction(ctx, webhookID)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "Webhook not found")
+		return
+	}
+	if !h.requireActionInScope(w, r, existing.FractalID, existing.PrismID, "Webhook") {
 		return
 	}
 
@@ -679,6 +706,15 @@ func (h *Handler) HandleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	existing, err := h.manager.GetWebhookAction(ctx, webhookID)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "Webhook not found")
+		return
+	}
+	if !h.requireActionInScope(w, r, existing.FractalID, existing.PrismID, "Webhook") {
+		return
+	}
+
 	if err := h.manager.DeleteWebhookAction(ctx, webhookID); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.respondError(w, http.StatusNotFound, "Webhook not found")
@@ -712,6 +748,15 @@ func (h *Handler) HandleTestWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	existing, err := h.manager.GetWebhookAction(ctx, webhookID)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "Webhook not found")
+		return
+	}
+	if !h.requireActionInScope(w, r, existing.FractalID, existing.PrismID, "Webhook") {
+		return
+	}
+
 	result, err := h.manager.TestWebhookAction(ctx, webhookID)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -733,7 +778,7 @@ func (h *Handler) HandleTestWebhook(w http.ResponseWriter, r *http.Request) {
 // Fractal Action Management Endpoints
 // ============================
 
-// HandleListFractalActions retrieves all fractal actions
+// HandleListFractalActions retrieves fractal actions in the current fractal/prism scope
 func (h *Handler) HandleListFractalActions(w http.ResponseWriter, r *http.Request) {
 	user := h.getUserObj(r)
 	if user == nil || !user.IsAdmin {
@@ -743,9 +788,16 @@ func (h *Handler) HandleListFractalActions(w http.ResponseWriter, r *http.Reques
 
 	ctx := r.Context()
 
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Alerts] Failed to get scope for fractal actions: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+		return
+	}
+
 	enabledOnly := r.URL.Query().Get("enabled") == "true"
 
-	fractalActions, err := h.manager.ListFractalActions(ctx, enabledOnly)
+	fractalActions, err := h.manager.ListFractalActions(ctx, enabledOnly, fractalID, prismID)
 	if err != nil {
 		log.Printf("[Alerts] Failed to list fractal actions: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to load fractal actions")
@@ -785,10 +837,17 @@ func (h *Handler) HandleCreateFractalAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	fractalAction, err := h.manager.CreateFractalAction(ctx, req, username)
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Alerts] Failed to get scope for fractal action create: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+		return
+	}
+
+	fractalAction, err := h.manager.CreateFractalAction(ctx, req, username, fractalID, prismID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "already exists") {
-			h.respondError(w, http.StatusConflict, "Fractal action name already exists")
+			h.respondError(w, http.StatusConflict, "Fractal action name already exists in this scope")
 		} else {
 			log.Printf("[Alerts] Failed to create fractal action: %v", err)
 			h.respondError(w, http.StatusInternalServerError, "Failed to create fractal action")
@@ -828,6 +887,10 @@ func (h *Handler) HandleGetFractalAction(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if !h.requireActionInScope(w, r, fractalAction.FractalID, fractalAction.PrismID, "Fractal action") {
+		return
+	}
+
 	h.respondSuccess(w, map[string]interface{}{
 		"fractal_action": fractalAction,
 	})
@@ -846,6 +909,15 @@ func (h *Handler) HandleUpdateFractalAction(w http.ResponseWriter, r *http.Reque
 
 	if fractalActionID == "" {
 		h.respondError(w, http.StatusBadRequest, "Fractal action ID is required")
+		return
+	}
+
+	existing, err := h.manager.GetFractalAction(ctx, fractalActionID)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "Fractal action not found")
+		return
+	}
+	if !h.requireActionInScope(w, r, existing.FractalID, existing.PrismID, "Fractal action") {
 		return
 	}
 
@@ -884,6 +956,15 @@ func (h *Handler) HandleDeleteFractalAction(w http.ResponseWriter, r *http.Reque
 
 	if fractalActionID == "" {
 		h.respondError(w, http.StatusBadRequest, "Fractal action ID is required")
+		return
+	}
+
+	existing, err := h.manager.GetFractalAction(ctx, fractalActionID)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "Fractal action not found")
+		return
+	}
+	if !h.requireActionInScope(w, r, existing.FractalID, existing.PrismID, "Fractal action") {
 		return
 	}
 
@@ -1024,6 +1105,25 @@ func parseIntParam(param string) (int, error) {
 		return 0, err
 	}
 	return result, nil
+}
+
+// requireActionInScope verifies that an action's (fractal_id, prism_id) matches the
+// caller's current session scope. It writes a 404 and returns false on mismatch.
+// resourceName is used for the error message (e.g. "Webhook", "Fractal action").
+func (h *Handler) requireActionInScope(w http.ResponseWriter, r *http.Request, actionFractalID, actionPrismID, resourceName string) bool {
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Alerts] Failed to get scope for %s: %v", resourceName, err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+		return false
+	}
+	inScope := (prismID != "" && actionPrismID == prismID) ||
+		(fractalID != "" && actionFractalID == fractalID)
+	if !inScope {
+		h.respondError(w, http.StatusNotFound, resourceName+" not found")
+		return false
+	}
+	return true
 }
 
 // getScope returns the current fractal or prism scope from the request context.
@@ -1232,7 +1332,14 @@ func (h *Handler) HandleListEmailActions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	actions, err := h.manager.ListEmailActions(r.Context())
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Alerts] Failed to get scope for email actions: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+		return
+	}
+
+	actions, err := h.manager.ListEmailActions(r.Context(), fractalID, prismID)
 	if err != nil {
 		log.Printf("[Alerts] Failed to list email actions: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to load email actions")
@@ -1258,10 +1365,17 @@ func (h *Handler) HandleCreateEmailAction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	action, err := h.manager.CreateEmailAction(r.Context(), req, user.Username)
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Alerts] Failed to get scope for email action create: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+		return
+	}
+
+	action, err := h.manager.CreateEmailAction(r.Context(), req, user.Username, fractalID, prismID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "already exists") {
-			h.respondError(w, http.StatusConflict, "Email action name already exists")
+			h.respondError(w, http.StatusConflict, "Email action name already exists in this scope")
 		} else {
 			log.Printf("[Alerts] Failed to create email action: %v", err)
 			h.respondError(w, http.StatusInternalServerError, "Failed to create email action")
@@ -1290,6 +1404,10 @@ func (h *Handler) HandleGetEmailAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.requireActionInScope(w, r, action.FractalID, action.PrismID, "Email action") {
+		return
+	}
+
 	h.respondSuccess(w, map[string]interface{}{"email_action": action})
 }
 
@@ -1301,6 +1419,15 @@ func (h *Handler) HandleUpdateEmailAction(w http.ResponseWriter, r *http.Request
 	}
 
 	id := chi.URLParam(r, "id")
+	existing, err := h.manager.GetEmailAction(r.Context(), id)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "Email action not found")
+		return
+	}
+	if !h.requireActionInScope(w, r, existing.FractalID, existing.PrismID, "Email action") {
+		return
+	}
+
 	var req EmailActionUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid request body")
@@ -1331,6 +1458,15 @@ func (h *Handler) HandleDeleteEmailAction(w http.ResponseWriter, r *http.Request
 	}
 
 	id := chi.URLParam(r, "id")
+	existing, err := h.manager.GetEmailAction(r.Context(), id)
+	if err != nil {
+		h.respondError(w, http.StatusNotFound, "Email action not found")
+		return
+	}
+	if !h.requireActionInScope(w, r, existing.FractalID, existing.PrismID, "Email action") {
+		return
+	}
+
 	if err := h.manager.DeleteEmailAction(r.Context(), id); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			h.respondError(w, http.StatusNotFound, "Email action not found")
@@ -1357,6 +1493,9 @@ func (h *Handler) HandleTestEmailAction(w http.ResponseWriter, r *http.Request) 
 	action, err := h.manager.GetEmailAction(ctx, id)
 	if err != nil {
 		h.respondError(w, http.StatusNotFound, "Email action not found")
+		return
+	}
+	if !h.requireActionInScope(w, r, action.FractalID, action.PrismID, "Email action") {
 		return
 	}
 

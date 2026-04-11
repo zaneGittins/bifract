@@ -31,6 +31,8 @@ type WebhookAction struct {
 	RetryCount       int               `json:"retry_count"`
 	IncludeAlertLink bool              `json:"include_alert_link"`
 	Enabled          bool              `json:"enabled"`
+	FractalID        string            `json:"fractal_id,omitempty"`
+	PrismID          string            `json:"prism_id,omitempty"`
 }
 
 // WebhookPayload is the JSON structure sent to webhook endpoints

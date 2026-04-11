@@ -49,6 +49,8 @@ type DictionaryAction struct {
 	CreatedBy         string `json:"created_by"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
+	FractalID         string `json:"fractal_id,omitempty"`
+	PrismID           string `json:"prism_id,omitempty"`
 
 	// DictionaryID is resolved at execution time from DictionaryName.
 	// Kept for internal use and backwards compat with existing rows.

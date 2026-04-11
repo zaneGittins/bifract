@@ -23,6 +23,32 @@ type Manager struct {
 	normalizerManager *normalizers.Manager
 }
 
+// nullableID returns nil for empty strings so the DB stores NULL, and the
+// raw string otherwise. Used for scope columns (fractal_id / prism_id)
+// where exactly one side is populated.
+func nullableID(id string) interface{} {
+	if id == "" {
+		return nil
+	}
+	return id
+}
+
+// scopedCountQuery builds a SELECT COUNT(*) ... WHERE id = ANY($1) AND <scope>
+// query for an action table, enforcing that rows belong to the given scope.
+// Callers must provide exactly one of fractalID or prismID.
+func scopedCountQuery(table string, ids []string, fractalID, prismID string) (string, []interface{}) {
+	args := []interface{}{pq.Array(ids)}
+	scope := "FALSE"
+	if prismID != "" {
+		args = append(args, prismID)
+		scope = "prism_id = $2"
+	} else if fractalID != "" {
+		args = append(args, fractalID)
+		scope = "fractal_id = $2"
+	}
+	return fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE id = ANY($1) AND %s", table, scope), args
+}
+
 // YAMLAlert represents the YAML format for alert definitions
 type YAMLAlert struct {
 	Name                string   `yaml:"name"`
@@ -190,8 +216,8 @@ func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, create
 		return nil, fmt.Errorf("invalid query syntax: %w", err)
 	}
 
-	// Resolve webhook actions by name
-	webhookIDs, err := m.resolveWebhookActionsByName(ctx, yamlAlert.ActionNames)
+	// Resolve webhook actions by name within the import's scope
+	webhookIDs, err := m.resolveWebhookActionsByName(ctx, yamlAlert.ActionNames, fractalID, prismID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve webhook actions: %w", err)
 	}
@@ -359,23 +385,23 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 		return nil, fmt.Errorf("invalid query syntax: %w", err)
 	}
 
-	// Validate webhook action IDs exist
-	if err := m.validateWebhookActionIDs(ctx, req.WebhookActionIDs); err != nil {
+	// Validate webhook action IDs exist in the current scope
+	if err := m.validateWebhookActionIDs(ctx, req.WebhookActionIDs, fractalID, prismID); err != nil {
 		return nil, fmt.Errorf("invalid webhook actions: %w", err)
 	}
 
-	// Validate fractal action IDs exist
-	if err := m.validateFractalActionIDs(ctx, req.FractalActionIDs); err != nil {
+	// Validate fractal action IDs exist in the current scope
+	if err := m.validateFractalActionIDs(ctx, req.FractalActionIDs, fractalID, prismID); err != nil {
 		return nil, fmt.Errorf("invalid fractal actions: %w", err)
 	}
 
-	// Validate dictionary action IDs exist
-	if err := m.validateDictionaryActionIDs(ctx, req.DictionaryActionIDs); err != nil {
+	// Validate dictionary action IDs exist in the current scope
+	if err := m.validateDictionaryActionIDs(ctx, req.DictionaryActionIDs, fractalID, prismID); err != nil {
 		return nil, fmt.Errorf("invalid dictionary actions: %w", err)
 	}
 
-	// Validate email action IDs exist
-	if err := m.validateEmailActionIDs(ctx, req.EmailActionIDs); err != nil {
+	// Validate email action IDs exist in the current scope
+	if err := m.validateEmailActionIDs(ctx, req.EmailActionIDs, fractalID, prismID); err != nil {
 		return nil, fmt.Errorf("invalid email actions: %w", err)
 	}
 
@@ -500,23 +526,32 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 		return nil, fmt.Errorf("invalid query syntax: %w", err)
 	}
 
-	// Validate webhook action IDs exist
-	if err := m.validateWebhookActionIDs(ctx, req.WebhookActionIDs); err != nil {
+	// Look up the alert's existing scope so action validation stays scoped.
+	var existingFractalID, existingPrismID string
+	if err := m.pg.QueryRow(ctx,
+		`SELECT COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '') FROM alerts WHERE id = $1`,
+		alertID,
+	).Scan(&existingFractalID, &existingPrismID); err != nil {
+		return nil, fmt.Errorf("failed to load alert scope: %w", err)
+	}
+
+	// Validate webhook action IDs exist in the alert's scope
+	if err := m.validateWebhookActionIDs(ctx, req.WebhookActionIDs, existingFractalID, existingPrismID); err != nil {
 		return nil, fmt.Errorf("invalid webhook actions: %w", err)
 	}
 
-	// Validate fractal action IDs exist
-	if err := m.validateFractalActionIDs(ctx, req.FractalActionIDs); err != nil {
+	// Validate fractal action IDs exist in the alert's scope
+	if err := m.validateFractalActionIDs(ctx, req.FractalActionIDs, existingFractalID, existingPrismID); err != nil {
 		return nil, fmt.Errorf("invalid fractal actions: %w", err)
 	}
 
-	// Validate dictionary action IDs exist
-	if err := m.validateDictionaryActionIDs(ctx, req.DictionaryActionIDs); err != nil {
+	// Validate dictionary action IDs exist in the alert's scope
+	if err := m.validateDictionaryActionIDs(ctx, req.DictionaryActionIDs, existingFractalID, existingPrismID); err != nil {
 		return nil, fmt.Errorf("invalid dictionary actions: %w", err)
 	}
 
-	// Validate email action IDs exist
-	if err := m.validateEmailActionIDs(ctx, req.EmailActionIDs); err != nil {
+	// Validate email action IDs exist in the alert's scope
+	if err := m.validateEmailActionIDs(ctx, req.EmailActionIDs, existingFractalID, existingPrismID); err != nil {
 		return nil, fmt.Errorf("invalid email actions: %w", err)
 	}
 
@@ -957,14 +992,23 @@ func (m *Manager) DeleteAlert(ctx context.Context, alertID string) error {
 	return nil
 }
 
-// resolveWebhookActionsByName converts webhook action names to IDs
-func (m *Manager) resolveWebhookActionsByName(ctx context.Context, actionNames []string) ([]string, error) {
+// resolveWebhookActionsByName converts webhook action names to IDs within a scope.
+func (m *Manager) resolveWebhookActionsByName(ctx context.Context, actionNames []string, fractalID, prismID string) ([]string, error) {
 	if len(actionNames) == 0 {
 		return []string{}, nil
 	}
 
-	query := `SELECT id, name FROM webhook_actions WHERE name = ANY($1) AND enabled = true`
-	rows, err := m.pg.Query(ctx, query, pq.Array(actionNames))
+	args := []interface{}{pq.Array(actionNames)}
+	scope := "FALSE"
+	if prismID != "" {
+		args = append(args, prismID)
+		scope = "prism_id = $2"
+	} else if fractalID != "" {
+		args = append(args, fractalID)
+		scope = "fractal_id = $2"
+	}
+	query := fmt.Sprintf(`SELECT id, name FROM webhook_actions WHERE name = ANY($1) AND enabled = true AND %s`, scope)
+	rows, err := m.pg.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query webhook actions: %w", err)
 	}
@@ -1033,18 +1077,19 @@ func (m *Manager) loadEmailActionIDs(ctx context.Context, alertID string) []stri
 	return ids
 }
 
-// validateDictionaryActionIDs validates that all dictionary action IDs exist.
-func (m *Manager) validateDictionaryActionIDs(ctx context.Context, ids []string) error {
+// validateDictionaryActionIDs validates that all dictionary action IDs exist
+// and belong to the given fractal/prism scope.
+func (m *Manager) validateDictionaryActionIDs(ctx context.Context, ids []string, fractalID, prismID string) error {
 	if len(ids) == 0 {
 		return nil
 	}
+	query, args := scopedCountQuery("dictionary_actions", ids, fractalID, prismID)
 	var count int
-	err := m.pg.QueryRow(ctx, `SELECT COUNT(*) FROM dictionary_actions WHERE id = ANY($1)`, pq.Array(ids)).Scan(&count)
-	if err != nil {
+	if err := m.pg.QueryRow(ctx, query, args...).Scan(&count); err != nil {
 		return fmt.Errorf("failed to validate dictionary actions: %w", err)
 	}
 	if count != len(ids) {
-		return fmt.Errorf("one or more dictionary actions not found")
+		return fmt.Errorf("one or more dictionary actions not found in current scope")
 	}
 	return nil
 }
@@ -1063,17 +1108,17 @@ func (m *Manager) associateDictionaryActions(ctx context.Context, tx storage.Tx,
 	return nil
 }
 
-func (m *Manager) validateEmailActionIDs(ctx context.Context, ids []string) error {
+func (m *Manager) validateEmailActionIDs(ctx context.Context, ids []string, fractalID, prismID string) error {
 	if len(ids) == 0 {
 		return nil
 	}
+	query, args := scopedCountQuery("email_actions", ids, fractalID, prismID)
 	var count int
-	err := m.pg.QueryRow(ctx, `SELECT COUNT(*) FROM email_actions WHERE id = ANY($1)`, pq.Array(ids)).Scan(&count)
-	if err != nil {
+	if err := m.pg.QueryRow(ctx, query, args...).Scan(&count); err != nil {
 		return fmt.Errorf("failed to validate email actions: %w", err)
 	}
 	if count != len(ids) {
-		return fmt.Errorf("one or more email actions not found")
+		return fmt.Errorf("one or more email actions not found in current scope")
 	}
 	return nil
 }
@@ -1129,21 +1174,22 @@ func queryHasAggregation(pipeline *parser.PipelineNode) bool {
 	return false
 }
 
-// validateWebhookActionIDs validates that all webhook action IDs exist and are enabled
-func (m *Manager) validateWebhookActionIDs(ctx context.Context, webhookIDs []string) error {
+// validateWebhookActionIDs validates that all webhook action IDs exist, are enabled,
+// and belong to the given fractal/prism scope.
+func (m *Manager) validateWebhookActionIDs(ctx context.Context, webhookIDs []string, fractalID, prismID string) error {
 	if len(webhookIDs) == 0 {
 		return nil
 	}
 
-	query := `SELECT COUNT(*) FROM webhook_actions WHERE id = ANY($1) AND enabled = true`
+	query, args := scopedCountQuery("webhook_actions", webhookIDs, fractalID, prismID)
+	query += " AND enabled = true"
 	var count int
-	err := m.pg.QueryRow(ctx, query, pq.Array(webhookIDs)).Scan(&count)
-	if err != nil {
+	if err := m.pg.QueryRow(ctx, query, args...).Scan(&count); err != nil {
 		return fmt.Errorf("failed to validate webhook actions: %w", err)
 	}
 
 	if count != len(webhookIDs) {
-		return fmt.Errorf("one or more webhook actions not found or disabled")
+		return fmt.Errorf("one or more webhook actions not found, disabled, or not in current scope")
 	}
 
 	return nil
@@ -1163,21 +1209,22 @@ func (m *Manager) associateWebhookActions(ctx context.Context, tx storage.Tx, al
 	return nil
 }
 
-// validateFractalActionIDs validates that all fractal action IDs exist and are enabled
-func (m *Manager) validateFractalActionIDs(ctx context.Context, fractalActionIDs []string) error {
+// validateFractalActionIDs validates that all fractal action IDs exist, are enabled,
+// and belong to the given fractal/prism scope.
+func (m *Manager) validateFractalActionIDs(ctx context.Context, fractalActionIDs []string, fractalID, prismID string) error {
 	if len(fractalActionIDs) == 0 {
 		return nil
 	}
 
-	query := `SELECT COUNT(*) FROM fractal_actions WHERE id = ANY($1) AND enabled = true`
+	query, args := scopedCountQuery("fractal_actions", fractalActionIDs, fractalID, prismID)
+	query += " AND enabled = true"
 	var count int
-	err := m.pg.QueryRow(ctx, query, pq.Array(fractalActionIDs)).Scan(&count)
-	if err != nil {
+	if err := m.pg.QueryRow(ctx, query, args...).Scan(&count); err != nil {
 		return fmt.Errorf("failed to validate fractal actions: %w", err)
 	}
 
 	if count != len(fractalActionIDs) {
-		return fmt.Errorf("one or more fractal actions not found or disabled")
+		return fmt.Errorf("one or more fractal actions not found, disabled, or not in current scope")
 	}
 
 	return nil
@@ -1201,8 +1248,13 @@ func (m *Manager) associateFractalActions(ctx context.Context, tx storage.Tx, al
 // Webhook Action Management
 // ============================
 
-// CreateWebhookAction creates a new webhook action
-func (m *Manager) CreateWebhookAction(ctx context.Context, req WebhookCreateRequest, createdBy string) (*WebhookAction, error) {
+// CreateWebhookAction creates a new webhook action scoped to the given fractal or prism.
+// Pass exactly one of fractalID or prismID.
+func (m *Manager) CreateWebhookAction(ctx context.Context, req WebhookCreateRequest, createdBy, fractalID, prismID string) (*WebhookAction, error) {
+	if (fractalID == "") == (prismID == "") {
+		return nil, fmt.Errorf("exactly one of fractal_id or prism_id must be set")
+	}
+
 	// Set defaults
 	if req.Method == "" {
 		req.Method = "POST"
@@ -1232,8 +1284,8 @@ func (m *Manager) CreateWebhookAction(ctx context.Context, req WebhookCreateRequ
 
 	var webhookID string
 	query := `
-		INSERT INTO webhook_actions (name, url, method, headers, auth_type, auth_config, timeout_seconds, retry_count, include_alert_link, enabled, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		INSERT INTO webhook_actions (name, url, method, headers, auth_type, auth_config, timeout_seconds, retry_count, include_alert_link, enabled, created_by, fractal_id, prism_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id
 	`
 
@@ -1243,6 +1295,7 @@ func (m *Manager) CreateWebhookAction(ctx context.Context, req WebhookCreateRequ
 	err := m.pg.QueryRow(ctx, query,
 		req.Name, req.URL, req.Method, string(headersJSON), req.AuthType,
 		string(authConfigJSON), req.TimeoutSeconds, req.RetryCount, includeAlertLink, req.Enabled, createdBy,
+		nullableID(fractalID), nullableID(prismID),
 	).Scan(&webhookID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create webhook action: %w", err)
@@ -1308,7 +1361,8 @@ func (m *Manager) UpdateWebhookAction(ctx context.Context, webhookID string, req
 func (m *Manager) GetWebhookAction(ctx context.Context, webhookID string) (*WebhookAction, error) {
 	query := `
 		SELECT id, name, url, method, headers, auth_type, auth_config, timeout_seconds, retry_count, include_alert_link, enabled,
-		       COALESCE(created_by, ''), created_at, updated_at
+		       COALESCE(created_by, ''), created_at, updated_at,
+		       COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '')
 		FROM webhook_actions
 		WHERE id = $1
 	`
@@ -1323,6 +1377,7 @@ func (m *Manager) GetWebhookAction(ctx context.Context, webhookID string) (*Webh
 		&headersJSON, &webhook.AuthType, &authConfigJSON,
 		&webhook.TimeoutSecs, &webhook.RetryCount, &webhook.IncludeAlertLink, &webhook.Enabled,
 		&createdBy, &createdAt, &updatedAt,
+		&webhook.FractalID, &webhook.PrismID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get webhook action: %w", err)
@@ -1339,22 +1394,37 @@ func (m *Manager) GetWebhookAction(ctx context.Context, webhookID string) (*Webh
 	return &webhook, nil
 }
 
-// ListWebhookActions retrieves all webhook actions
-func (m *Manager) ListWebhookActions(ctx context.Context, enabledOnly bool) ([]*WebhookAction, error) {
+// ListWebhookActions retrieves all webhook actions scoped to the given fractal or prism.
+// Pass exactly one of fractalID or prismID.
+func (m *Manager) ListWebhookActions(ctx context.Context, enabledOnly bool, fractalID, prismID string) ([]*WebhookAction, error) {
 	baseQuery := `
 		SELECT id, name, url, method, headers, auth_type, auth_config, timeout_seconds, retry_count, include_alert_link, enabled,
-		       COALESCE(created_by, ''), created_at, updated_at
+		       COALESCE(created_by, ''), created_at, updated_at,
+		       COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '')
 		FROM webhook_actions
 	`
 
-	var whereClause string
+	var conditions []string
+	var args []interface{}
+	if prismID != "" {
+		conditions = append(conditions, fmt.Sprintf("prism_id = $%d", len(args)+1))
+		args = append(args, prismID)
+	} else if fractalID != "" {
+		conditions = append(conditions, fmt.Sprintf("fractal_id = $%d", len(args)+1))
+		args = append(args, fractalID)
+	}
 	if enabledOnly {
-		whereClause = " WHERE enabled = true"
+		conditions = append(conditions, "enabled = true")
+	}
+
+	var whereClause string
+	if len(conditions) > 0 {
+		whereClause = " WHERE " + strings.Join(conditions, " AND ")
 	}
 
 	query := baseQuery + whereClause + " ORDER BY name"
 
-	rows, err := m.pg.Query(ctx, query)
+	rows, err := m.pg.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list webhook actions: %w", err)
 	}
@@ -1372,6 +1442,7 @@ func (m *Manager) ListWebhookActions(ctx context.Context, enabledOnly bool) ([]*
 			&headersJSON, &webhook.AuthType, &authConfigJSON,
 			&webhook.TimeoutSecs, &webhook.RetryCount, &webhook.IncludeAlertLink, &webhook.Enabled,
 			&createdBy, &createdAt, &updatedAt,
+			&webhook.FractalID, &webhook.PrismID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan webhook action: %w", err)
@@ -1455,8 +1526,13 @@ func (m *Manager) TestWebhookAction(ctx context.Context, webhookID string) (*Web
 // Fractal Action Management
 // ============================
 
-// CreateFractalAction creates a new fractal action
-func (m *Manager) CreateFractalAction(ctx context.Context, req FractalActionCreateRequest, createdBy string) (*FractalAction, error) {
+// CreateFractalAction creates a new fractal action scoped to the given fractal or prism.
+// Pass exactly one of fractalID or prismID.
+func (m *Manager) CreateFractalAction(ctx context.Context, req FractalActionCreateRequest, createdBy, fractalID, prismID string) (*FractalAction, error) {
+	if (fractalID == "") == (prismID == "") {
+		return nil, fmt.Errorf("exactly one of fractal_id or prism_id must be set")
+	}
+
 	// Set defaults
 	if req.MaxLogsPerTrigger <= 0 {
 		req.MaxLogsPerTrigger = 1000
@@ -1490,8 +1566,9 @@ func (m *Manager) CreateFractalAction(ctx context.Context, req FractalActionCrea
 
 	query := `
 		INSERT INTO fractal_actions (name, description, target_fractal_id, preserve_timestamp,
-		                           add_alert_context, field_mappings, max_logs_per_trigger, enabled, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		                           add_alert_context, field_mappings, max_logs_per_trigger, enabled, created_by,
+		                           fractal_id, prism_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, created_at, updated_at
 	`
 
@@ -1501,6 +1578,7 @@ func (m *Manager) CreateFractalAction(ctx context.Context, req FractalActionCrea
 		req.Name, req.Description, req.TargetFractalID, req.PreserveTimestamp,
 		req.AddAlertContext, string(fieldMappingsJSON), req.MaxLogsPerTrigger,
 		req.Enabled, createdBy,
+		nullableID(fractalID), nullableID(prismID),
 	).Scan(&fractalActionID, &createdAt, &updatedAt)
 
 	if err != nil {
@@ -1575,7 +1653,8 @@ func (m *Manager) UpdateFractalAction(ctx context.Context, fractalActionID strin
 func (m *Manager) GetFractalAction(ctx context.Context, fractalActionID string) (*FractalAction, error) {
 	query := `
 		SELECT fa.id, fa.name, fa.description, fa.target_fractal_id, fa.preserve_timestamp,
-		       fa.add_alert_context, fa.field_mappings, fa.max_logs_per_trigger, fa.enabled
+		       fa.add_alert_context, fa.field_mappings, fa.max_logs_per_trigger, fa.enabled,
+		       COALESCE(fa.fractal_id::text, ''), COALESCE(fa.prism_id::text, '')
 		FROM fractal_actions fa
 		WHERE fa.id = $1
 	`
@@ -1587,6 +1666,7 @@ func (m *Manager) GetFractalAction(ctx context.Context, fractalActionID string) 
 		&action.ID, &action.Name, &action.Description, &action.TargetFractalID,
 		&action.PreserveTimestamp, &action.AddAlertContext, &fieldMappingsJSON,
 		&action.MaxLogsPerTrigger, &action.Enabled,
+		&action.FractalID, &action.PrismID,
 	)
 
 	if err != nil {
@@ -1601,19 +1681,32 @@ func (m *Manager) GetFractalAction(ctx context.Context, fractalActionID string) 
 	return &action, nil
 }
 
-// ListFractalActions retrieves all fractal actions with optional filtering
-func (m *Manager) ListFractalActions(ctx context.Context, enabledOnly bool) ([]FractalAction, error) {
+// ListFractalActions retrieves fractal actions scoped to the given fractal or prism.
+// Pass exactly one of fractalID or prismID.
+func (m *Manager) ListFractalActions(ctx context.Context, enabledOnly bool, fractalID, prismID string) ([]FractalAction, error) {
 	query := `
 		SELECT fa.id, fa.name, fa.description, fa.target_fractal_id, fa.preserve_timestamp,
 		       fa.add_alert_context, fa.field_mappings, fa.max_logs_per_trigger, fa.enabled,
+		       COALESCE(fa.fractal_id::text, ''), COALESCE(fa.prism_id::text, ''),
 		       f.name as target_fractal_name
 		FROM fractal_actions fa
 		JOIN fractals f ON fa.target_fractal_id = f.id
 	`
 
-	args := []interface{}{}
+	var conditions []string
+	var args []interface{}
+	if prismID != "" {
+		conditions = append(conditions, fmt.Sprintf("fa.prism_id = $%d", len(args)+1))
+		args = append(args, prismID)
+	} else if fractalID != "" {
+		conditions = append(conditions, fmt.Sprintf("fa.fractal_id = $%d", len(args)+1))
+		args = append(args, fractalID)
+	}
 	if enabledOnly {
-		query += " WHERE fa.enabled = true"
+		conditions = append(conditions, "fa.enabled = true")
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	query += " ORDER BY fa.name"
 
@@ -1632,7 +1725,9 @@ func (m *Manager) ListFractalActions(ctx context.Context, enabledOnly bool) ([]F
 		err := rows.Scan(
 			&action.ID, &action.Name, &action.Description, &action.TargetFractalID,
 			&action.PreserveTimestamp, &action.AddAlertContext, &fieldMappingsJSON,
-			&action.MaxLogsPerTrigger, &action.Enabled, &targetFractalName,
+			&action.MaxLogsPerTrigger, &action.Enabled,
+			&action.FractalID, &action.PrismID,
+			&targetFractalName,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan fractal action: %w", err)
@@ -1999,7 +2094,12 @@ func (m *Manager) DuplicateAlert(ctx context.Context, alertID, createdBy string)
 // Email Action CRUD
 // ============================
 
-func (m *Manager) CreateEmailAction(ctx context.Context, req EmailActionCreateRequest, createdBy string) (*EmailAction, error) {
+// CreateEmailAction creates a new email action scoped to the given fractal or prism.
+// Pass exactly one of fractalID or prismID.
+func (m *Manager) CreateEmailAction(ctx context.Context, req EmailActionCreateRequest, createdBy, fractalID, prismID string) (*EmailAction, error) {
+	if (fractalID == "") == (prismID == "") {
+		return nil, fmt.Errorf("exactly one of fractal_id or prism_id must be set")
+	}
 	if strings.TrimSpace(req.Name) == "" {
 		return nil, fmt.Errorf("email action name is required")
 	}
@@ -2009,9 +2109,10 @@ func (m *Manager) CreateEmailAction(ctx context.Context, req EmailActionCreateRe
 
 	var id string
 	err := m.pg.QueryRow(ctx,
-		`INSERT INTO email_actions (name, recipients, subject_template, body_template, enabled, created_by)
-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		`INSERT INTO email_actions (name, recipients, subject_template, body_template, enabled, created_by, fractal_id, prism_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
 		req.Name, pq.Array(req.Recipients), req.SubjectTemplate, req.BodyTemplate, req.Enabled, createdBy,
+		nullableID(fractalID), nullableID(prismID),
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create email action: %w", err)
@@ -2023,19 +2124,35 @@ func (m *Manager) CreateEmailAction(ctx context.Context, req EmailActionCreateRe
 func (m *Manager) GetEmailAction(ctx context.Context, id string) (*EmailAction, error) {
 	var action EmailAction
 	err := m.pg.QueryRow(ctx,
-		`SELECT id, name, recipients, COALESCE(subject_template, ''), COALESCE(body_template, ''), enabled
+		`SELECT id, name, recipients, COALESCE(subject_template, ''), COALESCE(body_template, ''), enabled,
+		        COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '')
 		 FROM email_actions WHERE id = $1`, id,
-	).Scan(&action.ID, &action.Name, pq.Array(&action.Recipients), &action.SubjectTemplate, &action.BodyTemplate, &action.Enabled)
+	).Scan(&action.ID, &action.Name, pq.Array(&action.Recipients), &action.SubjectTemplate, &action.BodyTemplate, &action.Enabled,
+		&action.FractalID, &action.PrismID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get email action: %w", err)
 	}
 	return &action, nil
 }
 
-func (m *Manager) ListEmailActions(ctx context.Context) ([]EmailAction, error) {
-	rows, err := m.pg.Query(ctx,
-		`SELECT id, name, recipients, COALESCE(subject_template, ''), COALESCE(body_template, ''), enabled
-		 FROM email_actions ORDER BY name`)
+// ListEmailActions retrieves email actions scoped to the given fractal or prism.
+// Pass exactly one of fractalID or prismID.
+func (m *Manager) ListEmailActions(ctx context.Context, fractalID, prismID string) ([]EmailAction, error) {
+	baseQuery := `SELECT id, name, recipients, COALESCE(subject_template, ''), COALESCE(body_template, ''), enabled,
+	              COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '')
+	              FROM email_actions`
+
+	var args []interface{}
+	var where string
+	if prismID != "" {
+		where = " WHERE prism_id = $1"
+		args = append(args, prismID)
+	} else if fractalID != "" {
+		where = " WHERE fractal_id = $1"
+		args = append(args, fractalID)
+	}
+
+	rows, err := m.pg.Query(ctx, baseQuery+where+" ORDER BY name", args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list email actions: %w", err)
 	}
@@ -2044,7 +2161,8 @@ func (m *Manager) ListEmailActions(ctx context.Context) ([]EmailAction, error) {
 	var actions []EmailAction
 	for rows.Next() {
 		var a EmailAction
-		if err := rows.Scan(&a.ID, &a.Name, pq.Array(&a.Recipients), &a.SubjectTemplate, &a.BodyTemplate, &a.Enabled); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, pq.Array(&a.Recipients), &a.SubjectTemplate, &a.BodyTemplate, &a.Enabled,
+			&a.FractalID, &a.PrismID); err != nil {
 			return nil, fmt.Errorf("failed to scan email action: %w", err)
 		}
 		actions = append(actions, a)

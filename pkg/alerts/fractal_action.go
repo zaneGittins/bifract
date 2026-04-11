@@ -26,6 +26,8 @@ type FractalAction struct {
 	FieldMappings      map[string]string `json:"field_mappings"`
 	MaxLogsPerTrigger  int               `json:"max_logs_per_trigger"`
 	Enabled            bool              `json:"enabled"`
+	FractalID          string            `json:"fractal_id,omitempty"`
+	PrismID            string            `json:"prism_id,omitempty"`
 }
 
 // FractalResult represents the outcome of sending logs to a fractal
