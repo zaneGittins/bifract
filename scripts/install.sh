@@ -3,9 +3,9 @@ set -e
 
 # Bifract Control Installer
 # Usage:
-#   curl -sfL https://raw.githubusercontent.com/zaneGittins/bifract/main/scripts/install.sh | sh
-#   curl -sfL https://...install.sh | sh -s -- --upgrade
-#   curl -sfL https://...install.sh | sh -s -- --install --dir /opt/bifract
+#   curl -sfL https://docs.bifract.io/install.sh | sh
+#   curl -sfL https://docs.bifract.io/install.sh | sh -s -- --upgrade
+#   curl -sfL https://docs.bifract.io/install.sh | sh -s -- --install --dir /opt/bifract
 
 REPO="zaneGittins/bifract"
 BINARY="bifract"

@@ -23,7 +23,7 @@ Bifract is an open source log management, detection, and collaboration platform 
 
 The easiest way to install Bifract is with the Linux setup wizard. It handles SSL, secure passwords, Docker Compose, and database initialization. This downloads the `bifract` binary and runs the interactive setup:
 ```bash
-curl -sfL https://raw.githubusercontent.com/zaneGittins/bifract/main/scripts/install.sh | sh
+curl -sfL https://docs.bifract.io/install.sh | sh
 ```
 
 To upgrade an existing installation (if `bifract` is already installed):
