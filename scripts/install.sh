@@ -58,28 +58,6 @@ else
     sudo mv "/tmp/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 fi
 
-# Clean up old bifract-setup binary if present
-OLD_BINARY="${INSTALL_DIR}/bifract-setup"
-if [ -f "$OLD_BINARY" ]; then
-    echo "Removing old bifract-setup binary..."
-    if [ -w "$INSTALL_DIR" ]; then
-        rm -f "$OLD_BINARY"
-    else
-        sudo rm -f "$OLD_BINARY"
-    fi
-fi
-
-# Clean up old bifractctl binary if present
-OLD_CTL_BINARY="${INSTALL_DIR}/bifractctl"
-if [ -f "$OLD_CTL_BINARY" ]; then
-    echo "Removing old bifractctl binary..."
-    if [ -w "$INSTALL_DIR" ]; then
-        rm -f "$OLD_CTL_BINARY"
-    else
-        sudo rm -f "$OLD_CTL_BINARY"
-    fi
-fi
-
 echo ""
 echo "bifract ${TAG} installed to ${INSTALL_DIR}/${BINARY}"
 
