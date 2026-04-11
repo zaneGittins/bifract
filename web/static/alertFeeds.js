@@ -16,6 +16,20 @@ const AlertFeeds = {
 
     init() {
         this.setupEventListeners();
+        if (window.FractalContext && typeof FractalContext.subscribe === 'function') {
+            FractalContext.subscribe('AlertFeeds', () => this.onFractalChange());
+        }
+    },
+
+    onFractalChange() {
+        this.feeds = [];
+        this.feedAlerts = [];
+        this.filteredAlerts = [];
+        this.alertsPage = 1;
+        const view = document.getElementById('feedAlertsView');
+        if (view && view.offsetParent !== null) {
+            this.show();
+        }
     },
 
     showManualAlerts() {
@@ -154,10 +168,13 @@ const AlertFeeds = {
     // ============================
 
     async loadFeeds() {
+        const token = window.FractalContext?.scopeToken?.();
         try {
             const data = await HttpUtils.safeFetch('/api/v1/feeds');
+            if (window.FractalContext?.isScopeStale?.(token)) return;
             this.feeds = data.data || [];
         } catch (err) {
+            if (window.FractalContext?.isScopeStale?.(token)) return;
             console.error('[AlertFeeds] Failed to load feeds:', err);
             this.feeds = [];
         }
@@ -169,14 +186,17 @@ const AlertFeeds = {
 
         container.innerHTML = '<div class="loading">Loading feed alerts...</div>';
 
+        const token = window.FractalContext?.scopeToken?.();
         try {
             const data = await HttpUtils.safeFetch('/api/v1/alerts/feed');
+            if (window.FractalContext?.isScopeStale?.(token)) return;
             this.feedAlerts = data.data || [];
             this.filteredAlerts = this.feedAlerts;
             this.alertsPage = 1;
             this.populateLabelFilter();
             this.filterFeedAlerts();
         } catch (err) {
+            if (window.FractalContext?.isScopeStale?.(token)) return;
             console.error('[AlertFeeds] Failed to load feed alerts:', err);
             container.innerHTML = '<div class="error">Failed to load feed alerts: ' + Utils.escapeHtml(err.message) + '</div>';
         }
@@ -1094,3 +1114,5 @@ const AlertFeeds = {
         return days + 'd ago';
     }
 };
+
+window.AlertFeeds = AlertFeeds;

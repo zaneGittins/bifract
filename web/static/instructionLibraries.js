@@ -9,7 +9,23 @@ const InstructionLibraries = {
     pageLimit: 20,
 
     init() {
-        // No-op until shown
+        if (window.FractalContext && typeof FractalContext.subscribe === 'function') {
+            FractalContext.subscribe('InstructionLibraries', () => this.onFractalChange());
+        }
+    },
+
+    onFractalChange() {
+        this.libraries = [];
+        this.currentLibrary = null;
+        this.currentPages = [];
+        this.view = 'list';
+        this.editingPage = null;
+        this.pageSearch = '';
+        this.pageOffset = 0;
+        const container = document.getElementById('instructionLibrariesView');
+        if (container && container.offsetParent !== null) {
+            this.show();
+        }
     },
 
     async show() {
@@ -20,11 +36,14 @@ const InstructionLibraries = {
     },
 
     async loadLibraries() {
+        const token = window.FractalContext?.scopeToken?.();
         try {
             const resp = await fetch('/api/v1/instruction-libraries');
             const data = await resp.json();
+            if (window.FractalContext?.isScopeStale?.(token)) return;
             this.libraries = data.success && data.data ? data.data : [];
         } catch (e) {
+            if (window.FractalContext?.isScopeStale?.(token)) return;
             console.error('Failed to load instruction libraries:', e);
             this.libraries = [];
         }

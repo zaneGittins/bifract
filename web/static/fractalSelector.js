@@ -445,12 +445,7 @@ const FractalSelector = {
         if (sessionPrismID) {
             const prism = this.availablePrisms.find(p => p.id === sessionPrismID);
             if (prism) {
-                this.currentFractal = prism;
-                this.updateSelectorText(prism.name);
-                if (window.FractalContext) {
-                    FractalContext.currentFractal = prism;
-                    FractalContext.currentItemType = 'prism';
-                }
+                this._applyInitialSelection(prism, 'prism');
                 return;
             }
         }
@@ -458,12 +453,7 @@ const FractalSelector = {
         if (sessionFractalID) {
             const fractal = this.availableFractals.find(f => f.id === sessionFractalID);
             if (fractal) {
-                this.currentFractal = fractal;
-                this.updateSelectorText(fractal.name);
-                if (window.FractalContext) {
-                    FractalContext.currentFractal = fractal;
-                    FractalContext.currentItemType = 'fractal';
-                }
+                this._applyInitialSelection(fractal, 'fractal');
                 return;
             }
         }
@@ -474,14 +464,27 @@ const FractalSelector = {
             const defaultFractal = this.availableFractals.find(fractal => fractal.is_default);
             const targetFractal = defaultFractal || this.availableFractals[0];
             if (targetFractal) {
-                this.currentFractal = targetFractal;
-                this.updateSelectorText(targetFractal.name);
+                this._applyInitialSelection(targetFractal, 'fractal');
                 if (window.FractalContext) {
-                    FractalContext.currentFractal = targetFractal;
-                    FractalContext.currentItemType = 'fractal';
                     FractalContext.selectFractalOnServer(targetFractal.id);
                 }
             }
+        }
+    },
+
+    // Apply an initial fractal/prism selection to every view that needs to know
+    // about it: dropdown text, FractalContext, TimeBar (bottom-left label), and
+    // localStorage. No server call - that's the caller's decision.
+    _applyInitialSelection(target, type) {
+        this.currentFractal = target;
+        this.updateSelectorText(target.name);
+        if (window.FractalContext) {
+            FractalContext.currentFractal = target;
+            FractalContext.currentItemType = type;
+            FractalContext._saveToStorage();
+        }
+        if (window.TimeBar) {
+            TimeBar.updateFractalName(target.name);
         }
     },
 
@@ -515,23 +518,29 @@ const FractalSelector = {
                 throw new Error(errorData.error || `HTTP ${response.status}`);
             }
 
-            // Update current selection
             this.currentFractal = selectedFractal;
             this.updateSelectorText(selectedFractal.name);
 
             // Update auth fractal_role from the stored user_role
             if (window.Auth && Auth.currentUser) {
                 Auth.currentUser.fractal_role = selectedFractal.user_role || '';
+                Auth.currentUser.selected_fractal = selectedFractal.id;
+                Auth.currentUser.selected_prism = '';
                 Auth.updateRBACVisibility();
             }
 
-            // Keep FractalContext in sync
+            // Keep FractalContext, the bottom-left time bar, and localStorage
+            // in sync. This mirrors the work FractalContext.setCurrentFractal()
+            // does, minus the redundant server call we already made above.
             if (window.FractalContext) {
                 FractalContext.currentFractal = selectedFractal;
                 FractalContext.currentItemType = 'fractal';
+                FractalContext._saveToStorage();
+            }
+            if (window.TimeBar) {
+                TimeBar.updateFractalName(selectedFractal.name);
             }
 
-            // Refresh current view data to reflect new fractal
             this.refreshCurrentView();
 
             // Show success message
@@ -572,10 +581,21 @@ const FractalSelector = {
             this.currentFractal = prism;
             this.updateSelectorText(prism.name);
 
-            // Keep FractalContext in sync
+            if (window.Auth && Auth.currentUser) {
+                Auth.currentUser.selected_prism = prism.id;
+                Auth.currentUser.selected_fractal = '';
+                // Refresh role-gated UI for the new prism scope. The fractal
+                // path does this too; keep them symmetrical.
+                Auth.updateRBACVisibility();
+            }
+
             if (window.FractalContext) {
                 FractalContext.currentFractal = prism;
                 FractalContext.currentItemType = 'prism';
+                FractalContext._saveToStorage();
+            }
+            if (window.TimeBar) {
+                TimeBar.updateFractalName(prism.name);
             }
 
             this.refreshCurrentView();
@@ -596,36 +616,13 @@ const FractalSelector = {
     },
 
     refreshCurrentView() {
-        // Refresh data in the current view to reflect the new fractal selection
+        // Notify every module that cares about scope changes. This is the single
+        // source of truth for "tell the UI the scope changed" — do NOT special-case
+        // individual views here, or modules added later will silently stop reloading
+        // on scope switches. See FractalContext.notifyFractalChange() for the list.
         try {
-            // Determine current view and refresh its data
-            const currentView = App.getCurrentView ? App.getCurrentView() : null;
-
-            switch (currentView) {
-                case 'search':
-                    // Refresh search results if there's an active query
-                    if (window.QueryExecutor && QueryExecutor.onFractalChange) {
-                        QueryExecutor.onFractalChange();
-                    }
-                    break;
-
-                case 'alerts':
-                    // Refresh alerts list
-                    if (window.Alerts && Alerts.onFractalChange) {
-                        Alerts.onFractalChange();
-                    }
-                    break;
-
-                case 'commented':
-                    // Refresh commented logs
-                    if (window.CommentedLogs && CommentedLogs.onFractalChange) {
-                        CommentedLogs.onFractalChange();
-                    }
-                    break;
-
-                default:
-                    // For other views, trigger a general refresh
-                    break;
+            if (window.FractalContext && typeof FractalContext.notifyFractalChange === 'function') {
+                FractalContext.notifyFractalChange();
             }
         } catch (error) {
             console.error('Error refreshing current view:', error);

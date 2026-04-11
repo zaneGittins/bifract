@@ -29,6 +29,20 @@ const Dashboards = {
         this.stopDragResize();
         this.bindEvents();
         this.showDashboardListing();
+        if (window.FractalContext && typeof FractalContext.subscribe === 'function') {
+            FractalContext.subscribe('Dashboards', () => this.onFractalChange());
+        }
+    },
+
+    onFractalChange() {
+        this.currentDashboard = null;
+        this.stopDragResize();
+        this.currentPage = 0;
+        this.searchQuery = '';
+        const view = document.getElementById('dashboardsView');
+        if (view && view.offsetParent !== null) {
+            this.showDashboardListing();
+        }
     },
 
     bindEvents() {
@@ -130,11 +144,13 @@ const Dashboards = {
         if (emptyEl) emptyEl.style.display = 'none';
         if (paginationEl) paginationEl.style.display = 'none';
         const offset = this.currentPage * this.pageSize;
+        const token = window.FractalContext?.scopeToken?.();
         try {
             const response = await fetch(`/api/v1/dashboards?limit=${this.pageSize}&offset=${offset}`, {
                 credentials: 'include'
             });
             const data = await response.json();
+            if (window.FractalContext?.isScopeStale?.(token)) return;
 
             if (!data.success) throw new Error(data.error || 'Failed to load dashboards');
 
@@ -142,6 +158,7 @@ const Dashboards = {
             this.renderDashboardTable(data.data || []);
             this.updatePagination();
         } catch (err) {
+            if (window.FractalContext?.isScopeStale?.(token)) return;
             console.error('[Dashboards] Failed to load dashboards:', err);
             this.showError('Failed to load dashboards');
         }
