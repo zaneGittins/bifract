@@ -61,8 +61,8 @@ jobs:
         with:
           merge-multiple: true
 
-      - name: Create Release
+      - name: Upload Release Assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "${TAG}" bifract-* --generate-notes --repo "${{ github.repository }}"
+        run: gh release upload "${TAG}" bifract-* --repo "${{ github.repository }}" --clobber

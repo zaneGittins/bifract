@@ -47,7 +47,11 @@ fi
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${BINARY}-${OS}-${ARCH}"
 
 echo "Downloading ${BINARY} ${TAG} for ${OS}/${ARCH}..."
-curl -sfL -o "/tmp/${BINARY}" "$DOWNLOAD_URL"
+if ! curl -fL -o "/tmp/${BINARY}" "$DOWNLOAD_URL"; then
+    echo "Download failed. URL: ${DOWNLOAD_URL}"
+    echo "Check that release assets exist at https://github.com/${REPO}/releases/tag/${TAG}"
+    exit 1
+fi
 chmod +x "/tmp/${BINARY}"
 
 # Install (may need sudo)
