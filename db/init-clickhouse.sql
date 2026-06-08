@@ -27,3 +27,24 @@ SETTINGS index_granularity = 8192;
 -- Alert queries filter on ingest_timestamp which is not in the primary key;
 -- without this index ClickHouse scans every granule in the table.
 ALTER TABLE logs ADD INDEX IF NOT EXISTS ingest_ts_minmax ingest_timestamp TYPE minmax GRANULARITY 1;
+
+-- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
+-- Querying this instead of raw logs reduces the recent-logs histogram from a
+-- 200M-row scan to ~1440 rows for a 24-hour window.
+CREATE TABLE IF NOT EXISTS logs_histogram (
+    fractal_id LowCardinality(String),
+    minute     DateTime,
+    cnt        UInt64
+) ENGINE = SummingMergeTree(cnt)
+ORDER BY (fractal_id, minute)
+SETTINGS index_granularity = 256;
+
+-- Feeds logs_histogram from every insert into the local logs table.
+-- The MV writes to the local logs_histogram; the distributed table handles cross-shard reads.
+CREATE MATERIALIZED VIEW IF NOT EXISTS logs_histogram_mv TO logs_histogram AS
+SELECT
+    fractal_id,
+    toStartOfMinute(timestamp) AS minute,
+    count() AS cnt
+FROM logs
+GROUP BY fractal_id, minute;

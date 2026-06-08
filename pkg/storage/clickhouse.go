@@ -61,8 +61,27 @@ func (c *ClickHouseClient) ReadTable() string {
 	return "logs"
 }
 
-// rewriteEngineRe matches ENGINE = MergeTree(...) or ReplacingMergeTree(...) etc.
-var rewriteEngineRe = regexp.MustCompile(`(?i)ENGINE\s*=\s*(MergeTree|ReplacingMergeTree)\s*\(\s*\)`)
+// WriteTable returns the table name for insert queries. In cluster mode this is
+// "logs_distributed" so the Distributed engine shards writes across all nodes;
+// in single-node mode it is "logs".
+func (c *ClickHouseClient) WriteTable() string {
+	if c.Cluster != "" {
+		return "logs_distributed"
+	}
+	return "logs"
+}
+
+// HistogramReadTable returns the table name for pre-aggregated histogram reads.
+// In cluster mode this fans out to all shards via logs_histogram_distributed.
+func (c *ClickHouseClient) HistogramReadTable() string {
+	if c.Cluster != "" {
+		return "logs_histogram_distributed"
+	}
+	return "logs_histogram"
+}
+
+// rewriteEngineRe matches ENGINE = MergeTree(), ReplacingMergeTree(), or SummingMergeTree(args).
+var rewriteEngineRe = regexp.MustCompile(`(?i)ENGINE\s*=\s*(MergeTree|ReplacingMergeTree|SummingMergeTree)\s*\(([^)]*)\)`)
 
 // RewriteEngine replaces single-node table engines with their replicated
 // equivalents when cluster mode is active. Returns the input unchanged for
@@ -72,11 +91,27 @@ func (c *ClickHouseClient) RewriteEngine(sql string) string {
 		return sql
 	}
 	return rewriteEngineRe.ReplaceAllStringFunc(sql, func(match string) string {
-		upper := strings.ToUpper(match)
-		if strings.Contains(upper, "REPLACINGMERGETREE") {
-			return "ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')"
+		sub := rewriteEngineRe.FindStringSubmatch(match)
+		if len(sub) < 3 {
+			return match
 		}
-		return "ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/{table}', '{replica}')"
+		engineName := strings.ToUpper(sub[1])
+		innerArgs := strings.TrimSpace(sub[2])
+		replicaPath := "'/clickhouse/tables/{shard}/{database}/{table}', '{replica}'"
+		switch engineName {
+		case "REPLACINGMERGETREE":
+			if innerArgs == "" {
+				return "ENGINE = ReplicatedReplacingMergeTree(" + replicaPath + ")"
+			}
+			return "ENGINE = ReplicatedReplacingMergeTree(" + replicaPath + ", " + innerArgs + ")"
+		case "SUMMINGMERGETREE":
+			if innerArgs == "" {
+				return "ENGINE = ReplicatedSummingMergeTree(" + replicaPath + ")"
+			}
+			return "ENGINE = ReplicatedSummingMergeTree(" + replicaPath + ", " + innerArgs + ")"
+		default:
+			return "ENGINE = ReplicatedMergeTree(" + replicaPath + ")"
+		}
 	})
 }
 
@@ -86,6 +121,7 @@ var injectOnClusterPatterns = []struct {
 	prefix string
 	re     *regexp.Regexp
 }{
+	{"CREATE MATERIALIZED VIEW", regexp.MustCompile(`(?i)(CREATE\s+MATERIALIZED\s+VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+)`)},
 	{"CREATE TABLE", regexp.MustCompile(`(?i)(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+)`)},
 	{"ALTER TABLE", regexp.MustCompile(`(?i)(ALTER\s+TABLE\s+\S+)`)},
 	{"TRUNCATE", regexp.MustCompile(`(?i)(TRUNCATE\s+TABLE\s+(?:IF\s+EXISTS\s+)?\S+)`)},
@@ -136,8 +172,11 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 
 	for _, stmt := range splitClickHouseSQL(sql) {
 		upper := strings.ToUpper(strings.TrimSpace(stmt))
-		// If the table already exists, only run ALTER statements (idempotent schema fixes).
-		if tableExists && !strings.HasPrefix(upper, "ALTER ") {
+		// If the table already exists, run ALTER and CREATE statements only.
+		// CREATE statements must use IF NOT EXISTS — they are idempotent locally
+		// but the ON CLUSTER propagation still reaches any shard that missed the
+		// initial DDL. Non-DDL statements (INSERT, SET, etc.) are skipped.
+		if tableExists && !strings.HasPrefix(upper, "ALTER ") && !strings.HasPrefix(upper, "CREATE ") {
 			continue
 		}
 		// In cluster mode, inject ON CLUSTER and rewrite engines to replicated variants.
@@ -148,7 +187,7 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 		}
 	}
 
-	// In cluster mode, create the Distributed table for cross-shard reads.
+	// In cluster mode, create Distributed tables for cross-shard reads.
 	if c.IsCluster() {
 		distSQL := fmt.Sprintf(
 			"CREATE TABLE IF NOT EXISTS logs_distributed%s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
@@ -156,6 +195,14 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 		)
 		if err := c.conn.Exec(ctx, distSQL); err != nil {
 			return fmt.Errorf("failed to create distributed table: %w\nstatement: %s", err, distSQL)
+		}
+
+		histDistSQL := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS logs_histogram_distributed%s AS logs_histogram ENGINE = Distributed('%s', currentDatabase(), 'logs_histogram', rand())",
+			c.OnClusterSQL(), EscCHStr(c.Cluster),
+		)
+		if err := c.conn.Exec(ctx, histDistSQL); err != nil {
+			return fmt.Errorf("failed to create histogram distributed table: %w\nstatement: %s", err, histDistSQL)
 		}
 	}
 
@@ -239,8 +286,8 @@ func NewClickHouseClientWithPool(host string, port int, database, user, password
 var validClusterName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // NewClickHouseClusterClient creates a cluster-aware client that connects to
-// multiple ClickHouse nodes. The driver handles failover and load-balancing
-// across the provided addresses.
+// multiple ClickHouse nodes. The driver handles failover across the provided
+// addresses but does not load-balance writes; use logs_distributed for that.
 func NewClickHouseClusterClient(hosts []string, port int, database, user, password, cluster string, pool ClickHousePoolConfig) (*ClickHouseClient, error) {
 	if !validClusterName.MatchString(cluster) {
 		return nil, fmt.Errorf("invalid cluster name %q: must be alphanumeric, hyphens, or underscores only", cluster)
@@ -405,7 +452,7 @@ func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) erro
 		return nil
 	}
 
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO logs (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp)")
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.WriteTable()+" (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp)")
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
