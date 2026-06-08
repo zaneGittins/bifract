@@ -933,6 +933,93 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// HandleGetLogFields returns the parsed fields map for a single log by log_id.
+// Used by the frontend to lazy-load field details when a log row is expanded.
+func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request) {
+	logID := r.URL.Query().Get("log_id")
+	if logID == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "log_id is required",
+		})
+		return
+	}
+
+	user, _ := r.Context().Value("user").(*storage.User)
+	accessible, err := h.accessibleFractalIDs(r)
+	if err != nil {
+		log.Printf("[QueryHandler] HandleGetLogFields: failed to resolve accessible fractals: %v", err)
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"success": false,
+			"error":   "Failed to determine scope",
+		})
+		return
+	}
+
+	isAdmin := user != nil && user.IsAdmin
+	if !isAdmin && len(accessible) == 0 {
+		respondJSON(w, http.StatusNotFound, map[string]interface{}{
+			"success": false,
+			"error":   "Log not found",
+		})
+		return
+	}
+
+	// Fetch without fractal filter, then verify the log's fractal_id is in the
+	// accessible set. This correctly handles prism sessions (multiple fractals)
+	// without trusting anything from the request body.
+	results, err := h.db.GetLogFieldsByIDs(r.Context(), []string{logID}, "")
+	if err != nil {
+		log.Printf("[QueryHandler] HandleGetLogFields: failed to fetch fields: %v", err)
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"success": false,
+			"error":   "Failed to retrieve log fields",
+		})
+		return
+	}
+
+	if len(results) == 0 {
+		respondJSON(w, http.StatusNotFound, map[string]interface{}{
+			"success": false,
+			"error":   "Log not found",
+		})
+		return
+	}
+
+	if !isAdmin {
+		logFractalID, _ := results[0]["fractal_id"].(string)
+		if logFractalID == "" && h.fractalManager != nil {
+			if def, err := h.fractalManager.GetDefaultFractal(r.Context()); err == nil {
+				logFractalID = def.ID
+			}
+		}
+		allowed := false
+		for _, id := range accessible {
+			if id == logFractalID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			respondJSON(w, http.StatusNotFound, map[string]interface{}{
+				"success": false,
+				"error":   "Log not found",
+			})
+			return
+		}
+	}
+
+	fields, _ := results[0]["fields"].(map[string]interface{})
+	if fields == nil {
+		fields = map[string]interface{}{}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"fields":  fields,
+	})
+}
+
 // accessibleFractalIDs returns the list of fractal IDs the current session is
 // scoped to: a single ID for a fractal session, the member fractal IDs for a
 // prism session, or an empty list if no scope is set. Admin bypass is handled

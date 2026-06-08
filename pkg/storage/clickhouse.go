@@ -829,11 +829,11 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 	var err error
 	if fractalID != "" {
 		rows, err = c.conn.Query(ctx,
-			fmt.Sprintf("SELECT log_id, toString(fields) AS fields FROM %s WHERE log_id IN (?) AND fractal_id = ?", c.ReadTable()),
+			fmt.Sprintf("SELECT log_id, fractal_id, toString(fields) AS fields FROM %s WHERE log_id IN (?) AND fractal_id = ?", c.ReadTable()),
 			logIDs, fractalID)
 	} else {
 		rows, err = c.conn.Query(ctx,
-			fmt.Sprintf("SELECT log_id, toString(fields) AS fields FROM %s WHERE log_id IN (?)", c.ReadTable()),
+			fmt.Sprintf("SELECT log_id, fractal_id, toString(fields) AS fields FROM %s WHERE log_id IN (?)", c.ReadTable()),
 			logIDs)
 	}
 	if err != nil {
@@ -843,11 +843,11 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 
 	var results []map[string]interface{}
 	for rows.Next() {
-		var logID, fieldsStr string
-		if err := rows.Scan(&logID, &fieldsStr); err != nil {
+		var logID, logFractalID, fieldsStr string
+		if err := rows.Scan(&logID, &logFractalID, &fieldsStr); err != nil {
 			return nil, fmt.Errorf("failed to scan log fields row: %w", err)
 		}
-		entry := map[string]interface{}{"log_id": logID}
+		entry := map[string]interface{}{"log_id": logID, "fractal_id": logFractalID}
 		var m map[string]interface{}
 		if json.Unmarshal([]byte(fieldsStr), &m) == nil {
 			entry["fields"] = m

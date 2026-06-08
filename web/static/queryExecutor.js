@@ -257,6 +257,9 @@ const QueryExecutor = {
                 const sqlPreview = document.querySelector('.sql-preview');
                 if (sqlPreview && window.UserPrefs && UserPrefs.showSQL()) {
                     sqlPreview.style.display = 'block';
+                    elements.sqlOutput.style.display = 'block';
+                    const toggleBtn = document.getElementById('toggleSqlBtn');
+                    if (toggleBtn) toggleBtn.textContent = 'Hide SQL';
                 }
             }
 
@@ -403,6 +406,38 @@ const QueryExecutor = {
         }
     },
 
+    _buildProfileText(profile) {
+        // Normalise coordinator field to a plain boolean for clean JSON output.
+        const clean = {
+            query_id: profile.query_id,
+            shards: (profile.shards || []).map(r => ({
+                shard:          r.shard,
+                coordinator:    r.coordinator == 1 || r.coordinator === '1',
+                duration_ms:    Number(r.duration_ms),
+                read_bytes:     r.read_bytes,
+                read_rows:      Number(r.read_rows),
+                parts_scanned:  Number(r.parts_scanned),
+                marks_selected: Number(r.marks_selected),
+                marks_skipped:  Number(r.marks_skipped),
+                rows_surviving: Number(r.rows_surviving),
+                file_opens:     Number(r.file_opens),
+                disk_ms:        Number(r.disk_ms),
+                net_wait_ms:    Number(r.net_wait_ms),
+                bytes_from_disk: r.bytes_from_disk,
+            })),
+        };
+        if (profile.skip_index && profile.skip_index.length > 0) {
+            clean.skip_index = profile.skip_index.map(r => ({
+                shard:               r.shard,
+                marks_read:          Number(r.marks_read),
+                marks_skipped:       Number(r.marks_skipped),
+                total_marks:         Number(r.total_marks),
+                pct_marks_surviving: r.pct_marks_surviving != null ? Number(Number(r.pct_marks_surviving).toFixed(1)) : 0,
+            }));
+        }
+        return JSON.stringify(clean, null, 2);
+    },
+
     renderProfilePanel(profile) {
         const panel = document.getElementById('profilePanel');
         if (!panel) return;
@@ -416,7 +451,12 @@ const QueryExecutor = {
             return s.length > 32 ? '…' + s.slice(-32) : s;
         };
 
-        let html = `<div class="profile-section-label">Per-shard profile &nbsp;<span class="profile-query-id">${esc(profile.query_id)}</span></div>`;
+        panel._profileData = profile;
+
+        let html = `<div class="profile-header">
+  <div class="profile-section-label">Per-shard profile &nbsp;<span class="profile-query-id">${esc(profile.query_id)}</span></div>
+  <button class="toggle-sql-btn profile-copy-btn" id="profileCopyBtn">Copy</button>
+</div>`;
 
         if (!profile.shards || profile.shards.length === 0) {
             html += `<p class="profile-empty">No shard data found in query_log (logging may be disabled or entry not yet flushed).</p>`;
@@ -467,6 +507,24 @@ const QueryExecutor = {
 
         panel.innerHTML = html;
         panel.style.display = 'block';
+
+        const copyBtn = document.getElementById('profileCopyBtn');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', () => this._copyProfile(copyBtn));
+        }
+    },
+
+    _copyProfile(btn) {
+        const panel = document.getElementById('profilePanel');
+        if (!panel || !panel._profileData) return;
+        const text = this._buildProfileText(panel._profileData);
+        navigator.clipboard.writeText(text).then(() => {
+            const orig = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = orig; }, 1500);
+        }).catch(() => {
+            if (window.Toast) Toast.show('Copy failed — clipboard unavailable', 'error');
+        });
     },
 
     getTimeRange() {

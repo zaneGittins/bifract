@@ -111,8 +111,15 @@ const LogDetail = {
             content.querySelector(`.log-detail-tab-content[data-tab="${target}"]`).classList.add('active');
         });
 
-        // Render fields (excluding raw_log now)
-        this.renderFields(logData, fieldsContainer);
+        // If fields weren't included in the query result, fetch them lazily.
+        // Otherwise render immediately.
+        const hasFields = logData.fields && typeof logData.fields === 'object' && Object.keys(logData.fields).length > 0;
+        const hasAllFields = logData._all_fields && typeof logData._all_fields === 'object' && Object.keys(logData._all_fields).length > 0;
+        if (!hasFields && !hasAllFields && logData.log_id) {
+            this._lazyLoadFields(logData, fieldsContainer);
+        } else {
+            this.renderFields(logData, fieldsContainer);
+        }
 
         panel.classList.add('open');
 
@@ -120,6 +127,26 @@ const LogDetail = {
 
         if (window.Comments && window.Auth && window.Auth.isAuthenticated()) {
             window.Comments.openPanel(logData, isAggregated);
+        }
+    },
+
+    async _lazyLoadFields(logData, fieldsContainer) {
+        fieldsContainer.innerHTML = '<div class="fields-loading">Loading fields…</div>';
+        try {
+            const params = new URLSearchParams({ log_id: logData.log_id });
+            if (logData.fractal_id) params.set('fractal_id', logData.fractal_id);
+            const resp = await fetch(`/api/v1/logs/fields?${params}`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            if (data.success && data.fields) {
+                logData.fields = data.fields;
+                this.currentLogData = logData;
+                this.renderFields(logData, fieldsContainer);
+            } else {
+                fieldsContainer.innerHTML = '<div class="fields-loading">No fields available.</div>';
+            }
+        } catch (e) {
+            fieldsContainer.innerHTML = '<div class="fields-loading">Failed to load fields.</div>';
         }
     },
 

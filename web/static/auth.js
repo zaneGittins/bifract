@@ -171,7 +171,7 @@ const Auth = {
                 else if (fr === 'viewer') roleText = 'Viewer';
             }
             const themeLabel = ThemeManager.isDark() ? 'Light Mode' : 'Dark Mode';
-            const sqlLabel = UserPrefs.showSQL() ? 'Hide Generated SQL' : 'Show Generated SQL';
+            const sqlLabel = UserPrefs.showSQL() ? 'Hide Query Debug' : 'Show Query Debug';
             userInfo.innerHTML = `
                 <div class="user-display" id="userDisplayContainer">
                     <div class="user-clickable" id="userClickable" onclick="Auth.toggleMenu()">
@@ -291,7 +291,7 @@ const Auth = {
     updateSQLLabel() {
         const label = document.getElementById('sqlToggleLabel');
         if (label) {
-            label.textContent = UserPrefs.showSQL() ? 'Hide Generated SQL' : 'Show Generated SQL';
+            label.textContent = UserPrefs.showSQL() ? 'Hide Query Debug' : 'Show Query Debug';
         }
     },
 

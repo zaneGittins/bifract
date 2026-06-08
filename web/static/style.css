@@ -1477,6 +1477,13 @@ body.search-active {
 }
 
 /* Query profile panel (shown inside .sql-preview when SQL display is on) */
+.profile-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.375rem;
+}
+
 #profilePanel {
     margin-top: 0.75rem;
     border-top: 1px solid var(--border-color);

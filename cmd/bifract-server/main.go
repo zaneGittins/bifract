@@ -603,6 +603,7 @@ func main() {
 			r.Get("/query/reference", queryHandler.HandleReference)
 			r.Get("/logs/recent", queryHandler.HandleGetRecentLogs)
 			r.Post("/logs/by-timestamp", queryHandler.HandleGetLogByTimestamp)
+			r.Get("/logs/fields", queryHandler.HandleGetLogFields)
 			r.Get("/status", statusHandler.HandleStatus)
 			r.Get("/health/clickhouse", statusHandler.HandleHealthCheck)
 			r.Get("/system/pressure", func(w http.ResponseWriter, r *http.Request) {

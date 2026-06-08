@@ -609,7 +609,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 				break
 			}
 		}
-		if !hasFields && !plan.TableHasExplicitColumns {
+		if !hasFields && plan.HasTableCmd && !plan.TableHasExplicitColumns {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(fields) AS fields"})
 		}
 	}
