@@ -67,12 +67,20 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	if pipeline.Filter != nil {
 		// Suppress hasToken pre-filters for alert auto-projection: raw_log is excluded from SELECT.
 		suppressTokens := opts.UseIngestTimestamp && len(pipeline.Commands) == 0 && len(pipeline.Assignments) == 0
-		whereSQL, err := buildWhereClauseCtx(pipeline.Filter.Conditions, false, suppressTokens)
+		var prewhereTokens []string
+		var collectPrewhere *[]string
+		if !suppressTokens {
+			collectPrewhere = &prewhereTokens
+		}
+		whereSQL, err := buildWhereClauseCtx(pipeline.Filter.Conditions, false, suppressTokens, collectPrewhere)
 		if err != nil {
 			return nil, err
 		}
 		if whereSQL != "" {
 			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, whereSQL)
+		}
+		if len(prewhereTokens) > 0 {
+			plan.SourceStage().Layer.PreWhere = append(plan.SourceStage().Layer.PreWhere, prewhereTokens...)
 		}
 	}
 

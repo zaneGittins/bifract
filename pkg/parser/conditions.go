@@ -265,7 +265,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 	}
 
 	if cond.IsRegex {
-		return buildRegexMatchSQL(fieldRef, cond.Value, cond.Operator == "!=", false)
+		return buildRegexMatchSQL(fieldRef, cond.Value, cond.Operator == "!=", false, nil)
 	}
 
 	switch cond.Operator {

@@ -458,6 +458,11 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		err  error
 	}
 
+	// Histogram gets its own cancellable context so it can be abandoned
+	// if it hasn't finished by the time the main query returns.
+	histCtx, histCancel := context.WithCancel(queryCtx)
+	defer histCancel()
+
 	mainCh := make(chan mainResult, 1)
 	histCh := make(chan histResult, 1)
 
@@ -468,15 +473,25 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 	if needsHistogram {
 		go func() {
-			raw, qErr := h.db.Query(queryCtx, histogramSQL)
+			raw, qErr := h.db.Query(histCtx, histogramSQL)
 			histCh <- histResult{rows: raw, err: qErr}
 		}()
 	}
 
 	mainRes := <-mainCh
+
 	var histRes histResult
 	if needsHistogram {
-		histRes = <-histCh
+		// Give the histogram up to 500ms after the main query returns.
+		// In cluster mode the histogram fans out to all shards and can dominate
+		// executionTime (max(main, hist)). If it isn't done yet, skip it rather
+		// than blocking the response — the timeline chart is non-essential.
+		select {
+		case histRes = <-histCh:
+		case <-time.After(500 * time.Millisecond):
+			histCancel()
+			needsHistogram = false
+		}
 	}
 	executionTime := time.Since(queryStart).Milliseconds()
 
