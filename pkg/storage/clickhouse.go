@@ -173,14 +173,16 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 	for _, stmt := range splitClickHouseSQL(sql) {
 		upper := strings.ToUpper(strings.TrimSpace(stmt))
 		// If the table already exists, run ALTER and CREATE statements only.
-		// CREATE statements must use IF NOT EXISTS — they are idempotent locally
-		// but the ON CLUSTER propagation still reaches any shard that missed the
-		// initial DDL. Non-DDL statements (INSERT, SET, etc.) are skipped.
 		if tableExists && !strings.HasPrefix(upper, "ALTER ") && !strings.HasPrefix(upper, "CREATE ") {
 			continue
 		}
 		// In cluster mode, inject ON CLUSTER and rewrite engines to replicated variants.
-		stmt = c.InjectOnCluster(stmt)
+		// Skip ON CLUSTER for CREATE IF NOT EXISTS when tables already exist — those
+		// tables are already present on all live shards and the ON CLUSTER round-trip
+		// times out when replica pods are absent from the cluster config.
+		if !tableExists || strings.HasPrefix(upper, "ALTER ") {
+			stmt = c.InjectOnCluster(stmt)
+		}
 		stmt = c.RewriteEngine(stmt)
 		if err := c.conn.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("failed to execute clickhouse init statement: %w\nstatement: %s", err, stmt)
@@ -188,10 +190,16 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 	}
 
 	// In cluster mode, create Distributed tables for cross-shard reads.
+	// When tables already exist, create locally only — ON CLUSTER times out
+	// when replica pods defined in the cluster config are not running.
 	if c.IsCluster() {
+		onCluster := ""
+		if !tableExists {
+			onCluster = c.OnClusterSQL()
+		}
 		distSQL := fmt.Sprintf(
 			"CREATE TABLE IF NOT EXISTS logs_distributed%s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
-			c.OnClusterSQL(), EscCHStr(c.Cluster),
+			onCluster, EscCHStr(c.Cluster),
 		)
 		if err := c.conn.Exec(ctx, distSQL); err != nil {
 			return fmt.Errorf("failed to create distributed table: %w\nstatement: %s", err, distSQL)
@@ -199,7 +207,7 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 
 		histDistSQL := fmt.Sprintf(
 			"CREATE TABLE IF NOT EXISTS logs_histogram_distributed%s AS logs_histogram ENGINE = Distributed('%s', currentDatabase(), 'logs_histogram', rand())",
-			c.OnClusterSQL(), EscCHStr(c.Cluster),
+			onCluster, EscCHStr(c.Cluster),
 		)
 		if err := c.conn.Exec(ctx, histDistSQL); err != nil {
 			return fmt.Errorf("failed to create histogram distributed table: %w\nstatement: %s", err, histDistSQL)
