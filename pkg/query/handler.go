@@ -58,6 +58,40 @@ type QueryRequest struct {
 	Start     string `json:"start,omitempty"`      // RFC3339 format
 	End       string `json:"end,omitempty"`        // RFC3339 format
 	FractalID string `json:"fractal_id,omitempty"` // Fractal ID for multi-tenant queries
+	Profile   bool   `json:"profile,omitempty"`    // collect per-shard profiling data via system.query_log
+}
+
+// ProfileShardRow holds per-node metrics fetched from system.query_log.
+type ProfileShardRow struct {
+	Shard         string  `json:"shard"`
+	Coordinator   uint64  `json:"coordinator"`
+	DurationMs    uint64  `json:"duration_ms"`
+	ReadBytes     string  `json:"read_bytes"`
+	ReadRows      uint64  `json:"read_rows"`
+	PartsScanned  uint64  `json:"parts_scanned"`
+	MarksSelected uint64  `json:"marks_selected"`
+	MarksSkipped  uint64  `json:"marks_skipped"`
+	RowsSurviving uint64  `json:"rows_surviving"`
+	FileOpens     uint64  `json:"file_opens"`
+	DiskMs        uint64  `json:"disk_ms"`
+	NetWaitMs     uint64  `json:"net_wait_ms"`
+	BytesFromDisk string  `json:"bytes_from_disk"`
+}
+
+// SkipIndexRow holds skip-index effectiveness per shard.
+type SkipIndexRow struct {
+	Shard             string  `json:"shard"`
+	MarksRead         uint64  `json:"marks_read"`
+	MarksSkipped      uint64  `json:"marks_skipped"`
+	TotalMarks        uint64  `json:"total_marks"`
+	PctMarksSurviving float64 `json:"pct_marks_surviving"`
+}
+
+// ProfileData is the profiling payload attached to a query response.
+type ProfileData struct {
+	QueryID   string            `json:"query_id"`
+	Shards    []ProfileShardRow `json:"shards"`
+	SkipIndex []SkipIndexRow    `json:"skip_index,omitempty"`
 }
 
 type QueryResponse struct {
@@ -76,6 +110,7 @@ type QueryResponse struct {
 	Histogram    []int                    `json:"histogram,omitempty"`     // Time-bucketed counts for timeline
 	TimeStart    string                   `json:"time_start,omitempty"`    // Query time range start (RFC3339)
 	TimeEnd      string                   `json:"time_end,omitempty"`      // Query time range end (RFC3339)
+	Profile      *ProfileData             `json:"profile,omitempty"`       // Per-shard profiling data (only when requested)
 }
 
 // histogramBucketSeconds returns the bucket interval and total bucket count
@@ -436,6 +471,13 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Generate a stable query_id when profiling is requested so we can
+	// correlate this run with system.query_log entries afterward.
+	var profileQueryID string
+	if req.Profile {
+		profileQueryID = fmt.Sprintf("bif-prof-%d", time.Now().UnixNano())
+	}
+
 	// Execute main query (and histogram if needed) with timeout
 	queryStart := time.Now()
 
@@ -467,7 +509,13 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	histCh := make(chan histResult, 1)
 
 	go func() {
-		raw, qErr := h.db.Query(queryCtx, sql)
+		var raw []map[string]interface{}
+		var qErr error
+		if profileQueryID != "" {
+			raw, qErr = h.db.QueryWithID(queryCtx, profileQueryID, sql)
+		} else {
+			raw, qErr = h.db.Query(queryCtx, sql)
+		}
 		mainCh <- mainResult{rows: raw, err: qErr}
 	}()
 
@@ -562,6 +610,12 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[QueryHandler] Histogram query failed (non-critical): %v", histRes.err)
 	}
 
+	// Collect per-shard profiling data when requested (before any early returns).
+	var profileData *ProfileData
+	if profileQueryID != "" && err == nil {
+		profileData = h.fetchProfileData(profileQueryID)
+	}
+
 	// Check if result set is too large for efficient JSON handling
 	// Prevent massive responses that cause frontend JSON parsing errors
 	if len(results) > 1000 {
@@ -602,6 +656,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 					LimitHit:     "truncated",
 					Error:        "Warning: Result set was very large and has been truncated to 1000 rows. Consider adding more specific filters or using head() to limit results.",
 					Histogram:    histogram,
+					Profile:      profileData,
 				}
 				if histogram != nil {
 					response.TimeStart = startTime.Format(time.RFC3339)
@@ -637,6 +692,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		ChartType:    chartType,
 		ChartConfig:  chartConfig,
 		Histogram:    histogram,
+		Profile:      profileData,
 	}
 	if histogram != nil {
 		response.TimeStart = startTime.Format(time.RFC3339)
@@ -1113,6 +1169,168 @@ func escCHStr(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "'", "\\'")
 	return s
+}
+
+// fetchProfileData polls system.query_log until the query finishes, then
+// returns per-shard metrics. Returns nil if the log entry never appears.
+func (h *QueryHandler) fetchProfileData(queryID string) *ProfileData {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Poll the coordinator's local query_log until the entry appears.
+	found := false
+	for i := 0; i < 15; i++ {
+		select {
+		case <-time.After(time.Duration(500+i*300) * time.Millisecond):
+		case <-ctx.Done():
+			return nil
+		}
+		rows, err := h.db.Query(ctx, fmt.Sprintf(
+			`SELECT count() AS cnt FROM system.query_log WHERE query_id = '%s' AND type IN ('QueryFinish','ExceptionWhileProcessing')`,
+			escCHStr(queryID)))
+		if err == nil && len(rows) > 0 {
+			if cnt, ok := rows[0]["cnt"].(uint64); ok && cnt > 0 {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		log.Printf("[Profile] query_log entry not found for %s", queryID)
+		return nil
+	}
+
+	profile := &ProfileData{QueryID: queryID}
+
+	var shardSource string
+	if h.db.IsCluster() {
+		shardSource = fmt.Sprintf("cluster('%s', system.query_log)", escCHStr(h.db.Cluster))
+	} else {
+		shardSource = "system.query_log"
+	}
+
+	shardSQL := fmt.Sprintf(`
+SELECT
+    hostname()                                                                  AS shard,
+    toUInt64(is_initial_query)                                                  AS coordinator,
+    query_duration_ms                                                           AS duration_ms,
+    formatReadableSize(read_bytes)                                              AS read_bytes,
+    read_rows,
+    ProfileEvents['SelectedParts']                                              AS parts_scanned,
+    ProfileEvents['SelectedMarks']                                              AS marks_selected,
+    ProfileEvents['SkippedMarks']                                               AS marks_skipped,
+    ProfileEvents['SelectedRows']                                               AS rows_surviving,
+    ProfileEvents['FileOpen']                                                   AS file_opens,
+    toUInt64(ProfileEvents['DiskReadElapsedMicroseconds'] / 1000)               AS disk_ms,
+    toUInt64(ProfileEvents['NetworkReceiveElapsedMicroseconds'] / 1000)         AS net_wait_ms,
+    formatReadableSize(ProfileEvents['ReadBufferFromFileDescriptorReadBytes'])   AS bytes_from_disk
+FROM %s
+WHERE initial_query_id = '%s'
+  AND type = 'QueryFinish'
+ORDER BY coordinator DESC, duration_ms DESC`, shardSource, escCHStr(queryID))
+
+	shardRows, err := h.db.Query(ctx, shardSQL)
+	if err != nil {
+		log.Printf("[Profile] shard query failed: %v", err)
+		return profile
+	}
+	for _, row := range shardRows {
+		profile.Shards = append(profile.Shards, ProfileShardRow{
+			Shard:         profStr(row["shard"]),
+			Coordinator:   profU64(row["coordinator"]),
+			DurationMs:    profU64(row["duration_ms"]),
+			ReadBytes:     profStr(row["read_bytes"]),
+			ReadRows:      profU64(row["read_rows"]),
+			PartsScanned:  profU64(row["parts_scanned"]),
+			MarksSelected: profU64(row["marks_selected"]),
+			MarksSkipped:  profU64(row["marks_skipped"]),
+			RowsSurviving: profU64(row["rows_surviving"]),
+			FileOpens:     profU64(row["file_opens"]),
+			DiskMs:        profU64(row["disk_ms"]),
+			NetWaitMs:     profU64(row["net_wait_ms"]),
+			BytesFromDisk: profStr(row["bytes_from_disk"]),
+		})
+	}
+
+	// Skip index effectiveness — only meaningful in cluster mode (multiple shards).
+	if h.db.IsCluster() {
+		skipSQL := fmt.Sprintf(`
+SELECT
+    hostname()                                                       AS shard,
+    ProfileEvents['SelectedMarks']                                   AS marks_read,
+    ProfileEvents['SkippedMarks']                                    AS marks_skipped,
+    ProfileEvents['SelectedMarks'] + ProfileEvents['SkippedMarks']  AS total_marks,
+    if(ProfileEvents['SelectedMarks'] + ProfileEvents['SkippedMarks'] > 0,
+       round(100.0 * ProfileEvents['SelectedMarks'] /
+             (ProfileEvents['SelectedMarks'] + ProfileEvents['SkippedMarks']), 1),
+       toFloat64(0))                                                 AS pct_marks_surviving
+FROM cluster('%s', system.query_log)
+WHERE initial_query_id = '%s'
+  AND is_initial_query = 0
+  AND type = 'QueryFinish'
+ORDER BY shard`, escCHStr(h.db.Cluster), escCHStr(queryID))
+
+		skipRows, err := h.db.Query(ctx, skipSQL)
+		if err != nil {
+			log.Printf("[Profile] skip index query failed: %v", err)
+		} else {
+			for _, row := range skipRows {
+				profile.SkipIndex = append(profile.SkipIndex, SkipIndexRow{
+					Shard:             profStr(row["shard"]),
+					MarksRead:         profU64(row["marks_read"]),
+					MarksSkipped:      profU64(row["marks_skipped"]),
+					TotalMarks:        profU64(row["total_marks"]),
+					PctMarksSurviving: profF64(row["pct_marks_surviving"]),
+				})
+			}
+		}
+	}
+
+	return profile
+}
+
+func profStr(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func profU64(v interface{}) uint64 {
+	switch x := v.(type) {
+	case uint64:
+		return x
+	case uint8:
+		return uint64(x)
+	case int64:
+		if x > 0 {
+			return uint64(x)
+		}
+	case float64:
+		if x > 0 {
+			return uint64(x)
+		}
+	case string:
+		var n uint64
+		fmt.Sscanf(x, "%d", &n)
+		return n
+	}
+	return 0
+}
+
+func profF64(v interface{}) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case uint64:
+		return float64(x)
+	case int64:
+		return float64(x)
+	}
+	return 0
 }
 
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {

@@ -24,6 +24,9 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	var nonAggregateFields []string
 
 	for _, field := range cmd.Arguments {
+		if !strings.HasPrefix(field, "limit=") {
+			ctx.Plan.TableHasExplicitColumns = true
+		}
 		if strings.HasPrefix(field, "limit=") {
 			if n, err := validateInt(strings.TrimPrefix(field, "limit=")); err == nil {
 				source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)

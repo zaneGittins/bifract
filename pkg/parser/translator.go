@@ -566,7 +566,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 	}
 
 	// Has commands: add _all_fields for table commands, assignment fields
-	if plan.HasTableCmd && len(source.Layer.Selects) > 0 {
+	if plan.HasTableCmd && !plan.TableHasExplicitColumns && len(source.Layer.Selects) > 0 {
 		hasFieldsMap := false
 		for _, sel := range source.Layer.Selects {
 			if strings.Contains(sel.String(), "_all_fields") {
@@ -609,7 +609,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 				break
 			}
 		}
-		if !hasFields {
+		if !hasFields && !plan.TableHasExplicitColumns {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(fields) AS fields"})
 		}
 	}

@@ -1476,6 +1476,75 @@ body.search-active {
     word-break: break-word;
 }
 
+/* Query profile panel (shown inside .sql-preview when SQL display is on) */
+#profilePanel {
+    margin-top: 0.75rem;
+    border-top: 1px solid var(--border-color);
+    padding-top: 0.75rem;
+}
+
+.profile-section-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    margin-bottom: 0.375rem;
+    font-weight: 500;
+}
+
+.profile-query-id {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    opacity: 0.7;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.profile-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+}
+
+.profile-table th {
+    color: var(--text-muted);
+    font-weight: 500;
+    text-align: right;
+    padding: 0.2rem 0.4rem;
+    border-bottom: 1px solid var(--border-color);
+    white-space: nowrap;
+}
+
+.profile-table th:first-child { text-align: left; }
+
+.profile-table td {
+    text-align: right;
+    padding: 0.2rem 0.4rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+.profile-table td:first-child {
+    text-align: left;
+    color: var(--text-secondary);
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.profile-table tr.profile-coordinator td {
+    color: var(--accent-primary);
+}
+
+.profile-empty {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-style: italic;
+    margin: 0.25rem 0 0;
+}
+
 /* SQL Syntax highlighting */
 .sql-keyword {
     color: var(--syntax-keyword);

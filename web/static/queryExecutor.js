@@ -214,6 +214,8 @@ const QueryExecutor = {
 
         // Hide previous results and show loading
         if (elements.errorDiv) elements.errorDiv.style.display = 'none';
+        const profilePanel = document.getElementById('profilePanel');
+        if (profilePanel) { profilePanel.style.display = 'none'; profilePanel.innerHTML = ''; }
 
         // Reset chart/graph container so loading spinner is visible
         const chartContainer = document.getElementById('chartContainer');
@@ -236,6 +238,10 @@ const QueryExecutor = {
             // Include fractal context if FractalContext is available (skip for prisms - server uses session)
             if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
                 requestBody.fractal_id = window.FractalContext.currentFractal.id;
+            }
+
+            if (window.UserPrefs && UserPrefs.showSQL()) {
+                requestBody.profile = true;
             }
 
             // Use the safer HttpUtils for better error handling
@@ -368,6 +374,10 @@ const QueryExecutor = {
                 });
             }
 
+            if (data.profile) {
+                this.renderProfilePanel(data.profile);
+            }
+
         } catch (error) {
             // Don't show error if request was cancelled (fractal switch)
             if (error.name === 'AbortError') {
@@ -391,6 +401,72 @@ const QueryExecutor = {
             if (elements.resultsCount) elements.resultsCount.textContent = 'Query cancelled';
             if (window.Toast) Toast.show('Query cancelled', 'info');
         }
+    },
+
+    renderProfilePanel(profile) {
+        const panel = document.getElementById('profilePanel');
+        if (!panel) return;
+
+        const fmtNum = n => (n !== undefined && n !== null) ? Number(n).toLocaleString() : '—';
+        const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+        // Shorten long pod/hostname to last segment for readability
+        const shortHost = h => {
+            const s = String(h || '');
+            return s.length > 32 ? '…' + s.slice(-32) : s;
+        };
+
+        let html = `<div class="profile-section-label">Per-shard profile &nbsp;<span class="profile-query-id">${esc(profile.query_id)}</span></div>`;
+
+        if (!profile.shards || profile.shards.length === 0) {
+            html += `<p class="profile-empty">No shard data found in query_log (logging may be disabled or entry not yet flushed).</p>`;
+        } else {
+            html += `<table class="profile-table">
+<thead><tr>
+  <th>Shard</th><th>Coord</th><th>Duration</th><th>Read</th><th>Rows</th>
+  <th>Parts</th><th>Marks✓</th><th>Marks✗</th><th>Rows Out</th>
+  <th>Files</th><th>Disk ms</th><th>Net ms</th><th>Disk Bytes</th>
+</tr></thead><tbody>`;
+            for (const r of profile.shards) {
+                const coord = r.coordinator == 1 || r.coordinator === '1';
+                html += `<tr class="${coord ? 'profile-coordinator' : ''}">
+  <td title="${esc(r.shard)}">${esc(shortHost(r.shard))}</td>
+  <td>${coord ? '✓' : ''}</td>
+  <td>${fmtNum(r.duration_ms)}</td>
+  <td>${esc(r.read_bytes)}</td>
+  <td>${fmtNum(r.read_rows)}</td>
+  <td>${fmtNum(r.parts_scanned)}</td>
+  <td>${fmtNum(r.marks_selected)}</td>
+  <td>${fmtNum(r.marks_skipped)}</td>
+  <td>${fmtNum(r.rows_surviving)}</td>
+  <td>${fmtNum(r.file_opens)}</td>
+  <td>${fmtNum(r.disk_ms)}</td>
+  <td>${fmtNum(r.net_wait_ms)}</td>
+  <td>${esc(r.bytes_from_disk)}</td>
+</tr>`;
+            }
+            html += '</tbody></table>';
+        }
+
+        if (profile.skip_index && profile.skip_index.length > 0) {
+            html += `<div class="profile-section-label" style="margin-top:0.75rem;">Skip index effectiveness</div>
+<table class="profile-table">
+<thead><tr><th>Shard</th><th>Marks Read</th><th>Marks Skipped</th><th>Total</th><th>% Surviving</th></tr></thead>
+<tbody>`;
+            for (const r of profile.skip_index) {
+                html += `<tr>
+  <td title="${esc(r.shard)}">${esc(shortHost(r.shard))}</td>
+  <td>${fmtNum(r.marks_read)}</td>
+  <td>${fmtNum(r.marks_skipped)}</td>
+  <td>${fmtNum(r.total_marks)}</td>
+  <td>${r.pct_marks_surviving != null ? Number(r.pct_marks_surviving).toFixed(1) + '%' : '—'}</td>
+</tr>`;
+            }
+            html += '</tbody></table>';
+        }
+
+        panel.innerHTML = html;
+        panel.style.display = 'block';
     },
 
     getTimeRange() {

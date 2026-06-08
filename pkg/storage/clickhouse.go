@@ -572,6 +572,13 @@ func (c *ClickHouseClient) DeleteLogsByFractalIDOpt(ctx context.Context, fractal
 	return nil
 }
 
+// QueryWithID executes a query with a fixed query_id so the run can be
+// correlated with system.query_log entries for profiling.
+func (c *ClickHouseClient) QueryWithID(ctx context.Context, queryID, query string) ([]map[string]interface{}, error) {
+	ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(queryID))
+	return c.Query(ctx, query)
+}
+
 func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[string]interface{}, error) {
 	rows, err := c.conn.Query(ctx, query)
 	if err != nil {

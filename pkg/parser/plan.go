@@ -90,7 +90,8 @@ type QueryPlan struct {
 	JoinMaxRows  int      // max rows for subquery safety limit
 
 	// Table command tracking
-	HasTableCmd bool
+	HasTableCmd            bool
+	TableHasExplicitColumns bool
 
 	// Pending conditions: classified by kind after Declare, materialized after Execute
 	pendingWhereConditions    []HavingCondition
