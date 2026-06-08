@@ -65,7 +65,9 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	// 2. Process filter conditions from the parser
 	// ---------------------------------------------------------------
 	if pipeline.Filter != nil {
-		whereSQL, err := buildWhereClause(pipeline.Filter.Conditions)
+		// Suppress hasToken pre-filters for alert auto-projection: raw_log is excluded from SELECT.
+		suppressTokens := opts.UseIngestTimestamp && len(pipeline.Commands) == 0 && len(pipeline.Assignments) == 0
+		whereSQL, err := buildWhereClauseCtx(pipeline.Filter.Conditions, false, suppressTokens)
 		if err != nil {
 			return nil, err
 		}

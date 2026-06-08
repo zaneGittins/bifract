@@ -424,7 +424,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "(A OR B) AND NOT (C OR D) AND E",
 			query:     `(event_id=1 OR event_id=3) AND NOT (user="admin" OR user="system") AND image=/powershell/i`,
-			wantWhere: "((fields.`event_id`.:String = '1' OR fields.`event_id`.:String = '3') AND NOT (fields.`user`.:String = 'admin' OR fields.`user`.:String = 'system') AND match(fields.`image`.:String, '(?i)powershell'))",
+			wantWhere: "((fields.`event_id`.:String = '1' OR fields.`event_id`.:String = '3') AND NOT (fields.`user`.:String = 'admin' OR fields.`user`.:String = 'system') AND hasToken(raw_log, 'powershell') AND match(fields.`image`.:String, '(?i)powershell'))",
 		},
 
 		// --- Double negation ---

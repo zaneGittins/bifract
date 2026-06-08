@@ -372,6 +372,13 @@ func collectHavingConditionFields(conditions []HavingCondition, fields map[strin
 // buildWhereClause builds a WHERE clause from multiple conditions respecting OR/AND logic and parenthetical grouping.
 // Conditions with the same GroupID > 0 are collected into a group. If GroupNegate is set, the whole group is wrapped in NOT(...).
 func buildWhereClause(conditions []ConditionNode) (string, error) {
+	return buildWhereClauseCtx(conditions, false, false)
+}
+
+// buildWhereClauseCtx is the context-aware implementation of buildWhereClause.
+// inNegation indicates the caller is inside a NOT context (suppresses hasToken pre-filters on regex).
+// suppressTokens disables all hasToken pre-filters regardless of negation (used by alert auto-projection).
+func buildWhereClauseCtx(conditions []ConditionNode, inNegation bool, suppressTokens bool) (string, error) {
 	if len(conditions) == 0 {
 		return "", nil
 	}
@@ -400,7 +407,7 @@ func buildWhereClause(conditions []ConditionNode) (string, error) {
 			// Build inner SQL for the group
 			var inner strings.Builder
 			for j, gc := range group {
-				condSQL, err := translateCondition(gc)
+				condSQL, err := translateConditionCtx(gc, groupNegate||inNegation, suppressTokens)
 				if err != nil {
 					return "", err
 				}
@@ -425,7 +432,7 @@ func buildWhereClause(conditions []ConditionNode) (string, error) {
 			parts = append(parts, part{sql: groupSQL, logic: group[len(group)-1].Logic})
 		} else {
 			// Ungrouped condition
-			condSQL, err := translateCondition(cond)
+			condSQL, err := translateConditionCtx(cond, inNegation, suppressTokens)
 			if err != nil {
 				return "", err
 			}
@@ -462,9 +469,13 @@ func fixOperatorPrecedence(sql string) string {
 }
 
 func translateCondition(cond ConditionNode) (string, error) {
+	return translateConditionCtx(cond, false, false)
+}
+
+func translateConditionCtx(cond ConditionNode, inNegation bool, suppressTokens bool) (string, error) {
 	// Handle compound nodes by recursively building the inner SQL.
 	if cond.IsCompound {
-		innerSQL, err := buildWhereClause(cond.Children)
+		innerSQL, err := buildWhereClauseCtx(cond.Children, cond.Negate||inNegation, suppressTokens)
 		if err != nil {
 			return "", err
 		}
@@ -506,7 +517,8 @@ func translateCondition(cond ConditionNode) (string, error) {
 			sql = fmt.Sprintf("%s != ''", fieldRef)
 		}
 	} else if cond.IsRegex {
-		sql = buildRegexMatchSQL(fieldRef, cond.Value, cond.Operator == "!=")
+		noTokens := suppressTokens || cond.Negate || inNegation || cond.GroupID > 0
+		sql = buildRegexMatchSQL(fieldRef, cond.Value, cond.Operator == "!=", noTokens)
 	} else {
 		// For comparison operators, try to convert to numeric if the value looks numeric
 		// This allows queries like: bytes > 1000
@@ -777,13 +789,13 @@ func extractLiteralTokens(pattern string) []string {
 // Falls back to plain match() when no useful tokens can be extracted or for negated regex.
 // Pre-filters work for any field (raw_log, JSON fields) because raw_log contains
 // the full event text: if a JSON field matches a pattern, the tokens appear in raw_log.
-func buildRegexMatchSQL(fieldRef string, pattern string, negate bool) string {
+func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, suppressTokens bool) string {
 	matchExpr := fmt.Sprintf("match(%s, %s)", fieldRef, escapeRegexForClickHouse(pattern))
 	if negate {
 		matchExpr = "NOT " + matchExpr
 	}
 
-	if negate {
+	if negate || suppressTokens {
 		return matchExpr
 	}
 
