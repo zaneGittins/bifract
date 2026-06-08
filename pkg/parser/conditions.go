@@ -146,21 +146,48 @@ func classifyCompoundTarget(cond HavingCondition, registry *FieldRegistry, plan 
 func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 	source := plan.SourceStage()
 
-	if clause := materializeCondGroup(plan.pendingWhereConditions, registry); clause != "" {
+	// Collect PREWHERE tokens for WHERE-destined conditions only.
+	// PREWHERE is an AND filter, so it's only safe when no top-level OR exists.
+	var prewhereTokens []string
+	var wherePrewhere *[]string
+	if !hasTopLevelORHaving(plan.pendingWhereConditions) {
+		wherePrewhere = &prewhereTokens
+	}
+
+	if clause := materializeCondGroup(plan.pendingWhereConditions, registry, wherePrewhere); clause != "" {
 		source.Layer.Where = append(source.Layer.Where, clause)
 	}
-	if clause := materializeCondGroup(plan.pendingHavingConditions, registry); clause != "" {
+	if len(prewhereTokens) > 0 {
+		source.Layer.PreWhere = append(source.Layer.PreWhere, prewhereTokens...)
+	}
+	if clause := materializeCondGroup(plan.pendingHavingConditions, registry, nil); clause != "" {
 		source.Layer.Having = append(source.Layer.Having, clause)
 	}
-	if clause := materializeCondGroup(plan.pendingDeferredConditions, registry); clause != "" {
+	if clause := materializeCondGroup(plan.pendingDeferredConditions, registry, nil); clause != "" {
 		plan.DeferredWhere = append(plan.DeferredWhere, clause)
 	}
+}
+
+// hasTopLevelORHaving reports whether any condition in the list is OR-connected
+// to the next (i.e., has Logic == "OR"). Used to determine whether PREWHERE
+// collection is safe — PREWHERE conditions must be AND-connected with all other
+// filters to avoid incorrectly dropping rows.
+func hasTopLevelORHaving(conditions []HavingCondition) bool {
+	for _, c := range conditions {
+		if c.Logic == "OR" {
+			return true
+		}
+	}
+	return false
 }
 
 // materializeCondGroup builds SQL for a group of conditions and joins them.
 // Handles both flat conditions (with GroupID-based grouping) and compound
 // nodes (tree-based nesting) for arbitrary expression depth.
-func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry) string {
+// collectPrewhere, if non-nil, receives hasToken conditions from leaf regex
+// conditions so the caller can route them to PREWHERE. Compound nodes always
+// use nil to avoid unsafe PREWHERE extraction from OR'd sub-expressions.
+func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry, collectPrewhere *[]string) string {
 	if len(conditions) == 0 {
 		return ""
 	}
@@ -171,7 +198,9 @@ func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry)
 		var condSQL string
 		if cond.IsCompound {
 			// Recursively render compound sub-expression.
-			inner := materializeCondGroup(cond.Children, registry)
+			// Always pass nil: inner OR/AND structure may not be safe for PREWHERE,
+			// and the compound is already handled as a unit by the caller's OR check.
+			inner := materializeCondGroup(cond.Children, registry, nil)
 			if inner == "" {
 				continue
 			}
@@ -181,7 +210,7 @@ func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry)
 				condSQL = "(" + inner + ")"
 			}
 		} else {
-			condSQL = buildConditionSQL(cond, registry)
+			condSQL = buildConditionSQL(cond, registry, collectPrewhere)
 			if condSQL == "" {
 				continue
 			}
@@ -215,7 +244,9 @@ func joinCondGroups(groups []condGroup) string {
 }
 
 // buildConditionSQL builds the SQL for a single HavingCondition using the registry.
-func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
+// collectPrewhere, if non-nil, receives hasToken conditions extracted from non-negated
+// regex patterns so the caller can route them to PREWHERE instead of WHERE.
+func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, collectPrewhere *[]string) string {
 	var fieldRef string
 	isJSONField := false
 
@@ -265,7 +296,12 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 	}
 
 	if cond.IsRegex {
-		return buildRegexMatchSQL(fieldRef, cond.Value, cond.Operator == "!=", false, nil)
+		negate := cond.Operator == "!="
+		prewhere := collectPrewhere
+		if negate {
+			prewhere = nil // negated regex: hasToken would incorrectly exclude non-matching rows
+		}
+		return buildRegexMatchSQL(fieldRef, cond.Value, negate, false, prewhere)
 	}
 
 	switch cond.Operator {
