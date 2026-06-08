@@ -303,13 +303,15 @@ func NewClickHouseClusterClient(hosts []string, port int, database, user, passwo
 	}
 	// In cluster mode the target database may not exist yet (the operator
 	// doesn't pre-create it). Connect to "default" first and ensure the
-	// database is created ON CLUSTER before opening the real connection.
+	// database is created locally. ON CLUSTER is omitted to avoid timeout on
+	// slow/initializing clusters; table replication via ReplicatedMergeTree
+	// and Keeper/ZooKeeper handles cluster-wide synchronization.
 	bootstrap, err := openClickHouseConn(addrs, "default", user, password, pool)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap connection: %w", err)
 	}
-	createDB := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s ON CLUSTER '%s'",
-		EscCHStr(database), EscCHStr(cluster))
+	createDB := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s",
+		EscCHStr(database))
 	if execErr := bootstrap.Exec(context.Background(), createDB); execErr != nil {
 		bootstrap.Close()
 		return nil, fmt.Errorf("create database %s: %w", database, execErr)
