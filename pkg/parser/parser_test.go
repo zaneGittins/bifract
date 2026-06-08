@@ -422,13 +422,9 @@ func TestNOTGroupParentheses(t *testing.T) {
 			wantWhere: "((fields.`a`.:String = '1' OR fields.`a`.:String = '2') OR fields.`b`.:String = '3' OR (fields.`c`.:String = '4' OR fields.`c`.:String = '5'))",
 		},
 		{
-			name:  "(A OR B) AND NOT (C OR D) AND E",
-			query: `(event_id=1 OR event_id=3) AND NOT (user="admin" OR user="system") AND image=/powershell/i`,
-			// hasToken is now routed to PREWHERE; WHERE contains only match().
-			checkSQL: func(sql string) bool {
-				return strings.Contains(sql, "PREWHERE hasToken(raw_log, 'powershell')") &&
-					extractWhere(sql) == "((fields.`event_id`.:String = '1' OR fields.`event_id`.:String = '3') AND NOT (fields.`user`.:String = 'admin' OR fields.`user`.:String = 'system') AND match(fields.`image`.:String, '(?i)powershell'))"
-			},
+			name:      "(A OR B) AND NOT (C OR D) AND E",
+			query:     `(event_id=1 OR event_id=3) AND NOT (user="admin" OR user="system") AND image=/powershell/i`,
+			wantWhere: "((fields.`event_id`.:String = '1' OR fields.`event_id`.:String = '3') AND NOT (fields.`user`.:String = 'admin' OR fields.`user`.:String = 'system') AND hasToken(raw_log, 'powershell') AND match(fields.`image`.:String, '(?i)powershell'))",
 		},
 
 		// --- Double negation ---

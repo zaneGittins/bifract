@@ -372,48 +372,15 @@ func collectHavingConditionFields(conditions []HavingCondition, fields map[strin
 // buildWhereClause builds a WHERE clause from multiple conditions respecting OR/AND logic and parenthetical grouping.
 // Conditions with the same GroupID > 0 are collected into a group. If GroupNegate is set, the whole group is wrapped in NOT(...).
 func buildWhereClause(conditions []ConditionNode) (string, error) {
-	return buildWhereClauseCtx(conditions, false, false, nil)
-}
-
-// hasTopLevelOR returns true if any "part" at the top level of the condition
-// list is connected to the next via OR. A part is either an ungrouped condition
-// (GroupID=0, uses its own Logic) or a parenthetical group (uses the Logic of
-// the group's last condition, which determines how the whole group connects).
-// Internal ORs inside groups are not counted as top-level.
-func hasTopLevelOR(conditions []ConditionNode) bool {
-	groupLastIdx := make(map[int]int)
-	for i, c := range conditions {
-		if c.GroupID > 0 {
-			groupLastIdx[c.GroupID] = i
-		}
-	}
-	for i, c := range conditions {
-		if c.Logic != "OR" {
-			continue
-		}
-		if c.GroupID == 0 {
-			return true
-		}
-		if groupLastIdx[c.GroupID] == i {
-			return true
-		}
-	}
-	return false
+	return buildWhereClauseCtx(conditions, false, false)
 }
 
 // buildWhereClauseCtx is the context-aware implementation of buildWhereClause.
 // inNegation indicates the caller is inside a NOT context (suppresses hasToken pre-filters on regex).
 // suppressTokens disables all hasToken pre-filters regardless of negation (used by alert auto-projection).
-// collectPrewhere, if non-nil, receives hasToken conditions for routing to PREWHERE instead of WHERE.
-func buildWhereClauseCtx(conditions []ConditionNode, inNegation bool, suppressTokens bool, collectPrewhere *[]string) (string, error) {
+func buildWhereClauseCtx(conditions []ConditionNode, inNegation bool, suppressTokens bool) (string, error) {
 	if len(conditions) == 0 {
 		return "", nil
-	}
-
-	// hasToken is an AND filter; it's only safe in PREWHERE when every top-level
-	// part is AND-connected. Disable collection if any top-level OR exists.
-	if collectPrewhere != nil && hasTopLevelOR(conditions) {
-		collectPrewhere = nil
 	}
 
 	// Each "part" is either a single ungrouped condition or an entire parenthetical group.
@@ -440,7 +407,7 @@ func buildWhereClauseCtx(conditions []ConditionNode, inNegation bool, suppressTo
 			// Build inner SQL for the group
 			var inner strings.Builder
 			for j, gc := range group {
-				condSQL, err := translateConditionCtx(gc, groupNegate||inNegation, suppressTokens, nil)
+				condSQL, err := translateConditionCtx(gc, groupNegate||inNegation, suppressTokens)
 				if err != nil {
 					return "", err
 				}
@@ -464,9 +431,7 @@ func buildWhereClauseCtx(conditions []ConditionNode, inNegation bool, suppressTo
 			// The logic connecting this group to the next part is on the last condition
 			parts = append(parts, part{sql: groupSQL, logic: group[len(group)-1].Logic})
 		} else {
-			// Ungrouped condition — thread collectPrewhere so top-level AND'd regex
-			// conditions can route their hasToken parts to PREWHERE.
-			condSQL, err := translateConditionCtx(cond, inNegation, suppressTokens, collectPrewhere)
+			condSQL, err := translateConditionCtx(cond, inNegation, suppressTokens)
 			if err != nil {
 				return "", err
 			}
@@ -503,15 +468,13 @@ func fixOperatorPrecedence(sql string) string {
 }
 
 func translateCondition(cond ConditionNode) (string, error) {
-	return translateConditionCtx(cond, false, false, nil)
+	return translateConditionCtx(cond, false, false)
 }
 
-func translateConditionCtx(cond ConditionNode, inNegation bool, suppressTokens bool, collectPrewhere *[]string) (string, error) {
+func translateConditionCtx(cond ConditionNode, inNegation bool, suppressTokens bool) (string, error) {
 	// Handle compound nodes by recursively building the inner SQL.
 	if cond.IsCompound {
-		// Don't route prewhere tokens from inside compound/negated nodes — they
-		// may be OR'd and the AND-only guarantee required for PREWHERE safety breaks.
-		innerSQL, err := buildWhereClauseCtx(cond.Children, cond.Negate||inNegation, suppressTokens, nil)
+		innerSQL, err := buildWhereClauseCtx(cond.Children, cond.Negate||inNegation, suppressTokens)
 		if err != nil {
 			return "", err
 		}
@@ -554,11 +517,7 @@ func translateConditionCtx(cond ConditionNode, inNegation bool, suppressTokens b
 		}
 	} else if cond.IsRegex {
 		noTokens := suppressTokens || cond.Negate || inNegation || cond.GroupID > 0
-		prewhere := collectPrewhere
-		if noTokens {
-			prewhere = nil
-		}
-		sql = buildRegexMatchSQL(fieldRef, cond.Value, cond.Operator == "!=", noTokens, prewhere)
+		sql = buildRegexMatchSQL(fieldRef, cond.Value, cond.Operator == "!=", noTokens)
 	} else {
 		// For comparison operators, try to convert to numeric if the value looks numeric
 		// This allows queries like: bytes > 1000
@@ -829,10 +788,7 @@ func extractLiteralTokens(pattern string) []string {
 // Falls back to plain match() when no useful tokens can be extracted or for negated regex.
 // Pre-filters work for any field (raw_log, JSON fields) because raw_log contains
 // the full event text: if a JSON field matches a pattern, the tokens appear in raw_log.
-// collectPrewhere, if non-nil, receives the hasToken conditions so the caller
-// can route them to PREWHERE. The returned string contains only the match()
-// expression. When nil, hasToken and match() are combined in the returned string.
-func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, suppressTokens bool, collectPrewhere *[]string) string {
+func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, suppressTokens bool) string {
 	matchExpr := fmt.Sprintf("match(%s, %s)", fieldRef, escapeRegexForClickHouse(pattern))
 	if negate {
 		matchExpr = "NOT " + matchExpr
@@ -844,16 +800,6 @@ func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, suppressTo
 
 	tokens := extractLiteralTokens(pattern)
 	if len(tokens) == 0 {
-		return matchExpr
-	}
-
-	// hasToken() is supported by the text index and auto-applies the
-	// index preprocessor (lower) to search terms, so lowercased tokens
-	// match correctly for both case-sensitive and case-insensitive regex.
-	if collectPrewhere != nil {
-		for _, tok := range tokens {
-			*collectPrewhere = append(*collectPrewhere, fmt.Sprintf("hasToken(raw_log, '%s')", tok))
-		}
 		return matchExpr
 	}
 
