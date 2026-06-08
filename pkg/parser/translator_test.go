@@ -3789,15 +3789,13 @@ func TestBuildRegexMatchSQL(t *testing.T) {
 			},
 		},
 		{
-			name:     "non-raw_log field skips pre-filters",
+			name:     "JSON field regex gets hasToken pre-filters",
 			fieldRef: "fields.`message`.:String",
 			pattern:  "(?i)powershell",
 			negate:   false,
 			wantParts: []string{
+				"hasToken(raw_log, 'powershell')",
 				"match(fields.`message`.:String, '(?i)powershell')",
-			},
-			wantNoParts: []string{
-				"hasToken",
 			},
 		},
 		{
@@ -3920,13 +3918,11 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:  "field regex does NOT get hasToken pre-filters",
+			name:  "field regex gets hasToken pre-filters for granule pruning",
 			query: "image=/powershell/i",
 			wantContain: []string{
+				"hasToken(raw_log, 'powershell')",
 				"match(fields.`image`.:String, '(?i)powershell')",
-			},
-			wantNotContain: []string{
-				"hasToken",
 			},
 		},
 		{

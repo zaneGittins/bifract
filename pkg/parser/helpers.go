@@ -774,15 +774,16 @@ func extractLiteralTokens(pattern string) []string {
 // the text index on raw_log for granule pruning. The text index uses
 // preprocessor = lower(raw_log), so hasToken auto-lowers search terms
 // and works for both case-sensitive and case-insensitive regex patterns.
-// Falls back to plain match() when no useful tokens can be extracted,
-// when the field isn't raw_log, or for negated regex.
+// Falls back to plain match() when no useful tokens can be extracted or for negated regex.
+// Pre-filters work for any field (raw_log, JSON fields) because raw_log contains
+// the full event text: if a JSON field matches a pattern, the tokens appear in raw_log.
 func buildRegexMatchSQL(fieldRef string, pattern string, negate bool) string {
 	matchExpr := fmt.Sprintf("match(%s, %s)", fieldRef, escapeRegexForClickHouse(pattern))
 	if negate {
 		matchExpr = "NOT " + matchExpr
 	}
 
-	if fieldRef != "raw_log" || negate {
+	if negate {
 		return matchExpr
 	}
 

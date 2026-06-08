@@ -953,10 +953,17 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 		whereClause += " AND " + fractalCondition
 	}
 
-	// Run logs query and histogram query in parallel
+	// Run logs query and histogram query in parallel.
+	// The histogram reads from the pre-aggregated logs_histogram[_distributed] table
+	// rather than scanning raw logs, reducing the fan-out from ~200M rows to ~1440 rows.
 	readTbl := h.queryTableName()
 	logsSQL := fmt.Sprintf("SELECT timestamp, toString(fields) AS fields, log_id, fractal_id FROM %s %s ORDER BY timestamp DESC LIMIT 50", readTbl, whereClause)
-	histogramSQL := fmt.Sprintf("SELECT toStartOfInterval(timestamp, INTERVAL 15 MINUTE) AS bucket, count() AS cnt FROM %s %s GROUP BY bucket ORDER BY bucket", readTbl, whereClause)
+
+	histWhereClause := fmt.Sprintf("WHERE minute >= '%s'", oneDayAgo.Format("2006-01-02 15:04:05"))
+	if fractalCondition != "" {
+		histWhereClause += " AND " + fractalCondition
+	}
+	histogramSQL := fmt.Sprintf("SELECT toStartOfInterval(minute, INTERVAL 15 MINUTE) AS bucket, sum(cnt) AS cnt FROM %s %s GROUP BY bucket ORDER BY bucket", h.db.HistogramReadTable(), histWhereClause)
 
 	type logsResult struct {
 		rows []map[string]interface{}

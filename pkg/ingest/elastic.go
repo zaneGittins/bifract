@@ -3,12 +3,14 @@ package ingest
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"bifract/pkg/ingesttokens"
@@ -74,6 +76,16 @@ func (h *ElasticBulkHandler) HandleBulk(w http.ResponseWriter, r *http.Request) 
 	bodyReader := io.Reader(r.Body)
 	if h.handler.maxBodySize > 0 {
 		bodyReader = http.MaxBytesReader(w, r.Body, h.handler.maxBodySize)
+	}
+
+	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+		gr, err := gzip.NewReader(bodyReader)
+		if err != nil {
+			respondElasticError(w, http.StatusBadRequest, "Failed to decompress gzip request body")
+			return
+		}
+		defer gr.Close()
+		bodyReader = gr
 	}
 
 	body, err := io.ReadAll(bodyReader)
