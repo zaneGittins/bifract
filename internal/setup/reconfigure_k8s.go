@@ -290,6 +290,10 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 		"OIDC_BUTTON_TEXT":    secrets["OIDC_BUTTON_TEXT"],
 	}
 
+	// Preserve user-customized maxmind PVC settings
+	cfg.MaxmindPVCAccessMode = settings.maxmindPVCAccessMode
+	cfg.MaxmindPVCStorageClass = settings.maxmindPVCStorageClass
+
 	// Preserve mTLS CA if it exists
 	if cfg.MTLSEnabled {
 		mtlsCAPath := filepath.Join(dir, "client-ca", "ca.pem")

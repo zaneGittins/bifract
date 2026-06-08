@@ -263,7 +263,10 @@ metadata:
   namespace: bifract
 spec:
   accessModes:
-    - ReadWriteOnce
+    - {{if .MaxmindPVCAccessMode}}{{.MaxmindPVCAccessMode}}{{else}}ReadWriteOnce{{end}}
+{{- if .MaxmindPVCStorageClass}}
+  storageClassName: {{.MaxmindPVCStorageClass}}
+{{- end}}
   resources:
     requests:
       storage: 1Gi

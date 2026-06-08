@@ -138,6 +138,12 @@ type K8sConfig struct {
 
 	// ImagePullSecrets preserves manually-added pull secret names across upgrades.
 	ImagePullSecrets []string
+
+	// MaxmindPVCAccessMode and MaxmindPVCStorageClass preserve user-customized
+	// PVC settings (e.g. ReadWriteMany + azurefile-csi for Azure) across upgrades.
+	// Empty values fall back to defaults (ReadWriteOnce, no storageClassName).
+	MaxmindPVCAccessMode  string
+	MaxmindPVCStorageClass string
 }
 
 // K8s wizard steps
@@ -826,6 +832,11 @@ type k8sTemplateData struct {
 
 	// ImagePullSecrets preserves manually-added pull secret names across upgrades.
 	ImagePullSecrets []string
+
+	// MaxmindPVCAccessMode and MaxmindPVCStorageClass carry user-customized PVC
+	// settings through upgrades. Empty = use template defaults.
+	MaxmindPVCAccessMode  string
+	MaxmindPVCStorageClass string
 }
 
 // k8sManifestFile maps an embedded template to its output path.
@@ -871,12 +882,14 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		BackupEncryptionKey: cfg.BackupEncryptionKey,
 		LiteLLMMasterKey:    cfg.LiteLLMMasterKey,
 		UserSecrets:         cfg.UserSecrets,
-		IPBlock:             buildIPBlock(cfg),
-		IPBlockIngest:       buildIPBlockIngest(cfg),
-		MTLSEnabled:         cfg.MTLSEnabled,
-		MTLSCACert:          indentPEM(cfg.MTLSCACert, "    "),
-		MTLSCAKey:           indentPEM(cfg.MTLSCAKey, "    "),
-		CH:                  cfg.SizeProfile.ClickHouse,
+		IPBlock:              buildIPBlock(cfg),
+		IPBlockIngest:        buildIPBlockIngest(cfg),
+		MTLSEnabled:          cfg.MTLSEnabled,
+		MTLSCACert:           indentPEM(cfg.MTLSCACert, "    "),
+		MTLSCAKey:            indentPEM(cfg.MTLSCAKey, "    "),
+		MaxmindPVCAccessMode:  cfg.MaxmindPVCAccessMode,
+		MaxmindPVCStorageClass: cfg.MaxmindPVCStorageClass,
+		CH:                   cfg.SizeProfile.ClickHouse,
 		CHKeeper:            cfg.SizeProfile.CHKeeper,
 		BifractRes:          cfg.SizeProfile.Bifract,
 		PostgresRes:         cfg.SizeProfile.Postgres,

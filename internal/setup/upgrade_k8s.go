@@ -207,6 +207,11 @@ type k8sSettings struct {
 	// imagePullSecrets preserves manually-added pull secret names from the
 	// bifract deployment (e.g. for private GHCR images).
 	imagePullSecrets []string
+
+	// maxmindPVCAccessMode and maxmindPVCStorageClass preserve user-customized
+	// PVC settings (e.g. ReadWriteMany + azurefile-csi for Azure) across upgrades.
+	maxmindPVCAccessMode  string
+	maxmindPVCStorageClass string
 }
 
 // parseK8sSecrets reads stringData key-value pairs from a generated secrets.yaml.
@@ -259,13 +264,23 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 		chStorageGB: 100,
 	}
 
-	// Parse image tag, domain, and imagePullSecrets from bifract deployment
+	// Parse image tag, domain, imagePullSecrets, and PVC settings from bifract deployment
 	if data, err := os.ReadFile(filepath.Join(dir, "bifract", "deployment.yaml")); err == nil {
 		content := string(data)
 		s.imageTag = extractValue(content, `image: ghcr.io/zanegittins/bifract:(.+)`)
 		s.domain = strings.TrimSpace(extractValue(content, `BIFRACT_DOMAIN\s*\n\s*value:\s*"?([^"\n]+)"?`))
 		s.bifractResources = extractResources(content, "bifract")
 		s.imagePullSecrets = extractImagePullSecrets(content)
+
+		// Preserve user-customized bifract-maxmind PVC settings across upgrades.
+		// Split by document separator so regex stays within the PVC document.
+		for _, doc := range strings.Split(content, "\n---") {
+			if strings.Contains(doc, "kind: PersistentVolumeClaim") && strings.Contains(doc, "name: bifract-maxmind") {
+				s.maxmindPVCAccessMode = extractValue(doc, `accessModes:\s*\n\s*-\s*(\S+)`)
+				s.maxmindPVCStorageClass = extractValue(doc, `storageClassName:\s*(\S+)`)
+				break
+			}
+		}
 	}
 
 	// Fallback: extract domain from Caddy configmap if not found in deployment

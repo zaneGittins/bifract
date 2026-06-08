@@ -170,47 +170,72 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 	}
 	tableExists := count > 0
 
-	for _, stmt := range splitClickHouseSQL(sql) {
-		upper := strings.ToUpper(strings.TrimSpace(stmt))
-		// If the table already exists, run ALTER and CREATE statements only.
-		if tableExists && !strings.HasPrefix(upper, "ALTER ") && !strings.HasPrefix(upper, "CREATE ") {
-			continue
-		}
-		// In cluster mode, inject ON CLUSTER and rewrite engines to replicated variants.
-		// Skip ON CLUSTER for CREATE IF NOT EXISTS when tables already exist — those
-		// tables are already present on all live shards and the ON CLUSTER round-trip
-		// times out when replica pods are absent from the cluster config.
-		if !tableExists || strings.HasPrefix(upper, "ALTER ") {
-			stmt = c.InjectOnCluster(stmt)
-		}
-		stmt = c.RewriteEngine(stmt)
-		if err := c.conn.Exec(ctx, stmt); err != nil {
-			return fmt.Errorf("failed to execute clickhouse init statement: %w\nstatement: %s", err, stmt)
-		}
-	}
-
-	// In cluster mode, create Distributed tables for cross-shard reads.
-	// When tables already exist, create locally only — ON CLUSTER times out
-	// when replica pods defined in the cluster config are not running.
-	if c.IsCluster() {
-		onCluster := ""
-		if !tableExists {
-			onCluster = c.OnClusterSQL()
-		}
+	if c.IsCluster() && tableExists {
+		// Upgrade path: new tables (e.g. logs_histogram) may not exist on all shards yet.
+		// ON CLUSTER times out when replica pods are absent, so push all CREATE/ALTER
+		// statements — including distributed tables — to each shard host individually.
+		// IF NOT EXISTS makes every statement idempotent.
 		distSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS logs_distributed%s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
-			onCluster, EscCHStr(c.Cluster),
+			"CREATE TABLE IF NOT EXISTS logs_distributed AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
+			EscCHStr(c.Cluster),
 		)
-		if err := c.conn.Exec(ctx, distSQL); err != nil {
-			return fmt.Errorf("failed to create distributed table: %w\nstatement: %s", err, distSQL)
+		histDistSQL := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS logs_histogram_distributed AS logs_histogram ENGINE = Distributed('%s', currentDatabase(), 'logs_histogram', rand())",
+			EscCHStr(c.Cluster),
+		)
+		initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+		for _, addr := range c.addrs {
+			hostConn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, initPool)
+			if err != nil {
+				log.Printf("Warning: cluster schema sync to %s failed: %v", addr, err)
+				continue
+			}
+			for _, stmt := range splitClickHouseSQL(sql) {
+				upper := strings.ToUpper(strings.TrimSpace(stmt))
+				if !strings.HasPrefix(upper, "CREATE ") && !strings.HasPrefix(upper, "ALTER ") {
+					continue
+				}
+				stmt = c.RewriteEngine(stmt)
+				if execErr := hostConn.Exec(ctx, stmt); execErr != nil {
+					log.Printf("Warning: schema sync on %s: %v", addr, execErr)
+				}
+			}
+			for _, stmt := range []string{distSQL, histDistSQL} {
+				if execErr := hostConn.Exec(ctx, stmt); execErr != nil {
+					log.Printf("Warning: distributed table sync on %s: %v", addr, execErr)
+				}
+			}
+			hostConn.Close()
+		}
+	} else {
+		for _, stmt := range splitClickHouseSQL(sql) {
+			upper := strings.ToUpper(strings.TrimSpace(stmt))
+			if tableExists && !strings.HasPrefix(upper, "ALTER ") && !strings.HasPrefix(upper, "CREATE ") {
+				continue
+			}
+			stmt = c.InjectOnCluster(stmt)
+			stmt = c.RewriteEngine(stmt)
+			if err := c.conn.Exec(ctx, stmt); err != nil {
+				return fmt.Errorf("failed to execute clickhouse init statement: %w\nstatement: %s", err, stmt)
+			}
 		}
 
-		histDistSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS logs_histogram_distributed%s AS logs_histogram ENGINE = Distributed('%s', currentDatabase(), 'logs_histogram', rand())",
-			onCluster, EscCHStr(c.Cluster),
-		)
-		if err := c.conn.Exec(ctx, histDistSQL); err != nil {
-			return fmt.Errorf("failed to create histogram distributed table: %w\nstatement: %s", err, histDistSQL)
+		// Fresh install: create Distributed tables ON CLUSTER so all shards get them.
+		if c.IsCluster() {
+			distSQL := fmt.Sprintf(
+				"CREATE TABLE IF NOT EXISTS logs_distributed%s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
+				c.OnClusterSQL(), EscCHStr(c.Cluster),
+			)
+			if err := c.conn.Exec(ctx, distSQL); err != nil {
+				return fmt.Errorf("failed to create distributed table: %w\nstatement: %s", err, distSQL)
+			}
+			histDistSQL := fmt.Sprintf(
+				"CREATE TABLE IF NOT EXISTS logs_histogram_distributed%s AS logs_histogram ENGINE = Distributed('%s', currentDatabase(), 'logs_histogram', rand())",
+				c.OnClusterSQL(), EscCHStr(c.Cluster),
+			)
+			if err := c.conn.Exec(ctx, histDistSQL); err != nil {
+				return fmt.Errorf("failed to create histogram distributed table: %w\nstatement: %s", err, histDistSQL)
+			}
 		}
 	}
 
