@@ -22,6 +22,7 @@ func (s SelectExpr) String() string {
 // QueryLayer holds the parts of a single SQL query level.
 type QueryLayer struct {
 	Selects  []SelectExpr
+	PreWhere []string // PREWHERE conditions (ClickHouse: evaluated before WHERE, before reading expensive columns)
 	Where    []string
 	GroupBy  []string
 	Having   []string
@@ -164,6 +165,12 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	sql.WriteString("SELECT ")
 	sql.WriteString(selectClause)
 	sql.WriteString(" FROM " + opts.EffectiveTableName())
+
+	// PREWHERE: read raw_log first, filter, then read fields (the expensive JSON column)
+	if len(source.Layer.PreWhere) > 0 {
+		sql.WriteString(" PREWHERE ")
+		sql.WriteString(strings.Join(source.Layer.PreWhere, " AND "))
+	}
 
 	// WHERE
 	if len(source.Layer.Where) > 0 {
