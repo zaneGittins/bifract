@@ -18,7 +18,7 @@ func TestBasicFieldEquals(t *testing.T) {
 			query:   "status=200",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`status` = '200'")
+				return containsSubstr([]string{sql}, "fields.`status`::String = '200'")
 			},
 		},
 		{
@@ -34,7 +34,7 @@ func TestBasicFieldEquals(t *testing.T) {
 			query:   "source.ip=192.168.1.1",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`source`.`ip` = '192.168.1.1'")
+				return containsSubstr([]string{sql}, "fields.`source`.`ip`::String = '192.168.1.1'")
 			},
 		},
 		{
@@ -59,8 +59,8 @@ func TestBasicFieldEquals(t *testing.T) {
 			query:   "event_type!=*",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return strings.Contains(sql, "fields.`event_type` IS NULL") &&
-					strings.Contains(sql, "fields.`event_type` = ''")
+				return strings.Contains(sql, "fields.`event_type`::String IS NULL") &&
+					strings.Contains(sql, "fields.`event_type`::String = ''")
 			},
 		},
 		{
@@ -68,8 +68,8 @@ func TestBasicFieldEquals(t *testing.T) {
 			query:   `url=* location="/var/log/webapp.log"`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return strings.Contains(sql, "fields.`url` != ''") &&
-					strings.Contains(sql, "fields.`location` = '/var/log/webapp.log'")
+				return strings.Contains(sql, "fields.`url`::String != ''") &&
+					strings.Contains(sql, "fields.`location`::String = '/var/log/webapp.log'")
 			},
 		},
 		{
@@ -78,8 +78,8 @@ func TestBasicFieldEquals(t *testing.T) {
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return strings.Contains(sql, "fields.`event_id` != ''") &&
-					strings.Contains(sql, "fields.`program_name` IS NULL") &&
-					strings.Contains(sql, "fields.`program_name` != 'suricata'")
+					strings.Contains(sql, "fields.`program_name`::String IS NULL") &&
+					strings.Contains(sql, "fields.`program_name`::String != 'suricata'")
 			},
 		},
 		{
@@ -135,7 +135,7 @@ func TestRegexQueries(t *testing.T) {
 			query:   "message=/error/i",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "match(fields.`message`, '(?i)error')")
+				return containsSubstr([]string{sql}, "match(fields.`message`::String, '(?i)error')")
 			},
 		},
 		{
@@ -144,7 +144,7 @@ func TestRegexQueries(t *testing.T) {
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				// Check that the regex pattern is properly escaped
-				return containsSubstr([]string{sql}, "match(fields.`filename`, '(?i)\\\\.exe$')")
+				return containsSubstr([]string{sql}, "match(fields.`filename`::String, '(?i)\\\\.exe$')")
 			},
 		},
 		{
@@ -152,7 +152,7 @@ func TestRegexQueries(t *testing.T) {
 			query:   "target_filename=/\\.exe$/i",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "match(fields.`target_filename`, '(?i)\\\\.exe$')")
+				return containsSubstr([]string{sql}, "match(fields.`target_filename`::String, '(?i)\\\\.exe$')")
 			},
 		},
 		{
@@ -160,7 +160,7 @@ func TestRegexQueries(t *testing.T) {
 			query:   "path=/var\\/log/",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "match(fields.`path`, 'var\\\\/log')")
+				return containsSubstr([]string{sql}, "match(fields.`path`::String, 'var\\\\/log')")
 			},
 		},
 		{
@@ -215,8 +215,8 @@ func TestBooleanLogic(t *testing.T) {
 			query:   "status=500 AND service=api",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`status` = '500'") &&
-					containsSubstr([]string{sql}, "fields.`service` = 'api'")
+				return containsSubstr([]string{sql}, "fields.`status`::String = '500'") &&
+					containsSubstr([]string{sql}, "fields.`service`::String = 'api'")
 			},
 		},
 		{
@@ -224,8 +224,8 @@ func TestBooleanLogic(t *testing.T) {
 			query:   "status=404 OR status=500",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`status` = '404'") &&
-					containsSubstr([]string{sql}, "fields.`status` = '500'")
+				return containsSubstr([]string{sql}, "fields.`status`::String = '404'") &&
+					containsSubstr([]string{sql}, "fields.`status`::String = '500'")
 			},
 		},
 		{
@@ -233,7 +233,7 @@ func TestBooleanLogic(t *testing.T) {
 			query:   "NOT status=200",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "NOT (fields.`status` = '200')")
+				return containsSubstr([]string{sql}, "NOT (fields.`status`::String = '200')")
 			},
 		},
 		{
@@ -337,12 +337,12 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT single condition in parens",
 			query:     `NOT (a=1)`,
-			wantWhere: "NOT (fields.`a` = '1')",
+			wantWhere: "NOT (fields.`a`::String = '1')",
 		},
 		{
 			name:      "single condition in parens is unwrapped",
 			query:     `(a=1)`,
-			wantWhere: "fields.`a` = '1'",
+			wantWhere: "fields.`a`::String = '1'",
 		},
 
 		// --- NOT with grouped OR ---
@@ -354,7 +354,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT (A OR B OR C) wraps entire group",
 			query:     `NOT (a=1 OR b=2 OR c=3)`,
-			wantWhere: "NOT (fields.`a` = '1' OR fields.`b` = '2' OR fields.`c` = '3')",
+			wantWhere: "NOT (fields.`a`::String = '1' OR fields.`b`::String = '2' OR fields.`c`::String = '3')",
 		},
 		{
 			name:      "NOT (A OR B OR C) with many values",
@@ -366,7 +366,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT (A AND B) wraps entire group",
 			query:     `NOT (a=1 AND b=2)`,
-			wantWhere: "NOT (fields.`a` = '1' AND fields.`b` = '2')",
+			wantWhere: "NOT (fields.`a`::String = '1' AND fields.`b`::String = '2')",
 		},
 		{
 			name:      "NOT (A AND B) with regex and string",
@@ -376,7 +376,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT group with implicit AND",
 			query:     `NOT (a=1 b=2)`,
-			wantWhere: "NOT (fields.`a` = '1' AND fields.`b` = '2')",
+			wantWhere: "NOT (fields.`a`::String = '1' AND fields.`b`::String = '2')",
 		},
 
 		// --- Condition AND NOT group ---
@@ -402,24 +402,24 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "(A OR B) AND (C OR D) preserves both groups",
 			query:     `(a=1 OR a=2) AND (b=3 OR b=4)`,
-			wantWhere: "((fields.`a` = '1' OR fields.`a` = '2') AND (fields.`b` = '3' OR fields.`b` = '4'))",
+			wantWhere: "((fields.`a`::String = '1' OR fields.`a`::String = '2') AND (fields.`b`::String = '3' OR fields.`b`::String = '4'))",
 		},
 		{
 			name:      "OR between groups: (A AND B) OR (C AND D)",
 			query:     `(a=1 AND b=2) OR (c=3 AND d=4)`,
-			wantWhere: "((fields.`a` = '1' AND fields.`b` = '2') OR (fields.`c` = '3' AND fields.`d` = '4'))",
+			wantWhere: "((fields.`a`::String = '1' AND fields.`b`::String = '2') OR (fields.`c`::String = '3' AND fields.`d`::String = '4'))",
 		},
 
 		// --- Mixed ungrouped and groups ---
 		{
 			name:      "A OR (B AND C) OR D",
 			query:     `a=1 OR (b=2 AND c=3) OR d=4`,
-			wantWhere: "(fields.`a` = '1' OR (fields.`b` = '2' AND fields.`c` = '3') OR fields.`d` = '4')",
+			wantWhere: "(fields.`a`::String = '1' OR (fields.`b`::String = '2' AND fields.`c`::String = '3') OR fields.`d`::String = '4')",
 		},
 		{
 			name:      "(A OR B) OR C OR (D OR E)",
 			query:     `(a=1 OR a=2) OR b=3 OR (c=4 OR c=5)`,
-			wantWhere: "((fields.`a` = '1' OR fields.`a` = '2') OR fields.`b` = '3' OR (fields.`c` = '4' OR fields.`c` = '5'))",
+			wantWhere: "((fields.`a`::String = '1' OR fields.`a`::String = '2') OR fields.`b`::String = '3' OR (fields.`c`::String = '4' OR fields.`c`::String = '5'))",
 		},
 		{
 			name:      "(A OR B) AND NOT (C OR D) AND E",
@@ -436,31 +436,31 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT (A) AND NOT B (paren vs bare)",
 			query:     `NOT (a=1) AND NOT b=2`,
-			wantWhere: "(NOT (fields.`a` = '1') AND NOT (fields.`b` = '2'))",
+			wantWhere: "(NOT (fields.`a`::String = '1') AND NOT (fields.`b`::String = '2'))",
 		},
 
 		// --- Double/triple-wrapped parens ---
 		{
 			name:      "triple nested parens (((A OR B)))",
 			query:     `(((a=1 OR b=2)))`,
-			wantWhere: "(fields.`a` = '1' OR fields.`b` = '2')",
+			wantWhere: "(fields.`a`::String = '1' OR fields.`b`::String = '2')",
 		},
 		{
 			name:      "NOT with double-wrapped parens NOT ((A OR B OR C))",
 			query:     `field=x AND NOT ((a=1 OR b=2 OR c=3))`,
-			wantWhere: "(fields.`field` = 'x' AND NOT (fields.`a` = '1' OR fields.`b` = '2' OR fields.`c` = '3'))",
+			wantWhere: "(fields.`field`::String = 'x' AND NOT (fields.`a`::String = '1' OR fields.`b`::String = '2' OR fields.`c`::String = '3'))",
 		},
 
 		// --- Operators inside NOT groups ---
 		{
 			name:      "NOT with != inside group",
 			query:     `NOT (field!=value AND other!=test)`,
-			wantWhere: "NOT ((fields.`field` IS NULL OR fields.`field` != 'value') AND (fields.`other` IS NULL OR fields.`other` != 'test'))",
+			wantWhere: "NOT ((fields.`field`::String IS NULL OR fields.`field`::String != 'value') AND (fields.`other`::String IS NULL OR fields.`other`::String != 'test'))",
 		},
 		{
 			name:      "NOT group with wildcard",
 			query:     `NOT (field=* AND other=value)`,
-			wantWhere: "NOT (fields.`field` != '' AND fields.`other` = 'value')",
+			wantWhere: "NOT (fields.`field`::String != '' AND fields.`other`::String = 'value')",
 		},
 		{
 			name:      "NOT group with regex",
@@ -495,8 +495,8 @@ func TestNOTGroupParentheses(t *testing.T) {
 			checkSQL: func(sql string) bool {
 				w := extractWhere(sql)
 				return strings.Contains(w, "(match(fields.`image`, '(?i)ps') OR match(fields.`image`, '(?i)pwsh'))") &&
-					strings.Contains(w, "(match(fields.`cmd`, '(?i)iex') OR match(fields.`cmd`, '(?i)iwr'))") &&
-					strings.Contains(w, "NOT (fields.`user` = 'SYSTEM' AND match(fields.`parent`, '(?i)svchost'))")
+					strings.Contains(w, "(match(fields.`cmd`::String, '(?i)iex') OR match(fields.`cmd`::String, '(?i)iwr'))") &&
+					strings.Contains(w, "NOT (fields.`user` = 'SYSTEM' AND match(fields.`parent`::String, '(?i)svchost'))")
 			},
 		},
 
@@ -593,8 +593,8 @@ func TestGroupByQueries(t *testing.T) {
 			query:   "groupby(service, level)",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`service`") &&
-					containsSubstr([]string{sql}, "fields.`level`") &&
+				return containsSubstr([]string{sql}, "fields.`service`::String") &&
+					containsSubstr([]string{sql}, "fields.`level`::String") &&
 					containsSubstr([]string{sql}, "GROUP BY")
 			},
 		},
@@ -652,7 +652,7 @@ func TestComplexQueries(t *testing.T) {
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "fields.`event_id` = '11'") &&
-					containsSubstr([]string{sql}, "match(fields.`target_filename`, '(?i)\\\\.exe$')") &&
+					containsSubstr([]string{sql}, "match(fields.`target_filename`::String, '(?i)\\\\.exe$')") &&
 					containsSubstr([]string{sql}, "GROUP BY")
 			},
 		},
@@ -731,7 +731,7 @@ func TestComparisonOperators(t *testing.T) {
 			query:   "bytes>1000",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`bytes`) > 1000")
+				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`bytes`::String) > 1000")
 			},
 		},
 		{
@@ -739,7 +739,7 @@ func TestComparisonOperators(t *testing.T) {
 			query:   "duration<100",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`duration`) < 100")
+				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`duration`::String) < 100")
 			},
 		},
 		{
@@ -747,7 +747,7 @@ func TestComparisonOperators(t *testing.T) {
 			query:   "count>=10",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`count`) >= 10")
+				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`count`::String) >= 10")
 			},
 		},
 		{
@@ -755,7 +755,7 @@ func TestComparisonOperators(t *testing.T) {
 			query:   "status!=200",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`status` != '200'")
+				return containsSubstr([]string{sql}, "fields.`status`::String != '200'")
 			},
 		},
 	}
@@ -810,7 +810,7 @@ func TestFieldAssignment(t *testing.T) {
 			query:   `response_time_ms := response_time`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`response_time` AS response_time_ms")
+				return containsSubstr([]string{sql}, "fields.`response_time`::String AS response_time_ms")
 			},
 		},
 		{
@@ -827,7 +827,7 @@ func TestFieldAssignment(t *testing.T) {
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, `'OK' AS status_text`) &&
-					containsSubstr([]string{sql}, "fields.`response_time` AS response_time_ms")
+					containsSubstr([]string{sql}, "fields.`response_time`::String AS response_time_ms")
 			},
 		},
 		{
@@ -909,7 +909,7 @@ func TestNewAggregateFunctions(t *testing.T) {
 			query:   "* | max(response_time)",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "max(toFloat64OrNull(fields.`response_time`)) AS _max")
+				return containsSubstr([]string{sql}, "max(toFloat64OrNull(fields.`response_time`::String)) AS _max")
 			},
 		},
 		{
@@ -917,7 +917,7 @@ func TestNewAggregateFunctions(t *testing.T) {
 			query:   "* | min(response_time)",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "min(toFloat64OrNull(fields.`response_time`)) AS _min")
+				return containsSubstr([]string{sql}, "min(toFloat64OrNull(fields.`response_time`::String)) AS _min")
 			},
 		},
 		{
@@ -925,7 +925,7 @@ func TestNewAggregateFunctions(t *testing.T) {
 			query:   "* | stdDev(response_time)",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "stddevPop(toFloat64OrNull(fields.`response_time`)) AS stddev_response_time")
+				return containsSubstr([]string{sql}, "stddevPop(toFloat64OrNull(fields.`response_time`::String)) AS stddev_response_time")
 			},
 		},
 		{
@@ -933,7 +933,7 @@ func TestNewAggregateFunctions(t *testing.T) {
 			query:   "* | percentile(response_time)",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "quantiles(0.5, 0.75, 0.99)(toFloat64OrNull(fields.`response_time`)) AS percentile_response_time")
+				return containsSubstr([]string{sql}, "quantiles(0.5, 0.75, 0.99)(toFloat64OrNull(fields.`response_time`::String)) AS percentile_response_time")
 			},
 		},
 		{
@@ -941,7 +941,7 @@ func TestNewAggregateFunctions(t *testing.T) {
 			query:   "* | median(response_time)",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "median(toFloat64OrNull(fields.`response_time`)) AS _median")
+				return containsSubstr([]string{sql}, "median(toFloat64OrNull(fields.`response_time`::String)) AS _median")
 			},
 		},
 		{
@@ -958,7 +958,7 @@ func TestNewAggregateFunctions(t *testing.T) {
 			query:   "* | table(status, max(response_time))",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "max(toFloat64OrNull(fields.`response_time`)) AS _max") &&
+				return containsSubstr([]string{sql}, "max(toFloat64OrNull(fields.`response_time`::String)) AS _max") &&
 					containsSubstr([]string{sql}, "AS status")
 			},
 		},
@@ -967,7 +967,7 @@ func TestNewAggregateFunctions(t *testing.T) {
 			query:   "* | table(status, min(response_time))",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "min(toFloat64OrNull(fields.`response_time`)) AS _min") &&
+				return containsSubstr([]string{sql}, "min(toFloat64OrNull(fields.`response_time`::String)) AS _min") &&
 					containsSubstr([]string{sql}, "AS status")
 			},
 		},
@@ -976,7 +976,7 @@ func TestNewAggregateFunctions(t *testing.T) {
 			query:   "* | groupby(user) | max(bytes)",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "max(toFloat64OrNull(fields.`bytes`)) AS _max") &&
+				return containsSubstr([]string{sql}, "max(toFloat64OrNull(fields.`bytes`::String)) AS _max") &&
 					containsSubstr([]string{sql}, "GROUP BY")
 			},
 		},
@@ -1064,7 +1064,7 @@ func TestHeadTailFunctions(t *testing.T) {
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "ORDER BY timestamp ASC") &&
 					containsSubstr([]string{sql}, "LIMIT 5") &&
-					containsSubstr([]string{sql}, "fields.`loglevel` = 'ERROR'")
+					containsSubstr([]string{sql}, "fields.`loglevel`::String = 'ERROR'")
 			},
 		},
 		{
@@ -1074,7 +1074,7 @@ func TestHeadTailFunctions(t *testing.T) {
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "ORDER BY timestamp DESC") &&
 					containsSubstr([]string{sql}, "LIMIT 100") &&
-					containsSubstr([]string{sql}, "fields.`status` = '404'")
+					containsSubstr([]string{sql}, "fields.`status`::String = '404'")
 			},
 		},
 		{
@@ -1161,7 +1161,7 @@ func TestStringFunctions(t *testing.T) {
 			query:   `* | lowercase("username")`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "lower(fields.`username`)") &&
+				return containsSubstr([]string{sql}, "lower(fields.`username`::String)") &&
 					containsSubstr([]string{sql}, "AS username")
 			},
 		},
@@ -1179,7 +1179,7 @@ func TestStringFunctions(t *testing.T) {
 			query:   `* | replace("error", "ERROR") | lowercase("status") | table(timestamp, status)`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "lower(fields.`status`)") &&
+				return containsSubstr([]string{sql}, "lower(fields.`status`::String)") &&
 					containsSubstr([]string{sql}, "AS status")
 			},
 		},
@@ -1247,7 +1247,7 @@ func TestSpecializedFunctions(t *testing.T) {
 			query:   `* | eval("result = response_time")`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`response_time` AS result")
+				return containsSubstr([]string{sql}, "fields.`response_time`::String AS result")
 			},
 		},
 		{
@@ -1263,7 +1263,7 @@ func TestSpecializedFunctions(t *testing.T) {
 			query:   `* | eval("total = bytes_sent + bytes_received")`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "toFloat64OrNull(fields.`bytes_sent`) + toFloat64OrNull(fields.`bytes_received`) AS total")
+				return containsSubstr([]string{sql}, "toFloat64OrNull(fields.`bytes_sent`::String) + toFloat64OrNull(fields.`bytes_received`::String) AS total")
 			},
 		},
 		{
@@ -1271,7 +1271,7 @@ func TestSpecializedFunctions(t *testing.T) {
 			query:   `* | in("status", "404,500")`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`status` IN") &&
+				return containsSubstr([]string{sql}, "fields.`status`::String IN") &&
 					containsSubstr([]string{sql}, "'404'") &&
 					containsSubstr([]string{sql}, "'500'")
 			},
@@ -1305,7 +1305,7 @@ func TestSpecializedFunctions(t *testing.T) {
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "CASE WHEN") &&
-					containsSubstr([]string{sql}, "fields.`status` = '200'") &&
+					containsSubstr([]string{sql}, "fields.`status`::String = '200'") &&
 					containsSubstr([]string{sql}, "THEN 'OK'") &&
 					containsSubstr([]string{sql}, "ELSE 'Unknown'")
 			},
@@ -1315,7 +1315,7 @@ func TestSpecializedFunctions(t *testing.T) {
 			query:   `* | eval("calculated = bytes * 2") | table(timestamp, calculated)`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "toFloat64OrNull(fields.`bytes`) * 2 AS calculated")
+				return containsSubstr([]string{sql}, "toFloat64OrNull(fields.`bytes`::String) * 2 AS calculated")
 			},
 		},
 	}
@@ -1402,7 +1402,7 @@ func TestTimeFunctions(t *testing.T) {
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "toStartOfDay(timestamp) AS time_bucket") &&
-					containsSubstr([]string{sql}, "sum(toFloat64OrNull(fields.`bytes`)) AS bucket_sum") &&
+					containsSubstr([]string{sql}, "sum(toFloat64OrNull(fields.`bytes`::String)) AS bucket_sum") &&
 					containsSubstr([]string{sql}, "GROUP BY")
 			},
 		},
@@ -1461,8 +1461,8 @@ func TestStatsFunction(t *testing.T) {
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "COUNT(*) AS _count") &&
-					containsSubstr([]string{sql}, "avg(toFloat64OrNull(fields.`response_time`)) AS _avg") &&
-					containsSubstr([]string{sql}, "sum(toFloat64OrNull(fields.`bytes`)) AS _sum")
+					containsSubstr([]string{sql}, "avg(toFloat64OrNull(fields.`response_time`::String)) AS _avg") &&
+					containsSubstr([]string{sql}, "sum(toFloat64OrNull(fields.`bytes`::String)) AS _sum")
 			},
 		},
 		{
@@ -1470,8 +1470,8 @@ func TestStatsFunction(t *testing.T) {
 			query:   `* | groupby(user) | multi(avg(response_time), max(bytes))`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "avg(toFloat64OrNull(fields.`response_time`)) AS _avg") &&
-					containsSubstr([]string{sql}, "max(toFloat64OrNull(fields.`bytes`)) AS _max") &&
+				return containsSubstr([]string{sql}, "avg(toFloat64OrNull(fields.`response_time`::String)) AS _avg") &&
+					containsSubstr([]string{sql}, "max(toFloat64OrNull(fields.`bytes`::String)) AS _max") &&
 					containsSubstr([]string{sql}, "GROUP BY")
 			},
 		},

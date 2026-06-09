@@ -1,6 +1,6 @@
 module bifract
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.44.0
@@ -20,7 +20,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/robfig/cron/v3 v3.0.1
 	go.opentelemetry.io/proto/otlp v1.10.0
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/term v0.43.0
 	google.golang.org/protobuf v1.36.11
@@ -90,7 +90,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260209200024-4cfbd4190f57 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect

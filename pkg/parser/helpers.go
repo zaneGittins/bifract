@@ -660,11 +660,37 @@ func sanitizeIdentifier(s string) (string, error) {
 	return s, nil
 }
 
+// jsonTypeHintedFields is the set of fields declared with explicit String type hints
+// in the JSON column definition. These fields must be referenced without any cast so
+// that ClickHouse's skip index optimizer can match them against bloom_filter/set indexes.
+// Dynamic (non-hinted) fields require ::String for GROUP BY and aggregation compatibility.
+var jsonTypeHintedFields = map[string]bool{
+	"computer_name":      true,
+	"user":               true,
+	"src_ip":             true,
+	"dst_ip":             true,
+	"src_port":           true,
+	"dst_port":           true,
+	"commandline":        true,
+	"hash":               true,
+	"event_id":           true,
+	"image":              true,
+	"parent_image":       true,
+	"call_chain":         true,
+	"operation":          true,
+	"artifact":           true,
+	"query":              true,
+	"original_file_name": true,
+}
+
 // jsonFieldRef returns the ClickHouse JSON subcolumn reference for a field name.
 // Dots in the field name are treated as nested path separators, producing
-// fields.`event`.`name` for "event.name". No cast is appended: type-hinted
-// paths are already String, and direct sub-column references are required for
-// ClickHouse's skip index optimizer to fire (CAST expressions are not matched).
+// fields.`event`.`name` for "event.name".
+//
+// Type-hinted fields use a direct reference — required for the skip index optimizer
+// to fire (CAST expressions are not matched against bloom_filter/set indexes).
+// Dynamic (non-hinted) fields append ::String so GROUP BY and aggregations work;
+// Dynamic type is not directly groupable in ClickHouse.
 func jsonFieldRef(field string) string {
 	parts := strings.Split(field, ".")
 	var b strings.Builder
@@ -675,7 +701,11 @@ func jsonFieldRef(field string) string {
 		b.WriteString(escaped)
 		b.WriteString("`")
 	}
-	return b.String()
+	ref := b.String()
+	if len(parts) == 1 && jsonTypeHintedFields[parts[0]] {
+		return ref
+	}
+	return ref + "::String"
 }
 
 // validateNumeric ensures a value is a valid number, preventing SQL injection in numeric contexts.
@@ -797,6 +827,14 @@ func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, suppressTo
 		return matchExpr
 	}
 
+	// Patterns with alternation (|) cannot use AND-combined hasToken pre-filters:
+	// the alternatives are mutually exclusive so requiring every token to appear
+	// in the same document produces false negatives (e.g. /(cmd|vbs|ps1)/ would
+	// demand "cmd" AND "vbs" AND "ps1" all present, matching nothing).
+	if patternHasAlternation(pattern) {
+		return matchExpr
+	}
+
 	tokens := extractLiteralTokens(pattern)
 	if len(tokens) == 0 {
 		return matchExpr
@@ -810,10 +848,36 @@ func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, suppressTo
 	return strings.Join(parts, " AND ")
 }
 
+// patternHasAlternation returns true if the regex pattern contains | outside
+// of character classes. Such patterns use OR alternatives, so hasToken
+// pre-filters must not be AND-combined across the alternatives.
+func patternHasAlternation(pattern string) bool {
+	p := pattern
+	if strings.HasPrefix(p, "(?i)") {
+		p = p[4:]
+	}
+	inClass := false
+	for i := 0; i < len(p); i++ {
+		if p[i] == '\\' {
+			i++ // skip escaped char
+			continue
+		}
+		if p[i] == '[' {
+			inClass = true
+		} else if p[i] == ']' {
+			inClass = false
+		} else if p[i] == '|' && !inClass {
+			return true
+		}
+	}
+	return false
+}
+
 func extractFieldName(fieldRef string) string {
-	// Extract field name from JSON subcolumn ref: fields.`a`.`b`.:String -> a.b
+	// Extract field name from JSON subcolumn ref: fields.`a`.`b`::String -> a.b
 	ref := fieldRef
 	ref = strings.TrimSuffix(ref, ".:String")
+	ref = strings.TrimSuffix(ref, "::String")
 	if !strings.HasPrefix(ref, "fields.`") {
 		return fieldRef
 	}

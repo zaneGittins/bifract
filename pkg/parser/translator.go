@@ -333,6 +333,18 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		// Standard: build outer SELECT with timestamp formatting + deferred math
 		plan.Formatters = buildFormatters(selectStrings, ctx.Registry, deferredAssignments)
 		fieldOrder = computeFieldOrder(selectStrings, deferredAssignments)
+		// raw_log is added as a hidden base field for the row detail panel even when
+		// | table(explicit cols) is used. Strip it from the display order so it doesn't
+		// appear as a column when the user has explicitly chosen their columns.
+		if plan.TableHasExplicitColumns {
+			filtered := fieldOrder[:0]
+			for _, f := range fieldOrder {
+				if f != "raw_log" && f != "log_id" {
+					filtered = append(filtered, f)
+				}
+			}
+			fieldOrder = filtered
+		}
 	}
 
 	// --- Join: skip explicit formatter to let all join columns pass through ---
