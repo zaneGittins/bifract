@@ -10,6 +10,7 @@ import (
 
 	git "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/client"
 	githttp "github.com/go-git/go-git/v6/plumbing/transport/http"
 )
 
@@ -51,9 +52,11 @@ func CloneRepo(ctx context.Context, repoURL, branch, authToken string) (string, 
 	}
 
 	if authToken != "" {
-		opts.Auth = &githttp.BasicAuth{
-			Username: "x-token-auth",
-			Password: authToken,
+		opts.ClientOptions = []client.Option{
+			client.WithHTTPAuth(&githttp.BasicAuth{
+				Username: "x-token-auth",
+				Password: authToken,
+			}),
 		}
 	}
 

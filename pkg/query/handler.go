@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -59,6 +60,7 @@ type QueryRequest struct {
 	End       string `json:"end,omitempty"`        // RFC3339 format
 	FractalID string `json:"fractal_id,omitempty"` // Fractal ID for multi-tenant queries
 	Profile   bool   `json:"profile,omitempty"`    // collect per-shard profiling data via system.query_log
+	Cursor    string `json:"cursor,omitempty"`     // opaque token for next-page cursor pagination
 }
 
 // ProfileShardRow holds per-node metrics fetched from system.query_log.
@@ -111,7 +113,12 @@ type QueryResponse struct {
 	TimeStart    string                   `json:"time_start,omitempty"`    // Query time range start (RFC3339)
 	TimeEnd      string                   `json:"time_end,omitempty"`      // Query time range end (RFC3339)
 	Profile      *ProfileData             `json:"profile,omitempty"`       // Per-shard profiling data (only when requested)
+	NextCursor   string                   `json:"next_cursor,omitempty"`   // Cursor token for next page (non-aggregated only)
+	HasMore      bool                     `json:"has_more,omitempty"`      // True when more rows exist beyond this page
 }
+
+// cursorPageSize is the number of raw log rows returned per cursor page.
+const cursorPageSize = 200
 
 // histogramBucketSeconds returns the bucket interval and total bucket count
 // for a histogram query, adapting granularity to the query time range.
@@ -448,18 +455,35 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	chartType = translationResult.ChartType
 	chartConfig = translationResult.ChartConfig
 
+	// Track whether cursor pagination applies (non-aggregated, no explicit LIMIT in query)
+	appliedCursorPaging := !isAggregated && !strings.Contains(strings.ToUpper(sql), "LIMIT")
+
 	// Add LIMIT to queries that don't already have one
 	if !strings.Contains(strings.ToUpper(sql), "LIMIT") {
 		if isAggregated {
-			// Safety limit for aggregated queries (timechart, groupby, etc.)
 			sql += " LIMIT 10000"
 		} else {
-			sql += fmt.Sprintf(" LIMIT %d", h.maxRows)
+			// Ensure stable secondary sort so cursor pages don't drift on timestamp ties
+			if idx := strings.LastIndex(sql, " ORDER BY"); idx >= 0 {
+				if !strings.Contains(strings.ToUpper(sql[idx:]), "LOG_ID") {
+					sql += ", log_id DESC"
+				}
+			}
+			// Inject cursor condition for page N > 1
+			if req.Cursor != "" {
+				if cur, cerr := decodeCursor(req.Cursor); cerr == nil {
+					if idx := strings.LastIndex(sql, " ORDER BY"); idx >= 0 {
+						cond := fmt.Sprintf(" AND (toUnixTimestamp64Milli(timestamp), log_id) < (%d, '%s')", cur.TSMilli, escCHStr(cur.LID))
+						sql = sql[:idx] + cond + sql[idx:]
+					}
+				}
+			}
+			sql += fmt.Sprintf(" LIMIT %d", cursorPageSize+1)
 		}
 	}
 
-	// Build histogram query for non-aggregated raw log queries
-	needsHistogram := !isAggregated && chartType == ""
+	// Build histogram query for non-aggregated raw log queries (skip on cursor pages — already shown)
+	needsHistogram := !isAggregated && chartType == "" && req.Cursor == ""
 	var histogramSQL string
 	var histBucketSec, histBucketCount int
 	if needsHistogram {
@@ -545,6 +569,17 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 	results := mainRes.rows
 	err = mainRes.err
+
+	// Cursor pagination: trim to page size and encode next cursor when more rows exist
+	var nextCursor string
+	var hasMore bool
+	if appliedCursorPaging && err == nil && len(results) > cursorPageSize {
+		results = results[:cursorPageSize]
+		hasMore = true
+		if nc, encErr := encodeCursor(results[len(results)-1]); encErr == nil {
+			nextCursor = nc
+		}
+	}
 
 	if err != nil {
 		// Client disconnected; nothing to write back.
@@ -693,6 +728,8 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		ChartConfig:  chartConfig,
 		Histogram:    histogram,
 		Profile:      profileData,
+		NextCursor:   nextCursor,
+		HasMore:      hasMore,
 	}
 	if histogram != nil {
 		response.TimeStart = startTime.Format(time.RFC3339)
@@ -1046,8 +1083,45 @@ func (h *QueryHandler) accessibleFractalIDs(r *http.Request) ([]string, error) {
 	return nil, nil
 }
 
-// HandleGetRecentLogs returns a sample of recent logs (last 24h) for a fractal
-// along with an hourly histogram for the timechart.
+// buildFractalCondition constructs the fractal_id WHERE fragment for the given request.
+// noData is true when a prism context is active but contains no fractals (caller should return empty results).
+func (h *QueryHandler) buildFractalCondition(r *http.Request, selectedFractal string) (condition string, noData bool, err error) {
+	if selectedPrismID, _ := r.Context().Value("selected_prism").(string); selectedPrismID != "" && h.prismManager != nil {
+		prismFractalIDs, _ := h.prismManager.GetMemberFractalIDs(r.Context(), selectedPrismID)
+		if len(prismFractalIDs) == 0 {
+			return "", true, nil
+		}
+		quoted := make([]string, len(prismFractalIDs))
+		for i, id := range prismFractalIDs {
+			quoted[i] = fmt.Sprintf("'%s'", escCHStr(id))
+		}
+		condition = "fractal_id IN (" + strings.Join(quoted, ", ") + ")"
+		if h.fractalManager != nil {
+			if defaultFractal, ferr := h.fractalManager.GetDefaultFractal(r.Context()); ferr == nil {
+				for _, id := range prismFractalIDs {
+					if id == defaultFractal.ID {
+						quoted = append(quoted, "''")
+						condition = "fractal_id IN (" + strings.Join(quoted, ", ") + ")"
+						break
+					}
+				}
+			}
+		}
+		return condition, false, nil
+	}
+	if selectedFractal != "" {
+		if h.fractalManager != nil {
+			defaultFractal, ferr := h.fractalManager.GetDefaultFractal(r.Context())
+			if ferr == nil && defaultFractal.ID == selectedFractal {
+				return fmt.Sprintf("fractal_id IN ('%s', '')", escCHStr(selectedFractal)), false, nil
+			}
+		}
+		return fmt.Sprintf("fractal_id = '%s'", escCHStr(selectedFractal)), false, nil
+	}
+	return "", false, nil
+}
+
+// HandleGetRecentLogs returns the 50 most recent logs in the last 24h for a fractal.
 func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1057,107 +1131,41 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 	selectedFractal, err := h.getSelectedIndex(r)
 	if err != nil {
 		log.Printf("[QueryHandler] Failed to get selected fractal: %v", err)
-		respondJSON(w, http.StatusInternalServerError, QueryResponse{
-			Success: false,
-			Error:   "Failed to determine fractal context",
-		})
+		respondJSON(w, http.StatusInternalServerError, QueryResponse{Success: false, Error: "Failed to determine fractal context"})
+		return
+	}
+
+	fractalCondition, noData, err := h.buildFractalCondition(r, selectedFractal)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, QueryResponse{Success: false, Error: "Failed to determine fractal context"})
+		return
+	}
+	if noData {
+		respondJSON(w, http.StatusOK, QueryResponse{Success: true, Results: []map[string]interface{}{}, Count: 0})
 		return
 	}
 
 	now := time.Now().UTC()
 	oneDayAgo := now.Add(-24 * time.Hour)
-	timeCondition := fmt.Sprintf("timestamp >= '%s'", oneDayAgo.Format("2006-01-02 15:04:05"))
-
-	var fractalCondition string
-
-	// Check prism context first
-	if selectedPrismID, _ := r.Context().Value("selected_prism").(string); selectedPrismID != "" && h.prismManager != nil {
-		prismFractalIDs, _ := h.prismManager.GetMemberFractalIDs(r.Context(), selectedPrismID)
-		if len(prismFractalIDs) == 0 {
-			respondJSON(w, http.StatusOK, QueryResponse{Success: true, Results: []map[string]interface{}{}, Count: 0})
-			return
-		}
-		quoted := make([]string, len(prismFractalIDs))
-		for i, id := range prismFractalIDs {
-			quoted[i] = fmt.Sprintf("'%s'", escCHStr(id))
-		}
-		fractalCondition = "fractal_id IN (" + strings.Join(quoted, ", ") + ")"
-		if h.fractalManager != nil {
-			if defaultFractal, ferr := h.fractalManager.GetDefaultFractal(r.Context()); ferr == nil {
-				for _, id := range prismFractalIDs {
-					if id == defaultFractal.ID {
-						quoted = append(quoted, "''")
-						fractalCondition = "fractal_id IN (" + strings.Join(quoted, ", ") + ")"
-						break
-					}
-				}
-			}
-		}
-	} else if selectedFractal != "" {
-		if h.fractalManager != nil {
-			defaultFractal, ferr := h.fractalManager.GetDefaultFractal(r.Context())
-			if ferr == nil && defaultFractal.ID == selectedFractal {
-				fractalCondition = fmt.Sprintf("fractal_id IN ('%s', '')", escCHStr(selectedFractal))
-			} else {
-				fractalCondition = fmt.Sprintf("fractal_id = '%s'", escCHStr(selectedFractal))
-			}
-		} else {
-			fractalCondition = fmt.Sprintf("fractal_id = '%s'", escCHStr(selectedFractal))
-		}
-	}
-
-	whereClause := "WHERE " + timeCondition
+	whereClause := fmt.Sprintf("WHERE timestamp >= '%s'", oneDayAgo.Format("2006-01-02 15:04:05"))
 	if fractalCondition != "" {
 		whereClause += " AND " + fractalCondition
 	}
 
-	// Run logs query and histogram query in parallel.
-	// The histogram reads from the pre-aggregated logs_histogram[_distributed] table
-	// rather than scanning raw logs, reducing the fan-out from ~200M rows to ~1440 rows.
-	readTbl := h.queryTableName()
-	logsSQL := fmt.Sprintf("SELECT timestamp, toString(fields) AS fields, log_id, fractal_id FROM %s %s ORDER BY timestamp DESC LIMIT 50", readTbl, whereClause)
-
-	histWhereClause := fmt.Sprintf("WHERE minute >= '%s'", oneDayAgo.Format("2006-01-02 15:04:05"))
-	if fractalCondition != "" {
-		histWhereClause += " AND " + fractalCondition
-	}
-	histogramSQL := fmt.Sprintf("SELECT toStartOfInterval(minute, INTERVAL 15 MINUTE) AS bucket, sum(cnt) AS cnt FROM %s %s GROUP BY bucket ORDER BY bucket", h.db.HistogramReadTable(), histWhereClause)
-
-	type logsResult struct {
-		rows []map[string]interface{}
-		err  error
-	}
-	type histResult struct {
-		rows []map[string]interface{}
-		err  error
-	}
-
-	logsCh := make(chan logsResult, 1)
-	histCh := make(chan histResult, 1)
+	logsSQL := fmt.Sprintf("SELECT timestamp, raw_log AS fields, log_id FROM %s %s ORDER BY timestamp DESC LIMIT 50", h.queryTableName(), whereClause)
 
 	queryStart := time.Now()
 	queryCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	go func() {
-		raw, qErr := h.db.Query(queryCtx, logsSQL)
-		logsCh <- logsResult{rows: raw, err: qErr}
-	}()
-	go func() {
-		raw, qErr := h.db.Query(queryCtx, histogramSQL)
-		histCh <- histResult{rows: raw, err: qErr}
-	}()
-
-	logsRes := <-logsCh
-	histRes := <-histCh
+	rows, qErr := h.db.Query(queryCtx, logsSQL)
 	executionTime := time.Since(queryStart).Milliseconds()
 
-	if logsRes.err != nil {
-		// Client disconnected; nothing to write back.
+	if qErr != nil {
 		if r.Context().Err() == context.Canceled {
 			return
 		}
-		if logsRes.err == context.DeadlineExceeded || queryCtx.Err() == context.DeadlineExceeded {
+		if qErr == context.DeadlineExceeded || queryCtx.Err() == context.DeadlineExceeded {
 			respondJSON(w, http.StatusRequestTimeout, QueryResponse{
 				Success:     false,
 				Error:       "Recent logs query timed out. ClickHouse may be under heavy load.",
@@ -1165,7 +1173,7 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 			})
 			return
 		}
-		log.Printf("[QueryHandler] Failed to fetch recent logs: %v", logsRes.err)
+		log.Printf("[QueryHandler] Failed to fetch recent logs: %v", qErr)
 		respondJSON(w, http.StatusInternalServerError, QueryResponse{
 			Success:     false,
 			Error:       "Failed to retrieve recent logs",
@@ -1174,54 +1182,19 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	results := make([]map[string]interface{}, 0, len(logsRes.rows))
-	for _, rawResult := range logsRes.rows {
+	results := make([]map[string]interface{}, 0, len(rows))
+	for _, rawResult := range rows {
 		result := make(map[string]interface{})
-		if timestamp, exists := rawResult["timestamp"]; exists {
-			result["timestamp"] = timestamp
+		if v, ok := rawResult["timestamp"]; ok {
+			result["timestamp"] = v
 		}
-		if fieldsValue, exists := rawResult["fields"]; exists {
-			result["fields"] = fieldsValue
+		if v, ok := rawResult["fields"]; ok {
+			result["fields"] = v
 		}
-		if logID, exists := rawResult["log_id"]; exists {
-			result["log_id"] = logID
+		if v, ok := rawResult["log_id"]; ok {
+			result["log_id"] = v
 		}
 		results = append(results, result)
-	}
-
-	// Build histogram: 96 quarter-hour buckets for the last day
-	histogram := make([]int, 96)
-	if histRes.err == nil {
-		for _, row := range histRes.rows {
-			bucketVal, bOk := row["bucket"]
-			cntVal, cOk := row["cnt"]
-			if !bOk || !cOk {
-				continue
-			}
-			var bucketTime time.Time
-			switch b := bucketVal.(type) {
-			case time.Time:
-				bucketTime = b
-			case string:
-				bucketTime, _ = time.Parse("2006-01-02 15:04:05", b)
-			}
-			if bucketTime.IsZero() {
-				continue
-			}
-			idx := int(bucketTime.Sub(oneDayAgo).Minutes() / 15)
-			if idx >= 0 && idx < 96 {
-				switch c := cntVal.(type) {
-				case uint64:
-					histogram[idx] = int(c)
-				case int64:
-					histogram[idx] = int(c)
-				case float64:
-					histogram[idx] = int(c)
-				case int:
-					histogram[idx] = c
-				}
-			}
-		}
 	}
 
 	log.Printf("[QueryHandler] Fetched %d recent logs for fractal %s (%dms)", len(results), selectedFractal, executionTime)
@@ -1233,7 +1206,6 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 		Query       string                   `json:"query"`
 		ExecutionMs int64                    `json:"execution_ms"`
 		FieldOrder  []string                 `json:"field_order"`
-		Histogram   []int                    `json:"histogram"`
 		TimeStart   string                   `json:"time_start"`
 		TimeEnd     string                   `json:"time_end"`
 	}
@@ -1245,10 +1217,124 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 		Query:       "Recent logs (last 24h)",
 		ExecutionMs: executionTime,
 		FieldOrder:  []string{"timestamp", "fields", "log_id"},
-		Histogram:   histogram,
 		TimeStart:   oneDayAgo.Format(time.RFC3339),
 		TimeEnd:     now.Format(time.RFC3339),
 	})
+}
+
+// HandleGetRecentHistogram returns the 96-bucket quarter-hour event-count histogram for the last 24h.
+func (h *QueryHandler) HandleGetRecentHistogram(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	selectedFractal, err := h.getSelectedIndex(r)
+	if err != nil {
+		log.Printf("[QueryHandler] Failed to get selected fractal: %v", err)
+		respondJSON(w, http.StatusInternalServerError, QueryResponse{Success: false, Error: "Failed to determine fractal context"})
+		return
+	}
+
+	fractalCondition, noData, err := h.buildFractalCondition(r, selectedFractal)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, QueryResponse{Success: false, Error: "Failed to determine fractal context"})
+		return
+	}
+
+	now := time.Now().UTC()
+	oneDayAgo := now.Add(-24 * time.Hour)
+	histogram := make([]int, 96)
+
+	if !noData {
+		histWhereClause := fmt.Sprintf("WHERE minute >= '%s'", oneDayAgo.Format("2006-01-02 15:04:05"))
+		if fractalCondition != "" {
+			histWhereClause += " AND " + fractalCondition
+		}
+		histogramSQL := fmt.Sprintf(
+			"SELECT toStartOfInterval(minute, INTERVAL 15 MINUTE) AS bucket, sum(cnt) AS cnt FROM %s %s GROUP BY bucket ORDER BY bucket",
+			h.db.HistogramReadTable(), histWhereClause,
+		)
+
+		queryCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		rows, qErr := h.db.Query(queryCtx, histogramSQL)
+		if qErr == nil {
+			for _, row := range rows {
+				bucketVal, bOk := row["bucket"]
+				cntVal, cOk := row["cnt"]
+				if !bOk || !cOk {
+					continue
+				}
+				var bucketTime time.Time
+				switch b := bucketVal.(type) {
+				case time.Time:
+					bucketTime = b
+				case string:
+					bucketTime, _ = time.Parse("2006-01-02 15:04:05", b)
+				}
+				if bucketTime.IsZero() {
+					continue
+				}
+				idx := int(bucketTime.Sub(oneDayAgo).Minutes() / 15)
+				if idx >= 0 && idx < 96 {
+					switch c := cntVal.(type) {
+					case uint64:
+						histogram[idx] = int(c)
+					case int64:
+						histogram[idx] = int(c)
+					case float64:
+						histogram[idx] = int(c)
+					case int:
+						histogram[idx] = c
+					}
+				}
+			}
+		}
+	}
+
+	type histogramResponse struct {
+		Success   bool   `json:"success"`
+		Histogram []int  `json:"histogram"`
+		TimeStart string `json:"time_start"`
+		TimeEnd   string `json:"time_end"`
+	}
+
+	respondJSON(w, http.StatusOK, histogramResponse{
+		Success:   true,
+		Histogram: histogram,
+		TimeStart: oneDayAgo.Format(time.RFC3339),
+		TimeEnd:   now.Format(time.RFC3339),
+	})
+}
+
+// cursorToken is the decoded form of the opaque cursor string sent between client and server.
+type cursorToken struct {
+	TSMilli int64  `json:"ts"`  // Unix milliseconds of the last-seen row's timestamp
+	LID     string `json:"lid"` // log_id of the last-seen row
+}
+
+func encodeCursor(row map[string]interface{}) (string, error) {
+	ts, ok := row["timestamp"].(time.Time)
+	if !ok {
+		return "", fmt.Errorf("unexpected timestamp type %T", row["timestamp"])
+	}
+	lid, _ := row["log_id"].(string)
+	b, err := json.Marshal(cursorToken{TSMilli: ts.UnixMilli(), LID: lid})
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
+}
+
+func decodeCursor(s string) (cursorToken, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return cursorToken{}, err
+	}
+	var tok cursorToken
+	return tok, json.Unmarshal(b, &tok)
 }
 
 // escCHStr escapes a value for use inside single-quoted ClickHouse strings.

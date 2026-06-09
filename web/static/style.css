@@ -2640,6 +2640,42 @@ body.search-active {
     overflow-y: auto;
 }
 
+/* Fields skeleton loader */
+@keyframes fields-shimmer {
+    0%   { background-position: -400px 0; }
+    100% { background-position: 400px 0; }
+}
+
+.log-field-skeleton {
+    padding: 0.3rem 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.log-field-skeleton:last-child {
+    border-bottom: none;
+}
+
+.skeleton-bar {
+    border-radius: 3px;
+    background: linear-gradient(
+        90deg,
+        var(--bg-secondary, #1e1e2e) 25%,
+        var(--border-color, #333) 50%,
+        var(--bg-secondary, #1e1e2e) 75%
+    );
+    background-size: 800px 100%;
+    animation: fields-shimmer 1.4s infinite linear;
+}
+
+.skeleton-name {
+    height: 9px;
+    margin-bottom: 5px;
+}
+
+.skeleton-value {
+    height: 11px;
+}
+
 /* Raw Log Tab */
 .raw-log-content {
     position: relative;

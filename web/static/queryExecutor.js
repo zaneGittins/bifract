@@ -12,6 +12,7 @@ const QueryExecutor = {
     chartConfig: {},
     currentChart: null, // Store current chart instance
     currentRequest: null, // Track current request for cancellation
+    currentHistRequest: null, // Track histogram request for cancellation
     currentFractalId: null, // Track current fractal to validate responses
     hasLoadedShareLink: false, // Track if we've already loaded shared link on first fractal change
     pendingShareData: null, // Store shared link data waiting for fractal switch
@@ -57,50 +58,40 @@ const QueryExecutor = {
             .trim();
     },
 
-    // Load recent logs sample for initial fractal exploration
-    async loadRecentLogsSample(config = null) {
+    // Load recent logs sample for initial fractal exploration.
+    // Fires logs and histogram fetches independently so each renders as it arrives.
+    loadRecentLogsSample(config = null) {
         const elements = this.getElements(config);
 
-        // Cancel any previous request
-        if (this.currentRequest) {
-            this.currentRequest.abort();
-        }
+        // Cancel any in-flight requests from a previous fractal
+        if (this.currentRequest) this.currentRequest.abort();
+        if (this.currentHistRequest) this.currentHistRequest.abort();
 
-        // Create new abort controller for this request
         this.currentRequest = new AbortController();
-
-        // Store current fractal ID to validate response
+        this.currentHistRequest = new AbortController();
         this.currentFractalId = window.FractalContext?.currentFractal?.id || null;
 
-        // Show loading state in results table
         if (elements.resultsTable) {
             elements.resultsTable.innerHTML = '<div class="loading-spinner"><span class="spinner"></span></div>';
         }
-
-        // Hide error div
         if (elements.errorDiv) elements.errorDiv.style.display = 'none';
 
+        this._fetchRecentLogs(elements);
+        this._fetchRecentHistogram(elements);
+    },
+
+    async _fetchRecentLogs(elements) {
         try {
             const queryStart = performance.now();
-
-            // Use the safer HttpUtils for better error handling with cache-busting
             const data = await HttpUtils.safeFetch(`/api/v1/logs/recent?t=${Date.now()}`, {
                 method: 'GET',
                 credentials: 'include',
-                headers: {
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache'
-                },
+                headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
                 signal: this.currentRequest.signal
             });
-
             const executionTime = Math.round(performance.now() - queryStart);
 
-            // Validate that we're still on the same fractal (prevent race conditions)
-            const currentFractalId = window.FractalContext?.currentFractal?.id || null;
-            if (this.currentFractalId !== currentFractalId) {
-                return;
-            }
+            if (this.currentFractalId !== (window.FractalContext?.currentFractal?.id || null)) return;
 
             if (!data.success) {
                 this.showError(data.error || 'Failed to load recent logs');
@@ -113,23 +104,17 @@ const QueryExecutor = {
             this.isAggregated = false;
             this.chartType = '';
             this.chartConfig = {};
-
-            // Reset sort state
             this.sortColumn = null;
             this.sortDirection = null;
 
-            // Update results count for recent logs
             if (elements.resultsCount) {
                 elements.resultsCount.textContent = `${this.currentResults.length} recent logs (last 24h)`;
             }
-
-            // Display execution time
             if (elements.executionTime) {
                 elements.executionTime.textContent = `(${executionTime}ms)`;
                 elements.executionTime.style.display = 'inline';
             }
 
-            // Render results immediately, fetch comments in background
             if (window.Pagination) {
                 Pagination.setResults(this.currentResults);
                 this.renderPage(Pagination.getCurrentPageResults());
@@ -137,42 +122,51 @@ const QueryExecutor = {
                 this.renderResults(this.currentResults);
             }
 
-            // Update field statistics sidebar
             if (window.FieldStats) FieldStats.refresh();
 
-            // Use the server-provided time range (last 24h)
             this.currentTimeRange = {
                 start: data.time_start || new Date(Date.now() - 86400000).toISOString(),
                 end: data.time_end || new Date().toISOString()
             };
 
-            // Defer timeline to next frame so the table paints first
-            if (window.Timeline && data.histogram) {
-                requestAnimationFrame(() => {
-                    Timeline.renderFromHistogram(data.histogram, this.currentTimeRange);
-                });
-            }
-
-            // Fetch commented log IDs in background and update row highlights
             if (window.Comments) {
-                Comments.fetchCommentedLogIds().then(() => {
-                    this.updateCommentHighlights();
-                });
+                Comments.fetchCommentedLogIds().then(() => this.updateCommentHighlights());
             }
-
-
         } catch (error) {
-            // Don't show error if request was cancelled (fractal switch)
-            if (error.name === 'AbortError') {
-                return;
-            }
-
+            if (error.name === 'AbortError') return;
             console.error('Failed to load recent logs:', error);
             this.showError('Failed to load recent logs: ' + error.message);
             if (elements.resultsTable) elements.resultsTable.innerHTML = '';
         } finally {
-            // Clear the current request reference
             this.currentRequest = null;
+        }
+    },
+
+    async _fetchRecentHistogram(elements) {
+        try {
+            const data = await HttpUtils.safeFetch(`/api/v1/logs/histogram?t=${Date.now()}`, {
+                method: 'GET',
+                credentials: 'include',
+                headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+                signal: this.currentHistRequest.signal
+            });
+
+            if (this.currentFractalId !== (window.FractalContext?.currentFractal?.id || null)) return;
+            if (!data.success || !data.histogram) return;
+
+            const timeRange = {
+                start: data.time_start || new Date(Date.now() - 86400000).toISOString(),
+                end: data.time_end || new Date().toISOString()
+            };
+
+            if (window.Timeline) {
+                requestAnimationFrame(() => Timeline.renderFromHistogram(data.histogram, timeRange));
+            }
+        } catch (error) {
+            if (error.name === 'AbortError') return;
+            console.warn('Failed to load histogram:', error);
+        } finally {
+            this.currentHistRequest = null;
         }
     },
 
@@ -396,6 +390,10 @@ const QueryExecutor = {
     },
 
     cancelQuery() {
+        if (this.currentHistRequest) {
+            this.currentHistRequest.abort();
+            this.currentHistRequest = null;
+        }
         if (this.currentRequest) {
             this.currentRequest.abort();
             this.currentRequest = null;

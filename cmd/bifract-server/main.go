@@ -602,6 +602,7 @@ func main() {
 			r.Post("/query", queryHandler.HandleQuery)
 			r.Get("/query/reference", queryHandler.HandleReference)
 			r.Get("/logs/recent", queryHandler.HandleGetRecentLogs)
+				r.Get("/logs/histogram", queryHandler.HandleGetRecentHistogram)
 			r.Post("/logs/by-timestamp", queryHandler.HandleGetLogByTimestamp)
 			r.Get("/logs/fields", queryHandler.HandleGetLogFields)
 			r.Get("/status", statusHandler.HandleStatus)

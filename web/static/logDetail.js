@@ -130,8 +130,20 @@ const LogDetail = {
         }
     },
 
+    _renderFieldsSkeleton(container) {
+        const widths = [
+            [45, 70], [30, 85], [55, 55], [35, 90], [50, 65], [40, 75], [60, 50]
+        ];
+        container.innerHTML = widths.map(([nw, vw]) =>
+            `<div class="log-field-skeleton">` +
+            `<div class="skeleton-bar skeleton-name" style="width:${nw}%"></div>` +
+            `<div class="skeleton-bar skeleton-value" style="width:${vw}%"></div>` +
+            `</div>`
+        ).join('');
+    },
+
     async _lazyLoadFields(logData, fieldsContainer) {
-        fieldsContainer.innerHTML = '<div class="fields-loading">Loading fields…</div>';
+        this._renderFieldsSkeleton(fieldsContainer);
         try {
             const params = new URLSearchParams({ log_id: logData.log_id });
             if (logData.fractal_id) params.set('fractal_id', logData.fractal_id);
