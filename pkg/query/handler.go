@@ -1165,7 +1165,7 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 		whereClause += " AND " + fractalCondition
 	}
 
-	logsSQL := fmt.Sprintf("SELECT timestamp, raw_log AS fields, log_id FROM %s %s ORDER BY timestamp DESC LIMIT 50", h.queryTableName(), whereClause)
+	logsSQL := fmt.Sprintf("SELECT timestamp, raw_log, log_id FROM %s %s ORDER BY timestamp DESC LIMIT 50", h.queryTableName(), whereClause)
 
 	queryStart := time.Now()
 	queryCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -1201,8 +1201,8 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 		if v, ok := rawResult["timestamp"]; ok {
 			result["timestamp"] = v
 		}
-		if v, ok := rawResult["fields"]; ok {
-			result["fields"] = v
+		if v, ok := rawResult["raw_log"]; ok {
+			result["raw_log"] = v
 		}
 		if v, ok := rawResult["log_id"]; ok {
 			result["log_id"] = v
@@ -1229,7 +1229,7 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 		Count:       len(results),
 		Query:       "Recent logs (last 24h)",
 		ExecutionMs: executionTime,
-		FieldOrder:  []string{"timestamp", "fields", "log_id"},
+		FieldOrder:  []string{"timestamp", "raw_log", "log_id"},
 		TimeStart:   oneDayAgo.Format(time.RFC3339),
 		TimeEnd:     now.Format(time.RFC3339),
 	})

@@ -834,8 +834,10 @@ const QueryExecutor = {
                 } else if (value === undefined || value === null) {
                     value = '-';
                     cellClass += ' null-cell';
+                } else if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
+                    value = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(value)}</span>`;
+                    cellClass += ' json-cell';
                 } else {
-                    // Escape HTML for safety
                     value = Utils.escapeHtml(String(value));
                 }
 
@@ -1311,6 +1313,9 @@ const QueryExecutor = {
                 } else if (value === undefined || value === null) {
                     value = '-';
                     cellClass += ' null-cell';
+                } else if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
+                    value = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(value)}</span>`;
+                    cellClass += ' json-cell';
                 } else {
                     value = Utils.escapeHtml(String(value));
                 }
