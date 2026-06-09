@@ -35,34 +35,47 @@ CREATE TABLE IF NOT EXISTS logs (
     -- case-insensitive regex queries via hasToken pre-filters.
     INDEX raw_log_inverted raw_log TYPE text(tokenizer = splitByNonAlpha, preprocessor = lower(raw_log)),
     INDEX log_id_bloom log_id TYPE bloom_filter(0.001) GRANULARITY 1,
-    INDEX ingest_ts_minmax ingest_timestamp TYPE minmax GRANULARITY 1
+    INDEX ingest_ts_minmax ingest_timestamp TYPE minmax GRANULARITY 1,
+    -- Skip indexes on normalized fields. Defined inline so all new parts are indexed
+    -- on insert without requiring MATERIALIZE INDEX. Direct sub-column references
+    -- (no CAST) are required — ClickHouse's skip index optimizer does not match
+    -- CAST/function expressions against bloom filter or set indexes.
+    INDEX idx_src_ip             fields.src_ip             TYPE bloom_filter(0.001) GRANULARITY 1,
+    INDEX idx_dst_ip             fields.dst_ip             TYPE bloom_filter(0.001) GRANULARITY 1,
+    INDEX idx_computer_name      fields.computer_name      TYPE bloom_filter(0.001) GRANULARITY 1,
+    INDEX idx_user               fields.user               TYPE bloom_filter(0.001) GRANULARITY 1,
+    INDEX idx_hash               fields.hash               TYPE bloom_filter(0.001) GRANULARITY 1,
+    INDEX idx_image              fields.image              TYPE bloom_filter(0.001) GRANULARITY 1,
+    INDEX idx_parent_image       fields.parent_image       TYPE bloom_filter(0.001) GRANULARITY 1,
+    INDEX idx_original_file_name fields.original_file_name TYPE bloom_filter(0.001) GRANULARITY 1,
+    INDEX idx_query              fields.query              TYPE bloom_filter(0.001) GRANULARITY 1,
+    INDEX idx_event_id           fields.event_id           TYPE set(256)           GRANULARITY 1,
+    INDEX idx_operation          fields.operation          TYPE set(64)            GRANULARITY 1,
+    INDEX idx_artifact           fields.artifact           TYPE set(64)            GRANULARITY 1,
+    INDEX idx_src_port           fields.src_port           TYPE set(1024)          GRANULARITY 1,
+    INDEX idx_dst_port           fields.dst_port           TYPE set(1024)          GRANULARITY 1
 ) ENGINE = MergeTree()
 PARTITION BY toDate(timestamp)
 ORDER BY (fractal_id, timestamp, log_id)
 SETTINGS index_granularity = 8192;
 
--- Defensive: add ingest_timestamp minmax index for existing installs.
--- Alert queries filter on ingest_timestamp which is not in the primary key;
--- without this index ClickHouse scans every granule in the table.
-ALTER TABLE logs ADD INDEX IF NOT EXISTS ingest_ts_minmax ingest_timestamp TYPE minmax GRANULARITY 1;
-
--- Defensive: add skip indexes for normalized fields. These are idempotent and safe
--- to run on existing installs. New parts get the indexes automatically; run
--- MATERIALIZE INDEX to backfill existing parts on large production tables.
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_ip             fields.src_ip             TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_ip             fields.dst_ip             TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_computer_name      fields.computer_name      TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_user               fields.user               TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_hash               fields.hash               TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_image              fields.image              TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_parent_image       fields.parent_image       TYPE bloom_filter(0.001) GRANULARITY 1;
+-- Defensive: idempotent ADD INDEX for existing installs that predate inline index
+-- definitions. IF NOT EXISTS means these are safe no-ops on fresh installs.
+ALTER TABLE logs ADD INDEX IF NOT EXISTS ingest_ts_minmax       ingest_timestamp      TYPE minmax           GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_ip             fields.src_ip         TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_ip             fields.dst_ip         TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_computer_name      fields.computer_name  TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_user               fields.user           TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_hash               fields.hash           TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_image              fields.image          TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_parent_image       fields.parent_image   TYPE bloom_filter(0.001) GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_original_file_name fields.original_file_name TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_query              fields.query              TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_event_id           fields.event_id           TYPE set(256)           GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_operation          fields.operation          TYPE set(64)            GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_artifact           fields.artifact           TYPE set(64)            GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port           TYPE set(1024)          GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port           TYPE set(1024)          GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_query              fields.query          TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_event_id           fields.event_id       TYPE set(256)           GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_operation          fields.operation      TYPE set(64)            GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_artifact           fields.artifact       TYPE set(64)            GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port       TYPE set(1024)          GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port       TYPE set(1024)          GRANULARITY 1;
 
 -- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
 -- Querying this instead of raw logs reduces the recent-logs histogram from a
