@@ -1404,7 +1404,7 @@ SELECT
     read_rows,
     ProfileEvents['SelectedParts']                                              AS parts_scanned,
     ProfileEvents['SelectedMarks']                                              AS marks_selected,
-    ProfileEvents['SkippedMarks']                                               AS marks_skipped,
+    ProfileEvents['SelectedMarksTotal'] - ProfileEvents['SelectedMarks']        AS marks_skipped,
     ProfileEvents['SelectedRows']                                               AS rows_surviving,
     ProfileEvents['FileOpen']                                                   AS file_opens,
     toUInt64(ProfileEvents['DiskReadElapsedMicroseconds'] / 1000)               AS disk_ms,
@@ -1443,13 +1443,13 @@ ORDER BY coordinator DESC, duration_ms DESC`, shardSource, escCHStr(queryID))
 		skipSQL := fmt.Sprintf(`
 SELECT
     hostname()                                                       AS shard,
-    ProfileEvents['SelectedMarks']                                   AS marks_read,
-    ProfileEvents['SkippedMarks']                                    AS marks_skipped,
-    ProfileEvents['SelectedMarks'] + ProfileEvents['SkippedMarks']  AS total_marks,
-    if(ProfileEvents['SelectedMarks'] + ProfileEvents['SkippedMarks'] > 0,
+    ProfileEvents['SelectedMarks']                                              AS marks_read,
+    ProfileEvents['SelectedMarksTotal'] - ProfileEvents['SelectedMarks']        AS marks_skipped,
+    ProfileEvents['SelectedMarksTotal']                                         AS total_marks,
+    if(ProfileEvents['SelectedMarksTotal'] > 0,
        round(100.0 * ProfileEvents['SelectedMarks'] /
-             (ProfileEvents['SelectedMarks'] + ProfileEvents['SkippedMarks']), 1),
-       toFloat64(0))                                                 AS pct_marks_surviving
+             ProfileEvents['SelectedMarksTotal'], 1),
+       toFloat64(0))                                                            AS pct_marks_surviving
 FROM cluster('%s', system.query_log)
 WHERE initial_query_id = '%s'
   AND is_initial_query = 0

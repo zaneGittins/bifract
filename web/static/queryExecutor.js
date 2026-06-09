@@ -782,7 +782,7 @@ const QueryExecutor = {
             // Fall back to extracting from first result
             const firstResult = results[0];
             for (const key of Object.keys(firstResult)) {
-                if (key !== 'raw_log' && key !== '_all_fields' && key !== 'fractal_id') {
+                if (key !== '_all_fields' && key !== 'fractal_id') {
                     fields.push(key);
                 }
             }
@@ -1282,7 +1282,7 @@ const QueryExecutor = {
         } else if (results.length > 0) {
             const firstResult = results[0];
             for (const key of Object.keys(firstResult)) {
-                if (key !== 'raw_log' && key !== '_all_fields' && key !== 'fractal_id') {
+                if (key !== '_all_fields' && key !== 'fractal_id') {
                     fields.push(key);
                 }
             }

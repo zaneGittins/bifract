@@ -532,7 +532,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 			}
 		}
 		source.Layer.Selects = []SelectExpr{
-			{Expr: "timestamp"}, {Expr: "raw_log"}, {Expr: "log_id"}, {Expr: "toString(fields) AS fields"}, {Expr: "fractal_id"},
+			{Expr: "timestamp"}, {Expr: "raw_log"}, {Expr: "log_id"}, {Expr: "fractal_id"},
 		}
 		return
 	}
@@ -543,7 +543,6 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		for _, af := range assignmentFields {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: af})
 		}
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(fields) AS fields"})
 		return
 	}
 

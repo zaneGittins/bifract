@@ -31,7 +31,7 @@ func TestBasicQueries(t *testing.T) {
 			name:  "Field filter",
 			query: "image=/powershell/i",
 			wantContain: []string{
-				"match(fields.`image`.:String, '(?i)powershell')",
+				"match(fields.`image`, '(?i)powershell')",
 				"ORDER BY timestamp DESC",
 			},
 		},
@@ -50,7 +50,7 @@ func TestBasicQueries(t *testing.T) {
 			query: "image=/powershell/i | count()",
 			wantContain: []string{
 				"SELECT COUNT(*) AS _count FROM",
-				"match(fields.`image`.:String, '(?i)powershell')",
+				"match(fields.`image`, '(?i)powershell')",
 			},
 			wantNotContain: []string{
 				"ORDER BY timestamp",
@@ -61,7 +61,7 @@ func TestBasicQueries(t *testing.T) {
 			query: "* | groupBy(image)",
 			wantContain: []string{
 				"GROUP BY",
-				"fields.`image`.:String AS image",
+				"fields.`image` AS image",
 			},
 		},
 		{
@@ -70,7 +70,7 @@ func TestBasicQueries(t *testing.T) {
 			wantContain: []string{
 				"GROUP BY",
 				"COUNT(*) AS",
-				"fields.`image`.:String",
+				"fields.`image`",
 			},
 		},
 		{
@@ -78,15 +78,15 @@ func TestBasicQueries(t *testing.T) {
 			query: "* | groupBy(image, user)",
 			wantContain: []string{
 				"GROUP BY",
-				"fields.`image`.:String AS image",
-				"fields.`user`.:String AS user",
+				"fields.`image` AS image",
+				"fields.`user` AS user",
 			},
 		},
 		{
 			name:  "Sum function",
 			query: "* | sum(bytes)",
 			wantContain: []string{
-				"sum(toFloat64OrNull(fields.`bytes`.:String)) AS _sum",
+				"sum(toFloat64OrNull(fields.`bytes`)) AS _sum",
 			},
 		},
 		{
@@ -94,29 +94,29 @@ func TestBasicQueries(t *testing.T) {
 			query: "* | groupBy(image) | sum(bytes)",
 			wantContain: []string{
 				"GROUP BY",
-				"sum(toFloat64OrNull(fields.`bytes`.:String))",
-				"fields.`image`.:String",
+				"sum(toFloat64OrNull(fields.`bytes`))",
+				"fields.`image`",
 			},
 		},
 		{
 			name:  "Avg function",
 			query: "* | avg(response_time)",
 			wantContain: []string{
-				"avg(toFloat64OrNull(fields.`response_time`.:String)) AS _avg",
+				"avg(toFloat64OrNull(fields.`response_time`)) AS _avg",
 			},
 		},
 		{
 			name:  "Table with specific fields",
 			query: "* | table(timestamp, image, user)",
 			wantContain: []string{
-				"SELECT timestamp, fields.`image`.:String AS image, fields.`user`.:String AS user",
+				"SELECT timestamp, fields.`image` AS image, fields.`user` AS user",
 			},
 		},
 		{
 			name:  "Table with count",
 			query: "* | table(image, count)",
 			wantContain: []string{
-				"fields.`image`.:String AS image",
+				"fields.`image` AS image",
 				"COUNT(*) AS _count",
 				"GROUP BY",
 			},
@@ -139,7 +139,7 @@ func TestBasicQueries(t *testing.T) {
 			name:  "Sort by field",
 			query: "* | sort(user)",
 			wantContain: []string{
-				"ORDER BY fields.`user`.:String ASC",
+				"ORDER BY fields.`user` ASC",
 			},
 		},
 		{
@@ -153,49 +153,49 @@ func TestBasicQueries(t *testing.T) {
 			name:  "Complex pipeline",
 			query: "image=/powershell/i | groupBy(user) | count() | sort(count, desc) | limit(10)",
 			wantContain: []string{
-				"match(fields.`image`.:String, '(?i)powershell')",
+				"match(fields.`image`, '(?i)powershell')",
 				"GROUP BY",
 				"COUNT(*) AS",
 				"LIMIT 10",
-				"fields.`user`.:String",
+				"fields.`user`",
 			},
 		},
 		{
 			name:  "Negative regex (!=)",
 			query: "command_line!=/mp/i",
 			wantContain: []string{
-				"NOT match(fields.`command_line`.:String, '(?i)mp')",
+				"NOT match(fields.`command_line`, '(?i)mp')",
 			},
 		},
 		{
 			name:  "Multiple piped filters with negative regex",
 			query: "event_id=1 | image=/powershell/i | command_line!=/mp/i",
 			wantContain: []string{
-				"fields.`event_id`.:String = '1'",
-				"match(fields.`image`.:String, '(?i)powershell')",
-				"NOT match(fields.`command_line`.:String, '(?i)mp')",
+				"fields.`event_id` = '1'",
+				"match(fields.`image`, '(?i)powershell')",
+				"NOT match(fields.`command_line`, '(?i)mp')",
 			},
 		},
 		{
 			name:  "Multiple filters",
 			query: "image=/powershell/i user=admin",
 			wantContain: []string{
-				"match(fields.`image`.:String, '(?i)powershell')",
-				"fields.`user`.:String = 'admin'",
+				"match(fields.`image`, '(?i)powershell')",
+				"fields.`user` = 'admin'",
 			},
 		},
 		{
 			name:  "Regex with special chars",
 			query: `message=/error.*failed/i`,
 			wantContain: []string{
-				"match(fields.`message`.:String, '(?i)error.*failed')",
+				"match(fields.`message`, '(?i)error.*failed')",
 			},
 		},
 		{
 			name:  "Numeric comparison",
 			query: "status_code>=500",
 			wantContain: []string{
-				"toFloat64OrZero(fields.`status_code`.:String) >= 500",
+				"toFloat64OrZero(fields.`status_code`) >= 500",
 			},
 		},
 	}
@@ -520,7 +520,7 @@ func TestTimeChart(t *testing.T) {
 		if !strings.Contains(result.SQL, "toStartOfHour(timestamp) AS time_bucket") {
 			t.Errorf("Expected toStartOfHour in SQL, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "avg(toFloat64OrNull(fields.`latency`.:String))") {
+		if !strings.Contains(result.SQL, "avg(toFloat64OrNull(fields.`latency`))") {
 			t.Errorf("Expected avg aggregation in SQL, got: %s", result.SQL)
 		}
 	})
@@ -537,7 +537,7 @@ func TestTimeChart(t *testing.T) {
 		if !strings.Contains(result.SQL, "time_bucket") {
 			t.Errorf("Expected time_bucket in SQL, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "fields.`status`.:String") {
+		if !strings.Contains(result.SQL, "fields.`status`") {
 			t.Errorf("Expected status groupBy in SQL, got: %s", result.SQL)
 		}
 		if result.ChartType != "timechart" {
@@ -609,10 +609,10 @@ func TestChainFunction(t *testing.T) {
 			t.Fatalf("Failed to translate: %v", err)
 		}
 		// Each step should AND its conditions
-		if !strings.Contains(result.SQL, "match(fields.`image`.:String, '(?i)explorer')") {
+		if !strings.Contains(result.SQL, "match(fields.`image`, '(?i)explorer')") {
 			t.Errorf("Expected regex match for explorer, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "match(fields.`image`.:String, '(?i)powershell')") {
+		if !strings.Contains(result.SQL, "match(fields.`image`, '(?i)powershell')") {
 			t.Errorf("Expected regex match for powershell, got: %s", result.SQL)
 		}
 		// Should have 2-step pattern
@@ -631,7 +631,7 @@ func TestChainFunction(t *testing.T) {
 			t.Fatalf("Failed to translate: %v", err)
 		}
 		// Should have event_source filter in WHERE
-		if !strings.Contains(result.SQL, "fields.`event_source`.:String = 'Security'") {
+		if !strings.Contains(result.SQL, "fields.`event_source` = 'Security'") {
 			t.Errorf("Expected WHERE filter for event_source, got: %s", result.SQL)
 		}
 		// Should still have chain logic
@@ -715,13 +715,13 @@ func TestChainFunction(t *testing.T) {
 			t.Errorf("Expected arrayJoin for multi-identity fields, got: %s", sql)
 		}
 		// Should reference all three fields in the array
-		if !strings.Contains(sql, "fields.`user`.:String") {
+		if !strings.Contains(sql, "fields.`user`") {
 			t.Errorf("Expected user field reference, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`source_user`.:String") {
+		if !strings.Contains(sql, "fields.`source_user`") {
 			t.Errorf("Expected source_user field reference, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`target_user`.:String") {
+		if !strings.Contains(sql, "fields.`target_user`") {
 			t.Errorf("Expected target_user field reference, got: %s", sql)
 		}
 		// Should GROUP BY _entity
@@ -1166,9 +1166,9 @@ func TestMathAssignment(t *testing.T) {
 		if !strings.Contains(sql, "0.95") {
 			t.Errorf("Expected 0.95 multiplier in SQL, got: %s", sql)
 		}
-		// Verify it references the computed aliases, not fields.`total`.:String
-		if strings.Contains(sql, "fields.`total`.:String") {
-			t.Errorf("Should reference 'total' alias not fields.`total`.:String, got: %s", sql)
+		// Verify it references the computed aliases, not fields.`total`
+		if strings.Contains(sql, "fields.`total`") {
+			t.Errorf("Should reference 'total' alias not fields.`total`, got: %s", sql)
 		}
 	})
 }
@@ -1194,13 +1194,13 @@ func TestBFSFunction(t *testing.T) {
 		if !strings.Contains(sql, "WITH RECURSIVE traversal AS") {
 			t.Errorf("Expected recursive CTE, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`process_guid`.:String AS _node_id") {
+		if !strings.Contains(sql, "fields.`process_guid` AS _node_id") {
 			t.Errorf("Expected child field as _node_id, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`parent_process_guid`.:String = t._node_id") {
+		if !strings.Contains(sql, "fields.`parent_process_guid` = t._node_id") {
 			t.Errorf("Expected parent join condition, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`process_guid`.:String = 'ABC123'") {
+		if !strings.Contains(sql, "fields.`process_guid` = 'ABC123'") {
 			t.Errorf("Expected start value filter, got: %s", sql)
 		}
 		if !strings.Contains(sql, "ORDER BY _depth ASC") {
@@ -1226,7 +1226,7 @@ func TestBFSFunction(t *testing.T) {
 		}
 		sql := result.SQL
 		// Should have the filter in both base and recursive case
-		if !strings.Contains(sql, "fields.`event_id`.:String = '1'") {
+		if !strings.Contains(sql, "fields.`event_id` = '1'") {
 			t.Errorf("Expected event_id filter, got: %s", sql)
 		}
 		// Should have fractal filter
@@ -1238,7 +1238,7 @@ func TestBFSFunction(t *testing.T) {
 			t.Errorf("Expected aliased fractal filter in recursive case, got: %s", sql)
 		}
 		// Recursive case should have aliased field filter
-		if !strings.Contains(sql, "l.fields.`event_id`.:String = '1'") {
+		if !strings.Contains(sql, "l.fields.`event_id` = '1'") {
 			t.Errorf("Expected aliased event_id filter in recursive case, got: %s", sql)
 		}
 		// Should set graph chart type
@@ -1321,16 +1321,16 @@ func TestBFSFunction(t *testing.T) {
 		}
 		sql := result.SQL
 		// Should extract child and parent fields plus include fields
-		if !strings.Contains(sql, "fields.`process_guid`.:String AS _process_guid") {
+		if !strings.Contains(sql, "fields.`process_guid` AS _process_guid") {
 			t.Errorf("Expected child field extraction, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`parent_process_guid`.:String AS _parent_process_guid") {
+		if !strings.Contains(sql, "fields.`parent_process_guid` AS _parent_process_guid") {
 			t.Errorf("Expected parent field extraction, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`image`.:String AS _image") {
+		if !strings.Contains(sql, "fields.`image` AS _image") {
 			t.Errorf("Expected image field extraction, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`command_line`.:String AS _command_line") {
+		if !strings.Contains(sql, "fields.`command_line` AS _command_line") {
 			t.Errorf("Expected command_line field extraction, got: %s", sql)
 		}
 		// Final SELECT should alias them without underscore prefix
@@ -1490,9 +1490,9 @@ func TestQualifyColumnRefs(t *testing.T) {
 		},
 		{
 			name:     "fields reference",
-			input:    "fields.`event_id`.:String = '1'",
+			input:    "fields.`event_id` = '1'",
 			alias:    "l",
-			expected: "l.fields.`event_id`.:String = '1'",
+			expected: "l.fields.`event_id` = '1'",
 		},
 		{
 			name:     "fractal_id",
@@ -1502,21 +1502,21 @@ func TestQualifyColumnRefs(t *testing.T) {
 		},
 		{
 			name:     "string literal preserved",
-			input:    "fields.`event`.:String = 'timestamp exceeded'",
+			input:    "fields.`event` = 'timestamp exceeded'",
 			alias:    "l",
-			expected: "l.fields.`event`.:String = 'timestamp exceeded'",
+			expected: "l.fields.`event` = 'timestamp exceeded'",
 		},
 		{
 			name:     "match function",
-			input:    "match(fields.`image`.:String, '(?i)powershell')",
+			input:    "match(fields.`image`, '(?i)powershell')",
 			alias:    "l",
-			expected: "match(l.fields.`image`.:String, '(?i)powershell')",
+			expected: "match(l.fields.`image`, '(?i)powershell')",
 		},
 		{
 			name:     "compound condition",
-			input:    "(fields.`a`.:String = '1' AND fields.`b`.:String = '2')",
+			input:    "(fields.`a` = '1' AND fields.`b` = '2')",
 			alias:    "l",
-			expected: "(l.fields.`a`.:String = '1' AND l.fields.`b`.:String = '2')",
+			expected: "(l.fields.`a` = '1' AND l.fields.`b` = '2')",
 		},
 	}
 
@@ -1546,7 +1546,7 @@ func TestLenFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "length(fields.`message`.:String) AS _len") {
+		if !strings.Contains(result.SQL, "length(fields.`message`) AS _len") {
 			t.Errorf("Expected length() in SQL, got: %s", result.SQL)
 		}
 	})
@@ -1574,7 +1574,7 @@ func TestLenFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "length(fields.`image`.:String) AS _len") {
+		if !strings.Contains(result.SQL, "length(fields.`image`) AS _len") {
 			t.Errorf("Expected length() in SELECT, got: %s", result.SQL)
 		}
 		// _len should be referenced as a computed field, not as a JSON field
@@ -2162,10 +2162,10 @@ func TestLevenshteinFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "fields.`src_host`.:String") {
+		if !strings.Contains(result.SQL, "fields.`src_host`") {
 			t.Errorf("Expected src_host field ref, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "fields.`dst_host`.:String") {
+		if !strings.Contains(result.SQL, "fields.`dst_host`") {
 			t.Errorf("Expected dst_host field ref, got: %s", result.SQL)
 		}
 	})
@@ -2187,7 +2187,7 @@ func TestBase64DecodeFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "tryBase64Decode(fields.`payload`.:String) AS _decoded") {
+		if !strings.Contains(result.SQL, "tryBase64Decode(fields.`payload`) AS _decoded") {
 			t.Errorf("Expected tryBase64Decode in SQL, got: %s", result.SQL)
 		}
 	})
@@ -2245,7 +2245,7 @@ func TestCidrFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "isIPAddressInRange(fields.`src_ip`.:String, '10.0.0.0/8')") {
+		if !strings.Contains(result.SQL, "isIPAddressInRange(fields.`src_ip`, '10.0.0.0/8')") {
 			t.Errorf("Expected isIPAddressInRange in SQL, got: %s", result.SQL)
 		}
 	})
@@ -2281,7 +2281,7 @@ func TestSplitFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "splitByString('/', fields.`path`.:String)[2] AS _split") {
+		if !strings.Contains(result.SQL, "splitByString('/', fields.`path`)[2] AS _split") {
 			t.Errorf("Expected splitByString in SQL, got: %s", result.SQL)
 		}
 	})
@@ -2314,7 +2314,7 @@ func TestSubstrFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "substring(fields.`message`.:String, 1, 50) AS _substr") {
+		if !strings.Contains(result.SQL, "substring(fields.`message`, 1, 50) AS _substr") {
 			t.Errorf("Expected substring in SQL, got: %s", result.SQL)
 		}
 	})
@@ -2328,7 +2328,7 @@ func TestSubstrFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "substring(fields.`path`.:String, 5) AS _substr") {
+		if !strings.Contains(result.SQL, "substring(fields.`path`, 5) AS _substr") {
 			t.Errorf("Expected substring without length in SQL, got: %s", result.SQL)
 		}
 	})
@@ -2350,7 +2350,7 @@ func TestUrldecodeFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "decodeURLComponent(fields.`request_uri`.:String) AS _urldecoded") {
+		if !strings.Contains(result.SQL, "decodeURLComponent(fields.`request_uri`) AS _urldecoded") {
 			t.Errorf("Expected decodeURLComponent in SQL, got: %s", result.SQL)
 		}
 	})
@@ -2372,7 +2372,7 @@ func TestMedianFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "median(toFloat64OrNull(fields.`response_time`.:String)) AS _median") {
+		if !strings.Contains(result.SQL, "median(toFloat64OrNull(fields.`response_time`)) AS _median") {
 			t.Errorf("Expected median expression, got: %s", result.SQL)
 		}
 	})
@@ -2535,13 +2535,13 @@ func TestCoalesceFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "fields.`user`.:String") {
+		if !strings.Contains(result.SQL, "fields.`user`") {
 			t.Errorf("Expected user field ref, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "fields.`username`.:String") {
+		if !strings.Contains(result.SQL, "fields.`username`") {
 			t.Errorf("Expected username field ref, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "fields.`account_name`.:String") {
+		if !strings.Contains(result.SQL, "fields.`account_name`") {
 			t.Errorf("Expected account_name field ref, got: %s", result.SQL)
 		}
 	})
@@ -2558,10 +2558,10 @@ func TestCoalesceFunction(t *testing.T) {
 		if !strings.Contains(result.SQL, "printf('%s - %s'") {
 			t.Errorf("Expected printf format string, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "fields.`username`.:String") {
+		if !strings.Contains(result.SQL, "fields.`username`") {
 			t.Errorf("Expected username field ref, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "fields.`action`.:String") {
+		if !strings.Contains(result.SQL, "fields.`action`") {
 			t.Errorf("Expected action field ref, got: %s", result.SQL)
 		}
 		if !strings.Contains(result.SQL, "AS user_action") {
@@ -2651,7 +2651,7 @@ func TestCoalesceFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "formatDateTime(toDateTime(fields.`created_at`.:String)") {
+		if !strings.Contains(result.SQL, "formatDateTime(toDateTime(fields.`created_at`)") {
 			t.Errorf("Expected custom field ref, got: %s", result.SQL)
 		}
 		if !strings.Contains(result.SQL, "'US/Eastern'") {
@@ -3790,12 +3790,12 @@ func TestBuildRegexMatchSQL(t *testing.T) {
 		},
 		{
 			name:     "JSON field regex gets hasToken pre-filters",
-			fieldRef: "fields.`message`.:String",
+			fieldRef: "fields.`message`",
 			pattern:  "(?i)powershell",
 			negate:   false,
 			wantParts: []string{
 				"hasToken(raw_log, 'powershell')",
-				"match(fields.`message`.:String, '(?i)powershell')",
+				"match(fields.`message`, '(?i)powershell')",
 			},
 		},
 		{
@@ -3905,7 +3905,7 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			wantContain: []string{
 				"match(raw_log, 'A') OR match(raw_log, 'B')",
 				"service",
-				"match(fields.`user`.:String, '(?i)admin')",
+				"match(fields.`user`, '(?i)admin')",
 			},
 		},
 		{
@@ -3914,7 +3914,7 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			wantContain: []string{
 				"match(raw_log, 'A') AND match(raw_log, 'B')",
 				"service",
-				"match(fields.`user`.:String, '(?i)admin')",
+				"match(fields.`user`, '(?i)admin')",
 			},
 		},
 		{
@@ -3922,14 +3922,14 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			query: "image=/powershell/i",
 			wantContain: []string{
 				"hasToken(raw_log, 'powershell')",
-				"match(fields.`image`.:String, '(?i)powershell')",
+				"match(fields.`image`, '(?i)powershell')",
 			},
 		},
 		{
 			name:  "negated raw_log regex does NOT get hasToken pre-filters",
 			query: "/powershell/i | command_line!=/cmd/i",
 			wantContain: []string{
-				"NOT match(fields.`command_line`.:String, '(?i)cmd')",
+				"NOT match(fields.`command_line`, '(?i)cmd')",
 			},
 		},
 	}
@@ -3980,7 +3980,7 @@ func TestAlertAutoProjection(t *testing.T) {
 			opts:  alertOpts,
 			wantContain: []string{
 				"SELECT", "timestamp", "log_id",
-				"fields.`image`.:String",
+				"fields.`image`",
 			},
 			wantNotContain: []string{
 				"raw_log", "toString(fields)",
@@ -3992,8 +3992,8 @@ func TestAlertAutoProjection(t *testing.T) {
 			opts:  alertOpts,
 			wantContain: []string{
 				"timestamp", "log_id",
-				"fields.`image`.:String",
-				"fields.`user`.:String",
+				"fields.`image`",
+				"fields.`user`",
 			},
 			wantNotContain: []string{
 				"raw_log", "toString(fields)",
@@ -4015,8 +4015,8 @@ func TestAlertAutoProjection(t *testing.T) {
 			query: `image=/powershell/i | table(image, user)`,
 			opts:  alertOpts,
 			wantContain: []string{
-				"fields.`image`.:String",
-				"fields.`user`.:String",
+				"fields.`image`",
+				"fields.`user`",
 			},
 		},
 		{
