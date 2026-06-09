@@ -290,7 +290,7 @@ func main() {
 	}
 	// Initialize normalizer system (before alerts, since alert manager uses it for Sigma translation)
 	normalizerManager := normalizers.NewManager(pg)
-	normalizerHandler := normalizers.NewHandler(normalizerManager)
+	normalizerHandler := normalizers.NewHandler(normalizerManager, db)
 
 	alertEngine := alerts.NewEngineWithDicts(pg, db, dictionaryManager, alertBaseURL)
 	alertManager := alerts.NewManager(pg, alertEngine, normalizerManager)
@@ -898,6 +898,7 @@ func main() {
 			r.Post("/normalizers/{id}/duplicate", normalizerHandler.HandleDuplicate)
 			r.Get("/normalizers/{id}/export", normalizerHandler.HandleExportYAML)
 			r.Get("/normalizers/{id}/tokens", normalizerHandler.HandleTokenUsage)
+			r.Post("/normalizers/{id}/optimize-storage", normalizerHandler.HandleOptimizeStorage)
 
 			// Admin-only routes (checked in handler)
 			r.Post("/auth/register", authHandler.HandleRegister)
