@@ -98,6 +98,7 @@ const Normalizers = {
                     <button class="btn-sm btn-secondary" onclick="Normalizers.openEditForm('${n.id}')" title="Edit">Edit</button>
                     <button class="btn-sm btn-secondary" onclick="Normalizers.duplicateNormalizer('${n.id}')" title="Duplicate">Duplicate</button>
                     <button class="btn-sm btn-secondary" onclick="Normalizers.exportNormalizer('${n.id}', '${Utils.escapeHtml(n.name)}')" title="Export YAML">Export</button>
+                    <button class="btn-sm btn-secondary" id="optimizeBtn-${n.id}" onclick="Normalizers.optimizeStorage('${n.id}')" title="Add JSON type hints and skip indexes for this normalizer's fields">Optimize Storage</button>
                     ${!n.is_default ? `<button class="btn-sm btn-secondary" onclick="Normalizers.setDefault('${n.id}')" title="Set as default">Set Default</button>` : ''}
                     ${!n.is_default ? `<button class="btn-sm btn-danger" onclick="Normalizers.deleteNormalizer('${n.id}')" title="Delete">Delete</button>` : ''}
                 </td>
@@ -613,6 +614,19 @@ const Normalizers = {
         container.style.display = isVisible ? 'none' : 'block';
         if (!isVisible) {
             document.getElementById('normalizerPreviewInput')?.focus();
+        }
+    },
+
+    async optimizeStorage(id) {
+        const btn = document.getElementById(`optimizeBtn-${id}`);
+        if (btn) { btn.disabled = true; btn.textContent = 'Optimizing...'; }
+        try {
+            await HttpUtils.safeFetch(`/api/v1/normalizers/${id}/optimize-storage`, { method: 'POST' });
+            Utils.showNotification('Storage optimized — type hints and skip indexes applied', 'success');
+        } catch (err) {
+            Utils.showNotification(`Failed to optimize storage: ${err.message}`, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Optimize Storage'; }
         }
     }
 };

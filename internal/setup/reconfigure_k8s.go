@@ -61,6 +61,27 @@ func RunReconfigureK8s(dir string, opts K8sReconfigureOpts) error {
 	}
 	printDone("Secrets loaded")
 
+	// Merge any values added via "kubectl edit" that are not in secrets.yaml.
+	printStep("Checking live cluster secrets...")
+	if live := tryReadLiveSecrets("bifract", "bifract-secrets"); live != nil {
+		merged := 0
+		for k, v := range live {
+			if v != "" && !coreSecretKeys[k] {
+				if secrets[k] != v {
+					merged++
+				}
+				secrets[k] = v
+			}
+		}
+		if merged > 0 {
+			printDone(fmt.Sprintf("Synced %d user secret(s) from live cluster", merged))
+		} else {
+			printDone("Live cluster secrets match on-disk")
+		}
+	} else {
+		printWarn("kubectl unavailable — using secrets.yaml only (kubectl edit values will not be preserved)")
+	}
+
 	// Parse existing settings from manifests
 	printStep("Reading existing settings...")
 	settings, err := parseK8sSettings(dir)

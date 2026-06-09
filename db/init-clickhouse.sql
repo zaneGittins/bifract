@@ -9,7 +9,25 @@ CREATE TABLE IF NOT EXISTS logs (
     timestamp DateTime64(3),
     raw_log String CODEC(ZSTD(3)),
     log_id String,
-    fields JSON(max_dynamic_paths=1024),
+    fields JSON(
+        max_dynamic_paths=1024,
+        `computer_name`      String,
+        `user`               String,
+        `src_ip`             String,
+        `dst_ip`             String,
+        `src_port`           String,
+        `dst_port`           String,
+        `commandline`        String,
+        `hash`               String,
+        `event_id`           String,
+        `image`              String,
+        `parent_image`       String,
+        `call_chain`         String,
+        `operation`          String,
+        `artifact`           String,
+        `query`              String,
+        `original_file_name` String
+    ),
     fractal_id LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3),
     -- Inverted index: lower() preprocessor enables hasToken() to auto-lower search terms,
@@ -27,6 +45,24 @@ SETTINGS index_granularity = 8192;
 -- Alert queries filter on ingest_timestamp which is not in the primary key;
 -- without this index ClickHouse scans every granule in the table.
 ALTER TABLE logs ADD INDEX IF NOT EXISTS ingest_ts_minmax ingest_timestamp TYPE minmax GRANULARITY 1;
+
+-- Defensive: add skip indexes for normalized fields. These are idempotent and safe
+-- to run on existing installs. New parts get the indexes automatically; run
+-- MATERIALIZE INDEX to backfill existing parts on large production tables.
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_ip             fields.src_ip             TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_ip             fields.dst_ip             TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_computer_name      fields.computer_name      TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_user               fields.user               TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_hash               fields.hash               TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_image              fields.image              TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_parent_image       fields.parent_image       TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_original_file_name fields.original_file_name TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_query              fields.query              TYPE bloom_filter(0.001) GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_event_id           fields.event_id           TYPE set(256)           GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_operation          fields.operation          TYPE set(64)            GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_artifact           fields.artifact           TYPE set(64)            GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port           TYPE set(1024)          GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port           TYPE set(1024)          GRANULARITY 1;
 
 -- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
 -- Querying this instead of raw logs reduces the recent-logs histogram from a

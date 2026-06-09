@@ -861,3 +861,92 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 	}
 	return results, nil
 }
+
+// SyncJSONTypeHints merges extraFields into the type hints declared on the
+// fields JSON column and adds bloom_filter skip indexes for any newly added
+// fields. It is a no-op when all requested fields are already hinted.
+//
+// The operation schedules a background mutation on existing parts; new parts
+// receive the updated schema immediately. On large tables, callers should run
+// MATERIALIZE INDEX for each new index during off-peak hours.
+func (c *ClickHouseClient) SyncJSONTypeHints(ctx context.Context, extraFields []string) error {
+	// Read the current column type string from system.columns.
+	rows, err := c.conn.Query(ctx,
+		"SELECT type FROM system.columns WHERE database = 'logs' AND table = 'logs' AND name = 'fields'")
+	if err != nil {
+		return fmt.Errorf("read fields column type: %w", err)
+	}
+	var currentType string
+	if rows.Next() {
+		_ = rows.Scan(&currentType)
+	}
+	rows.Close()
+
+	// Parse existing type-hinted field names. The type string looks like:
+	// JSON(max_dynamic_paths=1024, `src_ip` String, `user` String, ...)
+	existing := parseJSONTypeHints(currentType)
+
+	// Compute the union of existing and requested fields.
+	merged := make(map[string]struct{}, len(existing))
+	for _, f := range existing {
+		merged[f] = struct{}{}
+	}
+	var newFields []string
+	for _, f := range extraFields {
+		if f == "" {
+			continue
+		}
+		if _, ok := merged[f]; !ok {
+			merged[f] = struct{}{}
+			newFields = append(newFields, f)
+		}
+	}
+	if len(newFields) == 0 {
+		return nil
+	}
+
+	// Build MODIFY COLUMN with the full merged set.
+	var sb strings.Builder
+	sb.WriteString("ALTER TABLE logs MODIFY COLUMN fields JSON(\n    max_dynamic_paths=1024")
+	for f := range merged {
+		escaped := strings.ReplaceAll(f, "`", "``")
+		sb.WriteString(",\n    `")
+		sb.WriteString(escaped)
+		sb.WriteString("` String")
+	}
+	sb.WriteString("\n)")
+
+	modifySQL := c.InjectOnCluster(sb.String())
+	if err := c.conn.Exec(ctx, modifySQL); err != nil {
+		return fmt.Errorf("modify fields column: %w", err)
+	}
+
+	// Add a bloom_filter index for each newly added field.
+	for _, f := range newFields {
+		escaped := strings.ReplaceAll(f, "`", "``")
+		idxName := "idx_" + strings.ReplaceAll(f, " ", "_")
+		idxSQL := fmt.Sprintf(
+			"ALTER TABLE logs ADD INDEX IF NOT EXISTS %s fields.`%s` TYPE bloom_filter(0.001) GRANULARITY 1",
+			idxName, escaped,
+		)
+		idxSQL = c.InjectOnCluster(idxSQL)
+		if err := c.conn.Exec(ctx, idxSQL); err != nil {
+			log.Printf("Warning: add index %s: %v", idxName, err)
+		}
+	}
+	return nil
+}
+
+// parseJSONTypeHints extracts field names from a ClickHouse JSON column type
+// string of the form: JSON(max_dynamic_paths=N, `field` String, ...).
+func parseJSONTypeHints(typeStr string) []string {
+	var fields []string
+	// Find each backtick-quoted identifier followed by a type keyword.
+	re := regexp.MustCompile("`([^`]+)`\\s+\\w+")
+	for _, match := range re.FindAllStringSubmatch(typeStr, -1) {
+		if len(match) >= 2 {
+			fields = append(fields, match[1])
+		}
+	}
+	return fields
+}

@@ -662,9 +662,9 @@ func sanitizeIdentifier(s string) (string, error) {
 
 // jsonFieldRef returns the ClickHouse JSON subcolumn reference for a field name.
 // Dots in the field name are treated as nested path separators, producing
-// fields.`event`.`name`.:String for "event.name". The .:String suffix casts
-// the Variant/Dynamic subcolumn to String, which is required for GROUP BY
-// and avoids ambiguous type comparisons.
+// fields.`event`.`name`::String for "event.name". The ::String cast works for
+// both type-hinted String paths (no-op) and dynamic paths (explicit variant cast),
+// and is compatible with skip index expressions on typed sub-columns.
 func jsonFieldRef(field string) string {
 	parts := strings.Split(field, ".")
 	var b strings.Builder
@@ -675,7 +675,7 @@ func jsonFieldRef(field string) string {
 		b.WriteString(escaped)
 		b.WriteString("`")
 	}
-	b.WriteString(".:String")
+	b.WriteString("::String")
 	return b.String()
 }
 
