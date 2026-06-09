@@ -784,7 +784,7 @@ func computeFieldOrder(selectFields []string, deferredAssignments []AssignmentNo
 	fieldOrder := make([]string, 0, len(selectFields))
 	for _, field := range selectFields {
 		alias := extractFieldAlias(field)
-		if alias != "_all_fields" && alias != "raw_log" && alias != "log_id" {
+		if alias != "_all_fields" && alias != "fields" {
 			fieldOrder = append(fieldOrder, strings.Trim(alias, "`"))
 		}
 	}
