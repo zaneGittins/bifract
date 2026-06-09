@@ -23,7 +23,7 @@ func TestBasicQueries(t *testing.T) {
 			name:  "Simple wildcard",
 			query: "*",
 			wantContain: []string{
-				"SELECT timestamp, raw_log, log_id, toString(fields) AS fields, fractal_id FROM logs",
+				"SELECT timestamp, raw_log, log_id, fractal_id FROM logs",
 				"ORDER BY timestamp DESC",
 			},
 		},
@@ -4024,7 +4024,7 @@ func TestAlertAutoProjection(t *testing.T) {
 			query: "image=/powershell/i",
 			opts:  baseOpts,
 			wantContain: []string{
-				"raw_log", "log_id", "toString(fields) AS fields",
+				"raw_log", "log_id",
 			},
 		},
 		{
@@ -4032,7 +4032,7 @@ func TestAlertAutoProjection(t *testing.T) {
 			query: "*",
 			opts:  alertOpts,
 			wantContain: []string{
-				"raw_log", "log_id", "toString(fields) AS fields",
+				"raw_log", "log_id",
 			},
 		},
 	}
