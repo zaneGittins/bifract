@@ -14,6 +14,9 @@ const QueryExecutor = {
     currentRequest: null, // Track current request for cancellation
     currentHistRequest: null, // Track histogram request for cancellation
     currentFractalId: null, // Track current fractal to validate responses
+    currentCursor: null, // Cursor token for next-page fetch
+    currentQuery: '', // Last executed query text (needed by loadMore)
+    loadingMore: false, // Guard against concurrent load-more clicks
     hasLoadedShareLink: false, // Track if we've already loaded shared link on first fractal change
     pendingShareData: null, // Store shared link data waiting for fractal switch
     deferredShareLink: null, // Store share link data waiting for fractals to load
@@ -75,9 +78,10 @@ const QueryExecutor = {
             elements.resultsTable.innerHTML = '<div class="loading-spinner"><span class="spinner"></span></div>';
         }
         if (elements.errorDiv) elements.errorDiv.style.display = 'none';
+        this._updateLoadMoreButton(false);
 
         this._fetchRecentLogs(elements);
-        this._fetchRecentHistogram(elements);
+        this._fetchRecentHistogram();
     },
 
     async _fetchRecentLogs(elements) {
@@ -142,7 +146,7 @@ const QueryExecutor = {
         }
     },
 
-    async _fetchRecentHistogram(elements) {
+    async _fetchRecentHistogram() {
         try {
             const data = await HttpUtils.safeFetch(`/api/v1/logs/histogram?t=${Date.now()}`, {
                 method: 'GET',
@@ -181,6 +185,10 @@ const QueryExecutor = {
         // Strip comment lines (lines starting with //)
         const query = this.stripComments(rawQuery);
         if (!query) return;
+
+        // Store for use by loadMore()
+        this.currentQuery = query;
+        this.currentCursor = null;
 
         // Clear shared query state when user runs their own query (but not during shared query processing)
         if (!this.isProcessingSharedQuery) {
@@ -275,6 +283,7 @@ const QueryExecutor = {
             this.limitHit = data.limit_hit || null;
             this.chartType = data.chart_type || '';
             this.chartConfig = data.chart_config || {};
+            this.currentCursor = data.next_cursor || null;
 
             // Debug: (removed debug logging)
 
@@ -304,8 +313,8 @@ const QueryExecutor = {
                             elements.resultsCount.textContent = `${resultsLength} results`;
                     }
                 } else {
-                    // Normal case - show total results
-                    elements.resultsCount.textContent = `${resultsLength.toLocaleString()} results`;
+                    const suffix = data.has_more ? '+' : '';
+                    elements.resultsCount.textContent = `${resultsLength.toLocaleString()}${suffix} results`;
                 }
             }
 
@@ -339,6 +348,9 @@ const QueryExecutor = {
                     this.renderResults(this.currentResults);
                 }
             }
+
+            // Show or hide the load-more button based on cursor availability
+            this._updateLoadMoreButton(data.has_more);
 
             // Update field statistics sidebar
             if (window.FieldStats) FieldStats.refresh();
@@ -397,10 +409,93 @@ const QueryExecutor = {
         if (this.currentRequest) {
             this.currentRequest.abort();
             this.currentRequest = null;
+            this.currentCursor = null;
+            this._updateLoadMoreButton(false);
             const elements = this.getElements();
             if (elements.resultsTable) elements.resultsTable.innerHTML = '';
             if (elements.resultsCount) elements.resultsCount.textContent = 'Query cancelled';
             if (window.Toast) Toast.show('Query cancelled', 'info');
+        }
+    },
+
+    _updateLoadMoreButton(hasMore) {
+        let container = document.getElementById('loadMoreContainer');
+        if (!container) {
+            const anchor = document.getElementById('paginationControls');
+            if (!anchor) return;
+            container = document.createElement('div');
+            container.id = 'loadMoreContainer';
+            anchor.insertAdjacentElement('afterend', container);
+        }
+        if (hasMore) {
+            container.innerHTML = '<button class="load-more-btn" onclick="QueryExecutor.loadMore()">Load more</button>';
+            container.style.display = 'block';
+        } else {
+            container.style.display = 'none';
+            container.innerHTML = '';
+        }
+    },
+
+    async loadMore() {
+        if (!this.currentCursor || this.loadingMore) return;
+        this.loadingMore = true;
+
+        const btn = document.querySelector('#loadMoreContainer .load-more-btn');
+        if (btn) { btn.textContent = 'Loading…'; btn.disabled = true; }
+
+        const fractalIdAtStart = window.FractalContext?.currentFractal?.id || null;
+
+        try {
+            const requestBody = {
+                query: this.currentQuery,
+                start: this.currentTimeRange.start,
+                end: this.currentTimeRange.end,
+                cursor: this.currentCursor
+            };
+            if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
+                requestBody.fractal_id = window.FractalContext.currentFractal.id;
+            }
+
+            const data = await HttpUtils.safeFetch('/api/v1/query', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            });
+
+            if (fractalIdAtStart !== (window.FractalContext?.currentFractal?.id || null)) return;
+
+            if (!data.success) {
+                if (btn) { btn.textContent = 'Load more'; btn.disabled = false; }
+                return;
+            }
+
+            const newResults = data.results || [];
+            this.currentResults = [...this.currentResults, ...newResults];
+            this.currentCursor = data.next_cursor || null;
+
+            if (window.Pagination) {
+                Pagination.allResults = this.currentResults;
+                Pagination.totalResults = this.currentResults.length;
+                Pagination.updateDisplay();
+            }
+
+            const elements = this.getElements();
+            if (elements.resultsCount) {
+                const suffix = data.has_more ? '+' : '';
+                elements.resultsCount.textContent = `${this.currentResults.length.toLocaleString()}${suffix} results`;
+            }
+
+            this._updateLoadMoreButton(data.has_more);
+
+            if (window.FieldStats) FieldStats.refresh();
+
+        } catch (error) {
+            if (error.name === 'AbortError') return;
+            console.error('Load more failed:', error);
+            const b = document.querySelector('#loadMoreContainer .load-more-btn');
+            if (b) { b.textContent = 'Load more'; b.disabled = false; }
+        } finally {
+            this.loadingMore = false;
         }
     },
 

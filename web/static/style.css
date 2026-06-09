@@ -1390,6 +1390,33 @@ body.search-active {
     cursor: not-allowed;
 }
 
+/* Load More */
+#loadMoreContainer {
+    text-align: center;
+    padding: 10px 0 4px;
+}
+
+.load-more-btn {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    padding: 6px 20px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.load-more-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.load-more-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 /* Error Message */
 .error-message {
     background: rgba(248, 113, 113, 0.1);

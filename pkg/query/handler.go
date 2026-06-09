@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"math"
 	"strings"
@@ -119,6 +120,11 @@ type QueryResponse struct {
 
 // cursorPageSize is the number of raw log rows returned per cursor page.
 const cursorPageSize = 200
+
+// sqlLimitRE matches the LIMIT SQL clause (whitespace before, whitespace or digit after)
+// so string literals containing "LIMIT" (e.g. WHERE msg = 'LIMIT reached') don't falsely match.
+// '\bLIMIT\b' is insufficient because '\b' fires at quote-letter boundaries like 'LIMIT'.
+var sqlLimitRE = regexp.MustCompile(`(?i)\sLIMIT[\s\d]`)
 
 // histogramBucketSeconds returns the bucket interval and total bucket count
 // for a histogram query, adapting granularity to the query time range.
@@ -455,11 +461,11 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	chartType = translationResult.ChartType
 	chartConfig = translationResult.ChartConfig
 
-	// Track whether cursor pagination applies (non-aggregated, no explicit LIMIT in query)
-	appliedCursorPaging := !isAggregated && !strings.Contains(strings.ToUpper(sql), "LIMIT")
+	// Track whether cursor pagination applies (non-aggregated, no explicit LIMIT keyword in query)
+	appliedCursorPaging := !isAggregated && !sqlLimitRE.MatchString(sql)
 
 	// Add LIMIT to queries that don't already have one
-	if !strings.Contains(strings.ToUpper(sql), "LIMIT") {
+	if !sqlLimitRE.MatchString(sql) {
 		if isAggregated {
 			sql += " LIMIT 10000"
 		} else {
@@ -473,7 +479,13 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 			if req.Cursor != "" {
 				if cur, cerr := decodeCursor(req.Cursor); cerr == nil {
 					if idx := strings.LastIndex(sql, " ORDER BY"); idx >= 0 {
-						cond := fmt.Sprintf(" AND (toUnixTimestamp64Milli(timestamp), log_id) < (%d, '%s')", cur.TSMilli, escCHStr(cur.LID))
+						cond := fmt.Sprintf("(toUnixTimestamp64Milli(timestamp), log_id) < (%d, '%s')", cur.TSMilli, escCHStr(cur.LID))
+						// Use WHERE or AND depending on whether a WHERE clause already exists
+						if strings.Contains(strings.ToUpper(sql[:idx]), " WHERE ") {
+							cond = " AND " + cond
+						} else {
+							cond = " WHERE " + cond
+						}
 						sql = sql[:idx] + cond + sql[idx:]
 					}
 				}
@@ -570,17 +582,6 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	results := mainRes.rows
 	err = mainRes.err
 
-	// Cursor pagination: trim to page size and encode next cursor when more rows exist
-	var nextCursor string
-	var hasMore bool
-	if appliedCursorPaging && err == nil && len(results) > cursorPageSize {
-		results = results[:cursorPageSize]
-		hasMore = true
-		if nc, encErr := encodeCursor(results[len(results)-1]); encErr == nil {
-			nextCursor = nc
-		}
-	}
-
 	if err != nil {
 		// Client disconnected; nothing to write back.
 		if r.Context().Err() == context.Canceled {
@@ -605,6 +606,18 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 			ExecutionMs: executionTime,
 		})
 		return
+	}
+
+	// Cursor pagination: trim to page size and encode next cursor when more rows exist.
+	// hasMore is only set when cursor encoding succeeds — avoids showing a broken button.
+	var nextCursor string
+	var hasMore bool
+	if appliedCursorPaging && len(results) > cursorPageSize {
+		results = results[:cursorPageSize]
+		if nc, encErr := encodeCursor(results[len(results)-1]); encErr == nil {
+			nextCursor = nc
+			hasMore = true
+		}
 	}
 
 	// Process histogram into bucketed array
