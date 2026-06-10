@@ -9,6 +9,11 @@ const Performance = {
     memoryChart: null,
     cpuChart: null,
     prevCpuTimes: null,
+    _lastProcesses: [],
+    _lastRecentQueries: [],
+    _shownProcesses: [],
+    _shownRecentQueries: [],
+    _drawerQuery: '',
 
     init() {
         const refreshSelect = document.getElementById('perfRefreshRate');
@@ -30,6 +35,19 @@ const Performance = {
                 this.refresh();
             });
         }
+
+        const procSearch = document.getElementById('perfProcessSearch');
+        if (procSearch) {
+            procSearch.addEventListener('input', () => this.filterProcesses());
+        }
+        const recentSearch = document.getElementById('perfRecentSearch');
+        if (recentSearch) {
+            recentSearch.addEventListener('input', () => this.filterRecentQueries());
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') this.closeDrawer();
+        });
     },
 
     async show() {
@@ -76,7 +94,7 @@ const Performance = {
             }
 
             if (metData.success) {
-                this.renderMetrics(metData.metrics || {}, metData.async_metrics || {});
+                this.renderMetrics(metData.metrics || {}, metData.async_metrics || {}, metData.log_storage || {}, metData.disk || {});
                 this.renderRecentQueries(metData.recent_queries || []);
                 this.updateCharts(metData.recent_queries || []);
                 this.renderCpuChart(metData.cpu_history || [], metData.cpu_history_nodes || null);
@@ -113,20 +131,45 @@ const Performance = {
         }
     },
 
-    renderMetrics(metrics, asyncMetrics) {
+    renderMetrics(metrics, asyncMetrics, logStorage, disk) {
         const activeQueries = metrics['Query'] || 0;
         const merges = metrics['Merge'] || 0;
         const memTracking = metrics['MemoryTracking'] || 0;
         const uptime = asyncMetrics['Uptime'] || 0;
-        const tables = asyncMetrics['NumberOfTables'] || 0;
-        const totalRows = asyncMetrics['TotalRowsOfMergeTreeTables'] || 0;
 
         this.setText('metricActiveQueries', activeQueries);
         this.setText('metricMemory', this.formatBytes(memTracking));
         this.setText('metricMerges', merges);
         this.setText('metricUptime', this.formatUptime(uptime));
-        this.setText('metricTables', tables);
-        this.setText('metricTotalRows', this.formatNumber(totalRows));
+
+        // Log-specific storage metrics
+        const logRows = logStorage['log_rows'] || 0;
+        const compressedBytes = logStorage['compressed_bytes'] || 0;
+        const uncompressedBytes = logStorage['uncompressed_bytes'] || 0;
+
+        this.setText('metricLogRows', this.formatNumber(logRows));
+        this.setText('metricLogStorage', this.formatBytes(compressedBytes));
+
+        // Disk usage with color coding
+        const diskPct = typeof disk['used_pct'] === 'number' ? disk['used_pct'] : 0;
+        const diskFree = disk['free_space'] || '';
+        const diskEl = document.getElementById('metricDiskUsage');
+        if (diskEl) {
+            diskEl.textContent = diskPct + '%';
+            diskEl.className = 'perf-metric-value' +
+                (diskPct > 85 ? ' perf-metric-danger' : diskPct > 70 ? ' perf-metric-warning' : '');
+        }
+        this.setText('metricDiskFree', diskFree ? diskFree + ' free' : '');
+
+        // Compression: space saved as a percentage
+        if (compressedBytes > 0 && uncompressedBytes > 0) {
+            const saved = (1 - compressedBytes / uncompressedBytes) * 100;
+            this.setText('metricCompression', saved.toFixed(1) + '% saved');
+            this.setText('metricUncompressed', this.formatBytes(uncompressedBytes) + ' raw');
+        } else {
+            this.setText('metricCompression', '--');
+            this.setText('metricUncompressed', '');
+        }
     },
 
     // Per-node color palette for multi-node CPU charts.
@@ -292,22 +335,35 @@ const Performance = {
     },
 
     renderProcesses(processes) {
-        const container = document.getElementById('perfProcessesTable');
-        const countEl = document.getElementById('perfProcessCount');
-        if (!container) return;
-
-        // Filter out our own monitoring queries
-        const filtered = processes.filter(p => {
+        this._lastProcesses = processes.filter(p => {
             const q = (p.query || '').toLowerCase();
             return !q.includes('system.processes') &&
                    !q.includes('system.metrics') &&
                    !q.includes('system.asynchronous_metrics') &&
                    !q.includes('system.query_log');
         });
+        this.filterProcesses();
+    },
 
-        if (countEl) countEl.textContent = filtered.length;
+    filterProcesses() {
+        const input = document.getElementById('perfProcessSearch');
+        const term = input ? input.value.toLowerCase().trim() : '';
+        this._shownProcesses = term
+            ? this._lastProcesses.filter(p =>
+                (p.query || '').toLowerCase().includes(term) ||
+                (p.user || '').toLowerCase().includes(term))
+            : this._lastProcesses;
+        const countEl = document.getElementById('perfProcessCount');
+        if (countEl) countEl.textContent = this._shownProcesses.length;
+        this._renderProcessTable();
+    },
 
-        if (filtered.length === 0) {
+    _renderProcessTable() {
+        const container = document.getElementById('perfProcessesTable');
+        if (!container) return;
+        const data = this._shownProcesses;
+
+        if (data.length === 0) {
             container.innerHTML = '<div class="empty-state" style="min-height: 120px;"><p>No active queries</p></div>';
             return;
         }
@@ -316,21 +372,21 @@ const Performance = {
         html += '<th>Elapsed</th><th>User</th><th>Query</th><th>Rows Read</th><th>Memory</th><th></th>';
         html += '</tr></thead><tbody>';
 
-        filtered.forEach(p => {
+        data.forEach((p, idx) => {
             const elapsed = parseFloat(p.elapsed || 0);
-            const elapsedClass = elapsed > 10 ? 'perf-warning' : elapsed > 30 ? 'perf-danger' : '';
+            const elapsedClass = elapsed > 30 ? 'perf-danger' : elapsed > 10 ? 'perf-warning' : '';
             const queryText = this.truncateQuery(p.query || '', 120);
             const memReadable = p.memory_readable || this.formatBytes(p.memory_usage || 0);
             const readRows = this.formatNumber(p.read_rows || 0);
             const queryId = this.escapeHtml(p.query_id || '');
 
-            html += `<tr class="${elapsedClass}">`;
+            html += `<tr class="${elapsedClass} perf-row-clickable" onclick="Performance.openQueryDrawer('proc',${idx})">`;
             html += `<td class="perf-elapsed">${elapsed.toFixed(1)}s</td>`;
             html += `<td>${this.escapeHtml(p.user || '')}</td>`;
-            html += `<td class="perf-query-cell" title="${this.escapeHtml(p.query || '')}">${this.escapeHtml(queryText)}</td>`;
+            html += `<td class="perf-query-cell">${this.escapeHtml(queryText)}</td>`;
             html += `<td>${readRows}</td>`;
             html += `<td>${memReadable}</td>`;
-            html += `<td><button class="btn-kill-query" onclick="Performance.killQuery('${queryId}')">Kill</button></td>`;
+            html += `<td><button class="btn-kill-query" onclick="event.stopPropagation();Performance.killQuery('${queryId}')">Kill</button></td>`;
             html += '</tr>';
         });
 
@@ -339,19 +395,31 @@ const Performance = {
     },
 
     renderRecentQueries(queries) {
-        const container = document.getElementById('perfRecentTable');
+        this._lastRecentQueries = queries.filter(q => (q.query_kind || '') !== '');
+        this.filterRecentQueries();
+    },
+
+    filterRecentQueries() {
+        const input = document.getElementById('perfRecentSearch');
+        const term = input ? input.value.toLowerCase().trim() : '';
+        if (term) {
+            this._shownRecentQueries = this._lastRecentQueries.filter(q =>
+                (q.query || '').toLowerCase().includes(term) ||
+                (q.query_kind || '').toLowerCase().includes(term));
+        } else {
+            this._shownRecentQueries = this._lastRecentQueries.slice(0, 50);
+        }
         const countEl = document.getElementById('perfRecentCount');
+        if (countEl) countEl.textContent = this._shownRecentQueries.length;
+        this._renderRecentTable();
+    },
+
+    _renderRecentTable() {
+        const container = document.getElementById('perfRecentTable');
         if (!container) return;
+        const data = this._shownRecentQueries;
 
-        // Filter out monitoring queries
-        const filtered = queries.filter(q => {
-            const text = (q.query_kind || '').toLowerCase();
-            return text !== '';
-        }).slice(0, 50);
-
-        if (countEl) countEl.textContent = filtered.length;
-
-        if (filtered.length === 0) {
+        if (data.length === 0) {
             container.innerHTML = '<div class="empty-state" style="min-height: 120px;"><p>No recent queries</p></div>';
             return;
         }
@@ -360,15 +428,15 @@ const Performance = {
         html += '<th>Time</th><th>Type</th><th>Duration</th><th>Rows Read</th><th>Memory</th><th>Status</th>';
         html += '</tr></thead><tbody>';
 
-        filtered.forEach(q => {
+        data.forEach((q, idx) => {
             const duration = q.query_duration_ms || 0;
-            const durationClass = duration > 5000 ? 'perf-warning' : duration > 30000 ? 'perf-danger' : '';
+            const durationClass = duration > 30000 ? 'perf-danger' : duration > 5000 ? 'perf-warning' : '';
             const isError = (q.type || '') === 'ExceptionWhileProcessing';
             const statusClass = isError ? 'perf-status-error' : 'perf-status-ok';
             const statusText = isError ? 'Error' : 'OK';
             const timeStr = this.formatEventTime(q.event_time);
 
-            html += `<tr class="${durationClass}">`;
+            html += `<tr class="${durationClass} perf-row-clickable" onclick="Performance.openQueryDrawer('recent',${idx})">`;
             html += `<td class="perf-time">${timeStr}</td>`;
             html += `<td>${this.escapeHtml(q.query_kind || '--')}</td>`;
             html += `<td>${this.formatDuration(duration)}</td>`;
@@ -380,6 +448,59 @@ const Performance = {
 
         html += '</tbody></table>';
         container.innerHTML = html;
+    },
+
+    openQueryDrawer(source, idx) {
+        const item = source === 'proc' ? this._shownProcesses[idx] : this._shownRecentQueries[idx];
+        if (!item) return;
+
+        this._drawerQuery = item.query || '';
+
+        let metaHtml = '';
+        if (source === 'proc') {
+            const elapsed = parseFloat(item.elapsed || 0);
+            metaHtml = [
+                item.user ? `<span>${this.escapeHtml(item.user)}</span>` : '',
+                `<span>${elapsed.toFixed(1)}s elapsed</span>`,
+                `<span>${this.formatBytes(item.memory_usage || 0)} memory</span>`,
+                `<span>${this.formatNumber(item.read_rows || 0)} rows read</span>`,
+            ].filter(Boolean).join('');
+        } else {
+            const isError = (item.type || '') === 'ExceptionWhileProcessing';
+            metaHtml = [
+                `<span>${this.formatEventTime(item.event_time)}</span>`,
+                `<span>${this.escapeHtml(item.query_kind || '--')}</span>`,
+                `<span>${this.formatDuration(item.query_duration_ms || 0)}</span>`,
+                `<span>${this.formatBytes(item.memory_usage || 0)}</span>`,
+                `<span class="${isError ? 'perf-status-error' : 'perf-status-ok'}">${isError ? 'Error' : 'OK'}</span>`,
+            ].join('');
+        }
+
+        const pre = document.getElementById('perfDrawerQuery');
+        const metaEl = document.getElementById('perfDrawerMeta');
+        const drawer = document.getElementById('perfQueryDrawer');
+        if (pre) pre.textContent = this._drawerQuery;
+        if (metaEl) metaEl.innerHTML = metaHtml;
+        if (drawer) drawer.classList.add('open');
+    },
+
+    closeDrawer() {
+        const drawer = document.getElementById('perfQueryDrawer');
+        if (drawer) drawer.classList.remove('open');
+    },
+
+    async copyDrawerQuery() {
+        try {
+            await navigator.clipboard.writeText(this._drawerQuery);
+            const btn = document.getElementById('perfDrawerCopy');
+            if (btn) {
+                const orig = btn.innerHTML;
+                btn.textContent = 'Copied!';
+                setTimeout(() => { btn.innerHTML = orig; }, 1500);
+            }
+        } catch (e) {
+            console.error('[Performance] clipboard copy failed:', e);
+        }
     },
 
     updateCharts(recentQueries) {

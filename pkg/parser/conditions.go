@@ -16,11 +16,16 @@ type condGroup struct {
 // (after Execute) so that PerRow handlers have set their real expressions.
 //
 // Routing rules by FieldKind:
-//   - FieldKindPerRow    -> WHERE (with inlined expression)
-//   - FieldKindAggregate -> HAVING (when aggregation present), else WHERE
-//   - FieldKindWindow    -> DeferredWhere (post-window filter), or HAVING for traversal
-//   - FieldKindAssignment -> HAVING (when aggregation present), else WHERE
-//   - Base/JSON/unknown  -> WHERE
+//   - FieldKindAggregate  -> HAVING (when aggregation present), else WHERE
+//   - FieldKindWindow     -> DeferredWhere (post-window filter), or HAVING for traversal
+//   - FieldKindPerRow     -> WHERE (inlined expression; string-typed, needs toFloat64OrZero)
+//   - FieldKindAssignment -> WHERE (inlined expression; already numeric, no coercion needed)
+//   - Base/JSON/unknown   -> WHERE
+//
+// The HAVING/WHERE boundary is purely about aggregation stage: only FieldKindAggregate
+// fields are produced after GROUP BY and therefore require HAVING. Assignment and PerRow
+// fields are both per-row scalars computed before aggregation; they differ only in whether
+// the value needs numeric coercion, not in SQL placement.
 func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, plan *QueryPlan) {
 	if len(conditions) == 0 {
 		return
@@ -58,11 +63,7 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 			case FieldKindPerRow:
 				target = &plan.pendingWhereConditions
 			case FieldKindAssignment:
-				if willHaveAggregation {
-					target = &plan.pendingHavingConditions
-				} else {
-					target = &plan.pendingWhereConditions
-				}
+				target = &plan.pendingWhereConditions
 			default:
 				target = &plan.pendingWhereConditions
 			}
@@ -112,9 +113,7 @@ func classifyCompoundTarget(cond HavingCondition, registry *FieldRegistry, plan 
 					priority = 2
 				}
 			case FieldKindAssignment:
-				if willHaveAggregation {
-					priority = 2
-				}
+				// per-row scalar, always WHERE
 			}
 		} else {
 			switch c.Field {

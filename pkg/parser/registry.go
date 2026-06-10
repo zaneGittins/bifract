@@ -11,7 +11,10 @@ const (
 	FieldKindPerRow                      // strftime, lowercase, eval, etc.
 	FieldKindAggregate                   // COUNT(*), sum(), etc.
 	FieldKindWindow                      // _modified_z, _is_outlier (from window wrappers)
-	FieldKindAssignment                  // user := assignments
+	// FieldKindAssignment: per-row scalar already numeric (len, levenshtein, := assignments).
+	// Always routes to WHERE — it is computed before aggregation, never after.
+	// Differs from FieldKindPerRow only in that no toFloat64OrZero() coercion is needed.
+	FieldKindAssignment
 )
 
 // FieldEntry tracks a single field's metadata.

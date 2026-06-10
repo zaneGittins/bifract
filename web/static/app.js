@@ -40,6 +40,8 @@ const App = {
             SavedQueries.init();
         }
 
+        this.initToolbarMenus();
+
         if (window.Settings) {
             Settings.init();
         }
@@ -1115,6 +1117,61 @@ const App = {
             });
 
             update();
+        });
+    },
+
+    initToolbarMenus() {
+        const defs = [
+            { btnId: 'queriesMenuBtn', menuId: 'queriesMenu', wrapId: 'queriesMenuWrap' },
+            { btnId: 'shareMenuBtn',   menuId: 'shareMenu',   wrapId: 'shareMenuWrap'   },
+        ];
+
+        const closeAll = () => {
+            defs.forEach(({ btnId, menuId }) => {
+                const m = document.getElementById(menuId);
+                const b = document.getElementById(btnId);
+                if (m) m.style.display = 'none';
+                if (b) b.classList.remove('active');
+            });
+        };
+
+        defs.forEach(({ btnId, menuId, wrapId }) => {
+            const btn  = document.getElementById(btnId);
+            const menu = document.getElementById(menuId);
+            const wrap = document.getElementById(wrapId);
+            if (!btn || !menu || !wrap) return;
+
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const opening = menu.style.display === 'none';
+                closeAll();
+                if (opening) {
+                    menu.style.display = 'block';
+                    btn.classList.add('active');
+                }
+            });
+
+            // Close after an item is chosen
+            menu.addEventListener('click', () => {
+                menu.style.display = 'none';
+                btn.classList.remove('active');
+            });
+        });
+
+        document.addEventListener('click', (e) => {
+            defs.forEach(({ menuId, btnId, wrapId }) => {
+                const wrap = document.getElementById(wrapId);
+                if (wrap && !wrap.contains(e.target)) {
+                    const m = document.getElementById(menuId);
+                    const b = document.getElementById(btnId);
+                    if (m) m.style.display = 'none';
+                    if (b) b.classList.remove('active');
+                }
+            });
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeAll();
         });
     }
 };

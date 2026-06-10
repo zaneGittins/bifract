@@ -286,7 +286,13 @@ const QueryExecutor = {
             this.chartConfig = data.chart_config || {};
             this.currentCursor = data.next_cursor || null;
 
-            // Debug: (removed debug logging)
+            const outputTypeLabels = {
+                piechart: 'Pie Chart', barchart: 'Bar Chart', graph: 'Network Graph',
+                singleval: 'Single Value', timechart: 'Time Chart', histogram: 'Histogram',
+                heatmap: 'Heat Map', worldmap: 'World Map',
+            };
+            const outputLabel = document.getElementById('outputTypeLabel');
+            if (outputLabel) outputLabel.textContent = outputTypeLabels[this.chartType] || 'Table';
 
             // Reset sort state for new query
             this.sortColumn = null;
@@ -807,6 +813,13 @@ const QueryExecutor = {
         }
 
         // Build table with sortable headers
+        const numericFields = new Set(fields.filter(field =>
+            results.length > 0 && results.every(r => {
+                const v = r[field];
+                return v !== undefined && v !== null && v !== '' && !isNaN(Number(v));
+            })
+        ));
+
         let html = '<table class="results-table"><thead><tr>';
         fields.forEach(field => {
             const displayName = field;
@@ -814,9 +827,10 @@ const QueryExecutor = {
                 ? (this.sortDirection === 'asc' ? ' ▲' : ' ▼')
                 : '';
             const width = this.columnWidths[field] ? `style="width: ${this.columnWidths[field]}px"` : '';
-            html += `<th class="sortable" data-field="${Utils.escapeAttr(field)}" ${width} draggable="true">${Utils.escapeHtml(displayName)}${sortIcon}<div class="column-resizer"></div></th>`;
+            const numClass = numericFields.has(field) ? ' numeric-col' : '';
+            html += `<th class="sortable${numClass}" data-field="${Utils.escapeAttr(field)}" ${width} draggable="true">${Utils.escapeHtml(displayName)}${sortIcon}<div class="column-resizer"></div></th>`;
         });
-        html += '</tr></thead><tbody>';
+        html += '<th class="filler-col"></th></tr></thead><tbody>';
 
         results.forEach((result, index) => {
             // Check if this log has comments
@@ -826,7 +840,7 @@ const QueryExecutor = {
             html += '<tr class="' + rowClass + '" data-index="' + index + '">';
             fields.forEach(field => {
                 let value = result[field];
-                let cellClass = field === 'timestamp' ? 'timestamp-cell' : '';
+                let cellClass = field === 'timestamp' ? 'timestamp-cell' : (numericFields.has(field) ? 'numeric-col' : '');
 
                 if (typeof value === 'object' && value !== null) {
                     const jsonStr = JSON.stringify(value);
@@ -844,7 +858,7 @@ const QueryExecutor = {
 
                 html += `<td class="${cellClass}">${value}</td>`;
             });
-            html += '</tr>';
+            html += '<td class="filler-col"></td></tr>';
         });
 
         html += '</tbody></table>';
@@ -1327,11 +1341,19 @@ const QueryExecutor = {
         }
 
         // Build table with sortable headers
+        const numericFields = new Set(fields.filter(field =>
+            results.length > 0 && results.every(r => {
+                const v = r[field];
+                return v !== undefined && v !== null && v !== '' && !isNaN(Number(v));
+            })
+        ));
+
         let html = '<table class="results-table"><thead><tr>';
         fields.forEach(field => {
-            html += `<th class="sortable" data-field="${Utils.escapeAttr(field)}" draggable="true">${Utils.escapeHtml(field)}<div class="column-resizer"></div></th>`;
+            const numClass = numericFields.has(field) ? ' numeric-col' : '';
+            html += `<th class="sortable${numClass}" data-field="${Utils.escapeAttr(field)}" draggable="true">${Utils.escapeHtml(field)}<div class="column-resizer"></div></th>`;
         });
-        html += '</tr></thead><tbody>';
+        html += '<th class="filler-col"></th></tr></thead><tbody>';
 
         results.forEach((result, index) => {
             const hasComments = window.Comments && Comments.hasComments(result);
@@ -1340,7 +1362,7 @@ const QueryExecutor = {
             html += '<tr class="' + rowClass + '" data-index="' + index + '">';
             fields.forEach(field => {
                 let value = result[field];
-                let cellClass = field === 'timestamp' ? 'timestamp-cell' : '';
+                let cellClass = field === 'timestamp' ? 'timestamp-cell' : (numericFields.has(field) ? 'numeric-col' : '');
 
                 if (typeof value === 'object' && value !== null) {
                     const jsonStr = JSON.stringify(value);
@@ -1358,7 +1380,7 @@ const QueryExecutor = {
 
                 html += `<td class="${cellClass}">${value}</td>`;
             });
-            html += '</tr>';
+            html += '<td class="filler-col"></td></tr>';
         });
 
         html += '</tbody></table>';

@@ -459,6 +459,27 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 		result["recent_queries"] = recentQueries
 	}
 
+	// Log-specific storage stats (metadata-only, no data scan)
+	logStorageSQL := `
+		SELECT
+			sum(rows) as log_rows,
+			sum(bytes_on_disk) as compressed_bytes,
+			sum(data_uncompressed_bytes) as uncompressed_bytes
+		FROM system.parts
+		WHERE database = 'logs' AND table = 'logs' AND active = 1`
+	if logRows, err := h.db.Query(r.Context(), logStorageSQL); err == nil && len(logRows) > 0 {
+		result["log_storage"] = logRows[0]
+	}
+
+	// Disk usage
+	diskSQL := `SELECT
+		round((total_space - free_space) / total_space * 100, 1) as used_pct,
+		formatReadableSize(free_space) as free_space
+		FROM system.disks WHERE name = 'default' LIMIT 1`
+	if diskRows, err := h.db.Query(r.Context(), diskSQL); err == nil && len(diskRows) > 0 {
+		result["disk"] = diskRows[0]
+	}
+
 	// CPU history from collector (works on both Docker and K8s).
 	if cpuHistory := h.collector.CPUHistory(since, bucketSize); len(cpuHistory) > 0 {
 		result["cpu_history"] = cpuHistory
