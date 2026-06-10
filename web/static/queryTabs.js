@@ -9,16 +9,30 @@ const QueryTabs = {
         const addBtn = document.getElementById('queryTabAdd');
         if (addBtn) addBtn.addEventListener('click', () => this.newTab());
 
+        // Backtick chord shortcuts — only fire when query editor is not focused
+        // `t = new tab, `1-`9 = switch to tab
+        let chordPending = false;
+        let chordTimer = null;
+
         document.addEventListener('keydown', (e) => {
-            if (!e.altKey) return;
-            if (e.key === 'n' || e.key === 'N') {
+            const queryFocused = document.activeElement === document.getElementById('queryInput');
+            if (queryFocused) return;
+
+            if (e.key === '`') {
+                e.preventDefault();
+                chordPending = true;
+                clearTimeout(chordTimer);
+                chordTimer = setTimeout(() => { chordPending = false; }, 600);
+                return;
+            }
+
+            if (!chordPending) return;
+            chordPending = false;
+            clearTimeout(chordTimer);
+
+            if (e.key === 't' || e.key === 'T') {
                 e.preventDefault();
                 this.newTab();
-            } else if (e.key === 'w' || e.key === 'W') {
-                if (this.tabs.length > 1) {
-                    e.preventDefault();
-                    this.closeTab(this.activeId);
-                }
             } else if (e.key >= '1' && e.key <= '9') {
                 const idx = parseInt(e.key) - 1;
                 if (this.tabs[idx]) {
@@ -160,13 +174,12 @@ const QueryTabs = {
         }
 
         strip.style.display = 'flex';
-        strip.innerHTML = this.tabs.map((tab, i) => `
+        strip.innerHTML = this.tabs.map((tab) => `
             <div class="query-tab${tab.id === this.activeId ? ' active' : ''}" data-id="${tab.id}">
-                <span class="query-tab-index">${i + 1}</span>
                 <span class="query-tab-label">${this._esc(tab.label)}</span>
                 <button class="query-tab-close" data-id="${tab.id}" title="Close tab">×</button>
             </div>
-        `).join('') + '<button class="query-tab-add" title="New query tab (Alt+N)">+</button>';
+        `).join('') + '<button class="query-tab-add" title="New query tab (\`t)">+</button>';
 
         strip.querySelectorAll('.query-tab').forEach(el => {
             el.addEventListener('click', (e) => {
