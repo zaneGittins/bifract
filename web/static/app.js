@@ -40,6 +40,10 @@ const App = {
             SavedQueries.init();
         }
 
+        if (window.QueryTabs) {
+            QueryTabs.init();
+        }
+
         this.initToolbarMenus();
 
         if (window.Settings) {

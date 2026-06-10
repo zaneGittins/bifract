@@ -703,14 +703,18 @@
                 </div>
 
                 <button id="executeBtn" class="search-btn">
-                    <span class="btn-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span>
                     <span class="btn-text">Run</span>
                     <span class="btn-shortcut">↵</span>
                     <span class="btn-loader" style="display: none;">
                         <span class="spinner"></span>
                     </span>
                 </button>
+
+                <button id="queryTabAdd" class="query-tab-new-btn" title="New query tab (Alt+N)">+</button>
             </div>
+
+            <!-- Query tabs strip (hidden until 2+ tabs open) -->
+            <div id="queryTabsStrip" class="query-tabs-strip" style="display:none;"></div>
 
             <!-- Query input -->
             <div class="query-input-row">
@@ -2934,6 +2938,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/apiKeys.js"></script>
     <script src="/static/ingestTokens.js"></script>
     <script src="/static/instructionLibraries.js"></script>
+    <script src="/static/queryTabs.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

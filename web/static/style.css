@@ -1037,6 +1037,129 @@ body {
     color: var(--text-primary);
 }
 
+/* Query tabs strip */
+.query-tab-new-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: var(--transition);
+    margin-left: -0.1rem;
+}
+
+.query-tab-new-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+}
+
+.query-tabs-strip {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    height: 30px;
+    padding: 0 0.25rem;
+    border-bottom: 1px solid var(--border-color);
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.query-tabs-strip::-webkit-scrollbar {
+    display: none;
+}
+
+.query-tab {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0 0.625rem;
+    border-radius: 4px 4px 0 0;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.15s ease, border-color 0.15s ease;
+    user-select: none;
+    position: relative;
+    max-width: 200px;
+}
+
+.query-tab:hover {
+    color: var(--text-secondary);
+}
+
+.query-tab.active {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent-primary);
+}
+
+.query-tab-index {
+    font-size: 0.65rem;
+    opacity: 0.45;
+    flex-shrink: 0;
+}
+
+.query-tab-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 140px;
+}
+
+.query-tab-close {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 0;
+    transition: var(--transition);
+}
+
+.query-tab:hover .query-tab-close {
+    display: flex;
+}
+
+.query-tab-close:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.query-tab-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 0.5rem;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1rem;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: var(--transition);
+    align-self: center;
+}
+
+.query-tab-add:hover {
+    color: var(--text-primary);
+}
+
 .query-input-row {
     display: flex;
     align-items: center;
@@ -1868,6 +1991,7 @@ body.search-active {
     max-width: 500px;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .timestamp-cell {
