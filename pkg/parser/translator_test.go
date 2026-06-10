@@ -2245,7 +2245,7 @@ func TestCidrFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "isIPAddressInRange(fields.`src_ip`, '10.0.0.0/8')") {
+		if !strings.Contains(result.SQL, "isIPAddressInRange(toString(fields.`src_ip`), '10.0.0.0/8')") {
 			t.Errorf("Expected isIPAddressInRange in SQL, got: %s", result.SQL)
 		}
 	})

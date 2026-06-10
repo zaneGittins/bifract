@@ -216,6 +216,7 @@ const QueryExecutor = {
 
         // Hide previous results and show loading
         if (elements.errorDiv) elements.errorDiv.style.display = 'none';
+        this.clearQueryError();
         const profilePanel = document.getElementById('profilePanel');
         if (profilePanel) { profilePanel.style.display = 'none'; profilePanel.innerHTML = ''; }
 
@@ -272,7 +273,7 @@ const QueryExecutor = {
             }
 
             if (!data.success) {
-                this.showError(data.error || 'Query failed');
+                this.showError(data.error || 'Query failed', data.error_type);
                 if (elements.resultsTable) elements.resultsTable.innerHTML = '';
                 return;
             }
@@ -1088,9 +1089,14 @@ const QueryExecutor = {
         }
     },
 
-    showError(message) {
-        // Use toast notifications if available, fallback to error div
-        if (window.Toast) {
+    showError(message, errorType) {
+        // Parse/translate errors point at a position in the BQL the user just
+        // typed, so render them persistently under the editor rather than in an
+        // auto-dismissing toast they'd lose while fixing the query. Execution and
+        // timeout errors are not tied to the cursor, so a toast is fine.
+        if (errorType === 'parse' || errorType === 'translate') {
+            this.showQueryError(message);
+        } else if (window.Toast) {
             Toast.error('Query Error', message);
         } else {
             const errorDiv = document.getElementById('error');
@@ -1104,6 +1110,36 @@ const QueryExecutor = {
         const exportBtn = document.getElementById('exportCsvBtn');
         if (exportBtn) {
             exportBtn.style.display = 'none';
+        }
+    },
+
+    showQueryError(message) {
+        const el = document.getElementById('queryError');
+        if (!el) {
+            // Fall back to a toast if the inline element is missing.
+            if (window.Toast) Toast.error('Query Error', message);
+            return;
+        }
+        el.innerHTML = '';
+        const text = document.createElement('span');
+        text.className = 'query-error-text';
+        text.textContent = message;
+        const dismiss = document.createElement('button');
+        dismiss.className = 'query-error-dismiss';
+        dismiss.type = 'button';
+        dismiss.setAttribute('aria-label', 'Dismiss error');
+        dismiss.textContent = '×';
+        dismiss.onclick = () => this.clearQueryError();
+        el.appendChild(text);
+        el.appendChild(dismiss);
+        el.style.display = 'flex';
+    },
+
+    clearQueryError() {
+        const el = document.getElementById('queryError');
+        if (el) {
+            el.style.display = 'none';
+            el.innerHTML = '';
         }
     },
 

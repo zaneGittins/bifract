@@ -70,7 +70,13 @@ func (h *cidrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		field := cmd.Arguments[0]
 		cidrRange := strings.Trim(cmd.Arguments[1], "\"'")
 		fieldRef := resolveFieldRef(field, ctx.Registry)
-		cidrExpr := fmt.Sprintf("isIPAddressInRange(%s, '%s')", fieldRef, escapeString(cidrRange))
+		// isIPAddressInRange strictly requires a String first argument. Type-hinted
+		// JSON fields resolve to a bare sub-column reference (no ::String) so skip
+		// indexes can fire, but a sub-column whose stored type is Dynamic (e.g. data
+		// ingested before the typed-path mutation completed) is rejected by the
+		// function. Force String here; isIPAddressInRange is a range function and
+		// never uses the bloom_filter skip index, so the cast costs nothing.
+		cidrExpr := fmt.Sprintf("isIPAddressInRange(toString(%s), '%s')", fieldRef, escapeString(cidrRange))
 		if cmd.Negate {
 			ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, "NOT "+cidrExpr)
 		} else {

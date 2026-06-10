@@ -1432,6 +1432,46 @@ body.search-active {
     display: none;
 }
 
+/* Inline query error: shown directly under the editor for parse/translate
+   errors the user can fix in their own BQL. Persistent (no auto-dismiss). */
+.query-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    border-left: 3px solid var(--error);
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+    margin-top: 0.5rem;
+    color: var(--error);
+    font-size: 0.8125rem;
+    font-family: var(--font-mono);
+    line-height: 1.4;
+}
+
+.query-error .query-error-text {
+    flex: 1;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.query-error .query-error-dismiss {
+    background: none;
+    border: none;
+    color: var(--error);
+    cursor: pointer;
+    opacity: 0.55;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0 0.25rem;
+    flex-shrink: 0;
+}
+
+.query-error .query-error-dismiss:hover {
+    opacity: 1;
+}
+
 /* Sigma Detection Info */
 .sigma-info {
     padding: 8px 12px;

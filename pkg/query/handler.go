@@ -104,6 +104,8 @@ type QueryResponse struct {
 	Query        string                   `json:"query,omitempty"`
 	SQL          string                   `json:"sql,omitempty"`
 	Error        string                   `json:"error,omitempty"`
+	ErrorType    string                   `json:"error_type,omitempty"` // "parse", "translate", "execution", "timeout" - lets the UI route display
+
 	ExecutionMs  int64                    `json:"execution_ms,omitempty"`
 	FieldOrder   []string                 `json:"field_order,omitempty"`
 	IsAggregated bool                     `json:"is_aggregated,omitempty"`
@@ -305,10 +307,14 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	pipeline, err := parser.ParseQuery(req.Query)
 	if err != nil {
 		log.Printf("[QueryHandler] Failed to parse query: %v", err)
+		// Parse errors describe the user's own BQL grammar (unexpected token,
+		// expected token, position). They contain no backend or schema detail,
+		// so surfacing them verbatim is safe and actionable.
 		respondJSON(w, http.StatusBadRequest, QueryResponse{
-			Success: false,
-			Error:   "Failed to parse query: check syntax and try again",
-			Query:   req.Query,
+			Success:   false,
+			Error:     "Parse error: " + err.Error(),
+			ErrorType: "parse",
+			Query:     req.Query,
 		})
 		return
 	}
@@ -448,10 +454,14 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	translationResult, err := parser.TranslateToSQLWithOrder(pipeline, opts)
 	if err != nil {
 		log.Printf("[QueryHandler] Failed to translate query: %v", err)
+		// Translation errors describe BQL semantics (unsupported command,
+		// invalid field name, incompatible function combinations) and only ever
+		// echo the user's own identifiers. No table names or generated SQL leak.
 		respondJSON(w, http.StatusBadRequest, QueryResponse{
-			Success: false,
-			Error:   "Failed to translate query: check syntax and try again",
-			Query:   req.Query,
+			Success:   false,
+			Error:     "Query error: " + err.Error(),
+			ErrorType: "translate",
+			Query:     req.Query,
 		})
 		return
 	}
@@ -592,16 +602,28 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusRequestTimeout, QueryResponse{
 				Success:     false,
 				Error:       "Query timeout: Consider adding more specific filters or reducing time range for raw log searches",
+				ErrorType:   "timeout",
 				Query:       req.Query,
 				ExecutionMs: executionTime,
 			})
 			return
 		}
 
+		// Never surface the raw ClickHouse exception: it can contain column
+		// names, table names, and sampled data values. Map known-safe error
+		// codes to friendly messages; otherwise stay generic and attach only the
+		// public numeric code for support correlation. The full detail is logged.
 		log.Printf("[QueryHandler] Failed to execute query: %v", err)
+		errMsg := "Query execution failed"
+		if friendly, ok := clickhouseUserMessage(err); ok {
+			errMsg = friendly
+		} else if code := clickhouseErrorCode(err); code != 0 {
+			errMsg = fmt.Sprintf("Query execution failed (ClickHouse error %d)", code)
+		}
 		respondJSON(w, http.StatusInternalServerError, QueryResponse{
 			Success:     false,
-			Error:       "Query execution failed",
+			Error:       errMsg,
+			ErrorType:   "execution",
 			Query:       req.Query,
 			ExecutionMs: executionTime,
 		})
