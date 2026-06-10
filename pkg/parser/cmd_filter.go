@@ -70,13 +70,19 @@ func (h *cidrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		field := cmd.Arguments[0]
 		cidrRange := strings.Trim(cmd.Arguments[1], "\"'")
 		fieldRef := resolveFieldRef(field, ctx.Registry)
-		// isIPAddressInRange strictly requires a String first argument. Type-hinted
-		// JSON fields resolve to a bare sub-column reference (no ::String) so skip
-		// indexes can fire, but a sub-column whose stored type is Dynamic (e.g. data
-		// ingested before the typed-path mutation completed) is rejected by the
-		// function. Force String here; isIPAddressInRange is a range function and
-		// never uses the bloom_filter skip index, so the cast costs nothing.
-		cidrExpr := fmt.Sprintf("isIPAddressInRange(toString(%s), '%s')", fieldRef, escapeString(cidrRange))
+		// isIPAddressInRange throws CANNOT_PARSE_TEXT on any value that is not a
+		// valid IP literal. Type-hinted JSON fields default missing values to ''
+		// (dynamic paths previously yielded NULL, which the function tolerated),
+		// and some sources store non-IP values, so a single bad row aborts the
+		// whole query. Guard both ends without relying on short-circuit evaluation:
+		//   - feed the function a real address only (sentinel otherwise) so it can
+		//     never be handed an unparseable value, and
+		//   - AND the validity check so non-IP rows are always "not in range",
+		//     correct for every CIDR including 0.0.0.0/0.
+		// isIPv4String/isIPv6String accept any string without throwing.
+		valid := fmt.Sprintf("(isIPv4String(%[1]s) OR isIPv6String(%[1]s))", fieldRef)
+		safeAddr := fmt.Sprintf("if(%s, %s, '0.0.0.0')", valid, fieldRef)
+		cidrExpr := fmt.Sprintf("(isIPAddressInRange(%s, '%s') AND %s)", safeAddr, escapeString(cidrRange), valid)
 		if cmd.Negate {
 			ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, "NOT "+cidrExpr)
 		} else {

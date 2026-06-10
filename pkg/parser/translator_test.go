@@ -2245,7 +2245,7 @@ func TestCidrFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "isIPAddressInRange(toString(fields.`src_ip`), '10.0.0.0/8')") {
+		if !strings.Contains(result.SQL, "(isIPAddressInRange(if((isIPv4String(fields.`src_ip`) OR isIPv6String(fields.`src_ip`)), fields.`src_ip`, '0.0.0.0'), '10.0.0.0/8') AND (isIPv4String(fields.`src_ip`) OR isIPv6String(fields.`src_ip`)))") {
 			t.Errorf("Expected isIPAddressInRange in SQL, got: %s", result.SQL)
 		}
 	})
@@ -2259,8 +2259,8 @@ func TestCidrFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "NOT isIPAddressInRange(") {
-			t.Errorf("Expected NOT isIPAddressInRange in SQL, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "NOT (isIPAddressInRange(if((isIPv4String(fields.`src_ip`) OR isIPv6String(fields.`src_ip`)), fields.`src_ip`, '0.0.0.0'), '10.0.0.0/8') AND (isIPv4String(fields.`src_ip`) OR isIPv6String(fields.`src_ip`)))") {
+			t.Errorf("Expected guarded NOT isIPAddressInRange in SQL, got: %s", result.SQL)
 		}
 	})
 }
