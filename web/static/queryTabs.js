@@ -33,6 +33,9 @@ const QueryTabs = {
             if (e.key === 't' || e.key === 'T') {
                 e.preventDefault();
                 this.newTab();
+            } else if (e.key === 'w' || e.key === 'W') {
+                e.preventDefault();
+                if (this.tabs.length > 1) this.closeTab(this.activeId);
             } else if (e.key >= '1' && e.key <= '9') {
                 const idx = parseInt(e.key) - 1;
                 if (this.tabs[idx]) {
@@ -74,7 +77,6 @@ const QueryTabs = {
         this._applyState(tab);
         this.activeId = tab.id;
         this._renderStrip();
-        document.getElementById('queryInput')?.focus();
     },
 
     closeTab(id) {
