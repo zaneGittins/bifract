@@ -1644,3 +1644,14 @@ CREATE INDEX IF NOT EXISTS idx_dictionary_actions_fractal_id ON dictionary_actio
 CREATE INDEX IF NOT EXISTS idx_dictionary_actions_prism_id   ON dictionary_actions(prism_id)   WHERE prism_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_email_actions_fractal_id      ON email_actions(fractal_id)      WHERE fractal_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_email_actions_prism_id        ON email_actions(prism_id)        WHERE prism_id IS NOT NULL;
+
+-- ============================
+-- Schema Fields (custom ClickHouse type hints / skip indexes)
+-- ============================
+CREATE TABLE IF NOT EXISTS clickhouse_schema_fields (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    field_name  VARCHAR(255) NOT NULL UNIQUE,
+    index_type  VARCHAR(32)  NOT NULL DEFAULT 'bloom_filter',
+    created_by  VARCHAR(255) NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);

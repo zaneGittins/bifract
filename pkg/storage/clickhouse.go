@@ -245,6 +245,9 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 
 // splitClickHouseSQL splits a SQL string into individual statements, skipping
 // USE and CREATE DATABASE statements since the DB is managed by the container env.
+// Leading comment lines are stripped from each segment so that Initialize()'s
+// prefix check (HasPrefix "ALTER"/"CREATE") works even when a comment block
+// precedes a DDL keyword in the same semicolon-delimited segment.
 func splitClickHouseSQL(sql string) []string {
 	parts := strings.Split(sql, ";")
 	var stmts []string
@@ -253,22 +256,25 @@ func splitClickHouseSQL(sql string) []string {
 		if stmt == "" {
 			continue
 		}
+		// Strip leading comment lines to expose the first SQL keyword.
+		lines := strings.Split(stmt, "\n")
+		firstSQL := -1
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" && !strings.HasPrefix(trimmed, "--") {
+				firstSQL = i
+				break
+			}
+		}
+		if firstSQL == -1 {
+			continue // all comments
+		}
+		stmt = strings.TrimSpace(strings.Join(lines[firstSQL:], "\n"))
 		upper := strings.ToUpper(stmt)
 		if strings.HasPrefix(upper, "USE ") || strings.HasPrefix(upper, "CREATE DATABASE") {
 			continue
 		}
-		// Skip blocks that are only comments
-		allComment := true
-		for _, line := range strings.Split(stmt, "\n") {
-			trimmed := strings.TrimSpace(line)
-			if trimmed != "" && !strings.HasPrefix(trimmed, "--") {
-				allComment = false
-				break
-			}
-		}
-		if !allComment {
-			stmts = append(stmts, stmt)
-		}
+		stmts = append(stmts, stmt)
 	}
 	return stmts
 }
