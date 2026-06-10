@@ -810,7 +810,15 @@ const QueryExecutor = {
                 }
             });
             fields = orderedFields;
+        } else if (!this.isAggregated) {
+            // Default source-event column order: timestamp, log_id, raw_log, then rest
+            const priority = ['timestamp', 'log_id', 'raw_log'];
+            const prioritized = priority.filter(f => fields.includes(f));
+            const rest = fields.filter(f => !priority.includes(f));
+            fields = [...prioritized, ...rest];
         }
+
+        const hasRawLog = fields.includes('raw_log');
 
         // Build table with sortable headers
         const numericFields = new Set(fields.filter(field =>
@@ -827,10 +835,10 @@ const QueryExecutor = {
                 ? (this.sortDirection === 'asc' ? ' ▲' : ' ▼')
                 : '';
             const width = this.columnWidths[field] ? `style="width: ${this.columnWidths[field]}px"` : '';
-            const numClass = numericFields.has(field) ? ' numeric-col' : '';
+            const numClass = numericFields.has(field) ? ' numeric-col' : (field === 'raw_log' ? ' raw-log-col' : '');
             html += `<th class="sortable${numClass}" data-field="${Utils.escapeAttr(field)}" ${width} draggable="true">${Utils.escapeHtml(displayName)}${sortIcon}<div class="column-resizer"></div></th>`;
         });
-        html += '<th class="filler-col"></th></tr></thead><tbody>';
+        html += (hasRawLog ? '' : '<th class="filler-col"></th>') + '</tr></thead><tbody>';
 
         results.forEach((result, index) => {
             // Check if this log has comments
@@ -840,7 +848,9 @@ const QueryExecutor = {
             html += '<tr class="' + rowClass + '" data-index="' + index + '">';
             fields.forEach(field => {
                 let value = result[field];
-                let cellClass = field === 'timestamp' ? 'timestamp-cell' : (numericFields.has(field) ? 'numeric-col' : '');
+                let cellClass = field === 'timestamp' ? 'timestamp-cell'
+                    : field === 'raw_log' ? 'raw-log-col'
+                    : (numericFields.has(field) ? 'numeric-col' : '');
 
                 if (typeof value === 'object' && value !== null) {
                     const jsonStr = JSON.stringify(value);
@@ -858,7 +868,7 @@ const QueryExecutor = {
 
                 html += `<td class="${cellClass}">${value}</td>`;
             });
-            html += '<td class="filler-col"></td></tr>';
+            html += (hasRawLog ? '' : '<td class="filler-col"></td>') + '</tr>';
         });
 
         html += '</tbody></table>';

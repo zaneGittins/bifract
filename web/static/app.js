@@ -1155,11 +1155,12 @@ const App = {
                 }
             });
 
-            // Close after an item is chosen
+            // Close after an item is chosen — capture phase so it fires before
+            // stopPropagation in child button handlers (e.g. recentQueriesBtn)
             menu.addEventListener('click', () => {
                 menu.style.display = 'none';
                 btn.classList.remove('active');
-            });
+            }, true);
         });
 
         document.addEventListener('click', (e) => {

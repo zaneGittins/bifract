@@ -1885,6 +1885,11 @@ body.search-active {
     padding: 0;
 }
 
+.results-table .raw-log-col {
+    width: 100%;
+    max-width: none;
+}
+
 .results-table th.numeric-col,
 .results-table td.numeric-col {
     text-align: right;
@@ -2601,18 +2606,24 @@ body.search-active {
 }
 
 .pagination-bar {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    justify-content: space-between;
     padding: 0.5rem 0.75rem;
     border-top: 1px solid var(--border-color);
     font-size: 0.75rem;
 }
 
 .page-numbers {
+    grid-column: 2;
     display: flex;
     align-items: center;
     gap: 0.25rem;
+}
+
+.page-size-options {
+    grid-column: 3;
+    justify-self: end;
 }
 
 .page-num-btn {
