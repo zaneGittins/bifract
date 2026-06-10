@@ -6,7 +6,20 @@ const SchemaFields = {
         document.getElementById('schemaFieldAddBtn')?.addEventListener('click', () => this.showAddForm());
         document.getElementById('schemaFieldCancelBtn')?.addEventListener('click', () => this.hideAddForm());
         document.getElementById('schemaFieldSaveBtn')?.addEventListener('click', () => this.saveField());
-        document.getElementById('schemaFieldResetBtn')?.addEventListener('click', () => this.confirmReset());
+        document.getElementById('schemaFieldResetBtn')?.addEventListener('click', () => this.openResetModal());
+
+        // Submit on Enter in the field name input
+        document.getElementById('schemaFieldName')?.addEventListener('keydown', e => {
+            if (e.key === 'Enter') this.saveField();
+        });
+
+        // Reset modal wiring
+        document.getElementById('schemaResetCancelBtn')?.addEventListener('click', () => this.closeResetModal());
+        document.getElementById('schemaResetConfirmInput')?.addEventListener('input', e => this._onResetPhraseInput(e));
+        document.getElementById('schemaResetDoBtn')?.addEventListener('click', () => this.executeReset());
+        document.getElementById('schemaResetModal')?.addEventListener('click', e => {
+            if (e.target === document.getElementById('schemaResetModal')) this.closeResetModal();
+        });
     },
 
     show() {
@@ -30,36 +43,52 @@ const SchemaFields = {
         const container = document.getElementById('schemaFieldsListContainer');
         if (!container) return;
 
-        const indexLabel = t => t === 'set' ? 'set(256)' : 'bloom_filter(0.001)';
+        let html = '';
 
-        let html = '<h4 style="margin:0 0 8px 0;color:var(--text-muted)">Project Defaults</h4>';
-        html += '<table class="schema-fields-table"><thead><tr><th>Field Name</th><th>Index Type</th><th></th></tr></thead><tbody>';
-        for (const f of this.defaults) {
-            html += `<tr>
-                <td><code>${this.escHtml(f.field_name)}</code></td>
-                <td><span class="index-type-badge">${indexLabel(f.index_type)}</span></td>
-                <td><span class="badge-readonly">default</span></td>
-            </tr>`;
+        // Project Defaults
+        html += `<div class="schema-section-heading">Project Defaults <span class="schema-section-count">${this.defaults.length}</span></div>`;
+        if (this.defaults.length > 0) {
+            html += '<table class="schema-fields-table"><thead><tr><th>Field Name</th><th>Index Type</th><th></th></tr></thead><tbody>';
+            for (const f of this.defaults) {
+                html += `<tr>
+                    <td>${this.escHtml(f.field_name)}</td>
+                    <td>${this._indexBadge(f.index_type)}</td>
+                    <td><span class="badge-default">built-in</span></td>
+                </tr>`;
+            }
+            html += '</tbody></table>';
         }
-        html += '</tbody></table>';
 
-        html += '<h4 style="margin:16px 0 8px 0;color:var(--text-muted)">Custom Fields</h4>';
+        html += '<div class="schema-section-divider"></div>';
+
+        // Custom Fields
+        html += `<div class="schema-section-heading">Custom Fields <span class="schema-section-count">${this.custom.length}</span></div>`;
         if (this.custom.length === 0) {
-            html += '<p class="help-text">No custom fields defined.</p>';
+            html += `<div class="schema-empty-state">
+                <strong>No custom fields yet</strong>
+                Add a field to enable index acceleration for log attributes specific to your environment.
+            </div>`;
         } else {
             html += '<table class="schema-fields-table"><thead><tr><th>Field Name</th><th>Index Type</th><th>Added By</th><th></th></tr></thead><tbody>';
             for (const f of this.custom) {
                 html += `<tr>
-                    <td><code>${this.escHtml(f.field_name)}</code></td>
-                    <td><span class="index-type-badge">${indexLabel(f.index_type)}</span></td>
-                    <td>${this.escHtml(f.created_by)}</td>
-                    <td><button class="btn-danger btn-sm" onclick="SchemaFields.deleteField('${this.escHtml(f.field_name)}')">Remove</button></td>
+                    <td>${this.escHtml(f.field_name)}</td>
+                    <td>${this._indexBadge(f.index_type)}</td>
+                    <td style="color:var(--text-muted);font-size:0.8125rem">${this.escHtml(f.created_by || '')}</td>
+                    <td style="text-align:right"><button class="btn-danger btn-sm" onclick="SchemaFields.deleteField('${this.escHtml(f.field_name)}')">Remove</button></td>
                 </tr>`;
             }
             html += '</tbody></table>';
         }
 
         container.innerHTML = html;
+    },
+
+    _indexBadge(type) {
+        if (type === 'set') {
+            return '<span class="index-badge index-badge-set">Set</span>';
+        }
+        return '<span class="index-badge index-badge-bloom">Bloom Filter</span>';
     },
 
     showAddForm() {
@@ -81,6 +110,7 @@ const SchemaFields = {
         const indexType = document.getElementById('schemaFieldIndexType')?.value;
         if (!name) {
             if (window.Toast) Toast.error('Validation Error', 'Field name is required');
+            document.getElementById('schemaFieldName')?.focus();
             return;
         }
         try {
@@ -98,42 +128,58 @@ const SchemaFields = {
     },
 
     async deleteField(name) {
-        if (!confirm(`Remove custom field "${name}"?\n\nThe type hint and index remain in ClickHouse until the next schema reset.`)) return;
+        if (!confirm(`Remove custom field "${name}"?\n\nThe ClickHouse type hint and index remain until the next schema reset.`)) return;
         try {
             await HttpUtils.safeFetch(`/api/v1/admin/schema-fields/${encodeURIComponent(name)}`, { method: 'DELETE' });
-            if (window.Toast) Toast.success('Field removed', `"${name}" removed. Queries on this field will no longer use its index.`);
+            if (window.Toast) Toast.success('Field removed', `"${name}" removed. Queries will no longer use its index.`);
             this.load();
         } catch (err) {
             if (window.Toast) Toast.error('Failed to remove field', err.message);
         }
     },
 
-    confirmReset() {
+    openResetModal() {
+        const modal = document.getElementById('schemaResetModal');
+        const input = document.getElementById('schemaResetConfirmInput');
+        const btn = document.getElementById('schemaResetDoBtn');
+        if (input) { input.value = ''; input.classList.remove('phrase-match'); }
+        if (btn) btn.disabled = true;
+        if (modal) modal.style.display = 'flex';
+        setTimeout(() => input?.focus(), 50);
+    },
+
+    closeResetModal() {
+        const modal = document.getElementById('schemaResetModal');
+        if (modal) modal.style.display = 'none';
+    },
+
+    _onResetPhraseInput(e) {
         const phrase = 'DELETE ALL LOG DATA';
-        const input = prompt(`This will permanently delete ALL ingested log data and rebuild the ClickHouse schema.\n\nFractal configs, normalizers, and all other settings are not affected.\n\nType "${phrase}" to confirm:`);
-        if (input === null) return;
-        if (input !== phrase) {
-            if (window.Toast) Toast.error('Reset cancelled', 'Confirmation phrase did not match');
-            return;
-        }
-        this.executeReset();
+        const match = e.target.value === phrase;
+        const btn = document.getElementById('schemaResetDoBtn');
+        e.target.classList.toggle('phrase-match', match);
+        if (btn) btn.disabled = !match;
     },
 
     async executeReset() {
-        const btn = document.getElementById('schemaFieldResetBtn');
+        const btn = document.getElementById('schemaResetDoBtn');
+        const cancelBtn = document.getElementById('schemaResetCancelBtn');
         if (btn) { btn.disabled = true; btn.textContent = 'Resetting...'; }
+        if (cancelBtn) cancelBtn.disabled = true;
         try {
             await HttpUtils.safeFetch('/api/v1/admin/schema-fields/reset', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ confirm: 'DELETE ALL LOG DATA' }),
             });
-            if (window.Toast) Toast.success('Schema reset complete', 'All log data has been deleted and schema rebuilt');
+            this.closeResetModal();
+            if (window.Toast) Toast.success('Schema reset complete', 'All log data has been deleted and the schema rebuilt');
             this.load();
         } catch (err) {
             if (window.Toast) Toast.error('Reset failed', err.message);
         } finally {
-            if (btn) { btn.disabled = false; btn.textContent = 'Reset Schema & Delete All Logs'; }
+            if (btn) { btn.disabled = false; btn.textContent = 'Reset and Delete All Logs'; }
+            if (cancelBtn) cancelBtn.disabled = false;
         }
     },
 

@@ -1,0 +1,231 @@
+/* ========================================================
+   Schema Fields
+   ======================================================== */
+
+/* Table */
+.schema-fields-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+}
+
+.schema-fields-table thead th {
+    text-align: left;
+    padding: 6px 12px;
+    color: var(--text-muted);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+}
+
+.schema-fields-table tbody tr {
+    border-bottom: 1px solid var(--border-color);
+    transition: background 0.1s;
+}
+
+.schema-fields-table tbody tr:last-child {
+    border-bottom: none;
+}
+
+.schema-fields-table tbody tr:hover {
+    background: var(--bg-hover, rgba(255,255,255,0.04));
+}
+
+.schema-fields-table td {
+    padding: 9px 12px;
+    vertical-align: middle;
+}
+
+.schema-fields-table td:first-child {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+}
+
+/* Index type badges */
+.index-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+.index-badge-bloom {
+    background: rgba(156, 106, 222, 0.15);
+    color: #c4a0f5;
+    border: 1px solid rgba(156, 106, 222, 0.3);
+}
+
+.index-badge-set {
+    background: rgba(74, 222, 128, 0.12);
+    color: #5ed994;
+    border: 1px solid rgba(74, 222, 128, 0.22);
+}
+
+[data-theme="light"] .index-badge-bloom {
+    background: rgba(99, 60, 180, 0.1);
+    color: #5b3fad;
+    border-color: rgba(99, 60, 180, 0.25);
+}
+
+[data-theme="light"] .index-badge-set {
+    background: rgba(22, 163, 74, 0.1);
+    color: #15803d;
+    border-color: rgba(22, 163, 74, 0.22);
+}
+
+/* Default / readonly badge */
+.badge-default {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+}
+
+/* Section sub-headings */
+.schema-section-heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 12px 0;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-muted);
+}
+
+.schema-section-heading + .schema-fields-table {
+    margin-bottom: 0;
+}
+
+.schema-section-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 9px;
+    background: var(--bg-tertiary, rgba(255,255,255,0.08));
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+/* Divider between sections */
+.schema-section-divider {
+    height: 1px;
+    background: var(--border-color);
+    margin: 24px 0;
+}
+
+/* Empty state for custom fields */
+.schema-empty-state {
+    padding: 28px 16px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    border: 1px dashed var(--border-color);
+}
+
+.schema-empty-state strong {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--text-primary);
+    font-size: 0.9375rem;
+}
+
+/* Inline add form */
+#schemaFieldAddForm {
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    padding: 14px 16px;
+    margin-bottom: 20px;
+}
+
+#schemaFieldAddForm .form-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+}
+
+#schemaFieldAddForm .form-group {
+    margin: 0;
+}
+
+#schemaFieldAddForm .form-group.flex-grow {
+    flex: 1;
+    min-width: 160px;
+}
+
+#schemaFieldAddForm .form-group.index-type-group {
+    min-width: 210px;
+}
+
+#schemaFieldAddForm .form-actions {
+    display: flex;
+    gap: 6px;
+    padding-bottom: 1px;
+}
+
+/* Field name validation hint */
+.schema-field-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 4px;
+    line-height: 1.4;
+    display: none;
+}
+
+#schemaFieldName:focus + .schema-field-hint {
+    display: block;
+}
+
+/* Danger zone */
+.schema-danger-zone {
+    margin-top: 32px;
+    padding: 16px 20px;
+    background: rgba(248, 113, 113, 0.05);
+    border: 1px solid rgba(248, 113, 113, 0.2);
+    border-radius: 6px;
+}
+
+.schema-danger-zone h4 {
+    margin: 0 0 8px 0;
+    color: var(--error, #f87171);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    font-weight: 700;
+}
+
+.schema-danger-zone p {
+    margin: 0 0 14px 0;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+}
+
+/* Reset modal confirm input */
+#schemaResetConfirmInput.phrase-match {
+    border-color: var(--error, #f87171);
+    box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.15);
+}

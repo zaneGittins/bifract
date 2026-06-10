@@ -17,6 +17,7 @@
     <link rel="stylesheet" href="/static/chat.css">
     <link rel="stylesheet" href="/static/ingestTokens.css">
     <link rel="stylesheet" href="/static/instructionLibraries.css">
+    <link rel="stylesheet" href="/static/schemaFields.css">
     <link rel="stylesheet" href="/static/fonts/fonts.css">
 </head>
 <body>
@@ -410,20 +411,21 @@
                         <p class="help-text">Project default fields are built into every deployment and are read-only. Custom fields add type hints and skip indexes to ClickHouse so queries on those fields use index acceleration.</p>
 
                         <!-- Inline add form -->
-                        <div id="schemaFieldAddForm" style="display:none; margin-bottom:16px; padding:12px; background:var(--bg-secondary); border-radius:6px;">
-                            <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
-                                <div class="form-group" style="margin:0; flex:1; min-width:160px;">
+                        <div id="schemaFieldAddForm" style="display:none;">
+                            <div class="form-row">
+                                <div class="form-group flex-grow">
                                     <label for="schemaFieldName">Field Name</label>
-                                    <input type="text" id="schemaFieldName" placeholder="e.g. tenant_id">
+                                    <input type="text" id="schemaFieldName" placeholder="e.g. tenant_id" autocomplete="off" spellcheck="false">
+                                    <div class="schema-field-hint">Use letters, digits, and underscores. Must start with a letter or underscore.</div>
                                 </div>
-                                <div class="form-group" style="margin:0; min-width:160px;">
+                                <div class="form-group index-type-group">
                                     <label for="schemaFieldIndexType">Index Type</label>
                                     <select id="schemaFieldIndexType">
-                                        <option value="bloom_filter">bloom_filter — high-cardinality strings (IPs, hashes)</option>
-                                        <option value="set">set — low-cardinality strings (status, type, role)</option>
+                                        <option value="bloom_filter">Bloom Filter: high-cardinality (IPs, hashes, paths)</option>
+                                        <option value="set">Set: low-cardinality (status codes, event types)</option>
                                     </select>
                                 </div>
-                                <div style="display:flex; gap:6px;">
+                                <div class="form-actions">
                                     <button id="schemaFieldSaveBtn" class="btn-primary btn-sm">Add Field</button>
                                     <button id="schemaFieldCancelBtn" class="btn-secondary btn-sm">Cancel</button>
                                 </div>
@@ -435,12 +437,33 @@
                         </div>
 
                         <!-- Danger zone -->
-                        <div style="margin-top:32px; padding:16px; border:1px solid var(--danger, #e53e3e); border-radius:6px;">
-                            <h4 style="margin:0 0 6px 0; color:var(--danger, #e53e3e)">Schema Reset</h4>
-                            <p class="help-text" style="margin:0 0 12px 0">Deletes all ingested log data and rebuilds the ClickHouse schema from the current field configuration. Fractal configs, normalizers, and all other settings are not affected. Use this after adding or removing custom fields on large datasets where background mutations are impractical.</p>
-                            <button id="schemaFieldResetBtn" class="btn-danger btn-sm">Reset Schema &amp; Delete All Logs</button>
+                        <div class="schema-danger-zone">
+                            <h4>Schema Reset</h4>
+                            <p>Deletes all ingested log data and rebuilds the ClickHouse schema from the current field configuration. Fractal configs, normalizers, and all other settings are not affected. Use this after adding or removing custom fields on large datasets where background mutations are impractical.</p>
+                            <button id="schemaFieldResetBtn" class="btn-danger btn-sm">Reset Schema and Delete All Logs</button>
                         </div>
                     </section>
+                </div>
+            </div>
+
+            <!-- Schema Reset Confirmation Modal -->
+            <div id="schemaResetModal" class="modal" style="display:none;">
+                <div class="modal-content" style="max-width:480px;">
+                    <div class="modal-header">
+                        <h3 style="margin:0;color:var(--error,#f87171)">Reset Schema and Delete All Logs</h3>
+                    </div>
+                    <div class="modal-body">
+                        <p style="margin:0 0 10px 0">This will permanently delete <strong>all ingested log data</strong> and rebuild the ClickHouse schema from the current field configuration.</p>
+                        <p style="margin:0 0 16px 0;font-size:0.875rem;color:var(--text-muted)">Fractal configs, normalizers, and all other settings are not affected.</p>
+                        <div class="form-group" style="margin:0">
+                            <label for="schemaResetConfirmInput">Type <strong>DELETE ALL LOG DATA</strong> to confirm</label>
+                            <input type="text" id="schemaResetConfirmInput" placeholder="DELETE ALL LOG DATA" autocomplete="off" spellcheck="false">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button id="schemaResetCancelBtn" class="btn-secondary">Cancel</button>
+                        <button id="schemaResetDoBtn" class="btn-danger" disabled>Reset and Delete All Logs</button>
+                    </div>
                 </div>
             </div>
 
