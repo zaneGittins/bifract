@@ -559,6 +559,48 @@ func escapeString(s string) string {
 	return s
 }
 
+// convertUnnamedGroupsToNonCapturing rewrites unnamed capturing groups (...)
+// to non-capturing (?:...) so that extractAllGroups indices align with named
+// group positions only. Escaped parens and named/non-capturing groups are left
+// untouched.
+func convertUnnamedGroupsToNonCapturing(pattern string) string {
+	var b strings.Builder
+	b.Grow(len(pattern) + 8)
+	inClass := false
+	for i := 0; i < len(pattern); i++ {
+		ch := pattern[i]
+		if ch == '\\' {
+			b.WriteByte(ch)
+			i++
+			if i < len(pattern) {
+				b.WriteByte(pattern[i])
+			}
+			continue
+		}
+		if ch == '[' && !inClass {
+			inClass = true
+			b.WriteByte(ch)
+			continue
+		}
+		if ch == ']' && inClass {
+			inClass = false
+			b.WriteByte(ch)
+			continue
+		}
+		if ch == '(' && !inClass {
+			if i+1 < len(pattern) && pattern[i+1] == '?' {
+				// Already (?:, (?<, (?=, (?! etc. — leave as-is
+				b.WriteByte(ch)
+			} else {
+				b.WriteString("(?:")
+			}
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
+}
+
 // validateGeneratedSQL checks the final SQL for dangerous patterns that should never
 // appear in translator output. It strips string literals first so that log data
 // containing keywords like "DROP TABLE" in search values won't trigger false positives.

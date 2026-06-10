@@ -1138,6 +1138,16 @@ func TestStringFunctions(t *testing.T) {
 			},
 		},
 		{
+			name:    "regex with pattern= named arg and field=",
+			query:   `* | regex(field=commandline,pattern="(?<dest>https?://\\S+)")`,
+			wantErr: false,
+			checkSQL: func(sql string) bool {
+				return containsSubstr([]string{sql}, "extractAllGroups(fields.`commandline`") &&
+					containsSubstr([]string{sql}, "https?://") &&
+					containsSubstr([]string{sql}, "AS dest")
+			},
+		},
+		{
 			name:    "replace function basic",
 			query:   `* | replace("error", "ERROR")`,
 			wantErr: false,

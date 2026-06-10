@@ -222,6 +222,8 @@ func (h *regexHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 			arg = strings.TrimSpace(arg)
 			if strings.HasPrefix(arg, "regex=") {
 				pattern = strings.Trim(strings.TrimPrefix(arg, "regex="), `"'`)
+			} else if strings.HasPrefix(arg, "pattern=") {
+				pattern = strings.Trim(strings.TrimPrefix(arg, "pattern="), `"'`)
 			} else if !strings.HasPrefix(arg, "field=") && pattern == "" {
 				pattern = arg
 			}
@@ -250,6 +252,9 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			} else if strings.HasPrefix(arg, "regex=") {
 				pattern = strings.TrimPrefix(arg, "regex=")
 				pattern = strings.Trim(pattern, `"'`)
+			} else if strings.HasPrefix(arg, "pattern=") {
+				pattern = strings.TrimPrefix(arg, "pattern=")
+				pattern = strings.Trim(pattern, `"'`)
 			} else if pattern == "" {
 				pattern = arg
 			} else if field == "raw_log" {
@@ -270,6 +275,10 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		namedGroupRe := regexp.MustCompile(`\(\?<([a-zA-Z_][a-zA-Z0-9_]*)>`)
 		namedGroups := namedGroupRe.FindAllStringSubmatch(pattern, -1)
 
+		// Convert unnamed capturing groups to non-capturing so that
+		// extractAllGroups indices match named-group positions exactly.
+		sqlPattern := convertUnnamedGroupsToNonCapturing(pattern)
+
 		if len(namedGroups) > 0 {
 			for i, match := range namedGroups {
 				name := match[1]
@@ -277,12 +286,12 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				if err != nil {
 					return fmt.Errorf("regex(): invalid capture name %q: %w", name, err)
 				}
-				expr := fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d] AS %s", fieldRef, escapeString(pattern), i+1, safeName)
+				expr := fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d] AS %s", fieldRef, escapeString(sqlPattern), i+1, safeName)
 				ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
-				ctx.Registry.SetResolveExpr(safeName, fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d]", fieldRef, escapeString(pattern), i+1))
+				ctx.Registry.SetResolveExpr(safeName, fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d]", fieldRef, escapeString(sqlPattern), i+1))
 			}
 		} else {
-			expr := fmt.Sprintf("extractAllGroups(%s, '%s') AS regex_match", fieldRef, escapeString(pattern))
+			expr := fmt.Sprintf("extractAllGroups(%s, '%s') AS regex_match", fieldRef, escapeString(sqlPattern))
 			ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
 			ctx.Registry.SetResolveExpr("regex_match", expr)
 		}
