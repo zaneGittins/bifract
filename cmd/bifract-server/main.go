@@ -205,22 +205,27 @@ func main() {
 	log.Println("ClickHouse schema ready")
 
 	// Load custom schema fields from Postgres and reconcile ClickHouse schema.
-	// Must run after CH init and before serving requests so the parser is aware.
+	// SetCustomTypeHintedFields runs synchronously so the parser is ready before
+	// the first query. ReconcileSchemaFields (MODIFY COLUMN) runs in the background
+	// because it can block for minutes on large datasets.
 	schemaFieldsManager := schemafields.NewManager(pg)
 	if customFields, err := schemaFieldsManager.List(context.Background()); err != nil {
 		log.Printf("Warning: Failed to load custom schema fields: %v", err)
 	} else {
-		allFields := append(schemafields.ProjectDefaultFields, customFields...)
-		if err := db.ReconcileSchemaFields(context.Background(), schemafields.ToSpecs(allFields)); err != nil {
-			log.Printf("Warning: Schema field reconciliation failed: %v", err)
-		}
 		customMap := make(map[string]bool, len(customFields))
 		for _, f := range customFields {
 			customMap[f.FieldName] = true
 		}
 		parser.SetCustomTypeHintedFields(customMap)
+		allFields := append(schemafields.ProjectDefaultFields, customFields...)
+		go func() {
+			if err := db.ReconcileSchemaFields(context.Background(), schemafields.ToSpecs(allFields)); err != nil {
+				log.Printf("Warning: Schema field reconciliation failed: %v", err)
+			} else {
+				log.Println("Schema fields reconciled")
+			}
+		}()
 	}
-	log.Println("Schema fields reconciled")
 
 	// Initialize settings from database
 	if err := settings.Init(pg); err != nil {
