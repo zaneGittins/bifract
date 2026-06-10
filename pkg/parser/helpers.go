@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // buildAnalyzeFieldsSQL generates a query that computes per-field statistics.
@@ -524,6 +525,14 @@ func translateConditionCtx(cond ConditionNode, inNegation bool, suppressTokens b
 		switch cond.Operator {
 		case "=":
 			sql = fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
+			// Prepend field_tokens + raw_log OR pre-filters for granule pruning.
+			// Type-hinted fields get this alongside their implicit bloom filter/set index.
+			// Suppressed in negation contexts where pre-filters provide no benefit.
+			if isJSONField && !suppressTokens && !inNegation && !cond.Negate {
+				if pre := equalityPreFilters(cond.Field, cond.Value); pre != "" {
+					sql = pre + " AND " + sql
+				}
+			}
 		case "!=":
 			// For JSON fields, include rows where the field doesn't exist (NULL).
 			// Without this, NULL != 'value' evaluates to NULL (falsy) and
@@ -702,11 +711,8 @@ func sanitizeIdentifier(s string) (string, error) {
 	return s, nil
 }
 
-// jsonTypeHintedFields is the set of fields declared with explicit String type hints
-// in the JSON column definition. These fields must be referenced without any cast so
-// that ClickHouse's skip index optimizer can match them against bloom_filter/set indexes.
-// Dynamic (non-hinted) fields require ::String for GROUP BY and aggregation compatibility.
-var jsonTypeHintedFields = map[string]bool{
+// jsonDefaultTypeHintedFields holds the project-level defaults. Never modified after init.
+var jsonDefaultTypeHintedFields = map[string]bool{
 	"computer_name":      true,
 	"user":               true,
 	"src_ip":             true,
@@ -723,6 +729,35 @@ var jsonTypeHintedFields = map[string]bool{
 	"artifact":           true,
 	"query":              true,
 	"original_file_name": true,
+}
+
+// jsonCustomTypeHintedFields holds user-defined custom fields loaded from Postgres.
+// Protected by jsonFieldMu for concurrent access from query and admin goroutines.
+var (
+	jsonCustomTypeHintedFields = map[string]bool{}
+	jsonFieldMu                sync.RWMutex
+)
+
+// isTypeHinted reports whether field has an explicit String type hint in the JSON
+// column, meaning a bare sub-column reference (no ::String cast) is correct and
+// the skip index optimizer will match it against bloom_filter/set indexes.
+func isTypeHinted(field string) bool {
+	if jsonDefaultTypeHintedFields[field] {
+		return true
+	}
+	jsonFieldMu.RLock()
+	v := jsonCustomTypeHintedFields[field]
+	jsonFieldMu.RUnlock()
+	return v
+}
+
+// SetCustomTypeHintedFields replaces the custom type-hinted field set with the
+// provided map. Called at startup and from the schema-fields admin handler after
+// any create/delete/reset operation. Safe for concurrent use.
+func SetCustomTypeHintedFields(custom map[string]bool) {
+	jsonFieldMu.Lock()
+	jsonCustomTypeHintedFields = custom
+	jsonFieldMu.Unlock()
 }
 
 // jsonFieldRef returns the ClickHouse JSON subcolumn reference for a field name.
@@ -744,7 +779,7 @@ func jsonFieldRef(field string) string {
 		b.WriteString("`")
 	}
 	ref := b.String()
-	if len(parts) == 1 && jsonTypeHintedFields[parts[0]] {
+	if len(parts) == 1 && isTypeHinted(parts[0]) {
 		return ref
 	}
 	return ref + "::String"
@@ -850,6 +885,87 @@ func extractLiteralTokens(pattern string) []string {
 		}
 	}
 	return result
+}
+
+// extractValueTokens extracts alphabetic token sequences from a plain (non-regex)
+// string value, matching how ClickHouse's splitByNonAlpha tokenizer processes raw_log.
+// Any non-alpha byte (dot, backslash, digit, underscore, etc.) splits a token.
+// Tokens shorter than 3 chars are excluded as they are too common to prune effectively.
+// Used to build hasToken() pre-filters for equality conditions on non-type-hinted JSON fields.
+func extractValueTokens(value string) []string {
+	var tokens []string
+	var current []byte
+
+	flush := func() {
+		if len(current) >= 3 {
+			tokens = append(tokens, strings.ToLower(string(current)))
+		}
+		current = current[:0]
+	}
+
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+			current = append(current, ch)
+		} else {
+			flush()
+		}
+	}
+	flush()
+
+	seen := make(map[string]bool)
+	var result []string
+	for _, t := range tokens {
+		if !seen[t] {
+			seen[t] = true
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
+// equalityPreFilters builds a migration-safe pre-filter for a field:value equality
+// condition, combining the new field_tokens text index with a raw_log fallback:
+//
+//	(hasToken(field_tokens, 'field:value') OR hasToken(raw_log, 'tok1') AND hasToken(raw_log, 'tok2'))
+//
+// The OR ensures old granules (where field_tokens='') fall back to the raw_log
+// inverted index rather than being incorrectly skipped by the field_tokens check.
+// Returns "" when no alpha tokens can be extracted from value (numeric-only, short, etc).
+func equalityPreFilters(field, value string) string {
+	tokens := extractValueTokens(value)
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	ftKey := replaceQueryTokenSeparators(strings.ToLower(field))
+	ftVal := replaceQueryTokenSeparators(strings.ToLower(value))
+	ftCheck := fmt.Sprintf("hasToken(field_tokens, '%s')", escapeString(ftKey+":"+ftVal))
+
+	rawParts := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		rawParts = append(rawParts, fmt.Sprintf("hasToken(raw_log, '%s')", tok))
+	}
+	rawFallback := strings.Join(rawParts, " AND ")
+
+	return "(" + ftCheck + " OR " + rawFallback + ")"
+}
+
+// replaceQueryTokenSeparators normalizes a field name or value for use in a
+// field_tokens token. Mirrors replaceTokenSeparators in pkg/storage/clickhouse.go —
+// both must apply identical transformations or hasToken lookups will miss stored tokens.
+func replaceQueryTokenSeparators(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case ':', ' ', '\t', '\n', '\r':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // buildRegexMatchSQL wraps match() with hasToken pre-filters that leverage

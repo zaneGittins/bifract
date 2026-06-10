@@ -3952,6 +3952,60 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 				"hasToken",
 			},
 		},
+		{
+			name:  "equality on non-type-hinted field gets field_tokens compound pre-filter with raw_log OR fallback",
+			query: `process_name=curl.exe`,
+			wantContain: []string{
+				"hasToken(field_tokens, 'process_name:curl.exe')",
+				"hasToken(raw_log, 'curl')",
+				"hasToken(raw_log, 'exe')",
+				"fields.`process_name`::String = 'curl.exe'",
+			},
+		},
+		{
+			name:  "equality on type-hinted field now also gets field_tokens compound pre-filter",
+			query: `original_file_name=curl.exe`,
+			wantContain: []string{
+				"hasToken(field_tokens, 'original_file_name:curl.exe')",
+				"hasToken(raw_log, 'curl')",
+				"hasToken(raw_log, 'exe')",
+				"fields.`original_file_name` = 'curl.exe'",
+			},
+		},
+		{
+			name:  "equality on non-type-hinted field with numeric value gets no hasToken",
+			query: `status=500`,
+			wantNotContain: []string{
+				"hasToken",
+			},
+		},
+		{
+			name:  "negated equality on non-type-hinted field gets no hasToken pre-filters",
+			query: `NOT process_name=curl.exe`,
+			wantContain: []string{
+				"fields.`process_name`::String = 'curl.exe'",
+			},
+			wantNotContain: []string{
+				"hasToken",
+			},
+		},
+		{
+			name:  "equality on non-type-hinted field inside NOT group gets no hasToken pre-filters",
+			query: `NOT (process_name=curl.exe AND status=200)`,
+			wantContain: []string{
+				"fields.`process_name`::String = 'curl.exe'",
+			},
+			wantNotContain: []string{
+				"hasToken",
+			},
+		},
+		{
+			name:  "equality on non-type-hinted field with short value gets no hasToken",
+			query: `flag=ok`,
+			wantNotContain: []string{
+				"hasToken",
+			},
+		},
 	}
 
 	for _, tt := range tests {

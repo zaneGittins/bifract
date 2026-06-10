@@ -35,6 +35,8 @@ import (
 	"bifract/pkg/instructions"
 	"bifract/pkg/groups"
 	"bifract/pkg/normalizers"
+	"bifract/pkg/parser"
+	"bifract/pkg/schemafields"
 	"bifract/pkg/maxmind"
 	"bifract/pkg/oidc"
 	"bifract/pkg/rbac"
@@ -202,6 +204,24 @@ func main() {
 	}
 	log.Println("ClickHouse schema ready")
 
+	// Load custom schema fields from Postgres and reconcile ClickHouse schema.
+	// Must run after CH init and before serving requests so the parser is aware.
+	schemaFieldsManager := schemafields.NewManager(pg)
+	if customFields, err := schemaFieldsManager.List(context.Background()); err != nil {
+		log.Printf("Warning: Failed to load custom schema fields: %v", err)
+	} else {
+		allFields := append(schemafields.ProjectDefaultFields, customFields...)
+		if err := db.ReconcileSchemaFields(context.Background(), schemafields.ToSpecs(allFields)); err != nil {
+			log.Printf("Warning: Schema field reconciliation failed: %v", err)
+		}
+		customMap := make(map[string]bool, len(customFields))
+		for _, f := range customFields {
+			customMap[f.FieldName] = true
+		}
+		parser.SetCustomTypeHintedFields(customMap)
+	}
+	log.Println("Schema fields reconciled")
+
 	// Initialize settings from database
 	if err := settings.Init(pg); err != nil {
 		log.Printf("Warning: Failed to initialize settings: %v", err)
@@ -290,7 +310,11 @@ func main() {
 	}
 	// Initialize normalizer system (before alerts, since alert manager uses it for Sigma translation)
 	normalizerManager := normalizers.NewManager(pg)
-	normalizerHandler := normalizers.NewHandler(normalizerManager, db)
+	normalizerHandler := normalizers.NewHandler(normalizerManager)
+
+	schemaFieldsHandler := schemafields.NewHandler(schemaFieldsManager, db, func(custom map[string]bool) {
+		parser.SetCustomTypeHintedFields(custom)
+	})
 
 	alertEngine := alerts.NewEngineWithDicts(pg, db, dictionaryManager, alertBaseURL)
 	alertManager := alerts.NewManager(pg, alertEngine, normalizerManager)
@@ -898,7 +922,12 @@ func main() {
 			r.Post("/normalizers/{id}/duplicate", normalizerHandler.HandleDuplicate)
 			r.Get("/normalizers/{id}/export", normalizerHandler.HandleExportYAML)
 			r.Get("/normalizers/{id}/tokens", normalizerHandler.HandleTokenUsage)
-			r.Post("/normalizers/{id}/optimize-storage", normalizerHandler.HandleOptimizeStorage)
+
+			// Schema fields (admin-only, checked in handler)
+			r.Get("/admin/schema-fields", schemaFieldsHandler.HandleList)
+			r.Post("/admin/schema-fields", schemaFieldsHandler.HandleCreate)
+			r.Delete("/admin/schema-fields/{name}", schemaFieldsHandler.HandleDelete)
+			r.Post("/admin/schema-fields/reset", schemaFieldsHandler.HandleReset)
 
 			// Admin-only routes (checked in handler)
 			r.Post("/auth/register", authHandler.HandleRegister)

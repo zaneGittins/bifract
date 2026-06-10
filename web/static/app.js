@@ -116,6 +116,9 @@ const App = {
         if (window.Normalizers) {
             Normalizers.init();
         }
+        if (window.SchemaFields) {
+            SchemaFields.init();
+        }
         if (window.AlertFeeds) {
             AlertFeeds.init();
         }
@@ -143,7 +146,7 @@ const App = {
     },
 
     // Tab name sets for hash-based open-in-new-tab support.
-    _mainTabs: new Set(['fractalListing', 'reference', 'performance', 'settings', 'context', 'normalizers']),
+    _mainTabs: new Set(['fractalListing', 'reference', 'performance', 'settings', 'context', 'normalizers', 'schema']),
     _fractalTabs: new Set(['search', 'comments', 'notebooks', 'dashboards', 'dictionaries', 'chat', 'alerts', 'ingest', 'manage']),
 
     // Build the target URL for a given hash (used for open-in-new-tab).
@@ -235,6 +238,7 @@ const App = {
         this._bindTab(document.getElementById('mainSettingsTabBtn'), () => this.showMainViewTab('settings'), 'settings');
         this._bindTab(document.getElementById('mainContextTabBtn'), () => this.showMainViewTab('context'), 'context');
         this._bindTab(document.getElementById('mainNormalizersTabBtn'), () => this.showMainViewTab('normalizers'), 'normalizers');
+        this._bindTab(document.getElementById('mainSchemaTabBtn'), () => this.showMainViewTab('schema'), 'schema');
 
         // Fractal View Tab Buttons
         this._bindTab(document.getElementById('fractalSearchTabBtn'), () => this.showFractalViewTab('search'), 'search');
@@ -712,6 +716,7 @@ const App = {
         if (window.Performance) Performance.hide();
         if (window.ContextLinks) ContextLinks.hide();
         if (window.Normalizers) Normalizers.hide();
+        if (window.SchemaFields && SchemaFields.hide) SchemaFields.hide();
 
         // Hide all main view tab contents
         const fractalListingContent = document.getElementById('fractalListingTabContent');
@@ -720,8 +725,9 @@ const App = {
         const mainSettingsContent = document.getElementById('mainSettingsTabContent');
         const mainContextContent = document.getElementById('mainContextTabContent');
         const mainNormalizersContent = document.getElementById('mainNormalizersTabContent');
+        const mainSchemaContent = document.getElementById('mainSchemaTabContent');
 
-        [fractalListingContent, queryReferenceContent, mainPerformanceContent, mainSettingsContent, mainContextContent, mainNormalizersContent].forEach(content => {
+        [fractalListingContent, queryReferenceContent, mainPerformanceContent, mainSettingsContent, mainContextContent, mainNormalizersContent, mainSchemaContent].forEach(content => {
             if (content) content.style.display = 'none';
         });
 
@@ -730,7 +736,8 @@ const App = {
         const performanceView = document.getElementById('performanceView');
         const contextLinksView = document.getElementById('contextLinksView');
         const normalizersView = document.getElementById('normalizersView');
-        [settingsView, performanceView, contextLinksView, normalizersView].forEach(view => {
+        const schemaFieldsView = document.getElementById('schemaFieldsView');
+        [settingsView, performanceView, contextLinksView, normalizersView, schemaFieldsView].forEach(view => {
             if (view) view.style.display = 'none';
         });
 
@@ -741,8 +748,9 @@ const App = {
         const mainSettingsTab = document.getElementById('mainSettingsTabBtn');
         const mainContextTab = document.getElementById('mainContextTabBtn');
         const mainNormalizersTab = document.getElementById('mainNormalizersTabBtn');
+        const mainSchemaTab = document.getElementById('mainSchemaTabBtn');
 
-        [fractalListingTab, queryReferenceTab, mainPerformanceTab, mainSettingsTab, mainContextTab, mainNormalizersTab].forEach(tabBtn => {
+        [fractalListingTab, queryReferenceTab, mainPerformanceTab, mainSettingsTab, mainContextTab, mainNormalizersTab, mainSchemaTab].forEach(tabBtn => {
             if (tabBtn) tabBtn.classList.remove('active');
         });
 
@@ -786,6 +794,12 @@ const App = {
                 if (normalizersView) normalizersView.style.display = 'block';
                 if (mainNormalizersTab) mainNormalizersTab.classList.add('active');
                 if (window.Normalizers) Normalizers.show();
+                break;
+            case 'schema':
+                if (mainSchemaContent) mainSchemaContent.style.display = 'block';
+                if (schemaFieldsView) schemaFieldsView.style.display = 'block';
+                if (mainSchemaTab) mainSchemaTab.classList.add('active');
+                if (window.SchemaFields) SchemaFields.show();
                 break;
         }
     },

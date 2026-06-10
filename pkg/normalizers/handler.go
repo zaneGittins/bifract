@@ -16,7 +16,6 @@ import (
 
 type Handler struct {
 	manager *Manager
-	ch      *storage.ClickHouseClient
 }
 
 type APIResponse struct {
@@ -25,8 +24,8 @@ type APIResponse struct {
 	Error   string      `json:"error,omitempty"`
 }
 
-func NewHandler(manager *Manager, ch *storage.ClickHouseClient) *Handler {
-	return &Handler{manager: manager, ch: ch}
+func NewHandler(manager *Manager) *Handler {
+	return &Handler{manager: manager}
 }
 
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
@@ -323,31 +322,6 @@ func (h *Handler) getCurrentUser(r *http.Request) string {
 	return ""
 }
 
-// HandleOptimizeStorage adds JSON type hints and bloom_filter skip indexes for
-// all target fields defined in this normalizer's field mappings.
-func (h *Handler) HandleOptimizeStorage(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
-	id := chi.URLParam(r, "id")
-	n, err := h.manager.Get(r.Context(), id)
-	if err != nil {
-		h.respondError(w, http.StatusNotFound, "Normalizer not found")
-		return
-	}
-	var fields []string
-	for _, fm := range n.FieldMappings {
-		if fm.Target != "" {
-			fields = append(fields, fm.Target)
-		}
-	}
-	if err := h.ch.SyncJSONTypeHints(r.Context(), fields); err != nil {
-		log.Printf("[Normalizers] optimize-storage %s: %v", id, err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to optimize storage")
-		return
-	}
-	h.respondSuccess(w, map[string]string{"message": "Storage optimized"})
-}
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")

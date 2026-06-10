@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -482,12 +483,53 @@ func (c *ClickHouseClient) Conn() driver.Conn {
 	return c.conn
 }
 
+// buildFieldTokens builds a space-separated string of lowercase field:value tokens
+// from a log entry's fields map. Each token encodes one field:value pair so that
+// hasToken(field_tokens, 'field:value') with the splitByWhitespace text index gives
+// precise compound-key granule pruning — far more selective than individual raw_log tokens.
+//
+// Normalization rules (must mirror replaceQueryTokenSeparators in pkg/parser/helpers.go):
+//   - keys and values are lowercased
+//   - whitespace and colons are replaced with underscore to avoid splitting tokens
+//   - empty values are skipped
+//   - tokens are sorted for deterministic output (map iteration is non-deterministic)
+func buildFieldTokens(fields map[string]string) string {
+	tokens := make([]string, 0, len(fields))
+	for k, v := range fields {
+		if v == "" {
+			continue
+		}
+		tokens = append(tokens, replaceTokenSeparators(strings.ToLower(k))+":"+replaceTokenSeparators(strings.ToLower(v)))
+	}
+	sort.Strings(tokens)
+	return strings.Join(tokens, " ")
+}
+
+// replaceTokenSeparators replaces characters that would break a field:value token
+// when indexed by splitByWhitespace. Applied to both field names and values:
+// whitespace would split the token at the index level; colons in field names would
+// create ambiguity with the field:value separator (colons in values are also replaced
+// for consistency, e.g. URLs and IPv6 addresses become unambiguous tokens).
+func replaceTokenSeparators(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case ':', ' ', '\t', '\n', '\r':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) error {
 	if len(logs) == 0 {
 		return nil
 	}
 
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.WriteTable()+" (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp)")
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.WriteTable()+" (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp, field_tokens)")
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
@@ -504,6 +546,7 @@ func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) erro
 			log.Fields,
 			log.FractalID,
 			ingestTS,
+			buildFieldTokens(log.Fields),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append log to batch: %w", err)
@@ -949,4 +992,111 @@ func parseJSONTypeHints(typeStr string) []string {
 		}
 	}
 	return fields
+}
+
+// SchemaFieldSpec describes a single type-hinted field and its skip index type.
+// Used by ReconcileSchemaFields and TruncateAndReschema to avoid coupling the
+// storage package to the schemafields package.
+type SchemaFieldSpec struct {
+	FieldName string
+	IndexType string // "bloom_filter" or "set"
+}
+
+// ReconcileSchemaFields ensures ClickHouse has type hints and skip indexes for
+// all requested fields. It is additive: existing type hints and indexes are
+// never removed. New fields are added via MODIFY COLUMN and ADD INDEX IF NOT EXISTS.
+// All DDL is wrapped with InjectOnCluster for multi-node deployments.
+func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []SchemaFieldSpec) error {
+	// Read current type hints from ClickHouse.
+	rows, err := c.conn.Query(ctx,
+		"SELECT type FROM system.columns WHERE database = 'logs' AND table = 'logs' AND name = 'fields'")
+	if err != nil {
+		return fmt.Errorf("read fields column type: %w", err)
+	}
+	var currentType string
+	if rows.Next() {
+		_ = rows.Scan(&currentType)
+	}
+	rows.Close()
+
+	existing := parseJSONTypeHints(currentType)
+	existingSet := make(map[string]struct{}, len(existing))
+	for _, f := range existing {
+		existingSet[f] = struct{}{}
+	}
+
+	// Compute merged set for MODIFY COLUMN.
+	merged := make(map[string]struct{}, len(existingSet)+len(fields))
+	for k := range existingSet {
+		merged[k] = struct{}{}
+	}
+	var newFields []string
+	for _, f := range fields {
+		if _, ok := merged[f.FieldName]; !ok {
+			newFields = append(newFields, f.FieldName)
+		}
+		merged[f.FieldName] = struct{}{}
+	}
+
+	// Run MODIFY COLUMN only when there are new fields to add.
+	if len(newFields) > 0 {
+		var sb strings.Builder
+		sb.WriteString("ALTER TABLE logs MODIFY COLUMN fields JSON(\n    max_dynamic_paths=1024")
+		for f := range merged {
+			escaped := strings.ReplaceAll(f, "`", "``")
+			sb.WriteString(",\n    `")
+			sb.WriteString(escaped)
+			sb.WriteString("` String")
+		}
+		sb.WriteString("\n)")
+		if err := c.conn.Exec(ctx, c.InjectOnCluster(sb.String())); err != nil {
+			return fmt.Errorf("modify fields column: %w", err)
+		}
+	}
+
+	// Ensure each desired field has the correct skip index.
+	// ADD INDEX IF NOT EXISTS is a no-op when the index already exists.
+	for _, f := range fields {
+		var idxExpr string
+		switch f.IndexType {
+		case "set":
+			idxExpr = "TYPE set(256)"
+		default:
+			idxExpr = "TYPE bloom_filter(0.001)"
+		}
+		escaped := strings.ReplaceAll(f.FieldName, "`", "``")
+		idxName := "idx_" + strings.ReplaceAll(f.FieldName, " ", "_")
+		idxSQL := fmt.Sprintf(
+			"ALTER TABLE logs ADD INDEX IF NOT EXISTS %s fields.`%s` %s GRANULARITY 1",
+			idxName, escaped, idxExpr,
+		)
+		if err := c.conn.Exec(ctx, c.InjectOnCluster(idxSQL)); err != nil {
+			log.Printf("Warning: add index %s: %v", idxName, err)
+		}
+	}
+	return nil
+}
+
+// TruncateAndReschema deletes all log data by truncating the logs tables, drops
+// all managed skip indexes, then calls ReconcileSchemaFields to apply the desired
+// schema fresh. TRUNCATE does not require the force_drop_table filesystem flag.
+func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []SchemaFieldSpec) error {
+	for _, tbl := range []string{"logs.logs_histogram", "logs.logs"} {
+		sql := fmt.Sprintf("TRUNCATE TABLE %s", tbl)
+		if err := c.conn.Exec(ctx, c.InjectOnCluster(sql)); err != nil {
+			return fmt.Errorf("truncate %s: %w", tbl, err)
+		}
+	}
+
+	// Drop all managed skip indexes so ReconcileSchemaFields can recreate them
+	// with the correct expressions from scratch.
+	for _, f := range fields {
+		idxName := "idx_" + strings.ReplaceAll(f.FieldName, " ", "_")
+		dropSQL := fmt.Sprintf("ALTER TABLE logs DROP INDEX IF EXISTS %s", idxName)
+		if err := c.conn.Exec(ctx, c.InjectOnCluster(dropSQL)); err != nil {
+			log.Printf("Warning: drop index %s: %v", idxName, err)
+		}
+	}
+
+	return c.ReconcileSchemaFields(ctx, fields)
 }

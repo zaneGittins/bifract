@@ -30,9 +30,15 @@ CREATE TABLE IF NOT EXISTS logs (
     ),
     fractal_id LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3),
+    -- Space-separated field:value tokens for all event fields, used by the
+    -- field_tokens_text skip index to prune granules for field equality conditions.
+    -- splitByWhitespace keeps each field:value pair as one atomic token so
+    -- hasToken(field_tokens, 'process_name:curl.exe') is a precise compound lookup.
+    field_tokens String DEFAULT '',
     -- Inverted index: lower() preprocessor enables hasToken() to auto-lower search terms,
     -- providing index-accelerated granule pruning for both case-sensitive and
     -- case-insensitive regex queries via hasToken pre-filters.
+    INDEX field_tokens_text field_tokens TYPE text(tokenizer = splitByWhitespace, preprocessor = lower(field_tokens)) GRANULARITY 1,
     INDEX raw_log_inverted raw_log TYPE text(tokenizer = splitByNonAlpha, preprocessor = lower(raw_log)),
     INDEX log_id_bloom log_id TYPE bloom_filter(0.001) GRANULARITY 1,
     INDEX ingest_ts_minmax ingest_timestamp TYPE minmax GRANULARITY 1,
@@ -59,8 +65,10 @@ PARTITION BY toDate(timestamp)
 ORDER BY (fractal_id, timestamp, log_id)
 SETTINGS index_granularity = 8192;
 
--- Defensive: idempotent ADD INDEX for existing installs that predate inline index
--- definitions. IF NOT EXISTS means these are safe no-ops on fresh installs.
+-- Defensive: idempotent ADD COLUMN / ADD INDEX for existing installs that predate
+-- inline definitions. IF NOT EXISTS means these are safe no-ops on fresh installs.
+ALTER TABLE logs ADD COLUMN IF NOT EXISTS field_tokens String DEFAULT '';
+ALTER TABLE logs ADD INDEX IF NOT EXISTS field_tokens_text field_tokens TYPE text(tokenizer = splitByWhitespace, preprocessor = lower(field_tokens)) GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS ingest_ts_minmax       ingest_timestamp      TYPE minmax           GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_ip             fields.src_ip         TYPE bloom_filter(0.001) GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_ip             fields.dst_ip         TYPE bloom_filter(0.001) GRANULARITY 1;

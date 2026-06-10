@@ -53,7 +53,8 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 
 	// Merge any values added via "kubectl edit" that are not in secrets.yaml.
 	printStep("Checking live cluster secrets...")
-	if live := tryReadLiveSecrets("bifract", "bifract-secrets"); live != nil {
+	live, liveErr := tryReadLiveSecrets("bifract", "bifract-secrets")
+	if live != nil {
 		merged := 0
 		for k, v := range live {
 			if v != "" && !coreSecretKeys[k] {
@@ -68,8 +69,9 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 		} else {
 			printDone("Live cluster secrets match on-disk")
 		}
-	} else {
-		printWarn("kubectl unavailable — using secrets.yaml only (kubectl edit values will not be preserved)")
+	} else if liveErr != "" {
+		printWarn(fmt.Sprintf("Could not read live cluster secrets: %s", liveErr))
+		printWarn("kubectl edit values will not be preserved — secrets.yaml is the source of truth")
 	}
 
 	// Parse existing settings from manifests
@@ -253,19 +255,31 @@ var coreSecretKeys = map[string]bool{
 }
 
 // tryReadLiveSecrets reads the deployed Secret from the cluster using kubectl.
-// Returns nil if kubectl is unavailable, not configured, or the secret does not
-// exist. Used to merge values added via "kubectl edit" that are not reflected in
-// the on-disk secrets.yaml.
-func tryReadLiveSecrets(namespace, secretName string) map[string]string {
-	out, err := exec.Command("kubectl", "get", "secret", secretName,
-		"-n", namespace, "-o", "jsonpath={.data}").Output()
+// Returns (nil, reason) if kubectl is unavailable, not configured, or the
+// secret does not exist. reason is empty on success.
+func tryReadLiveSecrets(namespace, secretName string) (map[string]string, string) {
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		return nil, "kubectl not found in PATH"
+	}
+	cmd := exec.Command("kubectl", "get", "secret", secretName,
+		"-n", namespace, "-o", "jsonpath={.data}")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, msg
+	}
 	trimmed := strings.TrimSpace(string(out))
-	if err != nil || trimmed == "" || trimmed == "{}" {
-		return nil
+	if trimmed == "" || trimmed == "{}" {
+		return nil, ""
 	}
 	var raw map[string]string
 	if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
-		return nil
+		return nil, fmt.Sprintf("unexpected kubectl output: %s", trimmed)
 	}
 	result := make(map[string]string, len(raw))
 	for k, v := range raw {
@@ -273,7 +287,7 @@ func tryReadLiveSecrets(namespace, secretName string) map[string]string {
 			result[k] = strings.TrimRight(string(dec), "\n")
 		}
 	}
-	return result
+	return result, ""
 }
 
 // parseK8sSecrets reads stringData key-value pairs from a generated secrets.yaml.

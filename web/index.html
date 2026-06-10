@@ -31,6 +31,7 @@
                 <nav id="mainViewNav" class="header-nav" style="display: none;">
                     <button id="fractalListingTabBtn" class="nav-tab active">Fractals</button>
                     <button id="mainNormalizersTabBtn" class="nav-tab admin-only" style="display: none;">Normalizers</button>
+                    <button id="mainSchemaTabBtn" class="nav-tab admin-only" style="display: none;">Schema</button>
                     <button id="mainContextTabBtn" class="nav-tab admin-only" style="display: none;">Context</button>
                     <button id="mainPerformanceTabBtn" class="nav-tab admin-only" style="display: none;">Performance</button>
                     <button id="queryReferenceTabBtn" class="nav-tab">Query Reference</button>
@@ -393,6 +394,53 @@
                             <button class="btn-secondary" onclick="ContextLinks.closeModal()">Cancel</button>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Schema Fields Tab Content (Admin Only) -->
+            <div id="mainSchemaTabContent" style="display: none;">
+                <div id="schemaFieldsView" class="admin-only" style="display: none;">
+                    <section class="settings-view-section">
+                        <div class="section-header">
+                            <h3 style="margin:0">Schema Fields</h3>
+                            <div class="section-header-actions">
+                                <button id="schemaFieldAddBtn" class="btn-primary btn-sm">+ Add Custom Field</button>
+                            </div>
+                        </div>
+                        <p class="help-text">Project default fields are built into every deployment and are read-only. Custom fields add type hints and skip indexes to ClickHouse so queries on those fields use index acceleration.</p>
+
+                        <!-- Inline add form -->
+                        <div id="schemaFieldAddForm" style="display:none; margin-bottom:16px; padding:12px; background:var(--bg-secondary); border-radius:6px;">
+                            <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+                                <div class="form-group" style="margin:0; flex:1; min-width:160px;">
+                                    <label for="schemaFieldName">Field Name</label>
+                                    <input type="text" id="schemaFieldName" placeholder="e.g. tenant_id">
+                                </div>
+                                <div class="form-group" style="margin:0; min-width:160px;">
+                                    <label for="schemaFieldIndexType">Index Type</label>
+                                    <select id="schemaFieldIndexType">
+                                        <option value="bloom_filter">bloom_filter — high-cardinality strings (IPs, hashes)</option>
+                                        <option value="set">set — low-cardinality strings (status, type, role)</option>
+                                    </select>
+                                </div>
+                                <div style="display:flex; gap:6px;">
+                                    <button id="schemaFieldSaveBtn" class="btn-primary btn-sm">Add Field</button>
+                                    <button id="schemaFieldCancelBtn" class="btn-secondary btn-sm">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="schemaFieldsListContainer">
+                            <div class="loading">Loading schema fields...</div>
+                        </div>
+
+                        <!-- Danger zone -->
+                        <div style="margin-top:32px; padding:16px; border:1px solid var(--danger, #e53e3e); border-radius:6px;">
+                            <h4 style="margin:0 0 6px 0; color:var(--danger, #e53e3e)">Schema Reset</h4>
+                            <p class="help-text" style="margin:0 0 12px 0">Deletes all ingested log data and rebuilds the ClickHouse schema from the current field configuration. Fractal configs, normalizers, and all other settings are not affected. Use this after adding or removing custom fields on large datasets where background mutations are impractical.</p>
+                            <button id="schemaFieldResetBtn" class="btn-danger btn-sm">Reset Schema &amp; Delete All Logs</button>
+                        </div>
+                    </section>
                 </div>
             </div>
 
@@ -2803,6 +2851,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/chat.js"></script>
     <script src="/static/contextLinks.js"></script>
     <script src="/static/normalizers.js"></script>
+    <script src="/static/schemaFields.js"></script>
     <script src="/static/logDetail.js"></script>
     <script src="/static/worldmap.js"></script>
     <script src="/static/fieldStats.js"></script>
