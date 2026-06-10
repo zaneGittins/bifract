@@ -56,13 +56,13 @@ CREATE TABLE IF NOT EXISTS logs (
     INDEX idx_original_file_name fields.original_file_name TYPE bloom_filter(0.001) GRANULARITY 1,
     INDEX idx_query              fields.query              TYPE bloom_filter(0.001) GRANULARITY 1,
     INDEX idx_event_id           fields.event_id           TYPE set(256)           GRANULARITY 1,
-    INDEX idx_operation          fields.operation          TYPE set(64)            GRANULARITY 1,
+    INDEX idx_operation          fields.operation          TYPE set(256)            GRANULARITY 1,
     INDEX idx_artifact           fields.artifact           TYPE set(64)            GRANULARITY 1,
-    INDEX idx_src_port           fields.src_port           TYPE set(1024)          GRANULARITY 1,
-    INDEX idx_dst_port           fields.dst_port           TYPE set(1024)          GRANULARITY 1
+    INDEX idx_src_port           fields.src_port           TYPE set(4096)          GRANULARITY 1,
+    INDEX idx_dst_port           fields.dst_port           TYPE set(4096)          GRANULARITY 1
 ) ENGINE = MergeTree()
-PARTITION BY toDate(timestamp)
-ORDER BY (fractal_id, timestamp, log_id)
+PARTITION BY (fractal_id, toDate(timestamp))
+ORDER BY (timestamp, log_id)
 SETTINGS index_granularity = 8192;
 
 -- Defensive: idempotent ADD COLUMN / ADD INDEX for existing installs that predate
@@ -80,10 +80,10 @@ ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_parent_image       fields.parent_im
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_original_file_name fields.original_file_name TYPE bloom_filter(0.001) GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_query              fields.query          TYPE bloom_filter(0.001) GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_event_id           fields.event_id       TYPE set(256)           GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_operation          fields.operation      TYPE set(64)            GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_operation          fields.operation      TYPE set(256)            GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_artifact           fields.artifact       TYPE set(64)            GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port       TYPE set(1024)          GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port       TYPE set(1024)          GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port       TYPE set(4096)          GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port       TYPE set(4096)          GRANULARITY 1;
 
 -- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
 -- Querying this instead of raw logs reduces the recent-logs histogram from a

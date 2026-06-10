@@ -583,41 +583,48 @@ func (c *ClickHouseClient) ExecArgs(ctx context.Context, query string, args ...i
 	return nil
 }
 
-// DeleteLogsByFractalID deletes all logs for a specific fractal using a
-// lightweight delete. The session max_execution_time is overridden to unlimited
-// for this query so large fractals don't hit the default 60s cap.
+// DeleteLogsByFractalID drops all partitions belonging to a fractal.
+// With PARTITION BY (fractal_id, toDate(timestamp)), each partition holds one
+// fractal's data for one day. DROP PARTITION is an instant metadata operation —
+// no lightweight delete mutation or OPTIMIZE TABLE needed, no matter how much
+// data the fractal holds. Replication happens via ZooKeeper automatically on
+// ReplicatedMergeTree, so ON CLUSTER is not used.
 func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID string) error {
-	return c.DeleteLogsByFractalIDOpt(ctx, fractalID, true)
-}
-
-// DeleteLogsByFractalIDOpt is like DeleteLogsByFractalID but allows skipping
-// the OPTIMIZE TABLE FINAL that forces immediate merge of deleted rows.
-// The lightweight delete takes effect immediately for queries; the optimize
-// only affects reported disk size and can be deferred.
-func (c *ClickHouseClient) DeleteLogsByFractalIDOpt(ctx context.Context, fractalID string, optimize bool) error {
-	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
-		"max_execution_time": 0,
-	}))
-	// Lightweight deletes replicate automatically via ZooKeeper on
-	// ReplicatedMergeTree tables, so ON CLUSTER is not needed and would
-	// cause the query to block waiting for all replicas synchronously.
-	err := c.conn.Exec(ctx, "DELETE FROM logs WHERE fractal_id = ?", fractalID)
+	rows, err := c.conn.Query(ctx,
+		"SELECT DISTINCT partition FROM system.parts WHERE database = currentDatabase() AND table = 'logs' AND active = 1",
+	)
 	if err != nil {
-		return fmt.Errorf("failed to delete logs for fractal %s: %w", fractalID, err)
+		return fmt.Errorf("failed to list partitions for fractal %s: %w", fractalID, err)
 	}
 
-	if optimize {
-		// Force ClickHouse to merge away lightweight-deleted rows so that
-		// system.parts reflects the actual on-disk size. Without this, the
-		// deleted rows stay in parts indefinitely and inflate the reported
-		// storage size for other fractals sharing the table.
-		optimizeSQL := c.InjectOnCluster("OPTIMIZE TABLE logs FINAL")
-		if err := c.conn.Exec(ctx, optimizeSQL); err != nil {
-			log.Printf("Warning: OPTIMIZE after delete for fractal %s failed: %v", fractalID, err)
+	// Partition strings look like ('my-fractal','2024-01-15'). Match the prefix,
+	// escaping single quotes to match ClickHouse's canonical representation.
+	escapedID := strings.ReplaceAll(fractalID, "'", "''")
+	prefix := fmt.Sprintf("('%s','", escapedID)
+
+	var partitions []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to scan partition: %w", err)
+		}
+		if strings.HasPrefix(p, prefix) {
+			partitions = append(partitions, p)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("partition query error for fractal %s: %w", fractalID, err)
+	}
+
+	for _, partition := range partitions {
+		if err := c.conn.Exec(ctx, "ALTER TABLE logs DROP PARTITION "+partition); err != nil {
+			return fmt.Errorf("failed to drop partition %s for fractal %s: %w", partition, fractalID, err)
 		}
 	}
 
-	log.Printf("Successfully deleted logs for fractal %s", fractalID)
+	log.Printf("Dropped %d partitions for fractal %s", len(partitions), fractalID)
 	return nil
 }
 
