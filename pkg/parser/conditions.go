@@ -263,7 +263,14 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 	}
 
 	if cond.IsRegex {
-		return buildRegexMatchSQL(fieldRef, cond.Value, cond.Operator == "!=", false)
+		negate := cond.Operator == "!="
+		matchSQL := buildRegexMatchSQL(fieldRef, cond.Value, negate, isJSONField)
+		if isJSONField && !negate {
+			if pre := regexPreFilters(cond.Field, cond.Value); pre != "" {
+				return pre + " AND " + matchSQL
+			}
+		}
+		return matchSQL
 	}
 
 	switch cond.Operator {

@@ -92,6 +92,11 @@ const App = {
             Dictionaries.init();
         }
 
+        // Initialize analytics models module
+        if (window.AnalyticsModels) {
+            AnalyticsModels.init();
+        }
+
         // Initialize chat module
         if (window.Chat) {
             Chat.init();
@@ -153,7 +158,7 @@ const App = {
 
     // Tab name sets for hash-based open-in-new-tab support.
     _mainTabs: new Set(['fractalListing', 'reference', 'performance', 'settings', 'context', 'normalizers', 'schema']),
-    _fractalTabs: new Set(['search', 'comments', 'notebooks', 'dashboards', 'dictionaries', 'chat', 'alerts', 'ingest', 'manage']),
+    _fractalTabs: new Set(['search', 'comments', 'notebooks', 'dashboards', 'dictionaries', 'models', 'chat', 'alerts', 'ingest', 'manage']),
 
     // Build the target URL for a given hash (used for open-in-new-tab).
     _tabUrl(hash) {
@@ -252,6 +257,7 @@ const App = {
         this._bindTab(document.getElementById('fractalNotebooksTabBtn'), () => this.showFractalViewTab('notebooks'), 'notebooks');
         this._bindTab(document.getElementById('fractalDashboardsTabBtn'), () => this.showFractalViewTab('dashboards'), 'dashboards');
         this._bindTab(document.getElementById('fractalDictionariesTabBtn'), () => this.showFractalViewTab('dictionaries'), 'dictionaries');
+        this._bindTab(document.getElementById('fractalModelsTabBtn'), () => this.showFractalViewTab('models'), 'models');
         this._bindTab(document.getElementById('fractalChatTabBtn'), () => this.showFractalViewTab('chat'), 'chat');
         this._bindTab(document.getElementById('fractalAlertsTabBtn'), () => this.showFractalViewTab('alerts'), 'alerts');
         this._bindTab(document.getElementById('fractalIngestTabBtn'), () => this.showFractalViewTab('ingest'), 'ingest');
@@ -901,12 +907,13 @@ const App = {
         const notebooksContent = document.getElementById('fractalNotebooksTabContent');
         const dashboardsContent = document.getElementById('fractalDashboardsTabContent');
         const dictionariesContent = document.getElementById('fractalDictionariesTabContent');
+        const modelsContent = document.getElementById('fractalModelsTabContent');
         const chatContent = document.getElementById('fractalChatTabContent');
         const alertsContent = document.getElementById('fractalAlertsTabContent');
         const ingestContent = document.getElementById('fractalIngestTabContent');
         const manageContent = document.getElementById('fractalManageTabContent');
 
-        [searchContent, commentsContent, notebooksContent, dashboardsContent, dictionariesContent, chatContent, alertsContent, ingestContent, manageContent].forEach(content => {
+        [searchContent, commentsContent, notebooksContent, dashboardsContent, dictionariesContent, modelsContent, chatContent, alertsContent, ingestContent, manageContent].forEach(content => {
             if (content) content.style.display = 'none';
         });
 
@@ -919,12 +926,13 @@ const App = {
         const notebooksView = document.getElementById('notebooksView');
         const dashboardsView = document.getElementById('dashboardsView');
         const dictionariesView = document.getElementById('dictionariesView');
+        const modelsView = document.getElementById('modelsView');
         const chatView = document.getElementById('chatView');
         const alertsView = document.getElementById('alertsView');
         const feedAlertsView = document.getElementById('feedAlertsView');
         const ingestView = document.getElementById('ingestView');
         const referenceView = document.getElementById('referenceView');
-        [searchView, commentedView, notebooksView, dashboardsView, dictionariesView, chatView, alertsView, feedAlertsView, ingestView, referenceView].forEach(view => {
+        [searchView, commentedView, notebooksView, dashboardsView, dictionariesView, modelsView, chatView, alertsView, feedAlertsView, ingestView, referenceView].forEach(view => {
             if (view) view.style.display = 'none';
         });
 
@@ -934,12 +942,13 @@ const App = {
         const notebooksTab = document.getElementById('fractalNotebooksTabBtn');
         const dashboardsTab = document.getElementById('fractalDashboardsTabBtn');
         const dictionariesTab = document.getElementById('fractalDictionariesTabBtn');
+        const modelsTab = document.getElementById('fractalModelsTabBtn');
         const chatTab = document.getElementById('fractalChatTabBtn');
         const alertsTab = document.getElementById('fractalAlertsTabBtn');
         const ingestTab = document.getElementById('fractalIngestTabBtn');
         const manageTab = document.getElementById('fractalManageTabBtn');
 
-        [searchTab, commentsTab, notebooksTab, dashboardsTab, dictionariesTab, chatTab, alertsTab, ingestTab, manageTab].forEach(tabBtn => {
+        [searchTab, commentsTab, notebooksTab, dashboardsTab, dictionariesTab, modelsTab, chatTab, alertsTab, ingestTab, manageTab].forEach(tabBtn => {
             if (tabBtn) tabBtn.classList.remove('active');
         });
 
@@ -1004,6 +1013,13 @@ const App = {
                 if (dictionariesTab) dictionariesTab.classList.add('active');
 
                 if (window.Dictionaries) Dictionaries.show();
+                break;
+            case 'models':
+                if (modelsContent) modelsContent.style.display = 'block';
+                if (modelsView) modelsView.style.display = 'block';
+                if (modelsTab) modelsTab.classList.add('active');
+
+                if (window.AnalyticsModels) AnalyticsModels.show();
                 break;
             case 'chat':
                 if (chatContent) chatContent.style.display = 'block';

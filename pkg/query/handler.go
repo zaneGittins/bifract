@@ -16,6 +16,7 @@ import (
 
 	"bifract/pkg/dictionaries"
 	"bifract/pkg/fractals"
+	"bifract/pkg/models"
 	"bifract/pkg/parser"
 	"bifract/pkg/prisms"
 	"bifract/pkg/rbac"
@@ -29,6 +30,7 @@ type QueryHandler struct {
 	maxRows           int
 	fractalManager    *fractals.Manager
 	dictionaryManager *dictionaries.Manager
+	modelManager      *models.Manager
 	prismManager      *prisms.Manager
 	rbacResolver      *rbac.Resolver
 	auditFractalID    string
@@ -178,6 +180,11 @@ func NewQueryHandlerFull(db *storage.ClickHouseClient, maxRows int, fractalManag
 		dictionaryManager: dictManager,
 		prismManager:      prismManager,
 	}
+}
+
+// SetModelManager wires in the analytics model manager for model_lookup() BQL support.
+func (h *QueryHandler) SetModelManager(m *models.Manager) {
+	h.modelManager = m
 }
 
 // SetPostgresClient sets the PostgreSQL client used for comment() query resolution
@@ -408,6 +415,23 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Load analytics model infos for model_lookup() resolution
+	var modelInfos map[string]parser.AnalyticsModelInfo
+	if h.modelManager != nil && selectedIndex != "" {
+		if infos, err := h.modelManager.ListModelInfos(r.Context(), selectedIndex); err == nil {
+			modelInfos = make(map[string]parser.AnalyticsModelInfo, len(infos))
+			for name, mi := range infos {
+				modelInfos[name] = parser.AnalyticsModelInfo{
+					ID:        mi.ID,
+					TableName: mi.TableName,
+					ModelType: string(mi.ModelType),
+					MinSample: mi.MinSample,
+					FractalID: mi.FractalID,
+				}
+			}
+		}
+	}
+
 	// Pre-process comment() function: fetch matching log_ids from PostgreSQL
 	var commentLogIDs []string
 	var hasCommentFilter bool
@@ -446,6 +470,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		FractalIDs:            prismFractalIDs,
 		IncludeEmptyFractalID: includeEmptyFractalID,
 		Dictionaries:          dictMappings,
+		Models:                modelInfos,
 		HasCommentFilter:      hasCommentFilter,
 		CommentLogIDs:         commentLogIDs,
 		GeoIPEnabled:          h.geoIPEnabled,

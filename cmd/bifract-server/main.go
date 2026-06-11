@@ -24,6 +24,7 @@ import (
 	"bifract/pkg/dashboards"
 	"bifract/pkg/dictionaries"
 	"bifract/pkg/fractals"
+	"bifract/pkg/models"
 	"bifract/pkg/ingest"
 	"bifract/pkg/ingesttokens"
 	"bifract/pkg/metrics"
@@ -293,6 +294,12 @@ func main() {
 	dictionaryHandler := dictionaries.NewHandler(dictionaryManager, fractalManager)
 	log.Println("Dictionary manager initialized")
 
+	// Initialize analytics model manager
+	log.Println("Initializing analytics model manager...")
+	modelManager := models.NewManager(pg, db)
+	modelHandler := models.NewHandler(modelManager, fractalManager)
+	log.Println("Analytics model manager initialized")
+
 	// Initialize MaxMind GeoIP (optional, enabled by MAXMIND_LICENSE_KEY)
 	// Downloads happen in the background so they don't block server startup.
 	var maxmindManager *maxmind.Manager
@@ -322,6 +329,7 @@ func main() {
 	})
 
 	alertEngine := alerts.NewEngineWithDicts(pg, db, dictionaryManager, alertBaseURL)
+	alertEngine.SetModelManager(modelManager)
 	alertManager := alerts.NewManager(pg, alertEngine, normalizerManager)
 
 	if err := alertEngine.RefreshAlerts(context.Background()); err != nil {
@@ -382,6 +390,7 @@ func main() {
 
 	queryHandler := query.NewQueryHandlerFull(db, config.MaxQueryRows, fractalManager, dictionaryManager, prismManager)
 	queryHandler.SetPostgresClient(pg)
+	queryHandler.SetModelManager(modelManager)
 
 	// Launch MaxMind background load after queryHandler exists
 	if maxmindManager != nil {
@@ -849,6 +858,18 @@ func main() {
 			r.Post("/dictionaries/{id}/columns/{name}/key", dictionaryHandler.HandleSetColumnKey)
 			r.Delete("/dictionaries/{id}/columns/{name}/key", dictionaryHandler.HandleUnsetColumnKey)
 			r.Post("/dictionaries/{id}/reload", dictionaryHandler.HandleReloadDictionary)
+
+			// Analytics models
+			r.Get("/models", modelHandler.HandleList)
+			r.Post("/models", modelHandler.HandleCreate)
+			r.Post("/models/test-extraction", modelHandler.HandleTestExtraction)
+			r.Post("/models/generate-query", modelHandler.HandleGenerateQuery)
+			r.Get("/models/{id}", modelHandler.HandleGet)
+			r.Put("/models/{id}", modelHandler.HandleUpdate)
+			r.Delete("/models/{id}", modelHandler.HandleDelete)
+			r.Get("/models/{id}/data", modelHandler.HandleGetData)
+			r.Post("/models/{id}/enable-alert", modelHandler.HandleEnableAlert)
+			r.Post("/models/{id}/disable-alert", modelHandler.HandleDisableAlert)
 
 			// Dictionary actions (for alerts)
 			r.Get("/dictionary-actions", dictionaryHandler.HandleListDictionaryActions)

@@ -81,8 +81,8 @@ func (c *ClickHouseClient) HistogramReadTable() string {
 	return "logs_histogram"
 }
 
-// rewriteEngineRe matches ENGINE = MergeTree(), ReplacingMergeTree(), or SummingMergeTree(args).
-var rewriteEngineRe = regexp.MustCompile(`(?i)ENGINE\s*=\s*(MergeTree|ReplacingMergeTree|SummingMergeTree)\s*\(([^)]*)\)`)
+// rewriteEngineRe matches ENGINE = MergeTree(), ReplacingMergeTree(), SummingMergeTree(), or AggregatingMergeTree(args).
+var rewriteEngineRe = regexp.MustCompile(`(?i)ENGINE\s*=\s*(MergeTree|ReplacingMergeTree|SummingMergeTree|AggregatingMergeTree)\s*\(([^)]*)\)`)
 
 // RewriteEngine replaces single-node table engines with their replicated
 // equivalents when cluster mode is active. Returns the input unchanged for
@@ -110,6 +110,11 @@ func (c *ClickHouseClient) RewriteEngine(sql string) string {
 				return "ENGINE = ReplicatedSummingMergeTree(" + replicaPath + ")"
 			}
 			return "ENGINE = ReplicatedSummingMergeTree(" + replicaPath + ", " + innerArgs + ")"
+		case "AGGREGATINGMERGETREE":
+			if innerArgs == "" {
+				return "ENGINE = ReplicatedAggregatingMergeTree(" + replicaPath + ")"
+			}
+			return "ENGINE = ReplicatedAggregatingMergeTree(" + replicaPath + ", " + innerArgs + ")"
 		default:
 			return "ENGINE = ReplicatedMergeTree(" + replicaPath + ")"
 		}

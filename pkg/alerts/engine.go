@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"bifract/pkg/dictionaries"
+	"bifract/pkg/models"
 	"bifract/pkg/parser"
 	"bifract/pkg/settings"
 	"bifract/pkg/storage"
@@ -38,6 +39,7 @@ type Engine struct {
 	pg                  *storage.PostgresClient
 	ch                  *storage.ClickHouseClient
 	dictManager         *dictionaries.Manager
+	modelManager        *models.Manager
 	webhookClient       *WebhookClient
 	emailClient         *EmailClient
 	fractalActionClient *FractalActionClient
@@ -152,6 +154,11 @@ type Alert struct {
 // NewEngine creates a new alert processing engine.
 func NewEngine(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Engine {
 	return NewEngineWithDicts(pg, ch, nil, "")
+}
+
+// SetModelManager wires in the analytics model manager for model_lookup() BQL support.
+func (e *Engine) SetModelManager(m *models.Manager) {
+	e.modelManager = m
 }
 
 // NewEngineWithDicts creates a new alert engine with dictionary action support.
@@ -430,6 +437,24 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 	// Collect extra fields needed by the alert processing pipeline so
 	// auto-projection includes them even if they aren't in the WHERE clause.
 	opts.AlertExtraFields = collectAlertExtraFields(alert)
+
+	// Load analytics model infos for model_lookup() BQL support.
+	if e.modelManager != nil && alert.FractalID != "" {
+		if infos, err := e.modelManager.ListModelInfos(ctx, alert.FractalID); err == nil {
+			parserModels := make(map[string]parser.AnalyticsModelInfo, len(infos))
+			for name, mi := range infos {
+				parserModels[name] = parser.AnalyticsModelInfo{
+					ID:        mi.ID,
+					TableName: mi.TableName,
+					ModelType: string(mi.ModelType),
+					MinSample: mi.MinSample,
+					FractalID: mi.FractalID,
+				}
+			}
+			opts.Models = parserModels
+		}
+	}
+
 	return opts, nil
 }
 

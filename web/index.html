@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/apiKeys.css">
     <link rel="stylesheet" href="/static/dictionaries.css">
+    <link rel="stylesheet" href="/static/models.css">
     <link rel="stylesheet" href="/static/chat.css">
     <link rel="stylesheet" href="/static/ingestTokens.css">
     <link rel="stylesheet" href="/static/instructionLibraries.css">
@@ -48,6 +49,7 @@
                     <button id="fractalNotebooksTabBtn" class="nav-tab">Notebooks</button>
                     <button id="fractalDashboardsTabBtn" class="nav-tab">Dashboards</button>
                     <button id="fractalDictionariesTabBtn" class="nav-tab">Dicts</button>
+                    <button id="fractalModelsTabBtn" class="nav-tab">Models</button>
                     <button id="fractalChatTabBtn" class="nav-tab">Chat</button>
                     <button id="fractalAlertsTabBtn" class="nav-tab">
                         Alerts
@@ -1066,6 +1068,11 @@
 
                     </section>
                 </div>
+            </div>
+
+            <!-- Models Tab Content -->
+            <div id="fractalModelsTabContent" style="display: none;">
+                <div id="modelsView" class="auth-required" style="display: none;"></div>
             </div>
 
             <!-- Chat Tab Content -->
@@ -2923,6 +2930,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/notebooks.js"></script>
     <script src="/static/dashboards.js"></script>
     <script src="/static/dictionaries.js"></script>
+    <script src="/static/models.js"></script>
     <script src="/static/chat.js"></script>
     <script src="/static/contextLinks.js"></script>
     <script src="/static/normalizers.js"></script>

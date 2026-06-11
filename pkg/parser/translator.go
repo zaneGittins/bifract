@@ -6,6 +6,16 @@ import (
 	"time"
 )
 
+// AnalyticsModelInfo is a lightweight representation of an analytics model used
+// in QueryOptions for BQL model_lookup() command execution.
+type AnalyticsModelInfo struct {
+	ID        string
+	TableName string // distributed table name in cluster mode, local otherwise
+	ModelType string // "rarity" or "first_seen"
+	MinSample int
+	FractalID string
+}
+
 type QueryOptions struct {
 	StartTime             time.Time
 	EndTime               time.Time
@@ -14,6 +24,7 @@ type QueryOptions struct {
 	FractalIDs            []string                      // Multiple fractal UUIDs (prism context); overrides FractalID when set
 	IncludeEmptyFractalID bool                          // Include logs with no fractal_id (legacy data) when querying default fractal
 	Dictionaries          map[string]map[string]string  // dict name -> key col -> ClickHouse lookup name
+	Models                map[string]AnalyticsModelInfo // model name -> ModelInfo for model_lookup() BQL command
 	HasCommentFilter      bool                          // True when query uses comment() and log_ids have been pre-fetched
 	CommentLogIDs         []string                      // Pre-fetched log_ids from PostgreSQL for comment() filtering
 	UseIngestTimestamp    bool                          // Filter on ingest_timestamp instead of timestamp (used by alerts)

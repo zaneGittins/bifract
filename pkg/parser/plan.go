@@ -89,6 +89,11 @@ type QueryPlan struct {
 	JoinInclude  []string // fields to include from subquery (empty = all)
 	JoinMaxRows  int      // max rows for subquery safety limit
 
+	// ModelLookup-specific fields (set by model_lookup() BQL command)
+	ModelLookupSQL    string   // pre-built scoring subquery SQL
+	ModelLookupOn     string   // JOIN ON condition (composite key via concat)
+	ModelLookupFields []string // output field names added to outer SELECT
+
 	// Table command tracking
 	HasTableCmd            bool
 	TableHasExplicitColumns bool
@@ -212,6 +217,11 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	// Apply join wrapping (subquery JOIN)
 	if p.IsJoin && p.JoinSubSQL != "" {
 		innerSQL = p.wrapWithJoin(innerSQL)
+	}
+
+	// Apply model_lookup JOIN wrapping
+	if p.ModelLookupSQL != "" {
+		innerSQL = p.wrapWithModelLookup(innerSQL)
 	}
 
 	// Apply formatters (outer SELECT for timestamp formatting, deferred math)
@@ -394,6 +404,22 @@ func (p *QueryPlan) wrapWithJoin(outerSQL string) string {
 	sql.WriteString(p.JoinKey)
 
 	return sql.String()
+}
+
+// wrapWithModelLookup wraps the outer query with a LEFT JOIN against the model scoring subquery.
+func (p *QueryPlan) wrapWithModelLookup(outerSQL string) string {
+	var b strings.Builder
+	b.WriteString("SELECT _outer.*")
+	for _, f := range p.ModelLookupFields {
+		b.WriteString(fmt.Sprintf(", _mlookup.%s", f))
+	}
+	b.WriteString(" FROM (")
+	b.WriteString(outerSQL)
+	b.WriteString(") AS _outer LEFT JOIN (")
+	b.WriteString(p.ModelLookupSQL)
+	b.WriteString(") AS _mlookup ON ")
+	b.WriteString(p.ModelLookupOn)
+	return b.String()
 }
 
 // outerHasColumn checks if the outer SQL SELECT clause contains the given column name as an alias.

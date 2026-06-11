@@ -49,7 +49,7 @@ const Pagination = {
         const totalPages = this.getTotalPages();
 
         if (totalPages > 1) {
-            bar.style.display = 'flex';
+            bar.style.display = 'grid';
             pageNumbers.innerHTML = this._renderPageNumbers(totalPages);
         } else {
             bar.style.display = 'none';

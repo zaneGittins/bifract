@@ -518,7 +518,15 @@ func translateConditionCtx(cond ConditionNode, inNegation bool, suppressTokens b
 		}
 	} else if cond.IsRegex {
 		noTokens := suppressTokens || cond.Negate || inNegation || cond.GroupID > 0
-		sql = buildRegexMatchSQL(fieldRef, cond.Value, cond.Operator == "!=", noTokens)
+		negate := cond.Operator == "!="
+		if isJSONField && !noTokens && !negate {
+			sql = buildRegexMatchSQL(fieldRef, cond.Value, false, true)
+			if pre := regexPreFilters(cond.Field, cond.Value); pre != "" {
+				sql = pre + " AND " + sql
+			}
+		} else {
+			sql = buildRegexMatchSQL(fieldRef, cond.Value, negate, noTokens)
+		}
 	} else {
 		// For comparison operators, try to convert to numeric if the value looks numeric
 		// This allows queries like: bytes > 1000
@@ -858,7 +866,7 @@ func extractLiteralTokens(pattern string) []string {
 			i++
 			continue
 		}
-		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') {
 			current = append(current, ch)
 		} else {
 			if len(current) > 0 {
@@ -879,7 +887,22 @@ func extractLiteralTokens(pattern string) []string {
 			continue
 		}
 		lower := strings.ToLower(t)
-		if !seen[lower] {
+		if seen[lower] {
+			continue
+		}
+		// Pure-digit tokens (e.g. "123") are unsafe as hasToken pre-filters:
+		// they can appear embedded inside larger alphanumeric tokens in raw_log
+		// (e.g. "error123" is ONE tokenbf_v1 token), causing false negatives.
+		// Mixed tokens like "namtws003" are kept because they contain alpha chars
+		// and are therefore unlikely to be substrings of other tokens.
+		hasAlpha := false
+		for _, c := range lower {
+			if c >= 'a' && c <= 'z' {
+				hasAlpha = true
+				break
+			}
+		}
+		if hasAlpha {
 			seen[lower] = true
 			result = append(result, lower)
 		}
@@ -887,11 +910,13 @@ func extractLiteralTokens(pattern string) []string {
 	return result
 }
 
-// extractValueTokens extracts alphabetic token sequences from a plain (non-regex)
-// string value, matching how ClickHouse's splitByNonAlpha tokenizer processes raw_log.
-// Any non-alpha byte (dot, backslash, digit, underscore, etc.) splits a token.
-// Tokens shorter than 3 chars are excluded as they are too common to prune effectively.
-// Used to build hasToken() pre-filters for equality conditions on non-type-hinted JSON fields.
+// extractValueTokens extracts alphanumeric token sequences from a plain (non-regex)
+// string value, mirroring ClickHouse's tokenbf_v1 tokenizer (splits on non-alphanumeric
+// characters). Tokens shorter than 3 chars or consisting entirely of digits are excluded:
+// pure-digit tokens are unsafe as raw_log hasToken pre-filters because digits can appear
+// embedded inside larger alphanumeric tokens (e.g. "500" inside "error500"), which would
+// cause false negatives. Mixed tokens like "namtws003" are kept.
+// Used to build hasToken() pre-filters for equality conditions on JSON fields.
 func extractValueTokens(value string) []string {
 	var tokens []string
 	var current []byte
@@ -905,7 +930,7 @@ func extractValueTokens(value string) []string {
 
 	for i := 0; i < len(value); i++ {
 		ch := value[i]
-		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') {
 			current = append(current, ch)
 		} else {
 			flush()
@@ -916,7 +941,19 @@ func extractValueTokens(value string) []string {
 	seen := make(map[string]bool)
 	var result []string
 	for _, t := range tokens {
-		if !seen[t] {
+		if seen[t] {
+			continue
+		}
+		// Drop pure-digit tokens for the same reason as extractLiteralTokens:
+		// they are unsafe as raw_log hasToken pre-filters (false negative risk).
+		hasAlpha := false
+		for _, c := range t {
+			if c >= 'a' && c <= 'z' {
+				hasAlpha = true
+				break
+			}
+		}
+		if hasAlpha {
 			seen[t] = true
 			result = append(result, t)
 		}
@@ -949,6 +986,27 @@ func equalityPreFilters(field, value string) string {
 	rawFallback := strings.Join(rawParts, " AND ")
 
 	return "(" + ftCheck + " OR " + rawFallback + ")"
+}
+
+// regexPreFilters generates (hasToken(field_tokens, 'field:token') OR hasToken(raw_log, 'token'))
+// pre-filters for regex conditions on JSON fields, mirroring equalityPreFilters so that
+// the field_tokens index provides a fallback when the value is absent from raw_log.
+func regexPreFilters(field, pattern string) string {
+	if patternHasAlternation(pattern) {
+		return ""
+	}
+	tokens := extractLiteralTokens(pattern)
+	if len(tokens) == 0 {
+		return ""
+	}
+	ftKey := replaceQueryTokenSeparators(strings.ToLower(field))
+	var parts []string
+	for _, tok := range tokens {
+		ftCheck := fmt.Sprintf("hasToken(field_tokens, '%s')", escapeString(ftKey+":"+tok))
+		rawCheck := fmt.Sprintf("hasToken(raw_log, '%s')", escapeString(tok))
+		parts = append(parts, "("+ftCheck+" OR "+rawCheck+")")
+	}
+	return strings.Join(parts, " AND ")
 }
 
 // replaceQueryTokenSeparators normalizes a field name or value for use in a
