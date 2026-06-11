@@ -1,8 +1,17 @@
 /* Analytics Models */
+#fractalModelsTabContent,
+#modelsView {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
 .models-view-section {
     display: flex;
     flex-direction: column;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
     padding: 16px;
     gap: 16px;
     overflow-y: auto;
