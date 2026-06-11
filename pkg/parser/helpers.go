@@ -517,16 +517,13 @@ func translateConditionCtx(cond ConditionNode, inNegation bool, suppressTokens b
 			sql = fmt.Sprintf("%s != ''", fieldRef)
 		}
 	} else if cond.IsRegex {
-		noTokens := suppressTokens || cond.Negate || inNegation || cond.GroupID > 0
 		negate := cond.Operator == "!="
-		if isJSONField && !noTokens && !negate {
-			sql = buildRegexMatchSQL(fieldRef, cond.Value, false, true)
-			if pre := regexPreFilters(cond.Field, cond.Value); pre != "" {
-				sql = pre + " AND " + sql
-			}
-		} else {
-			sql = buildRegexMatchSQL(fieldRef, cond.Value, negate, noTokens)
-		}
+		// Never use hasToken pre-filters for regex: regex is a substring match but
+		// hasToken requires an exact complete token. /http/ matches "https://..." but
+		// hasToken(raw_log, 'http') = FALSE because the Bloom filter token is "https".
+		// False negatives are unacceptable; ClickHouse's built-in granule pruning for
+		// match() is sufficient. match() is called with the negate flag only.
+		sql = buildRegexMatchSQL(fieldRef, cond.Value, negate, false)
 	} else {
 		// For comparison operators, try to convert to numeric if the value looks numeric
 		// This allows queries like: bytes > 1000
@@ -988,27 +985,6 @@ func equalityPreFilters(field, value string) string {
 	return "(" + ftCheck + " OR " + rawFallback + ")"
 }
 
-// regexPreFilters generates (hasToken(field_tokens, 'field:token') OR hasToken(raw_log, 'token'))
-// pre-filters for regex conditions on JSON fields, mirroring equalityPreFilters so that
-// the field_tokens index provides a fallback when the value is absent from raw_log.
-func regexPreFilters(field, pattern string) string {
-	if patternHasAlternation(pattern) {
-		return ""
-	}
-	tokens := extractLiteralTokens(pattern)
-	if len(tokens) == 0 {
-		return ""
-	}
-	ftKey := replaceQueryTokenSeparators(strings.ToLower(field))
-	var parts []string
-	for _, tok := range tokens {
-		ftCheck := fmt.Sprintf("hasToken(field_tokens, '%s')", escapeString(ftKey+":"+tok))
-		rawCheck := fmt.Sprintf("hasToken(raw_log, '%s')", escapeString(tok))
-		parts = append(parts, "("+ftCheck+" OR "+rawCheck+")")
-	}
-	return strings.Join(parts, " AND ")
-}
-
 // replaceQueryTokenSeparators normalizes a field name or value for use in a
 // field_tokens token. Mirrors replaceTokenSeparators in pkg/storage/clickhouse.go —
 // both must apply identical transformations or hasToken lookups will miss stored tokens.
@@ -1026,42 +1002,19 @@ func replaceQueryTokenSeparators(s string) string {
 	return b.String()
 }
 
-// buildRegexMatchSQL wraps match() with hasToken pre-filters that leverage
-// the text index on raw_log for granule pruning. The text index uses
-// preprocessor = lower(raw_log), so hasToken auto-lowers search terms
-// and works for both case-sensitive and case-insensitive regex patterns.
-// Falls back to plain match() when no useful tokens can be extracted or for negated regex.
-// Pre-filters work for any field (raw_log, JSON fields) because raw_log contains
-// the full event text: if a JSON field matches a pattern, the tokens appear in raw_log.
-func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, suppressTokens bool) string {
+// buildRegexMatchSQL returns a match() expression for use in WHERE clauses.
+// We do NOT add explicit hasToken pre-filters here: hasToken requires an exact
+// complete token, but regex is a substring match. A pattern like /http/ matches
+// "https://..." but hasToken(raw_log, 'http') = FALSE (the token is "https").
+// Adding hasToken as a mandatory AND causes false negatives. ClickHouse's own
+// tokenbf_v1 index already prunes granules for match() automatically — that
+// built-in optimization is sufficient and correct.
+func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, _ bool) string {
 	matchExpr := fmt.Sprintf("match(%s, %s)", fieldRef, escapeRegexForClickHouse(pattern))
 	if negate {
-		matchExpr = "NOT " + matchExpr
+		return "NOT " + matchExpr
 	}
-
-	if negate || suppressTokens {
-		return matchExpr
-	}
-
-	// Patterns with alternation (|) cannot use AND-combined hasToken pre-filters:
-	// the alternatives are mutually exclusive so requiring every token to appear
-	// in the same document produces false negatives (e.g. /(cmd|vbs|ps1)/ would
-	// demand "cmd" AND "vbs" AND "ps1" all present, matching nothing).
-	if patternHasAlternation(pattern) {
-		return matchExpr
-	}
-
-	tokens := extractLiteralTokens(pattern)
-	if len(tokens) == 0 {
-		return matchExpr
-	}
-
-	var parts []string
-	for _, tok := range tokens {
-		parts = append(parts, fmt.Sprintf("hasToken(raw_log, '%s')", tok))
-	}
-	parts = append(parts, matchExpr)
-	return strings.Join(parts, " AND ")
+	return matchExpr
 }
 
 // patternHasAlternation returns true if the regex pattern contains | outside

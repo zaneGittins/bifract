@@ -419,7 +419,7 @@ ${this.wizard.step < 4
         const w = this.wizard;
         return `
 <div class="wizard-card">
-    <h3>Step 1 — Source</h3>
+    <h3>Step 1: Source</h3>
     <div class="field-group" style="margin-bottom:16px">
         <label>Model Type</label>
         <div class="model-type-cards">
@@ -499,7 +499,7 @@ ${this.wizard.step < 4
         const w = this.wizard;
         return `
 <div class="wizard-card">
-    <h3>Step 2 — Extract</h3>
+    <h3>Step 2: Extract</h3>
     <p style="font-size:13px;color:var(--text-muted,#888);margin:0 0 12px 0">
         Use regex extractions to pull fields from raw log content. Each extraction's output becomes available to the next step.
         Leave empty to use raw log fields directly.
@@ -511,11 +511,13 @@ ${this.wizard.step < 4
     },
 
     _extractionCardHTML(ext, i, w) {
+        const datalistId = `from-fields-${i}`;
         const fromOptions = this._getAvailableFields(i, w).map(f =>
-            `<option value="${_esc(f)}" ${ext.from_field === f ? 'selected' : ''}>${_esc(f)}</option>`
+            `<option value="${_esc(f)}">`
         ).join('');
         return `
 <div class="extraction-card" data-idx="${i}">
+    <datalist id="${datalistId}">${fromOptions}</datalist>
     <div class="extraction-card-header">
         <span class="ext-num">Extraction ${i + 1}</span>
         <button class="btn-remove-row" data-idx="${i}">× Remove</button>
@@ -524,20 +526,20 @@ ${this.wizard.step < 4
     <div class="extraction-fields">
         <div class="field-group">
             <label>From Field</label>
-            <select class="ext-from">${fromOptions}</select>
+            <input type="text" class="ext-from field-group-input" list="${datalistId}" value="${_esc(ext.from_field || 'raw_log')}" placeholder="e.g. contents">
         </div>
         <div class="field-group">
             <label>Output Field</label>
-            <input type="text" class="ext-output" placeholder="e.g. tld" value="${_esc(ext.output_field || '')}">
+            <input type="text" class="ext-output field-group-input" placeholder="e.g. tld" value="${_esc(ext.output_field || '')}">
         </div>
         <div class="field-group" style="grid-column:1/-1">
             <label>Regex Pattern (one capture group)</label>
-            <input type="text" class="ext-pattern" placeholder='e.g. ([^.]+\\.[^.]+)$' value="${_esc(ext.pattern || '')}" style="font-family:var(--font-mono,'IBM Plex Mono',monospace)">
+            <input type="text" class="ext-pattern field-group-input" placeholder='e.g. ([^.]+\\.[^.]+)$' value="${_esc(ext.pattern || '')}" style="font-family:var(--font-mono,'IBM Plex Mono',monospace)">
         </div>
     </div>
     <div class="extraction-toggles">
         <label class="toggle-label">
-            <input type="checkbox" class="ext-lowercase" ${ext.lowercase ? 'checked' : ''}> Lowercase output
+            <input type="checkbox" class="ext-lowercase themed-checkbox" ${ext.lowercase ? 'checked' : ''}> Lowercase output
         </label>
         <label class="toggle-label" style="margin-left:16px">
             Min length: <input type="number" class="ext-minlen" value="${ext.min_length || 0}" min="0" style="width:50px;margin-left:4px;padding:2px 6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary)">
@@ -548,7 +550,7 @@ ${this.wizard.step < 4
     },
 
     _getAvailableFields(beforeIndex, w) {
-        const base = ['raw_log', 'fields.commandline', 'fields.target_file', 'fields.src_ip', 'fields.dst_ip', 'fields.user', 'fields.image'];
+        const base = ['raw_log', 'contents', 'commandline', 'target_file', 'src_ip', 'dst_ip', 'user', 'image', 'parent_process', 'process_name'];
         const extracted = w.extractions.slice(0, beforeIndex).map(e => e.output_field).filter(Boolean);
         return [...base, ...extracted];
     },
@@ -567,7 +569,7 @@ ${this.wizard.step < 4
         const w = this.wizard;
         document.querySelectorAll('.extraction-card').forEach(card => {
             const i = parseInt(card.dataset.idx);
-            card.querySelector('.ext-from').addEventListener('change', e => { w.extractions[i].from_field = e.target.value; });
+            card.querySelector('.ext-from').addEventListener('input', e => { w.extractions[i].from_field = e.target.value; });
             card.querySelector('.ext-output').addEventListener('change', e => { w.extractions[i].output_field = e.target.value; });
             card.querySelector('.ext-pattern').addEventListener('change', e => { w.extractions[i].pattern = e.target.value; });
             card.querySelector('.ext-lowercase').addEventListener('change', e => { w.extractions[i].lowercase = e.target.checked; });
@@ -613,7 +615,7 @@ ${this.wizard.step < 4
         if (w.modelType === 'rarity') {
             return `
 <div class="wizard-card">
-    <h3>Step 3 — Shape (Rarity)</h3>
+    <h3>Step 3: Shape (Rarity)</h3>
     <div class="shape-grid">
         <div class="field-group">
             <label>Partition Key (group by)</label>
@@ -635,7 +637,7 @@ ${this.wizard.step < 4
         } else {
             return `
 <div class="wizard-card">
-    <h3>Step 3 — Shape (First/Last Seen)</h3>
+    <h3>Step 3: Shape (First/Last Seen)</h3>
     <div class="field-group">
         <label>Key Fields (entity to track)</label>
         <div id="keyFieldsList">${w.keyFields.map((kf, i) => `
@@ -709,7 +711,7 @@ ${this.wizard.step < 4
         const w = this.wizard;
         return `
 <div class="wizard-card">
-    <h3>Step 4 — Name &amp; Create</h3>
+    <h3>Step 4: Name &amp; Create</h3>
     <div class="form-row">
         <div class="field-group" style="flex:2">
             <label>Model Name</label>

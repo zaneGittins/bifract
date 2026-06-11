@@ -3752,32 +3752,31 @@ func TestBuildRegexMatchSQL(t *testing.T) {
 		wantNoParts []string
 	}{
 		{
-			name:     "raw_log case-sensitive regex adds hasToken pre-filters",
+			name:     "raw_log case-sensitive regex returns plain match",
 			fieldRef: "raw_log",
 			pattern:  "Convert-GuidToCompressedGuid",
 			negate:   false,
 			wantParts: []string{
-				"hasToken(raw_log, 'convert')",
-				"hasToken(raw_log, 'guidtocompressedguid')",
 				"match(raw_log, 'Convert-GuidToCompressedGuid')",
+			},
+			wantNoParts: []string{
+				"hasToken",
 			},
 		},
 		{
-			name:     "raw_log case-insensitive regex also uses hasToken (preprocessor handles lowering)",
+			name:     "raw_log case-insensitive regex returns plain match",
 			fieldRef: "raw_log",
 			pattern:  "(?i)Convert-GuidToCompressedGuid",
 			negate:   false,
 			wantParts: []string{
-				"hasToken(raw_log, 'convert')",
-				"hasToken(raw_log, 'guidtocompressedguid')",
 				"match(raw_log, '(?i)Convert-GuidToCompressedGuid')",
 			},
 			wantNoParts: []string{
-				"hasTokenCaseInsensitive",
+				"hasToken",
 			},
 		},
 		{
-			name:     "negated regex skips pre-filters",
+			name:     "negated regex returns NOT match",
 			fieldRef: "raw_log",
 			pattern:  "Convert-GuidToCompressedGuid",
 			negate:   true,
@@ -3789,17 +3788,19 @@ func TestBuildRegexMatchSQL(t *testing.T) {
 			},
 		},
 		{
-			name:     "JSON field regex gets hasToken pre-filters",
+			name:     "JSON field regex returns plain match without hasToken",
 			fieldRef: "fields.`message`",
 			pattern:  "(?i)powershell",
 			negate:   false,
 			wantParts: []string{
-				"hasToken(raw_log, 'powershell')",
 				"match(fields.`message`, '(?i)powershell')",
+			},
+			wantNoParts: []string{
+				"hasToken",
 			},
 		},
 		{
-			name:     "no extractable tokens falls back to plain match",
+			name:     "no extractable tokens returns plain match",
 			fieldRef: "raw_log",
 			pattern:  `\d+\.\d+`,
 			negate:   false,
@@ -3843,33 +3844,33 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 		wantNotContain []string
 	}{
 		{
-			name:  "bare case-insensitive regex on raw_log gets hasToken pre-filters",
+			name:  "bare case-insensitive regex on raw_log uses plain match",
 			query: "/Convert-GuidToCompressedGuid/i",
 			wantContain: []string{
-				"hasToken(raw_log, 'convert')",
-				"hasToken(raw_log, 'guidtocompressedguid')",
 				"match(raw_log, '(?i)Convert-GuidToCompressedGuid')",
 			},
 			wantNotContain: []string{
-				"hasTokenCaseInsensitive",
+				"hasToken",
 			},
 		},
 		{
-			name:  "bare case-sensitive regex on raw_log gets hasToken pre-filters",
+			name:  "bare case-sensitive regex on raw_log uses plain match",
 			query: "/Convert-GuidToCompressedGuid/",
 			wantContain: []string{
-				"hasToken(raw_log, 'convert')",
-				"hasToken(raw_log, 'guidtocompressedguid')",
 				"match(raw_log, 'Convert-GuidToCompressedGuid')",
+			},
+			wantNotContain: []string{
+				"hasToken",
 			},
 		},
 		{
-			name:  "bare string search on raw_log gets hasToken pre-filters",
+			name:  "bare string search on raw_log uses plain match",
 			query: `"powershell.exe"`,
 			wantContain: []string{
-				"hasToken(raw_log, 'powershell')",
-				"hasToken(raw_log, 'exe')",
 				"match(raw_log,",
+			},
+			wantNotContain: []string{
+				"hasToken(raw_log",
 			},
 		},
 		{
@@ -3918,11 +3919,13 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:  "field regex gets hasToken pre-filters for granule pruning",
+			name:  "field regex uses plain match without hasToken",
 			query: "image=/powershell/i",
 			wantContain: []string{
-				"hasToken(raw_log, 'powershell')",
 				"match(fields.`image`, '(?i)powershell')",
+			},
+			wantNotContain: []string{
+				"hasToken(raw_log",
 			},
 		},
 		{

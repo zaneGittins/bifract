@@ -365,6 +365,60 @@
     cursor: pointer;
 }
 
+/* Dark-themed checkbox */
+.themed-checkbox {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    background: var(--bg-primary, #0f0f1a);
+    cursor: pointer;
+    flex-shrink: 0;
+    position: relative;
+}
+
+.themed-checkbox:checked {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+.themed-checkbox:checked::after {
+    content: '';
+    position: absolute;
+    left: 3px;
+    top: 1px;
+    width: 5px;
+    height: 8px;
+    border: 2px solid #fff;
+    border-top: none;
+    border-left: none;
+    transform: rotate(45deg);
+}
+
+.themed-checkbox:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(156, 106, 222, 0.3);
+}
+
+/* Free-text field input matching field-group select style */
+.field-group-input {
+    padding: 5px 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 13px;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.field-group-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
 .extraction-test-result {
     font-size: 12px;
     padding: 6px 10px;
