@@ -67,10 +67,13 @@ func buildMVSelect(def ModelDefinition, mt ModelType) (string, error) {
 		// base CTE: filter + initial field selection
 		b.WriteString("base AS (\n")
 		b.WriteString("    SELECT fractal_id, timestamp")
-		// Collect all fields referenced in extractions
+		// Collect all fields referenced in extractions, aliased so downstream CTEs
+		// can reference them by plain name (fields.X AS X) rather than via JSON traversal.
+		seen := map[string]bool{}
 		for _, ext := range def.Extractions {
-			if !isExtractionOutput(ext.FromField, def.Extractions) {
-				b.WriteString(fmt.Sprintf(", %s", chFieldRef(ext.FromField)))
+			if !isExtractionOutput(ext.FromField, def.Extractions) && !seen[ext.FromField] {
+				seen[ext.FromField] = true
+				b.WriteString(fmt.Sprintf(", %s AS %s", chFieldRef(ext.FromField), ext.FromField))
 			}
 		}
 		b.WriteString("\n    FROM logs\n")
@@ -80,14 +83,11 @@ func buildMVSelect(def ModelDefinition, mt ModelType) (string, error) {
 		}
 		b.WriteString("\n),\n")
 
-		// Extraction CTEs
+		// Extraction CTEs — reference columns by plain name since base CTE aliased them.
 		prevCTE := "base"
 		for i, ext := range def.Extractions {
 			cteName := fmt.Sprintf("e%d", i)
-			fromRef := chFieldRef(ext.FromField)
-			if isExtractionOutput(ext.FromField, def.Extractions[:i]) {
-				fromRef = ext.FromField
-			}
+			fromRef := ext.FromField
 			b.WriteString(fmt.Sprintf("%s AS (\n", cteName))
 			b.WriteString(fmt.Sprintf("    SELECT *, extract(%s, %s) AS %s\n",
 				fromRef, chStringLiteral(ext.Pattern), ext.OutputField))

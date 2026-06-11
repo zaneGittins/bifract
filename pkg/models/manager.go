@@ -429,9 +429,11 @@ func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter [
 
 	var b strings.Builder
 	b.WriteString("WITH\nbase AS (\n    SELECT timestamp, raw_log, log_id")
+	seen := map[string]bool{}
 	for _, ext := range extractions {
-		if !isExtractionOutput(ext.FromField, extractions) {
-			b.WriteString(fmt.Sprintf(", %s", chFieldRef(ext.FromField)))
+		if !isExtractionOutput(ext.FromField, extractions) && !seen[ext.FromField] {
+			seen[ext.FromField] = true
+			b.WriteString(fmt.Sprintf(", %s AS %s", chFieldRef(ext.FromField), ext.FromField))
 		}
 	}
 	b.WriteString(fmt.Sprintf("\n    FROM %s\n    WHERE fractal_id = '%s'", tableName, storage.EscCHStr(fractalID)))
@@ -443,10 +445,7 @@ func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter [
 	prevCTE := "base"
 	for i, ext := range extractions {
 		cteName := fmt.Sprintf("e%d", i)
-		fromRef := chFieldRef(ext.FromField)
-		if isExtractionOutput(ext.FromField, extractions[:i]) {
-			fromRef = ext.FromField
-		}
+		fromRef := ext.FromField
 		b.WriteString(fmt.Sprintf(",\n%s AS (\n    SELECT *, extract(%s, %s) AS %s\n    FROM %s\n    WHERE extract(%s, %s) != ''",
 			cteName, fromRef, chStringLiteral(ext.Pattern), ext.OutputField, prevCTE, fromRef, chStringLiteral(ext.Pattern)))
 		if ext.MinLength > 0 {
