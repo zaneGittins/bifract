@@ -201,14 +201,14 @@ func buildDirectSelect(def ModelDefinition, mt ModelType) string {
 }
 
 // chFieldRef converts a user-facing field name to a ClickHouse expression.
-// Known log columns (timestamp, raw_log, log_id, fractal_id) are referenced directly.
-// Everything else is treated as a JSON sub-column.
+// Known log columns are referenced directly. JSON sub-columns get ::String so
+// match() / extract() receive a concrete String type rather than Dynamic.
 func chFieldRef(field string) string {
 	switch field {
 	case "timestamp", "raw_log", "log_id", "fractal_id", "ingest_timestamp", "field_tokens":
 		return field
 	default:
-		return "fields." + field
+		return "fields.`" + field + "`::String"
 	}
 }
 
