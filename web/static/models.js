@@ -588,21 +588,24 @@ ${this.wizard.step < 4
         const exts = w.extractions.slice(0, upToIndex + 1).filter(e => e.pattern && e.output_field);
         if (!exts.length) { Toast.warning('Fill in pattern and output field first'); return; }
         const resultEl = document.getElementById(`extTestResult_${upToIndex}`);
-        if (resultEl) { resultEl.style.display = 'block'; resultEl.textContent = 'Testing...'; }
+        if (resultEl) { resultEl.style.display = 'block'; resultEl.innerHTML = '<em>Testing...</em>'; }
         try {
             const data = await this._api('POST', '/models/test-extraction', {
                 filter: w.filterRows.filter(f => f.field && f.value),
                 extractions: exts
             });
             const results = data?.data?.results || [];
+            const sql = data?.data?.sql || '';
+            const outField = exts[exts.length - 1]?.output_field || 'value';
+            const sqlBlock = sql ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--text-muted,#888);font-size:11px">Show SQL</summary><pre style="margin:4px 0 0;white-space:pre-wrap;font-size:11px;color:var(--text-muted,#888)">${_esc(sql)}</pre></details>` : '';
             if (!results.length) {
-                if (resultEl) resultEl.textContent = 'No matches found in recent logs.';
+                if (resultEl) resultEl.innerHTML = `No matches found in recent logs.${sqlBlock}`;
                 return;
             }
-            const preview = results.slice(0, 5).map(r => `${r.value} (${r.count})`).join(', ');
-            if (resultEl) resultEl.textContent = `${results.length} distinct values · e.g. ${preview}`;
+            const preview = results.slice(0, 5).map(r => `${r[outField]} (${r.cnt})`).join(', ');
+            if (resultEl) resultEl.innerHTML = `${results.length} distinct values &middot; e.g. ${_esc(preview)}${sqlBlock}`;
         } catch (e) {
-            if (resultEl) resultEl.textContent = `Error: ${e.message || 'test failed'}`;
+            if (resultEl) resultEl.innerHTML = `Error: ${_esc(e.message || 'test failed')}`;
         }
     },
 

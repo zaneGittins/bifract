@@ -420,11 +420,11 @@ WHERE fractal_id = '%s'`, "`"+tableName+"`", storage.EscCHStr(fractalID))
 	return rows, total, nil
 }
 
-// TestExtraction runs a sample extraction against logs and returns matched values.
-func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter []FilterCondition, extractions []ExtractionStep) ([]map[string]interface{}, error) {
+// TestExtraction runs a sample extraction against logs and returns matched values plus the generated SQL.
+func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter []FilterCondition, extractions []ExtractionStep) ([]map[string]interface{}, string, error) {
 	tableName := m.ch.ReadTable()
 	if len(extractions) == 0 {
-		return nil, fmt.Errorf("no extractions provided")
+		return nil, "", fmt.Errorf("no extractions provided")
 	}
 
 	var b strings.Builder
@@ -446,10 +446,11 @@ func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter [
 	for i, ext := range extractions {
 		cteName := fmt.Sprintf("e%d", i)
 		fromRef := ext.FromField
+		sqlPat := chStringLiteral(extractPattern(ext.Pattern))
 		b.WriteString(fmt.Sprintf(",\n%s AS (\n    SELECT *, extract(%s, %s) AS %s\n    FROM %s\n    WHERE extract(%s, %s) != ''",
-			cteName, fromRef, chStringLiteral(ext.Pattern), ext.OutputField, prevCTE, fromRef, chStringLiteral(ext.Pattern)))
+			cteName, fromRef, sqlPat, ext.OutputField, prevCTE, fromRef, sqlPat))
 		if ext.MinLength > 0 {
-			b.WriteString(fmt.Sprintf("\n    AND length(extract(%s, %s)) >= %d", fromRef, chStringLiteral(ext.Pattern), ext.MinLength))
+			b.WriteString(fmt.Sprintf("\n    AND length(extract(%s, %s)) >= %d", fromRef, sqlPat, ext.MinLength))
 		}
 		b.WriteString("\n)")
 		prevCTE = cteName
@@ -461,7 +462,9 @@ func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter [
 	b.WriteString(fmt.Sprintf("\nSELECT %s, count() AS cnt FROM %s GROUP BY %s ORDER BY cnt DESC LIMIT 50",
 		outField, prevCTE, outField))
 
-	return m.ch.Query(ctx, b.String())
+	sql := b.String()
+	results, err := m.ch.Query(ctx, sql)
+	return results, sql, err
 }
 
 // ---- Scanning helpers ----

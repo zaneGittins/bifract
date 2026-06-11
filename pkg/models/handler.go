@@ -179,7 +179,7 @@ func (h *Handler) HandleTestExtraction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := h.manager.TestExtraction(r.Context(), fractalID, req.Filter, req.Extractions)
+	results, sql, err := h.manager.TestExtraction(r.Context(), fractalID, req.Filter, req.Extractions)
 	if err != nil {
 		log.Printf("[Models] test extraction: %v", err)
 		h.respondError(w, http.StatusInternalServerError, fmt.Sprintf("Extraction failed: %v", err))
@@ -188,7 +188,7 @@ func (h *Handler) HandleTestExtraction(w http.ResponseWriter, r *http.Request) {
 	if results == nil {
 		results = []map[string]interface{}{}
 	}
-	h.respondSuccess(w, map[string]interface{}{"results": results, "count": len(results)})
+	h.respondSuccess(w, map[string]interface{}{"results": results, "count": len(results), "sql": sql})
 }
 
 // HandleEnableAlert enables the linked alert for a model.

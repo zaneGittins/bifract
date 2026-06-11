@@ -2,8 +2,18 @@ package models
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var namedGroupRe = regexp.MustCompile(`\(\?(?:P?<[a-zA-Z_][a-zA-Z0-9_]*>|P'[a-zA-Z_][a-zA-Z0-9_]*')`)
+
+// extractPattern strips named capture group syntax from a pattern so that
+// ClickHouse's extract() function receives a plain positional capture group.
+// (?<name>...) and (?P<name>...) become (...).
+func extractPattern(pattern string) string {
+	return namedGroupRe.ReplaceAllString(pattern, "(")
+}
 
 // GenerateDDL returns (createTableSQL, createMVSQL) for the given model definition.
 func GenerateDDL(def ModelDefinition, mt ModelType, tableName, mvName string) (string, string, error) {
@@ -88,15 +98,16 @@ func buildMVSelect(def ModelDefinition, mt ModelType) (string, error) {
 		for i, ext := range def.Extractions {
 			cteName := fmt.Sprintf("e%d", i)
 			fromRef := ext.FromField
+			sqlPat := chStringLiteral(extractPattern(ext.Pattern))
 			b.WriteString(fmt.Sprintf("%s AS (\n", cteName))
 			b.WriteString(fmt.Sprintf("    SELECT *, extract(%s, %s) AS %s\n",
-				fromRef, chStringLiteral(ext.Pattern), ext.OutputField))
+				fromRef, sqlPat, ext.OutputField))
 			b.WriteString(fmt.Sprintf("    FROM %s\n", prevCTE))
 			b.WriteString(fmt.Sprintf("    WHERE extract(%s, %s) != ''",
-				fromRef, chStringLiteral(ext.Pattern)))
+				fromRef, sqlPat))
 			if ext.MinLength > 0 {
 				b.WriteString(fmt.Sprintf("\n    AND length(extract(%s, %s)) >= %d",
-					fromRef, chStringLiteral(ext.Pattern), ext.MinLength))
+					fromRef, sqlPat, ext.MinLength))
 			}
 			if ext.Lowercase {
 				// Rewrite the output field as lowercased in a sub-expression
