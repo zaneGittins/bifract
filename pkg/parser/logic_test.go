@@ -20,11 +20,9 @@ var logicTestOpts = QueryOptions{
 	MaxRows:   1000,
 }
 
-// sqlFrag must be a substring that appears in the generated SQL regardless
-// of whether the term inherits its field from a preceding condition.
-// Bare strings/regex inherit the field of the previous condition in the same
-// expression (e.g., image=/ps/i OR /cmd/i searches image for both).
-// So we use value-level fragments that are always present.
+// sqlFrag must be a substring that appears in the generated SQL.
+// Bare strings/regex always search raw_log regardless of surrounding conditions.
+// We use value-level fragments that are always present.
 var termTypes = []termDef{
 	{"quoted_string", `"error"`, "'error')"},
 	{"regex", `/error/i`, "'(?i)error')"},

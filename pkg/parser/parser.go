@@ -427,13 +427,9 @@ func (p *Parser) parseConditionsWithPrecedence(minPrecedence int) ([]ConditionNo
 				}
 			}
 		} else if p.current().Type == TokenRegex {
-			// Bare regex after AND/OR: inherit field from previous condition
-			field := "raw_log"
-			if len(conditions) > 0 {
-				field = conditions[len(conditions)-1].Field
-			}
+			// Bare regex always searches raw_log
 			cond := &ConditionNode{
-				Field:    field,
+				Field:    "raw_log",
 				Operator: "=",
 				Value:    p.current().Value,
 				IsRegex:  true,
@@ -443,13 +439,9 @@ func (p *Parser) parseConditionsWithPrecedence(minPrecedence int) ([]ConditionNo
 			p.advance()
 			currentConditions = []ConditionNode{*cond}
 		} else if p.current().Type == TokenString {
-			// Bare string: substring search on raw_log (or inherit field)
-			field := "raw_log"
-			if len(conditions) > 0 {
-				field = conditions[len(conditions)-1].Field
-			}
+			// Bare string always searches raw_log
 			cond := &ConditionNode{
-				Field:    field,
+				Field:    "raw_log",
 				Operator: "~",
 				Value:    p.current().Value,
 				IsRegex:  true,
