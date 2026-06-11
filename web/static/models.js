@@ -116,7 +116,7 @@ const AnalyticsModels = {
             btn.addEventListener('click', () => this._openDataViewer(btn.dataset.id));
         });
         wrap.querySelectorAll('.btn-model-delete').forEach(btn => {
-            btn.addEventListener('click', () => this._deleteModel(btn.dataset.id, btn.dataset.name));
+            btn.addEventListener('click', () => this._deleteModel(btn.dataset.id, btn.dataset.name, btn));
         });
         wrap.querySelectorAll('.alert-mode-badge[data-id]').forEach(badge => {
             badge.addEventListener('click', () => this._toggleAlertMode(badge.dataset.id, badge.dataset.mode));
@@ -163,14 +163,17 @@ const AnalyticsModels = {
         }
     },
 
-    async _deleteModel(id, name) {
-        if (!confirm(`Delete model "${name}"? This will drop the ClickHouse table and MV. This cannot be undone.`)) return;
+    async _deleteModel(id, name, btn) {
+        if (!confirm(`Delete model "${name}"? This cannot be undone.`)) return;
+        if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
         try {
             await this._api('DELETE', `/models/${id}`);
             await this._loadModels();
             Toast.success('Model deleted');
         } catch (e) {
-            Toast.error('Failed to delete model');
+            console.error('[Models] delete failed:', e);
+            Toast.error('Delete failed: ' + (e.message || 'unknown error'));
+            if (btn) { btn.disabled = false; btn.textContent = 'Delete'; }
         }
     },
 

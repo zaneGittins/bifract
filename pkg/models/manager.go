@@ -205,22 +205,27 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 	return m.Get(ctx, id)
 }
 
-// Delete drops ClickHouse objects and removes the model from Postgres.
+// Delete removes the model from Postgres immediately, then drops ClickHouse
+// objects in the background. ON CLUSTER DDL can take 30-70+ seconds; blocking
+// the HTTP handler causes duplicate requests and confuses the UI.
 func (m *Manager) Delete(ctx context.Context, id string) error {
 	model, err := m.Get(ctx, id)
 	if err != nil {
 		return err
 	}
-	// Use a background context — ON CLUSTER DDL drops can be slow and the
-	// HTTP request context may cancel before they complete. We must not let
-	// a slow CH drop prevent the Postgres row from being cleaned up.
-	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	if err := m.dropCHObjects(bgCtx, model.CHTableName, model.CHMVName); err != nil {
-		log.Printf("model %s: drop CH objects during delete: %v", id, err)
+	// Remove from Postgres first so the UI sees it gone immediately.
+	if _, err = m.pg.Exec(ctx, `DELETE FROM analytics_models WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("delete model: %w", err)
 	}
-	_, err = m.pg.Exec(bgCtx, `DELETE FROM analytics_models WHERE id = $1`, id)
-	return err
+	// Fire-and-forget CH cleanup — slow ON CLUSTER DDL must not block the caller.
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if err := m.dropCHObjects(bgCtx, model.CHTableName, model.CHMVName); err != nil {
+			log.Printf("model %s: async drop CH objects: %v", id, err)
+		}
+	}()
+	return nil
 }
 
 // SetAlertMode updates the alert_mode and optionally the linked_alert_id.
