@@ -267,7 +267,7 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 		fieldRef := "raw_log"
 		if field != "raw_log" && field != "timestamp" {
-			fieldRef = jsonFieldRef(field)
+			fieldRef = resolveFieldRef(field, ctx.Registry)
 		} else if field == "timestamp" {
 			fieldRef = "toString(timestamp)"
 		}

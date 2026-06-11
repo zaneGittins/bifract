@@ -139,7 +139,7 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 		`INSERT INTO analytics_models
 		    (fractal_id, name, description, model_type, definition, ch_table_name, ch_mv_name,
 		     status, alert_mode, created_by)
-		 VALUES ($1, $2, $3, $4, $5, '', '', 'active', $6, $7)
+		 VALUES ($1, $2, $3, $4, $5, '', '', 'rebuilding', $6, $7)
 		 RETURNING id`,
 		fractalID, req.Name, req.Description, string(req.ModelType),
 		string(defJSON), req.AlertMode, createdBy).Scan(&id)
@@ -159,14 +159,21 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 		return nil, fmt.Errorf("update ch names: %w", err)
 	}
 
-	// Create ClickHouse objects — use a background context with a generous
-	// timeout so CH DDL is not bounded by the HTTP request deadline.
-	ddlCtx, ddlCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer ddlCancel()
-	if err := m.createCHObjects(ddlCtx, id, req.Definition, req.ModelType, tableName, mvName); err != nil {
-		_, _ = m.pg.Exec(context.Background(), `DELETE FROM analytics_models WHERE id = $1`, id)
-		return nil, fmt.Errorf("create clickhouse objects: %w", err)
-	}
+	// Create ClickHouse objects in a background goroutine so the HTTP handler
+	// returns immediately. ON CLUSTER DDL takes 30-70s in some deployments;
+	// blocking the request causes duplicate submissions and a stuck UI.
+	// The model is visible in the listing with status='rebuilding' while CH work completes.
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if err := m.createCHObjects(bgCtx, id, req.Definition, req.ModelType, tableName, mvName); err != nil {
+			log.Printf("model %s: async create CH objects failed: %v", id, err)
+			_, _ = m.pg.Exec(bgCtx, `UPDATE analytics_models SET status='error', error_message=$1 WHERE id=$2`,
+				err.Error(), id)
+			return
+		}
+		_, _ = m.pg.Exec(bgCtx, `UPDATE analytics_models SET status='active', error_message='' WHERE id=$1`, id)
+	}()
 
 	return m.Get(ctx, id)
 }
