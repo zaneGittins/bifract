@@ -868,6 +868,8 @@ ${this.wizard.step < 4
     },
 };
 
+window.AnalyticsModels = AnalyticsModels;
+
 // HTML-escape helper (shared with other modules in this codebase)
 function _esc(str) {
     if (str === null || str === undefined) return '';
