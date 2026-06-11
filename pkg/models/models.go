@@ -10,40 +10,35 @@ const (
 )
 
 type FilterCondition struct {
-	Field string `json:"field"`
-	Op    string `json:"op"`    // "=", "!=", "~", "!~"
-	Value string `json:"value"`
+	Field string `json:"field" yaml:"field"`
+	Op    string `json:"op" yaml:"op"`
+	Value string `json:"value" yaml:"value"`
 }
 
 type ExtractionStep struct {
-	FromField   string `json:"from_field"`
-	Pattern     string `json:"pattern"`
-	OutputField string `json:"output_field"`
-	Lowercase   bool   `json:"lowercase"`
-	MinLength   int    `json:"min_length"`
+	FromField   string `json:"from_field" yaml:"from_field"`
+	Pattern     string `json:"pattern" yaml:"pattern"`
+	OutputField string `json:"output_field" yaml:"output_field"`
+	Lowercase   bool   `json:"lowercase" yaml:"lowercase,omitempty"`
+	MinLength   int    `json:"min_length" yaml:"min_length,omitempty"`
 }
 
 type AlertConfig struct {
-	Severity  string   `json:"severity"`
-	ActionIDs []string `json:"action_ids"`
-	// Rarity thresholds
-	ConfidenceThreshold float64 `json:"confidence_threshold"`
-	PercentThreshold    float64 `json:"percent_threshold"`
-	// First-seen threshold
-	AlertOnNew bool `json:"alert_on_new"`
+	Severity            string   `json:"severity" yaml:"severity,omitempty"`
+	ActionIDs           []string `json:"action_ids" yaml:"action_ids,omitempty"`
+	ConfidenceThreshold float64  `json:"confidence_threshold" yaml:"confidence_threshold,omitempty"`
+	PercentThreshold    float64  `json:"percent_threshold" yaml:"percent_threshold,omitempty"`
+	AlertOnNew          bool     `json:"alert_on_new" yaml:"alert_on_new,omitempty"`
 }
 
 type ModelDefinition struct {
-	Filter      []FilterCondition `json:"filter"`
-	Extractions []ExtractionStep  `json:"extractions"`
-	// Rarity fields
-	PartitionKey string `json:"partition_key"`
-	ValueKey     string `json:"value_key"`
-	MinSample    int    `json:"min_sample"`
-	// First-seen fields
-	KeyFields []string `json:"key_fields"`
-	// Alert auto-create
-	Alert *AlertConfig `json:"alert,omitempty"`
+	Filter       []FilterCondition `json:"filter" yaml:"filter,omitempty"`
+	Extractions  []ExtractionStep  `json:"extractions" yaml:"extractions,omitempty"`
+	PartitionKey string            `json:"partition_key" yaml:"partition_key,omitempty"`
+	ValueKey     string            `json:"value_key" yaml:"value_key,omitempty"`
+	MinSample    int               `json:"min_sample" yaml:"min_sample,omitempty"`
+	KeyFields    []string          `json:"key_fields" yaml:"key_fields,omitempty"`
+	Alert        *AlertConfig      `json:"alert,omitempty" yaml:"alert,omitempty"`
 }
 
 type Model struct {

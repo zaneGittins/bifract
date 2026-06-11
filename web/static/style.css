@@ -11277,6 +11277,8 @@ div.vis-tooltip {
     align-items: center;
     gap: 0.5rem;
     margin-bottom: 0.5rem;
+    border-radius: 4px;
+    transition: opacity 0.15s;
 }
 
 .normalizer-ts-field-row input {
@@ -11289,6 +11291,31 @@ div.vis-tooltip {
 
 .normalizer-ts-field-row .ts-field-format {
     flex: 1.2;
+}
+
+.ts-drag-handle {
+    cursor: grab;
+    color: var(--text-muted);
+    padding: 0 2px;
+    user-select: none;
+    font-size: 0.9rem;
+    flex-shrink: 0;
+}
+
+.ts-drag-handle:hover {
+    color: var(--accent-primary);
+}
+
+.ts-drag-handle:active {
+    cursor: grabbing;
+}
+
+.normalizer-ts-field-row.ts-row-dragging {
+    opacity: 0.45;
+}
+
+.normalizer-ts-field-row.ts-row-drag-over {
+    border-top: 2px solid var(--accent-primary);
 }
 
 .mapping-sources-modal-overlay {

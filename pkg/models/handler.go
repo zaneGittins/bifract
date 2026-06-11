@@ -3,15 +3,25 @@ package models
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"gopkg.in/yaml.v3"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
 )
+
+type modelExport struct {
+	Name        string          `yaml:"name"`
+	Description string          `yaml:"description,omitempty"`
+	ModelType   ModelType       `yaml:"model_type"`
+	Definition  ModelDefinition `yaml:"definition"`
+}
 
 // Handler provides HTTP endpoints for analytics model management.
 type Handler struct {
@@ -46,7 +56,7 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	if model == nil {
 		return
 	}
-	rowCount, _ := h.manager.RowCount(r.Context(), model.CHTableName)
+	rowCount, _ := h.manager.RowCount(r.Context(), h.manager.readTableName(model))
 	h.respondSuccess(w, map[string]interface{}{"model": model, "row_count": rowCount})
 }
 
@@ -237,6 +247,69 @@ func (h *Handler) HandleGenerateQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	query := GenerateQuery(req.Name, req.Definition, req.ModelType)
 	h.respondSuccess(w, map[string]string{"query": query})
+}
+
+// HandleExport returns the model definition as a downloadable YAML file.
+func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
+	model := h.getModelScoped(w, r)
+	if model == nil {
+		return
+	}
+	exp := modelExport{
+		Name:        model.Name,
+		Description: model.Description,
+		ModelType:   model.ModelType,
+		Definition:  model.Definition,
+	}
+	out, err := yaml.Marshal(exp)
+	if err != nil {
+		h.respondError(w, http.StatusInternalServerError, "Failed to serialize model")
+		return
+	}
+	filename := strings.ReplaceAll(model.Name, " ", "_") + ".yaml"
+	w.Header().Set("Content-Type", "application/yaml")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Write(out)
+}
+
+// HandleImport creates a model from an uploaded YAML definition.
+func (h *Handler) HandleImport(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAnalyst(w, r) {
+		return
+	}
+	fractalID, err := h.getFractalID(r)
+	if err != nil {
+		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		h.respondError(w, http.StatusBadRequest, "Failed to read request body")
+		return
+	}
+	var exp modelExport
+	if err := yaml.Unmarshal(body, &exp); err != nil {
+		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Invalid YAML: %v", err))
+		return
+	}
+	if exp.Name == "" {
+		h.respondError(w, http.StatusBadRequest, "Model name is required")
+		return
+	}
+	req := CreateRequest{
+		Name:        exp.Name,
+		Description: exp.Description,
+		ModelType:   exp.ModelType,
+		Definition:  exp.Definition,
+		AlertMode:   "none",
+	}
+	model, err := h.manager.Create(r.Context(), fractalID, req, h.getCurrentUser(r))
+	if err != nil {
+		log.Printf("[Models] import: %v", err)
+		h.respondError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to import model: %v", err))
+		return
+	}
+	h.respondSuccess(w, map[string]interface{}{"model": model})
 }
 
 // ---- Helpers ----

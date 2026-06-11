@@ -50,6 +50,13 @@ const AnalyticsModels = {
         return data;
     },
 
+    async _apiRaw(method, path, body, contentType) {
+        const opts = { method, headers: { 'Content-Type': contentType } };
+        if (body !== undefined) opts.body = body;
+        const data = await HttpUtils.safeFetch('/api/v1' + path, opts);
+        return data;
+    },
+
     async _loadModels() {
         try {
             const data = await this._api('GET', '/models');
@@ -81,14 +88,18 @@ const AnalyticsModels = {
         <div class="models-filters">
             <input type="text" id="modelsSearchInput" class="models-search" placeholder="Search models...">
             <span class="filters-spacer"></span>
+            <button class="btn-secondary" id="modelsImportBtn">Import YAML</button>
             <button class="btn-primary" id="modelsNewBtn">+ New Model</button>
         </div>
+        <input type="file" id="modelsImportFile" accept=".yaml,.yml" style="display:none">
         <div id="modelsTableWrap" class="models-table-wrap">
             <div class="models-empty">Loading...</div>
         </div>
     </div>
 </div>`;
         document.getElementById('modelsNewBtn').addEventListener('click', () => this._startWizard());
+        document.getElementById('modelsImportBtn').addEventListener('click', () => document.getElementById('modelsImportFile').click());
+        document.getElementById('modelsImportFile').addEventListener('change', e => this._importModel(e));
         const searchInput = document.getElementById('modelsSearchInput');
         searchInput.addEventListener('input', () => this._renderList());
         this._loadModels();
@@ -115,6 +126,9 @@ const AnalyticsModels = {
         wrap.querySelectorAll('.btn-view-data').forEach(btn => {
             btn.addEventListener('click', () => this._openDataViewer(btn.dataset.id));
         });
+        wrap.querySelectorAll('.btn-model-export').forEach(btn => {
+            btn.addEventListener('click', () => this._exportModel(btn.dataset.id, btn.dataset.name));
+        });
         wrap.querySelectorAll('.btn-model-delete').forEach(btn => {
             btn.addEventListener('click', () => this._deleteModel(btn.dataset.id, btn.dataset.name, btn));
         });
@@ -139,6 +153,7 @@ const AnalyticsModels = {
     <td>
         <div class="model-actions">
             <button class="btn-view-data" data-id="${m.id}">Data</button>
+            <button class="btn-model-export" data-id="${m.id}" data-name="${_esc(m.name)}">Export</button>
             <button class="btn-model-delete btn-danger" data-id="${m.id}" data-name="${_esc(m.name)}">Delete</button>
         </div>
     </td>
@@ -161,6 +176,29 @@ const AnalyticsModels = {
             Toast.success(currentMode === 'active' ? 'Alert paused' : 'Alert activated');
         } catch (e) {
             Toast.error('Failed to toggle alert');
+        }
+    },
+
+    _exportModel(id, name) {
+        const a = document.createElement('a');
+        a.href = `/api/v1/models/${id}/export`;
+        a.download = (name || id) + '.yaml';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    },
+
+    async _importModel(e) {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        e.target.value = '';
+        const text = await file.text();
+        try {
+            const data = await this._apiRaw('POST', '/models/import', text, 'application/yaml');
+            await this._loadModels();
+            Toast.success(`Imported "${data?.data?.model?.name || file.name}"`);
+        } catch (err) {
+            Toast.error('Import failed: ' + (err.message || 'unknown error'));
         }
     },
 

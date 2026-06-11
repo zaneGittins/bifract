@@ -333,6 +333,15 @@ func (m *Manager) RowCount(ctx context.Context, tableName string) (uint64, error
 	return 0, nil
 }
 
+// readTableName returns the distributed table name in cluster mode, otherwise the local table.
+// Always use this for read queries so they fan out across all shards.
+func (m *Manager) readTableName(model *Model) string {
+	if m.ch.IsCluster() {
+		return chModelDistName(model.ID)
+	}
+	return model.CHTableName
+}
+
 // GetData returns paginated model data with computed scores.
 // For rarity: runs the triple-nested scoring subquery.
 // For first_seen: returns entity_key, first_seen, last_seen, event_count.
@@ -347,11 +356,12 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID, search, 
 		sortDir = "desc"
 	}
 
+	tableName := m.readTableName(model)
 	switch model.ModelType {
 	case ModelTypeRarity:
-		return m.getRarityData(ctx, model.CHTableName, fractalID, search, sortCol, sortDir, limit, offset)
+		return m.getRarityData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
 	case ModelTypeFirstSeen:
-		return m.getFirstSeenData(ctx, model.CHTableName, fractalID, search, sortCol, sortDir, limit, offset)
+		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
 	default:
 		return nil, 0, fmt.Errorf("unknown model type: %s", model.ModelType)
 	}

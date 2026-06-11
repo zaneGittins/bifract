@@ -2,6 +2,7 @@ const Normalizers = {
     normalizers: [],
     editingId: null,
     currentTransforms: [],
+    _draggedTsRow: null,
 
     TRANSFORMS: {
         flatten_leaf: { label: 'flatten_leaf', desc: 'Flatten nested keys to leaf name only (user.profile.name -> name)', conflicts: ['flatten_full', 'dedot'] },
@@ -19,7 +20,7 @@ const Normalizers = {
         { label: 'ISO 8601 (nanoseconds)',       value: '2006-01-02T15:04:05.999999999Z07:00' },
         { label: 'ISO 8601 (milliseconds)',      value: '2006-01-02T15:04:05.000Z07:00' },
         { label: 'Date + Time (space)',          value: '2006-01-02 15:04:05' },
-        { label: 'Date + Time (millis)',         value: '2006-01-02 15:04:05.000' },
+        { label: 'Date + Time (millis) / utc_time', value: '2006-01-02 15:04:05.000' },
         { label: 'Unix (seconds)',               value: 'unix' },
         { label: 'Unix (milliseconds)',          value: 'unixmilli' },
         { label: 'Unix (microseconds)',          value: 'unixmicro' },
@@ -98,7 +99,7 @@ const Normalizers = {
                     <button class="btn-sm btn-secondary" onclick="Normalizers.openEditForm('${n.id}')" title="Edit">Edit</button>
                     <button class="btn-sm btn-secondary" onclick="Normalizers.duplicateNormalizer('${n.id}')" title="Duplicate">Duplicate</button>
                     <button class="btn-sm btn-secondary" onclick="Normalizers.exportNormalizer('${n.id}', '${Utils.escapeHtml(n.name)}')" title="Export YAML">Export</button>
-                    <button class="btn-sm btn-secondary" id="optimizeBtn-${n.id}" onclick="Normalizers.optimizeStorage('${n.id}')" title="Add JSON type hints and skip indexes for this normalizer's fields">Optimize Storage</button>
+
                     ${!n.is_default ? `<button class="btn-sm btn-secondary" onclick="Normalizers.setDefault('${n.id}')" title="Set as default">Set Default</button>` : ''}
                     ${!n.is_default ? `<button class="btn-sm btn-danger" onclick="Normalizers.deleteNormalizer('${n.id}')" title="Delete">Delete</button>` : ''}
                 </td>
@@ -331,6 +332,7 @@ const Normalizers = {
         }
 
         row.innerHTML = `
+            <span class="ts-drag-handle" title="Drag to reorder">⋮⋮</span>
             <input type="text" class="ts-field-name" placeholder="Field name (e.g. system_time)" value="${Utils.escapeHtml(field || '')}">
             <select class="ts-field-preset" title="Select a preset or type a custom format">
                 ${presetOptions}
@@ -348,9 +350,44 @@ const Normalizers = {
             }
         });
         formatInput.addEventListener('input', () => {
-            // If user types a custom value, deselect preset
             const match = this.TIMESTAMP_PRESETS.find(p => p.value === formatInput.value);
             presetSelect.value = match ? match.value : '';
+        });
+
+        // Drag-to-reorder: only activate drag when the handle is grabbed
+        const handle = row.querySelector('.ts-drag-handle');
+        handle.addEventListener('mousedown', () => { row.draggable = true; });
+        handle.addEventListener('mouseup', () => { row.draggable = false; });
+        handle.addEventListener('mouseleave', () => { row.draggable = false; });
+
+        row.addEventListener('dragstart', (e) => {
+            Normalizers._draggedTsRow = row;
+            row.classList.add('ts-row-dragging');
+            e.dataTransfer.effectAllowed = 'move';
+        });
+        row.addEventListener('dragend', () => {
+            Normalizers._draggedTsRow = null;
+            row.classList.remove('ts-row-dragging');
+            row.draggable = false;
+            container.querySelectorAll('.normalizer-ts-field-row').forEach(r => r.classList.remove('ts-row-drag-over'));
+        });
+        row.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            if (Normalizers._draggedTsRow && Normalizers._draggedTsRow !== row) {
+                container.querySelectorAll('.normalizer-ts-field-row').forEach(r => r.classList.remove('ts-row-drag-over'));
+                row.classList.add('ts-row-drag-over');
+            }
+        });
+        row.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const dragged = Normalizers._draggedTsRow;
+            if (dragged && dragged !== row) {
+                const rows = [...container.querySelectorAll('.normalizer-ts-field-row')];
+                const dragIdx = rows.indexOf(dragged);
+                const dropIdx = rows.indexOf(row);
+                container.insertBefore(dragged, dragIdx < dropIdx ? row.nextSibling : row);
+                row.classList.remove('ts-row-drag-over');
+            }
         });
 
         container.appendChild(row);
@@ -617,18 +654,6 @@ const Normalizers = {
         }
     },
 
-    async optimizeStorage(id) {
-        const btn = document.getElementById(`optimizeBtn-${id}`);
-        if (btn) { btn.disabled = true; btn.textContent = 'Optimizing...'; }
-        try {
-            await HttpUtils.safeFetch(`/api/v1/normalizers/${id}/optimize-storage`, { method: 'POST' });
-            Utils.showNotification('Storage optimized — type hints and skip indexes applied', 'success');
-        } catch (err) {
-            Utils.showNotification(`Failed to optimize storage: ${err.message}`, 'error');
-        } finally {
-            if (btn) { btn.disabled = false; btn.textContent = 'Optimize Storage'; }
-        }
-    }
 };
 
 window.Normalizers = Normalizers;
