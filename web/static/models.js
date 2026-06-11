@@ -350,7 +350,7 @@ const AnalyticsModels = {
         <div class="wizard-header">
             <button class="btn-secondary" id="wizardCancelBtn">← Cancel</button>
             <h2>New Analytics Model</h2>
-            ${this._wizardStepsHTML()}
+            <div id="wizardStepsContainer">${this._wizardStepsHTML()}</div>
         </div>
         <div id="wizardStepContent"></div>
         <div class="wizard-nav" id="wizardNav"></div>
@@ -380,6 +380,9 @@ const AnalyticsModels = {
         const content = document.getElementById('wizardStepContent');
         const nav = document.getElementById('wizardNav');
         if (!content) return;
+
+        const stepsContainer = document.getElementById('wizardStepsContainer');
+        if (stepsContainer) stepsContainer.innerHTML = this._wizardStepsHTML();
 
         switch (this.wizard.step) {
             case 1: content.innerHTML = this._step1HTML(); this._bindStep1(); break;

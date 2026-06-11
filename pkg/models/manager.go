@@ -8,6 +8,8 @@ import (
 	"log"
 	"strings"
 
+	"time"
+
 	"bifract/pkg/storage"
 )
 
@@ -157,9 +159,12 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 		return nil, fmt.Errorf("update ch names: %w", err)
 	}
 
-	// Create ClickHouse objects
-	if err := m.createCHObjects(ctx, id, req.Definition, req.ModelType, tableName, mvName); err != nil {
-		_, _ = m.pg.Exec(ctx, `DELETE FROM analytics_models WHERE id = $1`, id)
+	// Create ClickHouse objects — use a background context with a generous
+	// timeout so CH DDL is not bounded by the HTTP request deadline.
+	ddlCtx, ddlCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer ddlCancel()
+	if err := m.createCHObjects(ddlCtx, id, req.Definition, req.ModelType, tableName, mvName); err != nil {
+		_, _ = m.pg.Exec(context.Background(), `DELETE FROM analytics_models WHERE id = $1`, id)
 		return nil, fmt.Errorf("create clickhouse objects: %w", err)
 	}
 
@@ -182,17 +187,20 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 		return nil, fmt.Errorf("update model: %w", err)
 	}
 
-	// Rebuild CH objects (drops old data, forward-only)
+	// Rebuild CH objects (drops old data, forward-only).
+	// Use a background context so slow ON CLUSTER DDL does not race the HTTP deadline.
+	ddlCtx, ddlCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer ddlCancel()
 	_, _ = m.pg.Exec(ctx, `UPDATE analytics_models SET status='rebuilding' WHERE id=$1`, id)
-	if err := m.dropCHObjects(ctx, existing.CHTableName, existing.CHMVName); err != nil {
+	if err := m.dropCHObjects(ddlCtx, existing.CHTableName, existing.CHMVName); err != nil {
 		log.Printf("model %s: drop CH objects during update: %v", id, err)
 	}
-	if err := m.createCHObjects(ctx, id, req.Definition, existing.ModelType, existing.CHTableName, existing.CHMVName); err != nil {
-		_, _ = m.pg.Exec(ctx, `UPDATE analytics_models SET status='error', error_message=$1 WHERE id=$2`,
+	if err := m.createCHObjects(ddlCtx, id, req.Definition, existing.ModelType, existing.CHTableName, existing.CHMVName); err != nil {
+		_, _ = m.pg.Exec(context.Background(), `UPDATE analytics_models SET status='error', error_message=$1 WHERE id=$2`,
 			err.Error(), id)
 		return nil, fmt.Errorf("recreate clickhouse objects: %w", err)
 	}
-	_, _ = m.pg.Exec(ctx, `UPDATE analytics_models SET status='active', error_message='' WHERE id=$1`, id)
+	_, _ = m.pg.Exec(context.Background(), `UPDATE analytics_models SET status='active', error_message='' WHERE id=$1`, id)
 
 	return m.Get(ctx, id)
 }
@@ -203,10 +211,15 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.dropCHObjects(ctx, model.CHTableName, model.CHMVName); err != nil {
+	// Use a background context — ON CLUSTER DDL drops can be slow and the
+	// HTTP request context may cancel before they complete. We must not let
+	// a slow CH drop prevent the Postgres row from being cleaned up.
+	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if err := m.dropCHObjects(bgCtx, model.CHTableName, model.CHMVName); err != nil {
 		log.Printf("model %s: drop CH objects during delete: %v", id, err)
 	}
-	_, err = m.pg.Exec(ctx, `DELETE FROM analytics_models WHERE id = $1`, id)
+	_, err = m.pg.Exec(bgCtx, `DELETE FROM analytics_models WHERE id = $1`, id)
 	return err
 }
 
