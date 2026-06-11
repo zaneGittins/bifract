@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"bifract/pkg/storage"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 )
 
 // Manager handles analytics model CRUD and the ClickHouse table+MV lifecycle.
@@ -251,6 +253,18 @@ func (m *Manager) SetAlertMode(ctx context.Context, id, alertMode, linkedAlertID
 
 // ---- ClickHouse object lifecycle ----
 
+// isCHDDLTimeout returns true for ClickHouse error code 159 (TIMEOUT_EXCEEDED),
+// which occurs when ON CLUSTER DDL exceeds distributed_ddl_task_timeout but the
+// task continues running in the background on all nodes. The object is created
+// successfully; the error is cosmetic and should be treated as a warning.
+func isCHDDLTimeout(err error) bool {
+	var ex *proto.Exception
+	if errors.As(err, &ex) {
+		return ex.Code == 159
+	}
+	return false
+}
+
 func (m *Manager) createCHObjects(ctx context.Context, id string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
 	tableSQL, mvSQL, err := GenerateDDL(def, mt, "`"+tableName+"`", "`"+mvName+"`")
 	if err != nil {
@@ -260,12 +274,12 @@ func (m *Manager) createCHObjects(ctx context.Context, id string, def ModelDefin
 	tableSQL = m.ch.RewriteEngine(tableSQL)
 	tableSQL = m.ch.InjectOnCluster(tableSQL)
 
-	if err := m.ch.Exec(ctx, tableSQL); err != nil {
+	if err := m.ch.Exec(ctx, tableSQL); err != nil && !isCHDDLTimeout(err) {
 		return fmt.Errorf("create model table: %w", err)
 	}
 
 	mvSQL = m.ch.InjectOnCluster(mvSQL)
-	if err := m.ch.Exec(ctx, mvSQL); err != nil {
+	if err := m.ch.Exec(ctx, mvSQL); err != nil && !isCHDDLTimeout(err) {
 		// Roll back table creation
 		_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)))
 		return fmt.Errorf("create model mv: %w", err)
