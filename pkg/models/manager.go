@@ -438,7 +438,7 @@ func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter [
 	for _, fc := range filter {
 		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
 	}
-	b.WriteString("\n    LIMIT 10000\n)")
+	b.WriteString("\n    ORDER BY timestamp DESC\n    LIMIT 1000\n)")
 
 	prevCTE := "base"
 	for i, ext := range extractions {
