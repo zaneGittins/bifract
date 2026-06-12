@@ -8,6 +8,7 @@ const AnalyticsModels = {
     // Wizard state
     wizard: {
         step: 1,
+        editId: null,        // set when editing an existing model
         modelType: 'rarity',
         filterRows: [],
         extractions: [],
@@ -31,6 +32,8 @@ const AnalyticsModels = {
         sortCol: '',
         sortDir: 'desc',
         search: '',
+        tab: 'data',     // 'data' | 'config'
+        stats: null,
     },
 
     init() {
@@ -119,12 +122,15 @@ const AnalyticsModels = {
         wrap.innerHTML = `
 <table class="models-table">
     <thead><tr>
-        <th>Name</th><th>Type</th><th>Status</th><th>Alert</th><th>Rows</th><th>Updated</th><th></th>
+        <th>Name</th><th>Type</th><th>Status</th><th>Alert</th><th>Updated</th><th></th>
     </tr></thead>
     <tbody>${filtered.map(m => this._modelRow(m)).join('')}</tbody>
 </table>`;
         wrap.querySelectorAll('.btn-view-data').forEach(btn => {
             btn.addEventListener('click', () => this._openDataViewer(btn.dataset.id));
+        });
+        wrap.querySelectorAll('.btn-model-edit').forEach(btn => {
+            btn.addEventListener('click', () => this._editModel(btn.dataset.id));
         });
         wrap.querySelectorAll('.btn-model-export').forEach(btn => {
             btn.addEventListener('click', () => this._exportModel(btn.dataset.id, btn.dataset.name));
@@ -148,11 +154,11 @@ const AnalyticsModels = {
     <td>${_esc(m.model_type)}</td>
     <td><span class="model-badge ${statusClass}"${errorTitle}>${_esc(m.status)}</span></td>
     <td>${alertBadge}</td>
-    <td>—</td>
     <td>${updated}</td>
     <td>
         <div class="model-actions">
             <button class="btn-view-data" data-id="${m.id}">Data</button>
+            <button class="btn-model-edit" data-id="${m.id}">Edit</button>
             <button class="btn-model-export" data-id="${m.id}" data-name="${_esc(m.name)}">Export</button>
             <button class="btn-model-delete btn-danger" data-id="${m.id}" data-name="${_esc(m.name)}">Delete</button>
         </div>
@@ -217,15 +223,42 @@ const AnalyticsModels = {
     },
 
     // ============================
+    // Edit existing model (opens wizard pre-populated)
+    // ============================
+    _editModel(id) {
+        const m = this.models.find(m => m.id === id);
+        if (!m) return;
+        const def = m.definition || {};
+        this.wizard = {
+            step: 1,
+            editId: m.id,
+            modelType: m.model_type || 'rarity',
+            filterRows: (def.filter || []).map(f => ({ ...f })),
+            extractions: (def.extractions || []).map(e => ({ ...e })),
+            partitionKey: def.partition_key || '',
+            valueKey: def.value_key || '',
+            keyFields: (def.key_fields && def.key_fields.length) ? [...def.key_fields] : [''],
+            minSample: def.min_sample || 5,
+            alertMode: m.alert_mode || 'none',
+            alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true },
+            name: m.name,
+            description: m.description || '',
+        };
+        this.currentView = 'wizard';
+        this._render();
+    },
+
+    // ============================
     // Data viewer
     // ============================
     async _openDataViewer(id) {
         const model = this.models.find(m => m.id === id);
         if (!model) return;
-        this.viewer = { model, rows: [], total: 0, limit: 50, offset: 0, sortCol: '', sortDir: 'desc', search: '' };
+        this.viewer = { model, rows: [], total: 0, limit: 50, offset: 0, sortCol: '', sortDir: 'desc', search: '', tab: 'data', stats: null };
         this.currentView = 'data';
         this._render();
         await this._loadViewerData();
+        this._loadViewerStats();
     },
 
     async _loadViewerData() {
@@ -238,10 +271,21 @@ const AnalyticsModels = {
             const data = await this._api('GET', `/models/${v.model.id}/data?${params}`);
             v.rows = data?.data?.rows || [];
             v.total = data?.data?.total || 0;
-            this._renderDataTable();
+            this._renderViewerContent();
         } catch (e) {
             console.error('[Models] loadViewerData error:', e);
             Toast.error('Failed to load model data: ' + (e?.message || String(e)));
+        }
+    },
+
+    async _loadViewerStats() {
+        const v = this.viewer;
+        try {
+            const data = await this._api('GET', `/models/${v.model.id}/stats`);
+            v.stats = data?.data?.stats || null;
+            this._renderStatsPanel();
+        } catch (e) {
+            console.error('[Models] loadViewerStats error:', e);
         }
     },
 
@@ -259,27 +303,48 @@ const AnalyticsModels = {
         <button class="btn-secondary" id="modelsBackBtn">← Back</button>
         <div class="model-data-title">${_esc(m.name)}</div>
         <span class="model-badge ${m.model_type === 'rarity' ? 'badge-active' : 'badge-paused'}">${_esc(m.model_type)}</span>
+        <button class="btn-secondary" id="modelsEditFromViewer">Edit</button>
         ${alertBtn}
         <button class="btn-secondary" id="modelsDataRefresh">↺ Refresh</button>
     </div>
-    <div class="model-data-controls">
-        <input type="text" id="modelsDataSearch" class="models-search" placeholder="Search..." value="${_esc(this.viewer.search)}">
+    <div id="modelsStatsPanel" class="model-stats-panel"></div>
+    <div class="model-viewer-tabs">
+        <button class="viewer-tab ${this.viewer.tab === 'data' ? 'active' : ''}" data-tab="data">Data</button>
+        <button class="viewer-tab ${this.viewer.tab === 'config' ? 'active' : ''}" data-tab="config">Configuration</button>
+        <div class="viewer-tab-spacer"></div>
+        <input type="text" id="modelsDataSearch" class="models-search" placeholder="Search..." value="${_esc(this.viewer.search)}" style="${this.viewer.tab !== 'data' ? 'visibility:hidden' : ''}">
     </div>
     <div class="model-data-table-wrap" id="modelsDataTableWrap">
         <div class="models-empty">Loading...</div>
     </div>
     <div class="model-data-pagination" id="modelsDataPagination"></div>
 </div>`;
+
         document.getElementById('modelsBackBtn').addEventListener('click', () => {
             this.currentView = 'list';
             this._render();
             this._loadModels();
         });
-        document.getElementById('modelsDataRefresh').addEventListener('click', () => this._loadViewerData());
+        document.getElementById('modelsDataRefresh').addEventListener('click', () => {
+            this._loadViewerData();
+            this._loadViewerStats();
+        });
+        document.getElementById('modelsEditFromViewer').addEventListener('click', () => {
+            this._editModel(m.id);
+        });
         document.getElementById('modelsDataSearch').addEventListener('input', e => {
             this.viewer.search = e.target.value;
             this.viewer.offset = 0;
             this._loadViewerData();
+        });
+        container.querySelectorAll('.viewer-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                this.viewer.tab = tab.dataset.tab;
+                container.querySelectorAll('.viewer-tab').forEach(t => t.classList.toggle('active', t === tab));
+                const searchEl = document.getElementById('modelsDataSearch');
+                if (searchEl) searchEl.style.visibility = this.viewer.tab === 'data' ? '' : 'hidden';
+                this._renderViewerContent();
+            });
         });
         if (document.getElementById('modelDataAlertToggle')) {
             document.getElementById('modelDataAlertToggle').addEventListener('click', () => {
@@ -291,6 +356,142 @@ const AnalyticsModels = {
                 });
             });
         }
+    },
+
+    _renderViewerContent() {
+        if (this.viewer.tab === 'config') {
+            this._renderConfigPanel();
+        } else {
+            this._renderDataTable();
+        }
+    },
+
+    _renderStatsPanel() {
+        const el = document.getElementById('modelsStatsPanel');
+        if (!el) return;
+        const v = this.viewer;
+        const s = v.stats;
+        if (!s) { el.innerHTML = ''; return; }
+
+        if (v.model.model_type === 'rarity') {
+            const totalRows = this._fmtNum(s.total_rows);
+            const parts = this._fmtNum(s.distinct_partitions);
+            const topParts = Array.isArray(s.top_partitions) ? s.top_partitions : [];
+            const maxCnt = topParts.reduce((m, r) => Math.max(m, Number(r.cnt || 0)), 1);
+
+            const barsHTML = topParts.map(r => {
+                const pct = Math.round(Number(r.cnt || 0) / maxCnt * 100);
+                return `<div class="stat-bar-row">
+                    <span class="stat-bar-label" title="${_esc(String(r.partition_val || ''))}">${_esc(String(r.partition_val || '').substring(0, 24))}</span>
+                    <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${pct}%"></div></div>
+                    <span class="stat-bar-val">${this._fmtNum(r.cnt)}</span>
+                </div>`;
+            }).join('');
+
+            el.innerHTML = `
+<div class="model-stats-bar">
+    <div class="stat-card">
+        <div class="stat-value">${totalRows}</div>
+        <div class="stat-label">Total Rows</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">${parts}</div>
+        <div class="stat-label">Partitions</div>
+    </div>
+    ${topParts.length ? `<div class="stat-card stat-card-wide">
+        <div class="stat-label">Top Partitions by Event Count</div>
+        <div class="stat-bars">${barsHTML}</div>
+    </div>` : ''}
+</div>`;
+        } else {
+            // first_seen
+            const hasData = Number(s.total_entities) > 0;
+            const total = this._fmtNum(s.total_entities);
+            const newToday = hasData ? this._fmtNum(s.new_today) : '—';
+            const oldest = hasData ? this._fmtDate(s.oldest_seen) : '—';
+            const newest = hasData ? this._fmtDate(s.newest_seen) : '—';
+
+            el.innerHTML = `
+<div class="model-stats-bar">
+    <div class="stat-card">
+        <div class="stat-value">${total}</div>
+        <div class="stat-label">Total Entities</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">${newToday}</div>
+        <div class="stat-label">New Today</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">${oldest}</div>
+        <div class="stat-label">First Ever Seen</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">${newest}</div>
+        <div class="stat-label">Most Recent</div>
+    </div>
+</div>`;
+        }
+    },
+
+    _renderConfigPanel() {
+        const wrap = document.getElementById('modelsDataTableWrap');
+        if (!wrap) return;
+        const m = this.viewer.model;
+        const def = m.definition || {};
+        const el = document.getElementById('modelsDataPagination');
+        if (el) el.innerHTML = '';
+
+        const filterHTML = (def.filter && def.filter.length)
+            ? def.filter.map(f => `<div class="config-row"><code>${_esc(f.field)}</code> <span class="config-op">${_esc(f.op)}</span> <code>${_esc(f.value)}</code></div>`).join('')
+            : '<div class="config-row config-empty">No filters — processes all logs</div>';
+
+        const extHTML = (def.extractions && def.extractions.length)
+            ? def.extractions.map((e, i) => `<div class="config-row">
+                <span class="config-num">${i + 1}</span>
+                <code>${_esc(e.from_field)}</code>
+                <span class="config-op">→</span>
+                <code class="config-pattern">${_esc(e.pattern)}</code>
+                <span class="config-op">→</span>
+                <code>${_esc(e.output_field)}</code>
+                ${e.lowercase ? '<span class="config-tag">lowercase</span>' : ''}
+                ${e.min_length > 0 ? `<span class="config-tag">min ${e.min_length}</span>` : ''}
+            </div>`).join('')
+            : '<div class="config-row config-empty">No extractions — uses raw log fields</div>';
+
+        let shapeHTML = '';
+        if (m.model_type === 'rarity') {
+            shapeHTML = `
+<div class="config-row"><span class="config-key">Partition key:</span> <code>${_esc(def.partition_key || '—')}</code></div>
+<div class="config-row"><span class="config-key">Value key:</span> <code>${_esc(def.value_key || '—')}</code></div>
+<div class="config-row"><span class="config-key">Min sample:</span> <code>${def.min_sample || 5}</code></div>`;
+        } else {
+            const keys = (def.key_fields || []).join(', ') || '—';
+            shapeHTML = `<div class="config-row"><span class="config-key">Key fields:</span> <code>${_esc(keys)}</code></div>`;
+        }
+
+        wrap.innerHTML = `
+<div class="model-config-panel">
+    <div class="config-section">
+        <div class="config-section-title">Filters</div>
+        ${filterHTML}
+    </div>
+    <div class="config-section">
+        <div class="config-section-title">Extractions</div>
+        ${extHTML}
+    </div>
+    <div class="config-section">
+        <div class="config-section-title">Shape</div>
+        ${shapeHTML}
+    </div>
+    <div class="config-section">
+        <div class="config-section-title">Alert</div>
+        <div class="config-row"><span class="config-key">Mode:</span> <code>${_esc(m.alert_mode || 'none')}</code></div>
+    </div>
+    <div style="margin-top:16px">
+        <button class="btn-primary" id="configEditBtn">Edit Configuration</button>
+    </div>
+</div>`;
+        document.getElementById('configEditBtn')?.addEventListener('click', () => this._editModel(m.id));
     },
 
     _renderDataTable() {
@@ -347,20 +548,72 @@ const AnalyticsModels = {
         const el = document.getElementById('modelsDataPagination');
         if (!el) return;
         const v = this.viewer;
+        if (v.total === 0) { el.innerHTML = ''; return; }
+
         const page = Math.floor(v.offset / v.limit) + 1;
-        const total_pages = Math.ceil(v.total / v.limit) || 1;
+        const totalPages = Math.ceil(v.total / v.limit) || 1;
+
+        const pageNums = this._paginationPages(page, totalPages);
+        const pageNumsHTML = pageNums.map(p =>
+            p === '...'
+                ? `<button class="page-num-btn ellipsis" disabled>...</button>`
+                : `<button class="page-num-btn models-page-btn${p === page ? ' active' : ''}" data-page="${p}">${p}</button>`
+        ).join('');
+
+        const pageSizeHTML = [25, 50, 100].map(s =>
+            `<button class="page-size-btn models-size-btn${v.limit === s ? ' active' : ''}" data-size="${s}">${s}</button>`
+        ).join('');
+
         el.innerHTML = `
-<span>Page ${page} / ${total_pages} &nbsp;·&nbsp; ${v.total.toLocaleString()} rows</span>
-<button ${v.offset === 0 ? 'disabled' : ''} id="modelsDataPrev">‹ Prev</button>
-<button ${v.offset + v.limit >= v.total ? 'disabled' : ''} id="modelsDataNext">Next ›</button>`;
-        document.getElementById('modelsDataPrev')?.addEventListener('click', () => {
-            v.offset = Math.max(0, v.offset - v.limit);
-            this._loadViewerData();
+<span class="pagination-info">${v.total.toLocaleString()} rows</span>
+<div class="page-numbers">${pageNumsHTML}</div>
+<div class="page-size-options">
+    <span class="page-size-label">Per page</span>
+    ${pageSizeHTML}
+</div>`;
+
+        el.querySelectorAll('.models-page-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                v.offset = (parseInt(btn.dataset.page) - 1) * v.limit;
+                this._loadViewerData();
+            });
         });
-        document.getElementById('modelsDataNext')?.addEventListener('click', () => {
-            v.offset += v.limit;
-            this._loadViewerData();
+        el.querySelectorAll('.models-size-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                v.limit = parseInt(btn.dataset.size);
+                v.offset = 0;
+                this._loadViewerData();
+            });
         });
+    },
+
+    _paginationPages(current, total) {
+        if (total <= 9) return Array.from({ length: total }, (_, i) => i + 1);
+        const set = new Set([1, total, current]);
+        for (let i = Math.max(2, current - 1); i <= Math.min(total - 1, current + 1); i++) set.add(i);
+        const sorted = Array.from(set).sort((a, b) => a - b);
+        const result = [];
+        let prev = 0;
+        for (const p of sorted) {
+            if (p - prev > 1) result.push('...');
+            result.push(p);
+            prev = p;
+        }
+        return result;
+    },
+
+    // ---- Formatting helpers ----
+    _fmtNum(v) {
+        const n = Number(v);
+        if (isNaN(n)) return '—';
+        if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e4) return (n / 1e3).toFixed(1) + 'K';
+        return n.toLocaleString();
+    },
+    _fmtDate(v) {
+        if (!v) return '—';
+        try { return new Date(v).toLocaleDateString(); } catch { return String(v); }
     },
 
     // ============================
@@ -369,6 +622,7 @@ const AnalyticsModels = {
     _startWizard() {
         this.wizard = {
             step: 1,
+            editId: null,
             modelType: 'rarity',
             filterRows: [],
             extractions: [],
@@ -387,12 +641,13 @@ const AnalyticsModels = {
 
     _renderWizardView(container) {
         const w = this.wizard;
+        const title = w.editId ? 'Edit Analytics Model' : 'New Analytics Model';
         container.innerHTML = `
 <div class="models-view-section">
     <div class="models-wizard">
         <div class="wizard-header">
             <button class="btn-secondary" id="wizardCancelBtn">← Cancel</button>
-            <h2>New Analytics Model</h2>
+            <h2>${title}</h2>
             <div id="wizardStepsContainer">${this._wizardStepsHTML()}</div>
         </div>
         <div id="wizardStepContent"></div>
@@ -409,7 +664,7 @@ const AnalyticsModels = {
 
     _wizardStepsHTML() {
         const step = this.wizard.step;
-        const labels = ['Source', 'Extract', 'Shape', 'Create'];
+        const labels = ['Source', 'Extract', 'Shape', 'Details'];
         const dots = labels.map((label, i) => {
             const n = i + 1;
             const cls = n < step ? 'done' : n === step ? 'active' : '';
@@ -434,12 +689,13 @@ const AnalyticsModels = {
             case 4: content.innerHTML = this._step4HTML(); this._bindStep4(); break;
         }
 
+        const createLabel = this.wizard.editId ? 'Update Model' : 'Create Model';
         nav.innerHTML = `
 ${this.wizard.step > 1 ? '<button class="btn-secondary" id="wizardPrev">← Back</button>' : ''}
 <span style="flex:1"></span>
 ${this.wizard.step < 4
     ? '<button class="btn-primary" id="wizardNext">Next →</button>'
-    : '<button class="btn-primary" id="wizardCreate">Create Model</button>'}`;
+    : `<button class="btn-primary" id="wizardCreate">${createLabel}</button>`}`;
 
         document.getElementById('wizardPrev')?.addEventListener('click', () => {
             this.wizard.step--;
@@ -457,17 +713,18 @@ ${this.wizard.step < 4
     // --- Step 1: Source (model type + filter) ---
     _step1HTML() {
         const w = this.wizard;
+        const isEdit = !!w.editId;
         return `
 <div class="wizard-card">
     <h3>Step 1: Source</h3>
     <div class="field-group" style="margin-bottom:16px">
-        <label>Model Type</label>
+        <label>Model Type${isEdit ? ' <span style="font-weight:400;font-size:11px;color:var(--text-muted)">(cannot change on edit)</span>' : ''}</label>
         <div class="model-type-cards">
-            <div class="model-type-card ${w.modelType === 'rarity' ? 'selected' : ''}" data-type="rarity">
+            <div class="model-type-card ${w.modelType === 'rarity' ? 'selected' : ''} ${isEdit ? 'model-type-card-locked' : ''}" data-type="rarity">
                 <div class="card-title">Rarity</div>
                 <div class="card-desc">Score how unusual a value is relative to its partition. Great for download domains, file prefixes, user-agent strings.</div>
             </div>
-            <div class="model-type-card ${w.modelType === 'first_seen' ? 'selected' : ''}" data-type="first_seen">
+            <div class="model-type-card ${w.modelType === 'first_seen' ? 'selected' : ''} ${isEdit ? 'model-type-card-locked' : ''}" data-type="first_seen">
                 <div class="card-title">First / Last Seen</div>
                 <div class="card-desc">Track when an entity was first and last observed. Alert on new entities never seen before.</div>
             </div>
@@ -502,12 +759,14 @@ ${this.wizard.step < 4
 
     _bindStep1() {
         const w = this.wizard;
-        document.querySelectorAll('.model-type-card').forEach(card => {
-            card.addEventListener('click', () => {
-                w.modelType = card.dataset.type;
-                document.querySelectorAll('.model-type-card').forEach(c => c.classList.toggle('selected', c === card));
+        if (!w.editId) {
+            document.querySelectorAll('.model-type-card').forEach(card => {
+                card.addEventListener('click', () => {
+                    w.modelType = card.dataset.type;
+                    document.querySelectorAll('.model-type-card').forEach(c => c.classList.toggle('selected', c === card));
+                });
             });
-        });
+        }
         document.getElementById('addFilterRow').addEventListener('click', () => {
             w.filterRows.push({ field: '', op: '=', value: '' });
             this._refreshFilterRows();
@@ -710,7 +969,6 @@ ${this.wizard.step < 4
             pSel?.addEventListener('change', e => { w.partitionKey = e.target.value; });
             vSel?.addEventListener('change', e => { w.valueKey = e.target.value; });
             document.getElementById('shapeMinSample')?.addEventListener('change', e => { w.minSample = parseInt(e.target.value) || 5; });
-            // Initialise from current DOM selection
             if (pSel && !w.partitionKey) w.partitionKey = pSel.value;
             if (vSel && !w.valueKey) w.valueKey = vSel.value;
         } else {
@@ -756,7 +1014,7 @@ ${this.wizard.step < 4
         const w = this.wizard;
         return `
 <div class="wizard-card">
-    <h3>Step 4: Name &amp; Create</h3>
+    <h3>Step 4: ${w.editId ? 'Name &amp; Update' : 'Name &amp; Create'}</h3>
     <div class="form-row">
         <div class="field-group" style="flex:2">
             <label>Model Name</label>
@@ -856,10 +1114,8 @@ ${this.wizard.step < 4
     _validateStep() {
         const w = this.wizard;
         switch (w.step) {
-            case 1:
-                return true;
-            case 2:
-                return true;
+            case 1: return true;
+            case 2: return true;
             case 3:
                 if (w.modelType === 'rarity' && (!w.partitionKey || !w.valueKey)) {
                     Toast.warning('Select partition key and value key');
@@ -903,19 +1159,29 @@ ${this.wizard.step < 4
         if (btn) btn.disabled = true;
 
         try {
-            await this._api('POST', '/models', {
-                name: w.name.trim(),
-                description: w.description.trim(),
-                model_type: w.modelType,
-                definition: def,
-                alert_mode: w.alertMode,
-            });
-            Toast.success('Model created');
+            if (w.editId) {
+                await this._api('PUT', `/models/${w.editId}`, {
+                    name: w.name.trim(),
+                    description: w.description.trim(),
+                    definition: def,
+                    alert_mode: w.alertMode,
+                });
+                Toast.success('Model updated');
+            } else {
+                await this._api('POST', '/models', {
+                    name: w.name.trim(),
+                    description: w.description.trim(),
+                    model_type: w.modelType,
+                    definition: def,
+                    alert_mode: w.alertMode,
+                });
+                Toast.success('Model created');
+            }
             this.currentView = 'list';
             this._render();
             await this._loadModels();
         } catch (e) {
-            Toast.error(e.message || 'Failed to create model');
+            Toast.error(e.message || 'Failed to save model');
             if (btn) btn.disabled = false;
         }
     },

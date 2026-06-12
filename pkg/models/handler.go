@@ -249,6 +249,26 @@ func (h *Handler) HandleGenerateQuery(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, map[string]string{"query": query})
 }
 
+// HandleGetStats returns aggregate statistics for a model's data table.
+func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
+	model := h.getModelScoped(w, r)
+	if model == nil {
+		return
+	}
+	fractalID, err := h.getFractalID(r)
+	if err != nil {
+		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		return
+	}
+	stats, err := h.manager.GetStats(r.Context(), model, fractalID)
+	if err != nil {
+		log.Printf("[Models] get stats %s: %v", model.ID, err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to fetch model stats")
+		return
+	}
+	h.respondSuccess(w, map[string]interface{}{"stats": stats})
+}
+
 // HandleExport returns the model definition as a downloadable YAML file.
 func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	model := h.getModelScoped(w, r)

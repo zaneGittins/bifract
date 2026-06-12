@@ -568,15 +568,6 @@
     background: rgba(255,255,255,0.03);
 }
 
-.model-data-pagination {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-    color: var(--text-muted, #888);
-    justify-content: flex-end;
-}
-
 /* Form helpers */
 .form-row {
     display: flex;
@@ -613,4 +604,247 @@ textarea.full-input {
     padding: 40px 20px;
     color: var(--text-muted, #888);
     font-size: 14px;
+}
+
+/* Stats panel */
+.model-stats-panel {
+    flex-shrink: 0;
+}
+
+.model-stats-bar {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.stat-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 10px 14px;
+    min-width: 100px;
+}
+
+.stat-card-wide {
+    flex: 1;
+    min-width: 220px;
+}
+
+.stat-value {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    line-height: 1.2;
+}
+
+.stat-label {
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-top: 2px;
+}
+
+.stat-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 6px;
+}
+
+.stat-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
+
+.stat-bar-label {
+    width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    flex-shrink: 0;
+}
+
+.stat-bar-track {
+    flex: 1;
+    height: 6px;
+    background: var(--bg-primary, #0f0f1a);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.stat-bar-fill {
+    height: 100%;
+    background: var(--accent-primary, #9c6ade);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+.stat-bar-val {
+    width: 40px;
+    text-align: right;
+    color: var(--text-muted, #888);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+/* Viewer tabs */
+.model-viewer-tabs {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0;
+    flex-shrink: 0;
+}
+
+.viewer-tab {
+    padding: 6px 14px;
+    font-size: 13px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted, #888);
+    cursor: pointer;
+    margin-bottom: -1px;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.viewer-tab:hover { color: var(--text-primary); }
+
+.viewer-tab.active {
+    color: var(--accent-primary);
+    border-bottom-color: var(--accent-primary);
+}
+
+.viewer-tab-spacer { flex: 1; }
+
+/* Config panel */
+.model-config-panel {
+    padding: 4px 0;
+    max-width: 720px;
+}
+
+.config-section {
+    margin-bottom: 20px;
+}
+
+.config-section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted, #888);
+    font-weight: 600;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.config-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+    font-size: 13px;
+    flex-wrap: wrap;
+}
+
+.config-row code {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.config-row code.config-pattern {
+    color: #b794f6;
+}
+
+.config-op {
+    color: var(--text-muted, #888);
+    font-size: 12px;
+}
+
+.config-key {
+    color: var(--text-muted, #888);
+    font-size: 12px;
+    min-width: 90px;
+}
+
+.config-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    flex-shrink: 0;
+}
+
+.config-tag {
+    background: rgba(156,106,222,0.15);
+    border: 1px solid rgba(156,106,222,0.3);
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 11px;
+    color: var(--accent-primary, #9c6ade);
+}
+
+.config-empty {
+    color: var(--text-muted, #888);
+    font-style: italic;
+    font-size: 12px;
+}
+
+/* Locked model type card (edit mode) */
+.model-type-card-locked {
+    opacity: 0.6;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+/* Pagination — reuse page-num-btn from style.css, override layout */
+.model-data-pagination {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-muted, #888);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    padding: 4px 0;
+}
+
+.model-data-pagination .pagination-info {
+    margin-right: 4px;
+}
+
+.model-data-pagination .page-numbers {
+    display: flex;
+    gap: 3px;
+}
+
+.model-data-pagination .page-size-options {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+}
+
+.model-data-pagination .page-size-label {
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    margin-right: 2px;
 }

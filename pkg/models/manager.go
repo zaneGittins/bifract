@@ -444,6 +444,66 @@ WHERE fractal_id = '%s'`, "`"+tableName+"`", storage.EscCHStr(fractalID))
 	return rows, total, nil
 }
 
+// GetStats returns aggregate statistics for a model's data table.
+func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) (map[string]interface{}, error) {
+	tableName := m.readTableName(model)
+	qt := "`" + tableName + "`"
+	fid := storage.EscCHStr(fractalID)
+
+	switch model.ModelType {
+	case ModelTypeRarity:
+		return m.getRarityStats(ctx, qt, fid)
+	case ModelTypeFirstSeen:
+		return m.getFirstSeenStats(ctx, qt, fid)
+	default:
+		return nil, fmt.Errorf("unknown model type: %s", model.ModelType)
+	}
+}
+
+func (m *Manager) getRarityStats(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
+	summaryQ := fmt.Sprintf(`SELECT count() AS total_rows, uniq(partition_val) AS distinct_partitions FROM %s FINAL WHERE fractal_id = '%s'`, qt, fid)
+	rows, err := m.ch.Query(ctx, summaryQ)
+	if err != nil {
+		return nil, fmt.Errorf("rarity stats: %w", err)
+	}
+	result := map[string]interface{}{}
+	if len(rows) > 0 {
+		result["total_rows"] = rows[0]["total_rows"]
+		result["distinct_partitions"] = rows[0]["distinct_partitions"]
+	}
+	topQ := fmt.Sprintf(`SELECT partition_val, sum(event_count) AS cnt FROM %s FINAL WHERE fractal_id = '%s' GROUP BY partition_val ORDER BY cnt DESC LIMIT 5`, qt, fid)
+	topRows, err := m.ch.Query(ctx, topQ)
+	if err == nil {
+		result["top_partitions"] = topRows
+	}
+	return result, nil
+}
+
+func (m *Manager) getFirstSeenStats(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
+	q := fmt.Sprintf(`
+SELECT count() AS total_entities,
+       min(first_seen) AS oldest_seen,
+       max(last_seen) AS newest_seen,
+       countIf(first_seen >= now() - INTERVAL 1 DAY) AS new_today
+FROM (
+    SELECT entity_key, min(first_seen) AS first_seen, max(last_seen) AS last_seen
+    FROM %s FINAL WHERE fractal_id = '%s'
+    GROUP BY entity_key
+)`, qt, fid)
+	rows, err := m.ch.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("first_seen stats: %w", err)
+	}
+	result := map[string]interface{}{}
+	if len(rows) > 0 {
+		result["total_entities"] = rows[0]["total_entities"]
+		result["oldest_seen"] = rows[0]["oldest_seen"]
+		result["newest_seen"] = rows[0]["newest_seen"]
+		result["new_today"] = rows[0]["new_today"]
+	}
+	return result, nil
+}
+
 // TestExtraction runs a sample extraction against logs and returns matched values plus the generated SQL.
 func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter []FilterCondition, extractions []ExtractionStep) ([]map[string]interface{}, string, error) {
 	tableName := m.ch.ReadTable()
