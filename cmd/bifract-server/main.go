@@ -369,6 +369,9 @@ func main() {
 	ingestQueue.SetQuotaManager(quotaManager)
 	if sysFractal, err := fractalManager.GetFractalByName(context.Background(), "system"); err == nil {
 		ingestQueue.SetSystemFractalID(sysFractal.ID)
+		log.Printf("Ingest queue system fractal wired: %s", sysFractal.ID)
+	} else {
+		log.Printf("Warning: could not resolve system fractal for ingest monitoring: %v", err)
 	}
 
 	ingestHandler := ingest.NewIngestHandler(ingestQueue, config.MaxBodySize, tokenCache, ingestTokenStorage)
@@ -519,7 +522,6 @@ func main() {
 	r := chi.NewRouter()
 
 	// Middleware
-	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
