@@ -200,8 +200,11 @@ const QueryExecutor = {
             this.currentRequest.abort();
         }
 
-        // Create new abort controller for this request
+        // Create new abort controller for this request. Capture it so the finally
+        // block only tears down loading state if this run is still the active one
+        // (a rapid re-run supersedes us and owns the indicator/timer).
         this.currentRequest = new AbortController();
+        const myController = this.currentRequest;
 
         // Store current fractal ID to validate response
         this.currentFractalId = window.FractalContext?.currentFractal?.id || null;
@@ -225,13 +228,32 @@ const QueryExecutor = {
         if (chartContainer) chartContainer.style.display = 'none';
         const fieldsDrawerReset = document.getElementById('fieldStatsDrawer');
         if (fieldsDrawerReset) fieldsDrawerReset.style.display = '';
-        if (elements.resultsTable) {
-            elements.resultsTable.style.display = 'block';
-            elements.resultsTable.innerHTML = '<div class="loading-spinner"><span class="spinner"></span><button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
-        }
 
-        // Flip the Run button to Cancel while the query is in flight.
-        this._setRunButtonState(true);
+        // Profiling collects per-shard execution stats over the full result,
+        // which the progressive stream does not produce. When the SQL/profile
+        // panel is enabled, use the buffered endpoint so the profile renders;
+        // otherwise stream for newest-first progressive results. This also picks
+        // the loading style: a blocking spinner (buffered) vs the deferred bar.
+        const wantsProfile = !!(window.UserPrefs && UserPrefs.showSQL());
+
+        // A superseded run's finally is guarded out and cannot clear its own
+        // deferred timer, so clear any pending one here before starting fresh.
+        this._clearLoadingTimer();
+
+        if (elements.resultsTable) elements.resultsTable.style.display = 'block';
+        if (wantsProfile) {
+            // Buffered path: show the blocking spinner immediately.
+            if (elements.resultsTable) {
+                elements.resultsTable.innerHTML = '<div class="loading-spinner"><span class="spinner"></span><button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
+            }
+            this._loadingMode = 'spinner';
+            this._loadingShown = true;
+            this._setRunButtonState(true);
+        } else {
+            // Streaming path: defer the bar + Cancel flip so fast (sub-threshold)
+            // searches don't flash chrome. Prior results stay until rows arrive.
+            this._beginLoadingIndicator(elements);
+        }
 
         try {
             // Get currently selected fractal for context
@@ -246,11 +268,6 @@ const QueryExecutor = {
                 requestBody.fractal_id = window.FractalContext.currentFractal.id;
             }
 
-            // Profiling collects per-shard execution stats over the full result,
-            // which the progressive stream does not produce. When the SQL/profile
-            // panel is enabled, use the buffered endpoint so the profile renders;
-            // otherwise stream for newest-first progressive results.
-            const wantsProfile = !!(window.UserPrefs && UserPrefs.showSQL());
             if (wantsProfile) {
                 requestBody.profile = true;
             }
@@ -264,8 +281,10 @@ const QueryExecutor = {
                 signal: this.currentRequest.signal
             });
 
-            // Validate that we're still on the same fractal (prevent race conditions)
+            // Validate that we're still on the same fractal (prevent race conditions).
+            // Abort so the abandoned stream body doesn't keep the server scanning.
             if (this.currentFractalId !== (window.FractalContext?.currentFractal?.id || null)) {
+                myController.abort();
                 return;
             }
 
@@ -297,11 +316,13 @@ const QueryExecutor = {
             this.showError(error.message);
             if (elements.resultsTable) elements.resultsTable.innerHTML = '';
         } finally {
-            this._loadingBar('hide');
-            this._streamingActive = false;
-            // Clear the current request reference
-            this.currentRequest = null;
-            this._setRunButtonState(false);
+            // Only tear down if a newer run hasn't superseded us (which would own
+            // the request, timer, and loading indicator).
+            if (this.currentRequest === myController) {
+                this._streamingActive = false;
+                this.currentRequest = null;
+                this._endLoadingIndicator();
+            }
         }
     },
 
@@ -332,6 +353,57 @@ const QueryExecutor = {
         }
     },
 
+    // Delay (ms) before the streaming loading chrome (bar + Cancel flip + searching
+    // line) appears. Searches that finish faster show no chrome at all, avoiding a
+    // flicker. Raise toward 1000 to keep sub-second searches fully silent.
+    LOADING_INDICATOR_DELAY_MS: 500,
+
+    // Schedule the streaming loading chrome. If the query finishes before the delay
+    // (_endLoadingIndicator clears the timer), nothing is shown.
+    _beginLoadingIndicator(elements) {
+        this._clearLoadingTimer();
+        this._loadingBar('hide'); // clear any leftover bar from a superseded run
+        this._loadingShown = false;
+        this._loadingMode = 'spinner'; // until the meta frame says it streams
+        this._loadingGotRows = false;
+        this._loadingTimer = setTimeout(() => {
+            this._loadingTimer = null;
+            this._loadingShown = true;
+            this._setRunButtonState(true);
+            if (this._loadingMode === 'bar') {
+                this._loadingBar('show');
+                if (!this._loadingGotRows && elements.resultsTable) {
+                    elements.resultsTable.innerHTML =
+                        '<div class="stream-searching"><span>Searching, newest first…</span>' +
+                        '<button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
+                }
+            } else if (elements.resultsTable) {
+                elements.resultsTable.innerHTML =
+                    '<div class="loading-spinner"><span class="spinner"></span>' +
+                    '<button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
+            }
+        }, this.LOADING_INDICATOR_DELAY_MS);
+    },
+
+    // Tear down the loading chrome: cancel a pending show, finish the bar, reset the button.
+    _endLoadingIndicator() {
+        this._clearLoadingTimer();
+        if (this._loadingShown && this._loadingMode === 'bar') {
+            this._loadingBar('done');
+        } else {
+            this._loadingBar('hide');
+        }
+        this._loadingShown = false;
+        this._setRunButtonState(false);
+    },
+
+    _clearLoadingTimer() {
+        if (this._loadingTimer) {
+            clearTimeout(this._loadingTimer);
+            this._loadingTimer = null;
+        }
+    },
+
     // Consume an NDJSON stream of query result frames, rendering rows newest-first
     // as they arrive. Frames: meta, histogram, rows, progress, error, done.
     async _consumeQueryStream(res, elements) {
@@ -358,6 +430,10 @@ const QueryExecutor = {
             switch (frame.type) {
                 case 'meta':
                     this.currentResults = [];
+                    // Tell the deferred indicator which style this query uses: the
+                    // thin progress bar for a real stream, a spinner otherwise.
+                    this._loadingMode = frame.streaming ? 'bar' : 'spinner';
+                    this._loadingGotRows = false;
                     // New query starts at page 1; subsequent streamed batches
                     // preserve whatever page the user is viewing.
                     if (window.Pagination) {
@@ -382,15 +458,21 @@ const QueryExecutor = {
                     break;
                 case 'rows':
                     if (frame.data && frame.data.length) {
+                        this._loadingGotRows = true;
                         for (const row of frame.data) this.currentResults.push(row);
                         scheduleRender();
                     }
                     break;
                 case 'progress':
-                    this._loadingBar('set', typeof frame.ratio === 'number' ? frame.ratio : 0);
+                    // Only drive the bar once the deferred indicator has shown it.
+                    if (this._loadingShown && this._loadingMode === 'bar') {
+                        this._loadingBar('set', typeof frame.ratio === 'number' ? frame.ratio : 0);
+                    }
                     break;
                 case 'error':
                     this.showError(frame.error || 'Query failed', frame.error_type);
+                    // Clear stale prior results if the error arrived before any rows.
+                    if (!this._loadingGotRows && elements.resultsTable) elements.resultsTable.innerHTML = '';
                     break;
                 case 'done':
                     this._streamingActive = false;
@@ -455,20 +537,8 @@ const QueryExecutor = {
 
         // Rows arrive pre-sorted (timestamp DESC) during a stream; block column
         // sorting until done so a mid-stream re-sort can't scramble partial data.
+        // The loading chrome itself is owned by the deferred indicator, not here.
         this._streamingActive = streaming;
-        if (streaming) {
-            // Replace the initial spinner with the thin progress bar plus a subtle
-            // searching/cancel line. Incoming rows overwrite this; on a rare-term
-            // deep scan it stays so the user can still cancel.
-            if (elements.resultsTable) {
-                elements.resultsTable.innerHTML =
-                    '<div class="stream-searching"><span>Searching, newest first…</span>' +
-                    '<button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
-            }
-            this._loadingBar('show');
-        } else {
-            this._loadingBar('hide');
-        }
     },
 
     // Render this.currentResults as a chart or a paginated table.
@@ -504,8 +574,8 @@ const QueryExecutor = {
     },
 
     // Finalize a completed query: counts, cursor, timeline, comments, profile.
+    // The loading chrome is torn down separately by _endLoadingIndicator.
     _finalizeQuery(data, elements) {
-        this._loadingBar('done');
         this.limitHit = data.limit_hit || null;
         this.currentCursor = data.next_cursor || null;
 
@@ -615,8 +685,7 @@ const QueryExecutor = {
             this.currentRequest = null;
             this.currentCursor = null;
             this._streamingActive = false;
-            this._loadingBar('hide');
-            this._setRunButtonState(false);
+            this._endLoadingIndicator();
             this._updateLoadMoreButton(false);
             const elements = this.getElements();
             if (elements.resultsTable) elements.resultsTable.innerHTML = '';
@@ -624,7 +693,7 @@ const QueryExecutor = {
             if (window.Toast) Toast.show('Query cancelled', 'info');
         } else {
             // No in-flight request (button raced an already-finished query): just reset.
-            this._setRunButtonState(false);
+            this._endLoadingIndicator();
         }
     },
 
