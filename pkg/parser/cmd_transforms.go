@@ -217,13 +217,15 @@ type regexHandler struct{}
 
 func (h *regexHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	if len(cmd.Arguments) > 0 {
-		var pattern string
+		var pattern, asName string
 		for _, arg := range cmd.Arguments {
 			arg = strings.TrimSpace(arg)
 			if strings.HasPrefix(arg, "regex=") {
 				pattern = strings.Trim(strings.TrimPrefix(arg, "regex="), `"'`)
 			} else if strings.HasPrefix(arg, "pattern=") {
 				pattern = strings.Trim(strings.TrimPrefix(arg, "pattern="), `"'`)
+			} else if strings.HasPrefix(arg, "as=") {
+				asName = strings.Trim(strings.TrimPrefix(arg, "as="), `"'`)
 			} else if !strings.HasPrefix(arg, "field=") && pattern == "" {
 				pattern = arg
 			}
@@ -231,9 +233,12 @@ func (h *regexHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 		namedGroupRe := regexp.MustCompile(`\(\?<([a-zA-Z_][a-zA-Z0-9_]*)>`)
 		namedGroups := namedGroupRe.FindAllStringSubmatch(pattern, -1)
 		if len(namedGroups) > 0 {
+			// Named capture groups take precedence over as=.
 			for _, match := range namedGroups {
 				ctx.Registry.Register(match[1], FieldKindPerRow, match[1], ctx.CmdIndex)
 			}
+		} else if asName != "" {
+			ctx.Registry.Register(asName, FieldKindPerRow, asName, ctx.CmdIndex)
 		} else {
 			ctx.Registry.Register("regex_match", FieldKindPerRow, "regex_match", ctx.CmdIndex)
 		}
@@ -243,7 +248,7 @@ func (h *regexHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if len(cmd.Arguments) > 0 {
-		var pattern, field string
+		var pattern, field, asName string
 		field = "raw_log"
 		for _, arg := range cmd.Arguments {
 			arg = strings.TrimSpace(arg)
@@ -255,6 +260,8 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			} else if strings.HasPrefix(arg, "pattern=") {
 				pattern = strings.TrimPrefix(arg, "pattern=")
 				pattern = strings.Trim(pattern, `"'`)
+			} else if strings.HasPrefix(arg, "as=") {
+				asName = strings.Trim(strings.TrimPrefix(arg, "as="), `"'`)
 			} else if pattern == "" {
 				pattern = arg
 			} else if field == "raw_log" {
@@ -290,6 +297,17 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
 				ctx.Registry.SetResolveExpr(safeName, fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d]", fieldRef, escapeString(sqlPattern), i+1))
 			}
+		} else if asName != "" {
+			// Single unnamed capture group aliased via as=. Use extract(), which
+			// returns the first capturing group as a scalar string, matching the
+			// model materialized-view semantics in pkg/models/ddl.go.
+			safeName, err := sanitizeIdentifier(asName)
+			if err != nil {
+				return fmt.Errorf("regex(): invalid as name %q: %w", asName, err)
+			}
+			scalarExpr := fmt.Sprintf("extract(%s, '%s')", fieldRef, escapeString(pattern))
+			ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeName)})
+			ctx.Registry.SetResolveExpr(safeName, scalarExpr)
 		} else {
 			expr := fmt.Sprintf("extractAllGroups(%s, '%s') AS regex_match", fieldRef, escapeString(sqlPattern))
 			ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
@@ -527,23 +545,48 @@ func (h *caseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
-// lenHandler handles len(field)
+// lenHandler handles len(field) and len(field, as=name).
+// Without as=, the result is the shared field _len; with as=, it is the given
+// name, so multiple len() calls in one pipeline do not collide on _len.
 type lenHandler struct{}
 
+// lenArgs returns the source field and output name for a len() command.
+func lenArgs(cmd CommandNode) (field, outName string) {
+	outName = "_len"
+	for _, arg := range cmd.Arguments {
+		arg = strings.TrimSpace(arg)
+		if strings.HasPrefix(arg, "as=") {
+			outName = strings.Trim(strings.TrimPrefix(arg, "as="), `"'`)
+		} else if strings.HasPrefix(arg, "field=") {
+			field = strings.TrimPrefix(arg, "field=")
+		} else if field == "" {
+			field = arg
+		}
+	}
+	return field, outName
+}
+
 func (h *lenHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	// _len produces a numeric SELECT alias; FieldKindAssignment lets condition
-	// routing reference it by name without wrapping in toFloat64OrZero.
-	ctx.Registry.Register("_len", FieldKindAssignment, "_len", ctx.CmdIndex)
+	// The numeric SELECT alias is registered as FieldKindAssignment so condition
+	// routing can reference it by name without wrapping in toFloat64OrZero.
+	_, outName := lenArgs(cmd)
+	if outName != "" {
+		ctx.Registry.Register(outName, FieldKindAssignment, outName, ctx.CmdIndex)
+	}
 	return nil
 }
 
 func (h *lenHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		field := cmd.Arguments[0]
+	field, outName := lenArgs(cmd)
+	if field != "" && outName != "" {
 		fieldRef := resolveFieldRef(field, ctx.Registry)
-		expr := fmt.Sprintf("length(%s) AS _len", fieldRef)
+		safeName, err := sanitizeIdentifier(outName)
+		if err != nil {
+			return fmt.Errorf("len(): invalid as name %q: %w", outName, err)
+		}
+		expr := fmt.Sprintf("length(%s) AS %s", fieldRef, safeName)
 		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
-		ctx.Registry.SetResolveExpr("_len", fmt.Sprintf("length(%s)", fieldRef))
+		ctx.Registry.SetResolveExpr(safeName, fmt.Sprintf("length(%s)", fieldRef))
 	}
 	return nil
 }

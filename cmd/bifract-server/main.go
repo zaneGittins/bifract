@@ -868,6 +868,7 @@ func main() {
 			r.Post("/models", modelHandler.HandleCreate)
 			r.Post("/models/test-extraction", modelHandler.HandleTestExtraction)
 			r.Post("/models/generate-query", modelHandler.HandleGenerateQuery)
+			r.Post("/models/parse-query", modelHandler.HandleParseQuery)
 			r.Post("/models/import", modelHandler.HandleImport)
 			r.Get("/models/{id}", modelHandler.HandleGet)
 			r.Put("/models/{id}", modelHandler.HandleUpdate)

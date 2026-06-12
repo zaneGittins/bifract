@@ -47,6 +47,9 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusInternalServerError, "Failed to load models")
 		return
 	}
+	for _, mo := range models {
+		mo.SourceQuery = GenerateSourceQuery(mo.Definition)
+	}
 	h.respondSuccess(w, map[string]interface{}{"models": models, "count": len(models)})
 }
 
@@ -56,6 +59,7 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	if model == nil {
 		return
 	}
+	model.SourceQuery = GenerateSourceQuery(model.Definition)
 	rowCount, _ := h.manager.RowCount(r.Context(), h.manager.readTableName(model))
 	h.respondSuccess(w, map[string]interface{}{"model": model, "row_count": rowCount})
 }
@@ -247,6 +251,31 @@ func (h *Handler) HandleGenerateQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	query := GenerateQuery(req.Name, req.Definition, req.ModelType)
 	h.respondSuccess(w, map[string]string{"query": query})
+}
+
+// HandleParseQuery lowers a BQL source query into the structured filter +
+// extraction half of a model definition, returning candidate fields for shaping
+// and any validation messages. Validation problems are returned in the body
+// (HTTP 200); only a malformed request body is a 400.
+func (h *Handler) HandleParseQuery(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query     string    `json:"query"`
+		ModelType ModelType `json:"model_type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	parsed := ParseSourceQuery(req.Query, req.ModelType)
+	h.respondSuccess(w, map[string]interface{}{
+		"definition": map[string]interface{}{
+			"filter":      parsed.Filter,
+			"extractions": parsed.Extractions,
+		},
+		"candidate_fields": parsed.CandidateFields,
+		"errors":           parsed.Errors,
+		"warnings":         parsed.Warnings,
+	})
 }
 
 // HandleGetStats returns aggregate statistics for a model's data table.

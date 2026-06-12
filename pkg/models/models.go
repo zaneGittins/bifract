@@ -42,22 +42,26 @@ type ModelDefinition struct {
 }
 
 type Model struct {
-	ID             string          `json:"id"`
-	FractalID      string          `json:"fractal_id"`
-	PrismID        string          `json:"prism_id"`
-	Name           string          `json:"name"`
-	Description    string          `json:"description"`
-	ModelType      ModelType       `json:"model_type"`
-	Definition     ModelDefinition `json:"definition"`
-	CHTableName    string          `json:"ch_table_name"`
-	CHMVName       string          `json:"ch_mv_name"`
-	Status         string          `json:"status"`
-	AlertMode      string          `json:"alert_mode"`
-	LinkedAlertID  string          `json:"linked_alert_id"`
-	ErrorMessage   string          `json:"error_message"`
-	CreatedBy      string          `json:"created_by"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	ID            string          `json:"id"`
+	FractalID     string          `json:"fractal_id"`
+	PrismID       string          `json:"prism_id"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	ModelType     ModelType       `json:"model_type"`
+	Definition    ModelDefinition `json:"definition"`
+	CHTableName   string          `json:"ch_table_name"`
+	CHMVName      string          `json:"ch_mv_name"`
+	Status        string          `json:"status"`
+	AlertMode     string          `json:"alert_mode"`
+	LinkedAlertID string          `json:"linked_alert_id"`
+	ErrorMessage  string          `json:"error_message"`
+	CreatedBy     string          `json:"created_by"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+
+	// SourceQuery is the derived BQL source query (filter + extraction) for the
+	// model builder editor. It is computed on read, never persisted.
+	SourceQuery string `json:"source_query,omitempty"`
 }
 
 // ModelInfo is a lightweight representation used in QueryOptions for BQL model_lookup().

@@ -1,25 +1,30 @@
-// Analytics Models module — 4-step wizard, listing, and data viewer.
+// Analytics Models module — BQL-first split-panel editor, listing, and data viewer.
 const AnalyticsModels = {
     // ---- State ----
     models: [],
-    currentView: 'list',   // 'list' | 'wizard' | 'data'
+    currentView: 'list',   // 'list' | 'editor' | 'data'
     selectedModel: null,
+    _runSeq: 0,            // monotonic token so only the latest _runQuery renders
 
-    // Wizard state
-    wizard: {
-        step: 1,
+    // Editor state (split-panel: BQL source query on the left, shape/alert on the right)
+    editor: {
         editId: null,        // set when editing an existing model
         modelType: 'rarity',
-        filterRows: [],
-        extractions: [],
+        query: '',           // BQL source query (filter + regex extractions)
+        parsed: { filter: [], extractions: [], candidate_fields: [], errors: [], warnings: [] },
         partitionKey: '',
         valueKey: '',
-        keyFields: [],
+        keyFields: [''],
         minSample: 5,
         alertMode: 'paused',
         alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true },
         name: '',
         description: '',
+        timeRange: '24h',
+        showSQL: false,
+        fieldOrder: null,
+        results: [],
+        ran: false,
     },
 
     // Data viewer state
@@ -75,7 +80,7 @@ const AnalyticsModels = {
         const container = document.getElementById('modelsView');
         if (!container) return;
         switch (this.currentView) {
-            case 'wizard': this._renderWizardView(container); break;
+            case 'editor': this._renderEditorView(container); break;
             case 'data':   this._renderDataViewerView(container); break;
             default:       this._renderListView(container); break;
         }
@@ -100,7 +105,7 @@ const AnalyticsModels = {
         </div>
     </div>
 </div>`;
-        document.getElementById('modelsNewBtn').addEventListener('click', () => this._startWizard());
+        document.getElementById('modelsNewBtn').addEventListener('click', () => this._startEditor());
         document.getElementById('modelsImportBtn').addEventListener('click', () => document.getElementById('modelsImportFile').click());
         document.getElementById('modelsImportFile').addEventListener('change', e => this._importModel(e));
         const searchInput = document.getElementById('modelsSearchInput');
@@ -223,28 +228,34 @@ const AnalyticsModels = {
     },
 
     // ============================
-    // Edit existing model (opens wizard pre-populated)
+    // Edit existing model (opens the editor pre-populated)
     // ============================
     _editModel(id) {
         const m = this.models.find(m => m.id === id);
         if (!m) return;
         const def = m.definition || {};
-        this.wizard = {
-            step: 1,
+        const alertCfg = { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true };
+        if (def.alert) Object.assign(alertCfg, def.alert);
+        this.editor = {
             editId: m.id,
             modelType: m.model_type || 'rarity',
-            filterRows: (def.filter || []).map(f => ({ ...f })),
-            extractions: (def.extractions || []).map(e => ({ ...e })),
+            query: m.source_query || '',
+            parsed: { filter: (def.filter || []).map(f => ({ ...f })), extractions: (def.extractions || []).map(e => ({ ...e })), candidate_fields: [], errors: [], warnings: [] },
             partitionKey: def.partition_key || '',
             valueKey: def.value_key || '',
             keyFields: (def.key_fields && def.key_fields.length) ? [...def.key_fields] : [''],
             minSample: def.min_sample || 5,
             alertMode: m.alert_mode || 'none',
-            alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true },
+            alertConfig: alertCfg,
             name: m.name,
             description: m.description || '',
+            timeRange: '24h',
+            showSQL: false,
+            fieldOrder: null,
+            results: [],
+            ran: false,
         };
-        this.currentView = 'wizard';
+        this.currentView = 'editor';
         this._render();
     },
 
@@ -617,15 +628,16 @@ const AnalyticsModels = {
     },
 
     // ============================
-    // Wizard
+    // Editor (split-panel, BQL-first)
     // ============================
-    _startWizard() {
-        this.wizard = {
-            step: 1,
+    BASE_FIELDS: ['raw_log', 'contents', 'commandline', 'target_file', 'src_ip', 'dst_ip', 'user', 'image', 'parent_process', 'process_name'],
+
+    _startEditor() {
+        this.editor = {
             editId: null,
             modelType: 'rarity',
-            filterRows: [],
-            extractions: [],
+            query: '',
+            parsed: { filter: [], extractions: [], candidate_fields: [], errors: [], warnings: [] },
             partitionKey: '',
             valueKey: '',
             keyFields: [''],
@@ -634,554 +646,471 @@ const AnalyticsModels = {
             alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true },
             name: '',
             description: '',
+            timeRange: '24h',
+            showSQL: false,
+            fieldOrder: null,
+            results: [],
+            ran: false,
         };
-        this.currentView = 'wizard';
+        this.currentView = 'editor';
         this._render();
     },
 
-    _renderWizardView(container) {
-        const w = this.wizard;
-        const title = w.editId ? 'Edit Analytics Model' : 'New Analytics Model';
+    _renderEditorView(container) {
+        const e = this.editor;
+        const title = e.editId ? 'Edit Analytics Model' : 'New Analytics Model';
+        const saveLabel = e.editId ? 'Update Model' : 'Create Model';
+        const ranges = [['1h', 'Last 1h'], ['6h', 'Last 6h'], ['24h', 'Last 24h'], ['7d', 'Last 7d'], ['30d', 'Last 30d']];
         container.innerHTML = `
-<div class="models-view-section">
-    <div class="models-wizard">
-        <div class="wizard-header">
-            <button class="btn-secondary" id="wizardCancelBtn">← Cancel</button>
-            <h2>${title}</h2>
-            <div id="wizardStepsContainer">${this._wizardStepsHTML()}</div>
+<div class="models-view-section model-editor">
+    <div class="model-editor-header">
+        <button class="btn-secondary" id="modelEditorCancel">← Cancel</button>
+        <h2>${title}</h2>
+        <span style="flex:1"></span>
+        <button class="btn-primary" id="modelEditorSave">${saveLabel}</button>
+    </div>
+    <div class="model-editor-body">
+        <div class="model-editor-left">
+            <div class="model-editor-toolbar">
+                <select id="modelTimeRange" class="model-time-select">
+                    ${ranges.map(([v, l]) => `<option value="${v}" ${e.timeRange === v ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+                <button class="btn-primary" id="modelRunBtn">Run</button>
+                <label class="model-sql-toggle"><input type="checkbox" id="modelSqlToggle" ${e.showSQL ? 'checked' : ''}> SQL</label>
+                <span style="flex:1"></span>
+                <span class="model-results-count" id="modelResultsCount"></span>
+            </div>
+            <div class="model-query-wrap">
+                <textarea id="modelQueryInput" class="model-query-input" spellcheck="false" placeholder='Define the model source in BQL. Example:&#10;level = "dns" | regex(field=raw_log, regex="([a-z]+)$", as=tld) | len(tld) | _len >= 2 | lowercase(tld)&#10;&#10;Filters, regex() extractions, optional len()/lowercase() refinements. Leave empty to use all logs.'>${_esc(e.query)}</textarea>
+            </div>
+            <pre id="modelSqlOutput" class="model-sql-output" style="display:${e.showSQL ? 'block' : 'none'}"></pre>
+            <div id="modelTranslation" class="model-translation"></div>
+            <div id="modelQueryResults" class="model-query-results"><div class="models-empty">Run the query to preview matching logs and extracted fields.</div></div>
         </div>
-        <div id="wizardStepContent"></div>
-        <div class="wizard-nav" id="wizardNav"></div>
+        <div class="model-editor-right">
+            <div class="config-section">
+                <div class="config-section-title">Model Type</div>
+                <div class="model-type-cards model-type-cards-compact" id="modelTypeCards">
+                    <div class="model-type-card ${e.modelType === 'rarity' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="rarity">
+                        <div class="card-title">Rarity</div>
+                        <div class="card-desc">Score how unusual a value is within its partition.</div>
+                    </div>
+                    <div class="model-type-card ${e.modelType === 'first_seen' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="first_seen">
+                        <div class="card-title">First / Last Seen</div>
+                        <div class="card-desc">Track when an entity was first and last observed.</div>
+                    </div>
+                </div>
+            </div>
+            <div class="config-section">
+                <div class="config-section-title">Shape</div>
+                <div id="modelShapeConfig">${this._editorShapeHTML()}</div>
+            </div>
+            <div class="config-section">
+                <div class="config-section-title">Details</div>
+                <div class="field-group">
+                    <label>Model Name</label>
+                    <input type="text" id="modelName" class="full-input" placeholder="e.g. download_domain_rarity" value="${_esc(e.name)}">
+                </div>
+                <div class="field-group" style="margin-top:10px">
+                    <label>Description (optional)</label>
+                    <textarea id="modelDesc" class="full-input" rows="2">${_esc(e.description)}</textarea>
+                </div>
+            </div>
+            <div class="config-section">
+                <div class="config-section-title">Alert</div>
+                <div class="alert-mode-options">
+                    ${this._editorAlertModeOptionsHTML()}
+                </div>
+                <div id="modelAlertConfig">${e.alertMode !== 'none' ? this._editorAlertConfigHTML() : ''}</div>
+            </div>
+        </div>
     </div>
 </div>`;
-        document.getElementById('wizardCancelBtn').addEventListener('click', () => {
+
+        document.getElementById('modelEditorCancel').addEventListener('click', () => {
             this.currentView = 'list';
             this._render();
             this._loadModels();
         });
-        this._renderWizardStep();
-    },
-
-    _wizardStepsHTML() {
-        const step = this.wizard.step;
-        const labels = ['Source', 'Extract', 'Shape', 'Details'];
-        const dots = labels.map((label, i) => {
-            const n = i + 1;
-            const cls = n < step ? 'done' : n === step ? 'active' : '';
-            const inner = n < step ? '✓' : n;
-            return `<span class="wizard-step-dot ${cls}" title="${label}">${inner}</span>${n < 4 ? '<span class="wizard-step-line"></span>' : ''}`;
-        }).join('');
-        return `<div class="wizard-steps">${dots}</div>`;
-    },
-
-    _renderWizardStep() {
-        const content = document.getElementById('wizardStepContent');
-        const nav = document.getElementById('wizardNav');
-        if (!content) return;
-
-        const stepsContainer = document.getElementById('wizardStepsContainer');
-        if (stepsContainer) stepsContainer.innerHTML = this._wizardStepsHTML();
-
-        switch (this.wizard.step) {
-            case 1: content.innerHTML = this._step1HTML(); this._bindStep1(); break;
-            case 2: content.innerHTML = this._step2HTML(); this._bindStep2(); break;
-            case 3: content.innerHTML = this._step3HTML(); this._bindStep3(); break;
-            case 4: content.innerHTML = this._step4HTML(); this._bindStep4(); break;
-        }
-
-        const createLabel = this.wizard.editId ? 'Update Model' : 'Create Model';
-        nav.innerHTML = `
-${this.wizard.step > 1 ? '<button class="btn-secondary" id="wizardPrev">← Back</button>' : ''}
-<span style="flex:1"></span>
-${this.wizard.step < 4
-    ? '<button class="btn-primary" id="wizardNext">Next →</button>'
-    : `<button class="btn-primary" id="wizardCreate">${createLabel}</button>`}`;
-
-        document.getElementById('wizardPrev')?.addEventListener('click', () => {
-            this.wizard.step--;
-            this._renderWizardStep();
+        document.getElementById('modelEditorSave').addEventListener('click', () => this._saveModel());
+        document.getElementById('modelRunBtn').addEventListener('click', () => this._runQuery());
+        const ta = document.getElementById('modelQueryInput');
+        ta.addEventListener('input', ev => { e.query = ev.target.value; });
+        ta.addEventListener('keydown', ev => {
+            if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') { ev.preventDefault(); this._runQuery(); }
         });
-        document.getElementById('wizardNext')?.addEventListener('click', () => {
-            if (this._validateStep()) {
-                this.wizard.step++;
-                this._renderWizardStep();
-            }
+        document.getElementById('modelTimeRange').addEventListener('change', ev => { e.timeRange = ev.target.value; if (e.ran) this._runQuery(); });
+        document.getElementById('modelSqlToggle').addEventListener('change', ev => {
+            e.showSQL = ev.target.checked;
+            document.getElementById('modelSqlOutput').style.display = e.showSQL ? 'block' : 'none';
         });
-        document.getElementById('wizardCreate')?.addEventListener('click', () => this._createModel());
-    },
-
-    // --- Step 1: Source (model type + filter) ---
-    _step1HTML() {
-        const w = this.wizard;
-        const isEdit = !!w.editId;
-        return `
-<div class="wizard-card">
-    <h3>Step 1: Source</h3>
-    <div class="field-group" style="margin-bottom:16px">
-        <label>Model Type${isEdit ? ' <span style="font-weight:400;font-size:11px;color:var(--text-muted)">(cannot change on edit)</span>' : ''}</label>
-        <div class="model-type-cards">
-            <div class="model-type-card ${w.modelType === 'rarity' ? 'selected' : ''} ${isEdit ? 'model-type-card-locked' : ''}" data-type="rarity">
-                <div class="card-title">Rarity</div>
-                <div class="card-desc">Score how unusual a value is relative to its partition. Great for download domains, file prefixes, user-agent strings.</div>
-            </div>
-            <div class="model-type-card ${w.modelType === 'first_seen' ? 'selected' : ''} ${isEdit ? 'model-type-card-locked' : ''}" data-type="first_seen">
-                <div class="card-title">First / Last Seen</div>
-                <div class="card-desc">Track when an entity was first and last observed. Alert on new entities never seen before.</div>
-            </div>
-        </div>
-    </div>
-    <div class="field-group">
-        <label>Filter (optional — restrict which logs are fed to this model)</label>
-        <div class="filter-rows" id="wizardFilterRows">
-            ${w.filterRows.map((f, i) => this._filterRowHTML(f, i)).join('')}
-        </div>
-        <button class="btn-add-row" id="addFilterRow">+ Add Filter</button>
-    </div>
-</div>`;
-    },
-
-    _filterRowHTML(f, i) {
-        return `
-<div class="filter-row" data-idx="${i}">
-    <input type="text" class="filter-field" placeholder="field" value="${_esc(f.field || '')}">
-    <select class="filter-op">
-        <option value="=" ${f.op === '=' ? 'selected' : ''}>=</option>
-        <option value="!=" ${f.op === '!=' ? 'selected' : ''}>!=</option>
-        <option value="~" ${f.op === '~' ? 'selected' : ''}>~</option>
-        <option value="!~" ${f.op === '!~' ? 'selected' : ''}>!~</option>
-        <option value="cidr" ${f.op === 'cidr' ? 'selected' : ''}>cidr</option>
-        <option value="!cidr" ${f.op === '!cidr' ? 'selected' : ''}>!cidr</option>
-    </select>
-    <input type="text" class="filter-value" placeholder="value" value="${_esc(f.value || '')}">
-    <button class="btn-remove-row" data-idx="${i}">×</button>
-</div>`;
-    },
-
-    _bindStep1() {
-        const w = this.wizard;
-        if (!w.editId) {
-            document.querySelectorAll('.model-type-card').forEach(card => {
+        if (!e.editId) {
+            document.querySelectorAll('#modelTypeCards .model-type-card').forEach(card => {
                 card.addEventListener('click', () => {
-                    w.modelType = card.dataset.type;
-                    document.querySelectorAll('.model-type-card').forEach(c => c.classList.toggle('selected', c === card));
+                    e.modelType = card.dataset.type;
+                    document.querySelectorAll('#modelTypeCards .model-type-card').forEach(c => c.classList.toggle('selected', c === card));
+                    this._renderEditorShape();
+                    this._renderEditorAlertConfig();
                 });
             });
         }
-        document.getElementById('addFilterRow').addEventListener('click', () => {
-            w.filterRows.push({ field: '', op: '=', value: '' });
-            this._refreshFilterRows();
-        });
-        this._bindFilterRowEvents();
-    },
+        this._bindEditorDetails();
+        this._bindEditorShape();
+        this._renderTranslation();
 
-    _refreshFilterRows() {
-        const container = document.getElementById('wizardFilterRows');
-        if (!container) return;
-        container.innerHTML = this.wizard.filterRows.map((f, i) => this._filterRowHTML(f, i)).join('');
-        this._bindFilterRowEvents();
-    },
-
-    _bindFilterRowEvents() {
-        const w = this.wizard;
-        document.querySelectorAll('.filter-row').forEach(row => {
-            const i = parseInt(row.dataset.idx);
-            row.querySelector('.filter-field').addEventListener('change', e => { w.filterRows[i].field = e.target.value; });
-            row.querySelector('.filter-op').addEventListener('change', e => { w.filterRows[i].op = e.target.value; });
-            row.querySelector('.filter-value').addEventListener('change', e => { w.filterRows[i].value = e.target.value; });
-            row.querySelector('.btn-remove-row').addEventListener('click', () => {
-                w.filterRows.splice(i, 1);
-                this._refreshFilterRows();
-            });
-        });
-    },
-
-    // --- Step 2: Extractions ---
-    _step2HTML() {
-        const w = this.wizard;
-        return `
-<div class="wizard-card">
-    <h3>Step 2: Extract</h3>
-    <p style="font-size:13px;color:var(--text-muted,#888);margin:0 0 12px 0">
-        Use regex extractions to pull fields from raw log content. Each extraction's output becomes available to the next step.
-        Leave empty to use raw log fields directly.
-    </p>
-    <div id="wizardExtractions">${w.extractions.map((e, i) => this._extractionCardHTML(e, i, w)).join('')}</div>
-    <button class="btn-add-row" id="addExtraction">+ Add Extraction</button>
-    <div id="extractionTestResult" style="margin-top:10px;display:none"></div>
-</div>`;
-    },
-
-    _extractionCardHTML(ext, i, w) {
-        const datalistId = `from-fields-${i}`;
-        const fromOptions = this._getAvailableFields(i, w).map(f =>
-            `<option value="${_esc(f)}">`
-        ).join('');
-        return `
-<div class="extraction-card" data-idx="${i}">
-    <datalist id="${datalistId}">${fromOptions}</datalist>
-    <div class="extraction-card-header">
-        <span class="ext-num">Extraction ${i + 1}</span>
-        <button class="btn-remove-row" data-idx="${i}">× Remove</button>
-        <button class="btn-secondary btn-test-ext" data-idx="${i}" style="margin-left:auto;font-size:12px;padding:3px 10px">Test</button>
-    </div>
-    <div class="extraction-fields">
-        <div class="field-group">
-            <label>From Field</label>
-            <input type="text" class="ext-from field-group-input" list="${datalistId}" value="${_esc(ext.from_field || 'raw_log')}" placeholder="e.g. contents">
-        </div>
-        <div class="field-group">
-            <label>Output Field</label>
-            <input type="text" class="ext-output field-group-input" placeholder="e.g. tld" value="${_esc(ext.output_field || '')}">
-        </div>
-        <div class="field-group" style="grid-column:1/-1">
-            <label>Regex Pattern (one capture group)</label>
-            <input type="text" class="ext-pattern field-group-input" placeholder='e.g. ([^.]+\\.[^.]+)$' value="${_esc(ext.pattern || '')}" style="font-family:var(--font-mono,'IBM Plex Mono',monospace)">
-        </div>
-    </div>
-    <div class="extraction-toggles">
-        <label class="toggle-label">
-            <input type="checkbox" class="ext-lowercase themed-checkbox" ${ext.lowercase ? 'checked' : ''}> Lowercase output
-        </label>
-        <label class="toggle-label" style="margin-left:16px">
-            Min length: <input type="number" class="ext-minlen" value="${ext.min_length || 0}" min="0" style="width:50px;margin-left:4px;padding:2px 6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary)">
-        </label>
-    </div>
-    <div class="extraction-test-result" id="extTestResult_${i}" style="display:none"></div>
-</div>`;
-    },
-
-    _getAvailableFields(beforeIndex, w) {
-        const base = ['raw_log', 'contents', 'commandline', 'target_file', 'src_ip', 'dst_ip', 'user', 'image', 'parent_process', 'process_name'];
-        const extracted = w.extractions.slice(0, beforeIndex).map(e => e.output_field).filter(Boolean);
-        return [...base, ...extracted];
-    },
-
-    _bindStep2() {
-        const w = this.wizard;
-        document.getElementById('addExtraction').addEventListener('click', () => {
-            w.extractions.push({ from_field: 'raw_log', pattern: '', output_field: '', lowercase: false, min_length: 0 });
-            document.getElementById('wizardExtractions').innerHTML = w.extractions.map((e, i) => this._extractionCardHTML(e, i, w)).join('');
-            this._bindExtractionEvents();
-        });
-        this._bindExtractionEvents();
-    },
-
-    _bindExtractionEvents() {
-        const w = this.wizard;
-        document.querySelectorAll('.extraction-card').forEach(card => {
-            const i = parseInt(card.dataset.idx);
-            card.querySelector('.ext-from').addEventListener('input', e => { w.extractions[i].from_field = e.target.value; });
-            card.querySelector('.ext-output').addEventListener('change', e => { w.extractions[i].output_field = e.target.value; });
-            card.querySelector('.ext-pattern').addEventListener('change', e => { w.extractions[i].pattern = e.target.value; });
-            card.querySelector('.ext-lowercase').addEventListener('change', e => { w.extractions[i].lowercase = e.target.checked; });
-            card.querySelector('.ext-minlen').addEventListener('change', e => { w.extractions[i].min_length = parseInt(e.target.value) || 0; });
-            card.querySelector('.btn-remove-row').addEventListener('click', () => {
-                w.extractions.splice(i, 1);
-                document.getElementById('wizardExtractions').innerHTML = w.extractions.map((ex, idx) => this._extractionCardHTML(ex, idx, w)).join('');
-                this._bindExtractionEvents();
-            });
-            card.querySelector('.btn-test-ext').addEventListener('click', () => this._testExtraction(i));
-        });
-    },
-
-    async _testExtraction(upToIndex) {
-        const w = this.wizard;
-        const exts = w.extractions.slice(0, upToIndex + 1).filter(e => e.pattern && e.output_field);
-        if (!exts.length) { Toast.warning('Fill in pattern and output field first'); return; }
-        const resultEl = document.getElementById(`extTestResult_${upToIndex}`);
-        if (resultEl) { resultEl.style.display = 'block'; resultEl.innerHTML = '<em>Testing...</em>'; }
-        try {
-            const data = await this._api('POST', '/models/test-extraction', {
-                filter: w.filterRows.filter(f => f.field && f.value),
-                extractions: exts
-            });
-            const results = data?.data?.results || [];
-            const sql = data?.data?.sql || '';
-            const outField = exts[exts.length - 1]?.output_field || 'value';
-            const sqlBlock = sql ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--text-muted,#888);font-size:11px">Show SQL</summary><pre style="margin:4px 0 0;white-space:pre-wrap;font-size:11px;color:var(--text-muted,#888)">${_esc(sql)}</pre></details>` : '';
-            if (!results.length) {
-                if (resultEl) resultEl.innerHTML = `No matches found in recent logs.${sqlBlock}`;
-                return;
-            }
-            const preview = results.slice(0, 5).map(r => `${r[outField]} (${r.cnt})`).join(', ');
-            if (resultEl) resultEl.innerHTML = `${results.length} distinct values &middot; e.g. ${_esc(preview)}${sqlBlock}`;
-        } catch (e) {
-            if (resultEl) resultEl.innerHTML = `Error: ${_esc(e.message || 'test failed')}`;
+        // Seed an initial run when editing (source query is pre-filled).
+        if (e.editId && (e.query || '').trim()) {
+            this._runQuery();
         }
     },
 
-    // --- Step 3: Shape ---
-    _step3HTML() {
-        const w = this.wizard;
-        const allFields = [...this._getAvailableFields(w.extractions.length, w)];
-        const fieldOpts = allFields.map(f => `<option value="${_esc(f)}">${_esc(f)}</option>`).join('');
+    // ---- Field option helpers ----
+    _editorAllFields(extra) {
+        const e = this.editor;
+        const seen = new Set();
+        const out = [];
+        const add = f => { if (f && !seen.has(f)) { seen.add(f); out.push(f); } };
+        (e.parsed.candidate_fields || []).forEach(add);
+        this.BASE_FIELDS.forEach(add);
+        (e.parsed.filter || []).forEach(f => add(f.field));
+        (e.parsed.extractions || []).forEach(x => add(x.output_field));
+        (extra || []).forEach(add);
+        return out;
+    },
 
-        if (w.modelType === 'rarity') {
+    _fieldOptions(selected) {
+        const placeholder = `<option value="" ${selected ? '' : 'selected'} disabled>Select a field…</option>`;
+        return placeholder + this._editorAllFields(selected ? [selected] : []).map(f =>
+            `<option value="${_esc(f)}" ${f === selected ? 'selected' : ''}>${_esc(f)}</option>`
+        ).join('');
+    },
+
+    // ---- Shape (right panel) ----
+    _editorShapeHTML() {
+        const e = this.editor;
+        if (e.modelType === 'rarity') {
             return `
-<div class="wizard-card">
-    <h3>Step 3: Shape (Rarity)</h3>
-    <div class="shape-grid">
-        <div class="field-group">
-            <label>Partition Key (group by)</label>
-            <select id="shapePartKey">${fieldOpts}</select>
-        </div>
-        <div class="field-group">
-            <label>Value Key (rarity of what?)</label>
-            <select id="shapeValKey">${fieldOpts}</select>
-        </div>
-        <div class="field-group">
-            <label>Min sample size</label>
-            <input type="number" id="shapeMinSample" value="${w.minSample}" min="1" style="padding:5px 8px;background:var(--bg-primary,#0f0f1a);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary)">
-        </div>
-    </div>
-    <p style="font-size:12px;color:var(--text-muted,#888);margin-top:12px">
-        Example: Partition=<em>file_prefix</em>, Value=<em>tld</em> → scores how unusual a TLD is for a given file prefix.
-    </p>
-</div>`;
-        } else {
-            return `
-<div class="wizard-card">
-    <h3>Step 3: Shape (First/Last Seen)</h3>
-    <div class="field-group">
-        <label>Key Fields (entity to track)</label>
-        <div id="keyFieldsList">${w.keyFields.map((kf, i) => `
-<div class="filter-row" data-idx="${i}" style="margin-bottom:6px">
-    <select class="key-field-sel">${fieldOpts.replace(`value="${_esc(kf)}"`, `value="${_esc(kf)}" selected`)}</select>
+<div class="field-group">
+    <label>Partition Key (group by)</label>
+    <select id="shapePartKey">${this._fieldOptions(e.partitionKey)}</select>
+</div>
+<div class="field-group" style="margin-top:10px">
+    <label>Value Key (rarity of what?)</label>
+    <select id="shapeValKey">${this._fieldOptions(e.valueKey)}</select>
+</div>
+<div class="field-group" style="margin-top:10px">
+    <label>Min sample size</label>
+    <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
+</div>
+<p class="config-hint">Example: Partition=<em>file_prefix</em>, Value=<em>tld</em> scores how unusual a TLD is for a given prefix.</p>`;
+        }
+        return `
+<div class="field-group">
+    <label>Key Fields (entity to track)</label>
+    <div id="keyFieldsList">${e.keyFields.map((kf, i) => `
+<div class="key-field-row" data-idx="${i}">
+    <select class="key-field-sel">${this._fieldOptions(kf)}</select>
     <button class="btn-remove-row" data-idx="${i}">×</button>
 </div>`).join('')}</div>
-        <button class="btn-add-row" id="addKeyField">+ Add Key Field</button>
-    </div>
-    <p style="font-size:12px;color:var(--text-muted,#888);margin-top:12px">
-        Example: Key=<em>fields.src_ip</em> → tracks when each IP was first and last seen.
-        Multiple key fields are concatenated into a composite key.
-    </p>
-</div>`;
-        }
+    <button class="btn-add-row" id="addKeyField">+ Add Key Field</button>
+</div>
+<p class="config-hint">Example: Key=<em>src_ip</em> tracks when each IP was first and last seen.</p>`;
     },
 
-    _bindStep3() {
-        const w = this.wizard;
-        if (w.modelType === 'rarity') {
+    _renderEditorShape() {
+        const el = document.getElementById('modelShapeConfig');
+        if (el) { el.innerHTML = this._editorShapeHTML(); this._bindEditorShape(); }
+    },
+
+    _bindEditorShape() {
+        const e = this.editor;
+        if (e.modelType === 'rarity') {
             const pSel = document.getElementById('shapePartKey');
             const vSel = document.getElementById('shapeValKey');
-            if (w.partitionKey) pSel.value = w.partitionKey;
-            if (w.valueKey) vSel.value = w.valueKey;
-            pSel?.addEventListener('change', e => { w.partitionKey = e.target.value; });
-            vSel?.addEventListener('change', e => { w.valueKey = e.target.value; });
-            document.getElementById('shapeMinSample')?.addEventListener('change', e => { w.minSample = parseInt(e.target.value) || 5; });
-            if (pSel && !w.partitionKey) w.partitionKey = pSel.value;
-            if (vSel && !w.valueKey) w.valueKey = vSel.value;
+            if (pSel) {
+                if (e.partitionKey) pSel.value = e.partitionKey;
+                pSel.addEventListener('change', ev => { e.partitionKey = ev.target.value; });
+            }
+            if (vSel) {
+                if (e.valueKey) vSel.value = e.valueKey;
+                vSel.addEventListener('change', ev => { e.valueKey = ev.target.value; });
+            }
+            document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 5; });
         } else {
             this._bindKeyFieldEvents();
             document.getElementById('addKeyField')?.addEventListener('click', () => {
-                w.keyFields.push('');
-                this._refreshKeyFields();
+                e.keyFields.push('');
+                this._renderEditorShape();
             });
         }
     },
 
-    _refreshKeyFields() {
-        const w = this.wizard;
-        const allFields = this._getAvailableFields(w.extractions.length, w);
-        const fieldOpts = allFields.map(f => `<option value="${_esc(f)}">${_esc(f)}</option>`).join('');
-        const list = document.getElementById('keyFieldsList');
-        if (!list) return;
-        list.innerHTML = w.keyFields.map((kf, i) => `
-<div class="filter-row" data-idx="${i}" style="margin-bottom:6px">
-    <select class="key-field-sel">${fieldOpts}</select>
-    <button class="btn-remove-row" data-idx="${i}">×</button>
-</div>`).join('');
-        this._bindKeyFieldEvents();
-    },
-
     _bindKeyFieldEvents() {
-        const w = this.wizard;
-        document.querySelectorAll('.key-field-sel').forEach((sel, i) => {
-            if (w.keyFields[i]) sel.value = w.keyFields[i];
-            sel.addEventListener('change', e => { w.keyFields[i] = e.target.value; });
-            if (!w.keyFields[i]) w.keyFields[i] = sel.value;
-        });
-        document.querySelectorAll('#keyFieldsList .btn-remove-row').forEach(btn => {
-            btn.addEventListener('click', () => {
-                w.keyFields.splice(parseInt(btn.dataset.idx), 1);
-                this._refreshKeyFields();
+        const e = this.editor;
+        document.querySelectorAll('#keyFieldsList .key-field-row').forEach(row => {
+            const i = parseInt(row.dataset.idx);
+            const sel = row.querySelector('.key-field-sel');
+            if (e.keyFields[i]) sel.value = e.keyFields[i];
+            sel.addEventListener('change', ev => { e.keyFields[i] = ev.target.value; });
+            row.querySelector('.btn-remove-row').addEventListener('click', () => {
+                e.keyFields.splice(i, 1);
+                if (!e.keyFields.length) e.keyFields = [''];
+                this._renderEditorShape();
             });
         });
     },
 
-    // --- Step 4: Name & Create ---
-    _step4HTML() {
-        const w = this.wizard;
-        return `
-<div class="wizard-card">
-    <h3>Step 4: ${w.editId ? 'Name &amp; Update' : 'Name &amp; Create'}</h3>
-    <div class="form-row">
-        <div class="field-group" style="flex:2">
-            <label>Model Name</label>
-            <input type="text" id="wizardName" class="full-input" placeholder="e.g. download_domain_rarity" value="${_esc(w.name)}">
-        </div>
+    // ---- Alert config (right panel) ----
+    _editorAlertModeOptionsHTML() {
+        const e = this.editor;
+        const opt = (val, title, desc) => `
+<label class="alert-mode-option ${e.alertMode === val ? 'selected' : ''}">
+    <input type="radio" name="modelAlertMode" value="${val}" ${e.alertMode === val ? 'checked' : ''}>
+    <div class="alert-mode-text">
+        <div class="mode-title">${title}</div>
+        <div class="mode-desc">${desc}</div>
     </div>
-    <div class="field-group" style="margin-top:10px">
-        <label>Description (optional)</label>
-        <textarea id="wizardDesc" class="full-input" rows="2">${_esc(w.description)}</textarea>
-    </div>
-    <div class="field-group" style="margin-top:16px">
-        <label>Alert Mode</label>
-        <div class="alert-mode-options">
-            <label class="alert-mode-option ${w.alertMode === 'none' ? 'selected' : ''}">
-                <input type="radio" name="alertMode" value="none" ${w.alertMode === 'none' ? 'checked' : ''}>
-                <div class="alert-mode-text">
-                    <div class="mode-title">Collect data only (no alert)</div>
-                    <div class="mode-desc">Model runs silently. View data anytime to see what it's learning.</div>
-                </div>
-            </label>
-            <label class="alert-mode-option ${w.alertMode === 'paused' ? 'selected' : ''}">
-                <input type="radio" name="alertMode" value="paused" ${w.alertMode === 'paused' ? 'checked' : ''}>
-                <div class="alert-mode-text">
-                    <div class="mode-title">Create alert — paused <em style="color:var(--accent-primary);font-style:normal">(Recommended)</em></div>
-                    <div class="mode-desc">Alert is created but won't fire. Enable it when the model has baked.</div>
-                </div>
-            </label>
-            <label class="alert-mode-option ${w.alertMode === 'active' ? 'selected' : ''}">
-                <input type="radio" name="alertMode" value="active" ${w.alertMode === 'active' ? 'checked' : ''}>
-                <div class="alert-mode-text">
-                    <div class="mode-title">Create alert — active</div>
-                    <div class="mode-desc">Alert fires immediately when threshold is exceeded.</div>
-                </div>
-            </label>
-        </div>
-    </div>
-    ${w.alertMode !== 'none' ? this._alertConfigHTML(w) : '<div id="alertConfigSection"></div>'}
-</div>`;
+</label>`;
+        return opt('none', 'Collect data only', "Model runs silently. View its data anytime.")
+            + opt('paused', 'Create alert — paused <em style="color:var(--accent-primary);font-style:normal">(Recommended)</em>', "Alert created but won't fire until enabled.")
+            + opt('active', 'Create alert — active', 'Alert fires immediately when the threshold is exceeded.');
     },
 
-    _alertConfigHTML(w) {
-        const c = w.alertConfig;
-        const isRarity = w.modelType === 'rarity';
+    _editorAlertConfigHTML() {
+        const c = this.editor.alertConfig;
+        const isRarity = this.editor.modelType === 'rarity';
         return `
-<div class="alert-config-section" id="alertConfigSection">
+<div class="alert-config-section">
     <div class="field-group">
         <label>Severity</label>
         <select id="alertSeverity">
-            ${['low','medium','high','critical'].map(s => `<option ${c.severity === s ? 'selected' : ''}>${s}</option>`).join('')}
+            ${['low', 'medium', 'high', 'critical'].map(s => `<option ${c.severity === s ? 'selected' : ''}>${s}</option>`).join('')}
         </select>
     </div>
     ${isRarity ? `
-    <div class="form-row">
+    <div class="form-row" style="margin-top:10px">
         <div class="field-group">
             <label>Min Confidence</label>
-            <input type="number" id="alertConfidence" value="${c.confidence_threshold}" min="0" max="1" step="0.05" style="width:80px;padding:5px 8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary)">
+            <input type="number" id="alertConfidence" class="model-num-input" value="${c.confidence_threshold}" min="0" max="1" step="0.05">
         </div>
         <div class="field-group">
             <label>Max % Threshold</label>
-            <input type="number" id="alertPercent" value="${c.percent_threshold}" min="0.1" max="100" step="0.5" style="width:80px;padding:5px 8px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary)">
+            <input type="number" id="alertPercent" class="model-num-input" value="${c.percent_threshold}" min="0.1" max="100" step="0.5">
         </div>
     </div>` : `
-    <label class="toggle-label">
+    <label class="toggle-label" style="margin-top:10px">
         <input type="checkbox" id="alertOnNew" ${c.alert_on_new ? 'checked' : ''}> Alert on new entities only
     </label>`}
 </div>`;
     },
 
-    _bindStep4() {
-        const w = this.wizard;
-        document.getElementById('wizardName').addEventListener('input', e => { w.name = e.target.value; });
-        document.getElementById('wizardDesc').addEventListener('input', e => { w.description = e.target.value; });
-        document.querySelectorAll('input[name=alertMode]').forEach(radio => {
-            radio.addEventListener('change', e => {
-                w.alertMode = e.target.value;
+    _renderEditorAlertConfig() {
+        const el = document.getElementById('modelAlertConfig');
+        if (el) { el.innerHTML = this.editor.alertMode !== 'none' ? this._editorAlertConfigHTML() : ''; this._bindAlertConfigEvents(); }
+    },
+
+    _bindEditorDetails() {
+        const e = this.editor;
+        document.getElementById('modelName').addEventListener('input', ev => { e.name = ev.target.value; });
+        document.getElementById('modelDesc').addEventListener('input', ev => { e.description = ev.target.value; });
+        document.querySelectorAll('input[name=modelAlertMode]').forEach(radio => {
+            radio.addEventListener('change', ev => {
+                e.alertMode = ev.target.value;
                 document.querySelectorAll('.alert-mode-option').forEach(opt => {
-                    opt.classList.toggle('selected', opt.querySelector('input').value === w.alertMode);
+                    opt.classList.toggle('selected', opt.querySelector('input').value === e.alertMode);
                 });
-                const configSection = document.getElementById('alertConfigSection');
-                if (configSection) {
-                    configSection.outerHTML = w.alertMode !== 'none' ? this._alertConfigHTML(w) : '<div id="alertConfigSection"></div>';
-                    this._bindAlertConfigEvents();
-                }
+                this._renderEditorAlertConfig();
             });
         });
         this._bindAlertConfigEvents();
     },
 
     _bindAlertConfigEvents() {
-        const c = this.wizard.alertConfig;
-        document.getElementById('alertSeverity')?.addEventListener('change', e => { c.severity = e.target.value; });
-        document.getElementById('alertConfidence')?.addEventListener('change', e => { c.confidence_threshold = parseFloat(e.target.value); });
-        document.getElementById('alertPercent')?.addEventListener('change', e => { c.percent_threshold = parseFloat(e.target.value); });
-        document.getElementById('alertOnNew')?.addEventListener('change', e => { c.alert_on_new = e.target.checked; });
+        const c = this.editor.alertConfig;
+        document.getElementById('alertSeverity')?.addEventListener('change', ev => { c.severity = ev.target.value; });
+        document.getElementById('alertConfidence')?.addEventListener('change', ev => { c.confidence_threshold = parseFloat(ev.target.value); });
+        document.getElementById('alertPercent')?.addEventListener('change', ev => { c.percent_threshold = parseFloat(ev.target.value); });
+        document.getElementById('alertOnNew')?.addEventListener('change', ev => { c.alert_on_new = ev.target.checked; });
     },
 
-    _validateStep() {
-        const w = this.wizard;
-        switch (w.step) {
-            case 1: return true;
-            case 2: return true;
-            case 3:
-                if (w.modelType === 'rarity' && (!w.partitionKey || !w.valueKey)) {
-                    Toast.warning('Select partition key and value key');
-                    return false;
-                }
-                if (w.modelType === 'first_seen' && (!w.keyFields.length || !w.keyFields[0])) {
-                    Toast.warning('Add at least one key field');
-                    return false;
-                }
-                return true;
-            case 4:
-                if (!w.name.trim()) {
-                    Toast.warning('Model name is required');
-                    return false;
-                }
-                return true;
+    // ---- Translation feedback strip (left panel) ----
+    _renderTranslation() {
+        const el = document.getElementById('modelTranslation');
+        if (!el) return;
+        const p = this.editor.parsed;
+        const parts = [];
+
+        if (p.errors && p.errors.length) {
+            parts.push(`<div class="model-trans-errors">${p.errors.map(x => `<div class="model-trans-error">⚠ ${_esc(x)}</div>`).join('')}</div>`);
         }
-        return true;
-    },
+        if (p.warnings && p.warnings.length) {
+            parts.push(`<div class="model-trans-warnings">${p.warnings.map(x => `<div class="model-trans-warn">${_esc(x)}</div>`).join('')}</div>`);
+        }
 
-    async _createModel() {
-        const w = this.wizard;
-        if (!this._validateStep()) return;
+        const filterChips = (p.filter || []).map(f =>
+            `<span class="model-chip"><code>${_esc(f.field)}</code> ${_esc(f.op)} <code>${_esc(f.value)}</code></span>`
+        ).join('');
+        const filterRow = `<div class="model-trans-row"><span class="model-trans-label">Filters</span>${filterChips || '<span class="model-trans-muted">all logs</span>'}</div>`;
 
-        const def = {
-            filter: w.filterRows.filter(f => f.field && f.value),
-            extractions: w.extractions.filter(e => e.pattern && e.output_field),
-            min_sample: w.minSample,
-        };
-        if (w.modelType === 'rarity') {
-            def.partition_key = w.partitionKey;
-            def.value_key = w.valueKey;
+        let extRows;
+        if ((p.extractions || []).length) {
+            extRows = (p.extractions || []).map(x => {
+                const badges = [];
+                if (x.min_length > 0) badges.push(`<span class="model-ext-badge">min len ${x.min_length}</span>`);
+                if (x.lowercase) badges.push(`<span class="model-ext-badge">lowercase</span>`);
+                return `
+<div class="model-ext-row">
+    <span class="model-chip"><code>${_esc(x.output_field)}</code> <span class="model-trans-muted">← regex(${_esc(x.from_field)})</span></span>
+    ${badges.join('')}
+</div>`;
+            }).join('');
         } else {
-            def.key_fields = w.keyFields.filter(Boolean);
+            extRows = '<span class="model-trans-muted">none</span>';
         }
-        if (w.alertMode !== 'none') {
-            def.alert = { ...w.alertConfig };
+        const extRow = `<div class="model-trans-row model-trans-row-col"><span class="model-trans-label">Extractions</span><div class="model-ext-list">${extRows}</div></div>`;
+
+        parts.push(`<div class="model-trans-body">${filterRow}${extRow}</div>`);
+        el.innerHTML = parts.join('');
+    },
+
+    // ---- Time range ----
+    _editorTimeRange() {
+        const now = Date.now();
+        const map = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 24 * 3600e3, '7d': 7 * 24 * 3600e3, '30d': 30 * 24 * 3600e3 };
+        const span = map[this.editor.timeRange] || map['24h'];
+        return { start: new Date(now - span).toISOString(), end: new Date(now).toISOString() };
+    },
+
+    // ---- Run: live preview + translation (parallel) ----
+    async _runQuery() {
+        const e = this.editor;
+        e.query = (document.getElementById('modelQueryInput')?.value || '').trim();
+        e.ran = true;
+        // Guard against out-of-order completion: only the latest run may render.
+        const seq = ++this._runSeq;
+        const resultsEl = document.getElementById('modelQueryResults');
+        const countEl = document.getElementById('modelResultsCount');
+        if (resultsEl) resultsEl.innerHTML = '<div class="loading-spinner"><span class="spinner"></span></div>';
+        if (countEl) countEl.textContent = 'Running…';
+
+        const { start, end } = this._editorTimeRange();
+        const qbody = { query: e.query || '*', start, end };
+        if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
+            qbody.fractal_id = window.FractalContext.currentFractal.id;
         }
 
-        const btn = document.getElementById('wizardCreate');
+        const queryPromise = e.query
+            ? fetch('/api/v1/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(qbody) }).then(r => r.json())
+            : Promise.resolve(null);
+        const parsePromise = this._api('POST', '/models/parse-query', { query: e.query, model_type: e.modelType }).catch(() => null);
+
+        const [queryData, parseData] = await Promise.all([queryPromise.catch(err => ({ error: err.message })), parsePromise]);
+
+        // A newer run started while this one was in flight; discard stale results.
+        if (seq !== this._runSeq) return;
+
+        // Translation result.
+        if (parseData?.data) {
+            const d = parseData.data;
+            e.parsed = {
+                filter: d.definition?.filter || [],
+                extractions: d.definition?.extractions || [],
+                candidate_fields: d.candidate_fields || [],
+                errors: d.errors || [],
+                warnings: d.warnings || [],
+            };
+            this._renderTranslation();
+            this._renderEditorShape();
+        }
+
+        // Live results.
+        if (queryData && queryData.sql) {
+            const sqlEl = document.getElementById('modelSqlOutput');
+            if (sqlEl && window.QueryExecutor) sqlEl.innerHTML = QueryExecutor.highlightSQL(queryData.sql);
+        }
+        if (!e.query) {
+            if (resultsEl) resultsEl.innerHTML = '<div class="models-empty">No filter — the model will process all logs in this fractal.</div>';
+            if (countEl) countEl.textContent = '';
+        } else if (queryData && queryData.error) {
+            if (resultsEl) resultsEl.innerHTML = `<div class="query-error"><p>Query Error: ${_esc(queryData.error)}</p></div>`;
+            if (countEl) countEl.textContent = 'Error';
+        } else if (queryData) {
+            const results = queryData.results || [];
+            e.results = results;
+            e.fieldOrder = queryData.field_order || null;
+            if (countEl) countEl.textContent = `${results.length} result${results.length === 1 ? '' : 's'}`;
+            if (!results.length) {
+                if (resultsEl) resultsEl.innerHTML = '<div class="models-empty">No matching logs in the selected time range.</div>';
+            } else if (window.QueryExecutor && resultsEl) {
+                QueryExecutor.renderResultsToElement(results.slice(0, 100), resultsEl, e.fieldOrder, {
+                    allResults: results, isAggregated: queryData.is_aggregated || false, disableDetailView: true
+                });
+            }
+        }
+    },
+
+    // ---- Save ----
+    async _saveModel() {
+        const e = this.editor;
+        e.query = (document.getElementById('modelQueryInput')?.value || '').trim();
+
+        if (!e.name.trim()) { Toast.warning('Model name is required'); return; }
+
+        // Re-parse on save for an authoritative definition + validation.
+        let filter = [], extractions = [];
+        if (e.query) {
+            const parseData = await this._api('POST', '/models/parse-query', { query: e.query, model_type: e.modelType }).catch(() => null);
+            const d = parseData?.data;
+            if (!d) { Toast.error('Could not validate the source query'); return; }
+            if (d.errors && d.errors.length) {
+                e.parsed = { filter: d.definition?.filter || [], extractions: d.definition?.extractions || [], candidate_fields: d.candidate_fields || [], errors: d.errors, warnings: d.warnings || [] };
+                this._renderTranslation();
+                Toast.error(d.errors[0]);
+                return;
+            }
+            filter = d.definition?.filter || [];
+            extractions = d.definition?.extractions || [];
+            e.parsed.candidate_fields = d.candidate_fields || [];
+        }
+
+        if (e.modelType === 'rarity' && (!e.partitionKey || !e.valueKey)) {
+            Toast.warning('Select a partition key and a value key');
+            return;
+        }
+        if (e.modelType === 'first_seen' && !e.keyFields.filter(Boolean).length) {
+            Toast.warning('Add at least one key field');
+            return;
+        }
+
+        const def = { filter, extractions };
+        if (e.modelType === 'rarity') {
+            def.partition_key = e.partitionKey;
+            def.value_key = e.valueKey;
+            def.min_sample = e.minSample;
+        } else {
+            def.key_fields = e.keyFields.filter(Boolean);
+        }
+        if (e.alertMode !== 'none') def.alert = { ...e.alertConfig };
+
+        const btn = document.getElementById('modelEditorSave');
         if (btn) btn.disabled = true;
-
         try {
-            if (w.editId) {
-                await this._api('PUT', `/models/${w.editId}`, {
-                    name: w.name.trim(),
-                    description: w.description.trim(),
-                    definition: def,
-                    alert_mode: w.alertMode,
+            if (e.editId) {
+                await this._api('PUT', `/models/${e.editId}`, {
+                    name: e.name.trim(), description: e.description.trim(), definition: def, alert_mode: e.alertMode,
                 });
                 Toast.success('Model updated');
             } else {
                 await this._api('POST', '/models', {
-                    name: w.name.trim(),
-                    description: w.description.trim(),
-                    model_type: w.modelType,
-                    definition: def,
-                    alert_mode: w.alertMode,
+                    name: e.name.trim(), description: e.description.trim(), model_type: e.modelType, definition: def, alert_mode: e.alertMode,
                 });
                 Toast.success('Model created');
             }
             this.currentView = 'list';
             this._render();
             await this._loadModels();
-        } catch (e) {
-            Toast.error(e.message || 'Failed to save model');
+        } catch (err) {
+            Toast.error(err.message || 'Failed to save model');
             if (btn) btn.disabled = false;
         }
     },
