@@ -321,7 +321,7 @@ const App = {
         if (executeBtn) {
             executeBtn.addEventListener('click', () => {
                 if (window.QueryExecutor) {
-                    QueryExecutor.execute();
+                    QueryExecutor.runOrCancel();
                 }
             });
         }

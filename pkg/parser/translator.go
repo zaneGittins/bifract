@@ -28,9 +28,9 @@ type QueryOptions struct {
 	HasCommentFilter      bool                          // True when query uses comment() and log_ids have been pre-fetched
 	CommentLogIDs         []string                      // Pre-fetched log_ids from PostgreSQL for comment() filtering
 	UseIngestTimestamp    bool                          // Filter on ingest_timestamp instead of timestamp (used by alerts)
-	AlertExtraFields     []string                      // Additional fields to project in alert auto-projection (throttle field, template fields)
-	GeoIPEnabled         bool                          // True when MaxMind GeoLite2 dictionaries are loaded
-	TableName            string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
+	AlertExtraFields      []string                      // Additional fields to project in alert auto-projection (throttle field, template fields)
+	GeoIPEnabled          bool                          // True when MaxMind GeoLite2 dictionaries are loaded
+	TableName             string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
 }
 
 // EffectiveTableName returns the table name to query, defaulting to "logs".
@@ -47,6 +47,10 @@ type TranslationResult struct {
 	IsAggregated bool
 	ChartType    string                 // "piechart", "barchart", "heatmap", "histogram", "" (empty for table)
 	ChartConfig  map[string]interface{} // Chart-specific configuration
+	// DefaultTimeOrder is true when the translator applied its implicit
+	// "timestamp DESC" ordering (no user ORDER BY / GROUP BY / aggregation).
+	// Such queries emit rows newest-first and can be progressively streamed.
+	DefaultTimeOrder bool
 }
 
 func TranslateToSQL(pipeline *PipelineNode, opts QueryOptions) (string, error) {
@@ -316,9 +320,11 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 	}
 
 	// --- Set default ORDER BY and LIMIT ---
+	defaultTimeOrder := false
 	if len(activeStage.Layer.OrderBy) == 0 && len(activeStage.Layer.GroupBy) == 0 && !plan.IsAggregated {
 		if activeStage.IsSource {
 			activeStage.Layer.OrderBy = []string{"timestamp DESC"}
+			defaultTimeOrder = true
 		}
 	}
 	if activeStage.Layer.Limit == "" && opts.MaxRows > 0 {
@@ -388,11 +394,12 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 	}
 
 	return &TranslationResult{
-		SQL:          sql,
-		FieldOrder:   fieldOrder,
-		IsAggregated: plan.IsAggregated || len(activeStage.Layer.GroupBy) > 0,
-		ChartType:    plan.ChartType,
-		ChartConfig:  plan.ChartConfig,
+		SQL:              sql,
+		FieldOrder:       fieldOrder,
+		IsAggregated:     plan.IsAggregated || len(activeStage.Layer.GroupBy) > 0,
+		ChartType:        plan.ChartType,
+		ChartConfig:      plan.ChartConfig,
+		DefaultTimeOrder: defaultTimeOrder,
 	}, nil
 }
 

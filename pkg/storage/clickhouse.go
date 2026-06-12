@@ -160,12 +160,12 @@ func (c *ClickHouseClient) InjectOnCluster(sql string) string {
 }
 
 type LogEntry struct {
-	Timestamp      time.Time
+	Timestamp       time.Time
 	IngestTimestamp time.Time
-	RawLog         string
-	LogID          string
-	Fields         map[string]string
-	FractalID      string // Fractal UUID for multi-tenant isolation
+	RawLog          string
+	LogID           string
+	Fields          map[string]string
+	FractalID       string // Fractal UUID for multi-tenant isolation
 }
 
 func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
@@ -650,96 +650,11 @@ func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[strin
 	var results []map[string]interface{}
 	columnTypes := rows.ColumnTypes()
 
-	// Debug: removed debug logging
-
 	for rows.Next() {
-		// Create typed destination variables based on column types
-		values := make([]interface{}, len(columnTypes))
-		for i, col := range columnTypes {
-			typeName := col.DatabaseTypeName()
-			switch {
-			case typeName == "String" || typeName == "Nullable(String)":
-				values[i] = new(string)
-			case typeName == "UInt64" || typeName == "Nullable(UInt64)":
-				values[i] = new(uint64)
-			case typeName == "Int64" || typeName == "Nullable(Int64)":
-				values[i] = new(int64)
-			case typeName == "Float64" || typeName == "Nullable(Float64)":
-				values[i] = new(float64)
-			case typeName == "DateTime64(3)" || typeName == "DateTime" || typeName == "Nullable(DateTime64(3))":
-				values[i] = new(time.Time)
-			case typeName == "Date" || typeName == "Nullable(Date)":
-				values[i] = new(time.Time)
-			case strings.HasPrefix(typeName, "Array("):
-				inner := typeName[6 : len(typeName)-1]
-				switch inner {
-				case "String":
-					values[i] = new([]string)
-				case "Float64":
-					values[i] = new([]float64)
-				case "UInt64":
-					values[i] = new([]uint64)
-				case "Int64":
-					values[i] = new([]int64)
-				default:
-					// Complex array types (Array(Tuple(...)), etc.) -
-					// let the driver scan into an interface slice.
-					var v interface{}
-					values[i] = &v
-				}
-			case strings.HasPrefix(typeName, "Tuple("):
-				var v interface{}
-				values[i] = &v
-			default:
-				// For unknown types (including JSON), try string
-				values[i] = new(string)
-			}
+		row, err := scanRowMap(columnTypes, rows)
+		if err != nil {
+			return nil, err
 		}
-
-		if err := rows.Scan(values...); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		// Convert to map[string]interface{}
-		row := make(map[string]interface{})
-		for i, col := range columnTypes {
-			colName := col.Name()
-			switch v := values[i].(type) {
-			case *string:
-				val := *v
-				// toString(fields) arrives as a JSON string; parse into a map
-				// so the API response contains an object, not a string.
-				if colName == "fields" || colName == "_all_fields" {
-					var m map[string]interface{}
-					if json.Unmarshal([]byte(val), &m) == nil {
-						row[colName] = m
-						continue
-					}
-				}
-				row[colName] = val
-			case *uint64:
-				row[colName] = *v
-			case *int64:
-				row[colName] = *v
-			case *float64:
-				row[colName] = *v
-			case *time.Time:
-				row[colName] = v.Format("2006-01-02 15:04:05.000")
-			case *[]string:
-				row[colName] = *v
-			case *[]float64:
-				row[colName] = *v
-			case *[]uint64:
-				row[colName] = *v
-			case *[]int64:
-				row[colName] = *v
-			case *interface{}:
-				row[colName] = *v
-			default:
-				row[colName] = v
-			}
-		}
-
 		results = append(results, row)
 	}
 
@@ -750,6 +665,100 @@ func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[strin
 	return results, nil
 }
 
+// scanRowMap scans the current row of rows into a map[string]interface{} using
+// the supplied column types. It is shared by the buffered Query path and the
+// streaming StreamQuery path so the two never diverge in type handling. The
+// caller must have already positioned the cursor via rows.Next().
+func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]interface{}, error) {
+	// Create typed destination variables based on column types
+	values := make([]interface{}, len(columnTypes))
+	for i, col := range columnTypes {
+		typeName := col.DatabaseTypeName()
+		switch {
+		case typeName == "String" || typeName == "Nullable(String)":
+			values[i] = new(string)
+		case typeName == "UInt64" || typeName == "Nullable(UInt64)":
+			values[i] = new(uint64)
+		case typeName == "Int64" || typeName == "Nullable(Int64)":
+			values[i] = new(int64)
+		case typeName == "Float64" || typeName == "Nullable(Float64)":
+			values[i] = new(float64)
+		case typeName == "DateTime64(3)" || typeName == "DateTime" || typeName == "Nullable(DateTime64(3))":
+			values[i] = new(time.Time)
+		case typeName == "Date" || typeName == "Nullable(Date)":
+			values[i] = new(time.Time)
+		case strings.HasPrefix(typeName, "Array("):
+			inner := typeName[6 : len(typeName)-1]
+			switch inner {
+			case "String":
+				values[i] = new([]string)
+			case "Float64":
+				values[i] = new([]float64)
+			case "UInt64":
+				values[i] = new([]uint64)
+			case "Int64":
+				values[i] = new([]int64)
+			default:
+				// Complex array types (Array(Tuple(...)), etc.) -
+				// let the driver scan into an interface slice.
+				var v interface{}
+				values[i] = &v
+			}
+		case strings.HasPrefix(typeName, "Tuple("):
+			var v interface{}
+			values[i] = &v
+		default:
+			// For unknown types (including JSON), try string
+			values[i] = new(string)
+		}
+	}
+
+	if err := rows.Scan(values...); err != nil {
+		return nil, fmt.Errorf("failed to scan row: %w", err)
+	}
+
+	// Convert to map[string]interface{}
+	row := make(map[string]interface{})
+	for i, col := range columnTypes {
+		colName := col.Name()
+		switch v := values[i].(type) {
+		case *string:
+			val := *v
+			// toString(fields) arrives as a JSON string; parse into a map
+			// so the API response contains an object, not a string.
+			if colName == "fields" || colName == "_all_fields" {
+				var m map[string]interface{}
+				if json.Unmarshal([]byte(val), &m) == nil {
+					row[colName] = m
+					continue
+				}
+			}
+			row[colName] = val
+		case *uint64:
+			row[colName] = *v
+		case *int64:
+			row[colName] = *v
+		case *float64:
+			row[colName] = *v
+		case *time.Time:
+			row[colName] = v.Format("2006-01-02 15:04:05.000")
+		case *[]string:
+			row[colName] = *v
+		case *[]float64:
+			row[colName] = *v
+		case *[]uint64:
+			row[colName] = *v
+		case *[]int64:
+			row[colName] = *v
+		case *interface{}:
+			row[colName] = *v
+		default:
+			row[colName] = v
+		}
+	}
+
+	return row, nil
+}
 
 func (c *ClickHouseClient) CountLogs(ctx context.Context, startTime, endTime time.Time) (uint64, error) {
 	var count uint64
@@ -768,6 +777,59 @@ func (c *ClickHouseClient) CountLogs(ctx context.Context, startTime, endTime tim
 // The caller is responsible for closing the returned Rows.
 func (c *ClickHouseClient) QueryRows(ctx context.Context, query string, args ...interface{}) (driver.Rows, error) {
 	return c.conn.Query(ctx, query, args...)
+}
+
+// StreamQuery executes a query and invokes onRow for each row as ClickHouse
+// produces it, without buffering the full result set. Rows are scanned with the
+// same logic as the buffered Query path (scanRowMap), so type handling is
+// identical. If onRow returns an error, iteration stops and that error is
+// returned (callers use this to cap the number of rows read).
+//
+// queryID, when non-empty, tags the query for system.query_log correlation.
+// onProgress, when non-nil, receives cumulative rows read and the server's
+// estimated total rows for driving a progress indicator; TotalRows may be 0
+// when unknown and may grow as the scan proceeds.
+//
+// Cancelling ctx (e.g. on client disconnect) aborts the underlying ClickHouse
+// query: the driver propagates cancellation to the connection.
+func (c *ClickHouseClient) StreamQuery(ctx context.Context, queryID, query string, onRow func(map[string]interface{}) error, onProgress func(read, total uint64)) error {
+	var opts []clickhouse.QueryOption
+	if onProgress != nil {
+		var readSoFar uint64
+		opts = append(opts, clickhouse.WithProgress(func(p *clickhouse.Progress) {
+			// Progress packets report per-increment row counts; accumulate.
+			readSoFar += p.Rows
+			onProgress(readSoFar, p.TotalRows)
+		}))
+	}
+	if queryID != "" {
+		opts = append(opts, clickhouse.WithQueryID(queryID))
+	}
+	if len(opts) > 0 {
+		ctx = clickhouse.Context(ctx, opts...)
+	}
+
+	rows, err := c.conn.Query(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	columnTypes := rows.ColumnTypes()
+	for rows.Next() {
+		row, scanErr := scanRowMap(columnTypes, rows)
+		if scanErr != nil {
+			return scanErr
+		}
+		if err := onRow(row); err != nil {
+			return err
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating rows: %w", err)
+	}
+	return nil
 }
 
 // QueryRow executes a query that is expected to return at most one row

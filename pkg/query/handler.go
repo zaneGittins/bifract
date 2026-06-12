@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
-	"math"
 	"strings"
 	"sync"
 	"time"
@@ -68,19 +69,19 @@ type QueryRequest struct {
 
 // ProfileShardRow holds per-node metrics fetched from system.query_log.
 type ProfileShardRow struct {
-	Shard         string  `json:"shard"`
-	Coordinator   uint64  `json:"coordinator"`
-	DurationMs    uint64  `json:"duration_ms"`
-	ReadBytes     string  `json:"read_bytes"`
-	ReadRows      uint64  `json:"read_rows"`
-	PartsScanned  uint64  `json:"parts_scanned"`
-	MarksSelected uint64  `json:"marks_selected"`
-	MarksSkipped  uint64  `json:"marks_skipped"`
-	RowsSurviving uint64  `json:"rows_surviving"`
-	FileOpens     uint64  `json:"file_opens"`
-	DiskMs        uint64  `json:"disk_ms"`
-	NetWaitMs     uint64  `json:"net_wait_ms"`
-	BytesFromDisk string  `json:"bytes_from_disk"`
+	Shard         string `json:"shard"`
+	Coordinator   uint64 `json:"coordinator"`
+	DurationMs    uint64 `json:"duration_ms"`
+	ReadBytes     string `json:"read_bytes"`
+	ReadRows      uint64 `json:"read_rows"`
+	PartsScanned  uint64 `json:"parts_scanned"`
+	MarksSelected uint64 `json:"marks_selected"`
+	MarksSkipped  uint64 `json:"marks_skipped"`
+	RowsSurviving uint64 `json:"rows_surviving"`
+	FileOpens     uint64 `json:"file_opens"`
+	DiskMs        uint64 `json:"disk_ms"`
+	NetWaitMs     uint64 `json:"net_wait_ms"`
+	BytesFromDisk string `json:"bytes_from_disk"`
 }
 
 // SkipIndexRow holds skip-index effectiveness per shard.
@@ -100,26 +101,26 @@ type ProfileData struct {
 }
 
 type QueryResponse struct {
-	Success      bool                     `json:"success"`
-	Results      []map[string]interface{} `json:"results,omitempty"`
-	Count        int                      `json:"count"`
-	Query        string                   `json:"query,omitempty"`
-	SQL          string                   `json:"sql,omitempty"`
-	Error        string                   `json:"error,omitempty"`
-	ErrorType    string                   `json:"error_type,omitempty"` // "parse", "translate", "execution", "timeout" - lets the UI route display
+	Success   bool                     `json:"success"`
+	Results   []map[string]interface{} `json:"results,omitempty"`
+	Count     int                      `json:"count"`
+	Query     string                   `json:"query,omitempty"`
+	SQL       string                   `json:"sql,omitempty"`
+	Error     string                   `json:"error,omitempty"`
+	ErrorType string                   `json:"error_type,omitempty"` // "parse", "translate", "execution", "timeout" - lets the UI route display
 
-	ExecutionMs  int64                    `json:"execution_ms,omitempty"`
-	FieldOrder   []string                 `json:"field_order,omitempty"`
-	IsAggregated bool                     `json:"is_aggregated,omitempty"`
-	LimitHit     string                   `json:"limit_hit,omitempty"` // "bloom", "search", "truncated", or empty
-	ChartType    string                   `json:"chart_type,omitempty"`    // "piechart", "barchart", "" for table
-	ChartConfig  map[string]interface{}   `json:"chart_config,omitempty"`  // Chart-specific configuration
-	Histogram    []int                    `json:"histogram,omitempty"`     // Time-bucketed counts for timeline
-	TimeStart    string                   `json:"time_start,omitempty"`    // Query time range start (RFC3339)
-	TimeEnd      string                   `json:"time_end,omitempty"`      // Query time range end (RFC3339)
-	Profile      *ProfileData             `json:"profile,omitempty"`       // Per-shard profiling data (only when requested)
-	NextCursor   string                   `json:"next_cursor,omitempty"`   // Cursor token for next page (non-aggregated only)
-	HasMore      bool                     `json:"has_more,omitempty"`      // True when more rows exist beyond this page
+	ExecutionMs  int64                  `json:"execution_ms,omitempty"`
+	FieldOrder   []string               `json:"field_order,omitempty"`
+	IsAggregated bool                   `json:"is_aggregated,omitempty"`
+	LimitHit     string                 `json:"limit_hit,omitempty"`    // "bloom", "search", "truncated", or empty
+	ChartType    string                 `json:"chart_type,omitempty"`   // "piechart", "barchart", "" for table
+	ChartConfig  map[string]interface{} `json:"chart_config,omitempty"` // Chart-specific configuration
+	Histogram    []int                  `json:"histogram,omitempty"`    // Time-bucketed counts for timeline
+	TimeStart    string                 `json:"time_start,omitempty"`   // Query time range start (RFC3339)
+	TimeEnd      string                 `json:"time_end,omitempty"`     // Query time range end (RFC3339)
+	Profile      *ProfileData           `json:"profile,omitempty"`      // Per-shard profiling data (only when requested)
+	NextCursor   string                 `json:"next_cursor,omitempty"`  // Cursor token for next page (non-aggregated only)
+	HasMore      bool                   `json:"has_more,omitempty"`     // True when more rows exist beyond this page
 }
 
 // cursorPageSize is the number of raw log rows returned per cursor page.
@@ -192,7 +193,36 @@ func (h *QueryHandler) SetPostgresClient(pg *storage.PostgresClient) {
 	h.pg = pg
 }
 
-func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
+// preparedQuery holds everything resolved from a search request (auth, fractal
+// scoping, translated SQL, cursor/limit, histogram) that the buffered and
+// streaming handlers both need. It is produced by prepareQuery.
+type preparedQuery struct {
+	req                 QueryRequest
+	sql                 string
+	fieldOrder          []string
+	isAggregated        bool
+	chartType           string
+	chartConfig         map[string]interface{}
+	streamable          bool
+	appliedCursorPaging bool
+	queryMaxRows        int
+	isBloomQuery        bool
+	startTime           time.Time
+	endTime             time.Time
+	selectedIndex       string
+	needsHistogram      bool
+	histogramSQL        string
+	histBucketSec       int
+	histBucketCount     int
+}
+
+// prepareQuery handles auth, fractal/prism resolution, BQL parsing, SQL
+// translation, cursor/limit injection, and histogram SQL construction shared by
+// HandleQuery and HandleQueryStream. On any failure or short-circuit it writes
+// the response itself and returns nil (named return), so callers only check for
+// nil. The named return lets the existing early-exit `return` statements stay
+// unchanged.
+func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (prep *preparedQuery) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -499,6 +529,12 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	// Track whether cursor pagination applies (non-aggregated, no explicit LIMIT keyword in query)
 	appliedCursorPaging := !isAggregated && !sqlLimitRE.MatchString(sql)
 
+	// A query can be progressively streamed newest-first only when it is a plain
+	// non-aggregated, non-charted search left in the translator's default
+	// timestamp-DESC order. Explicit sorts, aggregations, and charts must be
+	// fully computed before any meaningful result exists.
+	streamable := translationResult.DefaultTimeOrder && !isAggregated && chartType == ""
+
 	// Add LIMIT to queries that don't already have one
 	if !sqlLimitRE.MatchString(sql) {
 		if isAggregated {
@@ -541,6 +577,53 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 			needsHistogram = false
 		}
 	}
+
+	prep = &preparedQuery{
+		req:                 req,
+		sql:                 sql,
+		fieldOrder:          fieldOrder,
+		isAggregated:        isAggregated,
+		chartType:           chartType,
+		chartConfig:         chartConfig,
+		streamable:          streamable,
+		appliedCursorPaging: appliedCursorPaging,
+		queryMaxRows:        queryMaxRows,
+		isBloomQuery:        isBloomQuery,
+		startTime:           startTime,
+		endTime:             endTime,
+		selectedIndex:       selectedIndex,
+		needsHistogram:      needsHistogram,
+		histogramSQL:        histogramSQL,
+		histBucketSec:       histBucketSec,
+		histBucketCount:     histBucketCount,
+	}
+	return
+}
+
+// HandleQuery executes a BQL search and returns the full result set in one
+// buffered JSON response. Used by API consumers, alerts, and saved-query runs.
+func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
+	prep := h.prepareQuery(w, r)
+	if prep == nil {
+		return
+	}
+	req := prep.req
+	sql := prep.sql
+	fieldOrder := prep.fieldOrder
+	isAggregated := prep.isAggregated
+	chartType := prep.chartType
+	chartConfig := prep.chartConfig
+	appliedCursorPaging := prep.appliedCursorPaging
+	queryMaxRows := prep.queryMaxRows
+	isBloomQuery := prep.isBloomQuery
+	startTime := prep.startTime
+	endTime := prep.endTime
+	selectedIndex := prep.selectedIndex
+	needsHistogram := prep.needsHistogram
+	histogramSQL := prep.histogramSQL
+	histBucketSec := prep.histBucketSec
+	histBucketCount := prep.histBucketCount
+	var err error
 
 	// Generate a stable query_id when profiling is requested so we can
 	// correlate this run with system.query_log entries afterward.
@@ -670,37 +753,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	// Process histogram into bucketed array
 	var histogram []int
 	if needsHistogram && histRes.err == nil {
-		histogram = make([]int, histBucketCount)
-		for _, row := range histRes.rows {
-			bucketVal, bOk := row["bucket"]
-			cntVal, cOk := row["cnt"]
-			if !bOk || !cOk {
-				continue
-			}
-			var bucketTime time.Time
-			switch b := bucketVal.(type) {
-			case time.Time:
-				bucketTime = b
-			case string:
-				bucketTime, _ = time.Parse("2006-01-02 15:04:05", b)
-			}
-			if bucketTime.IsZero() {
-				continue
-			}
-			idx := int(bucketTime.Sub(startTime).Seconds()) / histBucketSec
-			if idx >= 0 && idx < histBucketCount {
-				switch c := cntVal.(type) {
-				case uint64:
-					histogram[idx] = int(c)
-				case int64:
-					histogram[idx] = int(c)
-				case float64:
-					histogram[idx] = int(c)
-				case int:
-					histogram[idx] = c
-				}
-			}
-		}
+		histogram = bucketHistogram(histRes.rows, startTime, histBucketSec, histBucketCount)
 	} else if needsHistogram && histRes.err != nil {
 		log.Printf("[QueryHandler] Histogram query failed (non-critical): %v", histRes.err)
 	}
@@ -806,6 +859,345 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	go h.logQueryAudit(req.Query, "bql", selectedIndex, username, executionTime, len(results))
 
 	respondJSON(w, http.StatusOK, response)
+}
+
+// bucketHistogram folds histogram query rows ({bucket, cnt}) into a fixed-size
+// count array aligned to startTime. Shared by the buffered and streaming paths.
+func bucketHistogram(rows []map[string]interface{}, startTime time.Time, histBucketSec, histBucketCount int) []int {
+	if histBucketCount <= 0 || histBucketSec <= 0 {
+		return nil
+	}
+	histogram := make([]int, histBucketCount)
+	for _, row := range rows {
+		bucketVal, bOk := row["bucket"]
+		cntVal, cOk := row["cnt"]
+		if !bOk || !cOk {
+			continue
+		}
+		var bucketTime time.Time
+		switch b := bucketVal.(type) {
+		case time.Time:
+			bucketTime = b
+		case string:
+			bucketTime, _ = time.Parse("2006-01-02 15:04:05", b)
+		}
+		if bucketTime.IsZero() {
+			continue
+		}
+		idx := int(bucketTime.Sub(startTime).Seconds()) / histBucketSec
+		if idx >= 0 && idx < histBucketCount {
+			switch c := cntVal.(type) {
+			case uint64:
+				histogram[idx] = int(c)
+			case int64:
+				histogram[idx] = int(c)
+			case float64:
+				histogram[idx] = int(c)
+			case int:
+				histogram[idx] = c
+			}
+		}
+	}
+	return histogram
+}
+
+// Sentinel errors used to unwind StreamQuery's onRow callback for non-failure
+// reasons: the page cap was reached, or the client connection went away.
+var (
+	errStreamPageFull = errors.New("stream page full")
+	errStreamClient   = errors.New("stream client gone")
+)
+
+const (
+	streamFlushRows = 50                     // flush a row batch once this many accumulate
+	streamFlushIval = 80 * time.Millisecond  // ...or this long has passed since the last flush
+	streamProgIval  = 100 * time.Millisecond // throttle progress frames
+)
+
+// HandleQueryStream executes a BQL search and streams the result as NDJSON
+// frames (one JSON object per line). For plain non-aggregated searches left in
+// the default timestamp-DESC order it emits rows newest-first as ClickHouse
+// produces them, with progress frames driving a loading indicator. Aggregations,
+// charts, and explicitly sorted queries are not progressively streamable, so
+// they fall back to a single buffered batch delivered through the same frame
+// protocol (meta -> rows -> done), keeping the frontend path uniform.
+func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request) {
+	prep := h.prepareQuery(w, r)
+	if prep == nil {
+		return // prepareQuery already wrote the response
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		respondJSON(w, http.StatusInternalServerError, QueryResponse{
+			Success: false,
+			Error:   "Streaming not supported by server",
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	enc := json.NewEncoder(w)
+	// writeFrame encodes one NDJSON frame and flushes it. Returns false when the
+	// connection is gone so callers can stop early. The clickhouse-go progress
+	// callback fires from the driver's background read goroutine, concurrently
+	// with the row-iteration goroutine, so all frame writes are serialized by a
+	// mutex to keep the NDJSON stream from interleaving.
+	var writeMu sync.Mutex
+	writeFrame := func(frame map[string]interface{}) bool {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if err := enc.Encode(frame); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	startWall := time.Now()
+
+	if !writeFrame(map[string]interface{}{
+		"type":          "meta",
+		"streaming":     prep.streamable,
+		"sql":           prep.sql,
+		"field_order":   prep.fieldOrder,
+		"is_aggregated": prep.isAggregated,
+		"chart_type":    prep.chartType,
+		"chart_config":  prep.chartConfig,
+		"time_start":    prep.startTime.Format(time.RFC3339),
+		"time_end":      prep.endTime.Format(time.RFC3339),
+	}) {
+		return
+	}
+
+	queryTimeoutSec := settings.Get().QueryTimeoutSeconds
+	var queryCtx context.Context
+	var cancel context.CancelFunc
+	if queryTimeoutSec > 0 {
+		queryCtx, cancel = context.WithTimeout(r.Context(), time.Duration(queryTimeoutSec)*time.Second)
+	} else {
+		queryCtx, cancel = context.WithCancel(r.Context())
+	}
+	defer cancel()
+
+	// Histogram (non-aggregated, first page only) runs concurrently and is
+	// emitted inline by the writer goroutine when ready.
+	histCh := make(chan []int, 1)
+	if prep.needsHistogram {
+		go func() {
+			rows, err := h.db.Query(queryCtx, prep.histogramSQL)
+			if err != nil {
+				log.Printf("[QueryHandler] Streaming histogram failed (non-critical): %v", err)
+				histCh <- nil
+				return
+			}
+			histCh <- bucketHistogram(rows, prep.startTime, prep.histBucketSec, prep.histBucketCount)
+		}()
+	}
+	histEmitted := false
+	tryEmitHistogram := func(block bool) {
+		if !prep.needsHistogram || histEmitted {
+			return
+		}
+		emit := func(buckets []int) {
+			histEmitted = true
+			if buckets != nil {
+				writeFrame(map[string]interface{}{
+					"type":           "histogram",
+					"buckets":        buckets,
+					"bucket_seconds": prep.histBucketSec,
+					"bucket_count":   prep.histBucketCount,
+				})
+			}
+		}
+		if block {
+			select {
+			case buckets := <-histCh:
+				emit(buckets)
+			case <-time.After(500 * time.Millisecond):
+			}
+		} else {
+			select {
+			case buckets := <-histCh:
+				emit(buckets)
+			default:
+			}
+		}
+	}
+
+	// Outcome fields populated by whichever branch runs, emitted in the done frame.
+	var count int
+	var nextCursorOut string
+	var hasMoreOut bool
+	var limitHitOut string
+
+	emitExecError := func(execErr error) {
+		log.Printf("[QueryHandler] Streaming query failed: %v", execErr)
+		msg := "Query execution failed"
+		if friendly, ok := clickhouseUserMessage(execErr); ok {
+			msg = friendly
+		} else if code := clickhouseErrorCode(execErr); code != 0 {
+			msg = fmt.Sprintf("Query execution failed (ClickHouse error %d)", code)
+		}
+		writeFrame(map[string]interface{}{
+			"type":       "error",
+			"error":      msg,
+			"error_type": "execution",
+		})
+	}
+
+	if prep.streamable {
+		batch := make([]map[string]interface{}, 0, streamFlushRows)
+		lastFlush := time.Now()
+		lastProgress := time.Time{}
+		var lastKept map[string]interface{}
+		clientGone := false
+
+		flushBatch := func() bool {
+			if len(batch) == 0 {
+				return true
+			}
+			frame := map[string]interface{}{"type": "rows", "data": batch}
+			ok := writeFrame(frame)
+			batch = make([]map[string]interface{}, 0, streamFlushRows)
+			lastFlush = time.Now()
+			return ok
+		}
+
+		onRow := func(row map[string]interface{}) error {
+			// When cursor paging is active the SQL is LIMIT cursorPageSize+1; the
+			// extra row signals has_more. Otherwise the SQL already carries the
+			// effective limit (explicit head() or the default max-rows cap), so we
+			// stream every row it returns rather than capping at a page.
+			if prep.appliedCursorPaging && count >= cursorPageSize {
+				hasMoreOut = true
+				return errStreamPageFull
+			}
+			sanitizeFloats(row)
+			batch = append(batch, row)
+			count++
+			lastKept = row
+			if len(batch) >= streamFlushRows || time.Since(lastFlush) >= streamFlushIval {
+				if !flushBatch() {
+					clientGone = true
+					return errStreamClient
+				}
+				tryEmitHistogram(false)
+			}
+			return nil
+		}
+
+		onProgress := func(read, total uint64) {
+			now := time.Now()
+			if now.Sub(lastProgress) < streamProgIval {
+				return
+			}
+			lastProgress = now
+			ratio := 0.0
+			if total > 0 {
+				ratio = float64(read) / float64(total)
+				if ratio > 1 {
+					ratio = 1
+				}
+			}
+			writeFrame(map[string]interface{}{
+				"type":       "progress",
+				"read_rows":  read,
+				"total_rows": total,
+				"ratio":      ratio,
+			})
+		}
+
+		streamErr := h.db.StreamQuery(queryCtx, "", prep.sql, onRow, onProgress)
+		flushBatch()
+
+		if clientGone || r.Context().Err() != nil {
+			return // client disconnected; nothing more to send
+		}
+		if streamErr != nil && !errors.Is(streamErr, errStreamPageFull) && !errors.Is(streamErr, errStreamClient) {
+			if queryCtx.Err() == context.DeadlineExceeded {
+				writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
+			} else {
+				emitExecError(streamErr)
+			}
+			return
+		}
+
+		if prep.appliedCursorPaging {
+			if hasMoreOut && lastKept != nil {
+				if nc, encErr := encodeCursor(lastKept); encErr == nil {
+					nextCursorOut = nc
+				} else {
+					hasMoreOut = false
+				}
+			}
+		} else if count == prep.queryMaxRows {
+			// Hit the (non-cursor) row cap, same signal the buffered path emits.
+			if prep.isBloomQuery {
+				limitHitOut = "bloom"
+			} else {
+				limitHitOut = "search"
+			}
+		}
+	} else {
+		rows, qErr := h.db.Query(queryCtx, prep.sql)
+		if qErr != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			if queryCtx.Err() == context.DeadlineExceeded {
+				writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
+			} else {
+				emitExecError(qErr)
+			}
+			return
+		}
+
+		if prep.appliedCursorPaging && len(rows) > cursorPageSize {
+			rows = rows[:cursorPageSize]
+			if nc, encErr := encodeCursor(rows[len(rows)-1]); encErr == nil {
+				nextCursorOut = nc
+				hasMoreOut = true
+			}
+		}
+		if len(rows) == prep.queryMaxRows {
+			if prep.isBloomQuery {
+				limitHitOut = "bloom"
+			} else {
+				limitHitOut = "search"
+			}
+		}
+		for _, row := range rows {
+			sanitizeFloats(row)
+		}
+		count = len(rows)
+		tryEmitHistogram(true)
+		if !writeFrame(map[string]interface{}{"type": "rows", "data": rows}) {
+			return
+		}
+	}
+
+	tryEmitHistogram(true)
+
+	executionMs := time.Since(startWall).Milliseconds()
+	writeFrame(map[string]interface{}{
+		"type":         "done",
+		"count":        count,
+		"has_more":     hasMoreOut,
+		"next_cursor":  nextCursorOut,
+		"execution_ms": executionMs,
+		"limit_hit":    limitHitOut,
+	})
+
+	username := ""
+	if user, ok := r.Context().Value("user").(*storage.User); ok && user != nil {
+		username = user.Username
+	}
+	go h.logQueryAudit(prep.req.Query, "bql", prep.selectedIndex, username, executionMs, count)
 }
 
 func (h *QueryHandler) parseTimeRange(start, end string) (time.Time, time.Time, error) {

@@ -14,9 +14,9 @@ func TestBasicQueries(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		query       string
-		wantContain []string
+		name           string
+		query          string
+		wantContain    []string
 		wantNotContain []string
 	}{
 		{
@@ -268,6 +268,53 @@ func TestAggregationWithoutGroupBy(t *testing.T) {
 	}
 }
 
+func TestDefaultTimeOrderStreamable(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:   1000,
+	}
+
+	tests := []struct {
+		query string
+		want  bool // expected DefaultTimeOrder (streamable gate)
+	}{
+		// Plain searches keep the implicit timestamp-DESC order: streamable.
+		{"*", true},
+		{"image=/powershell/i", true},
+		{`"evil-domain.com"`, true},
+		{"src_ip=10.0.0.1", true},
+		// Aggregations have no meaningful newest-first partial state.
+		{"* | count()", false},
+		{"* | sum(bytes)", false},
+		{"* | groupby(user)", false},
+		// An explicit sort overrides the default order, so streaming can't
+		// preserve incremental newest-first emission.
+		{"* | sort(bytes)", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			pipeline, err := ParseQuery(tt.query)
+			if err != nil {
+				t.Fatalf("Failed to parse query: %v", err)
+			}
+			result, err := TranslateToSQLWithOrder(pipeline, opts)
+			if err != nil {
+				t.Fatalf("Failed to translate query: %v", err)
+			}
+			if result.DefaultTimeOrder != tt.want {
+				t.Errorf("DefaultTimeOrder = %v, want %v\nQuery: %s\nSQL: %s",
+					result.DefaultTimeOrder, tt.want, tt.query, result.SQL)
+			}
+			// Sanity: when streamable, the SQL must actually carry the DESC order.
+			if tt.want && !strings.Contains(result.SQL, "ORDER BY timestamp DESC") {
+				t.Errorf("streamable query missing ORDER BY timestamp DESC\nQuery: %s\nSQL: %s", tt.query, result.SQL)
+			}
+		})
+	}
+}
+
 func TestEdgeCases(t *testing.T) {
 	opts := QueryOptions{
 		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -330,14 +377,14 @@ func TestSQLSafetyCheck(t *testing.T) {
 	}
 
 	legitimateQueries := []string{
-		`message="DROP TABLE logs"`,              // Searching for log containing DROP TABLE
-		`message="INSERT INTO users"`,            // Searching for log containing INSERT
-		`message=/DELETE FROM/i`,                 // Regex search for DELETE FROM
-		`raw_log="UNION SELECT * FROM secrets"`,  // Searching for this string in logs
-		`event="CREATE DATABASE test"`,           // Searching for this in event field
-		`*`,                                      // Simple wildcard
-		`image=/powershell/i | groupBy(user)`,    // Normal query
-		`* | count()`,                            // Aggregation
+		`message="DROP TABLE logs"`,             // Searching for log containing DROP TABLE
+		`message="INSERT INTO users"`,           // Searching for log containing INSERT
+		`message=/DELETE FROM/i`,                // Regex search for DELETE FROM
+		`raw_log="UNION SELECT * FROM secrets"`, // Searching for this string in logs
+		`event="CREATE DATABASE test"`,          // Searching for this in event field
+		`*`,                                     // Simple wildcard
+		`image=/powershell/i | groupBy(user)`,   // Normal query
+		`* | count()`,                           // Aggregation
 	}
 
 	for _, query := range legitimateQueries {
@@ -3744,11 +3791,11 @@ func TestExtractLiteralTokens(t *testing.T) {
 
 func TestBuildRegexMatchSQL(t *testing.T) {
 	tests := []struct {
-		name       string
-		fieldRef   string
-		pattern    string
-		negate     bool
-		wantParts  []string
+		name        string
+		fieldRef    string
+		pattern     string
+		negate      bool
+		wantParts   []string
 		wantNoParts []string
 	}{
 		{
@@ -3838,9 +3885,9 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		query       string
-		wantContain []string
+		name           string
+		query          string
+		wantContain    []string
 		wantNotContain []string
 	}{
 		{

@@ -230,6 +230,9 @@ const QueryExecutor = {
             elements.resultsTable.innerHTML = '<div class="loading-spinner"><span class="spinner"></span><button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
         }
 
+        // Flip the Run button to Cancel while the query is in flight.
+        this._setRunButtonState(true);
+
         try {
             // Get currently selected fractal for context
             let requestBody = {
@@ -243,157 +246,48 @@ const QueryExecutor = {
                 requestBody.fractal_id = window.FractalContext.currentFractal.id;
             }
 
-            if (window.UserPrefs && UserPrefs.showSQL()) {
+            // Profiling collects per-shard execution stats over the full result,
+            // which the progressive stream does not produce. When the SQL/profile
+            // panel is enabled, use the buffered endpoint so the profile renders;
+            // otherwise stream for newest-first progressive results.
+            const wantsProfile = !!(window.UserPrefs && UserPrefs.showSQL());
+            if (wantsProfile) {
                 requestBody.profile = true;
             }
+            const endpoint = wantsProfile ? '/api/v1/query' : '/api/v1/query/stream';
 
-            // Use the safer HttpUtils for better error handling
-            const data = await HttpUtils.safeFetch('/api/v1/query', {
+            const res = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify(requestBody),
                 signal: this.currentRequest.signal
             });
 
-            if (data.sql && elements.sqlOutput) {
-                elements.sqlOutput.innerHTML = this.highlightSQL(data.sql);
-                const sqlPreview = document.querySelector('.sql-preview');
-                if (sqlPreview && window.UserPrefs && UserPrefs.showSQL()) {
-                    sqlPreview.style.display = 'block';
-                    elements.sqlOutput.style.display = 'block';
-                    const toggleBtn = document.getElementById('toggleSqlBtn');
-                    if (toggleBtn) toggleBtn.textContent = 'Hide SQL';
-                }
-            }
-
             // Validate that we're still on the same fractal (prevent race conditions)
-            const currentFractalId = window.FractalContext?.currentFractal?.id || null;
-            if (this.currentFractalId !== currentFractalId) {
+            if (this.currentFractalId !== (window.FractalContext?.currentFractal?.id || null)) {
                 return;
             }
 
-            if (!data.success) {
-                this.showError(data.error || 'Query failed', data.error_type);
-                if (elements.resultsTable) elements.resultsTable.innerHTML = '';
+            const contentType = res.headers.get('Content-Type') || '';
+            if (!contentType.includes('application/x-ndjson')) {
+                // prepareQuery short-circuited with a single JSON response (auth /
+                // parse / translate error, or an empty prism result).
+                let data = {};
+                try { data = await res.json(); } catch (e) {}
+                if (!res.ok || !data.success) {
+                    this.showError(data.error || `Query failed (${res.status})`, data.error_type);
+                    if (elements.resultsTable) elements.resultsTable.innerHTML = '';
+                    return;
+                }
+                this._applyQueryMeta(data, elements, false);
+                this.currentResults = data.results || [];
+                this._renderCurrentResults(elements);
+                this._finalizeQuery(data, elements);
                 return;
             }
 
-            this.currentResults = data.results || [];
-            this.fieldOrder = data.field_order || null;
-            this.isAggregated = data.is_aggregated || false;
-            this.limitHit = data.limit_hit || null;
-            this.chartType = data.chart_type || '';
-            this.chartConfig = data.chart_config || {};
-            this.currentCursor = data.next_cursor || null;
-
-            const outputTypeLabels = {
-                piechart: 'Pie Chart', barchart: 'Bar Chart', graph: 'Network Graph',
-                singleval: 'Single Value', timechart: 'Time Chart', histogram: 'Histogram',
-                heatmap: 'Heat Map', worldmap: 'World Map',
-            };
-            const outputLabel = document.getElementById('outputTypeLabel');
-            if (outputLabel) outputLabel.textContent = outputTypeLabels[this.chartType] || 'Table';
-
-            // Reset sort state for new query
-            this.sortColumn = null;
-            this.sortDirection = null;
-
-            // Show results count with limit information and styling
-            if (elements.resultsCount) {
-                const resultsLength = this.currentResults.length;
-
-                if (data.limit_hit) {
-                    // Show clear message when hitting limits
-                    const countSpan = `<span style="color: #e74c3c; font-weight: 500;">${resultsLength}</span>`;
-
-                    switch (data.limit_hit) {
-                        case 'bloom':
-                            elements.resultsCount.innerHTML = `${countSpan} results (limit reached)`;
-                            break;
-                        case 'search':
-                            elements.resultsCount.innerHTML = `${countSpan} results (limit reached)`;
-                            break;
-                        case 'truncated':
-                            elements.resultsCount.innerHTML = `${countSpan} results (truncated due to large response)`;
-                            break;
-                        default:
-                            elements.resultsCount.textContent = `${resultsLength} results`;
-                    }
-                } else {
-                    const suffix = data.has_more ? '+' : '';
-                    elements.resultsCount.textContent = `${resultsLength.toLocaleString()}${suffix} results`;
-                }
-            }
-
-            // Display execution time
-            if (elements.executionTime && data.execution_ms !== undefined) {
-                elements.executionTime.textContent = `(${data.execution_ms}ms)`;
-                elements.executionTime.style.display = 'inline';
-            }
-
-            // Show export CSV button when results are available
-            const exportBtn = document.getElementById('exportCsvBtn');
-            if (exportBtn && this.currentResults && this.currentResults.length > 0) {
-                exportBtn.style.display = 'inline-block';
-            }
-
-            // Render results immediately, fetch comments in background
-            const paginationEl = document.getElementById('paginationControls');
-            const pageSizeEl = document.getElementById('pageSizeSelect');
-            if (this.chartType && this.chartType !== '') {
-                if (paginationEl) paginationEl.style.display = 'none';
-                if (pageSizeEl) pageSizeEl.style.display = 'none';
-                if (elements.resultsTable) elements.resultsTable.style.display = 'none';
-                this.renderResults(this.currentResults);
-            } else {
-                if (paginationEl) paginationEl.style.display = '';
-                if (pageSizeEl) pageSizeEl.style.display = '';
-                if (window.Pagination) {
-                    Pagination.setResults(this.currentResults);
-                    this.renderPage(Pagination.getCurrentPageResults());
-                } else {
-                    this.renderResults(this.currentResults);
-                }
-            }
-
-            // Show or hide the load-more button based on cursor availability
-            this._updateLoadMoreButton(data.has_more);
-
-            // Update field statistics sidebar
-            if (window.FieldStats) FieldStats.refresh();
-
-            // Defer timeline to next frame so the table paints first
-            const shouldShowTimeline = !this.fieldOrder || this.fieldOrder.includes('timestamp');
-            if (window.Timeline) {
-                if (shouldShowTimeline && data.histogram) {
-                    // Use server-provided histogram for accurate counts
-                    const histTimeRange = {
-                        start: data.time_start || this.currentTimeRange.start,
-                        end: data.time_end || this.currentTimeRange.end
-                    };
-                    requestAnimationFrame(() => {
-                        Timeline.renderFromHistogram(data.histogram, histTimeRange);
-                    });
-                } else if (shouldShowTimeline) {
-                    requestAnimationFrame(() => {
-                        Timeline.render(this.currentResults, this.currentTimeRange);
-                    });
-                } else {
-                    Timeline.hide();
-                }
-            }
-
-            // Fetch commented log IDs in background and update row highlights
-            if (window.Comments) {
-                Comments.fetchCommentedLogIds().then(() => {
-                    this.updateCommentHighlights();
-                });
-            }
-
-            if (data.profile) {
-                this.renderProfilePanel(data.profile);
-            }
-
+            await this._consumeQueryStream(res, elements);
         } catch (error) {
             // Don't show error if request was cancelled (fractal switch)
             if (error.name === 'AbortError') {
@@ -403,8 +297,311 @@ const QueryExecutor = {
             this.showError(error.message);
             if (elements.resultsTable) elements.resultsTable.innerHTML = '';
         } finally {
+            this._loadingBar('hide');
+            this._streamingActive = false;
             // Clear the current request reference
             this.currentRequest = null;
+            this._setRunButtonState(false);
+        }
+    },
+
+    // Dispatch the Run/Cancel button: cancel an in-flight query, else run a new one.
+    runOrCancel() {
+        if (this._queryRunning) {
+            this.cancelQuery();
+        } else {
+            this.execute();
+        }
+    },
+
+    // Toggle the search button between "Run" and a themed "Cancel" while running.
+    _setRunButtonState(running) {
+        this._queryRunning = running;
+        const btn = document.getElementById('executeBtn');
+        if (!btn) return;
+        const text = btn.querySelector('.btn-text');
+        const shortcut = btn.querySelector('.btn-shortcut');
+        if (running) {
+            btn.classList.add('is-running');
+            if (text) text.textContent = 'Cancel';
+            if (shortcut) shortcut.style.display = 'none';
+        } else {
+            btn.classList.remove('is-running');
+            if (text) text.textContent = 'Run';
+            if (shortcut) shortcut.style.display = '';
+        }
+    },
+
+    // Consume an NDJSON stream of query result frames, rendering rows newest-first
+    // as they arrive. Frames: meta, histogram, rows, progress, error, done.
+    async _consumeQueryStream(res, elements) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        let pendingRender = false;
+        let timeRange = this.currentTimeRange;
+        let histogram = null;
+
+        const scheduleRender = () => {
+            if (pendingRender) return;
+            pendingRender = true;
+            requestAnimationFrame(() => {
+                pendingRender = false;
+                this._renderCurrentResults(elements, { preservePage: true });
+                if (elements.resultsCount) {
+                    elements.resultsCount.textContent = `${this.currentResults.length.toLocaleString()} results`;
+                }
+            });
+        };
+
+        const handleFrame = (frame) => {
+            switch (frame.type) {
+                case 'meta':
+                    this.currentResults = [];
+                    // New query starts at page 1; subsequent streamed batches
+                    // preserve whatever page the user is viewing.
+                    if (window.Pagination) {
+                        Pagination.currentPage = 1;
+                        Pagination.allResults = [];
+                        Pagination.totalResults = 0;
+                    }
+                    timeRange = {
+                        start: frame.time_start || this.currentTimeRange.start,
+                        end: frame.time_end || this.currentTimeRange.end
+                    };
+                    this._applyQueryMeta({
+                        sql: frame.sql,
+                        field_order: frame.field_order,
+                        is_aggregated: frame.is_aggregated,
+                        chart_type: frame.chart_type,
+                        chart_config: frame.chart_config
+                    }, elements, !!frame.streaming);
+                    break;
+                case 'histogram':
+                    histogram = frame.buckets || null;
+                    break;
+                case 'rows':
+                    if (frame.data && frame.data.length) {
+                        for (const row of frame.data) this.currentResults.push(row);
+                        scheduleRender();
+                    }
+                    break;
+                case 'progress':
+                    this._loadingBar('set', typeof frame.ratio === 'number' ? frame.ratio : 0);
+                    break;
+                case 'error':
+                    this.showError(frame.error || 'Query failed', frame.error_type);
+                    break;
+                case 'done':
+                    this._streamingActive = false;
+                    this._renderCurrentResults(elements, { preservePage: true });
+                    this._finalizeQuery({
+                        has_more: frame.has_more,
+                        next_cursor: frame.next_cursor,
+                        limit_hit: frame.limit_hit,
+                        execution_ms: frame.execution_ms,
+                        histogram: histogram,
+                        time_start: timeRange.start,
+                        time_end: timeRange.end
+                    }, elements);
+                    break;
+            }
+        };
+
+        for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            let nl;
+            while ((nl = buf.indexOf('\n')) >= 0) {
+                const line = buf.slice(0, nl).trim();
+                buf = buf.slice(nl + 1);
+                if (!line) continue;
+                let frame;
+                try { frame = JSON.parse(line); } catch (e) { continue; }
+                handleFrame(frame);
+            }
+        }
+    },
+
+    // Apply query metadata (SQL display, output type, container setup) shared by
+    // the buffered and streaming paths. `streaming` selects the loading indicator.
+    _applyQueryMeta(data, elements, streaming) {
+        if (data.sql && elements.sqlOutput) {
+            elements.sqlOutput.innerHTML = this.highlightSQL(data.sql);
+            const sqlPreview = document.querySelector('.sql-preview');
+            if (sqlPreview && window.UserPrefs && UserPrefs.showSQL()) {
+                sqlPreview.style.display = 'block';
+                elements.sqlOutput.style.display = 'block';
+                const toggleBtn = document.getElementById('toggleSqlBtn');
+                if (toggleBtn) toggleBtn.textContent = 'Hide SQL';
+            }
+        }
+
+        this.fieldOrder = data.field_order || null;
+        this.isAggregated = data.is_aggregated || false;
+        this.chartType = data.chart_type || '';
+        this.chartConfig = data.chart_config || {};
+        this.sortColumn = null;
+        this.sortDirection = null;
+
+        const outputTypeLabels = {
+            piechart: 'Pie Chart', barchart: 'Bar Chart', graph: 'Network Graph',
+            singleval: 'Single Value', timechart: 'Time Chart', histogram: 'Histogram',
+            heatmap: 'Heat Map', worldmap: 'World Map',
+        };
+        const outputLabel = document.getElementById('outputTypeLabel');
+        if (outputLabel) outputLabel.textContent = outputTypeLabels[this.chartType] || 'Table';
+
+        // Rows arrive pre-sorted (timestamp DESC) during a stream; block column
+        // sorting until done so a mid-stream re-sort can't scramble partial data.
+        this._streamingActive = streaming;
+        if (streaming) {
+            // Replace the initial spinner with the thin progress bar plus a subtle
+            // searching/cancel line. Incoming rows overwrite this; on a rare-term
+            // deep scan it stays so the user can still cancel.
+            if (elements.resultsTable) {
+                elements.resultsTable.innerHTML =
+                    '<div class="stream-searching"><span>Searching, newest first…</span>' +
+                    '<button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
+            }
+            this._loadingBar('show');
+        } else {
+            this._loadingBar('hide');
+        }
+    },
+
+    // Render this.currentResults as a chart or a paginated table.
+    // opts.preservePage keeps the user's current page (used for incremental
+    // streaming updates) instead of resetting to page 1 as a new query would.
+    _renderCurrentResults(elements, opts = {}) {
+        const paginationEl = document.getElementById('paginationControls');
+        const pageSizeEl = document.getElementById('pageSizeSelect');
+        if (this.chartType && this.chartType !== '') {
+            if (paginationEl) paginationEl.style.display = 'none';
+            if (pageSizeEl) pageSizeEl.style.display = 'none';
+            if (elements.resultsTable) elements.resultsTable.style.display = 'none';
+            this.renderResults(this.currentResults);
+        } else {
+            if (paginationEl) paginationEl.style.display = '';
+            if (pageSizeEl) pageSizeEl.style.display = '';
+            if (elements.resultsTable) elements.resultsTable.style.display = 'block';
+            if (window.Pagination) {
+                if (opts.preservePage) {
+                    // Incremental, page-preserving update (mirrors loadMore) so
+                    // streaming batches don't bounce the user back to page 1.
+                    Pagination.allResults = this.currentResults;
+                    Pagination.totalResults = this.currentResults.length;
+                    Pagination.updateDisplay();
+                } else {
+                    Pagination.setResults(this.currentResults);
+                    this.renderPage(Pagination.getCurrentPageResults());
+                }
+            } else {
+                this.renderResults(this.currentResults);
+            }
+        }
+    },
+
+    // Finalize a completed query: counts, cursor, timeline, comments, profile.
+    _finalizeQuery(data, elements) {
+        this._loadingBar('done');
+        this.limitHit = data.limit_hit || null;
+        this.currentCursor = data.next_cursor || null;
+
+        if (elements.resultsCount) {
+            const resultsLength = this.currentResults.length;
+            if (data.limit_hit) {
+                const countSpan = `<span style="color: #e74c3c; font-weight: 500;">${resultsLength}</span>`;
+                switch (data.limit_hit) {
+                    case 'bloom':
+                    case 'search':
+                        elements.resultsCount.innerHTML = `${countSpan} results (limit reached)`;
+                        break;
+                    case 'truncated':
+                        elements.resultsCount.innerHTML = `${countSpan} results (truncated due to large response)`;
+                        break;
+                    default:
+                        elements.resultsCount.textContent = `${resultsLength} results`;
+                }
+            } else {
+                const suffix = data.has_more ? '+' : '';
+                elements.resultsCount.textContent = `${resultsLength.toLocaleString()}${suffix} results`;
+            }
+        }
+
+        if (elements.executionTime && data.execution_ms !== undefined) {
+            elements.executionTime.textContent = `(${data.execution_ms}ms)`;
+            elements.executionTime.style.display = 'inline';
+        }
+
+        const exportBtn = document.getElementById('exportCsvBtn');
+        if (exportBtn && this.currentResults && this.currentResults.length > 0) {
+            exportBtn.style.display = 'inline-block';
+        }
+
+        this._updateLoadMoreButton(data.has_more);
+
+        if (window.FieldStats) FieldStats.refresh();
+
+        const shouldShowTimeline = !this.fieldOrder || this.fieldOrder.includes('timestamp');
+        if (window.Timeline) {
+            if (shouldShowTimeline && data.histogram) {
+                const histTimeRange = {
+                    start: data.time_start || this.currentTimeRange.start,
+                    end: data.time_end || this.currentTimeRange.end
+                };
+                requestAnimationFrame(() => Timeline.renderFromHistogram(data.histogram, histTimeRange));
+            } else if (shouldShowTimeline) {
+                requestAnimationFrame(() => Timeline.render(this.currentResults, this.currentTimeRange));
+            } else {
+                Timeline.hide();
+            }
+        }
+
+        if (window.Comments) {
+            Comments.fetchCommentedLogIds().then(() => this.updateCommentHighlights());
+        }
+
+        if (data.profile) {
+            this.renderProfilePanel(data.profile);
+        }
+    },
+
+    // Drive the subtle determinate loading bar above the results.
+    // state: 'show' | 'set' (ratio 0..1) | 'done' | 'hide'.
+    _loadingBar(state, ratio) {
+        let bar = document.getElementById('queryLoadingBar');
+        const elements = this.getElements();
+        if (!bar) {
+            if (state === 'hide' || state === 'done') return;
+            const anchor = elements.resultsTable;
+            if (!anchor || !anchor.parentNode) return;
+            bar = document.createElement('div');
+            bar.id = 'queryLoadingBar';
+            bar.className = 'query-loading-bar';
+            bar.innerHTML = '<div class="query-loading-bar-fill"></div>';
+            anchor.parentNode.insertBefore(bar, anchor);
+        }
+        const fill = bar.firstElementChild;
+        switch (state) {
+            case 'show':
+                bar.classList.remove('is-done');
+                bar.style.display = 'block';
+                if (fill) fill.style.width = '4%';
+                break;
+            case 'set':
+                bar.style.display = 'block';
+                if (fill) fill.style.width = `${Math.max(4, Math.min(100, (ratio || 0) * 100))}%`;
+                break;
+            case 'done':
+                if (fill) fill.style.width = '100%';
+                bar.classList.add('is-done');
+                setTimeout(() => { if (bar) bar.style.display = 'none'; }, 280);
+                break;
+            case 'hide':
+                bar.style.display = 'none';
+                break;
         }
     },
 
@@ -417,11 +614,17 @@ const QueryExecutor = {
             this.currentRequest.abort();
             this.currentRequest = null;
             this.currentCursor = null;
+            this._streamingActive = false;
+            this._loadingBar('hide');
+            this._setRunButtonState(false);
             this._updateLoadMoreButton(false);
             const elements = this.getElements();
             if (elements.resultsTable) elements.resultsTable.innerHTML = '';
             if (elements.resultsCount) elements.resultsCount.textContent = 'Query cancelled';
             if (window.Toast) Toast.show('Query cancelled', 'info');
+        } else {
+            // No in-flight request (button raced an already-finished query): just reset.
+            this._setRunButtonState(false);
         }
     },
 
@@ -1054,6 +1257,12 @@ const QueryExecutor = {
     },
 
     sortByColumn(field) {
+        // Rows are still streaming in (pre-sorted newest-first); defer sorting
+        // until the result set is complete to avoid scrambling partial data.
+        if (this._streamingActive) {
+            if (window.Toast) Toast.show('Results still loading, sort available when complete', 'info');
+            return;
+        }
         // Determine sort direction
         if (this.sortColumn === field) {
             // Toggle direction

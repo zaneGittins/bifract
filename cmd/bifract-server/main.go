@@ -638,6 +638,7 @@ func main() {
 
 			// Query and status
 			r.Post("/query", queryHandler.HandleQuery)
+			r.Post("/query/stream", queryHandler.HandleQueryStream)
 			r.Get("/query/reference", queryHandler.HandleReference)
 			r.Get("/logs/recent", queryHandler.HandleGetRecentLogs)
 				r.Get("/logs/histogram", queryHandler.HandleGetRecentHistogram)
