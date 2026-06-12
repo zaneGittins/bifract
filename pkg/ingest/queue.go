@@ -42,6 +42,10 @@ const (
 	cpuPressureTrigger = 80.0
 	cpuPressureRelease = 60.0
 	cpuPollInterval    = 5 * time.Second
+	// cpuPressureSustainSamples consecutive polls above cpuPressureTrigger
+	// are required before backpressure activates. Prevents a single heavy
+	// user query from interrupting ingestion. 6 × 5s = 30 seconds.
+	cpuPressureSustainSamples int64 = 6
 
 	// diskPressureTrigger is the disk usage% above which backpressure activates.
 	// diskPressureRelease is the disk usage% below which it deactivates.
@@ -87,7 +91,8 @@ type IngestQueue struct {
 
 	// cpuPressure is 1 when ClickHouse CPU backpressure is active, 0 otherwise.
 	// Set by the background CPU monitor based on system.asynchronous_metrics.
-	cpuPressure atomic.Int64
+	cpuPressure  atomic.Int64
+	cpuHighStreak atomic.Int64 // consecutive polls above cpuPressureTrigger
 	// diskPressure is 1 when ClickHouse disk usage exceeds the high watermark.
 	// External ingestion is rejected while active; system fractals (audit,
 	// alerts, system) bypass this since they write directly via InsertLogs.
@@ -241,16 +246,22 @@ func (q *IngestQueue) monitorCPU() {
 			return
 		case <-ticker.C:
 			pct, err := q.queryClickHouseCPU()
-			if err == nil {
-				if pct >= cpuPressureTrigger && q.cpuPressure.Load() == 0 {
+			if err != nil {
+				q.cpuHighStreak.Store(0)
+			} else if pct >= cpuPressureTrigger {
+				streak := q.cpuHighStreak.Add(1)
+				if streak >= cpuPressureSustainSamples && q.cpuPressure.Load() == 0 {
 					q.cpuPressure.Store(1)
-					log.Printf("[Ingest Queue] CPU backpressure ON (%.1f%%)", pct)
+					log.Printf("[Ingest Queue] CPU backpressure ON (%.1f%%, sustained %ds)", pct, cpuPressureSustainSamples*int64(cpuPollInterval.Seconds()))
 					q.writeSystemEvent("ingest.backpressure.on", map[string]string{
 						"reason":    "cpu_pressure",
 						"value":     fmt.Sprintf("%.1f", pct),
 						"threshold": fmt.Sprintf("%.1f", cpuPressureTrigger),
 					})
-				} else if pct < cpuPressureRelease && q.cpuPressure.Load() == 1 {
+				}
+			} else {
+				q.cpuHighStreak.Store(0)
+				if pct < cpuPressureRelease && q.cpuPressure.Load() == 1 {
 					q.cpuPressure.Store(0)
 					log.Printf("[Ingest Queue] CPU backpressure OFF (%.1f%%)", pct)
 					q.writeSystemEvent("ingest.backpressure.off", map[string]string{
@@ -472,11 +483,12 @@ func (q *IngestQueue) writeSystemEvent(event string, fields map[string]string) {
 	rawLog := string(rawBytes)
 	now := time.Now()
 	entry := storage.LogEntry{
-		Timestamp: now,
-		RawLog:    rawLog,
-		LogID:     storage.GenerateLogID(now, rawLog),
-		Fields:    fields,
-		FractalID: fractalID,
+		Timestamp:       now,
+		IngestTimestamp: now,
+		RawLog:          rawLog,
+		LogID:           storage.GenerateLogID(now, rawLog),
+		Fields:          fields,
+		FractalID:       fractalID,
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
