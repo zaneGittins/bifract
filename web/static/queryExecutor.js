@@ -658,18 +658,27 @@ const QueryExecutor = {
             case 'show':
                 bar.classList.remove('is-done');
                 bar.style.display = 'block';
+                this._loadingProgress = 4;
                 if (fill) fill.style.width = '4%';
                 break;
-            case 'set':
+            case 'set': {
+                // ClickHouse revises its total-rows estimate upward mid-scan, so the
+                // raw read/total ratio is non-monotonic. Only ever advance the bar
+                // (never slide back), and hold below 100% until 'done' completes it.
                 bar.style.display = 'block';
-                if (fill) fill.style.width = `${Math.max(4, Math.min(100, (ratio || 0) * 100))}%`;
+                const target = Math.min(95, Math.max(4, (ratio || 0) * 100));
+                this._loadingProgress = Math.max(this._loadingProgress || 4, target);
+                if (fill) fill.style.width = `${this._loadingProgress}%`;
                 break;
+            }
             case 'done':
+                this._loadingProgress = 100;
                 if (fill) fill.style.width = '100%';
                 bar.classList.add('is-done');
                 setTimeout(() => { if (bar) bar.style.display = 'none'; }, 280);
                 break;
             case 'hide':
+                this._loadingProgress = 4;
                 bar.style.display = 'none';
                 break;
         }
