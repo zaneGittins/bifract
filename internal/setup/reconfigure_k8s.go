@@ -221,6 +221,14 @@ func fallbackProfile(parsed, fallback ResourceProfile) ResourceProfile {
 	return parsed
 }
 
+// fallbackInt returns a if non-zero, otherwise b.
+func fallbackInt(a, b int) int {
+	if a > 0 {
+		return a
+	}
+	return b
+}
+
 // buildK8sConfigFromExisting constructs a K8sConfig from parsed secrets and settings.
 // Shared between upgrade and reconfigure flows.
 func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings *k8sSettings) *K8sConfig {
@@ -248,14 +256,16 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 
 	cfg := &K8sConfig{
 		SizeProfile: SizeProfile{
-			Name:         "custom",
-			ClickHouse:   fallbackProfile(settings.chResources, fb.ClickHouse),
-			CHKeeper:     fallbackProfile(settings.chKeeperResources, fb.CHKeeper),
-			Bifract:      fallbackProfile(settings.bifractResources, fb.Bifract),
-			Postgres:     fallbackProfile(settings.postgresResources, fb.Postgres),
-			Caddy:        fallbackProfile(settings.caddyResources, fb.Caddy),
-			CaddyShipper: fallbackProfile(settings.caddyShipperResources, fb.CaddyShipper),
-			LiteLLM:      fallbackProfile(settings.litellmResources, fb.LiteLLM),
+			Name:            "custom",
+			ClickHouse:      fallbackProfile(settings.chResources, fb.ClickHouse),
+			CHKeeper:        fallbackProfile(settings.chKeeperResources, fb.CHKeeper),
+			Bifract:         fallbackProfile(settings.bifractResources, fb.Bifract),
+			Postgres:        fallbackProfile(settings.postgresResources, fb.Postgres),
+			Caddy:           fallbackProfile(settings.caddyResources, fb.Caddy),
+			CaddyShipper:    fallbackProfile(settings.caddyShipperResources, fb.CaddyShipper),
+			LiteLLM:         fallbackProfile(settings.litellmResources, fb.LiteLLM),
+			IngestQueueSize: fallbackInt(settings.ingestQueueSize, fb.IngestQueueSize),
+			IngestWorkers:   fallbackInt(settings.ingestWorkers, fb.IngestWorkers),
 		},
 		CHShards:    settings.chShards,
 		CHReplicas:  settings.chReplicas,

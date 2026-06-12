@@ -2,6 +2,8 @@ package ingest
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -96,6 +98,15 @@ type IngestQueue struct {
 	// Used by the alert engine to skip evaluation when no new data has arrived.
 	lastIngestedMu sync.RWMutex
 	lastIngested   map[string]time.Time
+
+	// systemFractalID is set after startup to enable internal monitoring events.
+	systemFractalID atomic.Value // stores string
+
+	// Pending drop counts per reason, flushed as system events every 30s.
+	pendingDropsCPU   atomic.Int64
+	pendingDropsDisk  atomic.Int64
+	pendingDropsQueue atomic.Int64
+	lastDropFlushUnix atomic.Int64
 }
 
 // NewIngestQueue creates and starts a buffered ingestion queue.
@@ -141,20 +152,26 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 		if time.Now().Unix()-q.lastFailureUnix.Load() > int64(unhealthyCooldown.Seconds()) {
 			q.consecutiveFailures.Store(0)
 		} else {
-			q.Metrics.QueueDrops.Add(int64(len(logs)))
+			n := int64(len(logs))
+			q.Metrics.QueueDrops.Add(n)
+			q.pendingDropsQueue.Add(n)
 			return false
 		}
 	}
 
 	// CPU backpressure: reject when ClickHouse CPU is saturated.
 	if q.cpuPressure.Load() == 1 {
-		q.Metrics.QueueDrops.Add(int64(len(logs)))
+		n := int64(len(logs))
+		q.Metrics.QueueDrops.Add(n)
+		q.pendingDropsCPU.Add(n)
 		return false
 	}
 
 	// Disk backpressure: reject when ClickHouse disk is nearly full.
 	if q.diskPressure.Load() == 1 {
-		q.Metrics.QueueDrops.Add(int64(len(logs)))
+		n := int64(len(logs))
+		q.Metrics.QueueDrops.Add(n)
+		q.pendingDropsDisk.Add(n)
 		return false
 	}
 
@@ -165,7 +182,9 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 	// the queue past 50% capacity. Check against slotsNeeded so we never
 	// partially enqueue (which would cause duplicates on client retry).
 	if q.bufSize > 0 && len(q.ch)+slotsNeeded > q.bufSize/2 {
-		q.Metrics.QueueDrops.Add(int64(len(logs)))
+		n := int64(len(logs))
+		q.Metrics.QueueDrops.Add(n)
+		q.pendingDropsQueue.Add(n)
 		return false
 	}
 
@@ -226,9 +245,18 @@ func (q *IngestQueue) monitorCPU() {
 				if pct >= cpuPressureTrigger && q.cpuPressure.Load() == 0 {
 					q.cpuPressure.Store(1)
 					log.Printf("[Ingest Queue] CPU backpressure ON (%.1f%%)", pct)
+					q.writeSystemEvent("ingest.backpressure.on", map[string]string{
+						"reason":    "cpu_pressure",
+						"value":     fmt.Sprintf("%.1f", pct),
+						"threshold": fmt.Sprintf("%.1f", cpuPressureTrigger),
+					})
 				} else if pct < cpuPressureRelease && q.cpuPressure.Load() == 1 {
 					q.cpuPressure.Store(0)
 					log.Printf("[Ingest Queue] CPU backpressure OFF (%.1f%%)", pct)
+					q.writeSystemEvent("ingest.backpressure.off", map[string]string{
+						"reason": "cpu_pressure",
+						"value":  fmt.Sprintf("%.1f", pct),
+					})
 				}
 			}
 
@@ -237,11 +265,22 @@ func (q *IngestQueue) monitorCPU() {
 				if diskPct >= diskPressureTrigger && q.diskPressure.Load() == 0 {
 					q.diskPressure.Store(1)
 					log.Printf("[Ingest Queue] Disk backpressure ON (%.1f%% used)", diskPct)
+					q.writeSystemEvent("ingest.backpressure.on", map[string]string{
+						"reason":    "disk_pressure",
+						"value":     fmt.Sprintf("%.1f", diskPct),
+						"threshold": fmt.Sprintf("%.1f", diskPressureTrigger),
+					})
 				} else if diskPct < diskPressureRelease && q.diskPressure.Load() == 1 {
 					q.diskPressure.Store(0)
 					log.Printf("[Ingest Queue] Disk backpressure OFF (%.1f%% used)", diskPct)
+					q.writeSystemEvent("ingest.backpressure.off", map[string]string{
+						"reason": "disk_pressure",
+						"value":  fmt.Sprintf("%.1f", diskPct),
+					})
 				}
 			}
+
+			q.flushDropEvents()
 		}
 	}
 }
@@ -414,6 +453,63 @@ func asFloat64(v interface{}) float64 {
 	}
 }
 
+// SetSystemFractalID enables internal monitoring events written to the system fractal.
+func (q *IngestQueue) SetSystemFractalID(id string) {
+	q.systemFractalID.Store(id)
+}
+
+// writeSystemEvent inserts a monitoring event into the system fractal (fire-and-forget).
+func (q *IngestQueue) writeSystemEvent(event string, fields map[string]string) {
+	fractalID, _ := q.systemFractalID.Load().(string)
+	if fractalID == "" {
+		return
+	}
+	fields["event"] = event
+	rawBytes, err := json.Marshal(fields)
+	if err != nil {
+		return
+	}
+	rawLog := string(rawBytes)
+	now := time.Now()
+	entry := storage.LogEntry{
+		Timestamp: now,
+		RawLog:    rawLog,
+		LogID:     storage.GenerateLogID(now, rawLog),
+		Fields:    fields,
+		FractalID: fractalID,
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := q.db.InsertLogs(ctx, []storage.LogEntry{entry}); err != nil {
+			log.Printf("[Ingest Queue] failed to write system event %s: %v", event, err)
+		}
+	}()
+}
+
+// flushDropEvents writes accumulated drop counts as system events if enough time has passed.
+func (q *IngestQueue) flushDropEvents() {
+	if time.Now().Unix()-q.lastDropFlushUnix.Load() < 30 {
+		return
+	}
+	q.lastDropFlushUnix.Store(time.Now().Unix())
+	for _, rc := range []struct {
+		reason string
+		count  *atomic.Int64
+	}{
+		{"cpu_pressure", &q.pendingDropsCPU},
+		{"disk_pressure", &q.pendingDropsDisk},
+		{"queue_full", &q.pendingDropsQueue},
+	} {
+		if n := rc.count.Swap(0); n > 0 {
+			q.writeSystemEvent("ingest.drops", map[string]string{
+				"reason": rc.reason,
+				"count":  fmt.Sprintf("%d", n),
+			})
+		}
+	}
+}
+
 // Shutdown closes the queue and waits for all workers to finish
 // draining remaining batches.
 func (q *IngestQueue) Shutdown() {
@@ -526,6 +622,10 @@ func (q *IngestQueue) worker(id int) {
 			q.Metrics.InsertErrors.Add(int64(len(buf)))
 			q.consecutiveFailures.Add(1)
 			q.lastFailureUnix.Store(time.Now().Unix())
+			q.writeSystemEvent("ingest.insert_error", map[string]string{
+				"worker":     fmt.Sprintf("%d", id),
+				"batch_size": fmt.Sprintf("%d", len(buf)),
+			})
 		}
 
 		// Shrink backing array if it grew beyond 2x the target to avoid

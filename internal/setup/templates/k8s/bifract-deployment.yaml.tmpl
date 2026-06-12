@@ -116,6 +116,11 @@ spec:
             # Query limits
             - name: BIFRACT_MAX_QUERY_ROWS
               value: "250"
+            # Ingestion queue tuning
+            - name: BIFRACT_INGEST_QUEUE_SIZE
+              value: "{{.IngestQueueSize}}"
+            - name: BIFRACT_INGEST_WORKERS
+              value: "{{.IngestWorkers}}"
             # S3 (for backups/archives)
             - name: BIFRACT_S3_ENDPOINT
               valueFrom:

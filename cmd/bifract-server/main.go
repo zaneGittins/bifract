@@ -367,6 +367,9 @@ func main() {
 	log.Println("Initializing ingestion queue...")
 	ingestQueue := ingest.NewIngestQueue(dbIngest, config.IngestQueueSize, config.IngestWorkers)
 	ingestQueue.SetQuotaManager(quotaManager)
+	if sysFractal, err := fractalManager.GetFractalByName(context.Background(), "system"); err == nil {
+		ingestQueue.SetSystemFractalID(sysFractal.ID)
+	}
 
 	ingestHandler := ingest.NewIngestHandler(ingestQueue, config.MaxBodySize, tokenCache, ingestTokenStorage)
 	ingestHandler.SetQuotaManager(quotaManager)

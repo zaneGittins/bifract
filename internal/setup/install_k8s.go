@@ -35,6 +35,8 @@ type SizeProfile struct {
 	Caddy          ResourceProfile
 	CaddyShipper   ResourceProfile
 	LiteLLM        ResourceProfile
+	IngestQueueSize int
+	IngestWorkers   int
 }
 
 var sizeProfiles = []SizeProfile{
@@ -50,6 +52,8 @@ var sizeProfiles = []SizeProfile{
 		Caddy:       ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:     ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
+		IngestQueueSize: 100,
+		IngestWorkers:   4,
 	},
 	{
 		Name:        "X-Small",
@@ -63,6 +67,8 @@ var sizeProfiles = []SizeProfile{
 		Caddy:       ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:     ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
+		IngestQueueSize: 200,
+		IngestWorkers:   4,
 	},
 	{
 		Name:        "Small",
@@ -76,6 +82,8 @@ var sizeProfiles = []SizeProfile{
 		Caddy:       ResourceProfile{"200m", "1", "256Mi", "512Mi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:     ResourceProfile{"250m", "1", "512Mi", "1Gi"},
+		IngestQueueSize: 300,
+		IngestWorkers:   6,
 	},
 	{
 		Name:        "Medium",
@@ -89,6 +97,8 @@ var sizeProfiles = []SizeProfile{
 		Caddy:       ResourceProfile{"250m", "1", "256Mi", "1Gi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:     ResourceProfile{"250m", "1", "512Mi", "1Gi"},
+		IngestQueueSize: 500,
+		IngestWorkers:   8,
 	},
 	{
 		Name:        "Large",
@@ -102,6 +112,8 @@ var sizeProfiles = []SizeProfile{
 		Caddy:       ResourceProfile{"500m", "2", "512Mi", "1Gi"},
 		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:     ResourceProfile{"500m", "1", "1Gi", "1Gi"},
+		IngestQueueSize: 1000,
+		IngestWorkers:   8,
 	},
 	{
 		Name:        "X-Large",
@@ -115,6 +127,8 @@ var sizeProfiles = []SizeProfile{
 		Caddy:       ResourceProfile{"1", "4", "1Gi", "2Gi"},
 		CaddyShipper: ResourceProfile{"10m", "200m", "32Mi", "128Mi"},
 		LiteLLM:     ResourceProfile{"500m", "2", "1Gi", "2Gi"},
+		IngestQueueSize: 2000,
+		IngestWorkers:   16,
 	},
 }
 
@@ -837,6 +851,10 @@ type k8sTemplateData struct {
 	// settings through upgrades. Empty = use template defaults.
 	MaxmindPVCAccessMode  string
 	MaxmindPVCStorageClass string
+
+	// IngestQueueSize and IngestWorkers tune the bifract ingest queue.
+	IngestQueueSize int
+	IngestWorkers   int
 }
 
 // k8sManifestFile maps an embedded template to its output path.
@@ -889,6 +907,8 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		MTLSCAKey:            indentPEM(cfg.MTLSCAKey, "    "),
 		MaxmindPVCAccessMode:  cfg.MaxmindPVCAccessMode,
 		MaxmindPVCStorageClass: cfg.MaxmindPVCStorageClass,
+		IngestQueueSize:       cfg.SizeProfile.IngestQueueSize,
+		IngestWorkers:         cfg.SizeProfile.IngestWorkers,
 		CH:                   cfg.SizeProfile.ClickHouse,
 		CHKeeper:            cfg.SizeProfile.CHKeeper,
 		BifractRes:          cfg.SizeProfile.Bifract,
