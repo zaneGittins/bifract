@@ -714,6 +714,8 @@ const Autocomplete = {
         // Notebook/dashboard editors: textarea inside .query-input-wrapper or with wie-q- id
         if (el.closest('.query-input-wrapper')) return true;
         if (el.id && el.id.startsWith('wie-q-')) return true;
+        // Analytics model builder source-query editor
+        if (el.id === 'modelQueryInput') return true;
         return false;
     },
 
