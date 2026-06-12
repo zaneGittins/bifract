@@ -240,7 +240,8 @@ const AnalyticsModels = {
             v.total = data?.data?.total || 0;
             this._renderDataTable();
         } catch (e) {
-            Toast.error('Failed to load model data');
+            console.error('[Models] loadViewerData error:', e);
+            Toast.error('Failed to load model data: ' + (e?.message || String(e)));
         }
     },
 
@@ -491,6 +492,8 @@ ${this.wizard.step < 4
         <option value="!=" ${f.op === '!=' ? 'selected' : ''}>!=</option>
         <option value="~" ${f.op === '~' ? 'selected' : ''}>~</option>
         <option value="!~" ${f.op === '!~' ? 'selected' : ''}>!~</option>
+        <option value="cidr" ${f.op === 'cidr' ? 'selected' : ''}>cidr</option>
+        <option value="!cidr" ${f.op === '!cidr' ? 'selected' : ''}>!cidr</option>
     </select>
     <input type="text" class="filter-value" placeholder="value" value="${_esc(f.value || '')}">
     <button class="btn-remove-row" data-idx="${i}">×</button>

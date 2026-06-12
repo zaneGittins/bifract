@@ -256,9 +256,19 @@ func filterConditionToSQL(fc FilterCondition) string {
 		return fmt.Sprintf("match(%s, %s)", ref, chStringLiteral(fc.Value))
 	case "!~":
 		return fmt.Sprintf("NOT match(%s, %s)", ref, chStringLiteral(fc.Value))
+	case "cidr":
+		return cidrExpr(ref, fc.Value)
+	case "!cidr":
+		return "NOT " + cidrExpr(ref, fc.Value)
 	default:
 		return fmt.Sprintf("%s = %s", ref, chStringLiteral(fc.Value))
 	}
+}
+
+func cidrExpr(fieldRef, subnet string) string {
+	valid := fmt.Sprintf("(isIPv4String(%[1]s) OR isIPv6String(%[1]s))", fieldRef)
+	safe := fmt.Sprintf("if(%s, %s, '0.0.0.0')", valid, fieldRef)
+	return fmt.Sprintf("(isIPAddressInRange(%s, %s) AND %s)", safe, chStringLiteral(subnet), valid)
 }
 
 // chStringLiteral escapes a string for use in ClickHouse SQL as a single-quoted literal.
