@@ -150,9 +150,16 @@ func (h *ElasticBulkHandler) HandleBulk(w http.ResponseWriter, r *http.Request) 
 		}
 	}(tokenData.TokenID, len(logs))
 
+	hasErrors := false
+	for _, item := range items {
+		if item.Index.Status >= 400 || item.Create.Status >= 400 {
+			hasErrors = true
+			break
+		}
+	}
 	respondJSON(w, http.StatusOK, ElasticBulkResponse{
 		Took:   int(time.Since(startTime).Milliseconds()),
-		Errors: false,
+		Errors: hasErrors,
 		Items:  items,
 	})
 }
