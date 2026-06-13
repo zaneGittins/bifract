@@ -157,6 +157,18 @@
                             </div>
                         </div>
 
+                        <!-- Cluster Health Cards (cluster mode only, shown by JS) -->
+                        <div id="clusterSection" style="display:none">
+                            <div class="perf-metrics-group-label">Cluster</div>
+                            <div class="perf-metrics-grid">
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Distribution Queue</div>
+                                    <div class="perf-metric-value" id="metricDistQueue">--</div>
+                                    <div class="perf-metric-sub" id="metricDistQueueSub"></div>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Charts Row -->
                         <div class="perf-charts-row">
                             <div class="perf-chart-card">

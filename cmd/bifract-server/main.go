@@ -389,6 +389,11 @@ func main() {
 		return ingestQueue.LastIngested(fractalID)
 	})
 
+	// Distribution queue monitor (cluster mode only) — polls system.distribution_queue
+	// every 60s and writes ch.distribution.* events to the system fractal on health changes.
+	distMonitor := storage.NewDistributionMonitor(dbIngest, ingestQueue.WriteSystemEvent)
+	distMonitor.Start()
+
 	// Rate limiter for ingestion endpoints
 	rateLimiter := ingest.NewRateLimiter(float64(config.IngestRateLimit), config.IngestRateBurst)
 	log.Printf("Ingestion ready (workers: %d, queue: %d, rate limit: %d req/s, body limit: %d bytes)",
@@ -653,10 +658,20 @@ func main() {
 			r.Get("/health/clickhouse", statusHandler.HandleHealthCheck)
 			r.Get("/system/pressure", func(w http.ResponseWriter, r *http.Request) {
 				alertsDeferred := ingestQueue.Depth() > config.IngestQueueSize/10
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]interface{}{
+				resp := map[string]interface{}{
 					"alerts_deferred": alertsDeferred,
-				})
+				}
+				if dbIngest.IsCluster() {
+					s := distMonitor.Stats()
+					resp["distribution_queue"] = map[string]interface{}{
+						"healthy":           s.Healthy,
+						"data_files":        s.DataFiles,
+						"broken_data_files": s.BrokenDataFiles,
+						"error_count":       s.ErrorCount,
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
 			})
 
 			// Settings
@@ -1047,6 +1062,9 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
+
+	// Stop the distribution queue monitor
+	distMonitor.Stop()
 
 	// Drain the ingestion queue (finish pending inserts)
 	ingestQueue.Shutdown()

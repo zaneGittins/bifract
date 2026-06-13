@@ -101,6 +101,7 @@ const Performance = {
             }
 
             this.renderPressureBanner(pressureData);
+            this.renderClusterHealth(pressureData.distribution_queue || null);
         } catch (err) {
             console.error('[Performance] refresh error:', err);
         }
@@ -128,6 +129,35 @@ const Performance = {
         const header = document.querySelector('.performance-header');
         if (header && header.parentNode) {
             header.parentNode.insertBefore(banner, header.nextSibling);
+        }
+    },
+
+    renderClusterHealth(dq) {
+        const section = document.getElementById('clusterSection');
+        if (!section) return;
+        if (!dq) { section.style.display = 'none'; return; }
+        section.style.display = '';
+
+        const el = document.getElementById('metricDistQueue');
+        const sub = document.getElementById('metricDistQueueSub');
+        if (!el) return;
+
+        if (dq.broken_data_files > 0) {
+            el.textContent = 'Critical';
+            el.className = 'perf-metric-value perf-metric-danger';
+            sub.textContent = dq.broken_data_files.toLocaleString() + ' broken files';
+        } else if (!dq.healthy) {
+            el.textContent = 'Degraded';
+            el.className = 'perf-metric-value perf-metric-warning';
+            sub.textContent = dq.data_files.toLocaleString() + ' files pending';
+        } else if (dq.data_files > 0) {
+            el.textContent = 'Draining';
+            el.className = 'perf-metric-value';
+            sub.textContent = dq.data_files.toLocaleString() + ' files';
+        } else {
+            el.textContent = 'Healthy';
+            el.className = 'perf-metric-value';
+            sub.textContent = '';
         }
     },
 

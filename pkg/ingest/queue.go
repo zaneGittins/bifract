@@ -499,6 +499,12 @@ func (q *IngestQueue) writeSystemEvent(event string, fields map[string]string) {
 	}()
 }
 
+// WriteSystemEvent is the public entry point for writing a system-fractal event,
+// allowing external components (e.g. DistributionMonitor) to use the same path.
+func (q *IngestQueue) WriteSystemEvent(event string, fields map[string]string) {
+	q.writeSystemEvent(event, fields)
+}
+
 // flushDropEvents writes accumulated drop counts as system events if enough time has passed.
 func (q *IngestQueue) flushDropEvents() {
 	if time.Now().Unix()-q.lastDropFlushUnix.Load() < 30 {
