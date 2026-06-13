@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.44.0
-	github.com/aws/aws-sdk-go-v2 v1.41.12
+	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.16
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.103.2
 	github.com/charmbracelet/bubbles v1.0.0
