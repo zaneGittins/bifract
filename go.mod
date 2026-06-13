@@ -11,7 +11,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/coreos/go-oidc/v3 v3.18.0
-	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-chi/cors v1.2.2
 	github.com/go-git/go-git/v6 v6.0.0-alpha.4
 	github.com/google/uuid v1.6.0
