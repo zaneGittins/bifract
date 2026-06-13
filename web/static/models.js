@@ -21,8 +21,8 @@ const AnalyticsModels = {
         name: '',
         description: '',
         timeRange: '24h',
-        showSQL: false,
         fieldOrder: null,
+        resultFields: [],
         results: [],
         ran: false,
     },
@@ -250,8 +250,8 @@ const AnalyticsModels = {
             name: m.name,
             description: m.description || '',
             timeRange: '24h',
-            showSQL: false,
             fieldOrder: null,
+            resultFields: [],
             results: [],
             ran: false,
         };
@@ -647,8 +647,8 @@ const AnalyticsModels = {
             name: '',
             description: '',
             timeRange: '24h',
-            showSQL: false,
             fieldOrder: null,
+            resultFields: [],
             results: [],
             ran: false,
         };
@@ -676,14 +676,14 @@ const AnalyticsModels = {
                     ${ranges.map(([v, l]) => `<option value="${v}" ${e.timeRange === v ? 'selected' : ''}>${l}</option>`).join('')}
                 </select>
                 <button class="btn-primary" id="modelRunBtn">Run</button>
-                <label class="model-sql-toggle"><input type="checkbox" id="modelSqlToggle" ${e.showSQL ? 'checked' : ''}> SQL</label>
                 <span style="flex:1"></span>
                 <span class="model-results-count" id="modelResultsCount"></span>
             </div>
             <div class="model-query-wrap">
+                <div id="modelQueryHighlight" class="model-query-highlight"></div>
                 <textarea id="modelQueryInput" class="model-query-input" spellcheck="false" placeholder='Define the model source in BQL. Example:&#10;level = "dns" | regex(field=raw_log, regex="([a-z]+)$", as=tld) | len(tld) | _len >= 2 | lowercase(tld)&#10;&#10;Filters, regex() extractions, optional len()/lowercase() refinements. Leave empty to use all logs.'>${_esc(e.query)}</textarea>
             </div>
-            <pre id="modelSqlOutput" class="model-sql-output" style="display:${e.showSQL ? 'block' : 'none'}"></pre>
+            <pre id="modelSqlOutput" class="model-sql-output" style="display:${this._showSQL() ? 'block' : 'none'}"></pre>
             <div id="modelTranslation" class="model-translation"></div>
             <div id="modelQueryResults" class="model-query-results"><div class="models-empty">Run the query to preview matching logs and extracted fields.</div></div>
         </div>
@@ -735,15 +735,13 @@ const AnalyticsModels = {
         document.getElementById('modelEditorSave').addEventListener('click', () => this._saveModel());
         document.getElementById('modelRunBtn').addEventListener('click', () => this._runQuery());
         const ta = document.getElementById('modelQueryInput');
-        ta.addEventListener('input', ev => { e.query = ev.target.value; });
+        ta.addEventListener('input', ev => { e.query = ev.target.value; this._updateQueryHighlight(); });
+        ta.addEventListener('scroll', () => this._syncQueryHighlightScroll());
         ta.addEventListener('keydown', ev => {
             if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') { ev.preventDefault(); this._runQuery(); }
         });
+        this._updateQueryHighlight();
         document.getElementById('modelTimeRange').addEventListener('change', ev => { e.timeRange = ev.target.value; if (e.ran) this._runQuery(); });
-        document.getElementById('modelSqlToggle').addEventListener('change', ev => {
-            e.showSQL = ev.target.checked;
-            document.getElementById('modelSqlOutput').style.display = e.showSQL ? 'block' : 'none';
-        });
         if (!e.editId) {
             document.querySelectorAll('#modelTypeCards .model-type-card').forEach(card => {
                 card.addEventListener('click', () => {
@@ -764,25 +762,54 @@ const AnalyticsModels = {
         }
     },
 
+    // Whether to surface the translated ClickHouse SQL (driven by the user's
+    // "Show Query Debug" profile preference, shared with the main search view).
+    _showSQL() {
+        return !!(window.UserPrefs && UserPrefs.showSQL());
+    },
+
+    // ---- BQL syntax highlighting (overlay over the query textarea) ----
+    _updateQueryHighlight() {
+        const ta = document.getElementById('modelQueryInput');
+        const hl = document.getElementById('modelQueryHighlight');
+        if (!ta || !hl || !window.SyntaxHighlight) return;
+        hl.innerHTML = SyntaxHighlight.highlight(ta.value) + '<br/>';
+        this._syncQueryHighlightScroll();
+    },
+
+    _syncQueryHighlightScroll() {
+        const ta = document.getElementById('modelQueryInput');
+        const hl = document.getElementById('modelQueryHighlight');
+        if (!ta || !hl) return;
+        hl.scrollTop = ta.scrollTop;
+        hl.scrollLeft = ta.scrollLeft;
+    },
+
     // ---- Field option helpers ----
     _editorAllFields(extra) {
         const e = this.editor;
         const seen = new Set();
         const out = [];
         const add = f => { if (f && !seen.has(f)) { seen.add(f); out.push(f); } };
+        // Fields discovered in the most recent query results come first: these
+        // are the columns actually present in the user's searched data.
+        (e.resultFields || []).forEach(add);
+        (e.parsed.extractions || []).forEach(x => add(x.output_field));
         (e.parsed.candidate_fields || []).forEach(add);
         this.BASE_FIELDS.forEach(add);
         (e.parsed.filter || []).forEach(f => add(f.field));
-        (e.parsed.extractions || []).forEach(x => add(x.output_field));
         (extra || []).forEach(add);
         return out;
     },
 
-    _fieldOptions(selected) {
-        const placeholder = `<option value="" ${selected ? '' : 'selected'} disabled>Select a field…</option>`;
-        return placeholder + this._editorAllFields(selected ? [selected] : []).map(f =>
-            `<option value="${_esc(f)}" ${f === selected ? 'selected' : ''}>${_esc(f)}</option>`
-        ).join('');
+    // Freeform field input backed by a datalist: users can pick a discovered
+    // field or type any column name (extracted fields, nested keys, etc).
+    _fieldInput(id, value, placeholder) {
+        const listId = id + 'List';
+        const opts = this._editorAllFields(value ? [value] : [])
+            .map(f => `<option value="${_esc(f)}"></option>`).join('');
+        return `<input type="text" id="${id}" class="full-input model-field-input" list="${listId}" value="${_esc(value || '')}" placeholder="${_esc(placeholder || 'field name')}" spellcheck="false" autocomplete="off">
+<datalist id="${listId}">${opts}</datalist>`;
     },
 
     // ---- Shape (right panel) ----
@@ -792,11 +819,11 @@ const AnalyticsModels = {
             return `
 <div class="field-group">
     <label>Partition Key (group by)</label>
-    <select id="shapePartKey">${this._fieldOptions(e.partitionKey)}</select>
+    ${this._fieldInput('shapePartKey', e.partitionKey, 'e.g. file_prefix')}
 </div>
 <div class="field-group" style="margin-top:10px">
     <label>Value Key (rarity of what?)</label>
-    <select id="shapeValKey">${this._fieldOptions(e.valueKey)}</select>
+    ${this._fieldInput('shapeValKey', e.valueKey, 'e.g. tld')}
 </div>
 <div class="field-group" style="margin-top:10px">
     <label>Min sample size</label>
@@ -809,7 +836,7 @@ const AnalyticsModels = {
     <label>Key Fields (entity to track)</label>
     <div id="keyFieldsList">${e.keyFields.map((kf, i) => `
 <div class="key-field-row" data-idx="${i}">
-    <select class="key-field-sel">${this._fieldOptions(kf)}</select>
+    ${this._fieldInput('keyField' + i, kf, 'e.g. src_ip')}
     <button class="btn-remove-row" data-idx="${i}">×</button>
 </div>`).join('')}</div>
     <button class="btn-add-row" id="addKeyField">+ Add Key Field</button>
@@ -827,14 +854,8 @@ const AnalyticsModels = {
         if (e.modelType === 'rarity') {
             const pSel = document.getElementById('shapePartKey');
             const vSel = document.getElementById('shapeValKey');
-            if (pSel) {
-                if (e.partitionKey) pSel.value = e.partitionKey;
-                pSel.addEventListener('change', ev => { e.partitionKey = ev.target.value; });
-            }
-            if (vSel) {
-                if (e.valueKey) vSel.value = e.valueKey;
-                vSel.addEventListener('change', ev => { e.valueKey = ev.target.value; });
-            }
+            if (pSel) pSel.addEventListener('input', ev => { e.partitionKey = ev.target.value.trim(); });
+            if (vSel) vSel.addEventListener('input', ev => { e.valueKey = ev.target.value.trim(); });
             document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 5; });
         } else {
             this._bindKeyFieldEvents();
@@ -849,9 +870,8 @@ const AnalyticsModels = {
         const e = this.editor;
         document.querySelectorAll('#keyFieldsList .key-field-row').forEach(row => {
             const i = parseInt(row.dataset.idx);
-            const sel = row.querySelector('.key-field-sel');
-            if (e.keyFields[i]) sel.value = e.keyFields[i];
-            sel.addEventListener('change', ev => { e.keyFields[i] = ev.target.value; });
+            const sel = row.querySelector('.model-field-input');
+            sel.addEventListener('input', ev => { e.keyFields[i] = ev.target.value.trim(); });
             row.querySelector('.btn-remove-row').addEventListener('click', () => {
                 e.keyFields.splice(i, 1);
                 if (!e.keyFields.length) e.keyFields = [''];
@@ -899,7 +919,7 @@ const AnalyticsModels = {
         </div>
     </div>` : `
     <label class="toggle-label" style="margin-top:10px">
-        <input type="checkbox" id="alertOnNew" ${c.alert_on_new ? 'checked' : ''}> Alert on new entities only
+        <input type="checkbox" class="themed-checkbox" id="alertOnNew" ${c.alert_on_new ? 'checked' : ''}> Alert on new entities only
     </label>`}
 </div>`;
     },
@@ -1024,9 +1044,10 @@ const AnalyticsModels = {
         }
 
         // Live results.
-        if (queryData && queryData.sql) {
-            const sqlEl = document.getElementById('modelSqlOutput');
-            if (sqlEl && window.QueryExecutor) sqlEl.innerHTML = QueryExecutor.highlightSQL(queryData.sql);
+        const sqlEl = document.getElementById('modelSqlOutput');
+        if (sqlEl) {
+            if (queryData && queryData.sql && window.QueryExecutor) sqlEl.innerHTML = QueryExecutor.highlightSQL(queryData.sql);
+            sqlEl.style.display = (this._showSQL() && queryData && queryData.sql) ? 'block' : 'none';
         }
         if (!e.query) {
             if (resultsEl) resultsEl.innerHTML = '<div class="models-empty">No filter — the model will process all logs in this fractal.</div>';
@@ -1038,6 +1059,10 @@ const AnalyticsModels = {
             const results = queryData.results || [];
             e.results = results;
             e.fieldOrder = queryData.field_order || null;
+            e.resultFields = this._collectResultFields(queryData);
+            // Refresh shape datalists so partition/value keys suggest the fields
+            // actually present in the freshly searched data.
+            this._renderEditorShape();
             if (countEl) countEl.textContent = `${results.length} result${results.length === 1 ? '' : 's'}`;
             if (!results.length) {
                 if (resultsEl) resultsEl.innerHTML = '<div class="models-empty">No matching logs in the selected time range.</div>';
@@ -1047,6 +1072,22 @@ const AnalyticsModels = {
                 });
             }
         }
+    },
+
+    // Collect the column names present in a query response so they can be
+    // offered as partition/value/key field suggestions.
+    _collectResultFields(queryData) {
+        const fields = [];
+        const seen = new Set();
+        const add = f => { if (f && !seen.has(f)) { seen.add(f); fields.push(f); } };
+        // field_order is the authoritative visible-column list; fall back to the
+        // union of result keys when it is absent.
+        if (queryData.field_order && queryData.field_order.length) {
+            queryData.field_order.forEach(add);
+        } else {
+            (queryData.results || []).slice(0, 50).forEach(r => Object.keys(r || {}).forEach(add));
+        }
+        return fields;
     },
 
     // ---- Save ----

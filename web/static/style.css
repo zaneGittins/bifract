@@ -3195,67 +3195,81 @@ body.search-active {
 }
 
 /* Query syntax highlighting */
-.query-highlight .hl-function {
+.query-highlight .hl-function,
+.model-query-highlight .hl-function {
     color: var(--syntax-function);
     font-weight: 500;
 }
 
-.query-highlight .hl-operator {
+.query-highlight .hl-operator,
+.model-query-highlight .hl-operator {
     color: var(--syntax-operator);
 }
 
-.query-highlight .hl-keyword {
+.query-highlight .hl-keyword,
+.model-query-highlight .hl-keyword {
     color: var(--syntax-keyword);
     font-weight: 500;
 }
 
-.query-highlight .hl-string {
+.query-highlight .hl-string,
+.model-query-highlight .hl-string {
     color: var(--syntax-string);
 }
 
-.query-highlight .hl-pipe {
+.query-highlight .hl-pipe,
+.model-query-highlight .hl-pipe {
     color: var(--syntax-operator);
     font-weight: 600;
 }
 
-.query-highlight .hl-field {
+.query-highlight .hl-field,
+.model-query-highlight .hl-field {
     color: var(--info);
 }
 
-.query-highlight .hl-value {
+.query-highlight .hl-value,
+.model-query-highlight .hl-value {
     color: var(--syntax-string);
 }
 
-.query-highlight .hl-regex {
+.query-highlight .hl-regex,
+.model-query-highlight .hl-regex {
     color: #c084fc;
     font-weight: 500;
 }
 
-.query-highlight .hl-assignment {
+.query-highlight .hl-assignment,
+.model-query-highlight .hl-assignment {
     color: var(--syntax-operator);
     font-weight: 600;
 }
 
-.query-highlight .hl-number {
+.query-highlight .hl-number,
+.model-query-highlight .hl-number {
     color: var(--syntax-number);
 }
 
-.query-highlight .hl-bracket {
+.query-highlight .hl-bracket,
+.model-query-highlight .hl-bracket {
     color: var(--text-secondary);
     font-weight: 500;
 }
 
-.query-highlight .hl-boolean {
+.query-highlight .hl-boolean,
+.model-query-highlight .hl-boolean {
     color: var(--syntax-keyword);
     font-weight: 500;
 }
 
-.query-highlight .hl-wildcard {
+.query-highlight .hl-wildcard,
+.model-query-highlight .hl-wildcard {
     color: var(--warning);
     font-weight: 600;
 }
 
-.query-highlight .hl-comment {
+.query-highlight .hl-comment,
+.model-query-highlight .hl-comment {
     color: var(--syntax-comment);
     font-style: italic;
 }
