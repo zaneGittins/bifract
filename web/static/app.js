@@ -843,10 +843,17 @@ const App = {
         if (mainViewNav) mainViewNav.style.display = 'none';
         if (fractalViewNav) fractalViewNav.style.display = 'flex';
 
-        // Hide Ingest tab for prisms (ingest tokens are per-fractal)
+        // Hide tabs that are inherently per-fractal when viewing a prism.
+        // Ingest tokens are per-fractal; analytics models are backed by a
+        // fractal-scoped ClickHouse table and do not populate in a prism.
+        const isPrism = window.FractalContext && window.FractalContext.isPrism();
         const ingestTabBtn = document.getElementById('fractalIngestTabBtn');
         if (ingestTabBtn) {
-            ingestTabBtn.style.display = (window.FractalContext && window.FractalContext.isPrism()) ? 'none' : '';
+            ingestTabBtn.style.display = isPrism ? 'none' : '';
+        }
+        const modelsTabBtn = document.getElementById('fractalModelsTabBtn');
+        if (modelsTabBtn) {
+            modelsTabBtn.style.display = isPrism ? 'none' : '';
         }
 
         // Switch to the requested tab
@@ -854,6 +861,12 @@ const App = {
     },
 
     showFractalViewTab(tab) {
+        // Models are fractal-scoped and never populate in a prism; redirect to
+        // search so a prism never lands on an empty Models view.
+        if (tab === 'models' && window.FractalContext && window.FractalContext.isPrism()) {
+            tab = 'search';
+        }
+
         // Clear shared query state when navigating away from search tab
         // BUT NOT if we have share parameters that need to be processed
         if (tab !== 'search' && window.QueryExecutor && typeof window.QueryExecutor.clearSharedQueryState === 'function') {
