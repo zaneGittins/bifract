@@ -17,7 +17,7 @@ func extractPattern(pattern string) string {
 
 // GenerateDDL returns (createTableSQL, createMVSQL) for the given model definition.
 func GenerateDDL(def ModelDefinition, mt ModelType, tableName, mvName string) (string, string, error) {
-	tableSQL, err := generateTableDDL(mt, tableName)
+	tableSQL, err := generateTableDDL(def, mt, tableName)
 	if err != nil {
 		return "", "", err
 	}
@@ -28,7 +28,7 @@ func GenerateDDL(def ModelDefinition, mt ModelType, tableName, mvName string) (s
 	return tableSQL, mvSQL, nil
 }
 
-func generateTableDDL(mt ModelType, tableName string) (string, error) {
+func generateTableDDL(def ModelDefinition, mt ModelType, tableName string) (string, error) {
 	switch mt {
 	case ModelTypeRarity:
 		return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
@@ -51,14 +51,53 @@ SETTINGS index_granularity = 8192`, tableName), nil
 ORDER BY (fractal_id, entity_key)
 SETTINGS index_granularity = 8192`, tableName), nil
 
+	case ModelTypeVolumeBaseline:
+		return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+    fractal_id  LowCardinality(String),
+    entity_val  String,
+    bucket      %s,
+    event_count SimpleAggregateFunction(sum, UInt64)
+) ENGINE = AggregatingMergeTree()
+ORDER BY (fractal_id, entity_val, bucket)
+SETTINGS index_granularity = 8192`, tableName, volumeBucketColType(def.TimeBucket)), nil
+
 	default:
 		return "", fmt.Errorf("unknown model type: %s", mt)
 	}
 }
 
+// volumeBucketExpr returns the ClickHouse expression that buckets a log's parsed
+// timestamp for a volume_baseline model.
+func volumeBucketExpr(timeBucket string) string {
+	if timeBucket == "hour" {
+		return "toStartOfHour(timestamp)"
+	}
+	return "toDate(timestamp)"
+}
+
+// volumeBucketColType returns the CH column type for the bucket key.
+func volumeBucketColType(timeBucket string) string {
+	if timeBucket == "hour" {
+		return "DateTime"
+	}
+	return "Date"
+}
+
+// volumeScoreBounds returns (lowerBound, upperBound) predicates on the bucket
+// column for read-time scoring. The upper bound excludes the current, still
+// incomplete bucket (whose count is artificially low); the lower bound caps how
+// much history is read so scoring stays bounded at scale.
+func volumeScoreBounds(timeBucket string) (lower, upper string) {
+	if timeBucket == "hour" {
+		return "toStartOfHour(now()) - INTERVAL 30 DAY", "toStartOfHour(now())"
+	}
+	return "today() - 90", "today()"
+}
+
 func generateMVDDL(def ModelDefinition, mt ModelType, tableName, mvName string) (string, error) {
-	// Build the SELECT body using CTE chains.
-	selectSQL, err := buildMVSelect(def, mt)
+	// Build the SELECT body using CTE chains. The MV reads from the local `logs`
+	// table with no extra predicate; this output must remain byte-for-byte stable.
+	selectSQL, err := buildModelSelect(def, mt, "logs", "")
 	if err != nil {
 		return "", err
 	}
@@ -67,8 +106,27 @@ func generateMVDDL(def ModelDefinition, mt ModelType, tableName, mvName string) 
 %s`, mvName, tableName, selectSQL), nil
 }
 
-// buildMVSelect builds the SELECT ... FROM logs ... GROUP BY ... for the MV.
-func buildMVSelect(def ModelDefinition, mt ModelType) (string, error) {
+// BuildBackfillInsert returns a full `INSERT INTO <targetTable> <select>` that
+// seeds a model from historical logs. It reuses the exact SELECT logic of the
+// materialized view, but reads from sourceTable (the distributed logs table in
+// cluster mode) and ANDs an extra predicate (the time window + ingest_timestamp
+// dedup boundary) into the source filter.
+//
+// IMPORTANT: this performs NO DDL. It only inserts into an already-existing
+// model table, so it can never orphan a table or materialized view.
+func BuildBackfillInsert(def ModelDefinition, mt ModelType, targetTable, sourceTable, whereExtra string) (string, error) {
+	selectSQL, err := buildModelSelect(def, mt, sourceTable, whereExtra)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("INSERT INTO %s\n%s", targetTable, selectSQL), nil
+}
+
+// buildModelSelect builds the SELECT ... FROM <sourceTable> ... GROUP BY ...
+// shared by the materialized view (sourceTable="logs", whereExtra="") and the
+// backfill INSERT...SELECT (distributed source + time-window predicate).
+// whereExtra, when non-empty, is ANDed into the source-scan WHERE clause.
+func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string) (string, error) {
 	var b strings.Builder
 
 	// CTE chain for extractions
@@ -86,10 +144,13 @@ func buildMVSelect(def ModelDefinition, mt ModelType) (string, error) {
 				b.WriteString(fmt.Sprintf(", %s AS %s", chFieldRef(ext.FromField), ext.FromField))
 			}
 		}
-		b.WriteString("\n    FROM logs\n")
+		b.WriteString(fmt.Sprintf("\n    FROM %s\n", sourceTable))
 		b.WriteString("    WHERE fractal_id != ''")
 		for _, fc := range def.Filter {
 			b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
+		}
+		if whereExtra != "" {
+			b.WriteString(fmt.Sprintf("\n    AND %s", whereExtra))
 		}
 		b.WriteString("\n),\n")
 
@@ -126,8 +187,8 @@ func buildMVSelect(def ModelDefinition, mt ModelType) (string, error) {
 		// Final SELECT from last CTE
 		b.WriteString(buildFinalSelect(def, mt, prevCTE))
 	} else {
-		// No extractions — SELECT directly from logs
-		b.WriteString(buildDirectSelect(def, mt))
+		// No extractions — SELECT directly from the source table
+		b.WriteString(buildDirectSelect(def, mt, sourceTable, whereExtra))
 	}
 
 	return b.String(), nil
@@ -170,12 +231,35 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string) strin
 			b.WriteString(fmt.Sprintf("WHERE %s\n", strings.Join(guards, " AND ")))
 		}
 		b.WriteString("GROUP BY fractal_id, entity_key, first_seen, last_seen")
+	case ModelTypeVolumeBaseline:
+		b.WriteString("SELECT fractal_id,\n")
+		if len(def.KeyFields) == 1 {
+			b.WriteString(fmt.Sprintf("    %s AS entity_val,\n", applyLowerIfNeeded(def.KeyFields[0], def.Extractions)))
+		} else {
+			parts := make([]string, len(def.KeyFields))
+			for i, kf := range def.KeyFields {
+				parts[i] = applyLowerIfNeeded(kf, def.Extractions)
+			}
+			b.WriteString(fmt.Sprintf("    concat(%s) AS entity_val,\n", strings.Join(parts, ", char(30), ")))
+		}
+		b.WriteString(fmt.Sprintf("    %s AS bucket,\n", volumeBucketExpr(def.TimeBucket)))
+		b.WriteString("    toUInt64(count()) AS event_count\n")
+		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
+		if len(def.KeyFields) > 0 {
+			guards := make([]string, len(def.KeyFields))
+			for i, kf := range def.KeyFields {
+				guards[i] = fmt.Sprintf("%s != ''", kf)
+			}
+			b.WriteString(fmt.Sprintf("WHERE %s\n", strings.Join(guards, " AND ")))
+		}
+		b.WriteString("GROUP BY fractal_id, entity_val, bucket")
 	}
 	return b.String()
 }
 
-// buildDirectSelect builds a SELECT directly from logs (no extractions).
-func buildDirectSelect(def ModelDefinition, mt ModelType) string {
+// buildDirectSelect builds a SELECT directly from the source table (no extractions).
+// whereExtra, when non-empty, is ANDed into the WHERE clause.
+func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string) string {
 	var b strings.Builder
 	b.WriteString("SELECT fractal_id")
 
@@ -183,10 +267,13 @@ func buildDirectSelect(def ModelDefinition, mt ModelType) string {
 	case ModelTypeRarity:
 		b.WriteString(fmt.Sprintf(",\n    %s AS partition_val,\n    %s AS value_val,\n    toUInt64(1) AS event_count\n",
 			chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey)))
-		b.WriteString("FROM logs\n")
+		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString("WHERE fractal_id != ''")
 		for _, fc := range def.Filter {
 			b.WriteString(fmt.Sprintf("\nAND %s", filterConditionToSQL(fc)))
+		}
+		if whereExtra != "" {
+			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
 		}
 		b.WriteString(fmt.Sprintf("\nAND %s != '' AND %s != ''\n", chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey)))
 		b.WriteString(fmt.Sprintf("GROUP BY fractal_id, partition_val, value_val"))
@@ -201,12 +288,38 @@ func buildDirectSelect(def ModelDefinition, mt ModelType) string {
 			b.WriteString(fmt.Sprintf(",\n    concat(%s) AS entity_key", strings.Join(parts, ", char(30), ")))
 		}
 		b.WriteString(",\n    timestamp AS first_seen,\n    timestamp AS last_seen,\n    toUInt64(1) AS event_count\n")
-		b.WriteString("FROM logs\n")
+		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString("WHERE fractal_id != ''")
 		for _, fc := range def.Filter {
 			b.WriteString(fmt.Sprintf("\nAND %s", filterConditionToSQL(fc)))
 		}
+		if whereExtra != "" {
+			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
+		}
 		b.WriteString("\nGROUP BY fractal_id, entity_key, first_seen, last_seen")
+	case ModelTypeVolumeBaseline:
+		if len(def.KeyFields) == 1 {
+			b.WriteString(fmt.Sprintf(",\n    %s AS entity_val", chFieldRef(def.KeyFields[0])))
+		} else {
+			parts := make([]string, len(def.KeyFields))
+			for i, kf := range def.KeyFields {
+				parts[i] = chFieldRef(kf)
+			}
+			b.WriteString(fmt.Sprintf(",\n    concat(%s) AS entity_val", strings.Join(parts, ", char(30), ")))
+		}
+		b.WriteString(fmt.Sprintf(",\n    %s AS bucket,\n    toUInt64(count()) AS event_count\n", volumeBucketExpr(def.TimeBucket)))
+		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
+		b.WriteString("WHERE fractal_id != ''")
+		for _, fc := range def.Filter {
+			b.WriteString(fmt.Sprintf("\nAND %s", filterConditionToSQL(fc)))
+		}
+		if whereExtra != "" {
+			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
+		}
+		for _, kf := range def.KeyFields {
+			b.WriteString(fmt.Sprintf("\nAND %s != ''", chFieldRef(kf)))
+		}
+		b.WriteString("\nGROUP BY fractal_id, entity_val, bucket")
 	}
 	return b.String()
 }

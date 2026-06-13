@@ -444,11 +444,12 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 			parserModels := make(map[string]parser.AnalyticsModelInfo, len(infos))
 			for name, mi := range infos {
 				parserModels[name] = parser.AnalyticsModelInfo{
-					ID:        mi.ID,
-					TableName: mi.TableName,
-					ModelType: string(mi.ModelType),
-					MinSample: mi.MinSample,
-					FractalID: mi.FractalID,
+					ID:         mi.ID,
+					TableName:  mi.TableName,
+					ModelType:  string(mi.ModelType),
+					MinSample:  mi.MinSample,
+					TimeBucket: mi.TimeBucket,
+					FractalID:  mi.FractalID,
 				}
 			}
 			opts.Models = parserModels

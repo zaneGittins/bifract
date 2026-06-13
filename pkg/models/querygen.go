@@ -46,6 +46,14 @@ func GenerateQuery(name string, def ModelDefinition, mt ModelType) string {
 		if def.Alert != nil && def.Alert.AlertOnNew {
 			lines = append(lines, `| is_new = "1"`)
 		}
+	case ModelTypeVolumeBaseline:
+		lines = append(lines, fmt.Sprintf("| model_lookup(model=%s, key=[%s])",
+			escapeBQLString(name), strings.Join(def.KeyFields, ", ")))
+		z := 3.5
+		if def.Alert != nil && def.Alert.ZThreshold > 0 {
+			z = def.Alert.ZThreshold
+		}
+		lines = append(lines, fmt.Sprintf("| z_score > %.2f", z))
 	}
 
 	return strings.Join(lines, "\n")

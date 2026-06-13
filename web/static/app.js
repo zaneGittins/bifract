@@ -880,6 +880,11 @@ const App = {
             }
         }
 
+        // Stop model backfill polling when leaving the models tab
+        if (tab !== 'models' && window.AnalyticsModels && typeof AnalyticsModels.teardown === 'function') {
+            AnalyticsModels.teardown();
+        }
+
         // Disconnect SSE when switching away from notebooks/dashboards
         if (tab !== 'notebooks' && window.Notebooks) {
             Notebooks.disconnectSSE();

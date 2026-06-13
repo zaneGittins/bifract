@@ -1677,6 +1677,14 @@ CREATE TABLE IF NOT EXISTS analytics_models (
     created_by      VARCHAR(255) NOT NULL DEFAULT '',
     created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
+    -- One-time historical backfill state (the live MV is forward-only).
+    backfill_status     VARCHAR(20) NOT NULL DEFAULT 'none', -- none|running|completed|failed|cancelled
+    backfill_window     VARCHAR(10) NOT NULL DEFAULT '',      -- 24h|7d|30d|90d
+    backfill_total      INT         NOT NULL DEFAULT 0,       -- total day-chunks
+    backfill_done       INT         NOT NULL DEFAULT 0,       -- completed day-chunks
+    backfill_anchor     TIMESTAMP,                            -- ingest_timestamp dedup boundary vs the MV
+    backfill_started_at TIMESTAMP,
+    backfill_error      TEXT        NOT NULL DEFAULT '',
     CONSTRAINT chk_model_scope CHECK (
         (fractal_id IS NOT NULL AND prism_id IS NULL) OR
         (fractal_id IS NULL AND prism_id IS NOT NULL)
@@ -1685,3 +1693,12 @@ CREATE TABLE IF NOT EXISTS analytics_models (
 
 CREATE INDEX IF NOT EXISTS idx_analytics_models_fractal ON analytics_models(fractal_id);
 CREATE INDEX IF NOT EXISTS idx_analytics_models_prism   ON analytics_models(prism_id);
+
+-- Defensive: backfill columns for installs created before backfill support.
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_status     VARCHAR(20) NOT NULL DEFAULT 'none';
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_window     VARCHAR(10) NOT NULL DEFAULT '';
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_total      INT         NOT NULL DEFAULT 0;
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_done       INT         NOT NULL DEFAULT 0;
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_anchor     TIMESTAMP;
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_started_at TIMESTAMP;
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_error      TEXT        NOT NULL DEFAULT '';

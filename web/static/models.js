@@ -5,6 +5,10 @@ const AnalyticsModels = {
     currentView: 'list',   // 'list' | 'editor' | 'data'
     selectedModel: null,
     _runSeq: 0,            // monotonic token so only the latest _runQuery renders
+    _viewerPoll: null,     // interval: poll the open model while its backfill runs
+    _listPoll: null,       // interval: poll the listing while any backfill runs
+    BACKFILL_WINDOWS: [['24h', 'Last 24h'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['90d', 'Last 90 days']],
+    EXAMPLE_QUERY: 'level = "dns" | regex(field=raw_log, regex="([a-z]+)$", as=tld) | lowercase(tld)',
 
     // Editor state (split-panel: BQL source query on the left, shape/alert on the right)
     editor: {
@@ -16,8 +20,9 @@ const AnalyticsModels = {
         valueKey: '',
         keyFields: [''],
         minSample: 5,
+        timeBucket: 'day',
         alertMode: 'paused',
-        alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true },
+        alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5 },
         name: '',
         description: '',
         timeRange: '24h',
@@ -48,6 +53,18 @@ const AnalyticsModels = {
     show() {
         this._render();
         if (this.currentView === 'list') this._loadModels();
+    },
+
+    // Stop all polling when the models tab is hidden (called from app.js).
+    teardown() {
+        this._stopViewerPoll();
+        this._stopListPoll();
+    },
+
+    _backfillPct(m) {
+        const total = Number(m.backfill_total || 0);
+        if (total <= 0) return 0;
+        return Math.min(100, Math.round(Number(m.backfill_done || 0) / total * 100));
     },
 
     // ---- API helpers ----
@@ -146,6 +163,26 @@ const AnalyticsModels = {
         wrap.querySelectorAll('.alert-mode-badge[data-id]').forEach(badge => {
             badge.addEventListener('click', () => this._toggleAlertMode(badge.dataset.id, badge.dataset.mode));
         });
+
+        // Keep the listing live while any model is seeding.
+        if (this.models.some(m => m.backfill_status === 'running')) this._startListPoll();
+        else this._stopListPoll();
+    },
+
+    _startListPoll() {
+        if (this._listPoll) return;
+        this._listPoll = setInterval(async () => {
+            if (this.currentView !== 'list') { this._stopListPoll(); return; }
+            try {
+                const data = await this._api('GET', '/models');
+                this.models = data?.data?.models || [];
+                this._renderList();
+            } catch (e) { /* transient; keep polling */ }
+        }, 3000);
+    },
+
+    _stopListPoll() {
+        if (this._listPoll) { clearInterval(this._listPoll); this._listPoll = null; }
     },
 
     _modelRow(m) {
@@ -153,11 +190,14 @@ const AnalyticsModels = {
         const alertBadge = this._alertModeBadge(m);
         const updated = m.updated_at ? new Date(m.updated_at).toLocaleDateString() : '—';
         const errorTitle = m.status === 'error' && m.error_message ? ` title="${_esc(m.error_message)}"` : '';
+        const backfillBadge = m.backfill_status === 'running'
+            ? ` <span class="model-badge badge-backfilling" title="Seeding historical data">⟳ Seeding ${this._backfillPct(m)}%</span>`
+            : '';
         return `
 <tr>
     <td><div class="model-name">${_esc(m.name)}</div><div class="model-desc">${_esc(m.description)}</div></td>
     <td>${_esc(m.model_type)}</td>
-    <td><span class="model-badge ${statusClass}"${errorTitle}>${_esc(m.status)}</span></td>
+    <td><span class="model-badge ${statusClass}"${errorTitle}>${_esc(m.status)}</span>${backfillBadge}</td>
     <td>${alertBadge}</td>
     <td>${updated}</td>
     <td>
@@ -234,7 +274,7 @@ const AnalyticsModels = {
         const m = this.models.find(m => m.id === id);
         if (!m) return;
         const def = m.definition || {};
-        const alertCfg = { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true };
+        const alertCfg = { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5 };
         if (def.alert) Object.assign(alertCfg, def.alert);
         this.editor = {
             editId: m.id,
@@ -245,6 +285,7 @@ const AnalyticsModels = {
             valueKey: def.value_key || '',
             keyFields: (def.key_fields && def.key_fields.length) ? [...def.key_fields] : [''],
             minSample: def.min_sample || 5,
+            timeBucket: def.time_bucket || 'day',
             alertMode: m.alert_mode || 'none',
             alertConfig: alertCfg,
             name: m.name,
@@ -265,11 +306,13 @@ const AnalyticsModels = {
     async _openDataViewer(id) {
         const model = this.models.find(m => m.id === id);
         if (!model) return;
-        this.viewer = { model, rows: [], total: 0, limit: 50, offset: 0, sortCol: '', sortDir: 'desc', search: '', tab: 'data', stats: null };
+        this._stopListPoll();
+        this.viewer = { model, rows: [], total: 0, limit: 50, offset: 0, sortCol: '', sortDir: 'desc', search: '', tab: 'data', stats: null, backfillWindow: '7d' };
         this.currentView = 'data';
         this._render();
         await this._loadViewerData();
         this._loadViewerStats();
+        if (model.backfill_status === 'running') this._startViewerPoll();
     },
 
     async _loadViewerData() {
@@ -318,6 +361,7 @@ const AnalyticsModels = {
         ${alertBtn}
         <button class="btn-secondary" id="modelsDataRefresh">↺ Refresh</button>
     </div>
+    <div id="modelsBackfillBar" class="model-backfill-bar"></div>
     <div id="modelsStatsPanel" class="model-stats-panel"></div>
     <div class="model-viewer-tabs">
         <button class="viewer-tab ${this.viewer.tab === 'data' ? 'active' : ''}" data-tab="data">Data</button>
@@ -332,10 +376,15 @@ const AnalyticsModels = {
 </div>`;
 
         document.getElementById('modelsBackBtn').addEventListener('click', () => {
+            this._stopViewerPoll();
             this.currentView = 'list';
             this._render();
             this._loadModels();
         });
+        this._renderBackfillBar();
+        // Resume progress polling if a backfill is running (e.g. after returning
+        // to this view from another tab). _startViewerPoll guards against dupes.
+        if (this.viewer.model && this.viewer.model.backfill_status === 'running') this._startViewerPoll();
         document.getElementById('modelsDataRefresh').addEventListener('click', () => {
             this._loadViewerData();
             this._loadViewerStats();
@@ -366,6 +415,149 @@ const AnalyticsModels = {
                     Toast.success(m.alert_mode === 'active' ? 'Alert activated' : 'Alert paused');
                 });
             });
+        }
+    },
+
+    // ---- Backfill (seed historical data) ----
+    _renderBackfillBar() {
+        const el = document.getElementById('modelsBackfillBar');
+        if (!el) return;
+        const m = this.viewer.model;
+        const st = m.backfill_status || 'none';
+
+        // Backfill is only available once the model's table+MV exist.
+        if (m.status !== 'active' && st !== 'running') {
+            el.className = 'model-backfill-bar';
+            el.innerHTML = `<div class="backfill-cta"><span class="backfill-note">Model is initializing…</span></div>`;
+            return;
+        }
+
+        if (st === 'running') {
+            const pct = this._backfillPct(m);
+            el.className = 'model-backfill-bar active';
+            el.innerHTML = `
+<div class="backfill-running">
+    <div class="backfill-running-head">
+        <span class="spinner spinner-inline"></span>
+        <span class="backfill-label">Seeding history…</span>
+        <span class="backfill-count">${m.backfill_done || 0}/${m.backfill_total || 0} days</span>
+        <span class="backfill-spacer"></span>
+        <button class="btn-secondary btn-sm" id="backfillCancelBtn">Cancel</button>
+    </div>
+    <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${pct}%"></div></div>
+</div>`;
+            document.getElementById('backfillCancelBtn')?.addEventListener('click', () => this._cancelBackfill());
+            return;
+        }
+
+        el.className = 'model-backfill-bar';
+
+        // Completed: terminal, no re-seed (re-running would double-count). To
+        // seed again the user edits the model, which resets and drops data.
+        if (st === 'completed') {
+            el.innerHTML = `<div class="backfill-cta"><span class="backfill-note ok">✓ Seeded ${_esc(m.backfill_window || 'history')} of history</span></div>`;
+            return;
+        }
+
+        // Failed / cancelled: offer Resume (continues from the saved cursor; no
+        // window picker, no double-count of already-seeded days).
+        if (st === 'failed' || st === 'cancelled') {
+            const note = st === 'failed'
+                ? `<span class="backfill-note err" title="${_esc(m.backfill_error || '')}">Backfill failed at ${m.backfill_done || 0}/${m.backfill_total || 0} days</span>`
+                : `<span class="backfill-note">Backfill cancelled at ${m.backfill_done || 0}/${m.backfill_total || 0} days</span>`;
+            el.innerHTML = `
+<div class="backfill-cta">
+    ${note}
+    <span class="backfill-spacer"></span>
+    <button class="btn-primary btn-sm" id="backfillStartBtn">Resume</button>
+</div>`;
+            document.getElementById('backfillStartBtn')?.addEventListener('click', () => this._startBackfill());
+            return;
+        }
+
+        // Fresh: window picker + seed.
+        const win = this.viewer.backfillWindow || '7d';
+        const pills = this.BACKFILL_WINDOWS.map(([v, l]) =>
+            `<button class="backfill-pill ${v === win ? 'selected' : ''}" data-win="${v}">${l.replace('Last ', '')}</button>`
+        ).join('');
+        el.innerHTML = `
+<div class="backfill-cta">
+    <span class="backfill-note">This model captures new logs from now on. Seed it with historical data.</span>
+    <span class="backfill-spacer"></span>
+    <div class="backfill-pills">${pills}</div>
+    <button class="btn-primary btn-sm" id="backfillStartBtn">Seed history</button>
+</div>`;
+        el.querySelectorAll('.backfill-pill').forEach(p => {
+            p.addEventListener('click', () => {
+                this.viewer.backfillWindow = p.dataset.win;
+                el.querySelectorAll('.backfill-pill').forEach(x => x.classList.toggle('selected', x === p));
+            });
+        });
+        document.getElementById('backfillStartBtn')?.addEventListener('click', () => this._startBackfill());
+    },
+
+    async _startBackfill() {
+        const m = this.viewer.model;
+        const window = this.viewer.backfillWindow || '7d';
+        const btn = document.getElementById('backfillStartBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+        try {
+            const data = await this._api('POST', `/models/${m.id}/backfill`, { window });
+            if (data?.data?.model) this.viewer.model = data.data.model;
+            else m.backfill_status = 'running';
+            this._renderBackfillBar();
+            this._startViewerPoll();
+            Toast.success('Backfill started');
+        } catch (e) {
+            Toast.error('Failed to start backfill: ' + (e?.message || 'error'));
+            this._renderBackfillBar();
+        }
+    },
+
+    async _cancelBackfill() {
+        const m = this.viewer.model;
+        const btn = document.getElementById('backfillCancelBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Cancelling…'; }
+        try {
+            await this._api('POST', `/models/${m.id}/backfill/cancel`);
+            Toast.success('Backfill cancelling…');
+            this._refreshViewerModel();
+        } catch (e) {
+            Toast.error('Failed to cancel backfill');
+            if (btn) { btn.disabled = false; btn.textContent = 'Cancel'; }
+        }
+    },
+
+    _startViewerPoll() {
+        if (this._viewerPoll) return;
+        this._viewerPoll = setInterval(() => this._refreshViewerModel(), 3000);
+    },
+
+    _stopViewerPoll() {
+        if (this._viewerPoll) { clearInterval(this._viewerPoll); this._viewerPoll = null; }
+    },
+
+    async _refreshViewerModel() {
+        if (this.currentView !== 'data' || !this.viewer.model) { this._stopViewerPoll(); return; }
+        const id = this.viewer.model.id;
+        let model;
+        try {
+            const data = await this._api('GET', `/models/${id}`);
+            model = data?.data?.model;
+        } catch (e) { return; /* transient; keep polling */ }
+        if (!model) return;
+        const prev = this.viewer.model.backfill_status;
+        this.viewer.model = model;
+        this._renderBackfillBar();
+        if (model.backfill_status !== 'running') {
+            this._stopViewerPoll();
+            if (prev === 'running') {
+                // Just finished: refresh the rows + stats once so seeded data shows.
+                this._loadViewerData();
+                this._loadViewerStats();
+                if (model.backfill_status === 'completed') Toast.success('Backfill complete');
+                else if (model.backfill_status === 'failed') Toast.error('Backfill failed: ' + (model.backfill_error || 'error'));
+            }
         }
     },
 
@@ -413,6 +605,27 @@ const AnalyticsModels = {
         <div class="stat-label">Top Partitions by Event Count</div>
         <div class="stat-bars">${barsHTML}</div>
     </div>` : ''}
+</div>`;
+        } else if (v.model.model_type === 'volume_baseline') {
+            const hasData = Number(s.total_entities) > 0;
+            const total = this._fmtNum(s.total_entities);
+            const anomalous = hasData ? this._fmtNum(s.anomalous) : '—';
+            const maxZ = hasData && s.max_z != null ? Number(s.max_z).toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—';
+
+            el.innerHTML = `
+<div class="model-stats-bar">
+    <div class="stat-card">
+        <div class="stat-value">${total}</div>
+        <div class="stat-label">Entities Scored</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">${anomalous}</div>
+        <div class="stat-label">Anomalous</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">${maxZ}</div>
+        <div class="stat-label">Max |Z-score|</div>
+    </div>
 </div>`;
         } else {
             // first_seen
@@ -475,6 +688,12 @@ const AnalyticsModels = {
 <div class="config-row"><span class="config-key">Partition key:</span> <code>${_esc(def.partition_key || '—')}</code></div>
 <div class="config-row"><span class="config-key">Value key:</span> <code>${_esc(def.value_key || '—')}</code></div>
 <div class="config-row"><span class="config-key">Min sample:</span> <code>${def.min_sample || 5}</code></div>`;
+        } else if (m.model_type === 'volume_baseline') {
+            const keys = (def.key_fields || []).join(', ') || '—';
+            shapeHTML = `
+<div class="config-row"><span class="config-key">Entity fields:</span> <code>${_esc(keys)}</code></div>
+<div class="config-row"><span class="config-key">Bucket:</span> <code>${_esc(def.time_bucket || 'day')}</code></div>
+<div class="config-row"><span class="config-key">Min history:</span> <code>${def.min_sample || 7}</code></div>`;
         } else {
             const keys = (def.key_fields || []).join(', ') || '—';
             shapeHTML = `<div class="config-row"><span class="config-key">Key fields:</span> <code>${_esc(keys)}</code></div>`;
@@ -511,13 +730,18 @@ const AnalyticsModels = {
         const v = this.viewer;
         const m = v.model;
         if (!v.rows.length) {
-            wrap.innerHTML = '<div class="models-empty">No data yet — logs matching the model filter will appear here as they are ingested.</div>';
+            const seeding = m.backfill_status === 'running';
+            wrap.innerHTML = seeding
+                ? '<div class="models-empty">Seeding historical data… rows will appear as each day completes.</div>'
+                : '<div class="models-empty">No data yet — seed historical data above, or new matching logs will appear here as they are ingested.</div>';
             this._renderPagination();
             return;
         }
         const cols = m.model_type === 'rarity'
             ? ['partition_val', 'value_val', 'model_count', 'percent', 'confidence']
-            : ['entity_key', 'first_seen', 'last_seen', 'event_count'];
+            : m.model_type === 'volume_baseline'
+                ? ['entity_val', 'latest_count', 'baseline_median', 'mad', 'z_score', 'n_buckets', 'latest_bucket']
+                : ['entity_key', 'first_seen', 'last_seen', 'event_count'];
 
         const headers = cols.map(c => {
             const active = v.sortCol === c ? (v.sortDir === 'asc' ? 'sort-asc' : 'sort-desc') : '';
@@ -642,8 +866,9 @@ const AnalyticsModels = {
             valueKey: '',
             keyFields: [''],
             minSample: 5,
+            timeBucket: 'day',
             alertMode: 'paused',
-            alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true },
+            alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5 },
             name: '',
             description: '',
             timeRange: '24h',
@@ -681,7 +906,11 @@ const AnalyticsModels = {
             </div>
             <div class="model-query-wrap">
                 <div id="modelQueryHighlight" class="model-query-highlight"></div>
-                <textarea id="modelQueryInput" class="model-query-input" spellcheck="false" placeholder='Define the model source in BQL. Example:&#10;level = "dns" | regex(field=raw_log, regex="([a-z]+)$", as=tld) | len(tld) | _len >= 2 | lowercase(tld)&#10;&#10;Filters, regex() extractions, optional len()/lowercase() refinements. Leave empty to use all logs.'>${_esc(e.query)}</textarea>
+                <textarea id="modelQueryInput" class="model-query-input" spellcheck="false" placeholder='Filter logs in BQL, or leave empty to use all logs'>${_esc(e.query)}</textarea>
+            </div>
+            <div class="model-query-hint">
+                <span>Narrow with a BQL filter and pull fields out with <code>regex()</code>.</span>
+                <button type="button" class="model-example-link" id="modelInsertExample">Insert example</button>
             </div>
             <pre id="modelSqlOutput" class="model-sql-output" style="display:${this._showSQL() ? 'block' : 'none'}"></pre>
             <div id="modelTranslation" class="model-translation"></div>
@@ -698,6 +927,10 @@ const AnalyticsModels = {
                     <div class="model-type-card ${e.modelType === 'first_seen' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="first_seen">
                         <div class="card-title">First / Last Seen</div>
                         <div class="card-desc">Track when an entity was first and last observed.</div>
+                    </div>
+                    <div class="model-type-card ${e.modelType === 'volume_baseline' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="volume_baseline">
+                        <div class="card-title">Volume Baseline</div>
+                        <div class="card-desc">Flag entities whose volume deviates from their own history (modified z-score).</div>
                     </div>
                 </div>
             </div>
@@ -741,6 +974,12 @@ const AnalyticsModels = {
             if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') { ev.preventDefault(); this._runQuery(); }
         });
         this._updateQueryHighlight();
+        document.getElementById('modelInsertExample')?.addEventListener('click', () => {
+            ta.value = this.EXAMPLE_QUERY;
+            e.query = this.EXAMPLE_QUERY;
+            this._updateQueryHighlight();
+            ta.focus();
+        });
         document.getElementById('modelTimeRange').addEventListener('change', ev => { e.timeRange = ev.target.value; if (e.ran) this._runQuery(); });
         if (!e.editId) {
             document.querySelectorAll('#modelTypeCards .model-type-card').forEach(card => {
@@ -831,6 +1070,32 @@ const AnalyticsModels = {
 </div>
 <p class="config-hint">Example: Partition=<em>file_prefix</em>, Value=<em>tld</em> scores how unusual a TLD is for a given prefix.</p>`;
         }
+        if (e.modelType === 'volume_baseline') {
+            return `
+<div class="field-group">
+    <label>Entity Fields (baseline per)</label>
+    <div id="keyFieldsList">${e.keyFields.map((kf, i) => `
+<div class="key-field-row" data-idx="${i}">
+    ${this._fieldInput('keyField' + i, kf, 'e.g. user')}
+    <button class="btn-remove-row" data-idx="${i}">×</button>
+</div>`).join('')}</div>
+    <button class="btn-add-row" id="addKeyField">+ Add Entity Field</button>
+</div>
+<div class="form-row" style="margin-top:10px">
+    <div class="field-group">
+        <label>Bucket</label>
+        <select id="shapeTimeBucket" class="full-input">
+            <option value="day" ${e.timeBucket === 'day' ? 'selected' : ''}>Per day</option>
+            <option value="hour" ${e.timeBucket === 'hour' ? 'selected' : ''}>Per hour</option>
+        </select>
+    </div>
+    <div class="field-group">
+        <label>Min history (buckets)</label>
+        <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
+    </div>
+</div>
+<p class="config-hint">Counts events per <em>${e.timeBucket === 'hour' ? 'hour' : 'day'}</em> per entity, then scores the latest complete bucket against the entity's own median (modified z-score). The current, incomplete bucket is excluded.</p>`;
+        }
         return `
 <div class="field-group">
     <label>Key Fields (entity to track)</label>
@@ -863,6 +1128,10 @@ const AnalyticsModels = {
                 e.keyFields.push('');
                 this._renderEditorShape();
             });
+            if (e.modelType === 'volume_baseline') {
+                document.getElementById('shapeTimeBucket')?.addEventListener('change', ev => { e.timeBucket = ev.target.value; this._renderEditorShape(); });
+                document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 7; });
+            }
         }
     },
 
@@ -898,16 +1167,10 @@ const AnalyticsModels = {
 
     _editorAlertConfigHTML() {
         const c = this.editor.alertConfig;
-        const isRarity = this.editor.modelType === 'rarity';
-        return `
-<div class="alert-config-section">
-    <div class="field-group">
-        <label>Severity</label>
-        <select id="alertSeverity">
-            ${['low', 'medium', 'high', 'critical'].map(s => `<option ${c.severity === s ? 'selected' : ''}>${s}</option>`).join('')}
-        </select>
-    </div>
-    ${isRarity ? `
+        const mt = this.editor.modelType;
+        let typeFields;
+        if (mt === 'rarity') {
+            typeFields = `
     <div class="form-row" style="margin-top:10px">
         <div class="field-group">
             <label>Min Confidence</label>
@@ -917,10 +1180,29 @@ const AnalyticsModels = {
             <label>Max % Threshold</label>
             <input type="number" id="alertPercent" class="model-num-input" value="${c.percent_threshold}" min="0.1" max="100" step="0.5">
         </div>
-    </div>` : `
+    </div>`;
+        } else if (mt === 'volume_baseline') {
+            typeFields = `
+    <div class="field-group" style="margin-top:10px">
+        <label>Z-score threshold</label>
+        <input type="number" id="alertZThreshold" class="model-num-input" value="${c.z_threshold}" min="0" step="0.5">
+        <p class="config-hint">Alert when an entity's latest bucket has |modified z-score| above this. 3.5 is the standard cutoff.</p>
+    </div>`;
+        } else {
+            typeFields = `
     <label class="toggle-label" style="margin-top:10px">
         <input type="checkbox" class="themed-checkbox" id="alertOnNew" ${c.alert_on_new ? 'checked' : ''}> Alert on new entities only
-    </label>`}
+    </label>`;
+        }
+        return `
+<div class="alert-config-section">
+    <div class="field-group">
+        <label>Severity</label>
+        <select id="alertSeverity">
+            ${['low', 'medium', 'high', 'critical'].map(s => `<option ${c.severity === s ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+    </div>
+    ${typeFields}
 </div>`;
     },
 
@@ -950,6 +1232,7 @@ const AnalyticsModels = {
         document.getElementById('alertSeverity')?.addEventListener('change', ev => { c.severity = ev.target.value; });
         document.getElementById('alertConfidence')?.addEventListener('change', ev => { c.confidence_threshold = parseFloat(ev.target.value); });
         document.getElementById('alertPercent')?.addEventListener('change', ev => { c.percent_threshold = parseFloat(ev.target.value); });
+        document.getElementById('alertZThreshold')?.addEventListener('change', ev => { c.z_threshold = parseFloat(ev.target.value); });
         document.getElementById('alertOnNew')?.addEventListener('change', ev => { c.alert_on_new = ev.target.checked; });
     },
 
@@ -958,6 +1241,18 @@ const AnalyticsModels = {
         const el = document.getElementById('modelTranslation');
         if (!el) return;
         const p = this.editor.parsed;
+
+        // Nothing parsed yet (or an empty query): keep the strip hidden rather
+        // than showing a noisy "all logs / none" placeholder.
+        const hasContent = (p.filter || []).length || (p.extractions || []).length ||
+            (p.errors || []).length || (p.warnings || []).length;
+        if (!hasContent) {
+            el.innerHTML = '';
+            el.style.display = 'none';
+            return;
+        }
+        el.style.display = '';
+
         const parts = [];
 
         if (p.errors && p.errors.length) {
@@ -1118,8 +1413,8 @@ const AnalyticsModels = {
             Toast.warning('Select a partition key and a value key');
             return;
         }
-        if (e.modelType === 'first_seen' && !e.keyFields.filter(Boolean).length) {
-            Toast.warning('Add at least one key field');
+        if ((e.modelType === 'first_seen' || e.modelType === 'volume_baseline') && !e.keyFields.filter(Boolean).length) {
+            Toast.warning(e.modelType === 'volume_baseline' ? 'Add at least one entity field' : 'Add at least one key field');
             return;
         }
 
@@ -1127,6 +1422,10 @@ const AnalyticsModels = {
         if (e.modelType === 'rarity') {
             def.partition_key = e.partitionKey;
             def.value_key = e.valueKey;
+            def.min_sample = e.minSample;
+        } else if (e.modelType === 'volume_baseline') {
+            def.key_fields = e.keyFields.filter(Boolean);
+            def.time_bucket = e.timeBucket;
             def.min_sample = e.minSample;
         } else {
             def.key_fields = e.keyFields.filter(Boolean);

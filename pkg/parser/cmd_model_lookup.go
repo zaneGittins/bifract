@@ -30,6 +30,11 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		ctx.Registry.Register("first_seen", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("last_seen", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("is_new", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("z_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("baseline_median", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("latest_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("mad", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("n_buckets", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		return nil
 	}
 
@@ -42,6 +47,12 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		ctx.Registry.Register("first_seen", FieldKindPerRow, "_mlookup.first_seen", ctx.CmdIndex)
 		ctx.Registry.Register("last_seen", FieldKindPerRow, "_mlookup.last_seen", ctx.CmdIndex)
 		ctx.Registry.Register("is_new", FieldKindPerRow, "_mlookup.is_new", ctx.CmdIndex)
+	case "volume_baseline":
+		ctx.Registry.Register("z_score", FieldKindPerRow, "_mlookup.z_score", ctx.CmdIndex)
+		ctx.Registry.Register("baseline_median", FieldKindPerRow, "_mlookup.baseline_median", ctx.CmdIndex)
+		ctx.Registry.Register("latest_count", FieldKindPerRow, "_mlookup.latest_count", ctx.CmdIndex)
+		ctx.Registry.Register("mad", FieldKindPerRow, "_mlookup.mad", ctx.CmdIndex)
+		ctx.Registry.Register("n_buckets", FieldKindPerRow, "_mlookup.n_buckets", ctx.CmdIndex)
 	}
 	return nil
 }
@@ -102,6 +113,22 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		ctx.Plan.ModelLookupOn = onClause
 		ctx.Plan.ModelLookupFields = []string{"entity_key", "first_seen", "last_seen", "event_count", "is_new"}
 
+	case "volume_baseline":
+		subSQL := buildVolumeBaselineScoringSQL(info.TableName, fractalID, info.MinSample, info.TimeBucket)
+		var outerRefs []string
+		for _, kf := range keyFields {
+			outerRefs = append(outerRefs, modelLookupFieldRef(kf))
+		}
+		var onClause string
+		if len(outerRefs) == 1 {
+			onClause = fmt.Sprintf("%s = _mlookup.entity_val", outerRefs[0])
+		} else {
+			onClause = fmt.Sprintf("concat(%s) = _mlookup.entity_val", strings.Join(outerRefs, ", char(30), "))
+		}
+		ctx.Plan.ModelLookupSQL = subSQL
+		ctx.Plan.ModelLookupOn = onClause
+		ctx.Plan.ModelLookupFields = []string{"entity_val", "latest_count", "baseline_median", "mad", "n_buckets", "z_score"}
+
 	default:
 		return fmt.Errorf("unknown model type %q for model %q", info.ModelType, modelName)
 	}
@@ -149,6 +176,54 @@ WHERE fractal_id = '%s'
 GROUP BY entity_key`,
 		"`"+tableName+"`",
 		escapeString(fractalID),
+	)
+}
+
+// volumeScoreBounds returns (lowerBound, upperBound) predicates on the bucket
+// column. The upper bound excludes the current incomplete bucket; the lower bound
+// caps history so reads stay bounded. Mirrors models.volumeScoreBounds.
+func volumeScoreBounds(timeBucket string) (lower, upper string) {
+	if timeBucket == "hour" {
+		return "toStartOfHour(now()) - INTERVAL 30 DAY", "toStartOfHour(now())"
+	}
+	return "today() - 90", "today()"
+}
+
+// buildVolumeBaselineScoringSQL returns the per-entity modified z-score subquery
+// for a volume_baseline model, joined against incoming logs on the entity field.
+// It mirrors models.buildVolumeBaselineScoringSQL: baseline = median of complete
+// daily counts, MAD = median absolute deviation, z = 0.6745*(latest-median)/MAD
+// with the mad=0 -> z=0 guard.
+func buildVolumeBaselineScoringSQL(tableName, fractalID string, minBuckets int, timeBucket string) string {
+	if minBuckets < 1 {
+		minBuckets = 7
+	}
+	lower, upper := volumeScoreBounds(timeBucket)
+	return fmt.Sprintf(`SELECT entity_val, latest_count, baseline_median, mad, n_buckets, latest_bucket,
+    if(mad = 0, 0, round(0.6745 * (toFloat64(latest_count) - baseline_median) / mad, 4)) AS z_score
+FROM (
+    SELECT entity_val, latest_count, baseline_median, n_buckets, latest_bucket,
+        arrayReduce('medianExact', arrayMap(x -> abs(toFloat64(x) - baseline_median), cnts)) AS mad
+    FROM (
+        SELECT entity_val,
+            groupArray(daily_count) AS cnts,
+            arrayReduce('medianExact', groupArray(daily_count)) AS baseline_median,
+            argMax(daily_count, bucket) AS latest_count,
+            max(bucket) AS latest_bucket,
+            count() AS n_buckets
+        FROM (
+            SELECT entity_val, bucket, sum(event_count) AS daily_count
+            FROM %s FINAL
+            WHERE fractal_id = '%s' AND bucket >= %s AND bucket < %s
+            GROUP BY entity_val, bucket
+        )
+        GROUP BY entity_val
+    )
+)
+WHERE n_buckets >= %d`,
+		"`"+tableName+"`",
+		escapeString(fractalID),
+		lower, upper, minBuckets,
 	)
 }
 

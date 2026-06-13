@@ -9,11 +9,12 @@ import (
 // AnalyticsModelInfo is a lightweight representation of an analytics model used
 // in QueryOptions for BQL model_lookup() command execution.
 type AnalyticsModelInfo struct {
-	ID        string
-	TableName string // distributed table name in cluster mode, local otherwise
-	ModelType string // "rarity" or "first_seen"
-	MinSample int
-	FractalID string
+	ID         string
+	TableName  string // distributed table name in cluster mode, local otherwise
+	ModelType  string // "rarity", "first_seen", or "volume_baseline"
+	MinSample  int
+	TimeBucket string // volume_baseline bucket granularity ("day"/"hour")
+	FractalID  string
 }
 
 type QueryOptions struct {

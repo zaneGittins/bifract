@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
-	"gopkg.in/yaml.v3"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
+	"github.com/go-chi/chi/v5"
+	"gopkg.in/yaml.v3"
 )
 
 type modelExport struct {
@@ -174,6 +174,46 @@ func (h *Handler) HandleGetData(w http.ResponseWriter, r *http.Request) {
 		"limit":  limit,
 		"offset": offset,
 	})
+}
+
+// HandleStartBackfill kicks off a one-time historical backfill for a model over
+// the requested window (24h/7d/30d/90d). Returns the model with running state.
+func (h *Handler) HandleStartBackfill(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAnalyst(w, r) {
+		return
+	}
+	model := h.getModelScoped(w, r)
+	if model == nil {
+		return
+	}
+	var req BackfillRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.manager.StartBackfill(r.Context(), model, req.Window); err != nil {
+		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Failed to start backfill: %v", err))
+		return
+	}
+	updated, err := h.manager.Get(r.Context(), model.ID)
+	if err != nil {
+		h.respondError(w, http.StatusInternalServerError, "Failed to load model")
+		return
+	}
+	h.respondSuccess(w, map[string]interface{}{"model": updated})
+}
+
+// HandleCancelBackfill stops an in-flight backfill. Partial data is kept.
+func (h *Handler) HandleCancelBackfill(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAnalyst(w, r) {
+		return
+	}
+	model := h.getModelScoped(w, r)
+	if model == nil {
+		return
+	}
+	h.manager.CancelBackfill(model.ID)
+	h.respondSuccess(w, map[string]bool{"cancelled": true})
 }
 
 // HandleTestExtraction runs a sample extraction against recent logs and returns matched values.

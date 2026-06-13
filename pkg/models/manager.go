@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"time"
 
@@ -20,11 +21,34 @@ type Manager struct {
 	pg   *storage.PostgresClient
 	ch   *storage.ClickHouseClient
 	chDB string
+
+	// Backfill engine state. The backfill seeds a model from historical logs via
+	// INSERT...SELECT (no DDL), throttled to avoid overwhelming ClickHouse.
+	bfCfg     backfillConfig
+	bfHealth  BackfillHealth // pause source: yields to ingest backpressure
+	bfSem     chan struct{}  // global single-flight gate
+	bfMu      sync.Mutex     // guards bfCancels
+	bfCancels map[string]context.CancelFunc
 }
 
 // NewManager creates a new analytics model manager.
 func NewManager(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Manager {
-	return &Manager{pg: pg, ch: ch, chDB: "logs"}
+	cfg := loadBackfillConfig()
+	return &Manager{
+		pg:        pg,
+		ch:        ch,
+		chDB:      "logs",
+		bfCfg:     cfg,
+		bfSem:     make(chan struct{}, cfg.concurrency),
+		bfCancels: make(map[string]context.CancelFunc),
+	}
+}
+
+// SetBackfillHealth injects the health signal the backfill engine yields to
+// (typically the ingest queue's CPU/disk backpressure). Safe to leave nil, in
+// which case backfill never pauses for pressure.
+func (m *Manager) SetBackfillHealth(h BackfillHealth) {
+	m.bfHealth = h
 }
 
 // chModelTableName returns the local CH table name for a model UUID.
@@ -50,7 +74,9 @@ func (m *Manager) List(ctx context.Context, fractalID string) ([]*Model, error) 
 		`SELECT id, COALESCE(fractal_id::text,''), COALESCE(prism_id::text,''),
 		        name, description, model_type, definition, ch_table_name, ch_mv_name,
 		        status, alert_mode, COALESCE(linked_alert_id::text,''), error_message,
-		        COALESCE(created_by,''), created_at, updated_at
+		        COALESCE(created_by,''), created_at, updated_at,
+		        backfill_status, backfill_window, backfill_total, backfill_done,
+		        backfill_started_at, backfill_error
 		 FROM analytics_models WHERE fractal_id = $1 ORDER BY name`, fractalID)
 	if err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
@@ -77,7 +103,9 @@ func (m *Manager) Get(ctx context.Context, id string) (*Model, error) {
 		`SELECT id, COALESCE(fractal_id::text,''), COALESCE(prism_id::text,''),
 		        name, description, model_type, definition, ch_table_name, ch_mv_name,
 		        status, alert_mode, COALESCE(linked_alert_id::text,''), error_message,
-		        COALESCE(created_by,''), created_at, updated_at
+		        COALESCE(created_by,''), created_at, updated_at,
+		        backfill_status, backfill_window, backfill_total, backfill_done,
+		        backfill_started_at, backfill_error
 		 FROM analytics_models WHERE id = $1`, id)
 	model, err := scanModelRow(row)
 	if err == sql.ErrNoRows {
@@ -116,11 +144,12 @@ func (m *Manager) ListModelInfos(ctx context.Context, fractalID string) (map[str
 		}
 
 		result[name] = ModelInfo{
-			ID:        id,
-			TableName: tableName,
-			ModelType: ModelType(modelType),
-			MinSample: def.MinSample,
-			FractalID: fractalID,
+			ID:         id,
+			TableName:  tableName,
+			ModelType:  ModelType(modelType),
+			MinSample:  def.MinSample,
+			TimeBucket: def.TimeBucket,
+			FractalID:  fractalID,
 		}
 	}
 	return result, rows.Err()
@@ -187,6 +216,10 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 		return nil, err
 	}
 
+	// A rebuild drops and recreates the model's data, so any in-flight backfill
+	// is now stale: cancel it before touching the table it writes to.
+	m.CancelBackfill(id)
+
 	defJSON, _ := json.Marshal(req.Definition)
 	_, err = m.pg.Exec(ctx,
 		`UPDATE analytics_models SET name=$1, description=$2, definition=$3, alert_mode=$4, updated_at=NOW()
@@ -209,7 +242,13 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 			err.Error(), id)
 		return nil, fmt.Errorf("recreate clickhouse objects: %w", err)
 	}
-	_, _ = m.pg.Exec(context.Background(), `UPDATE analytics_models SET status='active', error_message='' WHERE id=$1`, id)
+	// Data was dropped; reset backfill state so the data viewer re-offers the
+	// "Seed history" CTA against the new definition.
+	_, _ = m.pg.Exec(context.Background(),
+		`UPDATE analytics_models SET status='active', error_message='',
+		    backfill_status='none', backfill_window='', backfill_total=0, backfill_done=0,
+		    backfill_anchor=NULL, backfill_started_at=NULL, backfill_error=''
+		 WHERE id=$1`, id)
 
 	return m.Get(ctx, id)
 }
@@ -222,6 +261,8 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	// Stop any in-flight backfill before its target table is dropped.
+	m.CancelBackfill(id)
 	// Remove from Postgres first so the UI sees it gone immediately.
 	if _, err = m.pg.Exec(ctx, `DELETE FROM analytics_models WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("delete model: %w", err)
@@ -362,6 +403,8 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID, search, 
 		return m.getRarityData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
 	case ModelTypeFirstSeen:
 		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
+	case ModelTypeVolumeBaseline:
+		return m.getVolumeBaselineData(ctx, tableName, fractalID, model.Definition, search, sortCol, sortDir, limit, offset)
 	default:
 		return nil, 0, fmt.Errorf("unknown model type: %s", model.ModelType)
 	}
@@ -444,6 +487,81 @@ WHERE fractal_id = '%s'`, "`"+tableName+"`", storage.EscCHStr(fractalID))
 	return rows, total, nil
 }
 
+// volumeMinBuckets returns the minimum number of complete buckets of history an
+// entity must have before it is scored, defaulting to 7 when unset.
+func volumeMinBuckets(def ModelDefinition) int {
+	if def.MinSample > 0 {
+		return def.MinSample
+	}
+	return 7
+}
+
+// buildVolumeBaselineScoringSQL returns the per-entity modified z-score query for
+// a volume_baseline model. It computes, over the entity's complete buckets, the
+// median daily count (baseline), the Median Absolute Deviation (MAD), the most
+// recent complete bucket's count, and the modified z-score
+// (0.6745 * (count - median) / MAD), matching Bifract's BQL modifiedZScore()
+// convention including the mad=0 -> z=0 guard. quotedTable must already be
+// backtick-quoted; fidEsc must already be CH-escaped.
+func buildVolumeBaselineScoringSQL(quotedTable, fidEsc string, minBuckets int, timeBucket string) string {
+	if minBuckets < 1 {
+		minBuckets = 1
+	}
+	lower, upper := volumeScoreBounds(timeBucket)
+	return fmt.Sprintf(`SELECT entity_val, latest_count, baseline_median, mad, n_buckets, latest_bucket,
+    if(mad = 0, 0, round(0.6745 * (toFloat64(latest_count) - baseline_median) / mad, 4)) AS z_score
+FROM (
+    SELECT entity_val, latest_count, baseline_median, n_buckets, latest_bucket,
+        arrayReduce('medianExact', arrayMap(x -> abs(toFloat64(x) - baseline_median), cnts)) AS mad
+    FROM (
+        SELECT entity_val,
+            groupArray(daily_count) AS cnts,
+            arrayReduce('medianExact', groupArray(daily_count)) AS baseline_median,
+            argMax(daily_count, bucket) AS latest_count,
+            max(bucket) AS latest_bucket,
+            count() AS n_buckets
+        FROM (
+            SELECT entity_val, bucket, sum(event_count) AS daily_count
+            FROM %s FINAL
+            WHERE fractal_id = '%s' AND bucket >= %s AND bucket < %s
+            GROUP BY entity_val, bucket
+        )
+        GROUP BY entity_val
+    )
+)
+WHERE n_buckets >= %d`, quotedTable, fidEsc, lower, upper, minBuckets)
+}
+
+func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalID string, def ModelDefinition, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
+	allowed := map[string]bool{"entity_val": true, "latest_count": true, "baseline_median": true, "mad": true, "z_score": true, "n_buckets": true, "latest_bucket": true}
+	if !allowed[sortCol] {
+		sortCol = "z_score"
+	}
+
+	baseQuery := buildVolumeBaselineScoringSQL("`"+tableName+"`", storage.EscCHStr(fractalID), volumeMinBuckets(def), def.TimeBucket)
+	if search != "" {
+		baseQuery += fmt.Sprintf("\nAND entity_val ILIKE '%%%s%%'", storage.EscCHStr(search))
+	}
+
+	countQuery := fmt.Sprintf("SELECT count() FROM (%s)", baseQuery)
+	var total uint64
+	if err := m.ch.QueryRow(ctx, countQuery).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count volume_baseline data: %w", err)
+	}
+
+	// Sort by absolute z-score so the largest anomalies (high or low) surface first.
+	orderExpr := sortCol
+	if sortCol == "z_score" {
+		orderExpr = "abs(z_score)"
+	}
+	dataQuery := fmt.Sprintf("%s ORDER BY %s %s LIMIT %d OFFSET %d", baseQuery, orderExpr, strings.ToUpper(sortDir), limit, offset)
+	rows, err := m.ch.Query(ctx, dataQuery)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query volume_baseline data: %w", err)
+	}
+	return rows, total, nil
+}
+
 // GetStats returns aggregate statistics for a model's data table.
 func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) (map[string]interface{}, error) {
 	tableName := m.readTableName(model)
@@ -455,6 +573,8 @@ func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) 
 		return m.getRarityStats(ctx, qt, fid)
 	case ModelTypeFirstSeen:
 		return m.getFirstSeenStats(ctx, qt, fid)
+	case ModelTypeVolumeBaseline:
+		return m.getVolumeBaselineStats(ctx, tableName, model.Definition, fid)
 	default:
 		return nil, fmt.Errorf("unknown model type: %s", model.ModelType)
 	}
@@ -500,6 +620,29 @@ FROM (
 		result["oldest_seen"] = rows[0]["oldest_seen"]
 		result["newest_seen"] = rows[0]["newest_seen"]
 		result["new_today"] = rows[0]["new_today"]
+	}
+	return result, nil
+}
+
+func (m *Manager) getVolumeBaselineStats(ctx context.Context, tableName string, def ModelDefinition, fid string) (map[string]interface{}, error) {
+	threshold := 3.5
+	if def.Alert != nil && def.Alert.ZThreshold > 0 {
+		threshold = def.Alert.ZThreshold
+	}
+	scoring := buildVolumeBaselineScoringSQL("`"+tableName+"`", fid, volumeMinBuckets(def), def.TimeBucket)
+	q := fmt.Sprintf(`SELECT count() AS total_entities,
+       countIf(abs(z_score) > %g) AS anomalous,
+       round(max(abs(z_score)), 4) AS max_z
+FROM (%s)`, threshold, scoring)
+	rows, err := m.ch.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("volume_baseline stats: %w", err)
+	}
+	result := map[string]interface{}{}
+	if len(rows) > 0 {
+		result["total_entities"] = rows[0]["total_entities"]
+		result["anomalous"] = rows[0]["anomalous"]
+		result["max_z"] = rows[0]["max_z"]
 	}
 	return result, nil
 }
@@ -557,7 +700,9 @@ type modelScannable interface {
 	Scan(dest ...interface{}) error
 }
 
-func scanModel(rows interface{ Scan(dest ...interface{}) error }) (*Model, error) {
+func scanModel(rows interface {
+	Scan(dest ...interface{}) error
+}) (*Model, error) {
 	return scanModelRow(rows)
 }
 
@@ -570,6 +715,8 @@ func scanModelRow(row modelScannable) (*Model, error) {
 		&defRaw, &mo.CHTableName, &mo.CHMVName,
 		&mo.Status, &mo.AlertMode, &mo.LinkedAlertID, &mo.ErrorMessage,
 		&mo.CreatedBy, &mo.CreatedAt, &mo.UpdatedAt,
+		&mo.BackfillStatus, &mo.BackfillWindow, &mo.BackfillTotal, &mo.BackfillDone,
+		&mo.BackfillStartedAt, &mo.BackfillError,
 	)
 	if err != nil {
 		return nil, err
@@ -586,7 +733,7 @@ func validateCreateRequest(req CreateRequest) error {
 	if strings.TrimSpace(req.Name) == "" {
 		return fmt.Errorf("name is required")
 	}
-	if req.ModelType != ModelTypeRarity && req.ModelType != ModelTypeFirstSeen {
+	if req.ModelType != ModelTypeRarity && req.ModelType != ModelTypeFirstSeen && req.ModelType != ModelTypeVolumeBaseline {
 		return fmt.Errorf("invalid model type: %s", req.ModelType)
 	}
 	switch req.ModelType {
@@ -600,6 +747,13 @@ func validateCreateRequest(req CreateRequest) error {
 	case ModelTypeFirstSeen:
 		if len(req.Definition.KeyFields) == 0 {
 			return fmt.Errorf("key_fields is required for first_seen models")
+		}
+	case ModelTypeVolumeBaseline:
+		if len(req.Definition.KeyFields) == 0 {
+			return fmt.Errorf("key_fields is required for volume_baseline models")
+		}
+		if req.Definition.TimeBucket != "" && req.Definition.TimeBucket != "day" && req.Definition.TimeBucket != "hour" {
+			return fmt.Errorf("invalid time_bucket for volume_baseline: %s (use day or hour)", req.Definition.TimeBucket)
 		}
 	}
 	alertMode := req.AlertMode

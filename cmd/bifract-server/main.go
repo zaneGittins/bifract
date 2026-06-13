@@ -374,6 +374,11 @@ func main() {
 		log.Printf("Warning: could not resolve system fractal for ingest monitoring: %v", err)
 	}
 
+	// Model backfills yield to the same CPU/disk backpressure that gates ingestion,
+	// then resume any backfill interrupted by a prior crash.
+	modelManager.SetBackfillHealth(ingestQueue)
+	modelManager.RecoverBackfills(context.Background())
+
 	ingestHandler := ingest.NewIngestHandler(ingestQueue, config.MaxBodySize, tokenCache, ingestTokenStorage)
 	ingestHandler.SetQuotaManager(quotaManager)
 	elasticHandler := ingest.NewElasticBulkHandler(ingestHandler)
@@ -895,6 +900,8 @@ func main() {
 			r.Get("/models/{id}/export", modelHandler.HandleExport)
 			r.Post("/models/{id}/enable-alert", modelHandler.HandleEnableAlert)
 			r.Post("/models/{id}/disable-alert", modelHandler.HandleDisableAlert)
+			r.Post("/models/{id}/backfill", modelHandler.HandleStartBackfill)
+			r.Post("/models/{id}/backfill/cancel", modelHandler.HandleCancelBackfill)
 
 			// Dictionary actions (for alerts)
 			r.Get("/dictionary-actions", dictionaryHandler.HandleListDictionaryActions)
