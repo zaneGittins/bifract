@@ -75,13 +75,13 @@ ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port 
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port       TYPE set(4096)          GRANULARITY 1;
 
 -- Retire the deprecated field_tokens column and its text index. Equality now resolves against
--- the JSON sub-column directly (see pkg/parser); field_tokens is no longer written or queried.
+-- the JSON sub-column directly (see pkg/parser), so field_tokens is no longer written or queried.
 -- These DROPs live here, not only in a numbered migration, because the server applies this file
--- on every boot but does NOT run the bifract-setup migrations -- so this is the only path that
+-- on every boot but does NOT run the bifract-setup migrations, so this is the only path that
 -- reaches server/k8s installs. IF EXISTS makes them idempotent no-ops on fresh installs and on
--- every later boot. On a cluster Initialize propagates each ALTER to every shard (ON CLUSTER or
--- per-shard), so all shards converge; inserts stay safe meanwhile because the column had a
--- DEFAULT and is no longer written. DROP INDEX must precede DROP COLUMN; DROP COLUMN schedules a
+-- every later boot. On a cluster, Initialize propagates each ALTER to every shard (ON CLUSTER or
+-- per-shard) so all shards converge. Inserts stay safe meanwhile because the column had a
+-- DEFAULT and is no longer written. DROP INDEX must precede DROP COLUMN. DROP COLUMN schedules a
 -- background mutation to reclaim disk.
 ALTER TABLE logs DROP INDEX IF EXISTS field_tokens_text;
 ALTER TABLE logs DROP COLUMN IF EXISTS field_tokens;
