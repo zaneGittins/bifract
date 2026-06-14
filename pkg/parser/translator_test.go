@@ -4003,29 +4003,27 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:  "equality on non-type-hinted field gets hasAllTokens compound pre-filter with raw_log OR fallback",
+			name:  "equality on non-type-hinted field gets raw_log token pre-filter (field_tokens deprecated)",
 			query: `process_name=curl.exe`,
 			wantContain: []string{
-				"hasAllTokens(field_tokens, ['process_name:curl.exe'])",
 				"hasToken(raw_log, 'curl')",
 				"hasToken(raw_log, 'exe')",
 				"fields.`process_name`::String = 'curl.exe'",
 			},
 			wantNotContain: []string{
-				"hasToken(field_tokens",
+				"field_tokens",
 			},
 		},
 		{
-			name:  "equality on type-hinted field also gets hasAllTokens compound pre-filter",
+			name:  "equality on type-hinted field gets raw_log token pre-filter (field_tokens deprecated)",
 			query: `original_file_name=curl.exe`,
 			wantContain: []string{
-				"hasAllTokens(field_tokens, ['original_file_name:curl.exe'])",
 				"hasToken(raw_log, 'curl')",
 				"hasToken(raw_log, 'exe')",
 				"fields.`original_file_name` = 'curl.exe'",
 			},
 			wantNotContain: []string{
-				"hasToken(field_tokens",
+				"field_tokens",
 			},
 		},
 		{

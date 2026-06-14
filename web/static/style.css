@@ -3337,6 +3337,23 @@ body.search-active {
     font-style: italic;
 }
 
+/* BQL highlighting inside the query palette previews. */
+.palette-query .hl-default   { color: var(--text-primary); }
+.palette-query .hl-function  { color: var(--syntax-function); font-weight: 500; }
+.palette-query .hl-operator  { color: var(--syntax-operator); }
+.palette-query .hl-keyword   { color: var(--syntax-keyword); font-weight: 500; }
+.palette-query .hl-string    { color: var(--syntax-string); }
+.palette-query .hl-pipe      { color: var(--syntax-operator); font-weight: 600; }
+.palette-query .hl-field     { color: var(--info); }
+.palette-query .hl-value     { color: var(--syntax-string); }
+.palette-query .hl-regex     { color: #c084fc; font-weight: 500; }
+.palette-query .hl-assignment{ color: var(--syntax-operator); font-weight: 600; }
+.palette-query .hl-number    { color: var(--syntax-number); }
+.palette-query .hl-bracket   { color: var(--text-secondary); font-weight: 500; }
+.palette-query .hl-boolean   { color: var(--syntax-keyword); font-weight: 500; }
+.palette-query .hl-wildcard  { color: var(--warning); font-weight: 600; }
+.palette-query .hl-comment   { color: var(--syntax-comment); font-style: italic; }
+
 /* Syntax highlighting for display mode (notebooks) */
 .query-display .hl-default {
     color: var(--text-primary);

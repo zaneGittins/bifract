@@ -13,7 +13,9 @@ const Performance = {
     subTab: 'overview',
     ingestFractal: '',
     ingestDays: 30,
+    fractalNames: {},
     _ingestData: [],
+    _ingestSeries: null,
     _lastProcesses: [],
     _lastRecentQueries: [],
     _shownProcesses: [],
@@ -182,9 +184,11 @@ const Performance = {
             const data = await res.json();
             const fractals = (data.data && data.data.fractals) || data.fractals || [];
             const current = sel.value;
+            this.fractalNames = {};
             let html = '<option value="">All fractals</option>';
             fractals.forEach(f => {
                 if (!f.id) return; // empty id = default fractal, covered by "All"
+                this.fractalNames[f.id] = f.name || f.id;
                 html += `<option value="${this.escapeHtml(f.id)}">${this.escapeHtml(f.name || f.id)}</option>`;
             });
             sel.innerHTML = html;
@@ -201,19 +205,27 @@ const Performance = {
             const data = await res.json();
             if (data.success) {
                 this._ingestData = data.days || [];
-                this.renderIngestChart(this._ingestData);
+                this._ingestSeries = (data.series && data.series.length) ? data.series : null;
+                this.renderIngestChart();
             }
         } catch (err) {
             console.error('[Performance] ingest load error:', err);
         }
     },
 
-    renderIngestChart(days) {
+    fractalLabel(id) {
+        if (id === '__other__') return 'Other';
+        if (!id) return 'Default';
+        return this.fractalNames[id] || id;
+    },
+
+    renderIngestChart() {
         const canvas = document.getElementById('perfIngestChart');
         if (!canvas) return;
         const placeholder = document.getElementById('perfIngestPlaceholder');
+        const days = this._ingestData || [];
 
-        if (!days || days.length === 0) {
+        if (days.length === 0) {
             if (this.ingestChart) { this.ingestChart.destroy(); this.ingestChart = null; }
             if (placeholder) { placeholder.style.display = ''; placeholder.textContent = 'No ingest data'; }
             return;
@@ -227,44 +239,87 @@ const Performance = {
         const chartBorder = cv('--chart-border') || '#24243e';
         const accent = cv('--accent-primary') || '#9c6ade';
 
+        const self = this;
         const labels = days.map(d => this.formatDay(d.day));
-        const data = days.map(d => d.raw_bytes);
+        const stacked = Array.isArray(this._ingestSeries) && this._ingestSeries.length > 0;
+
+        let datasets;
+        if (stacked) {
+            datasets = this._ingestSeries.map((s, i) => {
+                const color = s.fractal_id === '__other__'
+                    ? '#6b7280'
+                    : this.nodeColors[i % this.nodeColors.length];
+                return {
+                    label: this.fractalLabel(s.fractal_id),
+                    data: s.raw_bytes || [],
+                    backgroundColor: color + 'cc',
+                    hoverBackgroundColor: color,
+                    borderRadius: 2,
+                    maxBarThickness: 40,
+                    _disk: s.disk_bytes || [],
+                    _rows: s.rows || []
+                };
+            });
+        } else {
+            datasets = [{
+                label: 'Uncompressed',
+                data: days.map(d => d.raw_bytes),
+                backgroundColor: accent + 'cc',
+                hoverBackgroundColor: accent,
+                borderRadius: 3,
+                maxBarThickness: 40
+            }];
+        }
+
+        // Toggling between stacked and single changes the dataset shape and axis
+        // config; rebuild the chart in that case rather than patching it.
+        if (this.ingestChart && this.ingestChart._stacked !== stacked) {
+            this.ingestChart.destroy();
+            this.ingestChart = null;
+        }
 
         if (this.ingestChart) {
             this.ingestChart.data.labels = labels;
-            this.ingestChart.data.datasets[0].data = data;
+            this.ingestChart.data.datasets = datasets;
             this.ingestChart.update('none');
             return;
         }
 
-        const self = this;
         const ctx = canvas.getContext('2d');
         this.ingestChart = new Chart(ctx, {
             type: 'bar',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'Uncompressed',
-                    data: data,
-                    backgroundColor: accent + 'cc',
-                    hoverBackgroundColor: accent,
-                    borderRadius: 3,
-                    maxBarThickness: 40
-                }]
-            },
+            data: { labels: labels, datasets: datasets },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
+                interaction: { mode: 'index', intersect: false },
                 plugins: {
-                    legend: { display: false },
+                    legend: {
+                        display: stacked,
+                        position: 'top',
+                        labels: {
+                            color: chartText,
+                            font: { family: 'Inter', size: 11 },
+                            boxWidth: 12,
+                            padding: 8
+                        }
+                    },
                     tooltip: {
                         backgroundColor: chartBg,
                         titleColor: chartText,
                         bodyColor: chartText,
                         borderColor: chartBorder,
                         borderWidth: 1,
-                        callbacks: {
+                        filter: (item) => !stacked || item.parsed.y > 0,
+                        callbacks: stacked ? {
+                            title: (items) => items.length ? (self._ingestData[items[0].dataIndex] || {}).day || '' : '',
+                            label: (ctx) => ctx.dataset.label + ': ' + self.formatBytes(ctx.parsed.y || 0),
+                            footer: (items) => {
+                                const total = items.reduce((sum, it) => sum + (it.parsed.y || 0), 0);
+                                return 'Total: ' + self.formatBytes(total);
+                            }
+                        } : {
                             title: (items) => {
                                 const row = self._ingestData[items[0].dataIndex];
                                 return row ? row.day : '';
@@ -282,6 +337,7 @@ const Performance = {
                 },
                 scales: {
                     x: {
+                        stacked: stacked,
                         grid: { display: false, drawBorder: false },
                         ticks: {
                             color: chartText,
@@ -292,6 +348,7 @@ const Performance = {
                         }
                     },
                     y: {
+                        stacked: stacked,
                         beginAtZero: true,
                         grid: { color: chartGrid, drawBorder: false },
                         ticks: {
@@ -303,6 +360,7 @@ const Performance = {
                 }
             }
         });
+        this.ingestChart._stacked = stacked;
     },
 
     renderPressureBanner(data) {

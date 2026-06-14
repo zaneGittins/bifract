@@ -530,8 +530,8 @@ func translateConditionCtx(cond ConditionNode, inNegation bool, suppressTokens b
 		switch cond.Operator {
 		case "=":
 			sql = fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
-			// Prepend field_tokens + raw_log OR pre-filters for granule pruning.
-			// Type-hinted fields get this alongside their implicit bloom filter/set index.
+			// Prepend raw_log token pre-filters for granule pruning. Type-hinted fields
+			// get this alongside their implicit bloom filter/set index.
 			// Suppressed in negation contexts where pre-filters provide no benefit.
 			if isJSONField && !suppressTokens && !inNegation && !cond.Negate {
 				if pre := equalityPreFilters(cond.Field, cond.Value); pre != "" {
@@ -958,59 +958,35 @@ func extractValueTokens(value string) []string {
 	return result
 }
 
-// equalityPreFilters builds a migration-safe pre-filter for a field:value equality
-// condition, combining the field_tokens text index with a raw_log fallback:
+// equalityPreFilters builds a raw_log token pre-filter for a field:value equality
+// condition, pruning granules via the raw_log inverted (text) index:
 //
-//	(hasAllTokens(field_tokens, ['field:value']) OR hasToken(raw_log, 'tok1') AND hasToken(raw_log, 'tok2'))
+//	(hasToken(raw_log, 'tok1') AND hasToken(raw_log, 'tok2'))
 //
-// The compound field:value token is highly selective (far rarer than the bare value
-// token in raw_log). hasAllTokens is used with an ARRAY argument so the token is looked
-// up literally against the field_tokens dictionary with no re-tokenization: this is what
-// lets the ':' delimiter (and separators like '.' '/' in values) survive. hasToken cannot
-// be used here -- it rejects any needle containing separator characters with ClickHouse
-// error 36. The array element must byte-match a token produced by buildFieldTokens, so the
-// identical normalization (lowercase, whitespace/colon -> '_') is applied here.
+// Every alphanumeric token in the value must appear in the raw log line, so this is a
+// safe superset filter (never a false negative); the exact `field = value` comparison it
+// is ANDed with enforces correctness. Type-hinted fields additionally prune via their
+// dedicated bloom_filter/set skip index on the direct sub-column -- that index (not this
+// pre-filter) is what prunes separator-heavy values like IPs, whose numeric tokens are
+// dropped below and so contribute nothing here.
+// Returns "" when no alpha tokens can be extracted from value (numeric-only, short, etc).
 //
-// The OR fallback ensures granules predating field_tokens (where it is '') fall back to the
-// raw_log inverted index rather than being incorrectly pruned by the field_tokens check.
-// The ANDed exact `field = value` comparison enforces correctness regardless. Type-hinted
-// fields additionally prune via their dedicated bloom_filter/set skip index.
-// Returns "" when no alpha tokens can be extracted from value (numeric-only, short, etc):
-// without a safe raw_log fallback, a lone field_tokens check would mis-prune old granules.
+// NOTE: a compound field_tokens pre-filter was tried twice and abandoned. hasToken rejects
+// the ':' delimiter (ClickHouse error 36); hasAllTokens then silently matched nothing (the
+// colon-compound is not in the index's token set) while adding a wide-column read that made
+// queries slower than raw_log alone. field_tokens is retained in the schema but is no longer
+// queried -- see db/init-clickhouse.sql.
 func equalityPreFilters(field, value string) string {
 	tokens := extractValueTokens(value)
 	if len(tokens) == 0 {
 		return ""
 	}
 
-	ftKey := replaceQueryTokenSeparators(strings.ToLower(field))
-	ftVal := replaceQueryTokenSeparators(strings.ToLower(value))
-	compound := fmt.Sprintf("hasAllTokens(field_tokens, ['%s'])", escapeString(ftKey+":"+ftVal))
-
 	rawParts := make([]string, 0, len(tokens))
 	for _, tok := range tokens {
 		rawParts = append(rawParts, fmt.Sprintf("hasToken(raw_log, '%s')", tok))
 	}
-	rawFallback := strings.Join(rawParts, " AND ")
-
-	return "(" + compound + " OR " + rawFallback + ")"
-}
-
-// replaceQueryTokenSeparators normalizes a field name or value for use in a
-// field_tokens token. Mirrors replaceTokenSeparators in pkg/storage/clickhouse.go --
-// both must apply identical transformations or hasAllTokens lookups will miss stored tokens.
-func replaceQueryTokenSeparators(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch r {
-		case ':', ' ', '\t', '\n', '\r':
-			b.WriteByte('_')
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
+	return "(" + strings.Join(rawParts, " AND ") + ")"
 }
 
 // buildRegexMatchSQL returns a match() expression for use in WHERE clauses.

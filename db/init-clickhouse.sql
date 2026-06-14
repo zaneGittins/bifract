@@ -30,14 +30,14 @@ CREATE TABLE IF NOT EXISTS logs (
     ),
     fractal_id LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3),
-    -- Space-separated field:value tokens for all event fields, used by the
-    -- field_tokens_text skip index to prune granules for field equality conditions.
-    -- splitByString defaults to a single-whitespace separator, keeping each field:value
-    -- pair as one atomic token so hasAllTokens(field_tokens, ['process_name:curl.exe'])
-    -- is a precise compound lookup. The array form preserves the ':' delimiter, which
-    -- hasToken cannot (it rejects separator characters in the needle).
+    -- DEPRECATED, NOT USED IN QUERIES. Space-separated field:value tokens, intended for
+    -- compound field equality granule pruning. The approach was abandoned: hasToken rejects
+    -- the ':' delimiter (error 36) and hasAllTokens matched nothing against the colon-compound
+    -- token while making queries slower than the raw_log index alone. Queries now prune via the
+    -- per-field bloom_filter/set skip indexes (type-hinted fields) and the raw_log text index.
+    -- The column and index are retained for now to avoid a costly part-rewrite; remove when
+    -- convenient. The column is still populated on ingest so it stays consistent if revisited.
     field_tokens String DEFAULT '',
-    -- lower() preprocessor lowercases tokens at index time so case-insensitive lookups match.
     INDEX field_tokens_text field_tokens TYPE text(tokenizer = splitByString, preprocessor = lower(field_tokens)) GRANULARITY 1,
     INDEX raw_log_inverted raw_log TYPE text(tokenizer = splitByNonAlpha, preprocessor = lower(raw_log)),
     INDEX log_id_bloom log_id TYPE bloom_filter(0.001) GRANULARITY 1,

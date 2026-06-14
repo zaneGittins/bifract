@@ -555,7 +555,11 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 		disk float64
 		rows float64
 	}
-	byDay := map[string]*dayAgg{}
+	// Keep the fractal dimension so the "All fractals" view can be broken down
+	// (stacked) per fractal.
+	byFractalDay := map[string]map[string]*dayAgg{} // fractalID -> day -> agg
+	totalByFractal := map[string]float64{}          // ranking by uncompressed bytes
+	maxDataDay := ""
 	for _, row := range rows {
 		part, _ := row["partition"].(string)
 		m := partitionRe.FindStringSubmatch(part)
@@ -566,39 +570,129 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 		if fractalFilter != "" && fractalID != fractalFilter {
 			continue
 		}
-		agg := byDay[day]
+		raw := toFloat64(row["raw_bytes"])
+		fd := byFractalDay[fractalID]
+		if fd == nil {
+			fd = map[string]*dayAgg{}
+			byFractalDay[fractalID] = fd
+		}
+		agg := fd[day]
 		if agg == nil {
 			agg = &dayAgg{}
-			byDay[day] = agg
+			fd[day] = agg
 		}
-		agg.raw += toFloat64(row["raw_bytes"])
+		agg.raw += raw
 		agg.disk += toFloat64(row["disk_bytes"])
 		agg.rows += toFloat64(row["rows"])
+		totalByFractal[fractalID] += raw
+		if day > maxDataDay {
+			maxDataDay = day
+		}
 	}
 
-	// Keep the most recent N days; ISO dates sort lexicographically.
-	cutoff := time.Now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
-	result := make([]map[string]interface{}, 0, len(byDay))
-	for day, agg := range byDay {
-		if day < cutoff {
-			continue
+	// Contiguous day window, zero-filled so bars stay evenly spaced and aligned.
+	// The window ends today, or later if data carries event timestamps into the
+	// future.
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	start := today.AddDate(0, 0, -days+1)
+	end := today
+	if t, err := time.Parse("2006-01-02", maxDataDay); err == nil && t.After(end) {
+		end = t
+	}
+
+	dayKeys := make([]string, 0, days)
+	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
+		dayKeys = append(dayKeys, d.Format("2006-01-02"))
+	}
+
+	// Per-day totals across all (selected) fractals: drives single-series
+	// rendering and per-day tooltip totals.
+	result := make([]map[string]interface{}, 0, len(dayKeys))
+	for _, key := range dayKeys {
+		var raw, disk, rowCount float64
+		for _, fd := range byFractalDay {
+			if agg := fd[key]; agg != nil {
+				raw += agg.raw
+				disk += agg.disk
+				rowCount += agg.rows
+			}
 		}
 		result = append(result, map[string]interface{}{
-			"day":        day,
-			"raw_bytes":  agg.raw,
-			"disk_bytes": agg.disk,
-			"rows":       agg.rows,
+			"day":        key,
+			"raw_bytes":  raw,
+			"disk_bytes": disk,
+			"rows":       rowCount,
 		})
 	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i]["day"].(string) < result[j]["day"].(string)
-	})
 
-	respondJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"success": true,
 		"days":    result,
 		"fractal": fractalFilter,
-	})
+	}
+
+	// Per-fractal breakdown (stacked) for the "All fractals" view. Cap to the
+	// top contributors and roll the remainder into an "Other" bucket so the
+	// legend and colour palette stay manageable.
+	if fractalFilter == "" && len(byFractalDay) > 0 {
+		const topN = 8
+		const otherKey = "__other__"
+
+		ranked := make([]string, 0, len(byFractalDay))
+		for id := range byFractalDay {
+			ranked = append(ranked, id)
+		}
+		sort.Slice(ranked, func(i, j int) bool {
+			return totalByFractal[ranked[i]] > totalByFractal[ranked[j]]
+		})
+
+		other := []string{}
+		if len(ranked) > topN {
+			other = ranked[topN:]
+			ranked = ranked[:topN]
+		}
+
+		seriesFor := func(ids []string) (raw, disk, rc []float64) {
+			raw = make([]float64, len(dayKeys))
+			disk = make([]float64, len(dayKeys))
+			rc = make([]float64, len(dayKeys))
+			for _, id := range ids {
+				fd := byFractalDay[id]
+				for i, key := range dayKeys {
+					if agg := fd[key]; agg != nil {
+						raw[i] += agg.raw
+						disk[i] += agg.disk
+						rc[i] += agg.rows
+					}
+				}
+			}
+			return
+		}
+
+		series := make([]map[string]interface{}, 0, len(ranked)+1)
+		for _, id := range ranked {
+			raw, disk, rc := seriesFor([]string{id})
+			series = append(series, map[string]interface{}{
+				"fractal_id": id,
+				"raw_bytes":  raw,
+				"disk_bytes": disk,
+				"rows":       rc,
+			})
+		}
+		if len(other) > 0 {
+			raw, disk, rc := seriesFor(other)
+			series = append(series, map[string]interface{}{
+				"fractal_id": otherKey,
+				"raw_bytes":  raw,
+				"disk_bytes": disk,
+				"rows":       rc,
+			})
+		}
+		resp["series"] = series
+	}
+
+	respondJSON(w, http.StatusOK, resp)
 }
 
 func toFloat64(v interface{}) float64 {
