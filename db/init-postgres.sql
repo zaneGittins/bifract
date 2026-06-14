@@ -1123,6 +1123,56 @@ DROP TRIGGER IF EXISTS update_saved_queries_updated_at ON saved_queries;
 CREATE TRIGGER update_saved_queries_updated_at BEFORE UPDATE ON saved_queries
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Collaboration columns (defensive; older installs created the table above without these).
+ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS description  TEXT;
+ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS visibility   VARCHAR(16) NOT NULL DEFAULT 'shared';
+ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP;
+ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS use_count    INTEGER NOT NULL DEFAULT 0;
+
+-- Per-user favorites. A shared saved query cannot store one user's pin on the
+-- row itself, so favorites live in their own join table.
+CREATE TABLE IF NOT EXISTS saved_query_favorites (
+    username       VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    saved_query_id UUID NOT NULL REFERENCES saved_queries(id) ON DELETE CASCADE,
+    created_at     TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (username, saved_query_id)
+);
+CREATE INDEX IF NOT EXISTS idx_saved_query_favorites_user ON saved_query_favorites(username);
+
+-- ============================
+-- Query History (per-user recent queries, synced server-side so history
+-- follows the user across browsers/devices, scoped per fractal or prism).
+-- ============================
+CREATE TABLE IF NOT EXISTS query_history (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username     VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    query_text   TEXT NOT NULL,
+    time_range   VARCHAR(32),
+    custom_start TIMESTAMP,
+    custom_end   TIMESTAMP,
+    result_count BIGINT,
+    duration_ms  INTEGER,
+    status       VARCHAR(16),
+    run_count    INTEGER NOT NULL DEFAULT 1,
+    first_run_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    last_run_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+    fractal_id   UUID REFERENCES fractals(id) ON DELETE CASCADE,
+    prism_id     UUID REFERENCES prisms(id) ON DELETE CASCADE,
+    CONSTRAINT query_history_scope_check CHECK (
+        (fractal_id IS NOT NULL AND prism_id IS NULL) OR
+        (fractal_id IS NULL AND prism_id IS NOT NULL)
+    )
+);
+
+-- Dedup key: one row per (user, scope, query). md5(query_text) keeps the index
+-- within btree size limits for arbitrarily long queries. COALESCE collapses the
+-- nullable scope columns so NULLs do not defeat the unique constraint. The same
+-- expression is used as the ON CONFLICT target in the record-run upsert.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_query_history_dedup
+    ON query_history (username, md5(query_text), COALESCE(fractal_id, prism_id));
+CREATE INDEX IF NOT EXISTS idx_query_history_list
+    ON query_history (username, COALESCE(fractal_id, prism_id), last_run_at DESC);
+
 -- ============================
 -- Context Links System Tables
 -- ============================
@@ -1654,8 +1704,14 @@ CREATE TABLE IF NOT EXISTS clickhouse_schema_fields (
     field_name  VARCHAR(255) NOT NULL UNIQUE,
     index_type  VARCHAR(32)  NOT NULL DEFAULT 'bloom_filter',
     created_by  VARCHAR(255) NOT NULL DEFAULT '',
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    -- Tracks the background ClickHouse reconcile (type hint + skip index):
+    -- pending while the ALTER runs, active on success, error on failure.
+    sync_status VARCHAR(16)  NOT NULL DEFAULT 'active',
+    sync_error  TEXT         NOT NULL DEFAULT ''
 );
+ALTER TABLE clickhouse_schema_fields ADD COLUMN IF NOT EXISTS sync_status VARCHAR(16) NOT NULL DEFAULT 'active';
+ALTER TABLE clickhouse_schema_fields ADD COLUMN IF NOT EXISTS sync_error  TEXT         NOT NULL DEFAULT '';
 
 -- ============================
 -- Analytics models

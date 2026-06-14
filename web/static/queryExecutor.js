@@ -209,13 +209,18 @@ const QueryExecutor = {
         // Store current fractal ID to validate response
         this.currentFractalId = window.FractalContext?.currentFractal?.id || null;
 
-        // Add to recent queries
-        if (window.RecentQueries) {
-            RecentQueries.add(query);
-        }
-
         // Get time range
         this.currentTimeRange = this.getTimeRange();
+
+        // Capture run metadata; the history entry is recorded on finalize once
+        // result count and duration are known (see _finalizeQuery).
+        const trToken = document.getElementById('timeRange')?.value || '';
+        this._pendingHistory = {
+            query: query,
+            timeRange: trToken,
+            customStart: trToken === 'custom' ? (this.currentTimeRange?.start || '') : '',
+            customEnd: trToken === 'custom' ? (this.currentTimeRange?.end || '') : ''
+        };
 
         // Hide previous results and show loading
         if (elements.errorDiv) elements.errorDiv.style.display = 'none';
@@ -578,6 +583,17 @@ const QueryExecutor = {
     _finalizeQuery(data, elements) {
         this.limitHit = data.limit_hit || null;
         this.currentCursor = data.next_cursor || null;
+
+        // Record the run into query history now that we know counts + timing.
+        if (window.QueryPalette && this._pendingHistory) {
+            QueryPalette.recordRun({
+                ...this._pendingHistory,
+                resultCount: this.currentResults ? this.currentResults.length : null,
+                durationMs: data.execution_ms != null ? data.execution_ms : null,
+                status: data.limit_hit ? 'limit_hit' : 'ok'
+            });
+            this._pendingHistory = null;
+        }
 
         if (elements.resultsCount) {
             const resultsLength = this.currentResults.length;

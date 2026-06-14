@@ -51,8 +51,13 @@ const AnalyticsModels = {
     },
 
     show() {
+        // Re-entering the Models tab always returns to the listing. currentView and
+        // the data-viewer/editor state are module-level, so without this reset a tab
+        // switch would re-render the previously opened model with stale (empty) data.
+        this.currentView = 'list';
+        this.selectedModel = null;
+        this.viewer.model = null;
         this._render();
-        if (this.currentView === 'list') this._loadModels();
     },
 
     // Stop all polling when the models tab is hidden (called from app.js).

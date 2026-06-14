@@ -1,12 +1,18 @@
 const SchemaFields = {
     defaults: [],
     custom: [],
+    _pollTimer: null,
 
     init() {
         document.getElementById('schemaFieldAddBtn')?.addEventListener('click', () => this.showAddForm());
         document.getElementById('schemaFieldCancelBtn')?.addEventListener('click', () => this.hideAddForm());
         document.getElementById('schemaFieldSaveBtn')?.addEventListener('click', () => this.saveField());
         document.getElementById('schemaFieldResetBtn')?.addEventListener('click', () => this.openResetModal());
+
+        // Import / export
+        document.getElementById('schemaExportBtn')?.addEventListener('click', () => this.exportYaml());
+        document.getElementById('schemaImportBtn')?.addEventListener('click', () => document.getElementById('schemaImportInput')?.click());
+        document.getElementById('schemaImportInput')?.addEventListener('change', e => this.importYaml(e));
 
         // Submit on Enter in the field name input
         document.getElementById('schemaFieldName')?.addEventListener('keydown', e => {
@@ -28,14 +34,32 @@ const SchemaFields = {
 
     async load() {
         const container = document.getElementById('schemaFieldsListContainer');
-        if (container) container.innerHTML = '<div class="loading">Loading schema fields...</div>';
+        // Only show the full-container spinner on the first paint; background
+        // refreshes (status polling) should not flash the list.
+        if (container && !this.custom.length && !this.defaults.length) {
+            container.innerHTML = '<div class="loading">Loading schema fields...</div>';
+        }
         try {
             const data = await HttpUtils.safeFetch('/api/v1/admin/schema-fields');
             this.defaults = data.data.defaults || [];
             this.custom = data.data.custom || [];
             this.render();
+            this._scheduleStatusPoll();
         } catch (err) {
             if (window.Toast) Toast.error('Failed to load schema fields', err.message);
+        }
+    },
+
+    // Re-fetch while any custom field is still applying its ClickHouse schema so
+    // the "Indexing" badge flips to "Active" without a manual refresh.
+    _scheduleStatusPoll() {
+        if (this._pollTimer) { clearTimeout(this._pollTimer); this._pollTimer = null; }
+        const pending = this.custom.some(f => f.sync_status === 'pending');
+        // offsetParent is null when the schema tab is hidden; stop polling then
+        // so we don't hit the API forever in the background. show() resumes it.
+        const visible = document.getElementById('mainSchemaTabContent')?.offsetParent !== null;
+        if (pending && visible) {
+            this._pollTimer = setTimeout(() => this.load(), 2500);
         }
     },
 
@@ -69,11 +93,12 @@ const SchemaFields = {
                 Add a field to enable index acceleration for log attributes specific to your environment.
             </div>`;
         } else {
-            html += '<table class="schema-fields-table"><thead><tr><th>Field Name</th><th>Index Type</th><th>Added By</th><th></th></tr></thead><tbody>';
+            html += '<table class="schema-fields-table"><thead><tr><th>Field Name</th><th>Index Type</th><th>Status</th><th>Added By</th><th></th></tr></thead><tbody>';
             for (const f of this.custom) {
                 html += `<tr>
                     <td>${this.escHtml(f.field_name)}</td>
                     <td>${this._indexBadge(f.index_type)}</td>
+                    <td>${this._statusBadge(f)}</td>
                     <td style="color:var(--text-muted);font-size:0.8125rem">${this.escHtml(f.created_by || '')}</td>
                     <td style="text-align:right"><button class="btn-danger btn-sm" onclick="SchemaFields.deleteField('${this.escHtml(f.field_name)}')">Remove</button></td>
                 </tr>`;
@@ -89,6 +114,17 @@ const SchemaFields = {
             return '<span class="index-badge index-badge-set">Set</span>';
         }
         return '<span class="index-badge index-badge-bloom">Bloom Filter</span>';
+    },
+
+    _statusBadge(f) {
+        switch (f.sync_status) {
+            case 'pending':
+                return '<span class="schema-status schema-status-pending"><span class="schema-status-dot"></span>Indexing</span>';
+            case 'error':
+                return `<span class="schema-status schema-status-error" title="${this.escHtml(f.sync_error || 'Schema update failed')}">Error</span>`;
+            default:
+                return '<span class="schema-status schema-status-active">Active</span>';
+        }
     },
 
     showAddForm() {
@@ -120,7 +156,7 @@ const SchemaFields = {
                 body: JSON.stringify({ field_name: name, index_type: indexType }),
             });
             this.hideAddForm();
-            if (window.Toast) Toast.success('Field added', `"${name}" added and schema updated`);
+            if (window.Toast) Toast.success('Field added', `"${name}" is indexing. Active for newly ingested logs; existing logs are not retroactively indexed.`);
             this.load();
         } catch (err) {
             if (window.Toast) Toast.error('Failed to add field', err.message);
@@ -180,6 +216,49 @@ const SchemaFields = {
         } finally {
             if (btn) { btn.disabled = false; btn.textContent = 'Reset and Delete All Logs'; }
             if (cancelBtn) cancelBtn.disabled = false;
+        }
+    },
+
+    async exportYaml() {
+        try {
+            const res = await fetch('/api/v1/admin/schema-fields/export', { credentials: 'include' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'schema-fields.yaml';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            if (window.Toast) Toast.error('Export failed', err.message);
+        }
+    },
+
+    async importYaml(e) {
+        const input = e.target;
+        const file = input.files && input.files[0];
+        if (!file) return;
+        const count = this.custom.length;
+        if (!confirm(`Import "${file.name}"?\n\nThis replaces all ${count} current custom field(s) with the file's contents. Fields not in the file are removed. Log data is not affected.`)) {
+            input.value = '';
+            return;
+        }
+        try {
+            const text = await file.text();
+            const data = await HttpUtils.safeFetch('/api/v1/admin/schema-fields/import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/yaml' },
+                body: text,
+            });
+            if (window.Toast) Toast.success('Schema imported', data.data?.message || 'Custom fields replaced.');
+            this.load();
+        } catch (err) {
+            if (window.Toast) Toast.error('Import failed', err.message);
+        } finally {
+            input.value = '';
         }
     },
 

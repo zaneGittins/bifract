@@ -32,12 +32,8 @@ const App = {
             FieldStats.init();
         }
 
-        if (window.RecentQueries) {
-            RecentQueries.init();
-        }
-
-        if (window.SavedQueries) {
-            SavedQueries.init();
+        if (window.QueryPalette) {
+            QueryPalette.init();
         }
 
         if (window.QueryTabs) {
@@ -1159,8 +1155,8 @@ const App = {
     },
 
     initToolbarMenus() {
+        // Queries is handled by QueryPalette (it owns its own button + popover).
         const defs = [
-            { btnId: 'queriesMenuBtn', menuId: 'queriesMenu', wrapId: 'queriesMenuWrap' },
             { btnId: 'shareMenuBtn',   menuId: 'shareMenu',   wrapId: 'shareMenuWrap'   },
         ];
 
@@ -1190,7 +1186,7 @@ const App = {
             });
 
             // Close after an item is chosen — capture phase so it fires before
-            // stopPropagation in child button handlers (e.g. recentQueriesBtn)
+            // stopPropagation in child button handlers.
             menu.addEventListener('click', () => {
                 menu.style.display = 'none';
                 btn.classList.remove('active');

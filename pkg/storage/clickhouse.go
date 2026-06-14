@@ -497,8 +497,9 @@ func (c *ClickHouseClient) Conn() driver.Conn {
 
 // buildFieldTokens builds a space-separated string of lowercase field:value tokens
 // from a log entry's fields map. Each token encodes one field:value pair so that
-// hasToken(field_tokens, 'field:value') with the splitByWhitespace text index gives
-// precise compound-key granule pruning — far more selective than individual raw_log tokens.
+// hasAllTokens(field_tokens, ['field:value']) with the whitespace-splitting text index
+// gives precise compound-key granule pruning — far more selective than individual raw_log
+// tokens. The array form looks the token up literally, preserving the ':' delimiter.
 //
 // Normalization rules (must mirror replaceQueryTokenSeparators in pkg/parser/helpers.go):
 //   - keys and values are lowercased

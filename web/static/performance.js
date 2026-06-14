@@ -8,7 +8,12 @@ const Performance = {
     durationChart: null,
     memoryChart: null,
     cpuChart: null,
+    ingestChart: null,
     prevCpuTimes: null,
+    subTab: 'overview',
+    ingestFractal: '',
+    ingestDays: 30,
+    _ingestData: [],
     _lastProcesses: [],
     _lastRecentQueries: [],
     _shownProcesses: [],
@@ -45,14 +50,63 @@ const Performance = {
             recentSearch.addEventListener('input', () => this.filterRecentQueries());
         }
 
+        // Ingest-per-day filters (Storage & Ingest sub-tab)
+        const ingestFractalSel = document.getElementById('perfIngestFractal');
+        if (ingestFractalSel) {
+            ingestFractalSel.addEventListener('change', (e) => {
+                this.ingestFractal = e.target.value;
+                this.loadIngest();
+            });
+        }
+        const ingestDaysSel = document.getElementById('perfIngestDays');
+        if (ingestDaysSel) {
+            ingestDaysSel.addEventListener('change', (e) => {
+                this.ingestDays = parseInt(e.target.value, 10) || 30;
+                this.loadIngest();
+            });
+        }
+
+        // Restore last-used sub-tab.
+        const savedTab = sessionStorage.getItem('perfSubTab');
+        if (savedTab === 'overview' || savedTab === 'storage' || savedTab === 'activity') {
+            this.subTab = savedTab;
+        }
+
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') this.closeDrawer();
+        });
+    },
+
+    switchSubTab(name) {
+        this.subTab = name;
+        sessionStorage.setItem('perfSubTab', name);
+        this.applySubTab(name);
+        this.refresh();
+    },
+
+    // Toggles the active sub-tab button and shows the matching pane.
+    applySubTab(name) {
+        const bar = document.getElementById('perfSubTabs');
+        if (bar) {
+            bar.querySelectorAll('.alerts-sub-tab').forEach(b =>
+                b.classList.toggle('active', b.dataset.subtab === name));
+        }
+        const panes = {
+            overview: 'perfPaneOverview',
+            storage: 'perfPaneStorage',
+            activity: 'perfPaneActivity'
+        };
+        Object.entries(panes).forEach(([k, id]) => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = (k === name) ? '' : 'none';
         });
     },
 
     async show() {
         this.isActive = true;
         this.prevCpuTimes = null;
+        this.applySubTab(this.subTab);
+        this.loadFractalOptions();
         await this.refresh();
         this.startUpdates();
     },
@@ -78,33 +132,177 @@ const Performance = {
     },
 
     async refresh() {
+        const tab = this.subTab;
         try {
-            const [procRes, metRes, pressureRes] = await Promise.all([
-                fetch('/api/v1/admin/processes', { credentials: 'include' }),
-                fetch(`/api/v1/admin/metrics?range=${this.timeRange}`, { credentials: 'include' }),
-                fetch('/api/v1/system/pressure', { credentials: 'include' })
-            ]);
+            // Metrics (server + storage cards, CPU, recent queries) and pressure
+            // are always fetched; processes only for Activity; ingest only for
+            // Storage. This keeps each poll scoped to what the active tab shows.
+            const metPromise = fetch(`/api/v1/admin/metrics?range=${this.timeRange}`, { credentials: 'include' });
+            const pressurePromise = fetch('/api/v1/system/pressure', { credentials: 'include' });
+            const procPromise = tab === 'activity'
+                ? fetch('/api/v1/admin/processes', { credentials: 'include' })
+                : null;
 
-            const procData = await procRes.json();
-            const metData = await metRes.json();
-            const pressureData = await pressureRes.json();
-
-            if (procData.success) {
-                this.renderProcesses(procData.processes || []);
-            }
+            const metData = await (await metPromise).json();
+            const pressureData = await (await pressurePromise).json();
 
             if (metData.success) {
                 this.renderMetrics(metData.metrics || {}, metData.async_metrics || {}, metData.log_storage || {}, metData.disk || {});
-                this.renderRecentQueries(metData.recent_queries || []);
-                this.updateCharts(metData.recent_queries || []);
-                this.renderCpuChart(metData.cpu_history || [], metData.cpu_history_nodes || null);
+                if (tab === 'overview') {
+                    this.renderCpuChart(metData.cpu_history || [], metData.cpu_history_nodes || null);
+                }
+                if (tab === 'activity') {
+                    this.renderRecentQueries(metData.recent_queries || []);
+                    this.updateCharts(metData.recent_queries || []);
+                }
             }
 
             this.renderPressureBanner(pressureData);
             this.renderClusterHealth(pressureData.distribution_queue || null);
+
+            if (procPromise) {
+                const procData = await procPromise.json();
+                if (procData.success) this.renderProcesses(procData.processes || []);
+            }
+
+            if (tab === 'storage') {
+                this.loadIngest();
+            }
         } catch (err) {
             console.error('[Performance] refresh error:', err);
         }
+    },
+
+    // Populates the ingest fractal filter dropdown (preserves current selection).
+    async loadFractalOptions() {
+        const sel = document.getElementById('perfIngestFractal');
+        if (!sel) return;
+        try {
+            const res = await fetch('/api/v1/fractals', { credentials: 'include' });
+            const data = await res.json();
+            const fractals = (data.data && data.data.fractals) || data.fractals || [];
+            const current = sel.value;
+            let html = '<option value="">All fractals</option>';
+            fractals.forEach(f => {
+                if (!f.id) return; // empty id = default fractal, covered by "All"
+                html += `<option value="${this.escapeHtml(f.id)}">${this.escapeHtml(f.name || f.id)}</option>`;
+            });
+            sel.innerHTML = html;
+            sel.value = current;
+        } catch (err) {
+            console.error('[Performance] fractal options error:', err);
+        }
+    },
+
+    async loadIngest() {
+        try {
+            const url = `/api/v1/admin/ingest-daily?days=${this.ingestDays}&fractal=${encodeURIComponent(this.ingestFractal)}`;
+            const res = await fetch(url, { credentials: 'include' });
+            const data = await res.json();
+            if (data.success) {
+                this._ingestData = data.days || [];
+                this.renderIngestChart(this._ingestData);
+            }
+        } catch (err) {
+            console.error('[Performance] ingest load error:', err);
+        }
+    },
+
+    renderIngestChart(days) {
+        const canvas = document.getElementById('perfIngestChart');
+        if (!canvas) return;
+        const placeholder = document.getElementById('perfIngestPlaceholder');
+
+        if (!days || days.length === 0) {
+            if (this.ingestChart) { this.ingestChart.destroy(); this.ingestChart = null; }
+            if (placeholder) { placeholder.style.display = ''; placeholder.textContent = 'No ingest data'; }
+            return;
+        }
+        if (placeholder) placeholder.style.display = 'none';
+
+        const cv = window.ThemeManager ? ThemeManager.getCSSVar : (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+        const chartText = cv('--chart-text') || '#e8eaed';
+        const chartGrid = cv('--chart-grid') || '#24243e';
+        const chartBg = cv('--chart-bg') || '#1a1a2e';
+        const chartBorder = cv('--chart-border') || '#24243e';
+        const accent = cv('--accent-primary') || '#9c6ade';
+
+        const labels = days.map(d => this.formatDay(d.day));
+        const data = days.map(d => d.raw_bytes);
+
+        if (this.ingestChart) {
+            this.ingestChart.data.labels = labels;
+            this.ingestChart.data.datasets[0].data = data;
+            this.ingestChart.update('none');
+            return;
+        }
+
+        const self = this;
+        const ctx = canvas.getContext('2d');
+        this.ingestChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Uncompressed',
+                    data: data,
+                    backgroundColor: accent + 'cc',
+                    hoverBackgroundColor: accent,
+                    borderRadius: 3,
+                    maxBarThickness: 40
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: chartBg,
+                        titleColor: chartText,
+                        bodyColor: chartText,
+                        borderColor: chartBorder,
+                        borderWidth: 1,
+                        callbacks: {
+                            title: (items) => {
+                                const row = self._ingestData[items[0].dataIndex];
+                                return row ? row.day : '';
+                            },
+                            label: (ctx) => {
+                                const row = self._ingestData[ctx.dataIndex] || {};
+                                return [
+                                    'Uncompressed: ' + self.formatBytes(row.raw_bytes || 0),
+                                    'On disk: ' + self.formatBytes(row.disk_bytes || 0),
+                                    'Rows: ' + self.formatNumber(row.rows || 0)
+                                ];
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { display: false, drawBorder: false },
+                        ticks: {
+                            color: chartText,
+                            font: { family: 'Inter', size: 10 },
+                            maxRotation: 0,
+                            autoSkip: true,
+                            maxTicksLimit: 12
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: chartGrid, drawBorder: false },
+                        ticks: {
+                            color: chartText,
+                            font: { family: 'Inter', size: 10 },
+                            callback: (value) => self.formatBytes(value)
+                        }
+                    }
+                }
+            }
+        });
     },
 
     renderPressureBanner(data) {
@@ -666,6 +864,10 @@ const Performance = {
             this.memoryChart.destroy();
             this.memoryChart = null;
         }
+        if (this.ingestChart) {
+            this.ingestChart.destroy();
+            this.ingestChart = null;
+        }
     },
 
     async killQuery(queryId) {
@@ -728,6 +930,14 @@ const Performance = {
         if (ms < 1) return '<1ms';
         if (ms < 1000) return ms + 'ms';
         return (ms / 1000).toFixed(1) + 's';
+    },
+
+    formatDay(d) {
+        const parts = String(d).split('-');
+        if (parts.length !== 3) return d;
+        const date = new Date(Date.UTC(+parts[0], +parts[1] - 1, +parts[2]));
+        if (isNaN(date.getTime())) return d;
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
     },
 
     formatEventTime(t) {

@@ -1,8 +1,6 @@
 // Settings View module
 
 const SettingsView = {
-    statusUpdateInterval: null,
-    lastLogCount: 0,
     isActive: false,
     mtlsEnabled: false,
 
@@ -102,7 +100,6 @@ const SettingsView = {
 
         // Load data
         await this.loadSettings();
-        await this.loadStatus();
         await this.loadMTLSStatus();
         await this.loadUsers();
 
@@ -110,9 +107,6 @@ const SettingsView = {
         if (window.GroupsView) {
             GroupsView.loadGroups();
         }
-
-        // Start real-time updates
-        this.startRealTimeUpdates();
     },
 
     hide() {
@@ -122,7 +116,6 @@ const SettingsView = {
         }
 
         this.isActive = false;
-        this.stopRealTimeUpdates();
     },
 
     async loadSettings() {
@@ -165,101 +158,6 @@ const SettingsView = {
         } catch (error) {
             console.error('Failed to save settings:', error);
             alert('Failed to save settings');
-        }
-    },
-
-    async loadStatus(showUpdateIndicator = false) {
-        const container = document.getElementById('settingsStatus');
-        if (!container) return;
-
-        try {
-            const response = await fetch('/api/v1/status', { credentials: 'include' });
-            const data = await response.json();
-
-            if (data.success) {
-                const ch = data.clickhouse || {};
-                const sys = data.system || {};
-                const currentLogCount = ch.total_logs || 0;
-
-                // Check if log count changed (only after initial load)
-                const isInitialLoad = this.lastLogCount === 0;
-                const logCountChanged = !isInitialLoad && this.lastLogCount !== currentLogCount;
-                const countIncrease = logCountChanged && currentLogCount > this.lastLogCount;
-
-                // Update internal counter
-                this.lastLogCount = currentLogCount;
-
-                // Disk pressure indicator
-                const diskPct = ch.disk_used_pct || 0;
-                let diskClass = 'status-ok';
-                if (diskPct >= 90) diskClass = 'status-error';
-                else if (diskPct >= 80) diskClass = 'status-warn';
-
-                const timeRange = ch.oldest_log && ch.newest_log
-                    ? this.formatTimestamp(ch.oldest_log) + ' to ' + this.formatTimestamp(ch.newest_log)
-                    : 'No logs';
-
-                container.innerHTML = `
-                    <div class="status-rows">
-                        <div class="detail-row">
-                            <span class="detail-label">ClickHouse:</span>
-                            <span class="detail-value ${ch.connected ? 'status-ok' : 'status-error'}">${ch.connected ? 'Connected' : 'Disconnected'}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Uptime:</span>
-                            <span class="detail-value">${ch.uptime || '-'}</span>
-                        </div>
-                        <div class="detail-row ${logCountChanged ? 'status-updated' : ''}">
-                            <span class="detail-label">Total Logs:</span>
-                            <span class="detail-value log-count-value">${currentLogCount.toLocaleString()}${countIncrease ? ' <span class="count-increase">↑</span>' : ''}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Log Storage:</span>
-                            <span class="detail-value">${ch.table_size || '0 B'}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Disk Usage:</span>
-                            <span class="detail-value ${diskClass}">${diskPct}%${ch.disk_free ? ' (' + ch.disk_free + ' free)' : ''}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Log Time Range:</span>
-                            <span class="detail-value">${timeRange}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Fractals:</span>
-                            <span class="detail-value">${sys.fractal_count || 0}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Users:</span>
-                            <span class="detail-value">${sys.user_count || 0}</span>
-                        </div>
-                    </div>
-                `;
-
-                // Add visual feedback for log count changes
-                if (logCountChanged) {
-                    const logCountElement = container.querySelector('.status-item.status-updated');
-                    if (logCountElement) {
-                        logCountElement.classList.add('highlight-update');
-                        setTimeout(() => {
-                            logCountElement.classList.remove('highlight-update', 'status-updated');
-                        }, 2000);
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('Failed to load status:', error);
-        }
-    },
-
-    formatTimestamp(ts) {
-        if (!ts) return '-';
-        try {
-            const d = new Date(ts);
-            if (isNaN(d.getTime())) return ts;
-            return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-        } catch {
-            return ts;
         }
     },
 
@@ -644,7 +542,7 @@ const SettingsView = {
             const data = await response.json();
 
             if (data.success) {
-                await this.loadStatus();
+                // logs cleared; nothing further to refresh here
             } else {
                 const errorMsg = data.error || 'Unknown error';
                 if (window.Toast) {
@@ -663,25 +561,6 @@ const SettingsView = {
         }
     },
 
-    startRealTimeUpdates() {
-        // Clear any existing interval
-        this.stopRealTimeUpdates();
-
-        // Update every 3 seconds
-        this.statusUpdateInterval = setInterval(async () => {
-            if (this.isActive) {
-                await this.loadStatus(true); // Show update indicator
-            }
-        }, 3000);
-    },
-
-    stopRealTimeUpdates() {
-        if (this.statusUpdateInterval) {
-            clearInterval(this.statusUpdateInterval);
-            this.statusUpdateInterval = null;
-        }
-    },
-
 };
 
 // Make globally available
@@ -690,9 +569,4 @@ window.SettingsView = SettingsView;
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     SettingsView.init();
-});
-
-// Cleanup on page unload
-window.addEventListener('beforeunload', () => {
-    SettingsView.stopRealTimeUpdates();
 });

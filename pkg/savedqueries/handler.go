@@ -2,6 +2,7 @@ package savedqueries
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -30,15 +31,29 @@ type Handler struct {
 }
 
 type SavedQuery struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	QueryText string    `json:"query_text"`
-	Tags      []string  `json:"tags"`
-	FractalID string    `json:"fractal_id,omitempty"`
-	PrismID   string    `json:"prism_id,omitempty"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	QueryText   string     `json:"query_text"`
+	Description string     `json:"description"`
+	Tags        []string   `json:"tags"`
+	Visibility  string     `json:"visibility"`
+	Favorited   bool       `json:"favorited"`
+	UseCount    int64      `json:"use_count"`
+	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
+	FractalID   string     `json:"fractal_id,omitempty"`
+	PrismID     string     `json:"prism_id,omitempty"`
+	CreatedBy   string     `json:"created_by"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// normalizeVisibility constrains visibility to the supported values, defaulting
+// to "shared" (the historical behavior where saved queries are fractal-wide).
+func normalizeVisibility(v string) string {
+	if strings.ToLower(strings.TrimSpace(v)) == "personal" {
+		return "personal"
+	}
+	return "shared"
 }
 
 type APIResponse struct {
@@ -122,35 +137,49 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	username := h.getCurrentUser(r)
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
 
-	var query string
-	var args []interface{}
-	argIdx := 1
-
+	// $1 = username (favorites join + personal visibility), $2 = scope id.
+	var scopeCol string
 	if prismID != "" {
-		query = fmt.Sprintf(`SELECT id, name, query_text, tags, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at
-			FROM saved_queries WHERE prism_id = $%d`, argIdx)
-		args = append(args, prismID)
+		scopeCol = "sq.prism_id"
 	} else {
-		query = fmt.Sprintf(`SELECT id, name, query_text, tags, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at
-			FROM saved_queries WHERE fractal_id = $%d`, argIdx)
-		args = append(args, fractalID)
+		scopeCol = "sq.fractal_id"
 	}
-	argIdx++
+	var scopeArg interface{}
+	if prismID != "" {
+		scopeArg = prismID
+	} else {
+		scopeArg = fractalID
+	}
+
+	query := fmt.Sprintf(`
+		SELECT sq.id, sq.name, sq.query_text, COALESCE(sq.description, ''), sq.tags,
+			COALESCE(sq.visibility, 'shared'), (f.username IS NOT NULL) AS favorited,
+			COALESCE(sq.use_count, 0), sq.last_used_at,
+			COALESCE(sq.fractal_id::text, ''), COALESCE(sq.prism_id::text, ''),
+			COALESCE(sq.created_by, ''), sq.created_at, sq.updated_at
+		FROM saved_queries sq
+		LEFT JOIN saved_query_favorites f ON f.saved_query_id = sq.id AND f.username = $1
+		WHERE %s = $2
+		  AND (COALESCE(sq.visibility, 'shared') = 'shared' OR sq.created_by = $1)`, scopeCol)
+	args := []interface{}{username, scopeArg}
+	argIdx := 3
 
 	if search != "" {
-		query += fmt.Sprintf(" AND name ILIKE '%%' || $%d || '%%'", argIdx)
+		query += fmt.Sprintf(" AND (sq.name ILIKE '%%' || $%d || '%%' OR sq.query_text ILIKE '%%' || $%d || '%%')", argIdx, argIdx)
 		args = append(args, search)
 		argIdx++
 	}
 	if tag != "" {
-		query += fmt.Sprintf(" AND $%d = ANY(tags)", argIdx)
+		query += fmt.Sprintf(" AND $%d = ANY(sq.tags)", argIdx)
 		args = append(args, tag)
 		argIdx++
 	}
-	query += " ORDER BY name ASC"
+	// Favorites first, then most recently used, then alphabetical.
+	query += " ORDER BY favorited DESC, sq.last_used_at DESC NULLS LAST, sq.name ASC"
 
 	rows, err := h.pg.Query(r.Context(), query, args...)
 	if err != nil {
@@ -163,11 +192,17 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	var queries []SavedQuery
 	for rows.Next() {
 		var sq SavedQuery
-		if err := rows.Scan(&sq.ID, &sq.Name, &sq.QueryText, pq.Array(&sq.Tags),
+		var lastUsed sql.NullTime
+		if err := rows.Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags),
+			&sq.Visibility, &sq.Favorited, &sq.UseCount, &lastUsed,
 			&sq.FractalID, &sq.PrismID, &sq.CreatedBy, &sq.CreatedAt, &sq.UpdatedAt); err != nil {
 			log.Printf("[SavedQueries] Failed to scan row: %v", err)
 			h.respondError(w, http.StatusInternalServerError, "Failed to load saved queries")
 			return
+		}
+		if lastUsed.Valid {
+			t := lastUsed.Time.UTC()
+			sq.LastUsedAt = &t
 		}
 		if sq.Tags == nil {
 			sq.Tags = []string{}
@@ -189,9 +224,11 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name      string   `json:"name"`
-		QueryText string   `json:"query_text"`
-		Tags      []string `json:"tags"`
+		Name        string   `json:"name"`
+		QueryText   string   `json:"query_text"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
+		Visibility  string   `json:"visibility"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
@@ -200,6 +237,8 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 
 	req.Name = strings.TrimSpace(req.Name)
 	req.QueryText = strings.TrimSpace(req.QueryText)
+	req.Description = strings.TrimSpace(req.Description)
+	visibility := normalizeVisibility(req.Visibility)
 
 	if req.Name == "" {
 		h.respondError(w, http.StatusBadRequest, "name is required")
@@ -249,11 +288,11 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 
 	var sq SavedQuery
 	err = h.pg.QueryRow(r.Context(), `
-		INSERT INTO saved_queries (name, query_text, tags, fractal_id, prism_id, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, name, query_text, tags, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`,
-		req.Name, req.QueryText, pq.Array(cleanTags), fractalIDPtr, prismIDPtr, username,
-	).Scan(&sq.ID, &sq.Name, &sq.QueryText, pq.Array(&sq.Tags),
+		INSERT INTO saved_queries (name, query_text, description, tags, visibility, fractal_id, prism_id, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, name, query_text, COALESCE(description, ''), tags, COALESCE(visibility, 'shared'), COALESCE(use_count, 0), COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`,
+		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), visibility, fractalIDPtr, prismIDPtr, username,
+	).Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags), &sq.Visibility, &sq.UseCount,
 		&sq.FractalID, &sq.PrismID, &sq.CreatedBy, &sq.CreatedAt, &sq.UpdatedAt)
 
 	if err != nil {
@@ -286,9 +325,11 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name      string   `json:"name"`
-		QueryText string   `json:"query_text"`
-		Tags      []string `json:"tags"`
+		Name        string   `json:"name"`
+		QueryText   string   `json:"query_text"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
+		Visibility  string   `json:"visibility"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
@@ -297,6 +338,8 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	req.Name = strings.TrimSpace(req.Name)
 	req.QueryText = strings.TrimSpace(req.QueryText)
+	req.Description = strings.TrimSpace(req.Description)
+	visibility := normalizeVisibility(req.Visibility)
 
 	if req.Name == "" {
 		h.respondError(w, http.StatusBadRequest, "name is required")
@@ -318,24 +361,31 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		cleanTags = []string{}
 	}
 
-	// Build WHERE clause based on scope
+	// Build WHERE clause based on scope.
 	var whereScope string
 	var scopeArg interface{}
 	if prismID != "" {
-		whereScope = "prism_id = $5"
+		whereScope = "prism_id = $6"
 		scopeArg = prismID
 	} else {
-		whereScope = "fractal_id = $5"
+		whereScope = "fractal_id = $6"
 		scopeArg = fractalID
 	}
 
+	username := h.getCurrentUser(r)
+
 	var sq SavedQuery
+	var lastUsed sql.NullTime
 	err = h.pg.QueryRow(r.Context(), fmt.Sprintf(`
-		UPDATE saved_queries SET name = $1, query_text = $2, tags = $3
-		WHERE id = $4 AND %s
-		RETURNING id, name, query_text, tags, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`, whereScope),
-		req.Name, req.QueryText, pq.Array(cleanTags), id, scopeArg,
-	).Scan(&sq.ID, &sq.Name, &sq.QueryText, pq.Array(&sq.Tags),
+		UPDATE saved_queries SET name = $1, query_text = $2, description = $3, tags = $4, visibility = $5
+		WHERE id = $7 AND %s
+		RETURNING id, name, query_text, COALESCE(description, ''), tags, COALESCE(visibility, 'shared'),
+			COALESCE(use_count, 0), last_used_at,
+			EXISTS (SELECT 1 FROM saved_query_favorites f WHERE f.saved_query_id = saved_queries.id AND f.username = $8),
+			COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`, whereScope),
+		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), visibility, scopeArg, id, username,
+	).Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags), &sq.Visibility,
+		&sq.UseCount, &lastUsed, &sq.Favorited,
 		&sq.FractalID, &sq.PrismID, &sq.CreatedBy, &sq.CreatedAt, &sq.UpdatedAt)
 
 	if err != nil {
@@ -350,6 +400,10 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[SavedQueries] Failed to update saved query: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to update saved query")
 		return
+	}
+	if lastUsed.Valid {
+		t := lastUsed.Time.UTC()
+		sq.LastUsedAt = &t
 	}
 	if sq.Tags == nil {
 		sq.Tags = []string{}
@@ -394,6 +448,100 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.respondSuccess(w, map[string]bool{"deleted": true})
+}
+
+// scopePredicate returns the scope column and arg for the active session scope.
+func scopePredicate(fractalID, prismID string) (col string, arg interface{}) {
+	if prismID != "" {
+		return "prism_id", prismID
+	}
+	return "fractal_id", fractalID
+}
+
+// HandleMarkUsed records that a saved query was run: bumps use_count and
+// last_used_at so popular team queries float to the top.
+func (h *Handler) HandleMarkUsed(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		h.respondError(w, http.StatusBadRequest, "Failed to determine context")
+		return
+	}
+	if !h.verifyAccess(w, r, fractalID, prismID) {
+		return
+	}
+	col, arg := scopePredicate(fractalID, prismID)
+	_, err = h.pg.Exec(r.Context(),
+		fmt.Sprintf("UPDATE saved_queries SET use_count = COALESCE(use_count, 0) + 1, last_used_at = NOW() WHERE id = $1 AND %s = $2", col),
+		id, arg)
+	if err != nil {
+		log.Printf("[SavedQueries] Failed to mark used: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to record usage")
+		return
+	}
+	h.respondSuccess(w, map[string]bool{"ok": true})
+}
+
+// HandleFavorite pins a saved query for the current user (per-user).
+func (h *Handler) HandleFavorite(w http.ResponseWriter, r *http.Request) {
+	username := h.getCurrentUser(r)
+	if username == "" {
+		h.respondError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		h.respondError(w, http.StatusBadRequest, "Failed to determine context")
+		return
+	}
+	if !h.verifyAccess(w, r, fractalID, prismID) {
+		return
+	}
+
+	// Only allow favoriting a query that exists in this scope and is visible to
+	// the user, so a guessed id in another scope cannot be pinned.
+	col, arg := scopePredicate(fractalID, prismID)
+	var exists bool
+	err = h.pg.QueryRow(r.Context(),
+		fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM saved_queries WHERE id = $1 AND %s = $2 AND (COALESCE(visibility, 'shared') = 'shared' OR created_by = $3))", col),
+		id, arg, username).Scan(&exists)
+	if err != nil {
+		log.Printf("[SavedQueries] Failed to check favorite target: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to favorite query")
+		return
+	}
+	if !exists {
+		h.respondError(w, http.StatusNotFound, "saved query not found")
+		return
+	}
+
+	if _, err := h.pg.Exec(r.Context(),
+		"INSERT INTO saved_query_favorites (username, saved_query_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+		username, id); err != nil {
+		log.Printf("[SavedQueries] Failed to favorite: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to favorite query")
+		return
+	}
+	h.respondSuccess(w, map[string]bool{"favorited": true})
+}
+
+// HandleUnfavorite removes the current user's pin on a saved query.
+func (h *Handler) HandleUnfavorite(w http.ResponseWriter, r *http.Request) {
+	username := h.getCurrentUser(r)
+	if username == "" {
+		h.respondError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if _, err := h.pg.Exec(r.Context(),
+		"DELETE FROM saved_query_favorites WHERE username = $1 AND saved_query_id = $2",
+		username, id); err != nil {
+		log.Printf("[SavedQueries] Failed to unfavorite: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to unfavorite query")
+		return
+	}
+	h.respondSuccess(w, map[string]bool{"favorited": false})
 }
 
 // -- Helpers --

@@ -327,7 +327,7 @@ const FractalContext = {
             'InstructionLibraries',
             'Notebooks',
             'QueryExecutor',
-            'SavedQueries'
+            'QueryPalette'
         ];
 
         const invoked = new Set();

@@ -6,7 +6,9 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"regexp"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -24,14 +26,14 @@ type cpuSample struct {
 // In multi-node setups each node is queried individually so that
 // per-node CPU% is accurate.
 type MetricsCollector struct {
-	mu      sync.RWMutex
+	mu sync.RWMutex
 	// Single-node: only "history" is populated.
 	history []cpuSample
 	// Multi-node: per-node history keyed by address.
 	nodeHistory map[string][]cpuSample
-	maxAge time.Duration
-	db     *storage.ClickHouseClient
-	stop   chan struct{}
+	maxAge      time.Duration
+	db          *storage.ClickHouseClient
+	stop        chan struct{}
 }
 
 const (
@@ -489,6 +491,114 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 	}
 
 	respondJSON(w, http.StatusOK, result)
+}
+
+// partitionRe extracts the fractal_id and date from a system.parts partition
+// value, which for the logs table (PARTITION BY (fractal_id, toDate(timestamp)))
+// is formatted as the tuple ('<fractal_id>','YYYY-MM-DD'). The default fractal
+// has an empty id, yielding (”,'YYYY-MM-DD').
+var partitionRe = regexp.MustCompile(`^\('(.*)','(\d{4}-\d{2}-\d{2})'\)$`)
+
+// HandleIngestDaily returns per-day ingest volume (uncompressed + on-disk bytes
+// and row counts) derived purely from system.parts partition metadata. Because
+// the logs table is partitioned by (fractal_id, toDate(timestamp)), this is a
+// metadata-only query (no data scan, sub-millisecond) and is exact per fractal.
+//
+// Bucketing is by event date (toDate(timestamp)) and bytes reflect the full
+// on-disk row footprint, so totals reconcile with the storage cards' "raw"
+// figure (both use system.parts.data_uncompressed_bytes).
+//
+// Optional params: ?fractal=<id> to scope to a single fractal, ?days=N to bound
+// the window (default 30, max 365).
+func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Request) {
+	user, ok := r.Context().Value("user").(*storage.User)
+	if !ok || user == nil || !user.IsAdmin {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{
+			"success": false,
+			"error":   "Admin access required",
+		})
+		return
+	}
+
+	fractalFilter := r.URL.Query().Get("fractal")
+	days := 30
+	if d := r.URL.Query().Get("days"); d != "" {
+		if n, err := strconv.Atoi(d); err == nil && n > 0 {
+			days = n
+		}
+	}
+	if days > 365 {
+		days = 365
+	}
+
+	// Metadata-only: aggregates partition stats without touching log data.
+	sql := `SELECT
+		partition,
+		sum(rows) AS rows,
+		sum(data_uncompressed_bytes) AS raw_bytes,
+		sum(bytes_on_disk) AS disk_bytes
+	FROM system.parts
+	WHERE database = 'logs' AND table = 'logs' AND active = 1
+	GROUP BY partition`
+
+	rows, err := h.db.Query(r.Context(), sql)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to query ingest stats: %v", err),
+		})
+		return
+	}
+
+	type dayAgg struct {
+		raw  float64
+		disk float64
+		rows float64
+	}
+	byDay := map[string]*dayAgg{}
+	for _, row := range rows {
+		part, _ := row["partition"].(string)
+		m := partitionRe.FindStringSubmatch(part)
+		if m == nil {
+			continue
+		}
+		fractalID, day := m[1], m[2]
+		if fractalFilter != "" && fractalID != fractalFilter {
+			continue
+		}
+		agg := byDay[day]
+		if agg == nil {
+			agg = &dayAgg{}
+			byDay[day] = agg
+		}
+		agg.raw += toFloat64(row["raw_bytes"])
+		agg.disk += toFloat64(row["disk_bytes"])
+		agg.rows += toFloat64(row["rows"])
+	}
+
+	// Keep the most recent N days; ISO dates sort lexicographically.
+	cutoff := time.Now().UTC().AddDate(0, 0, -days+1).Format("2006-01-02")
+	result := make([]map[string]interface{}, 0, len(byDay))
+	for day, agg := range byDay {
+		if day < cutoff {
+			continue
+		}
+		result = append(result, map[string]interface{}{
+			"day":        day,
+			"raw_bytes":  agg.raw,
+			"disk_bytes": agg.disk,
+			"rows":       agg.rows,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i]["day"].(string) < result[j]["day"].(string)
+	})
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"days":    result,
+		"fractal": fractalFilter,
+	})
 }
 
 func toFloat64(v interface{}) float64 {

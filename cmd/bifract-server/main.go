@@ -40,6 +40,7 @@ import (
 	"bifract/pkg/schemafields"
 	"bifract/pkg/maxmind"
 	"bifract/pkg/oidc"
+	"bifract/pkg/queryhistory"
 	"bifract/pkg/rbac"
 	"bifract/pkg/savedqueries"
 	"bifract/pkg/settings"
@@ -218,12 +219,18 @@ func main() {
 			customMap[f.FieldName] = true
 		}
 		parser.SetCustomTypeHintedFields(customMap)
-		allFields := append(schemafields.ProjectDefaultFields, customFields...)
+		allFields := append(append([]schemafields.SchemaField{}, schemafields.ProjectDefaultFields...), customFields...)
 		go func() {
 			if err := db.ReconcileSchemaFields(context.Background(), schemafields.ToSpecs(allFields)); err != nil {
 				log.Printf("Warning: Schema field reconciliation failed: %v", err)
-			} else {
-				log.Println("Schema fields reconciled")
+				return
+			}
+			log.Println("Schema fields reconciled")
+			// Clear any sync status left pending/error by a crash mid-reconcile.
+			for _, f := range customFields {
+				if err := schemaFieldsManager.UpdateSyncStatus(context.Background(), f.FieldName, schemafields.SyncStatusActive, ""); err != nil {
+					log.Printf("Warning: update schema field status %q: %v", f.FieldName, err)
+				}
 			}
 		}()
 	}
@@ -487,6 +494,9 @@ func main() {
 	savedQueryHandler := savedqueries.NewHandler(pg, fractalManager)
 	savedQueryHandler.SetRBACResolver(rbacAdapter)
 	savedQueryHandler.SetRBACFull(authHandler.RBACResolver())
+	queryHistoryHandler := queryhistory.NewHandler(pg, fractalManager)
+	queryHistoryHandler.SetRBACResolver(rbacAdapter)
+	queryHistoryHandler.SetRBACFull(authHandler.RBACResolver())
 	contextLinkManager := contextlinks.NewManager(pg)
 	contextLinkHandler := contextlinks.NewHandler(contextLinkManager)
 
@@ -915,6 +925,14 @@ func main() {
 			r.Post("/saved-queries", savedQueryHandler.HandleCreate)
 			r.Put("/saved-queries/{id}", savedQueryHandler.HandleUpdate)
 			r.Delete("/saved-queries/{id}", savedQueryHandler.HandleDelete)
+			r.Post("/saved-queries/{id}/use", savedQueryHandler.HandleMarkUsed)
+			r.Post("/saved-queries/{id}/favorite", savedQueryHandler.HandleFavorite)
+			r.Delete("/saved-queries/{id}/favorite", savedQueryHandler.HandleUnfavorite)
+
+			r.Get("/query-history", queryHistoryHandler.HandleList)
+			r.Post("/query-history", queryHistoryHandler.HandleRecord)
+			r.Delete("/query-history", queryHistoryHandler.HandleClear)
+			r.Delete("/query-history/{id}", queryHistoryHandler.HandleDelete)
 
 			// Chat
 			r.Get("/chat/conversations", chatHandler.HandleListConversations)
@@ -986,6 +1004,8 @@ func main() {
 			r.Post("/admin/schema-fields", schemaFieldsHandler.HandleCreate)
 			r.Delete("/admin/schema-fields/{name}", schemaFieldsHandler.HandleDelete)
 			r.Post("/admin/schema-fields/reset", schemaFieldsHandler.HandleReset)
+			r.Get("/admin/schema-fields/export", schemaFieldsHandler.HandleExportYAML)
+			r.Post("/admin/schema-fields/import", schemaFieldsHandler.HandleImportYAML)
 
 			// Admin-only routes (checked in handler)
 			r.Post("/auth/register", authHandler.HandleRegister)
@@ -1002,6 +1022,7 @@ func main() {
 			r.Get("/admin/processes", performanceHandler.HandleProcesses)
 			r.Post("/admin/kill-query", performanceHandler.HandleKillQuery)
 			r.Get("/admin/metrics", performanceHandler.HandleMetrics)
+			r.Get("/admin/ingest-daily", performanceHandler.HandleIngestDaily)
 		})
 	})
 

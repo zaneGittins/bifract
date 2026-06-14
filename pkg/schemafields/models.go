@@ -18,18 +18,40 @@ var validIndexTypes = map[IndexType]bool{
 	IndexTypeSet:         true,
 }
 
+// Sync status values track whether a custom field's ClickHouse schema (type
+// hint + skip index) has been applied. The reconcile runs in the background
+// because the underlying ALTER can block for minutes on large datasets.
+const (
+	SyncStatusPending = "pending"
+	SyncStatusActive  = "active"
+	SyncStatusError   = "error"
+)
+
 type SchemaField struct {
-	ID        string    `json:"id"`
-	FieldName string    `json:"field_name"`
-	IndexType IndexType `json:"index_type"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-	IsDefault bool      `json:"is_default"`
+	ID         string    `json:"id"`
+	FieldName  string    `json:"field_name"`
+	IndexType  IndexType `json:"index_type"`
+	CreatedBy  string    `json:"created_by"`
+	CreatedAt  time.Time `json:"created_at"`
+	IsDefault  bool      `json:"is_default"`
+	SyncStatus string    `json:"sync_status,omitempty"`
+	SyncError  string    `json:"sync_error,omitempty"`
 }
 
 type CreateRequest struct {
 	FieldName string    `json:"field_name"`
 	IndexType IndexType `json:"index_type"`
+}
+
+// SchemaExport is the YAML import/export envelope for custom schema fields.
+// Project defaults are built into the binary and are intentionally excluded.
+type SchemaExport struct {
+	Fields []SchemaFieldExport `yaml:"fields"`
+}
+
+type SchemaFieldExport struct {
+	FieldName string `yaml:"field_name"`
+	IndexType string `yaml:"index_type"`
 }
 
 // ToSpecs converts a slice of SchemaField to storage.SchemaFieldSpec for ClickHouse DDL calls.

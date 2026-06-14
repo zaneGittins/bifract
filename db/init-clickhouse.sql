@@ -32,12 +32,12 @@ CREATE TABLE IF NOT EXISTS logs (
     ingest_timestamp DateTime64(3) DEFAULT now64(3),
     -- Space-separated field:value tokens for all event fields, used by the
     -- field_tokens_text skip index to prune granules for field equality conditions.
-    -- splitByWhitespace keeps each field:value pair as one atomic token so
-    -- hasToken(field_tokens, 'process_name:curl.exe') is a precise compound lookup.
+    -- splitByString defaults to a single-whitespace separator, keeping each field:value
+    -- pair as one atomic token so hasAllTokens(field_tokens, ['process_name:curl.exe'])
+    -- is a precise compound lookup (the array form preserves the ':' delimiter; hasToken
+    -- cannot be used as it rejects separator characters in the needle).
     field_tokens String DEFAULT '',
-    -- Inverted index: lower() preprocessor enables hasToken() to auto-lower search terms,
-    -- providing index-accelerated granule pruning for both case-sensitive and
-    -- case-insensitive regex queries via hasToken pre-filters.
+    -- lower() preprocessor lowercases tokens at index time so case-insensitive lookups match.
     INDEX field_tokens_text field_tokens TYPE text(tokenizer = splitByString, preprocessor = lower(field_tokens)) GRANULARITY 1,
     INDEX raw_log_inverted raw_log TYPE text(tokenizer = splitByNonAlpha, preprocessor = lower(raw_log)),
     INDEX log_id_bloom log_id TYPE bloom_filter(0.001) GRANULARITY 1,

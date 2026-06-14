@@ -229,3 +229,100 @@
     border-color: var(--error, #f87171);
     box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.15);
 }
+
+/* Title row: heading + info icon */
+.schema-title-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Info icon + tooltip */
+.schema-info {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    cursor: help;
+    border-radius: 50%;
+    outline: none;
+    transition: color 0.15s ease;
+}
+
+.schema-info:hover,
+.schema-info:focus-visible {
+    color: var(--accent-primary);
+}
+
+.schema-info-tip {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    z-index: 50;
+    width: 320px;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    line-height: 1.55;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: normal;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-3px);
+    transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+    pointer-events: none;
+}
+
+.schema-info:hover .schema-info-tip,
+.schema-info:focus-visible .schema-info-tip {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+
+/* Per-field sync status */
+.schema-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+.schema-status-active {
+    color: var(--success, #4ade80);
+    background: rgba(74, 222, 128, 0.1);
+}
+
+.schema-status-pending {
+    color: var(--warning, #fbbf24);
+    background: rgba(251, 191, 36, 0.1);
+}
+
+.schema-status-error {
+    color: var(--error, #f87171);
+    background: rgba(248, 113, 113, 0.1);
+    cursor: help;
+}
+
+.schema-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: schema-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes schema-pulse {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+}

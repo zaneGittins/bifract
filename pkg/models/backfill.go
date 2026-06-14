@@ -26,18 +26,22 @@ const (
 
 // backfillConfig holds the throttle knobs, all env-overridable with safe defaults.
 type backfillConfig struct {
-	concurrency     int   // global single-flight cap (>=1)
-	maxThreads      int   // per-chunk max_threads
-	maxGroupByBytes int64 // max_bytes_before_external_group_by (spill, avoid OOM)
-	chunkTimeoutSec int   // per-chunk max_execution_time / ctx timeout
+	concurrency      int   // global single-flight cap (>=1)
+	maxThreads       int   // per-chunk max_threads
+	maxGroupByBytes  int64 // max_bytes_before_external_group_by (spill, avoid OOM)
+	chunkTimeoutSec  int   // per-chunk max_execution_time / ctx timeout
+	osThreadPriority int   // per-chunk os_thread_priority (nice): 0..19, higher = lower OS priority
+	chunkSleepMs     int   // cooldown slept between chunks so interactive load can drain
 }
 
 func loadBackfillConfig() backfillConfig {
 	cfg := backfillConfig{
-		concurrency:     1,
-		maxThreads:      2,
-		maxGroupByBytes: 2_000_000_000,
-		chunkTimeoutSec: 300,
+		concurrency:      1,
+		maxThreads:       2,
+		maxGroupByBytes:  2_000_000_000,
+		chunkTimeoutSec:  300,
+		osThreadPriority: 19,  // lowest OS scheduling priority: interactive queries always win CPU
+		chunkSleepMs:     500, // brief yield between chunks for merges + health re-check
 	}
 	if v, ok := envInt("BIFRACT_MODEL_BACKFILL_CONCURRENCY"); ok && v >= 1 {
 		cfg.concurrency = v
@@ -50,6 +54,20 @@ func loadBackfillConfig() backfillConfig {
 	}
 	if v, ok := envInt64("BIFRACT_MODEL_BACKFILL_MAX_GROUPBY_BYTES"); ok && v >= 0 {
 		cfg.maxGroupByBytes = v
+	}
+	// os_thread_priority is clamped to [0, 19]: we never let a backfill request a
+	// higher-than-normal OS priority (negative nice), only an equal or lower one.
+	if v, ok := envInt("BIFRACT_MODEL_BACKFILL_OS_PRIORITY"); ok {
+		if v < 0 {
+			v = 0
+		}
+		if v > 19 {
+			v = 19
+		}
+		cfg.osThreadPriority = v
+	}
+	if v, ok := envInt("BIFRACT_MODEL_BACKFILL_CHUNK_SLEEP_MS"); ok && v >= 0 {
+		cfg.chunkSleepMs = v
 	}
 	return cfg
 }
@@ -246,9 +264,14 @@ func (m *Manager) runBackfill(ctx context.Context, id string) {
 	sourceTable := "`" + m.ch.ReadTable() + "`"
 	targetTable := "`" + m.readTableName(model) + "`"
 
+	// os_thread_priority sets the OS nice() of the chunk's query threads so the
+	// Linux scheduler hands CPU to interactive (priority-0) query threads first;
+	// this is what keeps the platform responsive while a backfill runs, since the
+	// health check only pauses *between* chunks and a single chunk can run for
+	// minutes. priority is the in-ClickHouse scheduler hint (secondary).
 	settings := fmt.Sprintf(
-		" SETTINGS max_threads=%d, max_execution_time=%d, max_bytes_before_external_group_by=%d, priority=10",
-		m.bfCfg.maxThreads, m.bfCfg.chunkTimeoutSec, m.bfCfg.maxGroupByBytes)
+		" SETTINGS max_threads=%d, max_execution_time=%d, max_bytes_before_external_group_by=%d, priority=10, os_thread_priority=%d",
+		m.bfCfg.maxThreads, m.bfCfg.chunkTimeoutSec, m.bfCfg.maxGroupByBytes, m.bfCfg.osThreadPriority)
 	anchorLit := anchor.UTC().Format("2006-01-02 15:04:05")
 
 	for i, ch := range chunks {
@@ -290,6 +313,18 @@ func (m *Manager) runBackfill(ctx context.Context, id string) {
 		if _, err := m.pg.Exec(context.Background(),
 			`UPDATE analytics_models SET backfill_done=$1 WHERE id=$2`, done, id); err != nil {
 			log.Printf("model %s: backfill progress update: %v", id, err)
+		}
+
+		// Cooldown between chunks: lets ClickHouse drain interactive queries and
+		// background merges, and gives waitForHealth a clean window to observe
+		// pressure before the next heavy INSERT...SELECT. Cancellable.
+		if m.bfCfg.chunkSleepMs > 0 && i+1 < len(chunks) {
+			select {
+			case <-ctx.Done():
+				m.finishBackfill(id, "cancelled", "")
+				return
+			case <-time.After(time.Duration(m.bfCfg.chunkSleepMs) * time.Millisecond):
+			}
 		}
 	}
 

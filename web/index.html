@@ -35,9 +35,9 @@
                     <button id="mainNormalizersTabBtn" class="nav-tab admin-only" style="display: none;">Normalizers</button>
                     <button id="mainSchemaTabBtn" class="nav-tab admin-only" style="display: none;">Schema</button>
                     <button id="mainContextTabBtn" class="nav-tab admin-only" style="display: none;">Context</button>
-                    <button id="mainPerformanceTabBtn" class="nav-tab admin-only" style="display: none;">Performance</button>
+                    <button id="mainPerformanceTabBtn" class="nav-tab admin-only" style="display: none;">System</button>
                     <button id="queryReferenceTabBtn" class="nav-tab">Query Reference</button>
-                    <button id="mainSettingsTabBtn" class="nav-tab admin-only" style="display: none;">Settings</button>
+                    <button id="mainSettingsTabBtn" class="nav-tab admin-only" style="display: none;">Admin</button>
                 </nav>
                 <!-- Fractal View Navigation (inline with logo) -->
                 <nav id="fractalViewNav" class="header-nav" style="display: none;">
@@ -97,6 +97,11 @@
                 <div id="performanceView" class="admin-only" style="display: none;">
                     <section class="performance-view-section">
                         <div class="performance-header">
+                            <div class="alerts-sub-tabs perf-sub-tabs" id="perfSubTabs">
+                                <button class="alerts-sub-tab active" data-subtab="overview" onclick="Performance.switchSubTab('overview')">Overview</button>
+                                <button class="alerts-sub-tab" data-subtab="storage" onclick="Performance.switchSubTab('storage')">Storage &amp; Ingest</button>
+                                <button class="alerts-sub-tab" data-subtab="activity" onclick="Performance.switchSubTab('activity')">Activity</button>
+                            </div>
                             <div class="performance-controls">
                                 <span id="perfLiveBadge" class="live-badge">LIVE</span>
                                 <select id="perfTimeRange" class="setting-select perf-refresh-select">
@@ -113,103 +118,136 @@
                             </div>
                         </div>
 
-                        <!-- Server Overview Cards -->
-                        <div class="perf-metrics-group-label">Server</div>
-                        <div class="perf-metrics-grid">
-                            <div class="perf-metric-card">
-                                <div class="perf-metric-label">Active Queries</div>
-                                <div class="perf-metric-value" id="metricActiveQueries">--</div>
-                            </div>
-                            <div class="perf-metric-card">
-                                <div class="perf-metric-label">Memory Usage</div>
-                                <div class="perf-metric-value" id="metricMemory">--</div>
-                            </div>
-                            <div class="perf-metric-card">
-                                <div class="perf-metric-label">Active Merges</div>
-                                <div class="perf-metric-value" id="metricMerges">--</div>
-                            </div>
-                            <div class="perf-metric-card">
-                                <div class="perf-metric-label">Uptime</div>
-                                <div class="perf-metric-value" id="metricUptime">--</div>
-                            </div>
-                        </div>
-
-                        <!-- Storage Overview Cards -->
-                        <div class="perf-metrics-group-label">Storage</div>
-                        <div class="perf-metrics-grid">
-                            <div class="perf-metric-card">
-                                <div class="perf-metric-label">Log Rows</div>
-                                <div class="perf-metric-value" id="metricLogRows">--</div>
-                            </div>
-                            <div class="perf-metric-card">
-                                <div class="perf-metric-label">Log Storage</div>
-                                <div class="perf-metric-value" id="metricLogStorage">--</div>
-                            </div>
-                            <div class="perf-metric-card">
-                                <div class="perf-metric-label">Disk Usage</div>
-                                <div class="perf-metric-value" id="metricDiskUsage">--</div>
-                                <div class="perf-metric-sub" id="metricDiskFree"></div>
-                            </div>
-                            <div class="perf-metric-card">
-                                <div class="perf-metric-label">Compression</div>
-                                <div class="perf-metric-value" id="metricCompression">--</div>
-                                <div class="perf-metric-sub" id="metricUncompressed"></div>
-                            </div>
-                        </div>
-
-                        <!-- Cluster Health Cards (cluster mode only, shown by JS) -->
-                        <div id="clusterSection" style="display:none">
-                            <div class="perf-metrics-group-label">Cluster</div>
+                        <!-- Overview Sub-Tab -->
+                        <div id="perfPaneOverview" class="perf-pane">
+                            <!-- Server Overview Cards -->
+                            <div class="perf-metrics-group-label">Server</div>
                             <div class="perf-metrics-grid">
                                 <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Distribution Queue</div>
-                                    <div class="perf-metric-value" id="metricDistQueue">--</div>
-                                    <div class="perf-metric-sub" id="metricDistQueueSub"></div>
+                                    <div class="perf-metric-label">Active Queries</div>
+                                    <div class="perf-metric-value" id="metricActiveQueries">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Memory Usage</div>
+                                    <div class="perf-metric-value" id="metricMemory">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Active Merges</div>
+                                    <div class="perf-metric-value" id="metricMerges">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Uptime</div>
+                                    <div class="perf-metric-value" id="metricUptime">--</div>
+                                </div>
+                            </div>
+
+                            <!-- Cluster Health Cards (cluster mode only, shown by JS) -->
+                            <div id="clusterSection" style="display:none">
+                                <div class="perf-metrics-group-label">Cluster</div>
+                                <div class="perf-metrics-grid">
+                                    <div class="perf-metric-card">
+                                        <div class="perf-metric-label">Distribution Queue</div>
+                                        <div class="perf-metric-value" id="metricDistQueue">--</div>
+                                        <div class="perf-metric-sub" id="metricDistQueueSub"></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="perf-charts-row">
+                                <div class="perf-chart-card perf-chart-card-wide">
+                                    <h3>CPU Usage</h3>
+                                    <div id="perfCpuPlaceholder" class="perf-chart-placeholder">Loading...</div>
+                                    <canvas id="perfCpuChart"></canvas>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Charts Row -->
-                        <div class="perf-charts-row">
-                            <div class="perf-chart-card">
-                                <h3>CPU Usage</h3>
-                                <div id="perfCpuPlaceholder" class="perf-chart-placeholder">Loading...</div>
-                                <canvas id="perfCpuChart"></canvas>
+                        <!-- Storage & Ingest Sub-Tab -->
+                        <div id="perfPaneStorage" class="perf-pane" style="display:none;">
+                            <!-- Storage Overview Cards -->
+                            <div class="perf-metrics-group-label">Storage</div>
+                            <div class="perf-metrics-grid">
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Log Rows</div>
+                                    <div class="perf-metric-value" id="metricLogRows">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Log Storage</div>
+                                    <div class="perf-metric-value" id="metricLogStorage">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Disk Usage</div>
+                                    <div class="perf-metric-value" id="metricDiskUsage">--</div>
+                                    <div class="perf-metric-sub" id="metricDiskFree"></div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Compression</div>
+                                    <div class="perf-metric-value" id="metricCompression">--</div>
+                                    <div class="perf-metric-sub" id="metricUncompressed"></div>
+                                </div>
                             </div>
-                            <div class="perf-chart-card">
-                                <h3>Query Duration</h3>
-                                <canvas id="perfQueryDurationChart"></canvas>
-                            </div>
-                            <div class="perf-chart-card">
-                                <h3>Memory per Query</h3>
-                                <canvas id="perfMemoryChart"></canvas>
-                            </div>
-                        </div>
 
-                        <!-- Running Queries Table -->
-                        <div class="perf-section">
-                            <div class="perf-section-header">
-                                <h3>Running Queries</h3>
-                                <span id="perfProcessCount" class="perf-count">0</span>
-                                <input type="text" id="perfProcessSearch" class="perf-search-input" placeholder="Search..." autocomplete="off" spellcheck="false">
-                            </div>
-                            <div id="perfProcessesTable" class="perf-table-container">
-                                <div class="empty-state" style="min-height: 120px;">
-                                    <p>No active queries</p>
+                            <!-- Ingest per Day -->
+                            <div class="perf-section">
+                                <div class="perf-section-header">
+                                    <h3>Ingest per Day</h3>
+                                    <span class="perf-section-hint">uncompressed</span>
+                                    <div class="perf-ingest-controls">
+                                        <select id="perfIngestFractal" class="setting-select perf-refresh-select">
+                                            <option value="">All fractals</option>
+                                        </select>
+                                        <select id="perfIngestDays" class="setting-select perf-refresh-select">
+                                            <option value="14">14 days</option>
+                                            <option value="30" selected>30 days</option>
+                                            <option value="90">90 days</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="perf-ingest-chart-wrap">
+                                    <div id="perfIngestPlaceholder" class="perf-chart-placeholder">Loading...</div>
+                                    <canvas id="perfIngestChart"></canvas>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Recent Query Log -->
-                        <div class="perf-section">
-                            <div class="perf-section-header">
-                                <h3>Recent Queries</h3>
-                                <span id="perfRecentCount" class="perf-count">0</span>
-                                <input type="text" id="perfRecentSearch" class="perf-search-input" placeholder="Search..." autocomplete="off" spellcheck="false">
+                        <!-- Activity Sub-Tab -->
+                        <div id="perfPaneActivity" class="perf-pane" style="display:none;">
+                            <div class="perf-charts-row">
+                                <div class="perf-chart-card">
+                                    <h3>Query Duration</h3>
+                                    <canvas id="perfQueryDurationChart"></canvas>
+                                </div>
+                                <div class="perf-chart-card">
+                                    <h3>Memory per Query</h3>
+                                    <canvas id="perfMemoryChart"></canvas>
+                                </div>
                             </div>
-                            <div id="perfRecentTable" class="perf-table-container">
-                                <div class="empty-state" style="min-height: 120px;">
-                                    <p>No recent queries</p>
+
+                            <!-- Running Queries Table -->
+                            <div class="perf-section">
+                                <div class="perf-section-header">
+                                    <h3>Running Queries</h3>
+                                    <span id="perfProcessCount" class="perf-count">0</span>
+                                    <input type="text" id="perfProcessSearch" class="perf-search-input" placeholder="Search..." autocomplete="off" spellcheck="false">
+                                </div>
+                                <div id="perfProcessesTable" class="perf-table-container">
+                                    <div class="empty-state" style="min-height: 120px;">
+                                        <p>No active queries</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Recent Query Log -->
+                            <div class="perf-section">
+                                <div class="perf-section-header">
+                                    <h3>Recent Queries</h3>
+                                    <span id="perfRecentCount" class="perf-count">0</span>
+                                    <input type="text" id="perfRecentSearch" class="perf-search-input" placeholder="Search..." autocomplete="off" spellcheck="false">
+                                </div>
+                                <div id="perfRecentTable" class="perf-table-container">
+                                    <div class="empty-state" style="min-height: 120px;">
+                                        <p>No recent queries</p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -241,21 +279,13 @@
             <section class="settings-view-section">
                 <!-- Settings Sub-Tabs -->
                 <div class="alerts-sub-tabs" id="settingsSubTabs">
-                    <button class="alerts-sub-tab active" data-subtab="status" onclick="SettingsView.switchSubTab('status')">Status</button>
-                    <button class="alerts-sub-tab" data-subtab="users" onclick="SettingsView.switchSubTab('users')">Users</button>
+                    <button class="alerts-sub-tab active" data-subtab="users" onclick="SettingsView.switchSubTab('users')">Users</button>
                     <button class="alerts-sub-tab" data-subtab="groups" onclick="SettingsView.switchSubTab('groups')">Groups</button>
                     <button class="alerts-sub-tab" data-subtab="limits" onclick="SettingsView.switchSubTab('limits')">Limits</button>
                 </div>
 
-                <!-- Status Sub-Tab -->
-                <div id="settingsSubTabStatus" class="settings-sub-panel">
-                <div class="settings-card">
-                    <div id="settingsStatus"></div>
-                </div>
-                </div>
-
                 <!-- Users Sub-Tab -->
-                <div id="settingsSubTabUsers" class="settings-sub-panel" style="display:none;">
+                <div id="settingsSubTabUsers" class="settings-sub-panel">
                 <div class="settings-card">
                     <div class="section-header">
                         <button id="addUserBtnSettings" class="btn-primary btn-sm">+ Add User</button>
@@ -452,12 +482,30 @@
                 <div id="schemaFieldsView" class="admin-only" style="display: none;">
                     <section class="settings-view-section">
                         <div class="section-header">
-                            <h3 style="margin:0">Schema Fields</h3>
+                            <div class="schema-title-row">
+                                <h3 style="margin:0">Schema Fields</h3>
+                                <span class="schema-info" tabindex="0" role="img" aria-label="About schema fields">
+                                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <circle cx="8" cy="8" r="6.5"></circle>
+                                        <line x1="8" y1="7.2" x2="8" y2="11.5"></line>
+                                        <circle cx="8" cy="4.8" r="0.4" fill="currentColor"></circle>
+                                    </svg>
+                                    <span class="schema-info-tip" role="tooltip">
+                                        Project default fields are built into every deployment and are read-only.
+                                        Custom fields add type hints and skip indexes to ClickHouse so queries on
+                                        those fields use index acceleration. A new field applies to newly ingested
+                                        logs right away; existing logs stay fully searchable but are not
+                                        index-accelerated retroactively.
+                                    </span>
+                                </span>
+                            </div>
                             <div class="section-header-actions">
+                                <input type="file" id="schemaImportInput" accept=".yaml,.yml,text/yaml" style="display:none">
+                                <button id="schemaExportBtn" class="btn-secondary btn-sm">Export</button>
+                                <button id="schemaImportBtn" class="btn-secondary btn-sm">Import</button>
                                 <button id="schemaFieldAddBtn" class="btn-primary btn-sm">+ Add Custom Field</button>
                             </div>
                         </div>
-                        <p class="help-text">Project default fields are built into every deployment and are read-only. Custom fields add type hints and skip indexes to ClickHouse so queries on those fields use index acceleration.</p>
 
                         <!-- Inline add form -->
                         <div id="schemaFieldAddForm" style="display:none;">
@@ -659,21 +707,35 @@
 
                 <div class="toolbar-spacer"></div>
 
-                <!-- Queries menu -->
+                <!-- Queries palette (History + Saved) -->
                 <div class="toolbar-menu-wrap" id="queriesMenuWrap">
                     <button id="queriesMenuBtn" class="toolbar-menu-btn">
                         Queries
-                        <svg class="toolbar-menu-chevron" width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <span class="toolbar-menu-kbd">⌘K</span>
                     </button>
-                    <div id="queriesMenu" class="toolbar-dropdown-menu" style="display:none">
-                        <button id="recentQueriesBtn" class="toolbar-menu-item">
-                            <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 3.5v4.5l3 1.5M14.5 8a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                            Recent Queries
-                        </button>
-                        <button id="savedQueriesBtn" class="toolbar-menu-item">
-                            <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M4 1h8a1 1 0 0 1 1 1v12l-5-3-5 3V2a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-                            Saved Queries
-                        </button>
+                    <div id="paletteBackdrop" class="palette-backdrop" style="display:none"></div>
+                    <div id="queryPalette" class="query-palette" style="display:none">
+                        <div class="palette-search-row">
+                            <svg class="palette-search-icon" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M7 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM11 11l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                            <input type="text" id="paletteSearch" class="palette-search" placeholder="Search queries..." autocomplete="off" spellcheck="false" />
+                        </div>
+                        <div class="palette-tabs">
+                            <button class="palette-tab active" data-tab="history">History</button>
+                            <button class="palette-tab" data-tab="saved">Saved</button>
+                            <div class="palette-tabs-spacer"></div>
+                            <button id="paletteSaveBtn" class="palette-tab-action" title="Save current query">
+                                <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                                Save
+                            </button>
+                        </div>
+                        <div id="paletteList" class="palette-list"></div>
+                        <div class="palette-footer">
+                            <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+                            <span><kbd>↵</kbd> run</span>
+                            <span><kbd>⌘↵</kbd> load</span>
+                            <span><kbd>⌘S</kbd> save</span>
+                            <span id="paletteClearBtn" class="palette-footer-clear">Clear history</span>
+                        </div>
                     </div>
                 </div>
 
@@ -693,27 +755,6 @@
                             Send to notebook
                         </button>
                     </div>
-                </div>
-
-                <!-- Recent Queries Dropdown -->
-                <div id="recentQueriesDropdown" class="recent-queries-dropdown" style="display: none;">
-                    <div class="dropdown-header">
-                        <input type="text" id="recentQueriesSearch" class="dropdown-search" placeholder="Search recent queries..." />
-                        <button id="clearRecentBtn" class="clear-recent-btn" title="Clear all">✕</button>
-                    </div>
-                    <div id="recentQueriesList" class="dropdown-list"></div>
-                </div>
-
-                <!-- Saved Queries Dropdown -->
-                <div id="savedQueriesDropdown" class="saved-queries-dropdown" style="display: none;">
-                    <div class="dropdown-header">
-                        <input type="text" id="savedQueriesSearch" class="dropdown-search" placeholder="Search saved queries..." oninput="SavedQueries.handleSearch(this.value)" />
-                        <button class="toolbar-icon-btn" title="Save current query" onclick="SavedQueries.showSaveForm()" style="width:24px;height:24px;flex-shrink:0;">
-                            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                        </button>
-                    </div>
-                    <div id="savedQueriesSaveForm" style="display: none;"></div>
-                    <div id="savedQueriesList" class="dropdown-list"></div>
                 </div>
 
                 <button id="executeBtn" class="search-btn">
@@ -2920,8 +2961,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/config.js"></script>
     <script src="/static/httpUtils.js"></script>
     <script src="/static/pagination.js"></script>
-    <script src="/static/recentQueries.js"></script>
-    <script src="/static/savedQueries.js"></script>
+    <script src="/static/queryPalette.js"></script>
     <script src="/static/timeBar.js"></script>
     <script src="/static/autocomplete.js"></script>
     <script src="/static/timeline.js"></script>
