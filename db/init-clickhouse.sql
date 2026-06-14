@@ -85,6 +85,7 @@ ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port 
 -- background mutation to reclaim disk.
 ALTER TABLE logs DROP INDEX IF EXISTS field_tokens_text;
 ALTER TABLE logs DROP COLUMN IF EXISTS field_tokens;
+ALTER TABLE logs_distributed DROP COLUMN IF EXISTS field_tokens;
 
 -- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
 -- Querying this instead of raw logs reduces the recent-logs histogram from a
