@@ -373,13 +373,12 @@ func collectHavingConditionFields(conditions []HavingCondition, fields map[strin
 // buildWhereClause builds a WHERE clause from multiple conditions respecting OR/AND logic and parenthetical grouping.
 // Conditions with the same GroupID > 0 are collected into a group. If GroupNegate is set, the whole group is wrapped in NOT(...).
 func buildWhereClause(conditions []ConditionNode) (string, error) {
-	return buildWhereClauseCtx(conditions, false, false)
+	return buildWhereClauseCtx(conditions)
 }
 
-// buildWhereClauseCtx is the context-aware implementation of buildWhereClause.
-// inNegation indicates the caller is inside a NOT context (suppresses hasToken pre-filters on regex).
-// suppressTokens disables all hasToken pre-filters regardless of negation (used by alert auto-projection).
-func buildWhereClauseCtx(conditions []ConditionNode, inNegation bool, suppressTokens bool) (string, error) {
+// buildWhereClauseCtx builds the WHERE clause SQL for a list of condition nodes,
+// respecting OR/AND logic, parenthetical grouping, and NOT negation.
+func buildWhereClauseCtx(conditions []ConditionNode) (string, error) {
 	if len(conditions) == 0 {
 		return "", nil
 	}
@@ -408,7 +407,7 @@ func buildWhereClauseCtx(conditions []ConditionNode, inNegation bool, suppressTo
 			// Build inner SQL for the group
 			var inner strings.Builder
 			for j, gc := range group {
-				condSQL, err := translateConditionCtx(gc, groupNegate||inNegation, suppressTokens)
+				condSQL, err := translateConditionCtx(gc)
 				if err != nil {
 					return "", err
 				}
@@ -432,7 +431,7 @@ func buildWhereClauseCtx(conditions []ConditionNode, inNegation bool, suppressTo
 			// The logic connecting this group to the next part is on the last condition
 			parts = append(parts, part{sql: groupSQL, logic: group[len(group)-1].Logic})
 		} else {
-			condSQL, err := translateConditionCtx(cond, inNegation, suppressTokens)
+			condSQL, err := translateConditionCtx(cond)
 			if err != nil {
 				return "", err
 			}
@@ -469,13 +468,13 @@ func fixOperatorPrecedence(sql string) string {
 }
 
 func translateCondition(cond ConditionNode) (string, error) {
-	return translateConditionCtx(cond, false, false)
+	return translateConditionCtx(cond)
 }
 
-func translateConditionCtx(cond ConditionNode, inNegation bool, suppressTokens bool) (string, error) {
+func translateConditionCtx(cond ConditionNode) (string, error) {
 	// Handle compound nodes by recursively building the inner SQL.
 	if cond.IsCompound {
-		innerSQL, err := buildWhereClauseCtx(cond.Children, cond.Negate||inNegation, suppressTokens)
+		innerSQL, err := buildWhereClauseCtx(cond.Children)
 		if err != nil {
 			return "", err
 		}
@@ -529,15 +528,13 @@ func translateConditionCtx(cond ConditionNode, inNegation bool, suppressTokens b
 		// This allows queries like: bytes > 1000
 		switch cond.Operator {
 		case "=":
+			// Field-qualified equality is answered solely by the JSON sub-column (or the
+			// direct column for raw_log/timestamp/log_id). Type-hinted fields prune granules
+			// via their dedicated bloom_filter/set skip index; dynamic fields scan within the
+			// time+fractal partition. No raw_log token pre-filter is added: the value is not
+			// guaranteed to appear verbatim in raw_log (e.g. normalized/derived fields), so
+			// such a pre-filter can drop real matches. raw_log is for unqualified search only.
 			sql = fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
-			// Prepend raw_log token pre-filters for granule pruning. Type-hinted fields
-			// get this alongside their implicit bloom filter/set index.
-			// Suppressed in negation contexts where pre-filters provide no benefit.
-			if isJSONField && !suppressTokens && !inNegation && !cond.Negate {
-				if pre := equalityPreFilters(cond.Field, cond.Value); pre != "" {
-					sql = pre + " AND " + sql
-				}
-			}
 		case "!=":
 			// For JSON fields, include rows where the field doesn't exist (NULL).
 			// Without this, NULL != 'value' evaluates to NULL (falsy) and
@@ -905,88 +902,6 @@ func extractLiteralTokens(pattern string) []string {
 		}
 	}
 	return result
-}
-
-// extractValueTokens extracts alphanumeric token sequences from a plain (non-regex)
-// string value, mirroring ClickHouse's tokenbf_v1 tokenizer (splits on non-alphanumeric
-// characters). Tokens shorter than 3 chars or consisting entirely of digits are excluded:
-// pure-digit tokens are unsafe as raw_log hasToken pre-filters because digits can appear
-// embedded inside larger alphanumeric tokens (e.g. "500" inside "error500"), which would
-// cause false negatives. Mixed tokens like "namtws003" are kept.
-// Used to build hasToken() pre-filters for equality conditions on JSON fields.
-func extractValueTokens(value string) []string {
-	var tokens []string
-	var current []byte
-
-	flush := func() {
-		if len(current) >= 3 {
-			tokens = append(tokens, strings.ToLower(string(current)))
-		}
-		current = current[:0]
-	}
-
-	for i := 0; i < len(value); i++ {
-		ch := value[i]
-		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') {
-			current = append(current, ch)
-		} else {
-			flush()
-		}
-	}
-	flush()
-
-	seen := make(map[string]bool)
-	var result []string
-	for _, t := range tokens {
-		if seen[t] {
-			continue
-		}
-		// Drop pure-digit tokens for the same reason as extractLiteralTokens:
-		// they are unsafe as raw_log hasToken pre-filters (false negative risk).
-		hasAlpha := false
-		for _, c := range t {
-			if c >= 'a' && c <= 'z' {
-				hasAlpha = true
-				break
-			}
-		}
-		if hasAlpha {
-			seen[t] = true
-			result = append(result, t)
-		}
-	}
-	return result
-}
-
-// equalityPreFilters builds a raw_log token pre-filter for a field:value equality
-// condition, pruning granules via the raw_log inverted (text) index:
-//
-//	(hasToken(raw_log, 'tok1') AND hasToken(raw_log, 'tok2'))
-//
-// Every alphanumeric token in the value must appear in the raw log line, so this is a
-// safe superset filter (never a false negative); the exact `field = value` comparison it
-// is ANDed with enforces correctness. Type-hinted fields additionally prune via their
-// dedicated bloom_filter/set skip index on the direct sub-column -- that index (not this
-// pre-filter) is what prunes separator-heavy values like IPs, whose numeric tokens are
-// dropped below and so contribute nothing here.
-// Returns "" when no alpha tokens can be extracted from value (numeric-only, short, etc).
-//
-// NOTE: a compound field_tokens pre-filter was tried twice and abandoned. hasToken rejects
-// the ':' delimiter (ClickHouse error 36); hasAllTokens then silently matched nothing (the
-// colon-compound is not in the index's token set) while adding a wide-column read that made
-// queries slower than raw_log alone. field_tokens is retained in the schema but is no longer
-// queried -- see db/init-clickhouse.sql.
-func equalityPreFilters(field, value string) string {
-	tokens := extractValueTokens(value)
-	if len(tokens) == 0 {
-		return ""
-	}
-
-	rawParts := make([]string, 0, len(tokens))
-	for _, tok := range tokens {
-		rawParts = append(rawParts, fmt.Sprintf("hasToken(raw_log, '%s')", tok))
-	}
-	return "(" + strings.Join(rawParts, " AND ") + ")"
 }
 
 // buildRegexMatchSQL returns a match() expression for use in WHERE clauses.

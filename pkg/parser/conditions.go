@@ -269,13 +269,9 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 
 	switch cond.Operator {
 	case "=":
-		eqSQL := fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
-		if isJSONField {
-			if pre := equalityPreFilters(cond.Field, cond.Value); pre != "" {
-				return pre + " AND " + eqSQL
-			}
-		}
-		return eqSQL
+		// Equality is answered by the field's column/sub-column alone; no raw_log token
+		// pre-filter (the value may be normalized and absent from raw_log -> false negatives).
+		return fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
 	case "!=":
 		if isJSONField {
 			return fmt.Sprintf("(%s IS NULL OR %s != '%s')", fieldRef, fieldRef, escapeString(cond.Value))

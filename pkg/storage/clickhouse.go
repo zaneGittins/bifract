@@ -554,10 +554,10 @@ func (c *ClickHouseClient) Conn() driver.Conn {
 // buildFieldTokens builds a space-separated string of lowercase field:value tokens
 // from a log entry's fields map, populating the field_tokens column.
 //
-// DEPRECATED: field_tokens is no longer queried (see db/init-clickhouse.sql and
-// equalityPreFilters in pkg/parser/helpers.go for why the compound-lookup approach was
-// abandoned). The column is still populated so it stays consistent if the approach is ever
-// revisited; it can be dropped along with the column when that is rewritten.
+// DEPRECATED: field_tokens is no longer queried (see db/init-clickhouse.sql for why the
+// compound-lookup approach was abandoned). Field equality now resolves against the JSON
+// sub-column directly, pruned by per-field skip indexes. The column is still populated so it
+// stays consistent if the approach is ever revisited; drop it along with the column later.
 //
 // Normalization rules:
 //   - keys and values are lowercased
