@@ -199,6 +199,59 @@ func parseMaxNumber(output string) int {
 	return 0
 }
 
+// splitStatements splits a migration file into individual statements on ';'
+// characters that are not inside a line comment (-- to end of line), a block
+// comment (/* ... */), or a single-quoted string literal. A naive
+// strings.Split(sql, ";") truncates statements when a comment or literal contains
+// a semicolon, which several migration files do (e.g. "-- indexed automatically;
+// on large tables run ..."), producing invalid SQL fragments.
 func splitStatements(sql string) []string {
-	return strings.Split(sql, ";")
+	var stmts []string
+	var b strings.Builder
+	var inLineComment, inBlockComment, inString bool
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		switch {
+		case inLineComment:
+			b.WriteByte(c)
+			if c == '\n' {
+				inLineComment = false
+			}
+		case inBlockComment:
+			b.WriteByte(c)
+			if c == '*' && i+1 < len(sql) && sql[i+1] == '/' {
+				b.WriteByte('/')
+				i++
+				inBlockComment = false
+			}
+		case inString:
+			b.WriteByte(c)
+			if c == '\\' && i+1 < len(sql) {
+				b.WriteByte(sql[i+1])
+				i++
+			} else if c == '\'' {
+				inString = false
+			}
+		case c == '-' && i+1 < len(sql) && sql[i+1] == '-':
+			inLineComment = true
+			b.WriteByte(c)
+		case c == '/' && i+1 < len(sql) && sql[i+1] == '*':
+			inBlockComment = true
+			b.WriteByte(c)
+			b.WriteByte('*')
+			i++
+		case c == '\'':
+			inString = true
+			b.WriteByte(c)
+		case c == ';':
+			stmts = append(stmts, b.String())
+			b.Reset()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	if strings.TrimSpace(b.String()) != "" {
+		stmts = append(stmts, b.String())
+	}
+	return stmts
 }

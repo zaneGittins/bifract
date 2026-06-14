@@ -34,8 +34,8 @@ CREATE TABLE IF NOT EXISTS logs (
     -- field_tokens_text skip index to prune granules for field equality conditions.
     -- splitByString defaults to a single-whitespace separator, keeping each field:value
     -- pair as one atomic token so hasAllTokens(field_tokens, ['process_name:curl.exe'])
-    -- is a precise compound lookup (the array form preserves the ':' delimiter; hasToken
-    -- cannot be used as it rejects separator characters in the needle).
+    -- is a precise compound lookup. The array form preserves the ':' delimiter, which
+    -- hasToken cannot (it rejects separator characters in the needle).
     field_tokens String DEFAULT '',
     -- lower() preprocessor lowercases tokens at index time so case-insensitive lookups match.
     INDEX field_tokens_text field_tokens TYPE text(tokenizer = splitByString, preprocessor = lower(field_tokens)) GRANULARITY 1,
@@ -97,7 +97,7 @@ ORDER BY (fractal_id, minute)
 SETTINGS index_granularity = 256;
 
 -- Feeds logs_histogram from every insert into the local logs table.
--- The MV writes to the local logs_histogram; the distributed table handles cross-shard reads.
+-- The MV writes to the local logs_histogram. The distributed table handles cross-shard reads.
 CREATE MATERIALIZED VIEW IF NOT EXISTS logs_histogram_mv TO logs_histogram AS
 SELECT
     fractal_id,

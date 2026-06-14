@@ -249,13 +249,69 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 	return nil
 }
 
+// splitSQLOnTopLevelSemicolons splits sql into segments on ';' characters that are not
+// inside a line comment (-- to end of line), a block comment (/* ... */), or a single-
+// quoted string literal. A naive strings.Split(sql, ";") truncates statements when a
+// comment or literal contains a semicolon (e.g. "-- writes locally; reads cross-shard"
+// inside a CREATE TABLE block), producing unmatched parentheses and a syntax error.
+func splitSQLOnTopLevelSemicolons(sql string) []string {
+	var stmts []string
+	var b strings.Builder
+	var inLineComment, inBlockComment, inString bool
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		switch {
+		case inLineComment:
+			b.WriteByte(c)
+			if c == '\n' {
+				inLineComment = false
+			}
+		case inBlockComment:
+			b.WriteByte(c)
+			if c == '*' && i+1 < len(sql) && sql[i+1] == '/' {
+				b.WriteByte('/')
+				i++
+				inBlockComment = false
+			}
+		case inString:
+			b.WriteByte(c)
+			if c == '\\' && i+1 < len(sql) { // backslash-escaped char
+				b.WriteByte(sql[i+1])
+				i++
+			} else if c == '\'' { // closing quote (doubled '' re-opens on next iter)
+				inString = false
+			}
+		case c == '-' && i+1 < len(sql) && sql[i+1] == '-':
+			inLineComment = true
+			b.WriteByte(c)
+		case c == '/' && i+1 < len(sql) && sql[i+1] == '*':
+			inBlockComment = true
+			b.WriteByte(c)
+			b.WriteByte('*')
+			i++
+		case c == '\'':
+			inString = true
+			b.WriteByte(c)
+		case c == ';':
+			stmts = append(stmts, b.String())
+			b.Reset()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	if strings.TrimSpace(b.String()) != "" {
+		stmts = append(stmts, b.String())
+	}
+	return stmts
+}
+
 // splitClickHouseSQL splits a SQL string into individual statements, skipping
 // USE and CREATE DATABASE statements since the DB is managed by the container env.
 // Leading comment lines are stripped from each segment so that Initialize()'s
 // prefix check (HasPrefix "ALTER"/"CREATE") works even when a comment block
 // precedes a DDL keyword in the same semicolon-delimited segment.
 func splitClickHouseSQL(sql string) []string {
-	parts := strings.Split(sql, ";")
+	parts := splitSQLOnTopLevelSemicolons(sql)
 	var stmts []string
 	for _, part := range parts {
 		stmt := strings.TrimSpace(part)
