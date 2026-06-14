@@ -518,6 +518,7 @@
                                 <div class="form-group index-type-group">
                                     <label for="schemaFieldIndexType">Index Type</label>
                                     <select id="schemaFieldIndexType">
+                                        <option value="none">None: type hint only, no skip index (default)</option>
                                         <option value="bloom_filter">Bloom Filter: high-cardinality (IPs, hashes, paths)</option>
                                         <option value="set">Set: low-cardinality (status codes, event types)</option>
                                     </select>

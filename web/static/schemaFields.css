@@ -69,6 +69,18 @@
     border: 1px solid rgba(74, 222, 128, 0.22);
 }
 
+.index-badge-none {
+    background: rgba(148, 163, 184, 0.12);
+    color: #94a3b8;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+[data-theme="light"] .index-badge-none {
+    background: rgba(100, 116, 139, 0.1);
+    color: #64748b;
+    border-color: rgba(100, 116, 139, 0.22);
+}
+
 [data-theme="light"] .index-badge-bloom {
     background: rgba(99, 60, 180, 0.1);
     color: #5b3fad;

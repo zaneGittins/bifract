@@ -1093,7 +1093,7 @@ func parseJSONTypeHints(typeStr string) []string {
 // storage package to the schemafields package.
 type SchemaFieldSpec struct {
 	FieldName string
-	IndexType string // "bloom_filter" or "set"
+	IndexType string // "none" (type hint only), "bloom_filter", or "set"
 }
 
 // ReconcileSchemaFields ensures ClickHouse has type hints and skip indexes for
@@ -1153,13 +1153,17 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 	for _, f := range fields {
 		var idxExpr string
 		switch f.IndexType {
+		case "none":
+			// Type hint only (dedicated sub-column already applied via MODIFY COLUMN
+			// above); no skip index. Skip writes/merges pay for nothing otherwise.
+			continue
 		case "set":
 			idxExpr = "TYPE set(256)"
 		default:
 			idxExpr = "TYPE bloom_filter(0.001)"
 		}
 		escaped := strings.ReplaceAll(f.FieldName, "`", "``")
-		idxName := "idx_" + strings.ReplaceAll(f.FieldName, " ", "_")
+		idxName := schemaFieldIndexName(f.FieldName)
 		idxSQL := fmt.Sprintf(
 			"ALTER TABLE logs ADD INDEX IF NOT EXISTS %s fields.`%s` %s GRANULARITY 1",
 			idxName, escaped, idxExpr,
@@ -1185,7 +1189,7 @@ func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []Sch
 	// Drop all managed skip indexes so ReconcileSchemaFields can recreate them
 	// with the correct expressions from scratch.
 	for _, f := range fields {
-		idxName := "idx_" + strings.ReplaceAll(f.FieldName, " ", "_")
+		idxName := schemaFieldIndexName(f.FieldName)
 		dropSQL := fmt.Sprintf("ALTER TABLE logs DROP INDEX IF EXISTS %s", idxName)
 		if err := c.conn.Exec(ctx, c.InjectOnCluster(dropSQL)); err != nil {
 			log.Printf("Warning: drop index %s: %v", idxName, err)
@@ -1193,4 +1197,27 @@ func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []Sch
 	}
 
 	return c.ReconcileSchemaFields(ctx, fields)
+}
+
+// schemaFieldIndexName returns the skip-index name for a custom field. Add and drop
+// paths must use this single source of truth so the names can never drift apart.
+func schemaFieldIndexName(field string) string {
+	return "idx_" + strings.ReplaceAll(field, " ", "_")
+}
+
+// DropSchemaFieldIndex removes the skip index for a single custom field, used when a
+// field is deleted so a later recreate with a different index type applies cleanly
+// (ReconcileSchemaFields is additive and ADD INDEX IF NOT EXISTS would otherwise keep
+// the stale index). It deliberately leaves the type hint (dedicated sub-column): that is
+// harmless, is reused if the field is recreated, and removing it would need a heavy
+// MODIFY COLUMN mutation.
+//
+// Safe on clusters and for the distributed insert path: a skip index is a local,
+// query-time pruning structure and is NOT part of the column/insert schema, so dropping
+// it never changes what the Distributed table forwards. Shards may converge independently
+// without any insert mismatch or distributed-queue backlog. IF EXISTS makes it idempotent;
+// InjectOnCluster propagates it to every shard on multi-node deployments.
+func (c *ClickHouseClient) DropSchemaFieldIndex(ctx context.Context, fieldName string) error {
+	dropSQL := fmt.Sprintf("ALTER TABLE logs DROP INDEX IF EXISTS %s", schemaFieldIndexName(fieldName))
+	return c.conn.Exec(ctx, c.InjectOnCluster(dropSQL))
 }

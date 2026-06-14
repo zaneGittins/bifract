@@ -9,11 +9,16 @@ import (
 type IndexType string
 
 const (
+	// IndexTypeNone applies the type hint (dedicated sub-column) with no skip index.
+	// This is the default for new custom fields: a skip index adds write/merge cost,
+	// so it should be opted into only for fields that need granule pruning.
+	IndexTypeNone        IndexType = "none"
 	IndexTypeBloomFilter IndexType = "bloom_filter"
 	IndexTypeSet         IndexType = "set"
 )
 
 var validIndexTypes = map[IndexType]bool{
+	IndexTypeNone:        true,
 	IndexTypeBloomFilter: true,
 	IndexTypeSet:         true,
 }

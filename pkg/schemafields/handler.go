@@ -120,6 +120,25 @@ func (h *Handler) reconcileAsync(fieldNames []string) {
 	}()
 }
 
+// dropFieldIndexAsync removes a deleted field's skip index from ClickHouse in the
+// background, serialized on reconcileMu so it can't race a concurrent add/reconcile
+// (e.g. an immediate delete-then-recreate). The type hint is intentionally retained.
+// Dropping a skip index does not alter the column/insert schema, so it is safe on
+// clusters and cannot back up the distributed insert queue.
+func (h *Handler) dropFieldIndexAsync(fieldName string) {
+	go func() {
+		h.reconcileMu.Lock()
+		defer h.reconcileMu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), reconcileTimeout)
+		defer cancel()
+
+		if err := h.ch.DropSchemaFieldIndex(ctx, fieldName); err != nil {
+			log.Printf("[SchemaFields] drop index for deleted field %q: %v", fieldName, err)
+		}
+	}()
+}
+
 // markFields updates the sync status of the given fields, ignoring those that
 // no longer exist (e.g. removed mid-reconcile).
 func (h *Handler) markFields(ctx context.Context, fieldNames []string, status, errMsg string) {
@@ -147,6 +166,10 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	} else {
 		h.notifyFieldChange(custom)
 	}
+	// Drop the field's ClickHouse skip index so a later recreate with a different
+	// index type applies cleanly (the reconcile is additive and would otherwise keep
+	// the stale index). Serialized with reconciles so it can't race a concurrent add.
+	h.dropFieldIndexAsync(name)
 	h.respondSuccess(w, map[string]string{"message": fmt.Sprintf("Field %q removed", name)})
 }
 

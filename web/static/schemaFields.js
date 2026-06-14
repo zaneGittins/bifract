@@ -110,6 +110,9 @@ const SchemaFields = {
     },
 
     _indexBadge(type) {
+        if (type === 'none' || !type) {
+            return '<span class="index-badge index-badge-none">None</span>';
+        }
         if (type === 'set') {
             return '<span class="index-badge index-badge-set">Set</span>';
         }
@@ -133,7 +136,7 @@ const SchemaFields = {
         if (form) form.style.display = 'block';
         if (input) { input.value = ''; input.focus(); }
         const sel = document.getElementById('schemaFieldIndexType');
-        if (sel) sel.value = 'bloom_filter';
+        if (sel) sel.value = 'none';
     },
 
     hideAddForm() {

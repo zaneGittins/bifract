@@ -86,10 +86,10 @@ func validateCreate(req *CreateRequest) error {
 		return fmt.Errorf("field_name %q is invalid: use only letters, digits, and underscores, starting with a letter or underscore", req.FieldName)
 	}
 	if req.IndexType == "" {
-		req.IndexType = IndexTypeBloomFilter
+		req.IndexType = IndexTypeNone
 	}
 	if !validIndexTypes[req.IndexType] {
-		return fmt.Errorf("invalid index_type %q (must be bloom_filter or set)", req.IndexType)
+		return fmt.Errorf("invalid index_type %q (must be none, bloom_filter, or set)", req.IndexType)
 	}
 	if ProjectDefaultFieldMap()[req.FieldName] {
 		return fmt.Errorf("field %q is a project default and cannot be added as a custom field", req.FieldName)
