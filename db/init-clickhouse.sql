@@ -74,18 +74,20 @@ ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_artifact           fields.artifact 
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port       TYPE set(4096)          GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port       TYPE set(4096)          GRANULARITY 1;
 
--- Retire the deprecated field_tokens column and its text index. Equality now resolves against
--- the JSON sub-column directly (see pkg/parser), so field_tokens is no longer written or queried.
--- These DROPs live here, not only in a numbered migration, because the server applies this file
--- on every boot but does NOT run the bifract-setup migrations, so this is the only path that
--- reaches server/k8s installs. IF EXISTS makes them idempotent no-ops on fresh installs and on
--- every later boot. On a cluster, Initialize propagates each ALTER to every shard (ON CLUSTER or
--- per-shard) so all shards converge. Inserts stay safe meanwhile because the column had a
--- DEFAULT and is no longer written. DROP INDEX must precede DROP COLUMN. DROP COLUMN schedules a
--- background mutation to reclaim disk.
+-- Retire the deprecated field_tokens column and its text index. field_tokens only ever
+-- existed in v0.0.3-dev builds (never in a released version), so for any real upgrade path
+-- (a fresh install, or v0.0.2 to v0.0.3) these are IF EXISTS no-ops: the column never existed,
+-- including on the cluster Distributed table. They live here, not only in a numbered migration,
+-- because the server applies this file on boot but does not run the bifract-setup migrations.
+-- DROP INDEX must precede DROP COLUMN. Equality now resolves against the JSON sub-column
+-- directly (see pkg/parser), so field_tokens is no longer written or queried.
+--
+-- Do NOT add a `logs_distributed DROP COLUMN field_tokens` here. logs_distributed exists only
+-- on clusters, and the single-node init path returns an error on a missing table, which would
+-- break Docker startup. Since no released version shipped field_tokens, no cluster upgrade will
+-- have it on the Distributed table to drop. (The one dev cluster that did was fixed by hand.)
 ALTER TABLE logs DROP INDEX IF EXISTS field_tokens_text;
 ALTER TABLE logs DROP COLUMN IF EXISTS field_tokens;
-ALTER TABLE logs_distributed DROP COLUMN IF EXISTS field_tokens;
 
 -- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
 -- Querying this instead of raw logs reduces the recent-logs histogram from a
