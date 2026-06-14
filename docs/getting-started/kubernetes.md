@@ -2,7 +2,7 @@
 
 ClickHouse scales vertically on a single node exceptionally well, but when you need high availability or have outgrown the resources of a single machine, Bifract supports deploying across a Kubernetes cluster. This guide walks through deploying to a managed Kubernetes provider such as AWS EKS, Azure AKS, or GKE.
 
-Docker Compose remains the primary and simplest deployment method. See [Installation](installation.md) for the standard setup.
+Docker Compose and Kubernetes are both fully supported, first-class deployment methods. Choose based on your needs: Docker Compose is the simplest path for a single node, while Kubernetes is the right choice when you need high availability or horizontal scale. See [Installation](installation.md) for the Docker Compose setup.
 
 ## Prerequisites
 

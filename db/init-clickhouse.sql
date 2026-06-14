@@ -30,15 +30,6 @@ CREATE TABLE IF NOT EXISTS logs (
     ),
     fractal_id LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3),
-    -- DEPRECATED, NOT USED IN QUERIES. Space-separated field:value tokens, intended for
-    -- compound field equality granule pruning. The approach was abandoned: hasToken rejects
-    -- the ':' delimiter (error 36) and hasAllTokens matched nothing against the colon-compound
-    -- token while making queries slower than the raw_log index alone. Queries now prune via the
-    -- per-field bloom_filter/set skip indexes (type-hinted fields) and the raw_log text index.
-    -- The column and index are retained for now to avoid a costly part-rewrite; remove when
-    -- convenient. The column is still populated on ingest so it stays consistent if revisited.
-    field_tokens String DEFAULT '',
-    INDEX field_tokens_text field_tokens TYPE text(tokenizer = splitByString, preprocessor = lower(field_tokens)) GRANULARITY 1,
     INDEX raw_log_inverted raw_log TYPE text(tokenizer = splitByNonAlpha, preprocessor = lower(raw_log)),
     INDEX log_id_bloom log_id TYPE bloom_filter(0.001) GRANULARITY 1,
     INDEX ingest_ts_minmax ingest_timestamp TYPE minmax GRANULARITY 1,
@@ -67,8 +58,6 @@ SETTINGS index_granularity = 8192;
 
 -- Defensive: idempotent ADD COLUMN / ADD INDEX for existing installs that predate
 -- inline definitions. IF NOT EXISTS means these are safe no-ops on fresh installs.
-ALTER TABLE logs ADD COLUMN IF NOT EXISTS field_tokens String DEFAULT '';
-ALTER TABLE logs ADD INDEX IF NOT EXISTS field_tokens_text field_tokens TYPE text(tokenizer = splitByString, preprocessor = lower(field_tokens)) GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS ingest_ts_minmax       ingest_timestamp      TYPE minmax           GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_ip             fields.src_ip         TYPE bloom_filter(0.001) GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_ip             fields.dst_ip         TYPE bloom_filter(0.001) GRANULARITY 1;
@@ -84,6 +73,18 @@ ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_operation          fields.operation
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_artifact           fields.artifact       TYPE set(64)            GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port       TYPE set(4096)          GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port       TYPE set(4096)          GRANULARITY 1;
+
+-- Retire the deprecated field_tokens column and its text index. Equality now resolves against
+-- the JSON sub-column directly (see pkg/parser); field_tokens is no longer written or queried.
+-- These DROPs live here, not only in a numbered migration, because the server applies this file
+-- on every boot but does NOT run the bifract-setup migrations -- so this is the only path that
+-- reaches server/k8s installs. IF EXISTS makes them idempotent no-ops on fresh installs and on
+-- every later boot. On a cluster Initialize propagates each ALTER to every shard (ON CLUSTER or
+-- per-shard), so all shards converge; inserts stay safe meanwhile because the column had a
+-- DEFAULT and is no longer written. DROP INDEX must precede DROP COLUMN; DROP COLUMN schedules a
+-- background mutation to reclaim disk.
+ALTER TABLE logs DROP INDEX IF EXISTS field_tokens_text;
+ALTER TABLE logs DROP COLUMN IF EXISTS field_tokens;
 
 -- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
 -- Querying this instead of raw logs reduces the recent-logs histogram from a

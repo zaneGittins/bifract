@@ -1,8 +1,10 @@
 # Installation
 
+Bifract supports two first-class deployment methods: Docker Compose (covered here) and [Kubernetes](kubernetes.md). Both are fully supported. Docker Compose is the simplest path for a single node; Kubernetes is the right choice when you need high availability or horizontal scale.
+
 ## Quick Start
 
-The recommended way to install Bifract is with the Linux setup wizard. It handles SSL, secure passwords, Docker Compose, and database initialization:
+For a Docker Compose install, the simplest path is the Linux setup wizard. It handles SSL, secure passwords, Docker Compose, and database initialization:
 
 ```bash
 curl -sfL https://docs.bifract.io/install.sh | sh

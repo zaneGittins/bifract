@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -551,56 +550,12 @@ func (c *ClickHouseClient) Conn() driver.Conn {
 	return c.conn
 }
 
-// buildFieldTokens builds a space-separated string of lowercase field:value tokens
-// from a log entry's fields map, populating the field_tokens column.
-//
-// DEPRECATED: field_tokens is no longer queried (see db/init-clickhouse.sql for why the
-// compound-lookup approach was abandoned). Field equality now resolves against the JSON
-// sub-column directly, pruned by per-field skip indexes. The column is still populated so it
-// stays consistent if the approach is ever revisited; drop it along with the column later.
-//
-// Normalization rules:
-//   - keys and values are lowercased
-//   - whitespace and colons are replaced with underscore to avoid splitting tokens
-//   - empty values are skipped
-//   - tokens are sorted for deterministic output (map iteration is non-deterministic)
-func buildFieldTokens(fields map[string]string) string {
-	tokens := make([]string, 0, len(fields))
-	for k, v := range fields {
-		if v == "" {
-			continue
-		}
-		tokens = append(tokens, replaceTokenSeparators(strings.ToLower(k))+":"+replaceTokenSeparators(strings.ToLower(v)))
-	}
-	sort.Strings(tokens)
-	return strings.Join(tokens, " ")
-}
-
-// replaceTokenSeparators replaces characters that would break a field:value token
-// when indexed by splitByWhitespace. Applied to both field names and values:
-// whitespace would split the token at the index level; colons in field names would
-// create ambiguity with the field:value separator (colons in values are also replaced
-// for consistency, e.g. URLs and IPv6 addresses become unambiguous tokens).
-func replaceTokenSeparators(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch r {
-		case ':', ' ', '\t', '\n', '\r':
-			b.WriteByte('_')
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
 func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) error {
 	if len(logs) == 0 {
 		return nil
 	}
 
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.WriteTable()+" (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp, field_tokens)")
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.WriteTable()+" (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp)")
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
@@ -617,7 +572,6 @@ func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) erro
 			log.Fields,
 			log.FractalID,
 			ingestTS,
-			buildFieldTokens(log.Fields),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append log to batch: %w", err)
