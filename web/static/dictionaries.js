@@ -170,21 +170,23 @@ const Dictionaries = {
     },
 
     showCreateForm() {
-        const form = document.getElementById('dictCreateForm');
-        if (!form) return;
-        form.style.display = 'block';
-        document.getElementById('dictNewName').value = '';
-        document.getElementById('dictNewDesc').value = '';
+        const modal = document.getElementById('createDictModal');
+        if (!modal) return;
+        const nameInput = document.getElementById('dictNewName');
+        const descInput = document.getElementById('dictNewDesc');
         const globalCb = document.getElementById('dictNewGlobal');
-        if (globalCb) globalCb.checked = false;
         const err = document.getElementById('dictCreateError');
+        if (nameInput) nameInput.value = '';
+        if (descInput) descInput.value = '';
+        if (globalCb) globalCb.checked = false;
         if (err) err.style.display = 'none';
-        document.getElementById('dictNewName').focus();
+        modal.style.display = 'flex';
+        setTimeout(() => nameInput?.focus(), 100);
     },
 
     hideCreateForm() {
-        const form = document.getElementById('dictCreateForm');
-        if (form) form.style.display = 'none';
+        const modal = document.getElementById('createDictModal');
+        if (modal) modal.style.display = 'none';
     },
 
     async saveCreateDictionary() {
@@ -256,6 +258,7 @@ const Dictionaries = {
     </div>
     <div class="dict-detail-header-right">
         <button id="dictImportBtn" class="btn-secondary">Import CSV</button>
+        <button id="dictExportBtn" class="btn-secondary">Export CSV</button>
         <button id="dictReloadBtn" class="btn-secondary" title="Reload ClickHouse dictionary">Reload</button>
         <button id="dictDeleteBtn" class="btn-secondary" style="color:var(--error);">Delete</button>
     </div>
@@ -317,6 +320,7 @@ const Dictionaries = {
             if (this.rowPage < max) { this.rowPage++; this.loadRows(); }
         });
         document.getElementById('dictImportBtn')?.addEventListener('click', () => this.toggleImportPanel());
+        document.getElementById('dictExportBtn')?.addEventListener('click', () => this.doExport());
         document.getElementById('cancelImportBtn')?.addEventListener('click', () => this.hideImportPanel());
         document.getElementById('doImportBtn')?.addEventListener('click', () => this.doImport());
         document.getElementById('dictReloadBtn')?.addEventListener('click', () => this.reloadDictionary());
@@ -866,6 +870,11 @@ const Dictionaries = {
         }
         if (err) err.style.display = 'none';
 
+        const btn = document.getElementById('doImportBtn');
+        const cancelBtn = document.getElementById('cancelImportBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Importing...'; }
+        if (cancelBtn) cancelBtn.disabled = true;
+
         const formData = new FormData();
         formData.append('file', this._csvFile);
 
@@ -890,7 +899,20 @@ const Dictionaries = {
             this.loadRows();
         } catch (e) {
             if (err) { err.textContent = e.message; err.style.display = 'block'; }
+            if (btn) { btn.disabled = false; btn.textContent = 'Import'; }
+            if (cancelBtn) cancelBtn.disabled = false;
         }
+    },
+
+    doExport() {
+        const d = this.currentDictionary;
+        if (!d) return;
+        const a = document.createElement('a');
+        a.href = `/api/v1/dictionaries/${d.id}/export`;
+        a.download = `${d.name}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
     },
 
     // ---- Utilities ----

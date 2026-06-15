@@ -523,7 +523,9 @@ func (m *Manager) DeleteRow(ctx context.Context, id, key string) error {
 	return nil
 }
 
-// ImportCSV parses a CSV reader and upserts all rows. First row must be headers.
+const csvImportBatchSize = 1000
+
+// ImportCSV parses a CSV reader and batch-inserts all rows. First row must be headers.
 // Returns the number of rows imported.
 func (m *Manager) ImportCSV(ctx context.Context, id string, r io.Reader) (int, error) {
 	dict, err := m.GetDictionary(ctx, id)
@@ -555,15 +557,17 @@ func (m *Manager) ImportCSV(ctx context.Context, id string, r io.Reader) (int, e
 		}
 	}
 
-	count := 0
+	var rows []DictionaryRow
+	rowNum := 0
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return count, fmt.Errorf("CSV parse error at row %d: %w", count+1, err)
+			return len(rows), fmt.Errorf("CSV parse error at row %d: %w", rowNum+1, err)
 		}
+		rowNum++
 
 		fields := make(map[string]string)
 		for i, h := range headers {
@@ -576,13 +580,106 @@ func (m *Manager) ImportCSV(ctx context.Context, id string, r io.Reader) (int, e
 		if keyVal == "" {
 			continue
 		}
-
-		if err := m.UpsertRows(ctx, id, []DictionaryRow{{Key: keyVal, Fields: fields}}); err != nil {
-			return count, err
-		}
-		count++
+		rows = append(rows, DictionaryRow{Key: keyVal, Fields: fields})
 	}
-	return count, nil
+
+	if len(rows) == 0 {
+		return 0, nil
+	}
+
+	if err := m.batchInsertRows(ctx, dict, rows); err != nil {
+		return 0, err
+	}
+	m.updateRowCount(ctx, dict)
+	return len(rows), nil
+}
+
+// batchInsertRows inserts rows in batches of csvImportBatchSize using multi-row INSERT statements.
+func (m *Manager) batchInsertRows(ctx context.Context, dict *Dictionary, rows []DictionaryRow) error {
+	if len(dict.Columns) == 0 {
+		return nil
+	}
+
+	var colNames []string
+	for _, c := range dict.Columns {
+		colNames = append(colNames, fmt.Sprintf("`%s`", escCH(c.Name)))
+	}
+
+	placeholders := make([]string, len(dict.Columns))
+	for i := range placeholders {
+		placeholders[i] = "?"
+	}
+	rowPlaceholder := "(" + strings.Join(placeholders, ", ") + ")"
+
+	for i := 0; i < len(rows); i += csvImportBatchSize {
+		end := i + csvImportBatchSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		batch := rows[i:end]
+
+		batchPlaceholders := make([]string, len(batch))
+		for j := range batch {
+			batchPlaceholders[j] = rowPlaceholder
+		}
+
+		insertSQL := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES %s",
+			escCH(dict.CHTableName), strings.Join(colNames, ", "), strings.Join(batchPlaceholders, ", "))
+
+		args := make([]interface{}, 0, len(batch)*len(dict.Columns))
+		for _, row := range batch {
+			for _, c := range dict.Columns {
+				args = append(args, row.Fields[c.Name])
+			}
+		}
+
+		if err := m.ch.ExecArgs(ctx, insertSQL, args...); err != nil {
+			return fmt.Errorf("failed to batch insert rows: %w", err)
+		}
+	}
+	return nil
+}
+
+// ExportCSV writes all rows of a dictionary as CSV to w. First row is column headers.
+func (m *Manager) ExportCSV(ctx context.Context, id string, w io.Writer) error {
+	dict, err := m.GetDictionary(ctx, id)
+	if err != nil {
+		return err
+	}
+	if len(dict.Columns) == 0 {
+		return nil
+	}
+
+	var colRefs []string
+	var colNames []string
+	for _, c := range dict.Columns {
+		colRefs = append(colRefs, fmt.Sprintf("`%s`", escCH(c.Name)))
+		colNames = append(colNames, c.Name)
+	}
+
+	querySQL := fmt.Sprintf("SELECT %s FROM `%s` ORDER BY `%s` ASC",
+		strings.Join(colRefs, ", "), escCH(dict.CHTableName), escCH(dict.KeyColumn))
+
+	dataRows, err := m.ch.Query(ctx, querySQL)
+	if err != nil {
+		return fmt.Errorf("failed to query rows for export: %w", err)
+	}
+
+	writer := csv.NewWriter(w)
+	if err := writer.Write(colNames); err != nil {
+		return err
+	}
+	for _, row := range dataRows {
+		record := make([]string, len(colNames))
+		for i, col := range colNames {
+			record[i] = fmt.Sprintf("%v", row[col])
+		}
+		if err := writer.Write(record); err != nil {
+			return err
+		}
+	}
+	writer.Flush()
+	return writer.Error()
 }
 
 // ReloadDictionary forces ClickHouse to reload the dictionary from its source table.

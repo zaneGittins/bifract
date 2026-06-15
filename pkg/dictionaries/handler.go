@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"bifract/pkg/fractals"
@@ -361,6 +362,20 @@ func (h *Handler) HandleImportCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.respondSuccess(w, map[string]int{"imported": count})
+}
+
+// HandleExportCSV streams all dictionary rows as a CSV file download.
+func (h *Handler) HandleExportCSV(w http.ResponseWriter, r *http.Request) {
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	filename := strings.ReplaceAll(existing.Name, `"`, "_") + ".csv"
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	if err := h.manager.ExportCSV(r.Context(), existing.ID, w); err != nil {
+		log.Printf("[Dictionaries] CSV export failed for dictionary %s: %v", existing.ID, err)
+	}
 }
 
 // HandleReloadDictionary forces a ClickHouse dictionary reload.

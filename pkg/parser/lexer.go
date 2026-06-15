@@ -105,13 +105,25 @@ func (l *Lexer) readRegex() string {
 	var result strings.Builder
 	l.readChar() // skip opening /
 
-	for l.ch != '/' && l.ch != 0 {
+	// inClass tracks whether we are inside a character class [...].
+	// A literal / inside [...] must not terminate the regex — only an unescaped /
+	// outside a character class is the closing delimiter.
+	inClass := false
+	for l.ch != 0 {
 		if l.ch == '\\' {
 			result.WriteRune(l.ch)
 			l.readChar()
 			if l.ch != 0 {
 				result.WriteRune(l.ch)
 			}
+		} else if l.ch == '[' {
+			inClass = true
+			result.WriteRune(l.ch)
+		} else if l.ch == ']' && inClass {
+			inClass = false
+			result.WriteRune(l.ch)
+		} else if l.ch == '/' && !inClass {
+			break
 		} else {
 			result.WriteRune(l.ch)
 		}

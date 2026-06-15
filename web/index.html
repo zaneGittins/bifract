@@ -335,22 +335,6 @@
                         <div class="loading">Loading groups...</div>
                     </div>
 
-                    <!-- Create Group Form -->
-                    <div id="createGroupForm" style="display: none;">
-                        <h4>Create New Group</h4>
-                        <div class="form-group">
-                            <label for="newGroupName">Group Name</label>
-                            <input type="text" id="newGroupName" placeholder="Enter group name" required>
-                        </div>
-                        <div class="form-group">
-                            <label for="newGroupDescription">Description (optional)</label>
-                            <input type="text" id="newGroupDescription" placeholder="Enter description">
-                        </div>
-                        <div class="form-actions">
-                            <button id="submitCreateGroupBtn" class="btn-primary">Create Group</button>
-                            <button id="cancelCreateGroupBtn" class="btn-secondary">Cancel</button>
-                        </div>
-                    </div>
 
                     <!-- Group Detail Panel (shown when a group is expanded) -->
                     <div id="groupDetailPanel" style="display: none;">
@@ -1074,20 +1058,6 @@
                                 <input type="text" id="dictSearchInput" class="dashboards-search" placeholder="Search dicts...">
                                 <span class="filters-spacer"></span>
                                 <button id="dictCreateBtn" class="btn-primary">+ New Dict</button>
-                            </div>
-
-                            <!-- Inline create form -->
-                            <div id="dictCreateForm" class="dict-create-form" style="display:none;">
-                                <div class="dict-create-fields">
-                                    <input type="text" id="dictNewName" class="form-input" placeholder='Name'>
-                                    <input type="text" id="dictNewDesc" class="form-input" placeholder="Description (optional)">
-                                    <label class="dict-global-label"><input type="checkbox" id="dictNewGlobal"> Global <span class="form-hint">Available to all fractals</span></label>
-                                </div>
-                                <div class="dict-create-actions">
-                                    <button id="dictCreateSaveBtn" class="btn-primary btn-sm">Create</button>
-                                    <button id="dictCreateCancelBtn" class="btn-ghost btn-sm">Cancel</button>
-                                </div>
-                                <div id="dictCreateError" class="form-error" style="display:none;"></div>
                             </div>
 
                             <!-- Empty State -->
@@ -2933,6 +2903,101 @@ throttleTimeSeconds: 3600"></textarea>
                             I've Saved the Key
                         </button>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Dictionary Modal -->
+    <div id="createDictModal" class="modal" onclick="if(event.target===this)Dictionaries.hideCreateForm()">
+        <div class="modal-content" style="max-width:480px;">
+            <div class="modal-header">
+                <h2>New Dictionary</h2>
+                <button class="close-btn" onclick="Dictionaries.hideCreateForm()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="dictNewName">Name</label>
+                    <input type="text" id="dictNewName" class="form-input" placeholder="Dictionary name" required>
+                </div>
+                <div class="form-group">
+                    <label for="dictNewDesc">Description (optional)</label>
+                    <input type="text" id="dictNewDesc" class="form-input" placeholder="Enter description">
+                </div>
+                <div class="form-group">
+                    <label class="dict-global-label">
+                        <input type="checkbox" id="dictNewGlobal"> Global
+                        <span class="form-hint">Available to all fractals</span>
+                    </label>
+                </div>
+                <div id="dictCreateError" class="form-error" style="display:none;"></div>
+                <div class="form-actions">
+                    <button type="button" id="dictCreateSaveBtn" class="btn-primary">Create</button>
+                    <button type="button" id="dictCreateCancelBtn" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Group Modal -->
+    <div id="createGroupModal" class="modal" onclick="if(event.target===this)GroupsView.hideCreateForm()">
+        <div class="modal-content" style="max-width:480px;">
+            <div class="modal-header">
+                <h2>Create New Group</h2>
+                <button class="close-btn" onclick="GroupsView.hideCreateForm()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="newGroupName">Group Name</label>
+                    <input type="text" id="newGroupName" placeholder="Enter group name" required>
+                </div>
+                <div class="form-group">
+                    <label for="newGroupDescription">Description (optional)</label>
+                    <input type="text" id="newGroupDescription" placeholder="Enter description">
+                </div>
+                <div class="form-actions">
+                    <button id="submitCreateGroupBtn" class="btn-primary">Create Group</button>
+                    <button id="cancelCreateGroupBtn" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Ingest Token Modal -->
+    <div id="createIngestTokenModal" class="modal" onclick="if(event.target===this)IngestTokens.hideCreateModal()">
+        <div class="modal-content" style="max-width:560px;">
+            <div class="modal-header">
+                <h2>Create Ingest Token</h2>
+                <button class="close-btn" onclick="IngestTokens.hideCreateModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="ingest-form-grid">
+                    <div class="ingest-form-group">
+                        <label for="ingestTokenName">Name</label>
+                        <input type="text" id="ingestTokenName" placeholder="e.g. Velociraptor, Syslog">
+                    </div>
+                    <div class="ingest-form-group">
+                        <label for="ingestTokenParser">Parser</label>
+                        <select id="ingestTokenParser">
+                            <option value="json" selected>JSON</option>
+                            <option value="kv">Key=Value</option>
+                            <option value="syslog">Syslog</option>
+                        </select>
+                        <span class="form-help">How incoming log data is parsed</span>
+                    </div>
+                    <div class="ingest-form-group full-width">
+                        <label for="ingestTokenDesc">Description (optional)</label>
+                        <input type="text" id="ingestTokenDesc" placeholder="What sends logs with this token?">
+                    </div>
+                    <div class="ingest-form-group full-width">
+                        <label for="ingestTokenNormalizer">Normalizer</label>
+                        <select id="ingestTokenNormalizer"></select>
+                        <span class="form-help">Transform and standardize field names on ingest</span>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" id="cancelIngestTokenModalBtn" class="btn-secondary">Cancel</button>
+                    <button type="button" id="submitIngestTokenModalBtn" class="btn-primary">Create Token</button>
                 </div>
             </div>
         </div>

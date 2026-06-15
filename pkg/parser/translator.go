@@ -128,7 +128,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 
 		expr := assignment.Expression
 		isMathExpr := assignment.ExpressionType == TokenValue &&
-			(strings.ContainsAny(expr, "+/()") || strings.Contains(expr, " - ") || strings.Contains(expr, " -") || strings.Contains(expr, "- "))
+			(strings.ContainsAny(expr, "+*/()") || strings.Contains(expr, " - ") || strings.Contains(expr, " -") || strings.Contains(expr, "- "))
 		if isMathExpr {
 			deferredAssignments = append(deferredAssignments, assignment)
 			continue

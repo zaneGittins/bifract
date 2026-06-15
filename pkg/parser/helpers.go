@@ -1589,48 +1589,126 @@ func processStatsFn(fn string, selectFields *[]string, computedFields map[string
 
 	switch funcName {
 	case "avg":
-		field := extractFunctionField(fn, fn[:parenIdx])
-		*selectFields = append(*selectFields, fmt.Sprintf("avg(%s) AS _avg", castNumeric(field)))
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
+		}
+		alias := params["as"]
+		if alias == "" {
+			alias = "_avg"
+		}
+		*selectFields = append(*selectFields, fmt.Sprintf("avg(%s) AS %s", castNumeric(field), alias))
+		computedFields[alias] = true
 		return true
 	case "sum":
-		field := extractFunctionField(fn, fn[:parenIdx])
-		*selectFields = append(*selectFields, fmt.Sprintf("sum(%s) AS _sum", castNumeric(field)))
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
+		}
+		alias := params["as"]
+		if alias == "" {
+			alias = "_sum"
+		}
+		*selectFields = append(*selectFields, fmt.Sprintf("sum(%s) AS %s", castNumeric(field), alias))
+		computedFields[alias] = true
 		return true
 	case "max":
-		field := extractFunctionField(fn, fn[:parenIdx])
-		if field == "timestamp" {
-			*selectFields = append(*selectFields, "max(timestamp) AS max_timestamp")
-		} else {
-			*selectFields = append(*selectFields, fmt.Sprintf("max(%s) AS _max", castNumeric(field)))
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
 		}
+		alias := params["as"]
+		if field == "timestamp" {
+			if alias == "" {
+				alias = "max_timestamp"
+			}
+			*selectFields = append(*selectFields, fmt.Sprintf("max(timestamp) AS %s", alias))
+		} else {
+			if alias == "" {
+				alias = "_max"
+			}
+			*selectFields = append(*selectFields, fmt.Sprintf("max(%s) AS %s", castNumeric(field), alias))
+		}
+		computedFields[alias] = true
 		return true
 	case "min":
-		field := extractFunctionField(fn, fn[:parenIdx])
-		if field == "timestamp" {
-			*selectFields = append(*selectFields, "min(timestamp) AS min_timestamp")
-		} else {
-			*selectFields = append(*selectFields, fmt.Sprintf("min(%s) AS _min", castNumeric(field)))
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
 		}
+		alias := params["as"]
+		if field == "timestamp" {
+			if alias == "" {
+				alias = "min_timestamp"
+			}
+			*selectFields = append(*selectFields, fmt.Sprintf("min(timestamp) AS %s", alias))
+		} else {
+			if alias == "" {
+				alias = "_min"
+			}
+			*selectFields = append(*selectFields, fmt.Sprintf("min(%s) AS %s", castNumeric(field), alias))
+		}
+		computedFields[alias] = true
 		return true
 	case "percentile":
-		field := extractFunctionField(fn, fn[:parenIdx])
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
+		}
+		alias := params["as"]
+		if alias == "" {
+			alias = "percentile_" + escapeString(field)
+		}
 		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("quantiles(0.5, 0.75, 0.99)(%s) AS percentile_%s", cast, escapeString(field)))
+		*selectFields = append(*selectFields, fmt.Sprintf("quantiles(0.5, 0.75, 0.99)(%s) AS %s", cast, alias))
+		computedFields[alias] = true
 		return true
 	case "stddev":
-		field := extractFunctionField(fn, fn[:parenIdx])
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
+		}
+		alias := params["as"]
+		if alias == "" {
+			alias = "stddev_" + escapeString(field)
+		}
 		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("stddevPop(%s) AS stddev_%s", cast, escapeString(field)))
+		*selectFields = append(*selectFields, fmt.Sprintf("stddevPop(%s) AS %s", cast, alias))
+		computedFields[alias] = true
 		return true
 	case "skewness", "skew":
-		field := extractFunctionField(fn, fn[:parenIdx])
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
+		}
+		alias := params["as"]
+		if alias == "" {
+			alias = "skewness_" + escapeString(field)
+		}
 		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("skewPop(%s) AS skewness_%s", cast, escapeString(field)))
+		*selectFields = append(*selectFields, fmt.Sprintf("skewPop(%s) AS %s", cast, alias))
+		computedFields[alias] = true
 		return true
 	case "kurtosis", "kurt":
-		field := extractFunctionField(fn, fn[:parenIdx])
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
+		}
+		alias := params["as"]
+		if alias == "" {
+			alias = "kurtosis_" + escapeString(field)
+		}
 		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("kurtPop(%s) AS kurtosis_%s", cast, escapeString(field)))
+		*selectFields = append(*selectFields, fmt.Sprintf("kurtPop(%s) AS %s", cast, alias))
+		computedFields[alias] = true
 		return true
 	case "iqr":
 		field := extractFunctionField(fn, fn[:parenIdx])
@@ -1644,24 +1722,55 @@ func processStatsFn(fn string, selectFields *[]string, computedFields map[string
 		computedFields["iqr_"+escapeString(field)] = true
 		return true
 	case "selectfirst":
-		field := extractFunctionField(fn, fn[:parenIdx])
-		if field == "timestamp" {
-			*selectFields = append(*selectFields, "min(timestamp) AS first_timestamp")
-		} else {
-			*selectFields = append(*selectFields, fmt.Sprintf("argMin(%s, timestamp) AS first_%s", resolveField(field), escapeString(field)))
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
 		}
+		alias := params["as"]
+		if field == "timestamp" {
+			if alias == "" {
+				alias = "first_timestamp"
+			}
+			*selectFields = append(*selectFields, fmt.Sprintf("min(timestamp) AS %s", alias))
+		} else {
+			if alias == "" {
+				alias = "first_" + escapeString(field)
+			}
+			*selectFields = append(*selectFields, fmt.Sprintf("argMin(%s, timestamp) AS %s", resolveField(field), alias))
+		}
+		computedFields[alias] = true
 		return true
 	case "selectlast":
-		field := extractFunctionField(fn, fn[:parenIdx])
-		if field == "timestamp" {
-			*selectFields = append(*selectFields, "max(timestamp) AS last_timestamp")
-		} else {
-			*selectFields = append(*selectFields, fmt.Sprintf("argMax(%s, timestamp) AS last_%s", resolveField(field), escapeString(field)))
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
 		}
+		alias := params["as"]
+		if field == "timestamp" {
+			if alias == "" {
+				alias = "last_timestamp"
+			}
+			*selectFields = append(*selectFields, fmt.Sprintf("max(timestamp) AS %s", alias))
+		} else {
+			if alias == "" {
+				alias = "last_" + escapeString(field)
+			}
+			*selectFields = append(*selectFields, fmt.Sprintf("argMax(%s, timestamp) AS %s", resolveField(field), alias))
+		}
+		computedFields[alias] = true
 		return true
 	case "collect":
-		field := extractFunctionField(fn, fn[:parenIdx])
-		alias := "collect_" + field
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
+		}
+		alias := params["as"]
+		if alias == "" {
+			alias = "collect_" + field
+		}
 		fieldRef := resolveField(field)
 		if field == "timestamp" {
 			fieldRef = "toString(timestamp)"
@@ -1690,14 +1799,32 @@ func processStatsFn(fn string, selectFields *[]string, computedFields map[string
 		computedFields[alias] = true
 		return true
 	case "median":
-		field := extractFunctionField(fn, fn[:parenIdx])
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
+		}
+		alias := params["as"]
+		if alias == "" {
+			alias = "median_" + escapeString(field)
+		}
 		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("median(%s) AS median_%s", cast, escapeString(field)))
+		*selectFields = append(*selectFields, fmt.Sprintf("median(%s) AS %s", cast, alias))
+		computedFields[alias] = true
 		return true
 	case "mad":
-		field := extractFunctionField(fn, fn[:parenIdx])
+		params := parseStatsFunctionParams(fn, fn[:parenIdx])
+		field := params["field"]
+		if field == "" {
+			field = params["_positional"]
+		}
+		alias := params["as"]
+		if alias == "" {
+			alias = "mad_" + escapeString(field)
+		}
 		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("arrayReduce('median', arrayMap(x -> abs(x - arrayReduce('median', groupArray(%s))), groupArray(%s))) AS mad_%s", cast, cast, escapeString(field)))
+		*selectFields = append(*selectFields, fmt.Sprintf("arrayReduce('median', arrayMap(x -> abs(x - arrayReduce('median', groupArray(%s))), groupArray(%s))) AS %s", cast, cast, alias))
+		computedFields[alias] = true
 		return true
 	}
 	return false

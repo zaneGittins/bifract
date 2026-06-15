@@ -14,30 +14,38 @@ func (h *sortHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 func (h *sortHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
-	if len(cmd.Arguments) > 0 {
-		field := cmd.Arguments[0]
-		direction := "ASC"
-		if len(cmd.Arguments) > 1 {
-			dir := strings.ToUpper(cmd.Arguments[1])
-			if dir == "DESC" || dir == "ASC" {
-				direction = dir
-			}
-		}
-
-		var fieldRef string
-		if ctx.Registry.IsComputed(field) || ctx.Registry.Has(field) {
-			fieldRef = field
-		} else {
-			switch field {
-			case "timestamp", "raw_log", "log_id":
-				fieldRef = field
-			default:
-				fieldRef = jsonFieldRef(field)
-			}
-		}
-
-		source.Layer.OrderBy = append(source.Layer.OrderBy, fieldRef+" "+direction)
+	if len(cmd.Arguments) == 0 {
+		return nil
 	}
+
+	field := cmd.Arguments[0]
+	direction := "ASC"
+
+	for _, arg := range cmd.Arguments[1:] {
+		argUpper := strings.ToUpper(arg)
+		if strings.HasPrefix(argUpper, "ORDER=") {
+			val := strings.TrimPrefix(argUpper, "ORDER=")
+			if val == "DESC" || val == "ASC" {
+				direction = val
+			}
+		} else if argUpper == "DESC" || argUpper == "ASC" {
+			direction = argUpper
+		}
+	}
+
+	var fieldRef string
+	if ctx.Registry.IsComputed(field) || ctx.Registry.Has(field) {
+		fieldRef = field
+	} else {
+		switch field {
+		case "timestamp", "raw_log", "log_id":
+			fieldRef = field
+		default:
+			fieldRef = jsonFieldRef(field)
+		}
+	}
+
+	source.Layer.OrderBy = append(source.Layer.OrderBy, fieldRef+" "+direction)
 	return nil
 }
 

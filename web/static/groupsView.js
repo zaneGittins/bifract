@@ -14,6 +14,14 @@ const GroupsView = {
         const cancelBtn = document.getElementById('cancelCreateGroupBtn');
         if (cancelBtn) cancelBtn.addEventListener('click', () => this.hideCreateForm());
 
+        const nameInput = document.getElementById('newGroupName');
+        if (nameInput) {
+            nameInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') this.createGroup();
+                if (e.key === 'Escape') this.hideCreateForm();
+            });
+        }
+
         const closeBtn = document.getElementById('closeGroupDetailBtn');
         if (closeBtn) closeBtn.addEventListener('click', () => this.closeDetail());
 
@@ -86,14 +94,14 @@ const GroupsView = {
     },
 
     showCreateForm() {
-        const form = document.getElementById('createGroupForm');
-        if (form) form.style.display = 'block';
-        document.getElementById('newGroupName')?.focus();
+        const modal = document.getElementById('createGroupModal');
+        if (modal) modal.style.display = 'flex';
+        setTimeout(() => document.getElementById('newGroupName')?.focus(), 100);
     },
 
     hideCreateForm() {
-        const form = document.getElementById('createGroupForm');
-        if (form) form.style.display = 'none';
+        const modal = document.getElementById('createGroupModal');
+        if (modal) modal.style.display = 'none';
         const nameInput = document.getElementById('newGroupName');
         const descInput = document.getElementById('newGroupDescription');
         if (nameInput) nameInput.value = '';

@@ -35,6 +35,16 @@ func TestRegexLexing(t *testing.T) {
 			input:    "/https?:\\/\\/.*/i",
 			expected: "(?i)https?:\\/\\/.*",
 		},
+		{
+			name:     "slash inside character class (base64 pattern)",
+			input:    "/[A-Za-z0-9+/]{50,}/i",
+			expected: "(?i)[A-Za-z0-9+/]{50,}",
+		},
+		{
+			name:     "negated character class with slash",
+			input:    "/[^/]+/",
+			expected: "[^/]+",
+		},
 	}
 
 	for _, tt := range tests {

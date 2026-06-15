@@ -889,6 +889,7 @@ func main() {
 			r.Post("/dictionaries/{id}/data", dictionaryHandler.HandleUpsertRows)
 			r.Delete("/dictionaries/{id}/data/{key}", dictionaryHandler.HandleDeleteRow)
 			r.Post("/dictionaries/{id}/import", dictionaryHandler.HandleImportCSV)
+			r.Get("/dictionaries/{id}/export", dictionaryHandler.HandleExportCSV)
 			r.Post("/dictionaries/{id}/columns", dictionaryHandler.HandleAddColumn)
 			r.Delete("/dictionaries/{id}/columns/{name}", dictionaryHandler.HandleRemoveColumn)
 			r.Post("/dictionaries/{id}/columns/{name}/key", dictionaryHandler.HandleSetColumnKey)

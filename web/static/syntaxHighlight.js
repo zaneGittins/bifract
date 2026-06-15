@@ -132,6 +132,12 @@ const SyntaxHighlight = {
                     matched = true;
                 }
             }
+            // Check for line comments (//)
+            else if (line[i] === '/' && line[i + 1] === '/') {
+                result.push(`<span class="hl-comment">${this.escapeHtml(line.substring(i))}</span>`);
+                i = line.length;
+                matched = true;
+            }
             // Check for regex patterns /pattern/flags
             else if (line[i] === '/') {
                 const regexMatch = line.substring(i).match(/^\/(?:[^\/\n\\]|\\.)+\/[gimsu]*/);
@@ -150,7 +156,7 @@ const SyntaxHighlight = {
                     matched = true;
                 } else {
                     // Check for field names (word before =)
-                    const fieldMatch = line.substring(i).match(/^[a-zA-Z_][a-zA-Z0-9_.]*(?=\s*=)/);
+                    const fieldMatch = line.substring(i).match(/^[a-zA-Z_][a-zA-Z0-9_.]*(?=\s*(?:!=|>=|<=|=|>|<))/);
                     if (fieldMatch) {
                         result.push(`<span class="hl-field">${this.escapeHtml(fieldMatch[0])}</span>`);
                         i += fieldMatch[0].length;

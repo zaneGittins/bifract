@@ -143,6 +143,20 @@ func TestBasicQueries(t *testing.T) {
 			},
 		},
 		{
+			name:  "Sort named order=desc",
+			query: "* | groupby(host) | sort(_count, order=desc)",
+			wantContain: []string{
+				"ORDER BY _count DESC",
+			},
+		},
+		{
+			name:  "Sort named order=asc",
+			query: "* | sort(timestamp, order=asc)",
+			wantContain: []string{
+				"ORDER BY timestamp ASC",
+			},
+		},
+		{
 			name:  "Limit",
 			query: "* | limit(50)",
 			wantContain: []string{
@@ -1216,6 +1230,60 @@ func TestMathAssignment(t *testing.T) {
 		// Verify it references the computed aliases, not fields.`total`
 		if strings.Contains(sql, "fields.`total`::String") {
 			t.Errorf("Should reference 'total' alias not fields.`total`::String, got: %s", sql)
+		}
+	})
+
+	t.Run("field multiply scalar", func(t *testing.T) {
+		// Regression: * was missing from isMathExpr check, causing "invalid numeric assignment" error
+		pipeline, err := ParseQuery("* | cpupercent := cpupercent * 100")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Translation failed: %v", err)
+		}
+		sql := result.SQL
+		if !strings.Contains(sql, "cpupercent*100") {
+			t.Errorf("Expected cpupercent*100 in SQL, got: %s", sql)
+		}
+		if !strings.Contains(sql, "AS cpupercent") {
+			t.Errorf("Expected AS cpupercent in SQL, got: %s", sql)
+		}
+		found := false
+		for _, f := range result.FieldOrder {
+			if f == "cpupercent" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected cpupercent in FieldOrder, got: %v", result.FieldOrder)
+		}
+	})
+
+	t.Run("field multiply field", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | result := price * quantity")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Translation failed for field*field assignment: %v", err)
+		}
+		sql := result.SQL
+		if !strings.Contains(sql, "AS result") {
+			t.Errorf("Expected AS result in SQL, got: %s", sql)
+		}
+		found := false
+		for _, f := range result.FieldOrder {
+			if f == "result" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected result in FieldOrder, got: %v", result.FieldOrder)
 		}
 	})
 }
@@ -2531,6 +2599,127 @@ func TestMADFunction(t *testing.T) {
 		}
 		if !strings.Contains(result.SQL, "mad_response_time") {
 			t.Errorf("Expected mad_response_time alias, got: %s", result.SQL)
+		}
+	})
+
+	t.Run("as= alias in avg", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(host) | multi(avg(cpupercent, as=cpupercent))")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "AS cpupercent") {
+			t.Errorf("Expected AS cpupercent alias, got: %s", result.SQL)
+		}
+		if strings.Contains(result.SQL, "AS _avg") {
+			t.Errorf("Expected custom alias to override _avg default, got: %s", result.SQL)
+		}
+	})
+
+	t.Run("as= alias in sum", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(host) | multi(sum(bytes, as=total_bytes))")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "AS total_bytes") {
+			t.Errorf("Expected AS total_bytes alias, got: %s", result.SQL)
+		}
+	})
+
+	t.Run("as= alias in selectlast", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(host) | multi(selectlast(version, as=version))")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "AS version") {
+			t.Errorf("Expected AS version alias, got: %s", result.SQL)
+		}
+		if strings.Contains(result.SQL, "AS last_version") {
+			t.Errorf("Expected custom alias to override last_version default, got: %s", result.SQL)
+		}
+	})
+
+	t.Run("as= alias in selectfirst", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(host) | multi(selectfirst(cpupercent, as=first_cpu))")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "AS first_cpu") {
+			t.Errorf("Expected AS first_cpu alias, got: %s", result.SQL)
+		}
+	})
+
+	t.Run("as= alias in median", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(host) | multi(median(latency, as=p50))")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "AS p50") {
+			t.Errorf("Expected AS p50 alias, got: %s", result.SQL)
+		}
+	})
+
+	t.Run("as= alias in stddev", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(host) | multi(stddev(latency, as=latency_stddev))")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "AS latency_stddev") {
+			t.Errorf("Expected AS latency_stddev alias, got: %s", result.SQL)
+		}
+	})
+
+	t.Run("as= alias in collect", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(user) | multi(collect(image, as=images))")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "AS images") {
+			t.Errorf("Expected AS images alias, got: %s", result.SQL)
+		}
+	})
+
+	t.Run("as= alias default fallback", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(host) | multi(avg(response_time), sum(bytes))")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "AS _avg") {
+			t.Errorf("Expected default _avg alias, got: %s", result.SQL)
+		}
+		if !strings.Contains(result.SQL, "AS _sum") {
+			t.Errorf("Expected default _sum alias, got: %s", result.SQL)
 		}
 	})
 

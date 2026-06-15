@@ -25,7 +25,7 @@ const IngestTokens = {
     bindEvents() {
         const createBtn = document.getElementById('createIngestTokenBtn');
         if (createBtn) {
-            createBtn.addEventListener('click', () => this.toggleCreateForm());
+            createBtn.addEventListener('click', () => this.showCreateModal());
         }
 
         const refreshBtn = document.getElementById('ingestTokensRefreshBtn');
@@ -47,6 +47,13 @@ const IngestTokens = {
         if (nextBtn) {
             nextBtn.addEventListener('click', () => this.nextPage());
         }
+
+        document.getElementById('cancelIngestTokenModalBtn')?.addEventListener('click', () => this.hideCreateModal());
+        document.getElementById('submitIngestTokenModalBtn')?.addEventListener('click', () => this.createToken());
+        document.getElementById('ingestTokenName')?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') this.createToken();
+            if (e.key === 'Escape') this.hideCreateModal();
+        });
     },
 
     show() {
@@ -362,68 +369,50 @@ const IngestTokens = {
         }
     },
 
-    // -- Dynamic panels (create form, edit panel, reveal banner) --
+    // -- Dynamic panels (reveal banner only; create form is now a modal) --
 
     renderDynamicPanels() {
         const container = document.getElementById('ingestDynamicPanels');
         if (!container) return;
-
-        let html = '';
-
-        if (this.revealedToken) {
-            html += this.renderRevealedToken();
-        }
-
-        if (this.showCreateForm) {
-            html += this.renderCreateForm();
-        }
-
-        container.innerHTML = html;
+        container.innerHTML = this.revealedToken ? this.renderRevealedToken() : '';
     },
 
-    // -- Create form --
+    // -- Create modal --
 
-    toggleCreateForm() {
-        this.showCreateForm = !this.showCreateForm;
-        if (this.showCreateForm) this.editingToken = null;
-        this.renderDynamicPanels();
-        if (this.showCreateForm) {
-            document.getElementById('ingestTokenName')?.focus();
-        }
+    showCreateModal() {
+        const modal = document.getElementById('createIngestTokenModal');
+        if (!modal) return;
+        const nameInput = document.getElementById('ingestTokenName');
+        const descInput = document.getElementById('ingestTokenDesc');
+        const parserSelect = document.getElementById('ingestTokenParser');
+        if (nameInput) nameInput.value = '';
+        if (descInput) descInput.value = '';
+        if (parserSelect) parserSelect.value = 'json';
+        this._populateNormalizerSelect('ingestTokenNormalizer', null);
+        this.editingToken = null;
+        this.showCreateForm = true;
+        modal.style.display = 'flex';
+        setTimeout(() => nameInput?.focus(), 100);
     },
 
-    renderCreateForm() {
-        return `<div class="ingest-create-form">
-            <h3>Create Ingest Token</h3>
-            <div class="ingest-form-grid">
-                <div class="ingest-form-group">
-                    <label for="ingestTokenName">Name</label>
-                    <input type="text" id="ingestTokenName" placeholder="e.g. Velociraptor, Syslog">
-                </div>
-                <div class="ingest-form-group">
-                    <label for="ingestTokenParser">Parser</label>
-                    <select id="ingestTokenParser">
-                        <option value="json" selected>JSON</option>
-                        <option value="kv">Key=Value</option>
-                        <option value="syslog">Syslog</option>
-                    </select>
-                    <span class="form-help">How incoming log data is parsed</span>
-                </div>
-                <div class="ingest-form-group full-width">
-                    <label for="ingestTokenDesc">Description (optional)</label>
-                    <input type="text" id="ingestTokenDesc" placeholder="What sends logs with this token?">
-                </div>
-                <div class="ingest-form-group">
-                    <label for="ingestTokenNormalizer">Normalizer</label>
-                    ${this.renderNormalizerSelect('ingestTokenNormalizer', null)}
-                    <span class="form-help">Transform and standardize field names on ingest</span>
-                </div>
-            </div>
-            <div class="ingest-form-actions">
-                <button class="btn-secondary" onclick="IngestTokens.toggleCreateForm()">Cancel</button>
-                <button class="btn-primary" onclick="IngestTokens.createToken()">Create Token</button>
-            </div>
-        </div>`;
+    hideCreateModal() {
+        const modal = document.getElementById('createIngestTokenModal');
+        if (modal) modal.style.display = 'none';
+        this.showCreateForm = false;
+    },
+
+    _populateNormalizerSelect(id, selectedId) {
+        const select = document.getElementById(id);
+        if (!select) return;
+        const defaultNorm = this.availableNormalizers.find(n => n.is_default);
+        const selected = selectedId || (defaultNorm ? defaultNorm.id : '');
+        let options = '<option value="">None (no normalization)</option>';
+        for (const n of this.availableNormalizers) {
+            const sel = n.id === selected ? 'selected' : '';
+            const badge = n.is_default ? ' (default)' : '';
+            options += `<option value="${this.esc(n.id)}" ${sel}>${this.esc(n.name)}${badge}</option>`;
+        }
+        select.innerHTML = options;
     },
 
     async createToken() {
@@ -460,7 +449,7 @@ const IngestTokens = {
             const data = await resp.json();
             if (data.success) {
                 this.revealedToken = data.data;
-                this.showCreateForm = false;
+                this.hideCreateModal();
                 await this.loadTokens();
             } else {
                 if (window.Toast) Toast.error(data.error || 'Failed to create token');
@@ -531,7 +520,7 @@ const IngestTokens = {
             this.editingToken = null;
         } else {
             this.editingToken = { ...token };
-            this.showCreateForm = false;
+            this.hideCreateModal();
         }
         this.renderDynamicPanels();
         this.renderTable();
