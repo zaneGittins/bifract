@@ -235,6 +235,8 @@ spec:
           volumeMounts:
             - name: archives
               mountPath: /archives
+            - name: tmp
+              mountPath: /tmp
             - name: maxmind-data
               mountPath: /data/maxmind
 {{- if .MTLSEnabled}}
@@ -251,6 +253,8 @@ spec:
               memory: {{.BifractRes.MemLimit}}
       volumes:
         - name: archives
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
         - name: maxmind-data
           persistentVolumeClaim:
