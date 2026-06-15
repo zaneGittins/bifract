@@ -33,6 +33,16 @@ spec:
   replicas: {{.CHReplicas}}
   keeperClusterRef:
     name: bifract-keeper
+  podTemplate:
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: bifract-ch-clickhouse
+              topologyKey: kubernetes.io/hostname
   dataVolumeClaimSpec:
     accessModes:
       - ReadWriteOnce
