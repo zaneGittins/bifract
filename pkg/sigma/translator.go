@@ -6,6 +6,15 @@ import (
 	"unicode"
 )
 
+// TranslatorVersion identifies the Sigma->BQL translation behavior. It is mixed
+// into the feed rule content hash so that bumping it forces every existing feed
+// alert to be re-translated in place on the next sync (no DB migration needed).
+// Bump this whenever Translate's output changes for unchanged Sigma input.
+//
+//	v2: consolidate OR'd regex values (contains/startswith/endswith/re/keyword)
+//	    into a single alternation regex (one match() per field instead of N).
+const TranslatorVersion = "v2"
+
 // Translate converts a parsed Sigma rule's detection logic into a BQL query string.
 // fieldMapper optionally transforms Sigma field names to match stored field names.
 func Translate(rule *SigmaRule, fieldMapper func(string) string) (string, error) {

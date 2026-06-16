@@ -214,7 +214,12 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 			continue
 		}
 
-		hash := fmt.Sprintf("%x", sha256.Sum256(content))
+		// Mix the translator version into the hash so a translator change forces
+		// existing feed alerts to re-translate on the next sync (see sigma.TranslatorVersion).
+		h := sha256.New()
+		h.Write(content)
+		h.Write([]byte(sigma.TranslatorVersion))
+		hash := fmt.Sprintf("%x", h.Sum(nil))
 
 		// Check if this alert already exists
 		existing, existErr := s.alertManager.GetFeedAlertByPath(ctx, feed.ID, filePath)
