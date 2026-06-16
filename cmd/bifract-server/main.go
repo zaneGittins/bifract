@@ -206,6 +206,12 @@ func main() {
 	}
 	log.Println("ClickHouse schema ready")
 
+	// Start hot table cleaner: drops expired logs_hot partitions every 5 minutes.
+	hotCleanerCtx, hotCleanerCancel := context.WithCancel(context.Background())
+	defer hotCleanerCancel()
+	db.StartHotTableCleaner(hotCleanerCtx)
+	log.Println("Hot table cleaner started")
+
 	// Load custom schema fields from Postgres and reconcile ClickHouse schema.
 	// SetCustomTypeHintedFields runs synchronously so the parser is ready before
 	// the first query. ReconcileSchemaFields (MODIFY COLUMN) runs in the background

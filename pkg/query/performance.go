@@ -41,6 +41,97 @@ const (
 	maxHistoryAge   = 25 * time.Hour // keep slightly more than 24h
 )
 
+// cpuLogSQLTemplate queries system.asynchronous_metric_log for long-range CPU history.
+// Arguments: bucket interval string (e.g. "1 HOUR"), lookback in seconds.
+var cpuLogSQLTemplate = `
+SELECT
+    toStartOfInterval(event_time, INTERVAL %s) AS bucket,
+    avgIf(value, metric = 'OSUserTime')    AS user_t,
+    avgIf(value, metric = 'OSNiceTime')    AS nice_t,
+    avgIf(value, metric = 'OSSystemTime')  AS sys_t,
+    avgIf(value, metric = 'OSIdleTime')    AS idle_t,
+    avgIf(value, metric = 'OSIOWaitTime')  AS iowait_t,
+    avgIf(value, metric = 'OSIrqTime')     AS irq_t,
+    avgIf(value, metric = 'OSSoftIrqTime') AS softirq_t,
+    avgIf(value, metric = 'OSStealTime')   AS steal_t
+FROM system.asynchronous_metric_log
+WHERE metric IN ('OSUserTime','OSNiceTime','OSSystemTime','OSIdleTime',
+                 'OSIOWaitTime','OSIrqTime','OSSoftIrqTime','OSStealTime')
+    AND event_time > now() - INTERVAL %d SECOND
+GROUP BY bucket
+ORDER BY bucket`
+
+func cpuPointsFromLogRows(rows []map[string]interface{}) []map[string]interface{} {
+	var points []map[string]interface{}
+	for _, row := range rows {
+		var t time.Time
+		switch v := row["bucket"].(type) {
+		case time.Time:
+			t = v
+		default:
+			continue
+		}
+		busy := toFloat64(row["user_t"]) + toFloat64(row["nice_t"]) + toFloat64(row["sys_t"]) +
+			toFloat64(row["irq_t"]) + toFloat64(row["softirq_t"]) + toFloat64(row["steal_t"])
+		total := busy + toFloat64(row["idle_t"]) + toFloat64(row["iowait_t"])
+		var pct float64
+		if total > 0 {
+			pct = math.Round(busy/total*1000) / 10
+			if pct < 0 {
+				pct = 0
+			} else if pct > 100 {
+				pct = 100
+			}
+		}
+		points = append(points, map[string]interface{}{
+			"time":  t.UTC().Format("2006-01-02 15:04:05"),
+			"value": pct,
+		})
+	}
+	return points
+}
+
+// CPUHistoryLog queries system.asynchronous_metric_log for long-range CPU history (single-node).
+func (mc *MetricsCollector) CPUHistoryLog(ctx context.Context, since time.Duration, bucketInterval string) ([]map[string]interface{}, error) {
+	sql := fmt.Sprintf(cpuLogSQLTemplate, bucketInterval, int64(since.Seconds()))
+	rows, err := mc.db.Query(ctx, sql)
+	if err != nil {
+		return nil, err
+	}
+	return cpuPointsFromLogRows(rows), nil
+}
+
+// CPUHistoryLogNodes queries system.asynchronous_metric_log per node for long-range CPU history.
+// Returns nil when running in single-node mode.
+func (mc *MetricsCollector) CPUHistoryLogNodes(ctx context.Context, since time.Duration, bucketInterval string) map[string][]map[string]interface{} {
+	addrs := mc.db.Addrs()
+	if len(addrs) <= 1 {
+		return nil
+	}
+	sql := fmt.Sprintf(cpuLogSQLTemplate, bucketInterval, int64(since.Seconds()))
+	result := make(map[string][]map[string]interface{}, len(addrs))
+	for _, addr := range addrs {
+		conn, err := storage.OpenClickHouseAddr(addr, mc.db.User, mc.db.Password)
+		if err != nil {
+			log.Printf("[MetricsCollector] log query: failed to connect to %s: %v", addr, err)
+			continue
+		}
+		rows, qErr := storage.QueryConn(ctx, conn, sql)
+		conn.Close()
+		if qErr != nil {
+			log.Printf("[MetricsCollector] log query failed for node %s: %v", addr, qErr)
+			continue
+		}
+		if points := cpuPointsFromLogRows(rows); len(points) > 0 {
+			result[addr] = points
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 // NewMetricsCollector creates and starts a background collector.
 func NewMetricsCollector(db *storage.ClickHouseClient) *MetricsCollector {
 	mc := &MetricsCollector{
@@ -377,6 +468,8 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 	interval := "1 HOUR"
 	var since time.Duration
 	var bucketSize time.Duration
+	var useMetricLog bool
+	var logBucketInterval string
 	switch r.URL.Query().Get("range") {
 	case "8h":
 		interval = "8 HOUR"
@@ -386,6 +479,16 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 		interval = "24 HOUR"
 		since = 24 * time.Hour
 		bucketSize = 15 * time.Minute
+	case "7d":
+		interval = "24 HOUR" // cap query_log to last 24h
+		since = 7 * 24 * time.Hour
+		useMetricLog = true
+		logBucketInterval = "1 HOUR"
+	case "30d":
+		interval = "24 HOUR"
+		since = 30 * 24 * time.Hour
+		useMetricLog = true
+		logBucketInterval = "4 HOUR"
 	default:
 		since = 1 * time.Hour
 		bucketSize = 1 * time.Minute
@@ -449,7 +552,8 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 		read_bytes,
 		result_rows,
 		memory_usage,
-		event_time
+		event_time,
+		substring(query, 1, 500) AS query
 	FROM system.query_log
 	WHERE event_time > now() - INTERVAL %s
 		AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
@@ -482,12 +586,23 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 		result["disk"] = diskRows[0]
 	}
 
-	// CPU history from collector (works on both Docker and K8s).
-	if cpuHistory := h.collector.CPUHistory(since, bucketSize); len(cpuHistory) > 0 {
-		result["cpu_history"] = cpuHistory
-	}
-	if nodeHistory := h.collector.CPUHistoryNodes(since, bucketSize); nodeHistory != nil {
-		result["cpu_history_nodes"] = nodeHistory
+	// CPU history: use asynchronous_metric_log for long ranges, in-memory buffer otherwise.
+	if useMetricLog {
+		if points, err := h.collector.CPUHistoryLog(r.Context(), since, logBucketInterval); err == nil && len(points) > 0 {
+			result["cpu_history"] = points
+		} else if err != nil {
+			log.Printf("[Performance] asynchronous_metric_log query failed: %v", err)
+		}
+		if nodeHistory := h.collector.CPUHistoryLogNodes(r.Context(), since, logBucketInterval); nodeHistory != nil {
+			result["cpu_history_nodes"] = nodeHistory
+		}
+	} else {
+		if cpuHistory := h.collector.CPUHistory(since, bucketSize); len(cpuHistory) > 0 {
+			result["cpu_history"] = cpuHistory
+		}
+		if nodeHistory := h.collector.CPUHistoryNodes(since, bucketSize); nodeHistory != nil {
+			result["cpu_history_nodes"] = nodeHistory
+		}
 	}
 
 	respondJSON(w, http.StatusOK, result)

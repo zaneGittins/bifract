@@ -485,12 +485,25 @@ const Performance = {
         const chartBorder = cv('--chart-border') || '#24243e';
         const accentColor = cv('--accent-primary') || '#9c6ade';
 
-        const extractTime = (p) => {
-            const t = String(p.time || '');
+        const longRange = this.timeRange === '7d' || this.timeRange === '30d';
+        const showDate = longRange || this.timeRange === '8h' || this.timeRange === '24h';
+        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+        const extractLabel = (rawTime) => {
+            const t = String(rawTime || '');
             const parts = t.split(' ');
-            const timePart = parts.length > 1 ? parts[1] : parts[0];
-            return timePart.substring(0, 8);
+            if (!showDate) {
+                return (parts.length > 1 ? parts[1] : parts[0]).substring(0, 5);
+            }
+            if (parts.length < 2) return t;
+            const dp = parts[0].split('-');
+            const mon = dp.length >= 2 ? (months[parseInt(dp[1], 10) - 1] || dp[1]) : dp[0];
+            const day = dp.length >= 3 ? parseInt(dp[2], 10) : '';
+            const hhmm = parts[1].substring(0, 5);
+            return longRange ? `${mon} ${day} ${hhmm}` : `${mon} ${day} ${hhmm}`;
         };
+
+        const extractTime = (p) => extractLabel(p.time);
 
         let labels, datasets;
 
@@ -501,10 +514,7 @@ const Performance = {
                 for (const p of points) timeSet.add(String(p.time || ''));
             }
             const sortedTimes = Array.from(timeSet).sort();
-            labels = sortedTimes.map(t => {
-                const parts = t.split(' ');
-                return (parts.length > 1 ? parts[1] : parts[0]).substring(0, 8);
-            });
+            labels = sortedTimes.map(t => extractLabel(t));
 
             const nodes = Object.keys(cpuHistoryNodes).sort();
             datasets = nodes.map((node, i) => {
@@ -600,7 +610,7 @@ const Performance = {
                         ticks: {
                             color: chartText,
                             font: { family: 'Inter', size: 10 },
-                            maxTicksLimit: 6,
+                            maxTicksLimit: longRange ? 10 : 8,
                             maxRotation: 0
                         }
                     },
@@ -711,7 +721,7 @@ const Performance = {
         }
 
         let html = '<table class="results-table perf-table"><thead><tr>';
-        html += '<th>Time</th><th>Type</th><th>Duration</th><th>Rows Read</th><th>Memory</th><th>Status</th>';
+        html += '<th>Time</th><th>Type</th><th>Query</th><th>Duration</th><th>Rows Read</th><th>Memory</th><th>Status</th>';
         html += '</tr></thead><tbody>';
 
         data.forEach((q, idx) => {
@@ -725,6 +735,7 @@ const Performance = {
             html += `<tr class="${durationClass} perf-row-clickable" onclick="Performance.openQueryDrawer('recent',${idx})">`;
             html += `<td class="perf-time">${timeStr}</td>`;
             html += `<td>${this.escapeHtml(q.query_kind || '--')}</td>`;
+            html += `<td class="perf-query-cell">${this.escapeHtml(this.truncateQuery(q.query || '', 120))}</td>`;
             html += `<td>${this.formatDuration(duration)}</td>`;
             html += `<td>${this.formatNumber(q.read_rows || 0)}</td>`;
             html += `<td>${this.formatBytes(q.memory_usage || 0)}</td>`;

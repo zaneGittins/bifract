@@ -103,6 +103,11 @@ const (
 
 	// retentionInterval is how often the retention cleanup runs.
 	retentionInterval = 1 * time.Hour
+
+	// hotTableLookbackThreshold is the maximum cursor age for which alert
+	// queries are routed to logs_hot instead of logs. The 10-minute buffer
+	// below the 2-hour logs_hot TTL prevents boundary-edge data misses.
+	hotTableLookbackThreshold = 110 * time.Minute
 )
 
 // DictionaryActionRef is a lightweight reference for API listing responses.
@@ -414,9 +419,17 @@ func (e *Engine) resolvePrismFractalIDs(ctx context.Context, prismID string, cac
 
 // buildQueryOpts constructs parser.QueryOptions with fractal/prism scoping.
 func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time.Time, cache *prismResolveCache) (parser.QueryOptions, error) {
-	tableName := "logs"
-	if e.ch != nil && e.ch.IsCluster() {
+	// Route to logs_hot when the cursor is recent enough that the hot table has
+	// the data. Falls back to logs/logs_distributed for older cursors (catch-up
+	// beyond the 2-hour hot window) — self-heals as the cursor advances.
+	var tableName string
+	switch {
+	case e.ch != nil && time.Since(from) < hotTableLookbackThreshold:
+		tableName = e.ch.HotReadTable()
+	case e.ch != nil && e.ch.IsCluster():
 		tableName = "logs_distributed"
+	default:
+		tableName = "logs"
 	}
 	opts := parser.QueryOptions{
 		StartTime:         from,

@@ -80,6 +80,15 @@ func (c *ClickHouseClient) HistogramReadTable() string {
 	return "logs_histogram"
 }
 
+// HotReadTable returns the table name for hot-path alert queries (recent cursor).
+// In cluster mode this fans out to all shards via logs_hot_distributed.
+func (c *ClickHouseClient) HotReadTable() string {
+	if c.Cluster != "" {
+		return "logs_hot_distributed"
+	}
+	return "logs_hot"
+}
+
 // rewriteEngineRe matches ENGINE = MergeTree(), ReplacingMergeTree(), SummingMergeTree(), or AggregatingMergeTree(args).
 var rewriteEngineRe = regexp.MustCompile(`(?i)ENGINE\s*=\s*(MergeTree|ReplacingMergeTree|SummingMergeTree|AggregatingMergeTree)\s*\(([^)]*)\)`)
 
@@ -189,6 +198,10 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 			"CREATE TABLE IF NOT EXISTS logs_histogram_distributed AS logs_histogram ENGINE = Distributed('%s', currentDatabase(), 'logs_histogram', rand())",
 			EscCHStr(c.Cluster),
 		)
+		hotDistSQL := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS logs_hot_distributed AS logs_hot ENGINE = Distributed('%s', currentDatabase(), 'logs_hot', rand())",
+			EscCHStr(c.Cluster),
+		)
 		initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
 		for _, addr := range c.addrs {
 			hostConn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, initPool)
@@ -206,7 +219,7 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 					log.Printf("Warning: schema sync on %s: %v", addr, execErr)
 				}
 			}
-			for _, stmt := range []string{distSQL, histDistSQL} {
+			for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL} {
 				if execErr := hostConn.Exec(ctx, stmt); execErr != nil {
 					log.Printf("Warning: distributed table sync on %s: %v", addr, execErr)
 				}
@@ -241,6 +254,13 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 			)
 			if err := c.conn.Exec(ctx, histDistSQL); err != nil {
 				return fmt.Errorf("failed to create histogram distributed table: %w\nstatement: %s", err, histDistSQL)
+			}
+			hotDistSQL := fmt.Sprintf(
+				"CREATE TABLE IF NOT EXISTS logs_hot_distributed%s AS logs_hot ENGINE = Distributed('%s', currentDatabase(), 'logs_hot', rand())",
+				c.OnClusterSQL(), EscCHStr(c.Cluster),
+			)
+			if err := c.conn.Exec(ctx, hotDistSQL); err != nil {
+				return fmt.Errorf("failed to create hot distributed table: %w\nstatement: %s", err, hotDistSQL)
 			}
 		}
 	}
@@ -997,6 +1017,70 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 		return nil, fmt.Errorf("error iterating log fields rows: %w", err)
 	}
 	return results, nil
+}
+
+// StartHotTableCleaner starts a background goroutine that drops expired
+// logs_hot partitions every 5 minutes. DROP PARTITION is a near-instant
+// metadata operation and never blocks concurrent reads or writes.
+//
+// The TTL defined on logs_hot is a safety net; this cleaner is the primary
+// cleanup mechanism, giving deterministic bounded retention.
+//
+// On ReplicatedMergeTree (cluster mode), DROP PARTITION replicates
+// automatically via ZooKeeper. InjectOnCluster is used for DDL consistency.
+// Multiple pods running the cleaner simultaneously are safe — dropping an
+// already-dropped partition is a no-op in ClickHouse.
+//
+// The caller must cancel ctx on shutdown to stop the goroutine.
+func (c *ClickHouseClient) StartHotTableCleaner(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.dropExpiredHotPartitions(ctx)
+			}
+		}
+	}()
+}
+
+// dropExpiredHotPartitions queries system.parts for logs_hot partitions whose
+// max_time is older than 2 hours and drops them. Safe to call concurrently.
+func (c *ClickHouseClient) dropExpiredHotPartitions(ctx context.Context) {
+	rows, err := c.conn.Query(ctx,
+		"SELECT DISTINCT partition FROM system.parts"+
+			" WHERE database = currentDatabase() AND table = 'logs_hot'"+
+			" AND active = 1 AND max_time < now() - INTERVAL 2 HOUR",
+	)
+	if err != nil {
+		log.Printf("[HotTableCleaner] query partitions: %v", err)
+		return
+	}
+	defer rows.Close()
+	var partitions []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			log.Printf("[HotTableCleaner] scan partition: %v", err)
+			return
+		}
+		partitions = append(partitions, p)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[HotTableCleaner] rows error: %v", err)
+		return
+	}
+	for _, partition := range partitions {
+		dropSQL := c.InjectOnCluster(
+			fmt.Sprintf("ALTER TABLE logs_hot DROP PARTITION '%s'", partition),
+		)
+		if err := c.conn.Exec(ctx, dropSQL); err != nil {
+			log.Printf("[HotTableCleaner] drop partition %s: %v", partition, err)
+		}
+	}
 }
 
 // SyncJSONTypeHints merges extraFields into the type hints declared on the
