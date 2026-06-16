@@ -512,13 +512,17 @@ func getAlertTimeout() int {
 	return t
 }
 
-// advanceCursor writes the new cursor to PostgreSQL and updates the
-// in-memory cache so the next tick starts from the right position.
-func (e *Engine) advanceCursor(ctx context.Context, alert *Alert, t time.Time) {
-	if err := e.updateLastEvaluated(ctx, alert.ID, t); err != nil {
+// advanceCursor writes the new cursor and the latest query latency to
+// PostgreSQL and updates the in-memory cache so the next tick starts from the
+// right position. execMs is recorded on every evaluation (triggered or not) so
+// the alerts list reflects health for alerts that never match.
+func (e *Engine) advanceCursor(ctx context.Context, alert *Alert, t time.Time, execMs int) {
+	if err := e.updateLastEvaluated(ctx, alert.ID, t, execMs); err != nil {
 		log.Printf("[Alert Engine] Failed to advance cursor for alert %s: %v", alert.Name, err)
 	} else {
 		alert.LastEvaluatedAt = t
+		ms := execMs
+		alert.LastExecutionTimeMs = &ms
 	}
 }
 
@@ -555,8 +559,9 @@ func (e *Engine) evaluateAlertCursor(ctx context.Context, alert *Alert, cache *p
 		return err
 	}
 
-	e.advanceCursor(ctx, alert, toTime)
-	return e.processAlertResults(ctx, alert, results, int(time.Since(start).Milliseconds()))
+	execMs := int(time.Since(start).Milliseconds())
+	e.advanceCursor(ctx, alert, toTime, execMs)
+	return e.processAlertResults(ctx, alert, results, execMs)
 }
 
 // evaluateCompoundAlert evaluates a compound alert using tumbling windows.
@@ -589,8 +594,9 @@ func (e *Engine) evaluateCompoundAlert(ctx context.Context, alert *Alert, cache 
 		return err
 	}
 
-	e.advanceCursor(ctx, alert, windowEnd)
-	return e.processAlertResults(ctx, alert, results, int(time.Since(start).Milliseconds()))
+	execMs := int(time.Since(start).Milliseconds())
+	e.advanceCursor(ctx, alert, windowEnd, execMs)
+	return e.processAlertResults(ctx, alert, results, execMs)
 }
 
 // evaluateScheduledAlert evaluates a scheduled alert based on its cron
@@ -631,8 +637,9 @@ func (e *Engine) evaluateScheduledAlert(ctx context.Context, alert *Alert, cache
 		return err
 	}
 
-	e.advanceCursor(ctx, alert, toTime)
-	return e.processAlertResults(ctx, alert, results, int(time.Since(start).Milliseconds()))
+	execMs := int(time.Since(start).Milliseconds())
+	e.advanceCursor(ctx, alert, toTime, execMs)
+	return e.processAlertResults(ctx, alert, results, execMs)
 }
 
 // ---------------------------------------------------------------------------
@@ -994,8 +1001,8 @@ func (e *Engine) updateLastTriggered(ctx context.Context, alertID string) error 
 	return err
 }
 
-func (e *Engine) updateLastEvaluated(ctx context.Context, alertID string, t time.Time) error {
-	_, err := e.pg.Exec(ctx, `UPDATE alerts SET last_evaluated_at = $2 WHERE id = $1`, alertID, t)
+func (e *Engine) updateLastEvaluated(ctx context.Context, alertID string, t time.Time, execMs int) error {
+	_, err := e.pg.Exec(ctx, `UPDATE alerts SET last_evaluated_at = $2, last_execution_time_ms = $3 WHERE id = $1`, alertID, t, execMs)
 	return err
 }
 

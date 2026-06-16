@@ -336,6 +336,139 @@ func TestTranslate_ContainsAll(t *testing.T) {
 	assertValidBQL(t, result)
 }
 
+func TestTranslate_EndsWith_Consolidated(t *testing.T) {
+	rule := makeRule("selection", map[string]interface{}{
+		"Image|endswith": []interface{}{"/cat", "/grep", "/tail"},
+	}, "selection")
+
+	result, err := Translate(rule, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := `Image=/.*(?:\/cat|\/grep|\/tail)$/i`
+	if result != expected {
+		t.Errorf("expected %s, got %s", expected, result)
+	}
+	if strings.Contains(result, "OR") {
+		t.Errorf("multi-value endswith should not emit OR, got %s", result)
+	}
+	assertValidBQL(t, result)
+}
+
+func TestTranslate_Contains_Consolidated(t *testing.T) {
+	rule := makeRule("selection", map[string]interface{}{
+		"CommandLine|contains": []interface{}{"wget", "curl"},
+	}, "selection")
+
+	result, err := Translate(rule, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := `CommandLine=/.*(?:wget|curl).*/i`
+	if result != expected {
+		t.Errorf("expected %s, got %s", expected, result)
+	}
+	assertValidBQL(t, result)
+}
+
+func TestTranslate_StartsWith_Consolidated(t *testing.T) {
+	rule := makeRule("selection", map[string]interface{}{
+		"Image|startswith": []interface{}{`C:\Windows`, `C:\Temp`},
+	}, "selection")
+
+	result, err := Translate(rule, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := `Image=/^(?:C:\\Windows|C:\\Temp).*/i`
+	if result != expected {
+		t.Errorf("expected %s, got %s", expected, result)
+	}
+	assertValidBQL(t, result)
+}
+
+func TestTranslate_Regex_Consolidated(t *testing.T) {
+	rule := makeRule("selection", map[string]interface{}{
+		"CommandLine|re": []interface{}{`-enc.*`, `\^foo$`},
+	}, "selection")
+
+	result, err := Translate(rule, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := `CommandLine=/(?:-enc.*)|(?:\^foo$)/`
+	if result != expected {
+		t.Errorf("expected %s, got %s", expected, result)
+	}
+	assertValidBQL(t, result)
+}
+
+func TestTranslate_KeywordList_Consolidated(t *testing.T) {
+	yaml := `
+title: Keyword List
+detection:
+  keywords:
+    - foo
+    - bar
+  condition: keywords
+`
+	rule, err := ParseSigmaRule(yaml)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	result, err := Translate(rule, nil)
+	if err != nil {
+		t.Fatalf("translate error: %v", err)
+	}
+
+	expected := `/.*(?:foo|bar).*/i`
+	if result != expected {
+		t.Errorf("expected %s, got %s", expected, result)
+	}
+	assertValidBQL(t, result)
+}
+
+func TestTranslate_ExactMultiValue_StaysOR(t *testing.T) {
+	rule := makeRule("selection", map[string]interface{}{
+		"User": []interface{}{"admin", "root"},
+	}, "selection")
+
+	result, err := Translate(rule, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Exact matches stay as OR'd equalities (cheaper than regex in ClickHouse).
+	expected := `(User="admin" OR User="root")`
+	if result != expected {
+		t.Errorf("expected %s, got %s", expected, result)
+	}
+	assertValidBQL(t, result)
+}
+
+func TestTranslate_EndsWithAll_StaysAND(t *testing.T) {
+	rule := makeRule("selection", map[string]interface{}{
+		"CommandLine|contains|all": []interface{}{"cmd", "whoami"},
+	}, "selection")
+
+	result, err := Translate(rule, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// |all keeps AND semantics; not consolidated into an alternation.
+	expected := `(CommandLine=/.*cmd.*/i AND CommandLine=/.*whoami.*/i)`
+	if result != expected {
+		t.Errorf("expected %s, got %s", expected, result)
+	}
+	assertValidBQL(t, result)
+}
+
 func TestTranslate_ConditionAndNot(t *testing.T) {
 	yaml := `
 title: And Not
@@ -600,8 +733,13 @@ tags:
 	if !strings.Contains(result, "NOT") {
 		t.Errorf("expected NOT in complex rule, got %s", result)
 	}
-	if !strings.Contains(result, "OR") {
-		t.Errorf("expected OR for multi-value selections, got %s", result)
+	// Multi-value selections are consolidated into a single alternation regex
+	// rather than OR'd individual matches.
+	if !strings.Contains(result, `Image=/.*(?:\\powershell\.exe|\\pwsh\.exe)$/i`) {
+		t.Errorf("expected consolidated endswith alternation, got %s", result)
+	}
+	if !strings.Contains(result, `CommandLine=/.*(?:Invoke-WebRequest|wget|curl|DownloadString|DownloadFile).*/i`) {
+		t.Errorf("expected consolidated contains alternation, got %s", result)
 	}
 
 	// Verify metadata

@@ -149,7 +149,11 @@ CREATE TABLE IF NOT EXISTS alerts (
     updated_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    last_triggered TIMESTAMP
+    last_triggered TIMESTAMP,
+    -- Query latency of the most recent evaluation, refreshed every cycle
+    -- (not just on trigger) so the alerts list reflects health for alerts
+    -- that never match.
+    last_execution_time_ms INTEGER
 );
 -- Ensure columns exist (handles case where table was created by container init without them)
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS alert_type VARCHAR(50) NOT NULL DEFAULT 'event';
@@ -158,6 +162,7 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS disabled_reason TEXT;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS labels TEXT[] DEFAULT '{}';
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS "references" TEXT[] DEFAULT '{}';
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS severity VARCHAR(20) NOT NULL DEFAULT 'medium';
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS last_execution_time_ms INTEGER;
 
 -- Webhook actions table
 CREATE TABLE IF NOT EXISTS webhook_actions (

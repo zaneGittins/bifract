@@ -823,7 +823,7 @@ func (m *Manager) ListAlerts(ctx context.Context, enabledOnly bool, fractalID, p
 		       COALESCE(a.severity, 'medium'), COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''),
 		       COALESCE(a.created_by, ''), COALESCE(a.updated_by, ''), a.created_at, a.updated_at, a.last_triggered,
 		       COALESCE(a.disabled_reason, ''),
-		       (SELECT ae.execution_time_ms FROM alert_executions ae WHERE ae.alert_id = a.id ORDER BY ae.triggered_at DESC LIMIT 1),
+		       a.last_execution_time_ms,
 		       a.window_duration,
 		       COALESCE(a.schedule_cron, ''), COALESCE(a.query_window_seconds, 0),
 		       COALESCE(json_agg(
@@ -1975,7 +1975,7 @@ func (m *Manager) ListAllFeedAlerts(ctx context.Context, fractalID, prismID stri
 		       COALESCE(a.feed_id::text, ''), COALESCE(a.feed_rule_path, ''), COALESCE(a.feed_rule_hash, ''),
 		       COALESCE(a.created_by, ''), a.created_at, a.updated_at, COALESCE(a.disabled_reason, ''),
 		       a.last_triggered,
-		       (SELECT ae.execution_time_ms FROM alert_executions ae WHERE ae.alert_id = a.id ORDER BY ae.triggered_at DESC LIMIT 1),
+		       a.last_execution_time_ms,
 		       COALESCE(f.name, '') as feed_name
 		FROM alerts a
 		LEFT JOIN alert_feeds f ON a.feed_id = f.id

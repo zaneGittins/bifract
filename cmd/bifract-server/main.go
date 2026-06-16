@@ -374,6 +374,17 @@ func main() {
 	log.Println("Initializing ingestion queue...")
 	ingestQueue := ingest.NewIngestQueue(dbIngest, config.IngestQueueSize, config.IngestWorkers)
 	ingestQueue.SetQuotaManager(quotaManager)
+
+	// Queue depth at which alert evaluation is deferred to protect ingestion.
+	// Clamp the configured percentage to a sane (1, 100] range so a bad value
+	// can't disable alerts (0%) or wedge them permanently above 100%.
+	deferPct := config.AlertIngestDeferPct
+	if deferPct < 1 {
+		deferPct = 1
+	} else if deferPct > 100 {
+		deferPct = 100
+	}
+	alertDeferThreshold := config.IngestQueueSize * deferPct / 100
 	if sysFractal, err := fractalManager.GetFractalByName(context.Background(), "system"); err == nil {
 		ingestQueue.SetSystemFractalID(sysFractal.ID)
 		log.Printf("Ingest queue system fractal wired: %s", sysFractal.ID)
@@ -395,7 +406,7 @@ func main() {
 	// Wire ingest pressure signal to the alert engine so it defers evaluation
 	// during heavy ingestion. Cursor-based tracking ensures no logs are missed.
 	alertEngine.SetIngestPressureFunc(func() bool {
-		return ingestQueue.Depth() > config.IngestQueueSize/10
+		return ingestQueue.Depth() > alertDeferThreshold
 	})
 	alertEngine.SetLastIngestedFunc(func(fractalID string) time.Time {
 		return ingestQueue.LastIngested(fractalID)
@@ -672,7 +683,7 @@ func main() {
 			r.Get("/status", statusHandler.HandleStatus)
 			r.Get("/health/clickhouse", statusHandler.HandleHealthCheck)
 			r.Get("/system/pressure", func(w http.ResponseWriter, r *http.Request) {
-				alertsDeferred := ingestQueue.Depth() > config.IngestQueueSize/10
+				alertsDeferred := ingestQueue.Depth() > alertDeferThreshold
 				resp := map[string]interface{}{
 					"alerts_deferred": alertsDeferred,
 				}
@@ -1157,6 +1168,9 @@ type Config struct {
 
 	// Alert evaluation
 	AlertEvalInterval int // seconds
+	// Percentage of ingest queue depth at which alert evaluation is deferred
+	// to protect ingestion. Deferred alerts catch up via cursor tracking.
+	AlertIngestDeferPct int
 
 	// ClickHouse pool sizing (0 = use defaults)
 	CHQueryMaxConns  int
@@ -1203,7 +1217,8 @@ func loadConfig() Config {
 		IngestRateBurst: getEnvInt("BIFRACT_INGEST_RATE_BURST", 20000),
 
 		// Alert evaluation default
-		AlertEvalInterval: getEnvInt("BIFRACT_ALERT_EVAL_INTERVAL", 30),
+		AlertEvalInterval:   getEnvInt("BIFRACT_ALERT_EVAL_INTERVAL", 30),
+		AlertIngestDeferPct: getEnvInt("BIFRACT_ALERT_INGEST_DEFER_PCT", 25),
 
 		// ClickHouse pool sizing (0 = use package defaults)
 		CHQueryMaxConns:  getEnvInt("BIFRACT_CH_QUERY_MAX_CONNS", 0),
@@ -1237,6 +1252,7 @@ func loadConfig() Config {
 	log.Printf("  Max Body Size: %d bytes", config.MaxBodySize)
 	log.Printf("  Rate Limit: %d req/s (burst: %d)", config.IngestRateLimit, config.IngestRateBurst)
 	log.Printf("  Alert Eval Interval: %ds", config.AlertEvalInterval)
+	log.Printf("  Alert Ingest Defer: %d%% of queue depth", config.AlertIngestDeferPct)
 	if config.ClickHouseCluster != "" {
 		log.Printf("  ClickHouse Cluster: %s (replicated mode)", config.ClickHouseCluster)
 		if config.ClickHouseHosts != "" {

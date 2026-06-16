@@ -145,15 +145,64 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 		return "*", nil
 	}
 
-	// If |all modifier: AND the values; otherwise OR them
-	if hasAll || len(valueExprs) == 1 {
-		if len(valueExprs) == 1 {
-			return valueExprs[0], nil
-		}
+	if len(valueExprs) == 1 {
+		return valueExprs[0], nil
+	}
+
+	// |all modifier: every value must match, so AND the individual expressions.
+	if hasAll {
 		return "(" + strings.Join(valueExprs, " AND ") + ")", nil
 	}
 
+	// OR semantics. For regex-based match types we consolidate all values into a
+	// single alternation regex so the generated SQL runs one match() per field
+	// instead of one per value. This is a large CPU win over billions of logs and
+	// is semantically identical to OR'ing the individual patterns.
+	// Exact matches stay as OR'd equalities, which ClickHouse evaluates more
+	// cheaply than a regex.
+	if field == "" {
+		// Keyword search on raw_log uses contains semantics.
+		return buildCombinedRegexExpr("", fc.Values, "contains")
+	}
+	if matchType != "exact" {
+		return buildCombinedRegexExpr(field, fc.Values, matchType)
+	}
+
 	return "(" + strings.Join(valueExprs, " OR ") + ")", nil
+}
+
+// buildCombinedRegexExpr consolidates multiple OR'd values of the same regex
+// match type into a single BQL regex using alternation. The result is one
+// match() call in the generated SQL rather than one per value. The combination
+// is exactly equivalent to OR'ing the individual single-value patterns.
+func buildCombinedRegexExpr(field string, values []string, matchType string) (string, error) {
+	pieces := make([]string, 0, len(values))
+	for _, v := range values {
+		if matchType == "regex" {
+			// Raw user regex: wrap each in a non-capturing group so internal
+			// anchors and top-level alternation keep their precedence.
+			pieces = append(pieces, "(?:"+v+")")
+		} else {
+			pieces = append(pieces, escapeRegex(v))
+		}
+	}
+	alt := strings.Join(pieces, "|")
+
+	switch matchType {
+	case "regex":
+		return fmt.Sprintf("%s=/%s/", field, alt), nil
+	case "contains":
+		if field == "" {
+			return fmt.Sprintf("/.*(?:%s).*/i", alt), nil
+		}
+		return fmt.Sprintf("%s=/.*(?:%s).*/i", field, alt), nil
+	case "startswith":
+		return fmt.Sprintf("%s=/^(?:%s).*/i", field, alt), nil
+	case "endswith":
+		return fmt.Sprintf("%s=/.*(?:%s)$/i", field, alt), nil
+	default:
+		return "", fmt.Errorf("unknown match type for combination: %s", matchType)
+	}
 }
 
 // buildMatchExpr creates a single field=value BQL expression.
