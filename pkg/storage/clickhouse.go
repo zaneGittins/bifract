@@ -973,6 +973,87 @@ func (c *ClickHouseClient) scanLogRow(ctx context.Context, query string, args []
 	return row, nil
 }
 
+// GetLogFieldsByID fetches the parsed fields for a single log. When ts is
+// non-zero it is added as an exact-match predicate: because the log table is
+// ORDER BY (timestamp, log_id) and PARTITION BY (fractal_id, toDate(timestamp)),
+// an equality on timestamp prunes to a single date partition and pins the
+// primary index to one granule, turning a full-table bloom-filter scan into a
+// near-pinpoint read. The frontend supplies the exact ClickHouse timestamp from
+// the search result (not round-tripped through Postgres), so it bit-matches the
+// DateTime64(3) value.
+//
+// If the timestamped lookup returns nothing (e.g. a caller passed a stale or
+// reformatted timestamp), it transparently falls back to the log_id-only scan
+// so correctness never regresses.
+//
+// fractalID is normally left empty by callers that must read the log's own
+// fractal_id and verify it against the session's accessible set afterwards
+// (this is what keeps the lookup correct for both fractal and prism sessions).
+func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, ts time.Time, fractalID string) (map[string]interface{}, error) {
+	if logID == "" {
+		return nil, fmt.Errorf("log_id is required")
+	}
+
+	if !ts.IsZero() {
+		entry, err := c.queryLogFields(ctx, logID, ts, fractalID)
+		if err != nil {
+			return nil, err
+		}
+		if entry != nil {
+			return entry, nil
+		}
+		// Fall through to the untimed scan: the timestamp didn't match a row
+		// (stale/reformatted value), so don't fail-closed on it.
+	}
+
+	return c.queryLogFields(ctx, logID, time.Time{}, fractalID)
+}
+
+// queryLogFields runs a single-row field lookup. A non-zero ts adds an exact
+// timestamp predicate; a non-empty fractalID scopes the lookup. Returns nil
+// (no error) when no matching row exists.
+func (c *ClickHouseClient) queryLogFields(ctx context.Context, logID string, ts time.Time, fractalID string) (map[string]interface{}, error) {
+	query := fmt.Sprintf(
+		"SELECT log_id, fractal_id, toString(fields) AS fields FROM %s WHERE log_id = ?",
+		c.ReadTable())
+	args := []interface{}{logID}
+	if !ts.IsZero() {
+		query += " AND timestamp = ?"
+		args = append(args, ts)
+	}
+	if fractalID != "" {
+		query += " AND fractal_id = ?"
+		args = append(args, fractalID)
+	}
+	query += " LIMIT 1"
+
+	rows, err := c.conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query log fields: %w", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("error iterating log fields row: %w", err)
+		}
+		return nil, nil
+	}
+
+	var resLogID, logFractalID, fieldsStr string
+	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr); err != nil {
+		return nil, fmt.Errorf("failed to scan log fields row: %w", err)
+	}
+	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID}
+	var m map[string]interface{}
+	if json.Unmarshal([]byte(fieldsStr), &m) == nil {
+		entry["fields"] = m
+	} else {
+		entry["fields"] = map[string]interface{}{}
+	}
+	return entry, nil
+}
+
 // GetLogFieldsByIDs batch-fetches parsed field data for multiple log_ids.
 func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []string, fractalID string) ([]map[string]interface{}, error) {
 	if len(logIDs) == 0 {

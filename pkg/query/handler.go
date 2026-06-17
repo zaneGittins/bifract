@@ -1435,6 +1435,13 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Optional timestamp from the search result. When present it turns the
+	// lookup from a whole-table bloom-filter scan into a near-pinpoint read
+	// (timestamp is the leading sort key and part of the partition key). A
+	// malformed or missing value is ignored, not an error: GetLogFieldsByID
+	// falls back to the log_id-only scan.
+	ts := parseLogTimestamp(r.URL.Query().Get("timestamp"))
+
 	user, _ := r.Context().Value("user").(*storage.User)
 	accessible, err := h.accessibleFractalIDs(r)
 	if err != nil {
@@ -1458,7 +1465,7 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 	// Fetch without fractal filter, then verify the log's fractal_id is in the
 	// accessible set. This correctly handles prism sessions (multiple fractals)
 	// without trusting anything from the request body.
-	results, err := h.db.GetLogFieldsByIDs(r.Context(), []string{logID}, "")
+	logEntry, err := h.db.GetLogFieldsByID(r.Context(), logID, ts, "")
 	if err != nil {
 		log.Printf("[QueryHandler] HandleGetLogFields: failed to fetch fields: %v", err)
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -1468,7 +1475,7 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if len(results) == 0 {
+	if logEntry == nil {
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{
 			"success": false,
 			"error":   "Log not found",
@@ -1477,7 +1484,7 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 	}
 
 	if !isAdmin {
-		logFractalID, _ := results[0]["fractal_id"].(string)
+		logFractalID, _ := logEntry["fractal_id"].(string)
 		if logFractalID == "" && h.fractalManager != nil {
 			if def, err := h.fractalManager.GetDefaultFractal(r.Context()); err == nil {
 				logFractalID = def.ID
@@ -1499,7 +1506,7 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	fields, _ := results[0]["fields"].(map[string]interface{})
+	fields, _ := logEntry["fields"].(map[string]interface{})
 	if fields == nil {
 		fields = map[string]interface{}{}
 	}
@@ -1508,6 +1515,29 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 		"success": true,
 		"fields":  fields,
 	})
+}
+
+// parseLogTimestamp parses a timestamp string supplied by the frontend for a
+// log lookup. It accepts the ClickHouse result format (what the search results
+// carry, e.g. "2026-03-22 18:37:11.329", interpreted as UTC) as well as RFC3339
+// variants. It returns the zero time on any failure so callers treat the
+// timestamp as an absent optimization hint rather than an error.
+func parseLogTimestamp(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	layouts := []string{
+		"2006-01-02 15:04:05.000",
+		"2006-01-02 15:04:05",
+		time.RFC3339Nano,
+		time.RFC3339,
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC()
+		}
+	}
+	return time.Time{}
 }
 
 // accessibleFractalIDs returns the list of fractal IDs the current session is
