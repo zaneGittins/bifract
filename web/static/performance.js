@@ -185,7 +185,7 @@ const Performance = {
             }
 
             if (alertStatsPromise) {
-                const alertData = await alertStatsPromise.json();
+                const alertData = await (await alertStatsPromise).json();
                 if (alertData.success) this.renderAlertStats(alertData);
             }
         } catch (err) {

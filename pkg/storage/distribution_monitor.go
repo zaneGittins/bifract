@@ -87,13 +87,19 @@ func (m *DistributionMonitor) poll(prevErrorCount *int64, wasDegraded *bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	rows, err := m.ch.Query(ctx, `
+	// In cluster mode query all replicas so the count reflects the full
+	// cluster, not just whichever shard this connection landed on.
+	distQueueTable := "system.distribution_queue"
+	if m.ch.IsCluster() {
+		distQueueTable = fmt.Sprintf("clusterAllReplicas('%s', system, distribution_queue)", EscCHStr(m.ch.Cluster))
+	}
+	rows, err := m.ch.Query(ctx, fmt.Sprintf(`
 		SELECT
 			COALESCE(sum(data_files), 0)        AS data_files,
 			COALESCE(sum(broken_data_files), 0) AS broken_data_files,
 			COALESCE(max(error_count), 0)       AS error_count
-		FROM system.distribution_queue
-		WHERE table = 'logs_distributed'`)
+		FROM %s
+		WHERE table = 'logs_distributed'`, distQueueTable))
 	if err != nil {
 		log.Printf("[DistributionMonitor] query failed: %v", err)
 		return
