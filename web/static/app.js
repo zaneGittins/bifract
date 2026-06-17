@@ -563,7 +563,11 @@ const App = {
             const data = await response.json();
 
             if (statusDot && statusContainer) {
-                if (data.success && data.connected) {
+                if (data.success && data.connected && data.degraded) {
+                    statusDot.className = 'status-dot status-degraded';
+                    const down = (data.shards_total || 0) - (data.shards_healthy || 0);
+                    statusContainer.title = `ClickHouse Degraded — ${down} of ${data.shards_total} shard(s) unreachable`;
+                } else if (data.success && data.connected) {
                     statusDot.className = 'status-dot status-connected';
                     statusContainer.title = 'ClickHouse Connected';
                 } else {

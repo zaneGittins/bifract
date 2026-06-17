@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -68,20 +69,37 @@ func NewStatusHandler(db *storage.ClickHouseClient, pg *storage.PostgresClient) 
 }
 
 // HandleHealthCheck is an ultralight endpoint that only pings ClickHouse.
-// Used by the UI status dot; no expensive queries.
+// Used by the UI status dot; no expensive queries. In cluster mode also
+// checks per-shard health via system.clusters and returns degraded=true
+// when one or more shards are unreachable.
 func (h *StatusHandler) HandleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 
-	connected := h.db.HealthCheck(ctx) == nil
-	w.Header().Set("Content-Type", "application/json")
-	if connected {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"success":true,"connected":true}`))
-	} else {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"success":true,"connected":false}`))
+	type healthResp struct {
+		Success       bool `json:"success"`
+		Connected     bool `json:"connected"`
+		Degraded      bool `json:"degraded,omitempty"`
+		ShardsHealthy int  `json:"shards_healthy,omitempty"`
+		ShardsTotal   int  `json:"shards_total,omitempty"`
 	}
+
+	resp := healthResp{Success: true, Connected: h.db.HealthCheck(ctx) == nil}
+
+	if resp.Connected && h.db.IsCluster() {
+		shardCtx, shardCancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer shardCancel()
+		total, healthy, err := h.db.ShardHealth(shardCtx)
+		if err == nil && total > 0 {
+			resp.ShardsTotal = total
+			resp.ShardsHealthy = healthy
+			resp.Degraded = healthy < total
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *StatusHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {

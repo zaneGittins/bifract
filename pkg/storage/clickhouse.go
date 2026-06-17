@@ -560,6 +560,24 @@ func (c *ClickHouseClient) HealthCheck(ctx context.Context) error {
 	return c.conn.Ping(ctx)
 }
 
+// ShardHealth returns the total number of cluster nodes and how many are
+// currently healthy (estimated_recovery_time = 0 means ClickHouse's connection
+// manager considers the node reachable). Returns 0, 0, nil for single-node.
+func (c *ClickHouseClient) ShardHealth(ctx context.Context) (total, healthy int, err error) {
+	if !c.IsCluster() {
+		return 0, 0, nil
+	}
+	rows, err := c.Query(ctx, fmt.Sprintf(`
+		SELECT count()                              AS total,
+		       countIf(estimated_recovery_time = 0) AS healthy
+		FROM system.clusters
+		WHERE cluster = '%s'`, EscCHStr(c.Cluster)))
+	if err != nil || len(rows) == 0 {
+		return 0, 0, err
+	}
+	return int(distMonInt64(rows[0]["total"])), int(distMonInt64(rows[0]["healthy"])), nil
+}
+
 func (c *ClickHouseClient) Close() error {
 	return c.conn.Close()
 }

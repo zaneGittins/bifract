@@ -34,6 +34,8 @@ spec:
   keeperClusterRef:
     name: bifract-keeper
   podTemplate:
+    securityContext:
+      fsGroupChangePolicy: OnRootMismatch
     affinity:
       podAntiAffinity:
         preferredDuringSchedulingIgnoredDuringExecution:
@@ -66,4 +68,7 @@ spec:
       secret:
         name: bifract-secrets
         key: CLICKHOUSE_PASSWORD_HASH
-    distributed_background_insert_batch: "1"
+    extraUsersConfig:
+      profiles:
+        default:
+          distributed_background_insert_batch: 1
