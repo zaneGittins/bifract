@@ -456,12 +456,11 @@ func openClickHouseConn(addrs []string, database, user, password string, pool Cl
 			Password: password,
 		},
 		Settings: clickhouse.Settings{
-			"max_execution_time":     60,
 			"use_uncompressed_cache": 1,
 			"output_format_native_use_flattened_dynamic_and_json_serialization": 1,
 		},
 		DialTimeout:     pool.DialTimeout,
-		ReadTimeout:     0, // no TCP read deadline; server-side max_execution_time enforces query limits
+		ReadTimeout:     0,
 		MaxOpenConns:    pool.MaxOpenConns,
 		MaxIdleConns:    pool.MaxIdleConns,
 		ConnMaxLifetime: pool.ConnMaxLifetime,

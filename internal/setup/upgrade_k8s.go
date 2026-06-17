@@ -376,19 +376,29 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 		}
 	}
 
-	// Parse CH shards, replicas, storage from clickhouse installation
+	// Parse CH shards, replicas, storage from clickhouse installation.
+	// The file contains two YAML documents: KeeperCluster and ClickHouseCluster.
+	// Split by document separator so storage regex only matches the CH cluster doc,
+	// not the Keeper's hardcoded storage value.
 	if data, err := os.ReadFile(filepath.Join(dir, "clickhouse", "clickhouse-installation.yaml")); err == nil {
 		content := string(data)
-		if v := extractValue(content, `(?m)^\s*shards:\s*(\d+)`); v != "" {
+		chDoc := content
+		for _, doc := range strings.Split(content, "\n---") {
+			if strings.Contains(doc, "kind: ClickHouseCluster") {
+				chDoc = doc
+				break
+			}
+		}
+		if v := extractValue(chDoc, `(?m)^\s*shards:\s*(\d+)`); v != "" {
 			s.chShards, _ = strconv.Atoi(v)
 		}
-		if v := extractValue(content, `(?m)^\s*replicas:\s*(\d+)`); v != "" {
+		if v := extractValue(chDoc, `(?m)^\s*replicas:\s*(\d+)`); v != "" {
 			s.chReplicas, _ = strconv.Atoi(v)
 		}
-		if v := extractValue(content, `storage:\s*(\d+)Ti`); v != "" {
+		if v := extractValue(chDoc, `storage:\s*(\d+)Ti`); v != "" {
 			ti, _ := strconv.Atoi(v)
 			s.chStorageGB = ti * 1024
-		} else if v := extractValue(content, `storage:\s*(\d+)Gi`); v != "" {
+		} else if v := extractValue(chDoc, `storage:\s*(\d+)Gi`); v != "" {
 			s.chStorageGB, _ = strconv.Atoi(v)
 		}
 		s.chResources = extractResources(content, "clickhouse-server")
