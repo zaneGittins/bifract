@@ -1004,6 +1004,7 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 		}
 		// Fall through to the untimed scan: the timestamp didn't match a row
 		// (stale/reformatted value), so don't fail-closed on it.
+		log.Printf("[GetLogFieldsByID] timestamp exact-match missed for log_id=%s ts=%s, falling back to full scan", logID, ts.UTC().Format("2006-01-02 15:04:05.000"))
 	}
 
 	return c.queryLogFields(ctx, logID, time.Time{}, fractalID)

@@ -332,22 +332,9 @@ const App = {
             });
         }
 
-        // Time range
-        const timeRangeSelect = document.getElementById('timeRange');
-        const customTimeInputs = document.getElementById('customTimeInputs');
-
-        if (timeRangeSelect && customTimeInputs) {
-            timeRangeSelect.addEventListener('change', (e) => {
-                if (e.target.value === 'custom') {
-                    customTimeInputs.style.display = 'flex';
-                } else {
-                    customTimeInputs.style.display = 'none';
-                    // Save non-custom selection immediately so it persists on fractal switch
-                    if (window.QueryExecutor) {
-                        QueryExecutor.saveTimeRangeToStorage(e.target.value, null);
-                    }
-                }
-            });
+        // Time picker
+        if (window.TimePicker) {
+            TimePicker.init();
         }
 
         // SQL toggle

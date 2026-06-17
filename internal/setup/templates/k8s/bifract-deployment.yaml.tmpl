@@ -60,6 +60,10 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: CLICKHOUSE_HOSTS
               value: "{{.CHHostsList}}"
+{{- if gt .CHShards 1}}
+            - name: CLICKHOUSE_WRITE_HOST
+              value: "bifract-ch-clickhouse-lb"
+{{- end}}
             - name: CLICKHOUSE_PORT
               value: "9000"
             - name: CLICKHOUSE_DB

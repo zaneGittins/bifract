@@ -932,6 +932,18 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		}
 	}
 
+	// Write ClickHouse LB service for multi-shard clusters.
+	if cfg.CHShards > 1 {
+		content, err := renderK8sTemplate("templates/k8s/clickhouse-lb-service.yaml.tmpl", data)
+		if err != nil {
+			return fmt.Errorf("render clickhouse LB service template: %w", err)
+		}
+		outPath := filepath.Join(cfg.OutputDir, "clickhouse/lb-service.yaml")
+		if err := os.WriteFile(outPath, []byte(content), 0600); err != nil {
+			return fmt.Errorf("write clickhouse LB service: %w", err)
+		}
+	}
+
 	// Conditionally write mTLS CA secrets.
 	if cfg.MTLSEnabled {
 		// Caddy secret: CA cert only (for client verification)

@@ -36,10 +36,10 @@ const QueryExecutor = {
         prevPageBtn: 'prevPageBtn',
         nextPageBtn: 'nextPageBtn',
         pageInfo: 'pageInfo',
-        timeRange: 'timeRange',
-        customStart: 'customStart',
-        customEnd: 'customEnd',
-        customTimeInputs: 'customTimeInputs'
+        timeRange: null,
+        customStart: null,
+        customEnd: null,
+        customTimeInputs: null
     },
 
     // Get DOM elements based on current configuration
@@ -214,7 +214,7 @@ const QueryExecutor = {
 
         // Capture run metadata; the history entry is recorded on finalize once
         // result count and duration are known (see _finalizeQuery).
-        const trToken = document.getElementById('timeRange')?.value || '';
+        const trToken = window.TimePicker?.state?.type || '24h';
         this._pendingHistory = {
             query: query,
             timeRange: trToken,
@@ -925,68 +925,11 @@ const QueryExecutor = {
     },
 
     getTimeRange() {
-        const timeRangeSelect = document.getElementById('timeRange');
-        const customStart = document.getElementById('customStart');
-        const customEnd = document.getElementById('customEnd');
-
-        if (!timeRangeSelect) {
-            return {
-                start: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-                end: new Date().toISOString()
-            };
-        }
-
-        const value = timeRangeSelect.value;
-        const now = new Date();
-        let start, end = now;
-
-        switch (value) {
-            case '5m':
-                start = new Date(now - 5 * 60 * 1000);
-                break;
-            case '15m':
-                start = new Date(now - 15 * 60 * 1000);
-                break;
-            case '1h':
-                start = new Date(now - 60 * 60 * 1000);
-                break;
-            case '24h':
-                start = new Date(now - 24 * 60 * 60 * 1000);
-                break;
-            case '7d':
-                start = new Date(now - 7 * 24 * 60 * 60 * 1000);
-                break;
-            case '30d':
-                start = new Date(now - 30 * 24 * 60 * 60 * 1000);
-                break;
-            case 'all':
-                start = new Date('2000-01-01T00:00:00Z');
-                break;
-            case 'custom':
-                if (customStart && customEnd && customStart.value && customEnd.value) {
-                    const timeRange = {
-                        start: new Date(customStart.value).toISOString(),
-                        end: new Date(customEnd.value).toISOString()
-                    };
-                    // Store custom time range in localStorage
-                    this.saveTimeRangeToStorage('custom', timeRange);
-                    return timeRange;
-                }
-                start = new Date(now - 24 * 60 * 60 * 1000);
-                break;
-            default:
-                start = new Date(now - 24 * 60 * 60 * 1000);
-        }
-
-        const timeRange = {
-            start: start.toISOString(),
-            end: end.toISOString()
+        if (window.TimePicker) return TimePicker.getTimeRange();
+        return {
+            start: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+            end: new Date().toISOString()
         };
-
-        // Store time range in localStorage
-        this.saveTimeRangeToStorage(value, timeRange);
-
-        return timeRange;
     },
 
     _getTimeRangeStorageKey(suffix) {
@@ -998,57 +941,11 @@ const QueryExecutor = {
     },
 
     saveTimeRangeToStorage(rangeType, timeRange) {
-        try {
-            localStorage.setItem(this._getTimeRangeStorageKey('time_range_type'), rangeType);
-            if (rangeType === 'custom') {
-                localStorage.setItem(this._getTimeRangeStorageKey('custom_time_range'), JSON.stringify(timeRange));
-            }
-        } catch (e) {
-            console.error('Failed to save time range to localStorage:', e);
-        }
+        if (window.TimePicker) TimePicker.saveToStorage();
     },
 
     restoreTimeRangeFromStorage() {
-        try {
-            const timeRangeSelect = document.getElementById('timeRange');
-            const customStart = document.getElementById('customStart');
-            const customEnd = document.getElementById('customEnd');
-            const customTimeInputs = document.getElementById('customTimeInputs');
-            if (!timeRangeSelect) return;
-
-            const savedRangeType = localStorage.getItem(this._getTimeRangeStorageKey('time_range_type'));
-
-            if (savedRangeType) {
-                timeRangeSelect.value = savedRangeType;
-
-                if (savedRangeType === 'custom') {
-                    const savedCustomRange = localStorage.getItem(this._getTimeRangeStorageKey('custom_time_range'));
-                    if (savedCustomRange) {
-                        const range = JSON.parse(savedCustomRange);
-                        if (customStart && customEnd) {
-                            customStart.value = new Date(range.start).toISOString().slice(0, 16).replace('T', ' ');
-                            customEnd.value = new Date(range.end).toISOString().slice(0, 16).replace('T', ' ');
-                        }
-                    }
-                    if (customTimeInputs) {
-                        customTimeInputs.style.display = 'flex';
-                    }
-                } else {
-                    if (customTimeInputs) {
-                        customTimeInputs.style.display = 'none';
-                    }
-                }
-            } else {
-                // No saved range for this fractal -- reset to default
-                // to prevent the previous fractal's range from leaking
-                timeRangeSelect.value = '24h';
-                if (customTimeInputs) {
-                    customTimeInputs.style.display = 'none';
-                }
-            }
-        } catch (e) {
-            console.error('Failed to restore time range from localStorage:', e);
-        }
+        if (window.TimePicker) TimePicker.restoreFromStorage();
     },
 
     renderPage(pageResults) {
@@ -2561,9 +2458,8 @@ const QueryExecutor = {
             if (!rawQuery) return;
 
             // Get current time range
-            const timeRange = this.getTimeRange();
-            const timeRangeSelect = document.getElementById('timeRange');
-            const timeRangeValue = timeRangeSelect ? timeRangeSelect.value : '24h';
+            const trState = window.TimePicker?.state || { type: '24h' };
+            const timeRangeValue = trState.type;
 
             // Get current fractal/prism ID
             const ctx = window.FractalContext;
@@ -2575,20 +2471,20 @@ const QueryExecutor = {
 
             // Build URL parameters
             const urlParams = new URLSearchParams();
-            urlParams.set('q', btoa(encodeURIComponent(rawQuery))); // Base64 encode the query
-            urlParams.set('tr', timeRangeValue); // Time range type
+            urlParams.set('q', btoa(encodeURIComponent(rawQuery)));
+            urlParams.set('tr', timeRangeValue);
             if (ctx.isPrism()) {
-                urlParams.set('p', contextId); // Prism ID
+                urlParams.set('p', contextId);
             } else {
-                urlParams.set('f', contextId); // Fractal ID
+                urlParams.set('f', contextId);
             }
 
-            // Add custom time range if applicable
-            if (timeRangeValue === 'custom' && elements.customStart && elements.customEnd) {
-                if (elements.customStart.value && elements.customEnd.value) {
-                    urlParams.set('ts', new Date(elements.customStart.value).toISOString());
-                    urlParams.set('te', new Date(elements.customEnd.value).toISOString());
-                }
+            if (timeRangeValue === 'custom' && trState.customStart && trState.customEnd) {
+                urlParams.set('ts', trState.customStart);
+                urlParams.set('te', trState.customEnd);
+            } else if (timeRangeValue === 'relative') {
+                urlParams.set('rn', String(trState.relativeN || 4));
+                urlParams.set('ru', trState.relativeUnit || 'hours');
             }
 
             // Generate full URL
@@ -2684,7 +2580,7 @@ const QueryExecutor = {
 
             if (!hasData) {
                 // Store the share link data to be processed when fractals are loaded
-                this.deferredShareLink = { encodedQuery, timeRangeValue, fractalId: contextId, isPrismShare };
+                this.deferredShareLink = { encodedQuery, timeRangeValue, fractalId: contextId, isPrismShare, relativeN: urlParams.get('rn'), relativeUnit: urlParams.get('ru') };
 
                 // Start periodic check for fractals loading
                 this.startDeferredShareLinkPolling();
@@ -2732,7 +2628,9 @@ const QueryExecutor = {
                     query,
                     timeRangeValue,
                     customStart: urlParams.get('ts'),
-                    customEnd: urlParams.get('te')
+                    customEnd: urlParams.get('te'),
+                    relativeN: urlParams.get('rn'),
+                    relativeUnit: urlParams.get('ru')
                 };
 
                 if (isPrismShare) {
@@ -2777,7 +2675,9 @@ const QueryExecutor = {
                 query,
                 timeRangeValue,
                 customStart: urlParams.get('ts'),
-                customEnd: urlParams.get('te')
+                customEnd: urlParams.get('te'),
+                relativeN: urlParams.get('rn'),
+                relativeUnit: urlParams.get('ru')
             });
 
         } catch (error) {
@@ -2793,7 +2693,7 @@ const QueryExecutor = {
 
     // Load shared query data into the UI and execute
     loadShareDataIntoUI(shareData) {
-        const { query, timeRangeValue, customStart, customEnd } = shareData;
+        const { query, timeRangeValue, customStart, customEnd, relativeN, relativeUnit } = shareData;
 
         // Set flag to prevent clearing shared state during processing
         this.isProcessingSharedQuery = true;
@@ -2813,25 +2713,24 @@ const QueryExecutor = {
             }
 
             // Set time range
-            if (elements.timeRange) {
-                elements.timeRange.value = timeRangeValue;
-
-                // Handle custom time range
-                if (timeRangeValue === 'custom') {
-                    if (customStart && customEnd && elements.customStart && elements.customEnd) {
-                        // Convert ISO strings to datetime-local format
-                        const startDate = new Date(customStart);
-                        const endDate = new Date(customEnd);
-
-                        elements.customStart.value = this.formatDateTimeLocal(startDate);
-                        elements.customEnd.value = this.formatDateTimeLocal(endDate);
-
-                        // Show custom inputs
-                        if (elements.customTimeInputs) {
-                            elements.customTimeInputs.style.display = 'flex';
-                        }
-                    }
+            if (window.TimePicker) {
+                const newState = { type: timeRangeValue };
+                if (timeRangeValue === 'custom' && customStart && customEnd) {
+                    newState.customStart = customStart;
+                    newState.customEnd = customEnd;
+                    const absStart = document.getElementById('tpAbsStart');
+                    const absEnd = document.getElementById('tpAbsEnd');
+                    if (absStart) absStart.value = TimePicker._toDatetimeLocal(customStart);
+                    if (absEnd) absEnd.value = TimePicker._toDatetimeLocal(customEnd);
+                } else if (timeRangeValue === 'relative' && relativeN) {
+                    newState.relativeN = parseInt(relativeN, 10);
+                    newState.relativeUnit = relativeUnit || 'hours';
+                    const nEl = document.getElementById('tpRelativeN');
+                    const unitEl = document.getElementById('tpRelativeUnit');
+                    if (nEl) nEl.value = newState.relativeN;
+                    if (unitEl) unitEl.value = newState.relativeUnit;
                 }
+                TimePicker.setState(newState, true);
             }
 
             // Trigger syntax highlighting if available
@@ -2925,7 +2824,7 @@ const QueryExecutor = {
             return;
         }
 
-        const { encodedQuery, timeRangeValue, fractalId, isPrismShare } = this.deferredShareLink;
+        const { encodedQuery, timeRangeValue, fractalId, isPrismShare, relativeN, relativeUnit } = this.deferredShareLink;
 
         // Clear the deferred data and polling
         this.deferredShareLink = null;
@@ -2989,7 +2888,9 @@ const QueryExecutor = {
                     query,
                     timeRangeValue,
                     customStart: null,
-                    customEnd: null
+                    customEnd: null,
+                    relativeN: relativeN || null,
+                    relativeUnit: relativeUnit || null
                 };
 
                 if (isPrismShare) {
@@ -3033,8 +2934,10 @@ const QueryExecutor = {
             this.loadShareDataIntoUI({
                 query,
                 timeRangeValue,
-                customStart: null, // We don't have custom time data in deferred processing
-                customEnd: null
+                customStart: null,
+                customEnd: null,
+                relativeN: relativeN || null,
+                relativeUnit: relativeUnit || null
             });
 
         } catch (error) {

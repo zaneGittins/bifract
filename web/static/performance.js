@@ -958,6 +958,44 @@ const Performance = {
 
         this.renderAlertChart(data.history || []);
         this.renderSlowestTable(data.slowest || []);
+        this.renderHotTableStats(data.hot_table || null);
+    },
+
+    renderHotTableStats(hot) {
+        if (!hot) {
+            this.setText('hotMetricPartitions', '--');
+            this.setText('hotMetricRows', '--');
+            this.setText('hotMetricSize', '--');
+            this.setText('hotMetricCoverage', '--');
+            this.setText('hotMetricCoverageSub', '');
+            return;
+        }
+
+        this.setText('hotMetricPartitions', this.formatNumber(hot.partition_count || 0));
+        this.setText('hotMetricRows', this.formatNumber(hot.row_count || 0));
+        this.setText('hotMetricSize', this.formatBytes(hot.disk_bytes || 0));
+
+        const coverageEl = document.getElementById('hotMetricCoverage');
+        const coverageSub = document.getElementById('hotMetricCoverageSub');
+        const mins = hot.coverage_minutes;
+        if (mins != null) {
+            const h = Math.floor(mins / 60);
+            const m = Math.floor(mins % 60);
+            const label = h > 0 ? `${h}h ${m}m` : `${m}m`;
+            if (coverageEl) {
+                coverageEl.textContent = label;
+                // Warn if coverage exceeds 2.5 hours — cleaner may not be running.
+                coverageEl.className = 'perf-metric-value' + (mins > 150 ? ' perf-metric-warning' : '');
+            }
+            if (coverageSub && hot.oldest) {
+                const oldestTime = String(hot.oldest).split(' ')[1] || hot.oldest;
+                const newestTime = String(hot.newest || '').split(' ')[1] || '';
+                coverageSub.textContent = newestTime ? `${oldestTime} – ${newestTime}` : oldestTime;
+            }
+        } else {
+            if (coverageEl) { coverageEl.textContent = '--'; coverageEl.className = 'perf-metric-value'; }
+            if (coverageSub) coverageSub.textContent = '';
+        }
     },
 
     renderAlertChart(history) {

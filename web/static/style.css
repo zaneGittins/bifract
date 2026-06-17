@@ -1357,9 +1357,8 @@ body {
 }
 
 /* Query Mode Toggle */
-/* Time Range */
+/* Time Range (alert editor legacy inputs) */
 
-.time-range-select,
 .datetime-input {
     background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
@@ -1372,13 +1371,6 @@ body {
     width: 138px;
 }
 
-.time-range-select {
-    font-family: var(--font-main);
-    font-size: 0.8125rem;
-    width: auto;
-}
-
-.time-range-select:focus,
 .datetime-input:focus {
     outline: none;
     border-color: var(--accent-primary);
@@ -1438,6 +1430,180 @@ body {
 
 .range-separator {
     color: var(--text-muted);
+}
+
+/* Time Picker */
+.tp-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 99;
+}
+
+.time-picker-panel {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 100;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 0.75rem;
+    width: 282px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.tp-section-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 0.4rem;
+}
+
+.tp-presets {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.25rem;
+    margin-bottom: 0.25rem;
+}
+
+.tp-preset {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    padding: 0.3rem 0;
+    cursor: pointer;
+    text-align: center;
+    transition: var(--transition);
+}
+
+.tp-preset:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
+}
+
+.tp-preset.active {
+    background: var(--accent-glow);
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+}
+
+.tp-divider {
+    height: 1px;
+    background: var(--border-color);
+    margin: 0.625rem 0;
+}
+
+.tp-relative-row {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+}
+
+.tp-rel-prefix {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.tp-num-input {
+    width: 52px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    padding: 0.275rem 0.375rem;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.tp-num-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+.tp-unit-select {
+    flex: 1;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    padding: 0.275rem 0.375rem;
+    cursor: pointer;
+}
+
+.tp-unit-select:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+.tp-apply-btn {
+    background: var(--accent-primary);
+    border: none;
+    border-radius: 4px;
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.3rem 0.625rem;
+    cursor: pointer;
+    transition: var(--transition);
+    flex-shrink: 0;
+}
+
+.tp-apply-btn:hover {
+    opacity: 0.85;
+}
+
+.tp-absolute-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+}
+
+.tp-abs-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.tp-abs-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    width: 30px;
+    flex-shrink: 0;
+}
+
+.tp-abs-input {
+    flex: 1;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    padding: 0.275rem 0.375rem;
+    font-family: var(--font-mono);
+}
+
+.tp-abs-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+.tp-abs-apply {
+    align-self: flex-end;
+    margin-top: 0.125rem;
+}
+
+.tp-clock-icon {
+    flex-shrink: 0;
+    opacity: 0.65;
 }
 
 /* Timeline (inline in results) */
@@ -2122,12 +2288,6 @@ body.search-active {
 
     .query-input-wrapper {
         width: 100%;
-    }
-
-    .time-range-container {
-        flex-direction: column;
-        align-items: stretch;
-        gap: 1rem;
     }
 
     .time-controls-left {

@@ -156,8 +156,15 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to connect to ClickHouse cluster (query pool): %v", err)
 		}
+		// When a dedicated write LB host is set, route ingest writes through it so
+		// k8s spreads connections across all shards. The query pool (db) keeps all
+		// shard addresses so schema sync in Initialize() reaches every shard.
+		ingestHosts := hosts
+		if config.ClickHouseWriteHost != "" {
+			ingestHosts = []string{config.ClickHouseWriteHost}
+		}
 		dbIngest, err = storage.NewClickHouseClusterClient(
-			hosts, config.ClickHousePort,
+			ingestHosts, config.ClickHousePort,
 			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
 			config.ClickHouseCluster, ingestPool,
 		)
@@ -1186,6 +1193,8 @@ type Config struct {
 	// ClickHouse cluster mode (empty = single-node)
 	ClickHouseHosts   string // Comma-separated list of hosts (overrides ClickHouseHost when set)
 	ClickHouseCluster string // Cluster name for ON CLUSTER DDL and ReplicatedMergeTree
+	// Optional single LB endpoint for ingest writes; keeps CLICKHOUSE_HOSTS for schema sync
+	ClickHouseWriteHost string
 
 	// Base URL for external links (e.g. webhook alert_link)
 	BaseURL string
@@ -1232,8 +1241,9 @@ func loadConfig() Config {
 		CHIngestMaxConns: getEnvInt("BIFRACT_CH_INGEST_MAX_CONNS", 0),
 
 		// ClickHouse cluster mode
-		ClickHouseHosts:   getEnv("CLICKHOUSE_HOSTS", ""),
-		ClickHouseCluster: getEnv("CLICKHOUSE_CLUSTER", ""),
+		ClickHouseHosts:     getEnv("CLICKHOUSE_HOSTS", ""),
+		ClickHouseCluster:   getEnv("CLICKHOUSE_CLUSTER", ""),
+		ClickHouseWriteHost: getEnv("CLICKHOUSE_WRITE_HOST", ""),
 
 		// Base URL
 		BaseURL: getEnv("BIFRACT_BASE_URL", ""),
@@ -1264,6 +1274,9 @@ func loadConfig() Config {
 		log.Printf("  ClickHouse Cluster: %s (replicated mode)", config.ClickHouseCluster)
 		if config.ClickHouseHosts != "" {
 			log.Printf("  ClickHouse Hosts: %s", config.ClickHouseHosts)
+		}
+		if config.ClickHouseWriteHost != "" {
+			log.Printf("  ClickHouse Write Host (ingest LB): %s", config.ClickHouseWriteHost)
 		}
 	}
 

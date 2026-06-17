@@ -949,6 +949,37 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 		result["slowest"] = slowest
 	}
 
+	// logs_hot table health: partition count, row count, size, and coverage window.
+	// Coverage window = max_time - min_time across all active parts; should stay ~2h.
+	hotRows, err := h.db.Query(r.Context(), `
+		SELECT
+			count()            AS partition_count,
+			sum(rows)          AS row_count,
+			sum(bytes_on_disk) AS disk_bytes,
+			min(min_time)      AS oldest,
+			max(max_time)      AS newest
+		FROM system.parts
+		WHERE database = currentDatabase() AND table = 'logs_hot' AND active = 1`)
+	if err != nil {
+		log.Printf("[AlertStats] logs_hot stats: %v", err)
+	} else if len(hotRows) > 0 {
+		row := hotRows[0]
+		hotStats := map[string]interface{}{
+			"partition_count": toFloat64(row["partition_count"]),
+			"row_count":       toFloat64(row["row_count"]),
+			"disk_bytes":      toFloat64(row["disk_bytes"]),
+		}
+		// Compute coverage window in minutes from oldest/newest part timestamps.
+		if oldest, ok := row["oldest"].(time.Time); ok {
+			if newest, ok2 := row["newest"].(time.Time); ok2 && !newest.IsZero() && !oldest.IsZero() {
+				hotStats["coverage_minutes"] = int64(math.Round(newest.Sub(oldest).Minutes()))
+				hotStats["oldest"] = oldest.UTC().Format("2006-01-02 15:04:05")
+				hotStats["newest"] = newest.UTC().Format("2006-01-02 15:04:05")
+			}
+		}
+		result["hot_table"] = hotStats
+	}
+
 	respondJSON(w, http.StatusOK, result)
 }
 

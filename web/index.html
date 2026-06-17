@@ -282,6 +282,27 @@
                                 </div>
                             </div>
 
+                            <div class="perf-metrics-group-label">Hot Table (logs_hot)</div>
+                            <div class="perf-metrics-grid">
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Partitions</div>
+                                    <div class="perf-metric-value" id="hotMetricPartitions">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Rows</div>
+                                    <div class="perf-metric-value" id="hotMetricRows">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Size on Disk</div>
+                                    <div class="perf-metric-value" id="hotMetricSize">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Coverage Window</div>
+                                    <div class="perf-metric-value" id="hotMetricCoverage">--</div>
+                                    <div class="perf-metric-sub" id="hotMetricCoverageSub"></div>
+                                </div>
+                            </div>
+
                             <div class="perf-charts-row">
                                 <div class="perf-chart-card perf-chart-card-wide">
                                     <h3>Fires Over Time</h3>
@@ -722,21 +743,61 @@
         <section class="search-section">
             <!-- Toolbar row: mode toggle, time controls, utility buttons, search -->
             <div class="search-toolbar">
-                <select id="timeRange" class="time-range-select">
-                    <option value="5m">Last 5 Minutes</option>
-                    <option value="15m">Last 15 Minutes</option>
-                    <option value="1h">Last 1 Hour</option>
-                    <option value="24h" selected>Last 24 Hours</option>
-                    <option value="7d">Last 7 Days</option>
-                    <option value="30d">Last 30 Days</option>
-                    <option value="all">All Time</option>
-                    <option value="custom">Custom Range</option>
-                </select>
-
-                <div id="customTimeInputs" style="display: none;" class="custom-range-inputs">
-                    <input type="text" placeholder="YYYY-MM-DD HH:mm" id="customStart" class="datetime-input" />
-                    <span class="range-separator">to</span>
-                    <input type="text" placeholder="YYYY-MM-DD HH:mm" id="customEnd" class="datetime-input" />
+                <div id="timePickerWrap" class="toolbar-menu-wrap">
+                    <button id="timePickerBtn" class="toolbar-menu-btn" type="button">
+                        <svg class="tp-clock-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
+                            <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
+                            <path d="M8 5v3.5l2 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                        </svg>
+                        <span id="timePickerLabel">Last 24h</span>
+                        <svg class="toolbar-menu-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none">
+                            <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
+                    <div id="timePickerBackdrop" class="tp-backdrop" style="display:none"></div>
+                    <div id="timePickerPanel" class="time-picker-panel" style="display:none">
+                        <div class="tp-section-label">Presets</div>
+                        <div class="tp-presets">
+                            <button class="tp-preset" data-value="5m" type="button">5m</button>
+                            <button class="tp-preset" data-value="15m" type="button">15m</button>
+                            <button class="tp-preset" data-value="30m" type="button">30m</button>
+                            <button class="tp-preset" data-value="1h" type="button">1h</button>
+                            <button class="tp-preset" data-value="2h" type="button">2h</button>
+                            <button class="tp-preset" data-value="4h" type="button">4h</button>
+                            <button class="tp-preset" data-value="6h" type="button">6h</button>
+                            <button class="tp-preset" data-value="12h" type="button">12h</button>
+                            <button class="tp-preset active" data-value="24h" type="button">24h</button>
+                            <button class="tp-preset" data-value="7d" type="button">7d</button>
+                            <button class="tp-preset" data-value="30d" type="button">30d</button>
+                            <button class="tp-preset" data-value="all" type="button">All</button>
+                        </div>
+                        <div class="tp-divider"></div>
+                        <div class="tp-section-label">Relative</div>
+                        <div class="tp-relative-row">
+                            <span class="tp-rel-prefix">Last</span>
+                            <input type="number" id="tpRelativeN" class="tp-num-input" value="4" min="1" max="9999">
+                            <select id="tpRelativeUnit" class="tp-unit-select">
+                                <option value="minutes">minutes</option>
+                                <option value="hours" selected>hours</option>
+                                <option value="days">days</option>
+                                <option value="weeks">weeks</option>
+                            </select>
+                            <button id="tpRelativeApply" class="tp-apply-btn" type="button">Apply</button>
+                        </div>
+                        <div class="tp-divider"></div>
+                        <div class="tp-section-label">Absolute range</div>
+                        <div class="tp-absolute-col">
+                            <div class="tp-abs-row">
+                                <span class="tp-abs-label">From</span>
+                                <input type="datetime-local" id="tpAbsStart" class="tp-abs-input">
+                            </div>
+                            <div class="tp-abs-row">
+                                <span class="tp-abs-label">To</span>
+                                <input type="datetime-local" id="tpAbsEnd" class="tp-abs-input">
+                            </div>
+                            <button id="tpAbsApply" class="tp-apply-btn tp-abs-apply" type="button">Apply</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="toolbar-spacer"></div>
@@ -3079,6 +3140,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/pagination.js"></script>
     <script src="/static/queryPalette.js"></script>
     <script src="/static/timeBar.js"></script>
+    <script src="/static/timePicker.js"></script>
     <script src="/static/autocomplete.js"></script>
     <script src="/static/timeline.js"></script>
     <script src="/static/settings.js"></script>
