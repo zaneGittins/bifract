@@ -147,6 +147,9 @@ const LogDetail = {
         try {
             const params = new URLSearchParams({ log_id: logData.log_id });
             if (logData.fractal_id) params.set('fractal_id', logData.fractal_id);
+            // Pass the exact timestamp so the backend can prune to one partition
+            // and pin the primary index instead of a whole-table scan by log_id.
+            if (logData.timestamp) params.set('timestamp', logData.timestamp);
             const resp = await fetch(`/api/v1/logs/fields?${params}`);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
