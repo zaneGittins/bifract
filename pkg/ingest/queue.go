@@ -112,7 +112,17 @@ type IngestQueue struct {
 	pendingDropsDisk  atomic.Int64
 	pendingDropsQueue atomic.Int64
 	lastDropFlushUnix atomic.Int64
+
+	notifWriter notifWriterIface
 }
+
+type notifWriterIface interface {
+	Write(notifType, severity, title, message string) error
+}
+
+// SetNotificationWriter wires in the health notification writer (called from
+// main.go after both are constructed).
+func (q *IngestQueue) SetNotificationWriter(w notifWriterIface) { q.notifWriter = w }
 
 // NewIngestQueue creates and starts a buffered ingestion queue.
 // bufferSize controls how many pending batches can be held in memory.
@@ -258,6 +268,11 @@ func (q *IngestQueue) monitorCPU() {
 						"value":     fmt.Sprintf("%.1f", pct),
 						"threshold": fmt.Sprintf("%.1f", cpuPressureTrigger),
 					})
+					if q.notifWriter != nil {
+						go q.notifWriter.Write("ingest.cpu_pressure", "warning",
+							"Ingest CPU Backpressure Active",
+							fmt.Sprintf("CPU at %.1f%% (threshold %.1f%%)", pct, cpuPressureTrigger))
+					}
 				}
 			} else {
 				q.cpuHighStreak.Store(0)
@@ -281,6 +296,11 @@ func (q *IngestQueue) monitorCPU() {
 						"value":     fmt.Sprintf("%.1f", diskPct),
 						"threshold": fmt.Sprintf("%.1f", diskPressureTrigger),
 					})
+					if q.notifWriter != nil {
+						go q.notifWriter.Write("ingest.disk_pressure", "warning",
+							"Ingest Disk Backpressure Active",
+							fmt.Sprintf("Disk at %.1f%% used (threshold %.1f%%)", diskPct, diskPressureTrigger))
+					}
 				} else if diskPct < diskPressureRelease && q.diskPressure.Load() == 1 {
 					q.diskPressure.Store(0)
 					log.Printf("[Ingest Queue] Disk backpressure OFF (%.1f%% used)", diskPct)
@@ -638,12 +658,17 @@ func (q *IngestQueue) worker(id int) {
 
 		if !inserted {
 			q.Metrics.InsertErrors.Add(int64(len(buf)))
-			q.consecutiveFailures.Add(1)
+			failures := q.consecutiveFailures.Add(1)
 			q.lastFailureUnix.Store(time.Now().Unix())
 			q.writeSystemEvent("ingest.insert_error", map[string]string{
 				"worker":     fmt.Sprintf("%d", id),
 				"batch_size": fmt.Sprintf("%d", len(buf)),
 			})
+			if failures == unhealthyThreshold && q.notifWriter != nil {
+				go q.notifWriter.Write("ingest.insert_errors", "critical",
+					"Ingest Insert Errors",
+					fmt.Sprintf("Worker %d: %d consecutive insert failures", id, unhealthyThreshold))
+			}
 		}
 
 		// Shrink backing array if it grew beyond 2x the target to avoid

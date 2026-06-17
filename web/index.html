@@ -59,6 +59,24 @@
                     <button id="fractalManageTabBtn" class="nav-tab fractal-admin-only rbac-hidden">Manage</button>
                 </nav>
                 <div class="header-right">
+                    <div id="notificationBell" class="notification-bell" style="display:none;">
+                        <button id="notificationBellBtn" class="notification-bell-btn" onclick="Notifications.toggle()">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                                <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                            </svg>
+                            <span id="notificationBadge" class="notification-badge" style="display:none;"></span>
+                        </button>
+                        <div id="notificationDropdown" class="notification-dropdown" style="display:none;">
+                            <div class="notification-dropdown-header">
+                                <span class="notification-dropdown-title">Health Notifications</span>
+                                <button class="notification-mark-read-btn" onclick="Notifications.markAllRead()">Mark all read</button>
+                            </div>
+                            <div id="notificationList" class="notification-list">
+                                <div class="notification-empty">No notifications in the last 24 hours</div>
+                            </div>
+                        </div>
+                    </div>
                     <div id="userInfo"></div>
                     <button id="loginButton" onclick="Auth.showLoginModal()" class="btn-primary" style="display: none;">
                         Login
@@ -265,16 +283,16 @@
                                     <div class="perf-metric-value" id="alertMetricActive">--</div>
                                 </div>
                                 <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Fires (range)</div>
-                                    <div class="perf-metric-value" id="alertMetricFires">--</div>
-                                </div>
-                                <div class="perf-metric-card">
                                     <div class="perf-metric-label">Avg Exec Time</div>
                                     <div class="perf-metric-value" id="alertMetricAvgMs">--</div>
                                 </div>
                                 <div class="perf-metric-card">
                                     <div class="perf-metric-label">P95 Exec Time</div>
                                     <div class="perf-metric-value" id="alertMetricP95Ms">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Max Exec Time</div>
+                                    <div class="perf-metric-value" id="alertMetricMaxMs">--</div>
                                 </div>
                                 <div class="perf-metric-card">
                                     <div class="perf-metric-label">Disabled Alerts</div>
@@ -305,8 +323,8 @@
 
                             <div class="perf-charts-row">
                                 <div class="perf-chart-card perf-chart-card-wide">
-                                    <h3>Fires Over Time</h3>
-                                    <div id="perfAlertChartPlaceholder" class="perf-chart-placeholder">No alert fires in range</div>
+                                    <h3>Exec Time Distribution</h3>
+                                    <div id="perfAlertChartPlaceholder" class="perf-chart-placeholder">No eval data yet</div>
                                     <canvas id="perfAlertChart"></canvas>
                                 </div>
                             </div>
@@ -314,7 +332,7 @@
                             <div class="perf-section">
                                 <div class="perf-section-header">
                                     <h3>Slowest Alerts</h3>
-                                    <span class="perf-section-hint">by avg exec time in range</span>
+                                    <span class="perf-section-hint">by last eval exec time</span>
                                 </div>
                                 <div id="perfAlertSlowestTable" class="perf-table-container">
                                     <div class="empty-state" style="min-height: 80px;"><p>No alert fires in range</p></div>
@@ -3177,6 +3195,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/ingestTokens.js"></script>
     <script src="/static/instructionLibraries.js"></script>
     <script src="/static/queryTabs.js"></script>
+    <script src="/static/notifications.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

@@ -28,6 +28,7 @@ import (
 	"bifract/pkg/ingest"
 	"bifract/pkg/ingesttokens"
 	"bifract/pkg/metrics"
+	"bifract/pkg/notifications"
 	"bifract/pkg/notebooks"
 	"bifract/pkg/prisms"
 	"bifract/pkg/query"
@@ -121,6 +122,9 @@ func main() {
 		log.Fatalf("Failed to initialize PostgreSQL schema: %v", err)
 	}
 	log.Println("PostgreSQL schema ready")
+
+	notifWriter := notifications.New(pg)
+	log.Println("Health notification writer initialized")
 
 	// Initialize ClickHouse clients (separate pools for ingest vs queries)
 	log.Println("Connecting to ClickHouse...")
@@ -350,6 +354,7 @@ func main() {
 
 	alertEngine := alerts.NewEngineWithDicts(pg, db, dictionaryManager, alertBaseURL)
 	alertEngine.SetModelManager(modelManager)
+	alertEngine.SetNotificationWriter(notifWriter)
 	alertManager := alerts.NewManager(pg, alertEngine, normalizerManager)
 
 	if err := alertEngine.RefreshAlerts(context.Background()); err != nil {
@@ -387,6 +392,7 @@ func main() {
 	log.Println("Initializing ingestion queue...")
 	ingestQueue := ingest.NewIngestQueue(dbIngest, config.IngestQueueSize, config.IngestWorkers)
 	ingestQueue.SetQuotaManager(quotaManager)
+	ingestQueue.SetNotificationWriter(notifWriter)
 
 	// Queue depth at which alert evaluation is deferred to protect ingestion.
 	// Clamp the configured percentage to a sane (1, 100] range so a bad value
@@ -427,7 +433,19 @@ func main() {
 
 	// Distribution queue monitor (cluster mode only) — polls system.distribution_queue
 	// every 60s and writes ch.distribution.* events to the system fractal on health changes.
-	distMonitor := storage.NewDistributionMonitor(dbIngest, ingestQueue.WriteSystemEvent)
+	distMonitor := storage.NewDistributionMonitor(dbIngest, func(event string, fields map[string]string) {
+		ingestQueue.WriteSystemEvent(event, fields)
+		switch event {
+		case "ch.distribution.broken_data":
+			go notifWriter.Write("ch.distribution.broken_data", "critical",
+				"ClickHouse Distribution: Broken Data Files",
+				fmt.Sprintf("%s broken file(s) detected", fields["broken_data_files"]))
+		case "ch.distribution.degraded":
+			go notifWriter.Write("ch.distribution.degraded", "warning",
+				"ClickHouse Distribution Queue Degraded",
+				fmt.Sprintf("Error count: %s", fields["error_count"]))
+		}
+	})
 	distMonitor.Start()
 
 	// Rate limiter for ingestion endpoints
@@ -712,6 +730,12 @@ func main() {
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(resp)
 			})
+
+			// Health notifications
+			notifHandler := notifications.NewHandler(pg)
+			r.Get("/notifications", notifHandler.HandleList)
+			r.Get("/notifications/count", notifHandler.HandleCount)
+			r.Post("/notifications/read", notifHandler.HandleMarkRead)
 
 			// Settings
 			r.Get("/settings", settingsHandler.HandleGet)

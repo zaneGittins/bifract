@@ -831,119 +831,78 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	var since string
-	var bucketSecs int
-	switch r.URL.Query().Get("range") {
-	case "8h":
-		since = "8 hours"
-		bucketSecs = 1800 // 30-min buckets → 16 points
-	case "24h":
-		since = "24 hours"
-		bucketSecs = 3600 // 1-hour buckets → 24 points
-	default:
-		since = "1 hour"
-		bucketSecs = 300 // 5-min buckets → 12 points
-	}
 
 	result := map[string]interface{}{"success": true}
 
-	// Alert counts
-	countsRow := h.pg.QueryRow(r.Context(),
-		`SELECT
-			COUNT(*) FILTER (WHERE enabled = true)                                                AS total_active,
-			COUNT(*) FILTER (WHERE disabled_reason IS NOT NULL AND disabled_reason != '') AS disabled
-		 FROM alerts`)
-	var totalActive, disabled int64
-	if err := countsRow.Scan(&totalActive, &disabled); err != nil {
-		log.Printf("[AlertStats] alert counts: %v", err)
-	}
-
-	// Execution summary over range
+	// All stats sourced from alerts.last_execution_time_ms — updated on every
+	// evaluation cycle regardless of whether the alert triggered.
 	summaryRow := h.pg.QueryRow(r.Context(),
 		`SELECT
-			COUNT(*)                                                                     AS fire_count,
-			COALESCE(AVG(execution_time_ms), 0)                                          AS avg_ms,
-			COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY execution_time_ms), 0) AS p95_ms
-		 FROM alert_executions
-		 WHERE triggered_at > NOW() - $1::interval`,
-		since)
-	var fireCount int64
-	var avgMs, p95Ms float64
-	if err := summaryRow.Scan(&fireCount, &avgMs, &p95Ms); err != nil {
+			COUNT(*)                                                                                 AS total_active,
+			COUNT(*) FILTER (WHERE disabled_reason IS NOT NULL AND disabled_reason != '')            AS disabled,
+			COALESCE(AVG(last_execution_time_ms), 0)                                                 AS avg_ms,
+			COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY last_execution_time_ms), 0)        AS p95_ms,
+			COALESCE(MAX(last_execution_time_ms), 0)                                                 AS max_ms
+		 FROM alerts
+		 WHERE enabled = true`)
+	var totalActive, disabled int64
+	var avgMs, p95Ms, maxMs float64
+	if err := summaryRow.Scan(&totalActive, &disabled, &avgMs, &p95Ms, &maxMs); err != nil {
 		log.Printf("[AlertStats] summary: %v", err)
 	}
 
 	result["summary"] = map[string]interface{}{
 		"total_active": totalActive,
 		"disabled":     disabled,
-		"fire_count":   fireCount,
 		"avg_ms":       int64(math.Round(avgMs)),
 		"p95_ms":       int64(math.Round(p95Ms)),
+		"max_ms":       int64(math.Round(maxMs)),
 	}
 
-	// Bucketed history: fires + avg exec time per bucket
-	histRows, err := h.pg.Query(r.Context(),
+	// Exec time distribution: count of enabled alerts in each latency bucket.
+	distRow := h.pg.QueryRow(r.Context(),
 		`SELECT
-			to_timestamp((EXTRACT(EPOCH FROM triggered_at)::bigint / $1) * $1) AS bucket,
-			COUNT(*)                                                             AS fired,
-			COALESCE(AVG(execution_time_ms), 0)                                 AS avg_ms
-		 FROM alert_executions
-		 WHERE triggered_at > NOW() - $2::interval
-		 GROUP BY bucket
-		 ORDER BY bucket`,
-		bucketSecs, since)
-	if err != nil {
-		log.Printf("[AlertStats] history: %v", err)
+			COUNT(*) FILTER (WHERE last_execution_time_ms < 100)                                    AS fast,
+			COUNT(*) FILTER (WHERE last_execution_time_ms >= 100 AND last_execution_time_ms < 250)  AS ok,
+			COUNT(*) FILTER (WHERE last_execution_time_ms >= 250 AND last_execution_time_ms < 500)  AS slow,
+			COUNT(*) FILTER (WHERE last_execution_time_ms >= 500 AND last_execution_time_ms < 1000) AS warn,
+			COUNT(*) FILTER (WHERE last_execution_time_ms >= 1000)                                  AS crit
+		 FROM alerts
+		 WHERE enabled = true AND last_execution_time_ms IS NOT NULL`)
+	var fast, ok_, slow, warn, crit int64
+	if err := distRow.Scan(&fast, &ok_, &slow, &warn, &crit); err != nil {
+		log.Printf("[AlertStats] distribution: %v", err)
 	} else {
-		defer histRows.Close()
-		var history []map[string]interface{}
-		for histRows.Next() {
-			var bucket time.Time
-			var fired int64
-			var bAvgMs float64
-			if err := histRows.Scan(&bucket, &fired, &bAvgMs); err != nil {
-				continue
-			}
-			history = append(history, map[string]interface{}{
-				"time":   bucket.UTC().Format("2006-01-02 15:04:05"),
-				"fired":  fired,
-				"avg_ms": int64(math.Round(bAvgMs)),
-			})
+		result["distribution"] = []map[string]interface{}{
+			{"label": "<100ms", "count": fast},
+			{"label": "100–250ms", "count": ok_},
+			{"label": "250–500ms", "count": slow},
+			{"label": "500ms–1s", "count": warn},
+			{"label": ">1s", "count": crit},
 		}
-		result["history"] = history
 	}
 
-	// Top 10 slowest alerts by avg exec time in range
+	// Top 10 slowest alerts by last_execution_time_ms.
 	slowRows, err := h.pg.Query(r.Context(),
-		`SELECT
-			ae.alert_id::text,
-			a.name,
-			COALESCE(AVG(ae.execution_time_ms), 0) AS avg_ms,
-			COUNT(*)                                AS fire_count
-		 FROM alert_executions ae
-		 JOIN alerts a ON a.id = ae.alert_id
-		 WHERE ae.triggered_at > NOW() - $1::interval
-		 GROUP BY ae.alert_id, a.name
-		 ORDER BY avg_ms DESC
-		 LIMIT 10`,
-		since)
+		`SELECT name, COALESCE(last_execution_time_ms, 0) AS exec_ms
+		 FROM alerts
+		 WHERE enabled = true AND last_execution_time_ms IS NOT NULL
+		 ORDER BY exec_ms DESC
+		 LIMIT 10`)
 	if err != nil {
 		log.Printf("[AlertStats] slowest: %v", err)
 	} else {
 		defer slowRows.Close()
 		var slowest []map[string]interface{}
 		for slowRows.Next() {
-			var alertID, name string
-			var sAvgMs float64
-			var sFireCount int64
-			if err := slowRows.Scan(&alertID, &name, &sAvgMs, &sFireCount); err != nil {
+			var name string
+			var execMs int64
+			if err := slowRows.Scan(&name, &execMs); err != nil {
 				continue
 			}
 			slowest = append(slowest, map[string]interface{}{
-				"alert_id":   alertID,
-				"name":       name,
-				"avg_ms":     int64(math.Round(sAvgMs)),
-				"fire_count": sFireCount,
+				"name":    name,
+				"exec_ms": execMs,
 			})
 		}
 		result["slowest"] = slowest
@@ -970,8 +929,26 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 			"disk_bytes":      toFloat64(row["disk_bytes"]),
 		}
 		// Compute coverage window in minutes from oldest/newest part timestamps.
-		if oldest, ok := row["oldest"].(time.Time); ok {
-			if newest, ok2 := row["newest"].(time.Time); ok2 && !newest.IsZero() && !oldest.IsZero() {
+		// min_time/max_time in system.parts are Nullable(DateTime); the driver
+		// may return time.Time, *time.Time, or a formatted string depending on
+		// ClickHouse version. Handle all three.
+		parsePartTime := func(v interface{}) (time.Time, bool) {
+			switch t := v.(type) {
+			case time.Time:
+				return t, !t.IsZero()
+			case *time.Time:
+				if t != nil && !t.IsZero() {
+					return *t, true
+				}
+			case string:
+				if parsed, err := time.Parse("2006-01-02 15:04:05", t); err == nil {
+					return parsed, !parsed.IsZero()
+				}
+			}
+			return time.Time{}, false
+		}
+		if oldest, ok := parsePartTime(row["oldest"]); ok {
+			if newest, ok2 := parsePartTime(row["newest"]); ok2 {
 				hotStats["coverage_minutes"] = int64(math.Round(newest.Sub(oldest).Minutes()))
 				hotStats["oldest"] = oldest.UTC().Format("2006-01-02 15:04:05")
 				hotStats["newest"] = newest.UTC().Format("2006-01-02 15:04:05")

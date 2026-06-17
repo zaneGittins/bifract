@@ -232,6 +232,12 @@ const Auth = {
         if (loginButton) {
             loginButton.style.display = 'none';
         }
+
+        const notificationBell = document.getElementById('notificationBell');
+        if (notificationBell) {
+            notificationBell.style.display = 'flex';
+            if (window.Notifications) Notifications.pollCount();
+        }
     },
 
     showLoggedOutUI() {

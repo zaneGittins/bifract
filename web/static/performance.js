@@ -945,9 +945,15 @@ const Performance = {
     renderAlertStats(data) {
         const summary = data.summary || {};
         this.setText('alertMetricActive', summary.total_active ?? '--');
-        this.setText('alertMetricFires', this.formatNumber(summary.fire_count ?? 0));
         this.setText('alertMetricAvgMs', summary.avg_ms != null ? summary.avg_ms + 'ms' : '--');
         this.setText('alertMetricP95Ms', summary.p95_ms != null ? summary.p95_ms + 'ms' : '--');
+
+        const maxEl = document.getElementById('alertMetricMaxMs');
+        if (maxEl) {
+            const ms = summary.max_ms || 0;
+            maxEl.textContent = ms != null ? ms + 'ms' : '--';
+            maxEl.className = 'perf-metric-value' + (ms > 1000 ? ' perf-metric-danger' : ms > 300 ? ' perf-metric-warning' : '');
+        }
 
         const disabledEl = document.getElementById('alertMetricDisabled');
         if (disabledEl) {
@@ -956,7 +962,7 @@ const Performance = {
             disabledEl.className = 'perf-metric-value' + (d > 0 ? ' perf-metric-danger' : '');
         }
 
-        this.renderAlertChart(data.history || []);
+        this.renderAlertChart(data.distribution || []);
         this.renderSlowestTable(data.slowest || []);
         this.renderHotTableStats(data.hot_table || null);
     },
@@ -998,12 +1004,13 @@ const Performance = {
         }
     },
 
-    renderAlertChart(history) {
+    renderAlertChart(distribution) {
         const canvas = document.getElementById('perfAlertChart');
         if (!canvas) return;
         const placeholder = document.getElementById('perfAlertChartPlaceholder');
 
-        if (!history || history.length === 0) {
+        const hasData = distribution && distribution.some(b => b.count > 0);
+        if (!distribution || distribution.length === 0 || !hasData) {
             if (this.alertChart) { this.alertChart.destroy(); this.alertChart = null; }
             if (placeholder) placeholder.style.display = '';
             canvas.style.display = 'none';
@@ -1013,24 +1020,24 @@ const Performance = {
         canvas.style.display = '';
 
         const cv = window.ThemeManager ? ThemeManager.getCSSVar : (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-        const chartText  = cv('--chart-text')    || '#e8eaed';
-        const chartGrid  = cv('--chart-grid')    || '#24243e';
-        const chartBg    = cv('--chart-bg')      || '#1a1a2e';
+        const chartText   = cv('--chart-text')   || '#e8eaed';
+        const chartGrid   = cv('--chart-grid')   || '#24243e';
+        const chartBg     = cv('--chart-bg')     || '#1a1a2e';
         const chartBorder = cv('--chart-border') || '#24243e';
-        const accent     = cv('--accent-primary') || '#9c6ade';
-        const info       = cv('--info')           || '#60a5fa';
 
-        const labels   = history.map(p => {
-            const parts = String(p.time || '').split(' ');
-            return parts.length > 1 ? parts[1].substring(0, 5) : parts[0];
-        });
-        const firedData = history.map(p => p.fired  || 0);
-        const msData    = history.map(p => p.avg_ms || 0);
+        const bucketColors = ['#6bcb77cc', '#4ecdc4cc', '#ffd93dcc', '#ff9f43cc', '#ff6b6bcc'];
+        const bucketHover  = ['#6bcb77',   '#4ecdc4',   '#ffd93d',   '#ff9f43',   '#ff6b6b'];
+
+        const labels = distribution.map(b => b.label);
+        const counts = distribution.map(b => b.count || 0);
+        const colors = distribution.map((_, i) => bucketColors[i] || '#9c6adecc');
+        const hovers = distribution.map((_, i) => bucketHover[i]  || '#9c6ade');
 
         if (this.alertChart) {
             this.alertChart.data.labels = labels;
-            this.alertChart.data.datasets[0].data = firedData;
-            this.alertChart.data.datasets[1].data = msData;
+            this.alertChart.data.datasets[0].data = counts;
+            this.alertChart.data.datasets[0].backgroundColor = colors;
+            this.alertChart.data.datasets[0].hoverBackgroundColor = hovers;
             this.alertChart.update('none');
             return;
         }
@@ -1040,39 +1047,21 @@ const Performance = {
             type: 'bar',
             data: {
                 labels,
-                datasets: [
-                    {
-                        label: 'Fires',
-                        data: firedData,
-                        backgroundColor: accent + 'cc',
-                        borderRadius: 2,
-                        maxBarThickness: 30,
-                        yAxisID: 'yFires'
-                    },
-                    {
-                        label: 'Avg Exec (ms)',
-                        data: msData,
-                        type: 'line',
-                        borderColor: info,
-                        backgroundColor: 'transparent',
-                        borderWidth: 2,
-                        tension: 0.3,
-                        pointRadius: msData.length > 60 ? 0 : 2,
-                        pointHoverRadius: 4,
-                        yAxisID: 'yMs'
-                    }
-                ]
+                datasets: [{
+                    label: 'Alerts',
+                    data: counts,
+                    backgroundColor: colors,
+                    hoverBackgroundColor: hovers,
+                    borderRadius: 3,
+                    maxBarThickness: 60
+                }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
-                interaction: { mode: 'index', intersect: false },
                 plugins: {
-                    legend: {
-                        display: true,
-                        labels: { color: chartText, font: { family: 'Inter', size: 11 }, boxWidth: 12, padding: 8 }
-                    },
+                    legend: { display: false },
                     tooltip: {
                         backgroundColor: chartBg,
                         titleColor: chartText,
@@ -1080,30 +1069,24 @@ const Performance = {
                         borderColor: chartBorder,
                         borderWidth: 1,
                         callbacks: {
-                            label: (ctx) => ctx.datasetIndex === 1
-                                ? 'Avg Exec: ' + ctx.parsed.y + 'ms'
-                                : 'Fires: ' + ctx.parsed.y
+                            label: (ctx) => ctx.parsed.y + ' alert' + (ctx.parsed.y !== 1 ? 's' : '')
                         }
                     }
                 },
                 scales: {
                     x: {
                         grid: { display: false, drawBorder: false },
-                        ticks: { color: chartText, font: { family: 'Inter', size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }
+                        ticks: { color: chartText, font: { family: 'Inter', size: 11 }, maxRotation: 0 }
                     },
-                    yFires: {
-                        type: 'linear',
-                        position: 'left',
+                    y: {
                         beginAtZero: true,
                         grid: { color: chartGrid, drawBorder: false },
-                        ticks: { color: chartText, font: { family: 'Inter', size: 10 }, precision: 0 }
-                    },
-                    yMs: {
-                        type: 'linear',
-                        position: 'right',
-                        beginAtZero: true,
-                        grid: { display: false },
-                        ticks: { color: info, font: { family: 'Inter', size: 10 }, callback: (v) => v + 'ms' }
+                        ticks: {
+                            color: chartText,
+                            font: { family: 'Inter', size: 10 },
+                            precision: 0,
+                            stepSize: 1
+                        }
                     }
                 }
             }
@@ -1115,21 +1098,20 @@ const Performance = {
         if (!container) return;
 
         if (!slowest || slowest.length === 0) {
-            container.innerHTML = '<div class="empty-state" style="min-height: 80px;"><p>No alert fires in range</p></div>';
+            container.innerHTML = '<div class="empty-state" style="min-height: 80px;"><p>No exec time data yet</p></div>';
             return;
         }
 
         let html = '<table class="results-table perf-table"><thead><tr>';
-        html += '<th>Alert</th><th>Avg Exec</th><th>Fires</th>';
+        html += '<th>Alert</th><th>Last Exec</th>';
         html += '</tr></thead><tbody>';
 
         slowest.forEach(row => {
-            const ms = row.avg_ms || 0;
+            const ms = row.exec_ms || 0;
             const cls = ms > 1000 ? 'perf-danger' : ms > 300 ? 'perf-warning' : '';
             html += `<tr class="${cls}">`;
-            html += `<td>${this.escapeHtml(row.name || row.alert_id || '--')}</td>`;
+            html += `<td>${this.escapeHtml(row.name || '--')}</td>`;
             html += `<td>${this.formatDuration(ms)}</td>`;
-            html += `<td>${this.formatNumber(row.fire_count || 0)}</td>`;
             html += '</tr>';
         });
 

@@ -73,7 +73,17 @@ type Engine struct {
 	// startedAt records when the engine started so shouldSkipAlert can
 	// distinguish "no data since startup" from "never tracked."
 	startedAt time.Time
+
+	notifWriter engineNotifWriter
 }
+
+type engineNotifWriter interface {
+	Write(notifType, severity, title, message string) error
+}
+
+// SetNotificationWriter wires in the health notification writer (called from
+// main.go after both are constructed).
+func (e *Engine) SetNotificationWriter(w engineNotifWriter) { e.notifWriter = w }
 
 const (
 	// maxConcurrent bounds the number of alert evaluations running in
@@ -358,6 +368,11 @@ func (e *Engine) evaluateAllAlerts() {
 				if consecutiveFailures.Add(1) >= circuitBreakerThreshold {
 					if tripped.CompareAndSwap(false, true) {
 						log.Printf("[Alert Engine] Circuit breaker tripped after %d consecutive failures", circuitBreakerThreshold)
+						if e.notifWriter != nil {
+							go e.notifWriter.Write("alerts.circuit_breaker", "critical",
+								"Alert Engine Circuit Breaker Tripped",
+								fmt.Sprintf("Stopped after %d consecutive evaluation failures", circuitBreakerThreshold))
+						}
 					}
 				}
 			} else {
