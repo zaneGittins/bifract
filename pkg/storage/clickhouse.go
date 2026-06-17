@@ -1227,8 +1227,18 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 			sb.WriteString("` String")
 		}
 		sb.WriteString("\n)")
-		if err := c.conn.Exec(ctx, c.InjectOnCluster(sb.String())); err != nil {
+		colDef := sb.String()
+		if err := c.conn.Exec(ctx, c.InjectOnCluster(colDef)); err != nil {
 			return fmt.Errorf("modify fields column: %w", err)
+		}
+		// Mirror to logs_hot so the parser's type-hint registry stays in sync with
+		// both tables. Without this, newly-registered fields generate bare subcolumn
+		// references (no ::String cast) that return NULL on logs_hot because the
+		// typed subcolumn only exists in logs.
+		// No skip indexes needed on logs_hot — its ORDER BY covers alert query patterns.
+		hotColDef := strings.Replace(colDef, "ALTER TABLE logs ", "ALTER TABLE logs_hot ", 1)
+		if err := c.conn.Exec(ctx, c.InjectOnCluster(hotColDef)); err != nil {
+			log.Printf("Warning: mirror type hints to logs_hot: %v", err)
 		}
 	}
 

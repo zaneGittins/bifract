@@ -101,6 +101,7 @@
                                 <button class="alerts-sub-tab active" data-subtab="overview" onclick="Performance.switchSubTab('overview')">Overview</button>
                                 <button class="alerts-sub-tab" data-subtab="storage" onclick="Performance.switchSubTab('storage')">Storage &amp; Ingest</button>
                                 <button class="alerts-sub-tab" data-subtab="activity" onclick="Performance.switchSubTab('activity')">Activity</button>
+                                <button class="alerts-sub-tab" data-subtab="alerts" onclick="Performance.switchSubTab('alerts')">Alerts</button>
                             </div>
                             <div class="performance-controls">
                                 <span id="perfLiveBadge" class="live-badge">LIVE</span>
@@ -244,12 +245,58 @@
                                 <div class="perf-section-header">
                                     <h3>Recent Queries</h3>
                                     <span id="perfRecentCount" class="perf-count">0</span>
+                                    <label class="perf-toggle-label"><input type="checkbox" id="perfHideInserts"> Hide inserts</label>
                                     <input type="text" id="perfRecentSearch" class="perf-search-input" placeholder="Search..." autocomplete="off" spellcheck="false">
                                 </div>
                                 <div id="perfRecentTable" class="perf-table-container">
                                     <div class="empty-state" style="min-height: 120px;">
                                         <p>No recent queries</p>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Alerts Sub-Tab -->
+                        <div id="perfPaneAlerts" class="perf-pane" style="display:none;">
+                            <div class="perf-metrics-group-label">Alert Engine</div>
+                            <div class="perf-metrics-grid">
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Active Alerts</div>
+                                    <div class="perf-metric-value" id="alertMetricActive">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Fires (range)</div>
+                                    <div class="perf-metric-value" id="alertMetricFires">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Avg Exec Time</div>
+                                    <div class="perf-metric-value" id="alertMetricAvgMs">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">P95 Exec Time</div>
+                                    <div class="perf-metric-value" id="alertMetricP95Ms">--</div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Disabled Alerts</div>
+                                    <div class="perf-metric-value" id="alertMetricDisabled">--</div>
+                                </div>
+                            </div>
+
+                            <div class="perf-charts-row">
+                                <div class="perf-chart-card perf-chart-card-wide">
+                                    <h3>Fires Over Time</h3>
+                                    <div id="perfAlertChartPlaceholder" class="perf-chart-placeholder">No alert fires in range</div>
+                                    <canvas id="perfAlertChart"></canvas>
+                                </div>
+                            </div>
+
+                            <div class="perf-section">
+                                <div class="perf-section-header">
+                                    <h3>Slowest Alerts</h3>
+                                    <span class="perf-section-hint">by avg exec time in range</span>
+                                </div>
+                                <div id="perfAlertSlowestTable" class="perf-table-container">
+                                    <div class="empty-state" style="min-height: 80px;"><p>No alert fires in range</p></div>
                                 </div>
                             </div>
                         </div>

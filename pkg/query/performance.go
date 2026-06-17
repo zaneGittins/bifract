@@ -346,13 +346,14 @@ func bucketSamples(samples []cpuSample, since time.Duration, bucketSize time.Dur
 
 type PerformanceHandler struct {
 	db        *storage.ClickHouseClient
+	pg        *storage.PostgresClient
 	collector *MetricsCollector
 }
 
-func NewPerformanceHandler(db *storage.ClickHouseClient) *PerformanceHandler {
+func NewPerformanceHandler(db *storage.ClickHouseClient, pg *storage.PostgresClient) *PerformanceHandler {
 	mc := NewMetricsCollector(db)
 	log.Printf("[Performance] Started metrics collector for %d node(s)", len(db.Addrs()))
-	return &PerformanceHandler{db: db, collector: mc}
+	return &PerformanceHandler{db: db, pg: pg, collector: mc}
 }
 
 // StopCollector stops the background metrics collector.
@@ -808,6 +809,147 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 	}
 
 	respondJSON(w, http.StatusOK, resp)
+}
+
+// HandleAlertStats returns alert engine evaluation stats derived from alert_executions.
+// Accepts optional ?range= param: 1h (default), 8h, 24h.
+func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Request) {
+	user, ok := r.Context().Value("user").(*storage.User)
+	if !ok || user == nil || !user.IsAdmin {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{
+			"success": false,
+			"error":   "Admin access required",
+		})
+		return
+	}
+
+	if h.pg == nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"success": false,
+			"error":   "Postgres not available",
+		})
+		return
+	}
+
+	var since string
+	var bucketSecs int
+	switch r.URL.Query().Get("range") {
+	case "8h":
+		since = "8 hours"
+		bucketSecs = 1800 // 30-min buckets → 16 points
+	case "24h":
+		since = "24 hours"
+		bucketSecs = 3600 // 1-hour buckets → 24 points
+	default:
+		since = "1 hour"
+		bucketSecs = 300 // 5-min buckets → 12 points
+	}
+
+	result := map[string]interface{}{"success": true}
+
+	// Alert counts
+	countsRow := h.pg.QueryRow(r.Context(),
+		`SELECT
+			COUNT(*) FILTER (WHERE enabled = true)                                                AS total_active,
+			COUNT(*) FILTER (WHERE disabled_reason IS NOT NULL AND disabled_reason != '') AS disabled
+		 FROM alerts`)
+	var totalActive, disabled int64
+	if err := countsRow.Scan(&totalActive, &disabled); err != nil {
+		log.Printf("[AlertStats] alert counts: %v", err)
+	}
+
+	// Execution summary over range
+	summaryRow := h.pg.QueryRow(r.Context(),
+		`SELECT
+			COUNT(*)                                                                     AS fire_count,
+			COALESCE(AVG(execution_time_ms), 0)                                          AS avg_ms,
+			COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY execution_time_ms), 0) AS p95_ms
+		 FROM alert_executions
+		 WHERE triggered_at > NOW() - $1::interval`,
+		since)
+	var fireCount int64
+	var avgMs, p95Ms float64
+	if err := summaryRow.Scan(&fireCount, &avgMs, &p95Ms); err != nil {
+		log.Printf("[AlertStats] summary: %v", err)
+	}
+
+	result["summary"] = map[string]interface{}{
+		"total_active": totalActive,
+		"disabled":     disabled,
+		"fire_count":   fireCount,
+		"avg_ms":       int64(math.Round(avgMs)),
+		"p95_ms":       int64(math.Round(p95Ms)),
+	}
+
+	// Bucketed history: fires + avg exec time per bucket
+	histRows, err := h.pg.Query(r.Context(),
+		`SELECT
+			to_timestamp((EXTRACT(EPOCH FROM triggered_at)::bigint / $1) * $1) AS bucket,
+			COUNT(*)                                                             AS fired,
+			COALESCE(AVG(execution_time_ms), 0)                                 AS avg_ms
+		 FROM alert_executions
+		 WHERE triggered_at > NOW() - $2::interval
+		 GROUP BY bucket
+		 ORDER BY bucket`,
+		bucketSecs, since)
+	if err != nil {
+		log.Printf("[AlertStats] history: %v", err)
+	} else {
+		defer histRows.Close()
+		var history []map[string]interface{}
+		for histRows.Next() {
+			var bucket time.Time
+			var fired int64
+			var bAvgMs float64
+			if err := histRows.Scan(&bucket, &fired, &bAvgMs); err != nil {
+				continue
+			}
+			history = append(history, map[string]interface{}{
+				"time":   bucket.UTC().Format("2006-01-02 15:04:05"),
+				"fired":  fired,
+				"avg_ms": int64(math.Round(bAvgMs)),
+			})
+		}
+		result["history"] = history
+	}
+
+	// Top 10 slowest alerts by avg exec time in range
+	slowRows, err := h.pg.Query(r.Context(),
+		`SELECT
+			ae.alert_id::text,
+			a.name,
+			COALESCE(AVG(ae.execution_time_ms), 0) AS avg_ms,
+			COUNT(*)                                AS fire_count
+		 FROM alert_executions ae
+		 JOIN alerts a ON a.id = ae.alert_id
+		 WHERE ae.triggered_at > NOW() - $1::interval
+		 GROUP BY ae.alert_id, a.name
+		 ORDER BY avg_ms DESC
+		 LIMIT 10`,
+		since)
+	if err != nil {
+		log.Printf("[AlertStats] slowest: %v", err)
+	} else {
+		defer slowRows.Close()
+		var slowest []map[string]interface{}
+		for slowRows.Next() {
+			var alertID, name string
+			var sAvgMs float64
+			var sFireCount int64
+			if err := slowRows.Scan(&alertID, &name, &sAvgMs, &sFireCount); err != nil {
+				continue
+			}
+			slowest = append(slowest, map[string]interface{}{
+				"alert_id":   alertID,
+				"name":       name,
+				"avg_ms":     int64(math.Round(sAvgMs)),
+				"fire_count": sFireCount,
+			})
+		}
+		result["slowest"] = slowest
+	}
+
+	respondJSON(w, http.StatusOK, result)
 }
 
 func toFloat64(v interface{}) float64 {

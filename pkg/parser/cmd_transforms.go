@@ -825,7 +825,7 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	if logField == "timestamp" {
 		fieldRef = "toString(timestamp)"
 	} else if logField != "" {
-		fieldRef = jsonFieldRef(logField)
+		fieldRef = "toString(" + jsonFieldRef(logField) + ")"
 	}
 
 	for _, c := range includeColumns {
@@ -893,7 +893,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if logField == "timestamp" {
 		fieldRef = "toString(timestamp)"
 	} else {
-		fieldRef = jsonFieldRef(logField)
+		fieldRef = "toString(" + jsonFieldRef(logField) + ")"
 	}
 
 	for _, col := range includeColumns {

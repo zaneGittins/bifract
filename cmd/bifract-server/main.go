@@ -449,7 +449,7 @@ func main() {
 	}
 	statusHandler := query.NewStatusHandler(db, pg)
 	statusHandler.SetQuotaClearer(quotaManager)
-	performanceHandler := query.NewPerformanceHandler(db)
+	performanceHandler := query.NewPerformanceHandler(db, pg)
 	settingsHandler := settings.NewHandler(pg)
 
 	// Create API key handler and storage
@@ -1041,6 +1041,7 @@ func main() {
 			r.Post("/admin/kill-query", performanceHandler.HandleKillQuery)
 			r.Get("/admin/metrics", performanceHandler.HandleMetrics)
 			r.Get("/admin/ingest-daily", performanceHandler.HandleIngestDaily)
+			r.Get("/admin/alert-stats", performanceHandler.HandleAlertStats)
 		})
 	})
 
@@ -1223,7 +1224,7 @@ func loadConfig() Config {
 		IngestRateBurst: getEnvInt("BIFRACT_INGEST_RATE_BURST", 20000),
 
 		// Alert evaluation default
-		AlertEvalInterval:   getEnvInt("BIFRACT_ALERT_EVAL_INTERVAL", 30),
+		AlertEvalInterval:   getEnvInt("BIFRACT_ALERT_EVAL_INTERVAL", 60),
 		AlertIngestDeferPct: getEnvInt("BIFRACT_ALERT_INGEST_DEFER_PCT", 25),
 
 		// ClickHouse pool sizing (0 = use package defaults)

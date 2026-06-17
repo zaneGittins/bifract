@@ -9,6 +9,7 @@ const Performance = {
     memoryChart: null,
     cpuChart: null,
     ingestChart: null,
+    alertChart: null,
     prevCpuTimes: null,
     subTab: 'overview',
     ingestFractal: '',
@@ -21,6 +22,7 @@ const Performance = {
     _shownProcesses: [],
     _shownRecentQueries: [],
     _drawerQuery: '',
+    hideInserts: false,
 
     init() {
         const refreshSelect = document.getElementById('perfRefreshRate');
@@ -51,6 +53,13 @@ const Performance = {
         if (recentSearch) {
             recentSearch.addEventListener('input', () => this.filterRecentQueries());
         }
+        const hideInserts = document.getElementById('perfHideInserts');
+        if (hideInserts) {
+            hideInserts.addEventListener('change', (e) => {
+                this.hideInserts = e.target.checked;
+                this.filterRecentQueries();
+            });
+        }
 
         // Ingest-per-day filters (Storage & Ingest sub-tab)
         const ingestFractalSel = document.getElementById('perfIngestFractal');
@@ -70,7 +79,7 @@ const Performance = {
 
         // Restore last-used sub-tab.
         const savedTab = sessionStorage.getItem('perfSubTab');
-        if (savedTab === 'overview' || savedTab === 'storage' || savedTab === 'activity') {
+        if (['overview', 'storage', 'activity', 'alerts'].includes(savedTab)) {
             this.subTab = savedTab;
         }
 
@@ -96,7 +105,8 @@ const Performance = {
         const panes = {
             overview: 'perfPaneOverview',
             storage: 'perfPaneStorage',
-            activity: 'perfPaneActivity'
+            activity: 'perfPaneActivity',
+            alerts: 'perfPaneAlerts'
         };
         Object.entries(panes).forEach(([k, id]) => {
             const el = document.getElementById(id);
@@ -144,6 +154,9 @@ const Performance = {
             const procPromise = tab === 'activity'
                 ? fetch('/api/v1/admin/processes', { credentials: 'include' })
                 : null;
+            const alertStatsPromise = tab === 'alerts'
+                ? fetch(`/api/v1/admin/alert-stats?range=${this.timeRange}`, { credentials: 'include' })
+                : null;
 
             const metData = await (await metPromise).json();
             const pressureData = await (await pressurePromise).json();
@@ -169,6 +182,11 @@ const Performance = {
 
             if (tab === 'storage') {
                 this.loadIngest();
+            }
+
+            if (alertStatsPromise) {
+                const alertData = await alertStatsPromise.json();
+                if (alertData.success) this.renderAlertStats(alertData);
             }
         } catch (err) {
             console.error('[Performance] refresh error:', err);
@@ -698,12 +716,16 @@ const Performance = {
     filterRecentQueries() {
         const input = document.getElementById('perfRecentSearch');
         const term = input ? input.value.toLowerCase().trim() : '';
+        let rows = this._lastRecentQueries;
+        if (this.hideInserts) {
+            rows = rows.filter(q => (q.query_kind || '').toLowerCase() !== 'insert');
+        }
         if (term) {
-            this._shownRecentQueries = this._lastRecentQueries.filter(q =>
+            this._shownRecentQueries = rows.filter(q =>
                 (q.query || '').toLowerCase().includes(term) ||
                 (q.query_kind || '').toLowerCase().includes(term));
         } else {
-            this._shownRecentQueries = this._lastRecentQueries.slice(0, 50);
+            this._shownRecentQueries = rows.slice(0, 50);
         }
         const countEl = document.getElementById('perfRecentCount');
         if (countEl) countEl.textContent = this._shownRecentQueries.length;
@@ -920,6 +942,163 @@ const Performance = {
         });
     },
 
+    renderAlertStats(data) {
+        const summary = data.summary || {};
+        this.setText('alertMetricActive', summary.total_active ?? '--');
+        this.setText('alertMetricFires', this.formatNumber(summary.fire_count ?? 0));
+        this.setText('alertMetricAvgMs', summary.avg_ms != null ? summary.avg_ms + 'ms' : '--');
+        this.setText('alertMetricP95Ms', summary.p95_ms != null ? summary.p95_ms + 'ms' : '--');
+
+        const disabledEl = document.getElementById('alertMetricDisabled');
+        if (disabledEl) {
+            const d = summary.disabled || 0;
+            disabledEl.textContent = d;
+            disabledEl.className = 'perf-metric-value' + (d > 0 ? ' perf-metric-danger' : '');
+        }
+
+        this.renderAlertChart(data.history || []);
+        this.renderSlowestTable(data.slowest || []);
+    },
+
+    renderAlertChart(history) {
+        const canvas = document.getElementById('perfAlertChart');
+        if (!canvas) return;
+        const placeholder = document.getElementById('perfAlertChartPlaceholder');
+
+        if (!history || history.length === 0) {
+            if (this.alertChart) { this.alertChart.destroy(); this.alertChart = null; }
+            if (placeholder) placeholder.style.display = '';
+            canvas.style.display = 'none';
+            return;
+        }
+        if (placeholder) placeholder.style.display = 'none';
+        canvas.style.display = '';
+
+        const cv = window.ThemeManager ? ThemeManager.getCSSVar : (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+        const chartText  = cv('--chart-text')    || '#e8eaed';
+        const chartGrid  = cv('--chart-grid')    || '#24243e';
+        const chartBg    = cv('--chart-bg')      || '#1a1a2e';
+        const chartBorder = cv('--chart-border') || '#24243e';
+        const accent     = cv('--accent-primary') || '#9c6ade';
+        const info       = cv('--info')           || '#60a5fa';
+
+        const labels   = history.map(p => {
+            const parts = String(p.time || '').split(' ');
+            return parts.length > 1 ? parts[1].substring(0, 5) : parts[0];
+        });
+        const firedData = history.map(p => p.fired  || 0);
+        const msData    = history.map(p => p.avg_ms || 0);
+
+        if (this.alertChart) {
+            this.alertChart.data.labels = labels;
+            this.alertChart.data.datasets[0].data = firedData;
+            this.alertChart.data.datasets[1].data = msData;
+            this.alertChart.update('none');
+            return;
+        }
+
+        const ctx = canvas.getContext('2d');
+        this.alertChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [
+                    {
+                        label: 'Fires',
+                        data: firedData,
+                        backgroundColor: accent + 'cc',
+                        borderRadius: 2,
+                        maxBarThickness: 30,
+                        yAxisID: 'yFires'
+                    },
+                    {
+                        label: 'Avg Exec (ms)',
+                        data: msData,
+                        type: 'line',
+                        borderColor: info,
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: msData.length > 60 ? 0 : 2,
+                        pointHoverRadius: 4,
+                        yAxisID: 'yMs'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: {
+                        display: true,
+                        labels: { color: chartText, font: { family: 'Inter', size: 11 }, boxWidth: 12, padding: 8 }
+                    },
+                    tooltip: {
+                        backgroundColor: chartBg,
+                        titleColor: chartText,
+                        bodyColor: chartText,
+                        borderColor: chartBorder,
+                        borderWidth: 1,
+                        callbacks: {
+                            label: (ctx) => ctx.datasetIndex === 1
+                                ? 'Avg Exec: ' + ctx.parsed.y + 'ms'
+                                : 'Fires: ' + ctx.parsed.y
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { display: false, drawBorder: false },
+                        ticks: { color: chartText, font: { family: 'Inter', size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }
+                    },
+                    yFires: {
+                        type: 'linear',
+                        position: 'left',
+                        beginAtZero: true,
+                        grid: { color: chartGrid, drawBorder: false },
+                        ticks: { color: chartText, font: { family: 'Inter', size: 10 }, precision: 0 }
+                    },
+                    yMs: {
+                        type: 'linear',
+                        position: 'right',
+                        beginAtZero: true,
+                        grid: { display: false },
+                        ticks: { color: info, font: { family: 'Inter', size: 10 }, callback: (v) => v + 'ms' }
+                    }
+                }
+            }
+        });
+    },
+
+    renderSlowestTable(slowest) {
+        const container = document.getElementById('perfAlertSlowestTable');
+        if (!container) return;
+
+        if (!slowest || slowest.length === 0) {
+            container.innerHTML = '<div class="empty-state" style="min-height: 80px;"><p>No alert fires in range</p></div>';
+            return;
+        }
+
+        let html = '<table class="results-table perf-table"><thead><tr>';
+        html += '<th>Alert</th><th>Avg Exec</th><th>Fires</th>';
+        html += '</tr></thead><tbody>';
+
+        slowest.forEach(row => {
+            const ms = row.avg_ms || 0;
+            const cls = ms > 1000 ? 'perf-danger' : ms > 300 ? 'perf-warning' : '';
+            html += `<tr class="${cls}">`;
+            html += `<td>${this.escapeHtml(row.name || row.alert_id || '--')}</td>`;
+            html += `<td>${this.formatDuration(ms)}</td>`;
+            html += `<td>${this.formatNumber(row.fire_count || 0)}</td>`;
+            html += '</tr>';
+        });
+
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    },
+
     destroyCharts() {
         if (this.cpuChart) {
             this.cpuChart.destroy();
@@ -936,6 +1115,10 @@ const Performance = {
         if (this.ingestChart) {
             this.ingestChart.destroy();
             this.ingestChart = null;
+        }
+        if (this.alertChart) {
+            this.alertChart.destroy();
+            this.alertChart = null;
         }
     },
 

@@ -5895,6 +5895,22 @@ tr.perf-danger td {
     color: var(--text-muted);
 }
 
+.perf-toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.perf-toggle-label input[type="checkbox"] {
+    accent-color: var(--accent-primary);
+    cursor: pointer;
+}
+
 /* Clickable rows */
 .perf-row-clickable {
     cursor: pointer;
