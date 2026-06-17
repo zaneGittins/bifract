@@ -344,10 +344,19 @@ func bucketSamples(samples []cpuSample, since time.Duration, bucketSize time.Dur
 	return points
 }
 
+type alertExecSample struct {
+	Time  int64 `json:"time"`
+	AvgMs int64 `json:"avg_ms"`
+}
+
 type PerformanceHandler struct {
 	db        *storage.ClickHouseClient
 	pg        *storage.PostgresClient
 	collector *MetricsCollector
+
+	execHistMu   sync.Mutex
+	execHist     []alertExecSample // capped at 120 samples
+	execHistLast time.Time
 }
 
 func NewPerformanceHandler(db *storage.ClickHouseClient, pg *storage.PostgresClient) *PerformanceHandler {
@@ -847,8 +856,9 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 		 WHERE enabled = true`)
 	var totalActive, disabled int64
 	var avgMs, p95Ms, maxMs float64
-	if err := summaryRow.Scan(&totalActive, &disabled, &avgMs, &p95Ms, &maxMs); err != nil {
-		log.Printf("[AlertStats] summary: %v", err)
+	scanErr := summaryRow.Scan(&totalActive, &disabled, &avgMs, &p95Ms, &maxMs)
+	if scanErr != nil {
+		log.Printf("[AlertStats] summary: %v", scanErr)
 	}
 
 	result["summary"] = map[string]interface{}{
@@ -858,6 +868,24 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 		"p95_ms":       int64(math.Round(p95Ms)),
 		"max_ms":       int64(math.Round(maxMs)),
 	}
+
+	// Append a history sample at most once per minute, only when scan succeeded.
+	now := time.Now()
+	h.execHistMu.Lock()
+	if scanErr == nil && now.Sub(h.execHistLast) >= 55*time.Second {
+		h.execHist = append(h.execHist, alertExecSample{
+			Time:  now.Unix(),
+			AvgMs: int64(math.Round(avgMs)),
+		})
+		if len(h.execHist) > 120 {
+			h.execHist = h.execHist[len(h.execHist)-120:]
+		}
+		h.execHistLast = now
+	}
+	execHistCopy := make([]alertExecSample, len(h.execHist))
+	copy(execHistCopy, h.execHist)
+	h.execHistMu.Unlock()
+	result["exec_history"] = execHistCopy
 
 	// Exec time distribution: count of enabled alerts in each latency bucket.
 	distRow := h.pg.QueryRow(r.Context(),

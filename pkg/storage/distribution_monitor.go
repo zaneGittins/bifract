@@ -4,9 +4,16 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// DistQueueSample is a single time-series data point for the distribution queue.
+type DistQueueSample struct {
+	Time      int64 `json:"time"`       // Unix timestamp
+	DataFiles int64 `json:"data_files"` // total files in queue at sample time
+}
 
 // DistributionQueueStats is the last-sampled state of ClickHouse's async
 // distribution queue for logs_distributed. Zero/true values indicate healthy.
@@ -25,6 +32,9 @@ type DistributionMonitor struct {
 	onEvent func(event string, fields map[string]string)
 	state   atomic.Value // stores DistributionQueueStats
 	stop    chan struct{}
+
+	histMu  sync.Mutex
+	hist    []DistQueueSample // capped at 120 samples (~2 hours at 60s poll)
 }
 
 // NewDistributionMonitor creates a monitor. onEvent is called with system-fractal
@@ -37,6 +47,15 @@ func NewDistributionMonitor(ch *ClickHouseClient, onEvent func(string, map[strin
 	}
 	m.state.Store(DistributionQueueStats{Healthy: true})
 	return m
+}
+
+// History returns a copy of recent distribution queue samples (oldest first).
+func (m *DistributionMonitor) History() []DistQueueSample {
+	m.histMu.Lock()
+	defer m.histMu.Unlock()
+	out := make([]DistQueueSample, len(m.hist))
+	copy(out, m.hist)
+	return out
 }
 
 // Stats returns the most recently sampled distribution queue state.
@@ -139,6 +158,13 @@ func (m *DistributionMonitor) poll(prevErrorCount *int64, wasDegraded *bool) {
 		ErrorCount:      errorCount,
 		Healthy:         healthy,
 	})
+
+	m.histMu.Lock()
+	m.hist = append(m.hist, DistQueueSample{Time: time.Now().Unix(), DataFiles: dataFiles})
+	if len(m.hist) > 120 {
+		m.hist = m.hist[len(m.hist)-120:]
+	}
+	m.histMu.Unlock()
 }
 
 func distMonInt64(v interface{}) int64 {

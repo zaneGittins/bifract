@@ -10,6 +10,8 @@ const Performance = {
     cpuChart: null,
     ingestChart: null,
     alertChart: null,
+    distQueueChart: null,
+    alertTrendChart: null,
     prevCpuTimes: null,
     subTab: 'overview',
     ingestFractal: '',
@@ -174,6 +176,9 @@ const Performance = {
 
             this.renderPressureBanner(pressureData);
             this.renderClusterHealth(pressureData.distribution_queue || null);
+            if (tab === 'overview') {
+                this.renderDistQueueChart(pressureData.distribution_queue_history || []);
+            }
 
             if (procPromise) {
                 const procData = await procPromise.json();
@@ -186,7 +191,10 @@ const Performance = {
 
             if (alertStatsPromise) {
                 const alertData = await (await alertStatsPromise).json();
-                if (alertData.success) this.renderAlertStats(alertData);
+                if (alertData.success) {
+                    this.renderAlertStats(alertData);
+                    this.renderAlertTrendChart(alertData.exec_history || []);
+                }
             }
         } catch (err) {
             console.error('[Performance] refresh error:', err);
@@ -1119,6 +1127,176 @@ const Performance = {
         container.innerHTML = html;
     },
 
+    renderDistQueueChart(history) {
+        const canvas = document.getElementById('perfDistQueueChart');
+        const placeholder = document.getElementById('perfDistQueuePlaceholder');
+        if (!canvas) return;
+
+        if (!history || history.length < 2) {
+            if (this.distQueueChart) { this.distQueueChart.destroy(); this.distQueueChart = null; }
+            if (placeholder) placeholder.style.display = '';
+            canvas.style.display = 'none';
+            return;
+        }
+        if (placeholder) placeholder.style.display = 'none';
+        canvas.style.display = '';
+
+        const cv = window.ThemeManager ? ThemeManager.getCSSVar : (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+        const chartText   = cv('--chart-text')   || '#e8eaed';
+        const chartGrid   = cv('--chart-grid')   || '#24243e';
+        const chartBg     = cv('--chart-bg')     || '#1a1a2e';
+        const chartBorder = cv('--chart-border') || '#24243e';
+        const color = cv('--accent-primary') || '#9c6ade';
+
+        const labels = history.map(s => {
+            const d = new Date(s.time * 1000);
+            return d.toTimeString().slice(0, 5);
+        });
+        const values = history.map(s => s.data_files);
+
+        if (this.distQueueChart) {
+            this.distQueueChart.data.labels = labels;
+            this.distQueueChart.data.datasets[0].data = values;
+            this.distQueueChart.update('none');
+            return;
+        }
+
+        const ctx = canvas.getContext('2d');
+        this.distQueueChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'Files',
+                    data: values,
+                    borderColor: color,
+                    backgroundColor: color + '22',
+                    borderWidth: 2,
+                    pointRadius: 2,
+                    pointHoverRadius: 4,
+                    fill: true,
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: chartBg,
+                        titleColor: chartText,
+                        bodyColor: chartText,
+                        borderColor: chartBorder,
+                        borderWidth: 1,
+                        callbacks: { label: (ctx) => ctx.parsed.y.toLocaleString() + ' files' }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { color: chartGrid, drawBorder: false },
+                        ticks: { color: chartText, font: { family: 'Inter', size: 10 }, maxTicksLimit: 8 }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: chartGrid, drawBorder: false },
+                        ticks: {
+                            color: chartText,
+                            font: { family: 'Inter', size: 10 },
+                            callback: (v) => v.toLocaleString()
+                        }
+                    }
+                }
+            }
+        });
+    },
+
+    renderAlertTrendChart(history) {
+        const canvas = document.getElementById('perfAlertTrendChart');
+        const placeholder = document.getElementById('perfAlertTrendPlaceholder');
+        if (!canvas) return;
+
+        if (!history || history.length < 2) {
+            if (this.alertTrendChart) { this.alertTrendChart.destroy(); this.alertTrendChart = null; }
+            if (placeholder) placeholder.style.display = '';
+            canvas.style.display = 'none';
+            return;
+        }
+        if (placeholder) placeholder.style.display = 'none';
+        canvas.style.display = '';
+
+        const cv = window.ThemeManager ? ThemeManager.getCSSVar : (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+        const chartText   = cv('--chart-text')   || '#e8eaed';
+        const chartGrid   = cv('--chart-grid')   || '#24243e';
+        const chartBg     = cv('--chart-bg')     || '#1a1a2e';
+        const chartBorder = cv('--chart-border') || '#24243e';
+        const color = cv('--info') || '#60a5fa';
+
+        const labels = history.map(s => {
+            const d = new Date(s.time * 1000);
+            return d.toTimeString().slice(0, 5);
+        });
+        const values = history.map(s => s.avg_ms);
+
+        if (this.alertTrendChart) {
+            this.alertTrendChart.data.labels = labels;
+            this.alertTrendChart.data.datasets[0].data = values;
+            this.alertTrendChart.update('none');
+            return;
+        }
+
+        const ctx = canvas.getContext('2d');
+        this.alertTrendChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'Avg ms',
+                    data: values,
+                    borderColor: color,
+                    backgroundColor: color + '22',
+                    borderWidth: 2,
+                    pointRadius: 2,
+                    pointHoverRadius: 4,
+                    fill: true,
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: chartBg,
+                        titleColor: chartText,
+                        bodyColor: chartText,
+                        borderColor: chartBorder,
+                        borderWidth: 1,
+                        callbacks: { label: (ctx) => ctx.parsed.y + 'ms' }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { color: chartGrid, drawBorder: false },
+                        ticks: { color: chartText, font: { family: 'Inter', size: 10 }, maxTicksLimit: 8 }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: chartGrid, drawBorder: false },
+                        ticks: {
+                            color: chartText,
+                            font: { family: 'Inter', size: 10 },
+                            callback: (v) => v + 'ms'
+                        }
+                    }
+                }
+            }
+        });
+    },
+
     destroyCharts() {
         if (this.cpuChart) {
             this.cpuChart.destroy();
@@ -1139,6 +1317,14 @@ const Performance = {
         if (this.alertChart) {
             this.alertChart.destroy();
             this.alertChart = null;
+        }
+        if (this.distQueueChart) {
+            this.distQueueChart.destroy();
+            this.distQueueChart = null;
+        }
+        if (this.alertTrendChart) {
+            this.alertTrendChart.destroy();
+            this.alertTrendChart = null;
         }
     },
 

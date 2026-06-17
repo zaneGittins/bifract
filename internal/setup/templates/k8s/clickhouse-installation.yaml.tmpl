@@ -36,6 +36,10 @@ spec:
   podTemplate:
     securityContext:
       fsGroupChangePolicy: OnRootMismatch
+      runAsUser: 101
+      runAsGroup: 101
+      fsGroup: 101
+      runAsNonRoot: true
     affinity:
       podAntiAffinity:
         preferredDuringSchedulingIgnoredDuringExecution:
@@ -50,7 +54,7 @@ spec:
       - ReadWriteOnce
     resources:
       requests:
-        storage: {{.CHStorageGB}}Gi
+        storage: {{.CHStorageStr}}
   containerTemplate:
     image:
       repository: clickhouse/clickhouse-server

@@ -385,7 +385,10 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 		if v := extractValue(content, `(?m)^\s*replicas:\s*(\d+)`); v != "" {
 			s.chReplicas, _ = strconv.Atoi(v)
 		}
-		if v := extractValue(content, `storage:\s*(\d+)Gi`); v != "" {
+		if v := extractValue(content, `storage:\s*(\d+)Ti`); v != "" {
+			ti, _ := strconv.Atoi(v)
+			s.chStorageGB = ti * 1024
+		} else if v := extractValue(content, `storage:\s*(\d+)Gi`); v != "" {
 			s.chStorageGB, _ = strconv.Atoi(v)
 		}
 		s.chResources = extractResources(content, "clickhouse-server")

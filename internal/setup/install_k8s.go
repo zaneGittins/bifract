@@ -817,6 +817,7 @@ type k8sTemplateData struct {
 	CHShards            int
 	CHReplicas          int
 	CHStorageGB         int
+	CHStorageStr        string
 	CHPasswordHash      string
 	CHHostsList         string
 	PostgresPassword    string
@@ -890,6 +891,7 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		CHShards:            cfg.CHShards,
 		CHReplicas:          cfg.CHReplicas,
 		CHStorageGB:         cfg.CHStorageGB,
+		CHStorageStr:        formatStorageSize(cfg.CHStorageGB),
 		CHPasswordHash:      fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
 		CHHostsList:         buildCHHostsList(cfg.CHShards, cfg.CHReplicas),
 		PostgresPassword:    cfg.PostgresPassword,
@@ -990,6 +992,13 @@ func renderK8sTemplate(name string, data k8sTemplateData) (string, error) {
 // Bifract deployment env var based on the official operator's naming convention.
 // Pods are named: bifract-ch-clickhouse-{shard}-{replica}-0
 // The list includes all replicas across all shards.
+func formatStorageSize(gb int) string {
+	if gb >= 1024 && gb%1024 == 0 {
+		return fmt.Sprintf("%dTi", gb/1024)
+	}
+	return fmt.Sprintf("%dGi", gb)
+}
+
 func buildCHHostsList(shards, replicas int) string {
 	hosts := make([]string, 0, shards*replicas)
 	for s := 0; s < shards; s++ {

@@ -726,6 +726,7 @@ func main() {
 						"broken_data_files": s.BrokenDataFiles,
 						"error_count":       s.ErrorCount,
 					}
+					resp["distribution_queue_history"] = distMonitor.History()
 				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(resp)

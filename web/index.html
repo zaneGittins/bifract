@@ -172,6 +172,13 @@
                                         <div class="perf-metric-sub" id="metricDistQueueSub"></div>
                                     </div>
                                 </div>
+                                <div class="perf-charts-row">
+                                    <div class="perf-chart-card perf-chart-card-wide">
+                                        <h3>Distribution Queue</h3>
+                                        <div id="perfDistQueuePlaceholder" class="perf-chart-placeholder">Waiting for samples...</div>
+                                        <canvas id="perfDistQueueChart" style="display:none"></canvas>
+                                    </div>
+                                </div>
                             </div>
 
                             <div class="perf-charts-row">
@@ -326,6 +333,14 @@
                                     <h3>Exec Time Distribution</h3>
                                     <div id="perfAlertChartPlaceholder" class="perf-chart-placeholder">No eval data yet</div>
                                     <canvas id="perfAlertChart"></canvas>
+                                </div>
+                            </div>
+
+                            <div class="perf-charts-row">
+                                <div class="perf-chart-card perf-chart-card-wide">
+                                    <h3>Avg Exec Time</h3>
+                                    <div id="perfAlertTrendPlaceholder" class="perf-chart-placeholder">Waiting for samples...</div>
+                                    <canvas id="perfAlertTrendChart" style="display:none"></canvas>
                                 </div>
                             </div>
 
