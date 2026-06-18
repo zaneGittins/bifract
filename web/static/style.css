@@ -38,6 +38,8 @@
     --syntax-operator: #ff79c6;
     --syntax-comment: #6272a4;
     --syntax-key: #8be9fd;
+    --json-number: #f0a060;
+    --json-boolean: #b08ecc;
 
     /* Chart / canvas colors (used by JS) */
     --chart-text: #e8eaed;
@@ -121,6 +123,8 @@
     --syntax-operator: #af3685;
     --syntax-comment: #7a7268;
     --syntax-key: #0e6f9e;
+    --json-number: #c06820;
+    --json-boolean: #7a50a0;
 
     /* Chart / canvas colors */
     --chart-text: #1a1612;
@@ -1779,19 +1783,18 @@ body.search-active {
     background: var(--bg-tertiary);
 }
 
-.results-container.table-wrap .results-table td {
+.results-container.table-wrap .results-table td.raw-log-col {
     white-space: pre-wrap;
-    overflow: visible;
+    overflow: hidden;
     text-overflow: clip;
-    max-width: none;
-    word-break: break-all;
+    overflow-wrap: anywhere;
 }
 
-.results-container.table-wrap .results-table .json-value {
+.results-container.table-wrap .results-table td.raw-log-col .json-value {
     white-space: pre-wrap;
-    overflow: visible;
+    overflow: hidden;
     text-overflow: clip;
-    word-break: break-all;
+    overflow-wrap: anywhere;
 }
 
 /* Load More */
@@ -2221,9 +2224,10 @@ body.search-active {
     text-overflow: ellipsis;
 }
 
-/* JSON Syntax highlighting */
+/* JSON Syntax highlighting — keys muted, values prominent */
 .json-key {
-    color: var(--syntax-key);
+    color: var(--text-muted);
+    opacity: 0.85;
 }
 
 .json-string {
@@ -2231,16 +2235,15 @@ body.search-active {
 }
 
 .json-number {
-    color: var(--syntax-number);
+    color: var(--json-number);
 }
 
 .json-boolean {
-    color: var(--syntax-keyword);
+    color: var(--json-boolean);
 }
 
 .json-bracket {
-    color: var(--text-secondary);
-    font-weight: 600;
+    color: var(--text-muted);
 }
 
 .null-cell {

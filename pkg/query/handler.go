@@ -1838,12 +1838,21 @@ type cursorToken struct {
 }
 
 func encodeCursor(row map[string]interface{}) (string, error) {
-	ts, ok := row["timestamp"].(time.Time)
-	if !ok {
+	var tsMilli int64
+	switch v := row["timestamp"].(type) {
+	case time.Time:
+		tsMilli = v.UnixMilli()
+	case string:
+		t := parseLogTimestamp(v)
+		if t.IsZero() {
+			return "", fmt.Errorf("cannot parse timestamp string %q for cursor", v)
+		}
+		tsMilli = t.UnixMilli()
+	default:
 		return "", fmt.Errorf("unexpected timestamp type %T", row["timestamp"])
 	}
 	lid, _ := row["log_id"].(string)
-	b, err := json.Marshal(cursorToken{TSMilli: ts.UnixMilli(), LID: lid})
+	b, err := json.Marshal(cursorToken{TSMilli: tsMilli, LID: lid})
 	if err != nil {
 		return "", err
 	}
