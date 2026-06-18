@@ -45,7 +45,9 @@ type QueryPlan struct {
 	DeferredWhere []string     // conditions on window fields
 	DeferredOrder []string     // ORDER BY on window fields
 	DeferredLimit string       // LIMIT when sorting by window fields
-	Formatters   []SelectExpr  // outer SELECT: timestamp formatting, deferred math
+	Formatters      []SelectExpr // outer SELECT: timestamp formatting, deferred math
+	FormatterOrderBy []string   // ORDER BY lifted to formatter outer SELECT for streaming
+	FormatterLimit   string     // LIMIT lifted to formatter outer SELECT for streaming
 
 	FieldOrder   []string
 	IsAggregated bool
@@ -237,6 +239,14 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		outer.WriteString(" FROM (")
 		outer.WriteString(innerSQL)
 		outer.WriteString(")")
+		if len(p.FormatterOrderBy) > 0 {
+			outer.WriteString(" ORDER BY ")
+			outer.WriteString(strings.Join(p.FormatterOrderBy, ", "))
+		}
+		if p.FormatterLimit != "" {
+			outer.WriteString(" ")
+			outer.WriteString(p.FormatterLimit)
+		}
 		innerSQL = outer.String()
 	}
 

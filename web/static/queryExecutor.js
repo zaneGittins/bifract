@@ -629,6 +629,9 @@ const QueryExecutor = {
         const wrapBtn = document.getElementById('wrapToggleBtn');
         if (wrapBtn && this.currentResults && this.currentResults.length > 0) {
             wrapBtn.style.display = 'inline-block';
+            wrapBtn.classList.add('active');
+            const resultsTableEl = document.getElementById('resultsTable');
+            if (resultsTableEl) resultsTableEl.classList.add('table-wrap');
         }
 
         this._updateLoadMoreButton(data.has_more);
@@ -1773,6 +1776,15 @@ const QueryExecutor = {
             };
         }
         return null;
+    },
+
+    toggleFullscreen() {
+        const isFullscreen = document.body.classList.toggle('results-fullscreen');
+        const btn = document.getElementById('fullscreenBtn');
+        if (btn) {
+            btn.querySelector('.fs-expand-icon').style.display = isFullscreen ? 'none' : '';
+            btn.querySelector('.fs-compress-icon').style.display = isFullscreen ? '' : 'none';
+        }
     },
 
     toggleWrap() {

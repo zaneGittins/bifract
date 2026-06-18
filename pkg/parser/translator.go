@@ -349,6 +349,20 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		// Standard: build outer SELECT with timestamp formatting + deferred math
 		plan.Formatters = buildFormatters(selectStrings, ctx.Registry, deferredAssignments)
 		fieldOrder = computeFieldOrder(selectStrings, deferredAssignments)
+
+		// When formatters add a subquery wrapper AND the query uses the default
+		// timestamp-DESC order, lift ORDER BY and LIMIT to the formatter outer SELECT.
+		// With ORDER BY inside a subquery ClickHouse must fully materialize the inner
+		// sort before returning any rows; moving it to the outer level lets ClickHouse
+		// use its MergeTree streaming sort and return rows progressively to the driver.
+		// Join queries null out Formatters after this block, so only lift when
+		// formatters will actually be rendered around the source query.
+		if defaultTimeOrder && len(plan.Formatters) > 0 && !plan.IsJoin {
+			plan.FormatterOrderBy = activeStage.Layer.OrderBy
+			plan.FormatterLimit = activeStage.Layer.Limit
+			activeStage.Layer.OrderBy = nil
+			activeStage.Layer.Limit = ""
+		}
 		// raw_log is added as a hidden base field for the row detail panel even when
 		// | table(explicit cols) is used. Strip it from the display order so it doesn't
 		// appear as a column when the user has explicitly chosen their columns.
