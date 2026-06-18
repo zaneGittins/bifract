@@ -1647,19 +1647,20 @@ const QueryExecutor = {
                              .replace(/</g, '&lt;')
                              .replace(/>/g, '&gt;');
 
-        // Highlight strings (values in quotes)
-        highlighted = highlighted.replace(/("(?:[^"\\]|\\.)*")\s*:/g, '<span class="json-key">$1</span>:');
+        // Highlight keys
+        highlighted = highlighted.replace(/("(?:[^"\\]|\\.)*")\s*:/g, '<span class="json-key">$1</span><span class="json-punct">:</span>');
 
         // Highlight string values
-        highlighted = highlighted.replace(/:\s*("(?:[^"\\]|\\.)*")/g, ': <span class="json-string">$1</span>');
+        highlighted = highlighted.replace(/(<span class="json-punct">:<\/span>)\s*("(?:[^"\\]|\\.)*")/g, '$1 <span class="json-string">$2</span>');
 
         // Highlight numbers
-        highlighted = highlighted.replace(/:\s*(-?\d+\.?\d*)/g, ': <span class="json-number">$1</span>');
+        highlighted = highlighted.replace(/(<span class="json-punct">:<\/span>)\s*(-?\d+\.?\d*)/g, '$1 <span class="json-number">$2</span>');
 
         // Highlight booleans and null
-        highlighted = highlighted.replace(/:\s*(true|false|null)/g, ': <span class="json-boolean">$1</span>');
+        highlighted = highlighted.replace(/(<span class="json-punct">:<\/span>)\s*(true|false|null)/g, '$1 <span class="json-boolean">$2</span>');
 
-        // Highlight brackets and braces
+        // Mute commas and brackets
+        highlighted = highlighted.replace(/,/g, '<span class="json-punct">,</span>');
         highlighted = highlighted.replace(/([{}\[\]])/g, '<span class="json-bracket">$1</span>');
 
         return highlighted;

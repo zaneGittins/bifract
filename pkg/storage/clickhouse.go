@@ -1034,9 +1034,9 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 	}
 
 	query := fmt.Sprintf(
-		"SELECT log_id, fractal_id, toString(fields) AS fields FROM %s WHERE log_id = ? AND timestamp = ?",
+		"SELECT log_id, fractal_id, toString(fields) AS fields FROM %s WHERE log_id = ? AND toUnixTimestamp64Milli(timestamp) = ?",
 		c.ReadTable())
-	args := []interface{}{logID, ts}
+	args := []interface{}{logID, ts.UnixMilli()}
 	if fractalID != "" {
 		query += " AND fractal_id = ?"
 		args = append(args, fractalID)

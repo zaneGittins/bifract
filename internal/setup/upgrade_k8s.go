@@ -202,7 +202,7 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 	fmt.Println(summary)
 	fmt.Println()
 	fmt.Println(DimStyle.Render("  Apply with:"))
-	fmt.Println(DimStyle.Render("    kubectl apply -k " + dir))
+	fmt.Println(DimStyle.Render("    kubectl apply -k " + dir + " --server-side --force-conflicts"))
 	fmt.Println()
 	printDone("Upgrade complete")
 	fmt.Println()

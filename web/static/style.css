@@ -2224,10 +2224,13 @@ body.search-active {
     text-overflow: ellipsis;
 }
 
-/* JSON Syntax highlighting — keys muted, values prominent */
-.json-key {
+/* JSON Syntax highlighting */
+.json-punct {
     color: var(--text-muted);
-    opacity: 0.85;
+}
+
+.json-key {
+    color: var(--syntax-key);
 }
 
 .json-string {
@@ -2235,15 +2238,16 @@ body.search-active {
 }
 
 .json-number {
-    color: var(--json-number);
+    color: var(--syntax-number);
 }
 
 .json-boolean {
-    color: var(--json-boolean);
+    color: var(--syntax-keyword);
 }
 
 .json-bracket {
-    color: var(--text-muted);
+    color: var(--text-secondary);
+    font-weight: 600;
 }
 
 .null-cell {
