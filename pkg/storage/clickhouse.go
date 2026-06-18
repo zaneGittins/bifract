@@ -2,11 +2,17 @@ package storage
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
+	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -20,6 +26,14 @@ type ClickHouseClient struct {
 	Password string
 	Database string
 	Cluster  string // ClickHouse cluster name; empty for single-node deployments
+
+	// Shard-direct lookup (cluster mode only). shardHosts caches shard_num -> host:port
+	// from system.clusters so detail queries can bypass the Distributed fan-out.
+	shardHostsMu sync.RWMutex
+	shardHosts   map[uint64]string
+
+	shardConnsMu sync.Mutex
+	shardConns   map[uint64]driver.Conn
 }
 
 // Addrs returns the host:port addresses this client connects to.
@@ -177,81 +191,33 @@ type LogEntry struct {
 	FractalID       string // Fractal UUID for multi-tenant isolation
 }
 
-func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
+// Initialize ensures the ClickHouse schema is current.
+//
+// Fresh install (logs table absent): runs the full init SQL then marks all
+// migrations as baseline so subsequent restarts skip them entirely.
+//
+// Upgrade (logs table present):
+//   - Single-node: applies only unapplied numbered migrations; skips init SQL.
+//   - Cluster: spawns a goroutine that connects to each shard directly and
+//     applies only its pending migrations, avoiding ON CLUSTER timeouts during
+//     rolling restarts. Distributed table creation runs idempotently each time.
+func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migrations embed.FS, migrationsDir string) error {
 	var count uint64
-	err := c.conn.QueryRow(ctx, `SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = 'logs'`).Scan(&count)
-	if err != nil {
+	if err := c.conn.QueryRow(ctx, `SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = 'logs'`).Scan(&count); err != nil {
 		return fmt.Errorf("failed to check clickhouse initialization: %w", err)
 	}
 	tableExists := count > 0
 
-	if c.IsCluster() && tableExists {
-		// Upgrade path: push schema changes to each shard individually in the background.
-		// ON CLUSTER times out when replica pods are restarting; even metadata-only
-		// ALTER TABLE (ADD/DROP INDEX) blocks on Keeper coordination when a shard has
-		// just restarted. Running async lets the app start immediately — all statements
-		// are IF NOT EXISTS / IF EXISTS so they are safe to retry on the next startup.
-		distSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS logs_distributed AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
-			EscCHStr(c.Cluster),
-		)
-		histDistSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS logs_histogram_distributed AS logs_histogram ENGINE = Distributed('%s', currentDatabase(), 'logs_histogram', rand())",
-			EscCHStr(c.Cluster),
-		)
-		hotDistSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS logs_hot_distributed AS logs_hot ENGINE = Distributed('%s', currentDatabase(), 'logs_hot', rand())",
-			EscCHStr(c.Cluster),
-		)
-		go func() {
-			initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
-			for _, addr := range c.addrs {
-				hostConn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, initPool)
-				if err != nil {
-					log.Printf("Warning: cluster schema sync to %s failed: %v", addr, err)
-					continue
-				}
-				for _, stmt := range splitClickHouseSQL(sql) {
-					upper := strings.ToUpper(strings.TrimSpace(stmt))
-					if !strings.HasPrefix(upper, "CREATE ") && !strings.HasPrefix(upper, "ALTER ") {
-						continue
-					}
-					stmt = c.RewriteEngine(stmt)
-					stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
-					execErr := hostConn.Exec(stmtCtx, stmt)
-					stmtCancel()
-					if execErr != nil {
-						log.Printf("Warning: schema sync on %s: %v", addr, execErr)
-						break // connection in bad state; remaining stmts retry next startup
-					}
-				}
-				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL} {
-					stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
-					execErr := hostConn.Exec(stmtCtx, stmt)
-					stmtCancel()
-					if execErr != nil {
-						log.Printf("Warning: distributed table sync on %s: %v", addr, execErr)
-						break
-					}
-				}
-				hostConn.Close()
-			}
-			log.Printf("Cluster schema sync complete")
-		}()
-	} else {
+	if !tableExists {
+		// Fresh install: apply full init SQL, then create distributed tables and
+		// mark all migrations as baseline so upgrades only run future deltas.
 		for _, stmt := range splitClickHouseSQL(sql) {
-			upper := strings.ToUpper(strings.TrimSpace(stmt))
-			if tableExists && !strings.HasPrefix(upper, "ALTER ") && !strings.HasPrefix(upper, "CREATE ") {
-				continue
-			}
 			stmt = c.InjectOnCluster(stmt)
 			stmt = c.RewriteEngine(stmt)
 			if err := c.conn.Exec(ctx, stmt); err != nil {
 				return fmt.Errorf("failed to execute clickhouse init statement: %w\nstatement: %s", err, stmt)
 			}
 		}
-
-		// Fresh install: create Distributed tables ON CLUSTER so all shards get them.
 		if c.IsCluster() {
 			distSQL := fmt.Sprintf(
 				"CREATE TABLE IF NOT EXISTS logs_distributed%s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
@@ -275,9 +241,203 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 				return fmt.Errorf("failed to create hot distributed table: %w\nstatement: %s", err, hotDistSQL)
 			}
 		}
+		setClickHouseMigrationsBaseline(ctx, c.conn, c.RewriteEngine, migrations, migrationsDir)
+		return nil
 	}
 
+	if c.IsCluster() {
+		// Cluster upgrade: apply only pending migrations to each shard individually.
+		// ON CLUSTER can timeout when shards are restarting; per-shard direct
+		// connections are reliable. Distributed table creation is idempotent.
+		distSQL := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS logs_distributed AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
+			EscCHStr(c.Cluster),
+		)
+		histDistSQL := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS logs_histogram_distributed AS logs_histogram ENGINE = Distributed('%s', currentDatabase(), 'logs_histogram', rand())",
+			EscCHStr(c.Cluster),
+		)
+		hotDistSQL := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS logs_hot_distributed AS logs_hot ENGINE = Distributed('%s', currentDatabase(), 'logs_hot', rand())",
+			EscCHStr(c.Cluster),
+		)
+		go func() {
+			initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+			for _, addr := range c.addrs {
+				hostConn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, initPool)
+				if err != nil {
+					log.Printf("Warning: cluster migration sync to %s failed: %v", addr, err)
+					continue
+				}
+				n, err := runMigrationsOnConn(ctx, hostConn, c.RewriteEngine, migrations, migrationsDir)
+				if err != nil {
+					log.Printf("Warning: migration sync on %s: %v", addr, err)
+				} else if n > 0 {
+					log.Printf("Applied %d ClickHouse migration(s) to shard %s", n, addr)
+				}
+				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL} {
+					stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
+					hostConn.Exec(stmtCtx, stmt)
+					stmtCancel()
+				}
+				hostConn.Close()
+			}
+			log.Printf("Cluster schema sync complete")
+		}()
+		return nil
+	}
+
+	// Single-node upgrade: apply only pending migrations.
+	n, err := runMigrationsOnConn(ctx, c.conn, nil, migrations, migrationsDir)
+	if err != nil {
+		return fmt.Errorf("clickhouse migrations: %w", err)
+	}
+	if n > 0 {
+		log.Printf("Applied %d ClickHouse migration(s)", n)
+	}
 	return nil
+}
+
+type chMigrationEntry struct {
+	number int
+	name   string
+	sql    string
+}
+
+func loadClickHouseMigrations(fsys embed.FS, dir string) ([]chMigrationEntry, error) {
+	var migrations []chMigrationEntry
+	err := fs.WalkDir(fsys, dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(path, ".sql") {
+			return nil
+		}
+		name := filepath.Base(path)
+		parts := strings.SplitN(name, "_", 2)
+		if len(parts) < 2 {
+			return nil
+		}
+		num, convErr := strconv.Atoi(parts[0])
+		if convErr != nil {
+			return nil
+		}
+		content, readErr := fsys.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("read migration %s: %w", path, readErr)
+		}
+		migrations = append(migrations, chMigrationEntry{
+			number: num,
+			name:   strings.TrimSuffix(name, ".sql"),
+			sql:    string(content),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(migrations, func(i, j int) bool {
+		return migrations[i].number < migrations[j].number
+	})
+	return migrations, nil
+}
+
+// runMigrationsOnConn applies pending ClickHouse migrations via conn.
+// transformStmt, if non-nil, is applied to each DDL statement before execution
+// (used in cluster mode to rewrite engine names to their Replicated variants).
+// Returns the number of migrations applied.
+func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt func(string) string, migrations embed.FS, migrationsDir string) (int, error) {
+	const createMigrationsTable = `CREATE TABLE IF NOT EXISTS logs._bifract_migrations (
+		number UInt32,
+		name String,
+		applied_at DateTime DEFAULT now()
+	) ENGINE = ReplacingMergeTree()
+	ORDER BY number`
+
+	tableSQL := createMigrationsTable
+	if transformStmt != nil {
+		tableSQL = transformStmt(tableSQL)
+	}
+	if err := conn.Exec(ctx, tableSQL); err != nil {
+		return 0, fmt.Errorf("create migrations table: %w", err)
+	}
+
+	var maxApplied uint32
+	if err := conn.QueryRow(ctx, "SELECT max(number) FROM logs._bifract_migrations").Scan(&maxApplied); err != nil {
+		return 0, fmt.Errorf("query migration state: %w", err)
+	}
+
+	allMigrations, err := loadClickHouseMigrations(migrations, migrationsDir)
+	if err != nil {
+		return 0, err
+	}
+
+	applied := 0
+	for _, m := range allMigrations {
+		if uint32(m.number) <= maxApplied {
+			continue
+		}
+		for _, stmt := range splitClickHouseSQL(m.sql) {
+			stmt = strings.TrimSpace(stmt)
+			if stmt == "" {
+				continue
+			}
+			upper := strings.ToUpper(stmt)
+			if !strings.HasPrefix(upper, "CREATE ") && !strings.HasPrefix(upper, "ALTER ") {
+				continue
+			}
+			if transformStmt != nil {
+				stmt = transformStmt(stmt)
+			}
+			stmtCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			execErr := conn.Exec(stmtCtx, stmt)
+			cancel()
+			if execErr != nil {
+				return applied, fmt.Errorf("migration %s: %w", m.name, execErr)
+			}
+		}
+		record := fmt.Sprintf("INSERT INTO logs._bifract_migrations (number, name) VALUES (%d, '%s')",
+			m.number, strings.ReplaceAll(m.name, "'", "''"))
+		if err := conn.Exec(ctx, record); err != nil {
+			return applied, fmt.Errorf("record migration %s: %w", m.name, err)
+		}
+		applied++
+	}
+	return applied, nil
+}
+
+// setClickHouseMigrationsBaseline marks all known migrations as applied without
+// running them. Called after a fresh install where init-clickhouse.sql already
+// created the full schema, so subsequent restarts skip all current migrations.
+func setClickHouseMigrationsBaseline(ctx context.Context, conn driver.Conn, transformStmt func(string) string, migrations embed.FS, migrationsDir string) {
+	const createMigrationsTable = `CREATE TABLE IF NOT EXISTS logs._bifract_migrations (
+		number UInt32,
+		name String,
+		applied_at DateTime DEFAULT now()
+	) ENGINE = ReplacingMergeTree()
+	ORDER BY number`
+
+	tableSQL := createMigrationsTable
+	if transformStmt != nil {
+		tableSQL = transformStmt(tableSQL)
+	}
+	if err := conn.Exec(ctx, tableSQL); err != nil {
+		log.Printf("Warning: could not create migrations table for baseline: %v", err)
+		return
+	}
+
+	allMigrations, err := loadClickHouseMigrations(migrations, migrationsDir)
+	if err != nil {
+		log.Printf("Warning: could not load migrations for baseline: %v", err)
+		return
+	}
+	for _, m := range allMigrations {
+		record := fmt.Sprintf("INSERT INTO logs._bifract_migrations (number, name) VALUES (%d, '%s')",
+			m.number, strings.ReplaceAll(m.name, "'", "''"))
+		if err := conn.Exec(ctx, record); err != nil {
+			log.Printf("Warning: could not record baseline migration %s: %v", m.name, err)
+		}
+	}
 }
 
 // splitSQLOnTopLevelSemicolons splits sql into segments on ';' characters that are not
@@ -1046,6 +1206,147 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 	rows, err := c.conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query log fields: %w", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("error iterating log fields row: %w", err)
+		}
+		return nil, nil
+	}
+
+	var resLogID, logFractalID, fieldsStr string
+	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr); err != nil {
+		return nil, fmt.Errorf("failed to scan log fields row: %w", err)
+	}
+	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID}
+	var m map[string]interface{}
+	if json.Unmarshal([]byte(fieldsStr), &m) == nil {
+		entry["fields"] = m
+	} else {
+		entry["fields"] = map[string]interface{}{}
+	}
+	return entry, nil
+}
+
+// shardHostForNum returns the host:port for a given shard number by querying
+// system.clusters. Results are cached for the lifetime of the client.
+func (c *ClickHouseClient) shardHostForNum(ctx context.Context, shardNum uint64) (string, error) {
+	c.shardHostsMu.RLock()
+	if c.shardHosts != nil {
+		host, ok := c.shardHosts[shardNum]
+		c.shardHostsMu.RUnlock()
+		if ok {
+			return host, nil
+		}
+		return "", fmt.Errorf("shard %d not found in cluster topology", shardNum)
+	}
+	c.shardHostsMu.RUnlock()
+
+	c.shardHostsMu.Lock()
+	defer c.shardHostsMu.Unlock()
+	// Double-check after acquiring write lock.
+	if c.shardHosts != nil {
+		if host, ok := c.shardHosts[shardNum]; ok {
+			return host, nil
+		}
+		return "", fmt.Errorf("shard %d not found in cluster topology", shardNum)
+	}
+
+	rows, err := c.conn.Query(ctx, fmt.Sprintf(
+		"SELECT shard_num, host_name, port FROM system.clusters WHERE cluster = '%s' AND replica_num = 1 ORDER BY shard_num",
+		EscCHStr(c.Cluster),
+	))
+	if err != nil {
+		return "", fmt.Errorf("query system.clusters: %w", err)
+	}
+	defer rows.Close()
+
+	hosts := make(map[uint64]string)
+	for rows.Next() {
+		var sn uint32   // system.clusters.shard_num is UInt32
+		var hostName string
+		var port uint16 // system.clusters.port is UInt16
+		if err := rows.Scan(&sn, &hostName, &port); err != nil {
+			continue
+		}
+		hosts[uint64(sn)] = fmt.Sprintf("%s:%d", hostName, port)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("iterate system.clusters: %w", err)
+	}
+	c.shardHosts = hosts
+
+	if host, ok := hosts[shardNum]; ok {
+		return host, nil
+	}
+	return "", fmt.Errorf("shard %d not found in cluster topology", shardNum)
+}
+
+// shardConnForNum returns (or lazily opens) a direct connection to the shard
+// identified by shardNum. Connections are cached for the client's lifetime.
+func (c *ClickHouseClient) shardConnForNum(ctx context.Context, shardNum uint64) (driver.Conn, error) {
+	c.shardConnsMu.Lock()
+	defer c.shardConnsMu.Unlock()
+
+	if c.shardConns != nil {
+		if conn, ok := c.shardConns[shardNum]; ok {
+			return conn, nil
+		}
+	}
+
+	hostPort, err := c.shardHostForNum(ctx, shardNum)
+	if err != nil {
+		return nil, err
+	}
+
+	pool := ClickHousePoolConfig{
+		MaxOpenConns:    4,
+		MaxIdleConns:    2,
+		ConnMaxLifetime: 10 * time.Minute,
+		DialTimeout:     5 * time.Second,
+	}
+	conn, err := openClickHouseConn([]string{hostPort}, c.Database, c.User, c.Password, pool)
+	if err != nil {
+		return nil, fmt.Errorf("open shard %d connection to %s: %w", shardNum, hostPort, err)
+	}
+
+	if c.shardConns == nil {
+		c.shardConns = make(map[uint64]driver.Conn)
+	}
+	c.shardConns[shardNum] = conn
+	return conn, nil
+}
+
+// GetLogFieldsByIDDirect fetches log fields by routing directly to the shard
+// that owns the row, bypassing the Distributed engine fan-out. shardNum must
+// be the _shard_num value from the search result. Falls back to the distributed
+// path when not in cluster mode, when shardNum is 0, or when the direct shard
+// connection fails.
+func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID string, ts time.Time, fractalID string, shardNum uint64) (map[string]interface{}, error) {
+	if !c.IsCluster() || shardNum == 0 {
+		return c.GetLogFieldsByID(ctx, logID, ts, fractalID)
+	}
+
+	conn, err := c.shardConnForNum(ctx, shardNum)
+	if err != nil {
+		log.Printf("[GetLogFieldsByIDDirect] shard %d unavailable (%v), falling back to distributed", shardNum, err)
+		return c.GetLogFieldsByID(ctx, logID, ts, fractalID)
+	}
+
+	query := "SELECT log_id, fractal_id, toString(fields) AS fields FROM logs WHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')"
+	args := []interface{}{logID, ts.UTC().Format("2006-01-02 15:04:05.000")}
+	if fractalID != "" {
+		query += " AND fractal_id = ?"
+		args = append(args, fractalID)
+	}
+	query += " LIMIT 1"
+
+	rows, err := conn.Query(ctx, query, args...)
+	if err != nil {
+		log.Printf("[GetLogFieldsByIDDirect] direct query on shard %d failed (%v), falling back to distributed", shardNum, err)
+		return c.GetLogFieldsByID(ctx, logID, ts, fractalID)
 	}
 	defer rows.Close()
 

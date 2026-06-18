@@ -506,6 +506,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		CommentLogIDs:         commentLogIDs,
 		GeoIPEnabled:          h.geoIPEnabled,
 		TableName:             h.queryTableName(),
+		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
 	translationResult, err := parser.TranslateToSQLWithOrder(pipeline, opts)
 	if err != nil {
@@ -1483,7 +1484,14 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 	// correct for prism sessions (multiple fractals) without trusting the client.
 	scopeFractalID := scopedFractalFilter(r.URL.Query().Get("fractal_id"), accessible, isAdmin)
 
-	logEntry, err := h.db.GetLogFieldsByID(r.Context(), logID, ts, scopeFractalID)
+	var shardNum uint64
+	if s := r.URL.Query().Get("shard_num"); s != "" {
+		if n, err := strconv.ParseUint(s, 10, 64); err == nil {
+			shardNum = n
+		}
+	}
+
+	logEntry, err := h.db.GetLogFieldsByIDDirect(r.Context(), logID, ts, scopeFractalID, shardNum)
 	if err != nil {
 		log.Printf("[QueryHandler] HandleGetLogFields: failed to fetch fields: %v", err)
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{

@@ -8,13 +8,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	dbpkg "bifract/db"
 )
 
 //go:embed migrations/postgres/*.sql
 var postgresMigrations embed.FS
-
-//go:embed migrations/clickhouse/*.sql
-var clickhouseMigrations embed.FS
 
 type Migration struct {
 	Number int
@@ -120,7 +119,7 @@ func RunPostgresMigrations(docker *DockerOps, user, db string) (int, error) {
 
 // RunClickHouseMigrations applies unapplied migrations via docker compose exec.
 func RunClickHouseMigrations(docker *DockerOps, user, password string) (int, error) {
-	migrations, err := LoadMigrations(clickhouseMigrations, "migrations/clickhouse")
+	migrations, err := LoadMigrations(dbpkg.ClickHouseMigrations, dbpkg.ClickHouseMigrationsDir)
 	if err != nil {
 		return 0, fmt.Errorf("load clickhouse migrations: %w", err)
 	}

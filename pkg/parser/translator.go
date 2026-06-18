@@ -32,6 +32,7 @@ type QueryOptions struct {
 	AlertExtraFields      []string                      // Additional fields to project in alert auto-projection (throttle field, template fields)
 	GeoIPEnabled          bool                          // True when MaxMind GeoLite2 dictionaries are loaded
 	TableName             string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
+	IncludeShardNum       bool                          // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
 }
 
 // EffectiveTableName returns the table name to query, defaulting to "logs".
@@ -577,6 +578,9 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		source.Layer.Selects = []SelectExpr{
 			{Expr: "timestamp"}, {Expr: "raw_log"}, {Expr: "log_id"}, {Expr: "fractal_id"},
 		}
+		if ctx.Opts.IncludeShardNum {
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(_shard_num) AS _shard_num"})
+		}
 		return
 	}
 
@@ -585,6 +589,9 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		source.Layer.Selects = []SelectExpr{{Expr: "timestamp"}, {Expr: "raw_log"}, {Expr: "log_id"}, {Expr: "fractal_id"}}
 		for _, af := range assignmentFields {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: af})
+		}
+		if ctx.Opts.IncludeShardNum {
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(_shard_num) AS _shard_num"})
 		}
 		return
 	}
@@ -653,6 +660,18 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		}
 		if !hasFields && plan.HasTableCmd && !plan.TableHasExplicitColumns {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(fields) AS fields"})
+		}
+		if ctx.Opts.IncludeShardNum {
+			hasShardNum := false
+			for _, sel := range source.Layer.Selects {
+				if extractFieldAlias(sel.String()) == "_shard_num" {
+					hasShardNum = true
+					break
+				}
+			}
+			if !hasShardNum {
+				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(_shard_num) AS _shard_num"})
+			}
 		}
 	}
 }
@@ -827,7 +846,7 @@ func computeFieldOrder(selectFields []string, deferredAssignments []AssignmentNo
 	fieldOrder := make([]string, 0, len(selectFields))
 	for _, field := range selectFields {
 		alias := extractFieldAlias(field)
-		if alias != "_all_fields" && alias != "fields" {
+		if alias != "_all_fields" && alias != "fields" && alias != "_shard_num" {
 			fieldOrder = append(fieldOrder, strings.Trim(alias, "`"))
 		}
 	}

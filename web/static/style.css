@@ -1801,6 +1801,10 @@ body.search-active {
     background: var(--bg-hover);
 }
 
+body.results-fullscreen #timelineSection {
+    display: none !important;
+}
+
 body.results-fullscreen .results-section {
     position: fixed;
     inset: 0;
@@ -1815,6 +1819,10 @@ body.results-fullscreen .results-section {
     color: var(--accent-primary);
     border-color: var(--accent-primary);
     background: var(--bg-tertiary);
+}
+
+.results-container.table-wrap .results-table td {
+    vertical-align: top;
 }
 
 .results-container.table-wrap .results-table td.raw-log-col {

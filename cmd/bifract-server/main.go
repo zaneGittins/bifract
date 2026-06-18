@@ -212,7 +212,7 @@ func main() {
 		queryPool.MaxOpenConns, ingestPool.MaxOpenConns)
 
 	log.Println("Initializing ClickHouse schema...")
-	if err := db.Initialize(context.Background(), dbsql.ClickHouseSQL); err != nil {
+	if err := db.Initialize(context.Background(), dbsql.ClickHouseSQL, dbsql.ClickHouseMigrations, dbsql.ClickHouseMigrationsDir); err != nil {
 		log.Fatalf("Failed to initialize ClickHouse schema: %v", err)
 	}
 	log.Println("ClickHouse schema ready")
