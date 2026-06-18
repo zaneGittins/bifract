@@ -1093,7 +1093,8 @@ const QueryExecutor = {
                         ...logData._all_fields,
                         timestamp: logData.timestamp,
                         log_id: logData.log_id,
-                        fractal_id: logData.fractal_id
+                        fractal_id: logData.fractal_id,
+                        _shard_num: logData._shard_num
                     };
                 }
 
@@ -1627,7 +1628,8 @@ const QueryExecutor = {
                                 ...logData._all_fields,
                                 timestamp: logData.timestamp,
                                 log_id: logData.log_id,
-                                fractal_id: logData.fractal_id
+                                fractal_id: logData.fractal_id,
+                                _shard_num: logData._shard_num
                             };
                         }
                         LogDetail.show(detailData, options.isAggregated || false);
