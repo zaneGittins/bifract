@@ -186,10 +186,11 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 	tableExists := count > 0
 
 	if c.IsCluster() && tableExists {
-		// Upgrade path: new tables (e.g. logs_histogram) may not exist on all shards yet.
-		// ON CLUSTER times out when replica pods are absent, so push all CREATE/ALTER
-		// statements — including distributed tables — to each shard host individually.
-		// IF NOT EXISTS makes every statement idempotent.
+		// Upgrade path: push schema changes to each shard individually in the background.
+		// ON CLUSTER times out when replica pods are restarting; even metadata-only
+		// ALTER TABLE (ADD/DROP INDEX) blocks on Keeper coordination when a shard has
+		// just restarted. Running async lets the app start immediately — all statements
+		// are IF NOT EXISTS / IF EXISTS so they are safe to retry on the next startup.
 		distSQL := fmt.Sprintf(
 			"CREATE TABLE IF NOT EXISTS logs_distributed AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
 			EscCHStr(c.Cluster),
@@ -202,36 +203,41 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 			"CREATE TABLE IF NOT EXISTS logs_hot_distributed AS logs_hot ENGINE = Distributed('%s', currentDatabase(), 'logs_hot', rand())",
 			EscCHStr(c.Cluster),
 		)
-		initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
-		for _, addr := range c.addrs {
-			hostConn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, initPool)
-			if err != nil {
-				log.Printf("Warning: cluster schema sync to %s failed: %v", addr, err)
-				continue
-			}
-			for _, stmt := range splitClickHouseSQL(sql) {
-				upper := strings.ToUpper(strings.TrimSpace(stmt))
-				if !strings.HasPrefix(upper, "CREATE ") && !strings.HasPrefix(upper, "ALTER ") {
+		go func() {
+			initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+			for _, addr := range c.addrs {
+				hostConn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, initPool)
+				if err != nil {
+					log.Printf("Warning: cluster schema sync to %s failed: %v", addr, err)
 					continue
 				}
-				stmt = c.RewriteEngine(stmt)
-				stmtCtx, stmtCancel := context.WithTimeout(ctx, 20*time.Second)
-				execErr := hostConn.Exec(stmtCtx, stmt)
-				stmtCancel()
-				if execErr != nil {
-					log.Printf("Warning: schema sync on %s: %v", addr, execErr)
+				for _, stmt := range splitClickHouseSQL(sql) {
+					upper := strings.ToUpper(strings.TrimSpace(stmt))
+					if !strings.HasPrefix(upper, "CREATE ") && !strings.HasPrefix(upper, "ALTER ") {
+						continue
+					}
+					stmt = c.RewriteEngine(stmt)
+					stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
+					execErr := hostConn.Exec(stmtCtx, stmt)
+					stmtCancel()
+					if execErr != nil {
+						log.Printf("Warning: schema sync on %s: %v", addr, execErr)
+						break // connection in bad state; remaining stmts retry next startup
+					}
 				}
-			}
-			for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL} {
-				stmtCtx, stmtCancel := context.WithTimeout(ctx, 20*time.Second)
-				execErr := hostConn.Exec(stmtCtx, stmt)
-				stmtCancel()
-				if execErr != nil {
-					log.Printf("Warning: distributed table sync on %s: %v", addr, execErr)
+				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL} {
+					stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
+					execErr := hostConn.Exec(stmtCtx, stmt)
+					stmtCancel()
+					if execErr != nil {
+						log.Printf("Warning: distributed table sync on %s: %v", addr, execErr)
+						break
+					}
 				}
+				hostConn.Close()
 			}
-			hostConn.Close()
-		}
+			log.Printf("Cluster schema sync complete")
+		}()
 	} else {
 		for _, stmt := range splitClickHouseSQL(sql) {
 			upper := strings.ToUpper(strings.TrimSpace(stmt))
