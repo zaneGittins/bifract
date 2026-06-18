@@ -418,21 +418,12 @@ const QueryExecutor = {
         let pendingRender = false;
         let timeRange = this.currentTimeRange;
         let histogram = null;
-        let streamRenderCount = 0; // how many rows were in currentResults at last render
-
         const scheduleRender = () => {
             if (pendingRender) return;
             pendingRender = true;
             requestAnimationFrame(() => {
                 pendingRender = false;
-                if (streamRenderCount === 0) {
-                    // First batch: build the full table structure.
-                    this._renderCurrentResults(elements, { preservePage: true });
-                } else {
-                    // Subsequent batches: append only new rows to avoid full DOM rebuild.
-                    this._streamAppendRows(streamRenderCount, elements);
-                }
-                streamRenderCount = this.currentResults.length;
+                this._renderCurrentResults(elements, { preservePage: true });
                 if (elements.resultsCount) {
                     elements.resultsCount.textContent = `${this.currentResults.length.toLocaleString()} results`;
                 }
@@ -517,82 +508,6 @@ const QueryExecutor = {
                 handleFrame(frame);
             }
         }
-    },
-
-    // Append only new rows to an already-rendered streaming table, avoiding a full
-    // DOM rebuild on every batch. Falls back to full render if the table is gone.
-    _streamAppendRows(prevCount, elements) {
-        const resultsTable = document.getElementById('resultsTable');
-        if (!resultsTable) return;
-        const tbody = resultsTable.querySelector('tbody');
-        if (!tbody) {
-            this._renderCurrentResults(elements, { preservePage: true });
-            return;
-        }
-
-        // Which rows are new and fall on the current page?
-        const pageStart = window.Pagination ? (Pagination.currentPage - 1) * Pagination.pageSize : 0;
-        const pageEnd   = window.Pagination ? pageStart + Pagination.pageSize : Infinity;
-
-        const visibleRows = [];
-        for (let i = prevCount; i < this.currentResults.length; i++) {
-            if (i >= pageStart && i < pageEnd) visibleRows.push({ row: this.currentResults[i], index: i });
-        }
-
-        // Update pagination metadata + bar without triggering a full re-render.
-        if (window.Pagination) {
-            Pagination.allResults   = this.currentResults;
-            Pagination.totalResults = this.currentResults.length;
-            const totalPages  = Pagination.getTotalPages();
-            const bar         = document.getElementById('paginationBar');
-            const pageNumbers = document.getElementById('pageNumbers');
-            if (bar && pageNumbers) {
-                if (totalPages > 1) {
-                    bar.style.display = 'grid';
-                    pageNumbers.innerHTML = Pagination._renderPageNumbers(totalPages);
-                } else {
-                    bar.style.display = 'none';
-                }
-            }
-        }
-
-        if (visibleRows.length === 0) return;
-
-        // Derive column/type info from the existing thead so row HTML matches exactly.
-        const fields       = Array.from(resultsTable.querySelectorAll('thead th[data-field]')).map(th => th.dataset.field);
-        const numericCols  = new Set(Array.from(resultsTable.querySelectorAll('thead th.numeric-col')).map(th => th.dataset.field));
-        const hasRawLog    = fields.includes('raw_log');
-
-        let html = '';
-        for (const { row: result, index } of visibleRows) {
-            const hasComments = window.Comments && Comments.hasComments(result);
-            html += `<tr class="${hasComments ? 'result-row has-comments' : 'result-row'}" data-index="${index}">`;
-            for (const field of fields) {
-                let value = result[field];
-                let cls   = field === 'timestamp' ? 'timestamp-cell'
-                          : field === 'raw_log'   ? 'raw-log-col'
-                          : numericCols.has(field) ? 'numeric-col' : '';
-                if (typeof value === 'object' && value !== null) {
-                    value = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(JSON.stringify(value))}</span>`;
-                    cls += ' json-cell';
-                } else if (value === undefined || value === null) {
-                    value = '-';
-                    cls += ' null-cell';
-                } else if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
-                    value = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(value)}</span>`;
-                    cls += ' json-cell';
-                } else {
-                    value = Utils.escapeHtml(String(value));
-                }
-                html += `<td class="${cls}">${value}</td>`;
-            }
-            html += (hasRawLog ? '' : '<td class="filler-col"></td>') + '</tr>';
-        }
-
-        tbody.insertAdjacentHTML('beforeend', html);
-
-        this.lazyHighlightJSON(resultsTable);
-        if (window.TimeBar) TimeBar.addRelativeTimeTooltips();
     },
 
     // Apply query metadata (SQL display, output type, container setup) shared by
@@ -713,9 +628,6 @@ const QueryExecutor = {
         const wrapBtn = document.getElementById('wrapToggleBtn');
         if (wrapBtn && this.currentResults && this.currentResults.length > 0) {
             wrapBtn.style.display = 'inline-block';
-            wrapBtn.classList.add('active');
-            const resultsTableEl = document.getElementById('resultsTable');
-            if (resultsTableEl) resultsTableEl.classList.add('table-wrap');
         }
 
         this._updateLoadMoreButton(data.has_more);
