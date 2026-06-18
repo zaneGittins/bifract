@@ -1821,20 +1821,22 @@ body.results-fullscreen .results-section {
     background: var(--bg-tertiary);
 }
 
-.results-container.table-wrap .results-table {
-    width: 100%;
+.results-container.table-wrap {
+    overflow-x: hidden;
 }
 
 .results-container.table-wrap .results-table td.raw-log-col {
     white-space: pre-wrap;
+    overflow: hidden;
+    text-overflow: clip;
     overflow-wrap: anywhere;
-    word-break: break-word;
 }
 
 .results-container.table-wrap .results-table td.raw-log-col .json-value {
     white-space: pre-wrap;
+    overflow: hidden;
+    text-overflow: clip;
     overflow-wrap: anywhere;
-    word-break: break-word;
 }
 
 /* Load More */
