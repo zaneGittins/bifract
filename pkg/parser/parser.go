@@ -204,7 +204,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				having := &HavingCondition{
 					Field:    "raw_log",
 					Operator: operator,
-					Value:    p.current().Value,
+					Value:    caseInsensitiveSearch(p.current().Value),
 					IsRegex:  true,
 				}
 				p.advance()
@@ -443,7 +443,7 @@ func (p *Parser) parseConditionsWithPrecedence(minPrecedence int) ([]ConditionNo
 			cond := &ConditionNode{
 				Field:    "raw_log",
 				Operator: "~",
-				Value:    p.current().Value,
+				Value:    caseInsensitiveSearch(p.current().Value),
 				IsRegex:  true,
 				Negate:   negate,
 				GroupID:  0,
@@ -920,7 +920,7 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 			cond := HavingCondition{
 				Field:    "raw_log",
 				Operator: operator,
-				Value:    p.current().Value,
+				Value:    caseInsensitiveSearch(p.current().Value),
 				IsRegex:  true,
 			}
 			p.advance()
@@ -1371,4 +1371,16 @@ func ParseQuery(query string) (*PipelineNode, error) {
 
 	parser := NewParser(tokens)
 	return parser.Parse()
+}
+
+// caseInsensitiveSearch wraps a bare-term raw_log search value with RE2's
+// case-insensitive flag. Typed words match case-insensitively by default (the
+// common analyst workflow); explicit /regex/ literals keep their own casing and
+// are only case-insensitive when written with the /i flag. The flag is not
+// double-applied if already present.
+func caseInsensitiveSearch(value string) string {
+	if strings.HasPrefix(value, "(?i)") {
+		return value
+	}
+	return "(?i)" + value
 }

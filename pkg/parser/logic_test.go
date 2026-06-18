@@ -22,10 +22,11 @@ var logicTestOpts = QueryOptions{
 
 // sqlFrag must be a substring that appears in the generated SQL.
 // Bare strings/regex always search raw_log regardless of surrounding conditions.
-// We use value-level fragments that are always present.
+// Case-insensitive raw_log searches route through lower(raw_log) so the n-gram
+// index can prune granules; field-qualified regex is left as a plain (?i) match.
 var termTypes = []termDef{
-	{"quoted_string", `"error"`, "'error')"},
-	{"regex", `/error/i`, "'(?i)error')"},
+	{"quoted_string", `"error"`, "match(lower(raw_log), 'error')"},
+	{"regex", `/error/i`, "match(lower(raw_log), 'error')"},
 	{"field_eq", `status="200"`, "fields.`status`::String = '200'"},
 	{"field_regex", `image=/powershell/i`, "'(?i)powershell')"},
 	{"field_neq", `user!="admin"`, "fields.`user`"},
@@ -226,12 +227,12 @@ func TestPipelineBooleanConditions(t *testing.T) {
 		{
 			name:    "string OR in pipeline",
 			query:   `* | "error" OR "warning"`,
-			wantSQL: []string{"match(raw_log, 'error')", "match(raw_log, 'warning')", " OR "},
+			wantSQL: []string{"match(lower(raw_log), 'error')", "match(lower(raw_log), 'warning')", " OR "},
 		},
 		{
 			name:    "string AND in pipeline",
 			query:   `* | "error" AND "warning"`,
-			wantSQL: []string{"match(raw_log, 'error')", "match(raw_log, 'warning')"},
+			wantSQL: []string{"match(lower(raw_log), 'error')", "match(lower(raw_log), 'warning')"},
 		},
 		{
 			name:    "NOT regex in pipeline",
@@ -241,7 +242,7 @@ func TestPipelineBooleanConditions(t *testing.T) {
 		{
 			name:    "NOT string in pipeline",
 			query:   `* | NOT "error"`,
-			wantSQL: []string{"NOT match(raw_log,"},
+			wantSQL: []string{"NOT match(lower(raw_log),"},
 		},
 		{
 			name:    "field OR in pipeline",
@@ -251,12 +252,12 @@ func TestPipelineBooleanConditions(t *testing.T) {
 		{
 			name:    "mixed string and field in pipeline",
 			query:   `* | "error" OR status="500"`,
-			wantSQL: []string{"match(raw_log, 'error')", "fields.`status`::String = '500'", " OR "},
+			wantSQL: []string{"match(lower(raw_log), 'error')", "fields.`status`::String = '500'", " OR "},
 		},
 		{
 			name:    "field AND string in pipeline",
 			query:   `* | status="200" AND "success"`,
-			wantSQL: []string{"fields.`status`::String = '200'", "match(raw_log, 'success')"},
+			wantSQL: []string{"fields.`status`::String = '200'", "match(lower(raw_log), 'success')"},
 		},
 		{
 			name:      "NOT field in pipeline",
@@ -267,7 +268,7 @@ func TestPipelineBooleanConditions(t *testing.T) {
 		{
 			name:    "NOT string then OR in pipeline",
 			query:   `* | NOT "error" OR "warning"`,
-			wantSQL: []string{"NOT match(raw_log,", " OR ", "match(raw_log, 'warning')"},
+			wantSQL: []string{"NOT match(lower(raw_log),", " OR ", "match(lower(raw_log), 'warning')"},
 		},
 		{
 			name:      "NOT field then AND in pipeline",
@@ -278,7 +279,7 @@ func TestPipelineBooleanConditions(t *testing.T) {
 		{
 			name:    "mid-compound NOT: string OR NOT string",
 			query:   `* | "error" OR NOT "warning"`,
-			wantSQL: []string{"match(raw_log, 'error')", "NOT match(raw_log,", " OR "},
+			wantSQL: []string{"match(lower(raw_log), 'error')", "NOT match(lower(raw_log),", " OR "},
 		},
 		{
 			name:      "mid-compound NOT: field OR NOT field",
@@ -314,22 +315,22 @@ func TestPipelineBooleanConditions(t *testing.T) {
 		{
 			name:    "paren group with strings in pipeline",
 			query:   `* | ("error" OR "warning") AND service="web"`,
-			wantSQL: []string{"match(raw_log, 'error')", "match(raw_log, 'warning')", "fields.`service`::String = 'web'"},
+			wantSQL: []string{"match(lower(raw_log), 'error')", "match(lower(raw_log), 'warning')", "fields.`service`::String = 'web'"},
 		},
 		{
 			name:    "regex OR field in pipeline",
 			query:   `* | /warn/i OR level="error"`,
-			wantSQL: []string{"match(raw_log, '(?i)warn')", "fields.`level`::String = 'error'", " OR "},
+			wantSQL: []string{"match(lower(raw_log), 'warn')", "fields.`level`::String = 'error'", " OR "},
 		},
 		{
 			name:    "multiple pipes with boolean",
 			query:   `service="web" | "error" OR "warning" | user="admin"`,
-			wantSQL: []string{"fields.`service`::String = 'web'", "match(raw_log, 'error')", "fields.`user` = 'admin'"},
+			wantSQL: []string{"fields.`service`::String = 'web'", "match(lower(raw_log), 'error')", "fields.`user` = 'admin'"},
 		},
 		{
 			name:    "chained pipeline with OR and AND",
 			query:   `* | "error" OR "warning" | status="500"`,
-			wantSQL: []string{"match(raw_log, 'error')", "match(raw_log, 'warning')", "fields.`status`::String = '500'"},
+			wantSQL: []string{"match(lower(raw_log), 'error')", "match(lower(raw_log), 'warning')", "fields.`status`::String = '500'"},
 		},
 		// Regression: A OR (B AND C) OR D in pipeline must not merge A and D
 		// into one group. All three OR branches must appear.
@@ -419,12 +420,12 @@ func TestOperatorPrecedence(t *testing.T) {
 		{
 			name:    "bare strings: OR then AND",
 			query:   `"A" OR "B" AND "C"`,
-			wantSQL: []string{"match(raw_log, 'A')", "match(raw_log, 'B')", "match(raw_log, 'C')", " OR "},
+			wantSQL: []string{"match(lower(raw_log), 'a')", "match(lower(raw_log), 'b')", "match(lower(raw_log), 'c')", " OR "},
 		},
 		{
 			name:    "mixed: string OR field AND field",
 			query:   `"A" OR status="200" AND service="web"`,
-			wantSQL: []string{"match(raw_log, 'A')", "fields.`status`::String = '200'", "fields.`service`::String = 'web'", " OR "},
+			wantSQL: []string{"match(lower(raw_log), 'a')", "fields.`status`::String = '200'", "fields.`service`::String = 'web'", " OR "},
 		},
 		{
 			name:    "explicit parens override precedence",

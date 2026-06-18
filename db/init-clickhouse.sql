@@ -30,7 +30,13 @@ CREATE TABLE IF NOT EXISTS logs (
     ),
     fractal_id LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3),
-    INDEX raw_log_inverted raw_log TYPE text(tokenizer = splitByNonAlpha, preprocessor = lower(raw_log)),
+    -- Character n-gram full-text index on lower(raw_log). Indexes the lowercased
+    -- expression (not the column) so the translator can route case-insensitive
+    -- substring/regex search to match(lower(raw_log), ...) and prune granules.
+    -- The n-gram tokenizer (unlike whole-word splitByNonAlpha) accelerates
+    -- arbitrary substring and regex matches. Single raw_log copy: only the index
+    -- stores the lowercased form, not a duplicate column.
+    INDEX raw_log_ngram_lc lower(raw_log) TYPE text(tokenizer = ngrams(3)) GRANULARITY 1,
     INDEX log_id_bloom log_id TYPE bloom_filter(0.001) GRANULARITY 1,
     INDEX ingest_ts_minmax ingest_timestamp TYPE minmax GRANULARITY 1,
     -- Skip indexes on normalized fields. Defined inline so all new parts are indexed
@@ -73,6 +79,17 @@ ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_operation          fields.operation
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_artifact           fields.artifact       TYPE set(64)            GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port       TYPE set(4096)          GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port       TYPE set(4096)          GRANULARITY 1;
+
+-- Replace the legacy word-tokenized raw_log index (splitByNonAlpha) with a
+-- character n-gram index on lower(raw_log). The old index could only match whole
+-- tokens, so substring/regex search ("test" matching "testing") fell back to a
+-- full scan; the n-gram index prunes granules for those. DROP/ADD INDEX are
+-- metadata-only and instant, so this is safe to run at startup. Existing parts are
+-- NOT indexed until MATERIALIZE INDEX runs; the bifract app submits that backfill
+-- asynchronously at startup (alter_sync=0) so it never blocks boot. To backfill
+-- manually: ALTER TABLE logs MATERIALIZE INDEX raw_log_ngram_lc;
+ALTER TABLE logs DROP INDEX IF EXISTS raw_log_inverted;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS raw_log_ngram_lc lower(raw_log) TYPE text(tokenizer = ngrams(3)) GRANULARITY 1;
 
 -- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
 -- Querying this instead of raw logs reduces the recent-logs histogram from a

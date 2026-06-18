@@ -4000,16 +4000,66 @@ func TestBuildRegexMatchSQL(t *testing.T) {
 			},
 		},
 		{
-			name:     "raw_log case-insensitive regex returns plain match",
+			name:     "raw_log case-insensitive regex routes through lower() with lowercased literal",
 			fieldRef: "raw_log",
 			pattern:  "(?i)Convert-GuidToCompressedGuid",
 			negate:   false,
 			wantParts: []string{
-				"match(raw_log, '(?i)Convert-GuidToCompressedGuid')",
+				"match(lower(raw_log), 'convert-guidtocompressedguid')",
 			},
 			wantNoParts: []string{
-				"hasToken",
+				"hasToken", "(?i)",
 			},
+		},
+		{
+			name:     "raw_log ci character-class range lowers cleanly",
+			fieldRef: "raw_log",
+			pattern:  "(?i)[A-Z]error",
+			negate:   false,
+			wantParts: []string{
+				"match(lower(raw_log), '[a-z]error')",
+			},
+			wantNoParts: []string{"(?i)"},
+		},
+		{
+			name:     "raw_log ci preserves class/anchor escapes when lowering",
+			fieldRef: "raw_log",
+			pattern:  `(?i)\d+\D`,
+			negate:   false,
+			wantParts: []string{
+				`match(lower(raw_log), '\\d+\\D')`,
+			},
+			wantNoParts: []string{"(?i)"},
+		},
+		{
+			name:     "raw_log ci falls back to plain (?i) match on unsafe group",
+			fieldRef: "raw_log",
+			pattern:  "(?i)foo(?:bar)",
+			negate:   false,
+			wantParts: []string{
+				"match(raw_log, '(?i)foo(?:bar)')",
+			},
+			wantNoParts: []string{"lower(raw_log)"},
+		},
+		{
+			name:     "raw_log ci falls back to plain (?i) match on hex escape",
+			fieldRef: "raw_log",
+			pattern:  `(?i)\x41`,
+			negate:   false,
+			wantParts: []string{
+				`match(raw_log, '(?i)\\x41')`,
+			},
+			wantNoParts: []string{"lower(raw_log)"},
+		},
+		{
+			name:     "raw_log ci negated routes through lower()",
+			fieldRef: "raw_log",
+			pattern:  "(?i)Error",
+			negate:   true,
+			wantParts: []string{
+				"NOT match(lower(raw_log), 'error')",
+			},
+			wantNoParts: []string{"(?i)"},
 		},
 		{
 			name:     "negated regex returns NOT match",
@@ -4080,10 +4130,10 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 		wantNotContain []string
 	}{
 		{
-			name:  "bare case-insensitive regex on raw_log uses plain match",
+			name:  "bare case-insensitive regex on raw_log routes through lower()",
 			query: "/Convert-GuidToCompressedGuid/i",
 			wantContain: []string{
-				"match(raw_log, '(?i)Convert-GuidToCompressedGuid')",
+				"match(lower(raw_log), 'convert-guidtocompressedguid')",
 			},
 			wantNotContain: []string{
 				"hasToken",
@@ -4100,10 +4150,10 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			},
 		},
 		{
-			name:  "bare string search on raw_log uses plain match",
+			name:  "bare string search on raw_log routes through lower()",
 			query: `"powershell.exe"`,
 			wantContain: []string{
-				"match(raw_log,",
+				"match(lower(raw_log),",
 			},
 			wantNotContain: []string{
 				"hasToken(raw_log",
@@ -4113,8 +4163,8 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			name:  "bare strings with OR get correct OR logic",
 			query: `"prod-billing-9" OR "prod-billing-10"`,
 			wantContain: []string{
-				"match(raw_log, 'prod-billing-9')",
-				"match(raw_log, 'prod-billing-10')",
+				"match(lower(raw_log), 'prod-billing-9')",
+				"match(lower(raw_log), 'prod-billing-10')",
 				" OR ",
 			},
 		},
@@ -4122,17 +4172,17 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			name:  "bare strings with AND get correct AND logic",
 			query: `"prod-billing-9" AND "prod-billing-10"`,
 			wantContain: []string{
-				"match(raw_log, 'prod-billing-9')",
-				"match(raw_log, 'prod-billing-10')",
+				"match(lower(raw_log), 'prod-billing-9')",
+				"match(lower(raw_log), 'prod-billing-10')",
 			},
 		},
 		{
 			name:  "three bare strings with OR",
 			query: `"foo" OR "bar" OR "baz"`,
 			wantContain: []string{
-				"match(raw_log, 'foo')",
-				"match(raw_log, 'bar')",
-				"match(raw_log, 'baz')",
+				"match(lower(raw_log), 'foo')",
+				"match(lower(raw_log), 'bar')",
+				"match(lower(raw_log), 'baz')",
 				" OR ",
 			},
 		},
@@ -4140,7 +4190,7 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			name:  "bare strings with OR in pipeline are grouped",
 			query: `* | service="test" | "A" OR "B" | user=/admin/i`,
 			wantContain: []string{
-				"match(raw_log, 'A') OR match(raw_log, 'B')",
+				"match(lower(raw_log), 'a') OR match(lower(raw_log), 'b')",
 				"service",
 				"match(fields.`user`, '(?i)admin')",
 			},
@@ -4149,7 +4199,7 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			name:  "bare strings with AND in pipeline are grouped",
 			query: `* | service="test" | "A" AND "B" | user=/admin/i`,
 			wantContain: []string{
-				"match(raw_log, 'A') AND match(raw_log, 'B')",
+				"match(lower(raw_log), 'a') AND match(lower(raw_log), 'b')",
 				"service",
 				"match(fields.`user`, '(?i)admin')",
 			},

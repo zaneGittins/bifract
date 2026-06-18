@@ -1168,6 +1168,116 @@ func (c *ClickHouseClient) dropExpiredHotPartitions(ctx context.Context) {
 	}
 }
 
+// RawLogIndexName is the lower(raw_log) n-gram text index (migration 005) used to
+// accelerate case-insensitive substring/regex search on raw_log.
+const RawLogIndexName = "raw_log_ngram_lc"
+
+// rawLogIndexBackfillLockID is a Postgres advisory-lock id that ensures only one
+// replica submits the one-time MATERIALIZE INDEX backfill. Distinct from the
+// schema-init lock ("bifract\0").
+const rawLogIndexBackfillLockID int64 = 0x6269667261637401 // "bifract\x01"
+
+// StartRawLogIndexBackfill materializes the lower(raw_log) n-gram index on parts
+// written before the index existed, so historical data benefits from granule
+// pruning. It never blocks startup:
+//
+//   - Schema init adds the index as metadata only (instant). Older parts carry no
+//     index data until MATERIALIZE INDEX rebuilds them, which can take hours on
+//     large tables, so the rebuild runs here in a background goroutine.
+//   - The ALTER is submitted with alter_sync=0, so it returns as soon as the
+//     mutation is queued and ClickHouse rebuilds parts asynchronously.
+//   - A Postgres advisory lock ensures only one replica submits it. Submitting is
+//     skipped when a matching mutation already exists; re-running would be cheap
+//     anyway because ClickHouse skips parts that already carry the index.
+//
+// pg may be nil, in which case the system.mutations existence check is the only
+// guard (sufficient for single-replica deployments).
+func (c *ClickHouseClient) StartRawLogIndexBackfill(ctx context.Context, pg *PostgresClient) {
+	go func() {
+		if pg != nil {
+			unlock, ok := pg.TryAdvisoryLock(ctx, rawLogIndexBackfillLockID)
+			if !ok {
+				return // another replica owns the backfill
+			}
+			defer unlock()
+		}
+
+		exists, err := c.indexMutationExists(ctx, RawLogIndexName)
+		if err != nil {
+			log.Printf("[IndexBackfill] check existing mutation: %v", err)
+			return
+		}
+		if exists {
+			return // already submitted (running or finished)
+		}
+		if err := c.submitMaterializeIndex(ctx, RawLogIndexName); err != nil {
+			log.Printf("[IndexBackfill] submit MATERIALIZE INDEX %s: %v", RawLogIndexName, err)
+			return
+		}
+		log.Printf("[IndexBackfill] submitted MATERIALIZE INDEX %s; backfilling existing parts in the background", RawLogIndexName)
+		c.awaitIndexMutation(ctx, RawLogIndexName)
+	}()
+}
+
+// indexMutationExists reports whether a MATERIALIZE INDEX mutation for idx already
+// exists for the logs table (running or finished).
+func (c *ClickHouseClient) indexMutationExists(ctx context.Context, idx string) (bool, error) {
+	var n uint64
+	q := fmt.Sprintf(
+		"SELECT count() FROM system.mutations WHERE database = currentDatabase() AND table = 'logs' AND command LIKE '%%MATERIALIZE INDEX %s%%'",
+		idx,
+	)
+	if err := c.conn.QueryRow(ctx, q).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// submitMaterializeIndex queues an asynchronous MATERIALIZE INDEX (alter_sync=0)
+// so the call returns immediately while ClickHouse rebuilds parts in the background.
+func (c *ClickHouseClient) submitMaterializeIndex(ctx context.Context, idx string) error {
+	sql := "ALTER TABLE logs"
+	if c.IsCluster() {
+		sql += c.OnClusterSQL()
+	}
+	sql += fmt.Sprintf(" MATERIALIZE INDEX %s", idx)
+	actx := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"alter_sync":     0,
+		"mutations_sync": 0,
+	}))
+	return c.conn.Exec(actx, sql)
+}
+
+// awaitIndexMutation polls mutation progress for logging only; the mutation
+// proceeds server-side regardless of this goroutine's lifetime.
+func (c *ClickHouseClient) awaitIndexMutation(ctx context.Context, idx string) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	q := fmt.Sprintf(
+		"SELECT countIf(is_done = 0), toInt64(sum(parts_to_do)) FROM system.mutations"+
+			" WHERE database = currentDatabase() AND table = 'logs' AND command LIKE '%%MATERIALIZE INDEX %s%%'",
+		idx,
+	)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			var pending uint64
+			var remaining int64
+			if err := c.conn.QueryRow(ctx, q).Scan(&pending, &remaining); err != nil {
+				log.Printf("[IndexBackfill] poll progress: %v", err)
+				return
+			}
+			if pending == 0 {
+				log.Printf("[IndexBackfill] MATERIALIZE INDEX %s complete", idx)
+				return
+			}
+			log.Printf("[IndexBackfill] MATERIALIZE INDEX %s in progress (%d parts remaining)", idx, remaining)
+		}
+	}
+}
+
 // SyncJSONTypeHints merges extraFields into the type hints declared on the
 // fields JSON column and adds bloom_filter skip indexes for any newly added
 // fields. It is a no-op when all requested fields are already hinted.

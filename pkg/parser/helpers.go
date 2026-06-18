@@ -904,19 +904,88 @@ func extractLiteralTokens(pattern string) []string {
 	return result
 }
 
+// rawLogColumn is the bare ClickHouse column holding the full log line. It carries
+// the lower(raw_log) n-gram text index, so case-insensitive searches against it are
+// rewritten to match(lower(raw_log), ...) to enable granule pruning.
+const rawLogColumn = "raw_log"
+
+// caseInsensitiveFlag is RE2's inline case-insensitivity flag, prepended to a
+// pattern by the lexer for /regex/i and by the parser for bare-term searches.
+const caseInsensitiveFlag = "(?i)"
+
 // buildRegexMatchSQL returns a match() expression for use in WHERE clauses.
-// We do NOT add explicit hasToken pre-filters here: hasToken requires an exact
-// complete token, but regex is a substring match. A pattern like /http/ matches
-// "https://..." but hasToken(raw_log, 'http') = FALSE (the token is "https").
-// Adding hasToken as a mandatory AND causes false negatives. ClickHouse's own
-// tokenbf_v1 index already prunes granules for match() automatically — that
-// built-in optimization is sufficient and correct.
+//
+// For case-insensitive searches on raw_log we emit match(lower(raw_log), <lowered
+// pattern>) rather than match(raw_log, '(?i)...'). ClickHouse cannot use a text
+// index when the (?i) inline flag is present, so the (?i) form always scans; the
+// lower(raw_log) form aligns with the lower(raw_log) n-gram index and prunes
+// granules while returning identical results (the indexed column is lowercased,
+// the pattern's literals are lowercased to match). When the pattern contains a
+// construct that byte-wise lowering cannot safely transform, we fall back to the
+// plain (?i) match (correct, just unaccelerated).
+//
+// We do NOT add explicit hasToken pre-filters: hasToken requires an exact complete
+// token, but regex/substring search is not token-aligned (/http/ matches
+// "https://..." but hasToken(raw_log,'http') = FALSE), which would cause false
+// negatives. The text index prunes match() automatically and correctly.
 func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, _ bool) string {
-	matchExpr := fmt.Sprintf("match(%s, %s)", fieldRef, escapeRegexForClickHouse(pattern))
+	matchExpr := buildMatchExpr(fieldRef, pattern)
 	if negate {
 		return "NOT " + matchExpr
 	}
 	return matchExpr
+}
+
+// buildMatchExpr builds the match() call, routing case-insensitive raw_log
+// searches through lower(raw_log) so the n-gram text index can be used.
+func buildMatchExpr(fieldRef, pattern string) string {
+	if fieldRef == rawLogColumn && strings.HasPrefix(pattern, caseInsensitiveFlag) {
+		if lowered, ok := lowerRegexForLowercasedColumn(pattern[len(caseInsensitiveFlag):]); ok {
+			return fmt.Sprintf("match(lower(%s), %s)", rawLogColumn, escapeRegexForClickHouse(lowered))
+		}
+	}
+	return fmt.Sprintf("match(%s, %s)", fieldRef, escapeRegexForClickHouse(pattern))
+}
+
+// lowerRegexForLowercasedColumn lowercases the literal portions of an RE2 pattern
+// so it matches correctly against a lowercased column (lower(raw_log)). The (?i)
+// flag must already be stripped by the caller. On lowercased data this is
+// equivalent to a case-insensitive match: literals and contiguous letter ranges
+// ([A-Z] -> [a-z]) lower cleanly, and class/anchor escapes (\d \w \s \b \. ...)
+// are preserved by copying the byte after a backslash verbatim.
+//
+// It returns ok=false when the pattern contains a construct whose meaning byte-wise
+// lowering would change, so the caller falls back to a plain (?i) match:
+//   - hex/unicode-property/octal/backreference escapes: \xNN, \pX, \PX, \1..\9
+//   - inline-flag, named, or non-capturing groups: (?...) — flag letters and
+//     named-group identifiers must not be lowercased.
+func lowerRegexForLowercasedColumn(pattern string) (string, bool) {
+	var b strings.Builder
+	b.Grow(len(pattern))
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		switch {
+		case c == '\\':
+			if i+1 >= len(pattern) {
+				b.WriteByte(c)
+				continue
+			}
+			next := pattern[i+1]
+			if next == 'x' || next == 'p' || next == 'P' || (next >= '0' && next <= '9') {
+				return "", false
+			}
+			b.WriteByte(c)
+			b.WriteByte(next) // preserve escape letter (\D stays \D, not \d)
+			i++
+		case c == '(' && i+1 < len(pattern) && pattern[i+1] == '?':
+			return "", false
+		case c >= 'A' && c <= 'Z':
+			b.WriteByte(c + ('a' - 'A'))
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String(), true
 }
 
 // patternHasAlternation returns true if the regex pattern contains | outside

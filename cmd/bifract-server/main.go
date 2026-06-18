@@ -223,6 +223,11 @@ func main() {
 	db.StartHotTableCleaner(hotCleanerCtx)
 	log.Println("Hot table cleaner started")
 
+	// Backfill the lower(raw_log) n-gram index on parts that predate it. Runs
+	// asynchronously (alter_sync=0, advisory-locked to one replica) so the heavy
+	// MATERIALIZE INDEX never blocks startup or trips the readiness probe.
+	db.StartRawLogIndexBackfill(context.Background(), pg)
+
 	// Load custom schema fields from Postgres and reconcile ClickHouse schema.
 	// SetCustomTypeHintedFields runs synchronously so the parser is ready before
 	// the first query. ReconcileSchemaFields (MODIFY COLUMN) runs in the background
