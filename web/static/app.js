@@ -1197,12 +1197,7 @@ const App = {
         });
 
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                closeAll();
-                if (document.body.classList.contains('results-fullscreen')) {
-                    QueryExecutor.toggleFullscreen();
-                }
-            }
+            if (e.key === 'Escape') closeAll();
         });
     }
 };

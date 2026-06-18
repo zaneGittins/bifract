@@ -418,6 +418,7 @@ const QueryExecutor = {
         let pendingRender = false;
         let timeRange = this.currentTimeRange;
         let histogram = null;
+
         const scheduleRender = () => {
             if (pendingRender) return;
             pendingRender = true;
@@ -1092,8 +1093,7 @@ const QueryExecutor = {
                         ...logData._all_fields,
                         timestamp: logData.timestamp,
                         log_id: logData.log_id,
-                        fractal_id: logData.fractal_id,
-                        _shard_num: logData._shard_num
+                        fractal_id: logData.fractal_id
                     };
                 }
 
@@ -1627,8 +1627,7 @@ const QueryExecutor = {
                                 ...logData._all_fields,
                                 timestamp: logData.timestamp,
                                 log_id: logData.log_id,
-                                fractal_id: logData.fractal_id,
-                                _shard_num: logData._shard_num
+                                fractal_id: logData.fractal_id
                             };
                         }
                         LogDetail.show(detailData, options.isAggregated || false);
@@ -1774,15 +1773,6 @@ const QueryExecutor = {
             };
         }
         return null;
-    },
-
-    toggleFullscreen() {
-        const isFullscreen = document.body.classList.toggle('results-fullscreen');
-        const btn = document.getElementById('fullscreenBtn');
-        if (btn) {
-            btn.querySelector('.fs-expand-icon').style.display = isFullscreen ? 'none' : '';
-            btn.querySelector('.fs-compress-icon').style.display = isFullscreen ? '' : 'none';
-        }
     },
 
     toggleWrap() {
