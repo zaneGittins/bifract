@@ -1825,10 +1825,6 @@ body.results-fullscreen .results-section {
     width: 100%;
 }
 
-.results-container.table-wrap .results-table td {
-    vertical-align: top;
-}
-
 .results-container.table-wrap .results-table td.raw-log-col {
     white-space: pre-wrap;
     overflow: hidden;
