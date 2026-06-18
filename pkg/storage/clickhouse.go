@@ -215,12 +215,18 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string) error {
 					continue
 				}
 				stmt = c.RewriteEngine(stmt)
-				if execErr := hostConn.Exec(ctx, stmt); execErr != nil {
+				stmtCtx, stmtCancel := context.WithTimeout(ctx, 20*time.Second)
+				execErr := hostConn.Exec(stmtCtx, stmt)
+				stmtCancel()
+				if execErr != nil {
 					log.Printf("Warning: schema sync on %s: %v", addr, execErr)
 				}
 			}
 			for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL} {
-				if execErr := hostConn.Exec(ctx, stmt); execErr != nil {
+				stmtCtx, stmtCancel := context.WithTimeout(ctx, 20*time.Second)
+				execErr := hostConn.Exec(stmtCtx, stmt)
+				stmtCancel()
+				if execErr != nil {
 					log.Printf("Warning: distributed table sync on %s: %v", addr, execErr)
 				}
 			}

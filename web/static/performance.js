@@ -181,7 +181,7 @@ const Performance = {
             }
 
             if (procPromise) {
-                const procData = await procPromise.json();
+                const procData = await (await procPromise).json();
                 if (procData.success) this.renderProcesses(procData.processes || []);
             }
 
