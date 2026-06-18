@@ -888,10 +888,15 @@ func (c *ClickHouseClient) QueryRow(ctx context.Context, query string, args ...i
 	return c.conn.QueryRow(ctx, query, args...)
 }
 
-// GetLogByTimestamp fetches a single log by log_id with an optional fractal_id
-// scope. When fractalID is non-empty the query is restricted to that fractal
-// (used by comment creation to prevent cross-fractal log_id probing). When
-// empty, the lookup is unscoped and the caller must enforce access control.
+// GetLogByTimestamp fetches a single log by log_id, optionally pinned by an
+// exact timestamp and/or scoped to a fractal. The log table is
+// ORDER BY (timestamp, log_id) and PARTITION BY (fractal_id, toDate(timestamp)),
+// so a non-zero timestamp prunes to a single date partition and pins the primary
+// index, and a non-empty fractalID prunes to that fractal's partitions - either
+// predicate turns a whole-table scan into a near-pinpoint read. Callers that
+// must read the log's own fractal_id for access control pass an empty fractalID
+// and verify afterwards. A zero timestamp is omitted (used by comment creation,
+// which resolves the timestamp from the matched row).
 func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time.Time, logID string, fractalID string) (map[string]interface{}, error) {
 	if logID == "" {
 		return nil, fmt.Errorf("log_id is required")
@@ -902,6 +907,10 @@ func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time
 		c.ReadTable())
 	args := []interface{}{logID}
 
+	if !timestamp.IsZero() {
+		query += " AND timestamp = ?"
+		args = append(args, timestamp)
+	}
 	if fractalID != "" {
 		query += " AND fractal_id = ?"
 		args = append(args, fractalID)
@@ -990,55 +999,32 @@ func (c *ClickHouseClient) scanLogRow(ctx context.Context, query string, args []
 	return row, nil
 }
 
-// GetLogFieldsByID fetches the parsed fields for a single log. When ts is
-// non-zero it is added as an exact-match predicate: because the log table is
+// GetLogFieldsByID fetches the parsed fields for a single log by an exact
+// (timestamp, log_id) key, optionally scoped to a fractal. The log table is
 // ORDER BY (timestamp, log_id) and PARTITION BY (fractal_id, toDate(timestamp)),
-// an equality on timestamp prunes to a single date partition and pins the
-// primary index to one granule, turning a full-table bloom-filter scan into a
-// near-pinpoint read. The frontend supplies the exact ClickHouse timestamp from
-// the search result (not round-tripped through Postgres), so it bit-matches the
-// DateTime64(3) value.
+// so the timestamp equality prunes to a single date partition and pins the
+// primary index to one granule, and a non-empty fractalID prunes to one
+// fractal - turning a whole-table bloom-filter scan into a near-pinpoint read.
+// The frontend supplies the exact ClickHouse timestamp from the search result,
+// so it bit-matches the DateTime64(3) value.
 //
-// If the timestamped lookup returns nothing (e.g. a caller passed a stale or
-// reformatted timestamp), it transparently falls back to the log_id-only scan
-// so correctness never regresses.
-//
-// fractalID is normally left empty by callers that must read the log's own
-// fractal_id and verify it against the session's accessible set afterwards
-// (this is what keeps the lookup correct for both fractal and prism sessions).
+// The timestamp is required: this is the single, deterministic lookup path. A
+// non-empty fractalID is normally left to the caller, which either passes a
+// session-validated value as a partition-pruning filter or leaves it empty and
+// verifies the row's own fractal_id against the accessible set afterwards.
+// Returns nil (no error) when no matching row exists.
 func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, ts time.Time, fractalID string) (map[string]interface{}, error) {
 	if logID == "" {
 		return nil, fmt.Errorf("log_id is required")
 	}
-
-	if !ts.IsZero() {
-		entry, err := c.queryLogFields(ctx, logID, ts, fractalID)
-		if err != nil {
-			return nil, err
-		}
-		if entry != nil {
-			return entry, nil
-		}
-		// Fall through to the untimed scan: the timestamp didn't match a row
-		// (stale/reformatted value), so don't fail-closed on it.
-		log.Printf("[GetLogFieldsByID] timestamp exact-match missed for log_id=%s ts=%s, falling back to full scan", logID, ts.UTC().Format("2006-01-02 15:04:05.000"))
+	if ts.IsZero() {
+		return nil, fmt.Errorf("timestamp is required")
 	}
 
-	return c.queryLogFields(ctx, logID, time.Time{}, fractalID)
-}
-
-// queryLogFields runs a single-row field lookup. A non-zero ts adds an exact
-// timestamp predicate; a non-empty fractalID scopes the lookup. Returns nil
-// (no error) when no matching row exists.
-func (c *ClickHouseClient) queryLogFields(ctx context.Context, logID string, ts time.Time, fractalID string) (map[string]interface{}, error) {
 	query := fmt.Sprintf(
-		"SELECT log_id, fractal_id, toString(fields) AS fields FROM %s WHERE log_id = ?",
+		"SELECT log_id, fractal_id, toString(fields) AS fields FROM %s WHERE log_id = ? AND timestamp = ?",
 		c.ReadTable())
-	args := []interface{}{logID}
-	if !ts.IsZero() {
-		query += " AND timestamp = ?"
-		args = append(args, ts)
-	}
+	args := []interface{}{logID, ts}
 	if fractalID != "" {
 		query += " AND fractal_id = ?"
 		args = append(args, fractalID)

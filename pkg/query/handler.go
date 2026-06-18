@@ -1329,6 +1329,7 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 	var req struct {
 		Timestamp string `json:"timestamp"`
 		LogID     string `json:"log_id,omitempty"`
+		FractalID string `json:"fractal_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -1375,7 +1376,13 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	logEntry, err := h.db.GetLogByTimestamp(r.Context(), timestamp, req.LogID, "")
+	// Use the client-supplied fractal_id as a partition-pruning filter, but only
+	// after confirming it is in the caller's accessible set (admins may use any).
+	// An invalid or absent value falls back to an unscoped lookup; the post-fetch
+	// verification below is the authoritative access check either way.
+	scopeFractalID := scopedFractalFilter(req.FractalID, accessible, isAdmin)
+
+	logEntry, err := h.db.GetLogByTimestamp(r.Context(), timestamp, req.LogID, scopeFractalID)
 	if err != nil {
 		log.Printf("[QueryHandler] Failed to fetch log: %v", err)
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -1435,12 +1442,19 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Optional timestamp from the search result. When present it turns the
-	// lookup from a whole-table bloom-filter scan into a near-pinpoint read
-	// (timestamp is the leading sort key and part of the partition key). A
-	// malformed or missing value is ignored, not an error: GetLogFieldsByID
-	// falls back to the log_id-only scan.
+	// The exact timestamp from the search result is required: it is the leading
+	// sort key and part of the partition key, so it turns the lookup from a
+	// whole-table bloom-filter scan into a near-pinpoint read. There is a single,
+	// deterministic lookup path (no log_id-only fallback), so a missing or
+	// malformed timestamp is a client error rather than a slow-path trigger.
 	ts := parseLogTimestamp(r.URL.Query().Get("timestamp"))
+	if ts.IsZero() {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "valid timestamp is required",
+		})
+		return
+	}
 
 	user, _ := r.Context().Value("user").(*storage.User)
 	accessible, err := h.accessibleFractalIDs(r)
@@ -1462,10 +1476,14 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Fetch without fractal filter, then verify the log's fractal_id is in the
-	// accessible set. This correctly handles prism sessions (multiple fractals)
-	// without trusting anything from the request body.
-	logEntry, err := h.db.GetLogFieldsByID(r.Context(), logID, ts, "")
+	// Use the client-supplied fractal_id as a partition-pruning filter, but only
+	// after confirming it is in the caller's accessible set (admins may use any).
+	// An invalid or absent value falls back to an unscoped lookup; the post-fetch
+	// verification below remains the authoritative access check and keeps this
+	// correct for prism sessions (multiple fractals) without trusting the client.
+	scopeFractalID := scopedFractalFilter(r.URL.Query().Get("fractal_id"), accessible, isAdmin)
+
+	logEntry, err := h.db.GetLogFieldsByID(r.Context(), logID, ts, scopeFractalID)
 	if err != nil {
 		log.Printf("[QueryHandler] HandleGetLogFields: failed to fetch fields: %v", err)
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -1538,6 +1556,27 @@ func parseLogTimestamp(s string) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+// scopedFractalFilter validates a client-supplied fractal_id for use as a
+// partition-pruning filter on a single-log lookup. It returns the value only
+// when the caller is an admin or the value is in the session's accessible set;
+// otherwise it returns "" so the lookup runs unscoped and the caller's
+// post-fetch access check stays authoritative. This lets the fast path prune to
+// one fractal partition without ever trusting the client for access control.
+func scopedFractalFilter(requested string, accessible []string, isAdmin bool) string {
+	if requested == "" {
+		return ""
+	}
+	if isAdmin {
+		return requested
+	}
+	for _, id := range accessible {
+		if id == requested {
+			return requested
+		}
+	}
+	return ""
 }
 
 // accessibleFractalIDs returns the list of fractal IDs the current session is
