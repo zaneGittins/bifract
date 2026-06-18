@@ -228,6 +228,13 @@ const QueryExecutor = {
         const profilePanel = document.getElementById('profilePanel');
         if (profilePanel) { profilePanel.style.display = 'none'; profilePanel.innerHTML = ''; }
 
+        // Reset toolbar buttons and wrap state for new query
+        const exportBtnReset = document.getElementById('exportCsvBtn');
+        if (exportBtnReset) exportBtnReset.style.display = 'none';
+        const wrapBtnReset = document.getElementById('wrapToggleBtn');
+        if (wrapBtnReset) { wrapBtnReset.style.display = 'none'; wrapBtnReset.classList.remove('active'); }
+        if (elements.resultsTable) elements.resultsTable.classList.remove('table-wrap');
+
         // Reset chart/graph container so loading spinner is visible
         const chartContainer = document.getElementById('chartContainer');
         if (chartContainer) chartContainer.style.display = 'none';

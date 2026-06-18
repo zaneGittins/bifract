@@ -1821,6 +1821,10 @@ body.results-fullscreen .results-section {
     background: var(--bg-tertiary);
 }
 
+.results-container.table-wrap .results-table {
+    width: 100%;
+}
+
 .results-container.table-wrap .results-table td {
     vertical-align: top;
 }
