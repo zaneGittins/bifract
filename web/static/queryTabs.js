@@ -149,6 +149,9 @@ const QueryTabs = {
         if (wrapBtn) { wrapBtn.style.display = 'none'; wrapBtn.classList.remove('active'); }
         const resultsTable = document.getElementById('resultsTable');
         if (resultsTable) resultsTable.classList.remove('table-wrap');
+        if (document.body.classList.contains('results-fullscreen')) {
+            if (window.QueryExecutor) QueryExecutor.toggleFullscreen();
+        }
         const outputLabel = document.getElementById('outputTypeLabel');
         if (outputLabel) outputLabel.textContent = 'Table';
     },

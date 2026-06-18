@@ -629,6 +629,9 @@ const QueryExecutor = {
         const wrapBtn = document.getElementById('wrapToggleBtn');
         if (wrapBtn && this.currentResults && this.currentResults.length > 0) {
             wrapBtn.style.display = 'inline-block';
+            wrapBtn.classList.add('active');
+            const resultsTableEl = document.getElementById('resultsTable');
+            if (resultsTableEl) resultsTableEl.classList.add('table-wrap');
         }
 
         this._updateLoadMoreButton(data.has_more);
@@ -1018,6 +1021,10 @@ const QueryExecutor = {
         }
 
         const hasRawLog = fields.includes('raw_log');
+
+        // Hide log_id from the display when raw_log is present (default source-event view).
+        // log_id stays in the row data so the detail pane can still fetch by it.
+        if (hasRawLog) fields = fields.filter(f => f !== 'log_id');
 
         // Build table with sortable headers
         const numericFields = new Set(fields.filter(field =>
@@ -1783,6 +1790,15 @@ const QueryExecutor = {
         if (!container || !btn) return;
         const active = container.classList.toggle('table-wrap');
         btn.classList.toggle('active', active);
+    },
+
+    toggleFullscreen() {
+        const isFs = document.body.classList.toggle('results-fullscreen');
+        const btn = document.getElementById('fullscreenBtn');
+        if (btn) {
+            btn.querySelector('.fs-expand-icon').style.display = isFs ? 'none' : '';
+            btn.querySelector('.fs-compress-icon').style.display = isFs ? '' : 'none';
+        }
     },
 
     exportToCsv() {
