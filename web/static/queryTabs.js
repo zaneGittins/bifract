@@ -145,6 +145,10 @@ const QueryTabs = {
         if (execTime) execTime.textContent = '';
         const csvBtn = document.getElementById('exportCsvBtn');
         if (csvBtn) csvBtn.style.display = 'none';
+        const wrapBtn = document.getElementById('wrapToggleBtn');
+        if (wrapBtn) { wrapBtn.style.display = 'none'; wrapBtn.classList.remove('active'); }
+        const resultsTable = document.getElementById('resultsTable');
+        if (resultsTable) resultsTable.classList.remove('table-wrap');
         const outputLabel = document.getElementById('outputTypeLabel');
         if (outputLabel) outputLabel.textContent = 'Table';
     },

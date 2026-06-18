@@ -773,7 +773,7 @@ func buildHistogramLayers(plan *QueryPlan, ctx *CommandContext) {
 func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAssignments []AssignmentNode) []SelectExpr {
 	if len(selectFields) == 0 {
 		return []SelectExpr{
-			{Expr: "formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as timestamp"},
+			{Expr: "toString(timestamp) as timestamp"},
 			{Expr: "raw_log"},
 			{Expr: "fields"},
 		}
@@ -783,7 +783,7 @@ func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAss
 	for _, field := range selectFields {
 		alias := extractFieldAlias(field)
 		if alias == "timestamp" {
-			formatters = append(formatters, SelectExpr{Expr: "formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as timestamp"})
+			formatters = append(formatters, SelectExpr{Expr: "toString(timestamp) as timestamp"})
 		} else if alias != "" {
 			formatters = append(formatters, SelectExpr{Expr: alias})
 		}

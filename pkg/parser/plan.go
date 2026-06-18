@@ -163,7 +163,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		}
 		selectClause = strings.Join(parts, ", ")
 	} else {
-		selectClause = "formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as timestamp, raw_log, log_id"
+		selectClause = "toString(timestamp) as timestamp, raw_log, log_id"
 	}
 
 	var sql strings.Builder
