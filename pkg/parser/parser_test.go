@@ -280,8 +280,13 @@ func extractWhere(sql string) string {
 	// The standard prefix ends with "AND " after the timestamp/fractal clauses.
 	// Find the last standard "AND " before user conditions by looking for the
 	// pattern after the timestamp range.
-	const orderBy = " ORDER BY"
-	end := strings.Index(sql, orderBy)
+	// ORDER BY may be inside the inner subquery or on the outer formatter SELECT
+	// (after the fix that lifts ORDER BY to the formatter outer for streaming).
+	// Prefer ") ORDER BY" so the closing subquery paren is not captured.
+	end := strings.Index(sql, ") ORDER BY")
+	if end < 0 {
+		end = strings.Index(sql, " ORDER BY")
+	}
 	if end < 0 {
 		end = len(sql)
 	}
