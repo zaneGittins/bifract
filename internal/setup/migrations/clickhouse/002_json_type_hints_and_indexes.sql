@@ -1,41 +1,17 @@
--- Add JSON type hints for default normalized fields.
--- Type hints guarantee dedicated sub-column storage regardless of the
--- max_dynamic_paths limit, preventing overflow-bucket I/O on high-cardinality
--- deployments. MODIFY COLUMN schedules a background mutation on existing parts.
-ALTER TABLE logs MODIFY COLUMN fields JSON(
-    max_dynamic_paths=1024,
-    `computer_name`      String,
-    `user`               String,
-    `src_ip`             String,
-    `dst_ip`             String,
-    `src_port`           String,
-    `dst_port`           String,
-    `commandline`        String,
-    `hash`               String,
-    `event_id`           String,
-    `image`              String,
-    `parent_image`       String,
-    `call_chain`         String,
-    `operation`          String,
-    `artifact`           String,
-    `query`              String,
-    `original_file_name` String
-);
-
--- Add skip indexes for normalized fields. IF NOT EXISTS makes these idempotent.
--- New parts are indexed automatically; on large production tables run
--- MATERIALIZE INDEX for each during off-peak hours to backfill existing parts.
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_ip             fields.src_ip             TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_ip             fields.dst_ip             TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_computer_name      fields.computer_name      TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_user               fields.user               TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_hash               fields.hash               TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_image              fields.image              TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_parent_image       fields.parent_image       TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_original_file_name fields.original_file_name TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_query              fields.query              TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_event_id           fields.event_id           TYPE set(256)           GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_operation          fields.operation          TYPE set(64)            GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_artifact           fields.artifact           TYPE set(64)            GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port           TYPE set(1024)          GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port           TYPE set(1024)          GRANULARITY 1;
+-- Migration 002: neutralized (was: JSON type hints + skip indexes).
+--
+-- The original migration ran ALTER TABLE logs MODIFY COLUMN fields JSON(...) from a
+-- fixed field list. MODIFY COLUMN replaces the entire JSON definition, so it stripped
+-- any custom type hints added through the schema UI and invalidated their dependent
+-- skip indexes (ClickHouse code 44: bloom_filter index on a Dynamic column), aborting
+-- the migration and, with it, app startup.
+--
+-- Type hint and skip index management now lives entirely in ReconcileSchemaFields,
+-- which runs at every app startup and merges project defaults with custom fields
+-- non-destructively. The default hints are also present in db/init-clickhouse.sql for
+-- fresh installs. This migration is therefore redundant and is kept only as a no-op so
+-- that migration numbering stays contiguous (001-005) across docker and k8s.
+--
+-- SELECT 1 is a harmless no-op: the app's runner only executes CREATE/ALTER statements
+-- (so it skips this), and bifract-setup's runner executes it without side effects.
+SELECT 1;
