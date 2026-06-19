@@ -118,7 +118,10 @@ func (d *DockerOps) ExecPostgresRestore(user, db string, data io.Reader) (string
 }
 
 func (d *DockerOps) ExecClickHouse(user, password, sql string) (string, error) {
+	// --database logs: migration bodies use unqualified table names (ALTER TABLE
+	// logs, CREATE TABLE logs_hot) that must resolve against the logs database, not
+	// the client's default. Fully-qualified bookkeeping statements are unaffected.
 	out, err := d.compose("exec", "-T", "clickhouse", "clickhouse-client",
-		"--user", user, "--password", password, "--query", sql).CombinedOutput()
+		"--user", user, "--password", password, "--database", "logs", "--query", sql).CombinedOutput()
 	return string(out), err
 }
