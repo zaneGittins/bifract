@@ -648,6 +648,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		}
 		ensureSelectExpr("timestamp")
 		ensureSelectExpr("log_id")
+		ensureSelectExpr("fractal_id")
 		ensureSelectExpr("raw_log")
 
 		hasFields := false

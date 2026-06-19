@@ -1477,12 +1477,25 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Use the client-supplied fractal_id as a partition-pruning filter, but only
-	// after confirming it is in the caller's accessible set (admins may use any).
-	// An invalid or absent value falls back to an unscoped lookup; the post-fetch
-	// verification below remains the authoritative access check and keeps this
-	// correct for prism sessions (multiple fractals) without trusting the client.
-	scopeFractalID := scopedFractalFilter(r.URL.Query().Get("fractal_id"), accessible, isAdmin)
+	// fractal_id is required: every log has one, and it is both a partition key
+	// and a mandatory pruning filter. The translator always projects it in search
+	// results, so absence means a malformed or very old client request.
+	rawFractalID := r.URL.Query().Get("fractal_id")
+	if rawFractalID == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "fractal_id is required",
+		})
+		return
+	}
+	scopeFractalID := scopedFractalFilter(rawFractalID, accessible, isAdmin)
+	if scopeFractalID == "" {
+		respondJSON(w, http.StatusNotFound, map[string]interface{}{
+			"success": false,
+			"error":   "Log not found",
+		})
+		return
+	}
 
 	var shardNum uint64
 	if s := r.URL.Query().Get("shard_num"); s != "" {

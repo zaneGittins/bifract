@@ -145,14 +145,12 @@ const LogDetail = {
     async _lazyLoadFields(logData, fieldsContainer) {
         this._renderFieldsSkeleton(fieldsContainer);
         try {
-            const params = new URLSearchParams({ log_id: logData.log_id });
-            if (logData.fractal_id) params.set('fractal_id', logData.fractal_id);
-            // Pass the exact timestamp so the backend can prune to one partition
-            // and pin the primary index instead of a whole-table scan by log_id.
-            if (logData.timestamp) params.set('timestamp', logData.timestamp);
-            // Pass the shard number so the backend can query that shard directly
-            // instead of fanning out across all shards via logs_distributed.
-            if (logData._shard_num) params.set('shard_num', logData._shard_num);
+            const params = new URLSearchParams({
+                log_id: logData.log_id,
+                fractal_id: logData.fractal_id,
+                timestamp: logData.timestamp,
+                shard_num: logData._shard_num,
+            });
             const resp = await fetch(`/api/v1/logs/fields?${params}`);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
