@@ -43,7 +43,7 @@ const TimePicker = {
         }
 
         if (type === 'all') {
-            return { start: new Date('2000-01-01T00:00:00Z').toISOString(), end: now.toISOString() };
+            return { start: new Date('2000-01-01T00:00:00Z').toISOString(), end: now.toISOString(), selective: true };
         }
 
         const ms = this._presetMs[type] || this._presetMs['24h'];
@@ -131,7 +131,15 @@ const TimePicker = {
     },
 
     _toDatetimeLocal(iso) {
-        return new Date(iso).toISOString().slice(0, 16);
+        const d = new Date(iso);
+        const pad = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    },
+
+    _parseAbsInput(val) {
+        if (!val) return null;
+        const d = new Date(val.trim().replace(' ', 'T'));
+        return isNaN(d) ? null : d.toISOString();
     },
 
     _updateLabel() {
@@ -223,17 +231,18 @@ const TimePicker = {
         }
 
         if (absApply) {
-            absApply.addEventListener('click', () => {
+            const applyAbs = () => {
                 const startEl = document.getElementById('tpAbsStart');
                 const endEl = document.getElementById('tpAbsEnd');
-                if (startEl?.value && endEl?.value) {
-                    this._applyAndExecute({
-                        type: 'custom',
-                        customStart: new Date(startEl.value).toISOString(),
-                        customEnd: new Date(endEl.value).toISOString(),
-                    });
+                const start = this._parseAbsInput(startEl?.value);
+                const end = this._parseAbsInput(endEl?.value);
+                if (start && end) {
+                    this._applyAndExecute({ type: 'custom', customStart: start, customEnd: end });
                 }
-            });
+            };
+            absApply.addEventListener('click', applyAbs);
+            document.getElementById('tpAbsStart')?.addEventListener('keydown', e => { if (e.key === 'Enter') applyAbs(); });
+            document.getElementById('tpAbsEnd')?.addEventListener('keydown', e => { if (e.key === 'Enter') applyAbs(); });
         }
 
         this._updateLabel();

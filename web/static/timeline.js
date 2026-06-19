@@ -365,29 +365,15 @@ const Timeline = {
     },
 
     applyTimeRangeSelection(startTime, endTime) {
-        const formatForInput = (date) => {
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            const hours = String(date.getHours()).padStart(2, '0');
-            const minutes = String(date.getMinutes()).padStart(2, '0');
-            return `${year}-${month}-${day} ${hours}:${minutes}`;
-        };
+        const customStart = startTime.toISOString();
+        const customEnd = endTime.toISOString();
 
-        const timeRangeSelect = document.getElementById('timeRange');
-        const customTimeInputs = document.getElementById('customTimeInputs');
-        const customStart = document.getElementById('customStart');
-        const customEnd = document.getElementById('customEnd');
-
-        if (timeRangeSelect && customTimeInputs && customStart && customEnd) {
-            timeRangeSelect.value = 'custom';
-            customTimeInputs.style.display = 'flex';
-            customStart.value = formatForInput(startTime);
-            customEnd.value = formatForInput(endTime);
-
-            if (window.QueryExecutor) {
-                setTimeout(() => QueryExecutor.execute(), 100);
-            }
+        if (window.TimePicker) {
+            const absStart = document.getElementById('tpAbsStart');
+            const absEnd = document.getElementById('tpAbsEnd');
+            if (absStart) absStart.value = TimePicker._toDatetimeLocal(customStart);
+            if (absEnd) absEnd.value = TimePicker._toDatetimeLocal(customEnd);
+            TimePicker._applyAndExecute({ type: 'custom', customStart, customEnd });
         }
 
         const alertTimeRange = document.getElementById('alertTimeRange');
@@ -396,10 +382,12 @@ const Timeline = {
         const alertCustomTimeInputs = document.getElementById('alertCustomTimeInputs');
 
         if (alertTimeRange && alertCustomStart && alertCustomEnd && alertCustomTimeInputs) {
+            const pad = n => String(n).padStart(2, '0');
+            const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
             alertTimeRange.value = 'custom';
             alertCustomTimeInputs.style.display = 'flex';
-            alertCustomStart.value = formatForInput(startTime);
-            alertCustomEnd.value = formatForInput(endTime);
+            alertCustomStart.value = fmt(startTime);
+            alertCustomEnd.value = fmt(endTime);
         }
     }
 };

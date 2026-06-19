@@ -267,6 +267,7 @@ const QueryExecutor = {
                 start: this.currentTimeRange.start,
                 end: this.currentTimeRange.end
             };
+            if (this.currentTimeRange.selective) requestBody.selective = true;
 
             // Include fractal context if FractalContext is available (skip for prisms - server uses session)
             if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {

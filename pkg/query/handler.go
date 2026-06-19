@@ -65,6 +65,7 @@ type QueryRequest struct {
 	FractalID string `json:"fractal_id,omitempty"` // Fractal ID for multi-tenant queries
 	Profile   bool   `json:"profile,omitempty"`    // collect per-shard profiling data via system.query_log
 	Cursor    string `json:"cursor,omitempty"`     // opaque token for next-page cursor pagination
+	Selective bool   `json:"selective,omitempty"`  // run active-days preflight and skip empty 8h windows
 }
 
 // ProfileShardRow holds per-node metrics fetched from system.query_log.
@@ -240,6 +241,38 @@ func (p *preparedQuery) buildWindowSQL(windowStart, windowEnd time.Time, limit i
 		sql += fmt.Sprintf(" LIMIT %d", limit)
 	}
 	return sql, nil
+}
+
+// buildActiveDaysSQL returns a query that lists every calendar day containing at
+// least one log row for the given fractal/prism scope. Used by the selective
+// windowing path to skip 8-hour windows that have no data at all.
+func buildActiveDaysSQL(opts parser.QueryOptions) string {
+	var conds []string
+	conds = append(conds,
+		fmt.Sprintf("timestamp >= '%s'", opts.StartTime.Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("timestamp <= '%s'", opts.EndTime.Format("2006-01-02 15:04:05")),
+	)
+	if len(opts.FractalIDs) > 0 {
+		quoted := make([]string, len(opts.FractalIDs))
+		for i, id := range opts.FractalIDs {
+			quoted[i] = fmt.Sprintf("'%s'", id)
+		}
+		fc := fmt.Sprintf("fractal_id IN (%s)", strings.Join(quoted, ", "))
+		if opts.IncludeEmptyFractalID {
+			fc = fmt.Sprintf("(%s OR fractal_id = '')", fc)
+		}
+		conds = append(conds, fc)
+	} else if opts.FractalID != "" {
+		fc := fmt.Sprintf("fractal_id = '%s'", opts.FractalID)
+		if opts.IncludeEmptyFractalID {
+			fc = fmt.Sprintf("(%s OR fractal_id = '')", fc)
+		}
+		conds = append(conds, fc)
+	}
+	return fmt.Sprintf(
+		"SELECT DISTINCT toDate(timestamp) AS day FROM %s WHERE %s ORDER BY day DESC",
+		opts.EffectiveTableName(), strings.Join(conds, " AND "),
+	)
 }
 
 // prepareQuery handles auth, fractal/prism resolution, BQL parsing, SQL
@@ -1157,6 +1190,28 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			numWindows := int(math.Ceil(prep.endTime.Sub(prep.startTime).Hours() / 8))
 			log.Printf("[QueryHandler] Windowed streaming: %d x 8h windows over %s",
 				numWindows, prep.endTime.Sub(prep.startTime).Round(time.Minute))
+
+			// Selective mode: run a cheap preflight query to find which calendar days
+			// have any data at all, then skip 8h windows that fall on empty days.
+			var activeDays map[string]bool
+			if prep.req.Selective {
+				activeDaySQL := buildActiveDaysSQL(prep.translationOpts)
+				if dayRows, dayErr := h.db.Query(queryCtx, activeDaySQL); dayErr == nil {
+					activeDays = make(map[string]bool, len(dayRows))
+					for _, row := range dayRows {
+						switch v := row["day"].(type) {
+						case time.Time:
+							activeDays[v.UTC().Format("2006-01-02")] = true
+						case string:
+							activeDays[v] = true
+						}
+					}
+					log.Printf("[QueryHandler] Selective windowing: %d active days found", len(activeDays))
+				} else {
+					log.Printf("[QueryHandler] Active-days preflight failed (non-fatal): %v", dayErr)
+				}
+			}
+
 			firstWindow := true
 			for !clientGone && count < prep.queryMaxRows && windowEnd.After(prep.startTime) {
 				windowStart := windowEnd.Add(-windowDuration)
@@ -1172,6 +1227,17 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 					queryEnd = windowEnd.Add(-time.Second)
 				}
 				firstWindow = false
+
+				// Selective: skip windows whose entire date range has no data.
+				if activeDays != nil {
+					d1 := windowStart.UTC().Format("2006-01-02")
+					d2 := queryEnd.UTC().Format("2006-01-02")
+					if !activeDays[d1] && !activeDays[d2] {
+						windowEnd = windowStart
+						continue
+					}
+				}
+
 				windowSQL, sqlErr := prep.buildWindowSQL(windowStart, queryEnd, prep.queryMaxRows-count)
 				if sqlErr != nil {
 					emitExecError(sqlErr)
