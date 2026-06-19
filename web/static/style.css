@@ -1825,7 +1825,7 @@ body.results-fullscreen .results-section {
     overflow-x: hidden;
 }
 
-.results-container.table-wrap .results-table td {
+.results-container.table-wrap .results-table td:not(.timestamp-cell) {
     white-space: pre-wrap;
     overflow: hidden;
     text-overflow: clip;

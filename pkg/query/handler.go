@@ -214,6 +214,32 @@ type preparedQuery struct {
 	histogramSQL        string
 	histBucketSec       int
 	histBucketCount     int
+	pipeline        *parser.PipelineNode
+	translationOpts parser.QueryOptions
+}
+
+// buildWindowSQL re-translates the query with a narrower time window and a
+// per-window row limit. Used by the windowed streaming path to issue 8-hour
+// chunks newest-first instead of one large distributed scan.
+func (p *preparedQuery) buildWindowSQL(windowStart, windowEnd time.Time, limit int) (string, error) {
+	opts := p.translationOpts
+	opts.StartTime = windowStart
+	opts.EndTime = windowEnd
+	opts.MaxRows = limit
+	result, err := parser.TranslateToSQLWithOrder(p.pipeline, opts)
+	if err != nil {
+		return "", err
+	}
+	sql := result.SQL
+	if !sqlLimitRE.MatchString(sql) {
+		if idx := strings.LastIndex(sql, " ORDER BY"); idx >= 0 {
+			if !strings.Contains(strings.ToUpper(sql[idx:]), "LOG_ID") {
+				sql += ", log_id DESC"
+			}
+		}
+		sql += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	return sql, nil
 }
 
 // prepareQuery handles auth, fractal/prism resolution, BQL parsing, SQL
@@ -598,6 +624,8 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		histogramSQL:        histogramSQL,
 		histBucketSec:       histBucketSec,
 		histBucketCount:     histBucketCount,
+		pipeline:            pipeline,
+		translationOpts:     opts,
 	}
 	return
 }
@@ -1114,35 +1142,92 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			})
 		}
 
-		streamErr := h.db.StreamQuery(queryCtx, "", prep.sql, onRow, onProgress)
-		flushBatch()
+		// For streamable queries spanning more than 8 hours, iterate 8-hour windows
+		// newest-first and stop as soon as the row cap is reached. This avoids
+		// issuing a single distributed scan over the full range: ClickHouse must
+		// scan every granule in the range regardless of LIMIT when non-primary-key
+		// filters (fractal_id, fields.*) are involved. Windowing lets the scan stop
+		// as soon as enough rows are found in recent data.
+		useWindowing := prep.req.Cursor == "" && !prep.appliedCursorPaging &&
+			prep.queryMaxRows > 0 && prep.endTime.Sub(prep.startTime) > 8*time.Hour
 
-		if clientGone || r.Context().Err() != nil {
-			return // client disconnected; nothing more to send
-		}
-		if streamErr != nil && !errors.Is(streamErr, errStreamPageFull) && !errors.Is(streamErr, errStreamClient) {
-			if queryCtx.Err() == context.DeadlineExceeded {
-				writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
-			} else {
-				emitExecError(streamErr)
+		if useWindowing {
+			const windowDuration = 8 * time.Hour
+			windowEnd := prep.endTime
+			numWindows := int(math.Ceil(prep.endTime.Sub(prep.startTime).Hours() / 8))
+			log.Printf("[QueryHandler] Windowed streaming: %d x 8h windows over %s",
+				numWindows, prep.endTime.Sub(prep.startTime).Round(time.Minute))
+			firstWindow := true
+			for !clientGone && count < prep.queryMaxRows && windowEnd.After(prep.startTime) {
+				windowStart := windowEnd.Add(-windowDuration)
+				if windowStart.Before(prep.startTime) {
+					windowStart = prep.startTime
+				}
+				// From window 2 onward subtract 1 second from the upper bound so that
+				// rows landing exactly on the 8-hour boundary are not returned twice.
+				// The format string is second-precision so 1s is the smallest unit that
+				// changes the rendered literal.
+				queryEnd := windowEnd
+				if !firstWindow {
+					queryEnd = windowEnd.Add(-time.Second)
+				}
+				firstWindow = false
+				windowSQL, sqlErr := prep.buildWindowSQL(windowStart, queryEnd, prep.queryMaxRows-count)
+				if sqlErr != nil {
+					emitExecError(sqlErr)
+					return
+				}
+				streamErr := h.db.StreamQuery(queryCtx, "", windowSQL, onRow, onProgress)
+				flushBatch()
+				if clientGone || r.Context().Err() != nil {
+					return
+				}
+				if streamErr != nil && !errors.Is(streamErr, errStreamPageFull) && !errors.Is(streamErr, errStreamClient) {
+					if queryCtx.Err() == context.DeadlineExceeded {
+						writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
+					} else {
+						emitExecError(streamErr)
+					}
+					return
+				}
+				tryEmitHistogram(false)
+				windowEnd = windowStart
 			}
-			return
-		}
-
-		if prep.appliedCursorPaging {
-			if hasMoreOut && lastKept != nil {
-				if nc, encErr := encodeCursor(lastKept); encErr == nil {
-					nextCursorOut = nc
+			if count >= prep.queryMaxRows {
+				if prep.isBloomQuery {
+					limitHitOut = "bloom"
 				} else {
-					hasMoreOut = false
+					limitHitOut = "search"
 				}
 			}
-		} else if count == prep.queryMaxRows {
-			// Hit the (non-cursor) row cap, same signal the buffered path emits.
-			if prep.isBloomQuery {
-				limitHitOut = "bloom"
-			} else {
-				limitHitOut = "search"
+		} else {
+			streamErr := h.db.StreamQuery(queryCtx, "", prep.sql, onRow, onProgress)
+			flushBatch()
+			if clientGone || r.Context().Err() != nil {
+				return
+			}
+			if streamErr != nil && !errors.Is(streamErr, errStreamPageFull) && !errors.Is(streamErr, errStreamClient) {
+				if queryCtx.Err() == context.DeadlineExceeded {
+					writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
+				} else {
+					emitExecError(streamErr)
+				}
+				return
+			}
+			if prep.appliedCursorPaging {
+				if hasMoreOut && lastKept != nil {
+					if nc, encErr := encodeCursor(lastKept); encErr == nil {
+						nextCursorOut = nc
+					} else {
+						hasMoreOut = false
+					}
+				}
+			} else if count == prep.queryMaxRows {
+				if prep.isBloomQuery {
+					limitHitOut = "bloom"
+				} else {
+					limitHitOut = "search"
+				}
 			}
 		}
 	} else {
