@@ -4393,6 +4393,17 @@ func TestAlertAutoProjection(t *testing.T) {
 			},
 		},
 		{
+			name:  "Explicit table columns omit raw_log from SELECT",
+			query: "image=/powershell/i | table(timestamp, image)",
+			opts:  baseOpts,
+			wantContain: []string{
+				"log_id", "fields.`image`",
+			},
+			wantNotContain: []string{
+				"raw_log",
+			},
+		},
+		{
 			name:  "Alert bare wildcard gets full SELECT",
 			query: "*",
 			opts:  alertOpts,

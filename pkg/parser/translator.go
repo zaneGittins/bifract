@@ -358,11 +358,20 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		// use its MergeTree streaming sort and return rows progressively to the driver.
 		// Join queries null out Formatters after this block, so only lift when
 		// formatters will actually be rendered around the source query.
+		//
+		// Exception: distributed queries (IncludeShardNum == cluster mode). Lifting
+		// LIMIT off the source means each shard returns ALL matching rows to the
+		// coordinator before the outer LIMIT fires, which transfers unbounded data.
+		// Keeping ORDER BY LIMIT in the source causes each shard to limit its own
+		// output first; the coordinator merge-sorts across shards and re-applies the
+		// outer LIMIT — correct and dramatically cheaper over the network.
 		if defaultTimeOrder && len(plan.Formatters) > 0 && !plan.IsJoin {
 			plan.FormatterOrderBy = activeStage.Layer.OrderBy
 			plan.FormatterLimit = activeStage.Layer.Limit
-			activeStage.Layer.OrderBy = nil
-			activeStage.Layer.Limit = ""
+			if !ctx.Opts.IncludeShardNum {
+				activeStage.Layer.OrderBy = nil
+				activeStage.Layer.Limit = ""
+			}
 		}
 		// raw_log is added as a hidden base field for the row detail panel even when
 		// | table(explicit cols) is used. Strip it from the display order so it doesn't
@@ -649,7 +658,13 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		ensureSelectExpr("timestamp")
 		ensureSelectExpr("log_id")
 		ensureSelectExpr("fractal_id")
-		ensureSelectExpr("raw_log")
+		// raw_log is large (ZSTD-compressed blob). Skip it when the user has
+		// explicitly chosen table columns — it's dead weight in the distributed
+		// result transfer and the row detail panel fetches it on-demand via the
+		// shard-direct path (log_id + _shard_num, both always present above).
+		if !plan.TableHasExplicitColumns {
+			ensureSelectExpr("raw_log")
+		}
 
 		hasFields := false
 		for _, sel := range source.Layer.Selects {

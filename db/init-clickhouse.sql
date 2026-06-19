@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS logs_hot (
 PARTITION BY toStartOfFiveMinutes(ingest_timestamp)
 ORDER BY (fractal_id, ingest_timestamp, log_id)
 TTL toDateTime(ingest_timestamp) + INTERVAL 4 HOUR DELETE
-SETTINGS index_granularity = 8192;
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 
 -- Feeds logs_hot from every insert into the local logs table.
 -- The MV writes to local logs_hot on each shard — it fires per-shard when distributed
