@@ -1196,19 +1196,25 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			var activeDays map[string]bool
 			if prep.req.Selective {
 				activeDaySQL := buildActiveDaysSQL(prep.translationOpts)
-				if dayRows, dayErr := h.db.Query(queryCtx, activeDaySQL); dayErr == nil {
+				if dayRows, dayErr := h.db.Query(queryCtx, activeDaySQL); dayErr != nil {
+					log.Printf("[QueryHandler] Active-days preflight failed (non-fatal): %v", dayErr)
+				} else if len(dayRows) > 0 {
 					activeDays = make(map[string]bool, len(dayRows))
 					for _, row := range dayRows {
 						switch v := row["day"].(type) {
 						case time.Time:
 							activeDays[v.UTC().Format("2006-01-02")] = true
 						case string:
-							activeDays[v] = true
+							// scanRowMap formats time.Time as "2006-01-02 15:04:05.000";
+							// take only the date portion.
+							if len(v) >= 10 {
+								activeDays[v[:10]] = true
+							}
 						}
 					}
 					log.Printf("[QueryHandler] Selective windowing: %d active days found", len(activeDays))
 				} else {
-					log.Printf("[QueryHandler] Active-days preflight failed (non-fatal): %v", dayErr)
+					log.Printf("[QueryHandler] Selective windowing: preflight returned no days, skipping selective optimization")
 				}
 			}
 
