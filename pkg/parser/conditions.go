@@ -267,6 +267,21 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 		return buildRegexMatchSQL(fieldRef, cond.Value, negate, isJSONField)
 	}
 
+	if cond.Operator == "=~" || cond.Operator == "=^" || cond.Operator == "=$" {
+		values := cond.Values
+		if len(values) == 0 && cond.Value != "" {
+			values = []string{cond.Value}
+		}
+		switch cond.Operator {
+		case "=~":
+			return buildContainsAnySQL(fieldRef, values, false)
+		case "=^":
+			return buildStartsWithAnySQL(fieldRef, values, false)
+		case "=$":
+			return buildEndsWithAnySQL(fieldRef, values, false)
+		}
+	}
+
 	switch cond.Operator {
 	case "=":
 		// Equality is answered by the field's column/sub-column alone; no raw_log token
@@ -312,6 +327,10 @@ func negateConditionOperator(c *ConditionNode) {
 		c.Operator = "<"
 	case "<=":
 		c.Operator = ">"
+	case "=~", "=^", "=$":
+		// No negated operator variant; toggle the Negate flag instead so the
+		// SQL builder wraps the expression in NOT (...).
+		c.Negate = !c.Negate
 	}
 }
 
@@ -338,5 +357,7 @@ func negateHavingCondition(h *HavingCondition) {
 		h.Operator = "<"
 	case "<=":
 		h.Operator = ">"
+	case "=~", "=^", "=$":
+		h.Negate = !h.Negate
 	}
 }

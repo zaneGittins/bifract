@@ -39,6 +39,9 @@ const (
 	TokenMinus
 	TokenMultiply
 	TokenDivide
+	TokenContainsAny   // =~ (substring match any, case-insensitive)
+	TokenStartsWithAny // =^ (prefix match any, case-insensitive)
+	TokenEndsWithAny   // =$ (suffix match any, case-insensitive)
 )
 
 type Token struct {
@@ -178,8 +181,23 @@ func (l *Lexer) NextToken() Token {
 			l.readChar()
 		}
 	case '=':
-		tok = Token{Type: TokenEqual, Value: "="}
-		l.readChar()
+		switch l.peekChar() {
+		case '~':
+			l.readChar()
+			tok = Token{Type: TokenContainsAny, Value: "=~"}
+			l.readChar()
+		case '^':
+			l.readChar()
+			tok = Token{Type: TokenStartsWithAny, Value: "=^"}
+			l.readChar()
+		case '$':
+			l.readChar()
+			tok = Token{Type: TokenEndsWithAny, Value: "=$"}
+			l.readChar()
+		default:
+			tok = Token{Type: TokenEqual, Value: "="}
+			l.readChar()
+		}
 	case '!':
 		if l.peekChar() == '=' {
 			l.readChar()
@@ -335,12 +353,15 @@ func (t TokenType) String() string {
 		TokenFunction:    "FUNCTION",
 		TokenGreater:     "GREATER",
 		TokenLess:        "LESS",
-		TokenGreaterEqual: "GREATEREQUAL",
-		TokenLessEqual:   "LESSEQUAL",
-		TokenPlus:        "PLUS",
-		TokenMinus:       "MINUS",
-		TokenMultiply:    "MULTIPLY",
-		TokenDivide:      "DIVIDE",
+		TokenGreaterEqual:  "GREATEREQUAL",
+		TokenLessEqual:     "LESSEQUAL",
+		TokenPlus:          "PLUS",
+		TokenMinus:         "MINUS",
+		TokenMultiply:      "MULTIPLY",
+		TokenDivide:        "DIVIDE",
+		TokenContainsAny:   "CONTAINSANY",
+		TokenStartsWithAny: "STARTSWITHANY",
+		TokenEndsWithAny:   "ENDSWITHANY",
 	}
 	if name, ok := names[t]; ok {
 		return name

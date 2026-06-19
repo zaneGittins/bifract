@@ -300,8 +300,9 @@ const QueryExecutor = {
                 let data = {};
                 try { data = await res.json(); } catch (e) {}
                 if (!res.ok || !data.success) {
-                    this.showError(data.error || `Query failed (${res.status})`, data.error_type);
-                    if (elements.resultsTable) elements.resultsTable.innerHTML = '';
+                    const msg = data.error || `Query failed (${res.status})`;
+                    this.showError(msg, data.error_type);
+                    this.renderTableError(msg);
                     return;
                 }
                 this._applyQueryMeta(data, elements, false);
@@ -319,7 +320,7 @@ const QueryExecutor = {
             }
 
             this.showError(error.message);
-            if (elements.resultsTable) elements.resultsTable.innerHTML = '';
+            this.renderTableError(error.message);
         } finally {
             // Only tear down if a newer run hasn't superseded us (which would own
             // the request, timer, and loading indicator).
@@ -476,8 +477,7 @@ const QueryExecutor = {
                     break;
                 case 'error':
                     this.showError(frame.error || 'Query failed', frame.error_type);
-                    // Clear stale prior results if the error arrived before any rows.
-                    if (!this._loadingGotRows && elements.resultsTable) elements.resultsTable.innerHTML = '';
+                    this.renderTableError(frame.error || 'Query failed');
                     break;
                 case 'done':
                     this._streamingActive = false;
@@ -1324,6 +1324,15 @@ const QueryExecutor = {
         } else {
             this.renderResults(sorted);
         }
+    },
+
+    renderTableError(message) {
+        const resultsTable = document.getElementById('resultsTable');
+        if (!resultsTable) return;
+        const safe = message ? Utils.escapeHtml(String(message)) : 'Query failed';
+        resultsTable.innerHTML = `<div class="results-error"><span class="results-error-icon">⚠</span><span>${safe}</span></div>`;
+        const chartContainer = document.getElementById('chartContainer');
+        if (chartContainer) chartContainer.style.display = 'none';
     },
 
     showError(message, errorType) {

@@ -1825,14 +1825,14 @@ body.results-fullscreen .results-section {
     overflow-x: hidden;
 }
 
-.results-container.table-wrap .results-table td.raw-log-col {
+.results-container.table-wrap .results-table td {
     white-space: pre-wrap;
     overflow: hidden;
     text-overflow: clip;
     overflow-wrap: anywhere;
 }
 
-.results-container.table-wrap .results-table td.raw-log-col .json-value {
+.results-container.table-wrap .results-table td .json-value {
     white-space: pre-wrap;
     overflow: hidden;
     text-overflow: clip;
@@ -2113,6 +2113,28 @@ body.results-fullscreen .results-section {
 
 .empty-state p {
     font-size: 0.875rem;
+}
+
+/* Results empty / error states */
+.no-results,
+.results-error {
+    padding: 2rem 1.5rem;
+    text-align: center;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.results-error {
+    color: var(--error);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
+.results-error .results-error-icon {
+    font-size: 1.1rem;
+    flex-shrink: 0;
 }
 
 /* Results Table */

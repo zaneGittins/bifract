@@ -36,6 +36,74 @@ func TestBasicQueries(t *testing.T) {
 			},
 		},
 		{
+			name:  "Contains-any single term",
+			query: "image=~powershell",
+			wantContain: []string{
+				"multiSearchAnyCaseInsensitive(fields.`image`, ['powershell'])",
+			},
+		},
+		{
+			name:  "Contains-any multi-term",
+			query: "image=~powershell,pwsh,cmd",
+			wantContain: []string{
+				"multiSearchAnyCaseInsensitive(fields.`image`, ['powershell', 'pwsh', 'cmd'])",
+			},
+		},
+		{
+			name:  "Starts-with-any single term",
+			query: "image=^mimikatz",
+			wantContain: []string{
+				"startsWith(lower(fields.`image`), 'mimikatz')",
+			},
+		},
+		{
+			name:  "Starts-with-any multi-term",
+			query: "image=^mimikatz,impacket",
+			wantContain: []string{
+				"startsWith(lower(fields.`image`), 'mimikatz')",
+				"startsWith(lower(fields.`image`), 'impacket')",
+			},
+		},
+		{
+			name:  "Ends-with-any single term",
+			query: "image=$exe",
+			wantContain: []string{
+				"endsWith(lower(fields.`image`), 'exe')",
+			},
+		},
+		{
+			name:  "Ends-with-any multi-term",
+			query: "image=$exe,dll,bat",
+			wantContain: []string{
+				"endsWith(lower(fields.`image`), 'exe')",
+				"endsWith(lower(fields.`image`), 'dll')",
+				"endsWith(lower(fields.`image`), 'bat')",
+			},
+		},
+		{
+			name:  "Ends-with-any case-insensitive (uppercased term lowercased)",
+			query: "image=$EXE,DLL",
+			wantContain: []string{
+				"endsWith(lower(fields.`image`), 'exe')",
+				"endsWith(lower(fields.`image`), 'dll')",
+			},
+		},
+		{
+			name:  "Contains-any combined with AND filter",
+			query: "event_id=1 AND image=~powershell,pwsh",
+			wantContain: []string{
+				"event_id",
+				"multiSearchAnyCaseInsensitive(fields.`image`, ['powershell', 'pwsh'])",
+			},
+		},
+		{
+			name:  "NOT wraps contains-any",
+			query: "NOT image=~svchost",
+			wantContain: []string{
+				"NOT (multiSearchAnyCaseInsensitive(fields.`image`, ['svchost']))",
+			},
+		},
+		{
 			name:  "Count only",
 			query: "* | count()",
 			wantContain: []string{

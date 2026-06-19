@@ -1096,6 +1096,33 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 			{
+				Operator:    "=~",
+				Description: "Contains-any (case-insensitive substring). Matches if the field contains any of the comma-separated terms. Translated to multiSearchAnyCaseInsensitive(), which uses SIMD multi-pattern search and is accelerated by text skip indexes. Faster than equivalent regex for multi-term searches.",
+				Examples: []string{
+					"image=~powershell,pwsh,cmd",
+					"commandline=~encodedcommand,bypass,hidden",
+					"parent_image=~wscript,cscript,mshta",
+				},
+			},
+			{
+				Operator:    "=^",
+				Description: "Starts-with-any (case-insensitive prefix). Matches if the field starts with any of the comma-separated terms. Translated to startsWith(lower(field), term). Accelerated by text skip indexes.",
+				Examples: []string{
+					"image=^mimikatz,impacket",
+					"commandline=^powershell -enc",
+					"src_ip=^192.168,10.",
+				},
+			},
+			{
+				Operator:    "=$",
+				Description: "Ends-with-any (case-insensitive suffix). Matches if the field ends with any of the comma-separated terms. Translated to endsWith(lower(field), term). Accelerated by text skip indexes.",
+				Examples: []string{
+					"image=$exe,dll,bat",
+					"commandline=$bypass",
+					"image=$powershell.exe,cmd.exe",
+				},
+			},
+			{
 				Operator:    "/pattern/i",
 				Description: "Regex pattern matching (case-insensitive with /i flag)",
 				Examples: []string{

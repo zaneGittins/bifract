@@ -17,8 +17,9 @@ func (f FilterNode) Type() string { return "filter" }
 
 type ConditionNode struct {
 	Field       string
-	Operator    string // "=", "!=", "~" (regex)
+	Operator    string // "=", "!=", "~" (regex), "=~", "=^", "=$"
 	Value       string
+	Values      []string // multi-value list for =~, =^, =$ operators
 	IsRegex     bool
 	Negate      bool
 	Logic       string // "AND", "OR", ""
@@ -47,8 +48,9 @@ func (p PipelineNode) Type() string { return "pipeline" }
 
 type HavingCondition struct {
 	Field    string
-	Operator string // ">", "<", ">=", "<=", "=", "!="
+	Operator string // ">", "<", ">=", "<=", "=", "!=", "=~", "=^", "=$"
 	Value    string
+	Values   []string // multi-value list for =~, =^, =$ operators
 	IsRegex  bool
 	Logic    string // "AND", "OR", ""
 	GroupID  int    // Conditions with the same non-zero GroupID are parenthesized together
@@ -507,6 +509,33 @@ func (p *Parser) parseConditionsWithPrecedence(minPrecedence int) ([]ConditionNo
 	return conditions, nil
 }
 
+// parseValueList reads a comma-separated list of values for =~, =^, =$ operators.
+// Values can be bare identifiers, numbers, or quoted strings.
+// Reading stops at the first token that is not a value type or comma.
+func (p *Parser) parseValueList() ([]string, error) {
+	var values []string
+	for {
+		tok := p.current()
+		var val string
+		switch tok.Type {
+		case TokenString, TokenField, TokenValue:
+			val = tok.Value
+		default:
+			if len(values) == 0 {
+				return nil, fmt.Errorf("expected value in list, got %s", tok.Type)
+			}
+			return values, nil
+		}
+		p.advance()
+		values = append(values, val)
+		if p.current().Type != TokenComma {
+			break
+		}
+		p.advance() // consume comma
+	}
+	return values, nil
+}
+
 func (p *Parser) parseCondition() (*ConditionNode, error) {
 	cond := &ConditionNode{}
 
@@ -518,7 +547,7 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 	cond.Field = tok.Value
 	p.advance()
 
-	// Operator - now supporting all comparison operators
+	// Operator
 	opTok := p.current()
 	switch opTok.Type {
 	case TokenEqual:
@@ -539,8 +568,30 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 	case TokenLessEqual:
 		cond.Operator = "<="
 		p.advance()
+	case TokenContainsAny:
+		cond.Operator = "=~"
+		p.advance()
+	case TokenStartsWithAny:
+		cond.Operator = "=^"
+		p.advance()
+	case TokenEndsWithAny:
+		cond.Operator = "=$"
+		p.advance()
 	default:
-		return nil, fmt.Errorf("expected comparison operator (=, !=, >, <, >=, <=), got %s", opTok.Type)
+		return nil, fmt.Errorf("expected comparison operator (=, !=, >, <, >=, <=, =~, =^, =$), got %s", opTok.Type)
+	}
+
+	// Multi-value operators: parse comma-separated list and return early
+	if cond.Operator == "=~" || cond.Operator == "=^" || cond.Operator == "=$" {
+		values, err := p.parseValueList()
+		if err != nil {
+			return nil, err
+		}
+		cond.Values = values
+		if len(values) > 0 {
+			cond.Value = values[0]
+		}
+		return cond, nil
 	}
 
 	// Value
@@ -565,7 +616,9 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 		// (=, !=, >, etc.), then next is a new field name, not a pattern suffix.
 		isNewCondition := nextNext.Type == TokenEqual || nextNext.Type == TokenNotEqual ||
 			nextNext.Type == TokenGreater || nextNext.Type == TokenLess ||
-			nextNext.Type == TokenGreaterEqual || nextNext.Type == TokenLessEqual
+			nextNext.Type == TokenGreaterEqual || nextNext.Type == TokenLessEqual ||
+			nextNext.Type == TokenContainsAny || nextNext.Type == TokenStartsWithAny ||
+			nextNext.Type == TokenEndsWithAny
 		if (next.Type == TokenField || next.Type == TokenValue) && !isNewCondition {
 			// Concatenate: "*" + "powershell*" -> "*powershell*"
 			cond.Value = "*" + next.Value
@@ -1012,10 +1065,29 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 		having.Operator = "="
 	case TokenNotEqual:
 		having.Operator = "!="
+	case TokenContainsAny:
+		having.Operator = "=~"
+	case TokenStartsWithAny:
+		having.Operator = "=^"
+	case TokenEndsWithAny:
+		having.Operator = "=$"
 	default:
 		return nil, fmt.Errorf("expected comparison operator in HAVING condition, got %s", opTok.Type)
 	}
 	p.advance()
+
+	// Multi-value operators: parse comma-separated list and return early
+	if having.Operator == "=~" || having.Operator == "=^" || having.Operator == "=$" {
+		values, err := p.parseValueList()
+		if err != nil {
+			return nil, err
+		}
+		having.Values = values
+		if len(values) > 0 {
+			having.Value = values[0]
+		}
+		return having, nil
+	}
 
 	// Value
 	valTok := p.current()

@@ -36,6 +36,41 @@ image=/powershell/i
 
 Append `i` for case-insensitive matching.
 
+### Contains-any (`=~`)
+
+Case-insensitive substring match against a comma-separated list of terms. Faster than equivalent regex for multi-term searches — uses SIMD multi-pattern search internally and gains additional speed from text indexes when present.
+
+```
+image=~powershell,pwsh,cmd
+commandline=~encodedcommand,bypass,hidden
+parent_image=~wscript,cscript,mshta
+```
+
+Single-term form also works:
+
+```
+image=~mimikatz
+```
+
+### Starts-with-any (`=^`)
+
+Case-insensitive prefix match against a comma-separated list of terms.
+
+```
+image=^mimikatz,impacket
+commandline=^"powershell -enc"
+src_ip=^192.168,10.
+```
+
+### Ends-with-any (`=$`)
+
+Case-insensitive suffix match against a comma-separated list of terms.
+
+```
+image=$exe,dll,bat
+image=$powershell.exe,cmd.exe
+```
+
 ### Negative match
 
 ```

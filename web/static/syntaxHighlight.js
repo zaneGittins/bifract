@@ -156,7 +156,7 @@ const SyntaxHighlight = {
                     matched = true;
                 } else {
                     // Check for field names (word before =)
-                    const fieldMatch = line.substring(i).match(/^[a-zA-Z_][a-zA-Z0-9_.]*(?=\s*(?:!=|>=|<=|=|>|<))/);
+                    const fieldMatch = line.substring(i).match(/^[a-zA-Z_][a-zA-Z0-9_.]*(?=\s*(?:!=|>=|<=|=~|=\^|=\$|=|>|<))/);
                     if (fieldMatch) {
                         result.push(`<span class="hl-field">${this.escapeHtml(fieldMatch[0])}</span>`);
                         i += fieldMatch[0].length;
@@ -175,6 +175,14 @@ const SyntaxHighlight = {
                                 result.push(`<span class="hl-keyword">${this.escapeHtml(keywordMatch[0])}</span>`);
                                 i += keywordMatch[0].length;
                                 matched = true;
+                            } else {
+                                // Bare identifier (e.g. values in =~, =^, =$ lists, or plain values after =)
+                                const identMatch = line.substring(i).match(/^[a-zA-Z_][a-zA-Z0-9_.]*/);
+                                if (identMatch) {
+                                    result.push(`<span class="hl-string">${this.escapeHtml(identMatch[0])}</span>`);
+                                    i += identMatch[0].length;
+                                    matched = true;
+                                }
                             }
                         }
                     }
@@ -196,7 +204,10 @@ const SyntaxHighlight = {
                 matched = true;
             } else if (line.substring(i, i + 2) === '!=' ||
                        line.substring(i, i + 2) === '<=' ||
-                       line.substring(i, i + 2) === '>=') {
+                       line.substring(i, i + 2) === '>=' ||
+                       line.substring(i, i + 2) === '=~' ||
+                       line.substring(i, i + 2) === '=^' ||
+                       line.substring(i, i + 2) === '=$') {
                 result.push(`<span class="hl-operator">${this.escapeHtml(line.substring(i, i + 2))}</span>`);
                 i += 2;
                 matched = true;

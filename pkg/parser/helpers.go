@@ -523,6 +523,19 @@ func translateConditionCtx(cond ConditionNode) (string, error) {
 		// False negatives are unacceptable; ClickHouse's built-in granule pruning for
 		// match() is sufficient. match() is called with the negate flag only.
 		sql = buildRegexMatchSQL(fieldRef, cond.Value, negate, false)
+	} else if cond.Operator == "=~" || cond.Operator == "=^" || cond.Operator == "=$" {
+		values := cond.Values
+		if len(values) == 0 && cond.Value != "" {
+			values = []string{cond.Value}
+		}
+		switch cond.Operator {
+		case "=~":
+			sql = buildContainsAnySQL(fieldRef, values, false)
+		case "=^":
+			sql = buildStartsWithAnySQL(fieldRef, values, false)
+		case "=$":
+			sql = buildEndsWithAnySQL(fieldRef, values, false)
+		}
 	} else {
 		// For comparison operators, try to convert to numeric if the value looks numeric
 		// This allows queries like: bytes > 1000
@@ -912,6 +925,60 @@ const rawLogColumn = "raw_log"
 // caseInsensitiveFlag is RE2's inline case-insensitivity flag, prepended to a
 // pattern by the lexer for /regex/i and by the parser for bare-term searches.
 const caseInsensitiveFlag = "(?i)"
+
+// buildContainsAnySQL returns a case-insensitive substring-contains-any expression.
+// Uses multiSearchAnyCaseInsensitive (Volnitsky/SIMD multi-pattern search), which is
+// significantly faster than equivalent regex alternation and is accelerated by text
+// (inverted) skip indexes when those are present on the target column.
+func buildContainsAnySQL(fieldRef string, values []string, negate bool) string {
+	quoted := make([]string, len(values))
+	for i, v := range values {
+		quoted[i] = "'" + escapeString(v) + "'"
+	}
+	expr := fmt.Sprintf("multiSearchAnyCaseInsensitive(%s, [%s])", fieldRef, strings.Join(quoted, ", "))
+	if negate {
+		return "NOT " + expr
+	}
+	return expr
+}
+
+// buildStartsWithAnySQL returns a case-insensitive prefix-match-any expression.
+// Uses startsWith(lower(field), lowered_term) which is accelerated by text indexes.
+func buildStartsWithAnySQL(fieldRef string, values []string, negate bool) string {
+	parts := make([]string, len(values))
+	for i, v := range values {
+		parts[i] = fmt.Sprintf("startsWith(lower(%s), '%s')", fieldRef, escapeString(strings.ToLower(v)))
+	}
+	var expr string
+	if len(parts) == 1 {
+		expr = parts[0]
+	} else {
+		expr = "(" + strings.Join(parts, " OR ") + ")"
+	}
+	if negate {
+		return "NOT (" + expr + ")"
+	}
+	return expr
+}
+
+// buildEndsWithAnySQL returns a case-insensitive suffix-match-any expression.
+// Uses endsWith(lower(field), lowered_term) which is accelerated by text indexes.
+func buildEndsWithAnySQL(fieldRef string, values []string, negate bool) string {
+	parts := make([]string, len(values))
+	for i, v := range values {
+		parts[i] = fmt.Sprintf("endsWith(lower(%s), '%s')", fieldRef, escapeString(strings.ToLower(v)))
+	}
+	var expr string
+	if len(parts) == 1 {
+		expr = parts[0]
+	} else {
+		expr = "(" + strings.Join(parts, " OR ") + ")"
+	}
+	if negate {
+		return "NOT (" + expr + ")"
+	}
+	return expr
+}
 
 // buildRegexMatchSQL returns a match() expression for use in WHERE clauses.
 //
