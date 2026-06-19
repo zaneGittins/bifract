@@ -420,12 +420,41 @@ const QueryExecutor = {
         let timeRange = this.currentTimeRange;
         let histogram = null;
 
+        let lastPageKey = '';
         const scheduleRender = () => {
             if (pendingRender) return;
             pendingRender = true;
             requestAnimationFrame(() => {
                 pendingRender = false;
-                this._renderCurrentResults(elements, { preservePage: true });
+                // Only rebuild the table when the current page's rows have actually
+                // changed. After page 1 fills up, streaming rows go to later pages
+                // and the visible content is stable — avoid needless innerHTML churn.
+                const pg = window.Pagination ? Pagination.currentPage : 1;
+                const ps = window.Pagination ? Pagination.pageSize : 50;
+                const start = (pg - 1) * ps;
+                const end = Math.min(start + ps, this.currentResults.length);
+                const pageKey = `${pg}:${start}-${end}`;
+                if (pageKey !== lastPageKey) {
+                    lastPageKey = pageKey;
+                    this._renderCurrentResults(elements, { preservePage: true });
+                } else {
+                    // Page content unchanged — just refresh pagination controls and count
+                    if (window.Pagination) {
+                        Pagination.allResults = this.currentResults;
+                        Pagination.totalResults = this.currentResults.length;
+                        const bar = document.getElementById('paginationBar');
+                        const pageNums = document.getElementById('pageNumbers');
+                        const total = Pagination.getTotalPages();
+                        if (bar && pageNums) {
+                            if (total > 1) {
+                                bar.style.display = 'grid';
+                                pageNums.innerHTML = Pagination._renderPageNumbers(total);
+                            } else {
+                                bar.style.display = 'none';
+                            }
+                        }
+                    }
+                }
                 if (elements.resultsCount) {
                     elements.resultsCount.textContent = `${this.currentResults.length.toLocaleString()} results`;
                 }
