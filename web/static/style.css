@@ -1825,22 +1825,18 @@ body.results-fullscreen .results-section {
     overflow-x: hidden;
 }
 
-.results-container.table-wrap .results-table td:not(.timestamp-cell) {
-    white-space: pre-wrap;
-    overflow-wrap: break-word;
-    word-break: break-word;
-}
-
 .results-container.table-wrap .results-table td.raw-log-col {
+    white-space: pre-wrap;
     overflow: hidden;
     text-overflow: clip;
     overflow-wrap: anywhere;
 }
 
-.results-container.table-wrap .results-table td .json-value {
+.results-container.table-wrap .results-table td.raw-log-col .json-value {
     white-space: pre-wrap;
-    overflow-wrap: break-word;
-    word-break: break-word;
+    overflow: hidden;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
 }
 
 /* Load More */

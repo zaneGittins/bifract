@@ -1826,17 +1826,8 @@ const QueryExecutor = {
         const container = document.getElementById('resultsTable');
         const btn = document.getElementById('wrapToggleBtn');
         if (!container || !btn) return;
-        const table = container.querySelector('.results-table');
         const active = container.classList.toggle('table-wrap');
         btn.classList.toggle('active', active);
-        if (table) {
-            const ths = table.querySelectorAll('thead th');
-            if (active) {
-                ths.forEach(th => { th.style.minWidth = th.offsetWidth + 'px'; });
-            } else {
-                ths.forEach(th => { th.style.minWidth = ''; });
-            }
-        }
     },
 
     toggleFullscreen() {
