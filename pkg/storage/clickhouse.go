@@ -742,7 +742,7 @@ func (c *ClickHouseClient) ShardHealth(ctx context.Context) (total, healthy int,
 		SELECT count()                              AS total,
 		       countIf(estimated_recovery_time = 0) AS healthy
 		FROM system.clusters
-		WHERE cluster = '%s'`, EscCHStr(c.Cluster)))
+		WHERE cluster = '%s' AND replica_num = 1`, EscCHStr(c.Cluster)))
 	if err != nil || len(rows) == 0 {
 		return 0, 0, err
 	}

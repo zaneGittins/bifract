@@ -1695,7 +1695,11 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 		whereClause += " AND " + fractalCondition
 	}
 
-	logsSQL := fmt.Sprintf("SELECT timestamp, raw_log, log_id FROM %s %s ORDER BY timestamp DESC LIMIT 50", h.queryTableName(), whereClause)
+	selectCols := "toString(timestamp) AS timestamp, raw_log, log_id, fractal_id"
+	if h.db.IsCluster() {
+		selectCols += ", toString(_shard_num) AS _shard_num"
+	}
+	logsSQL := fmt.Sprintf("SELECT %s FROM %s %s ORDER BY timestamp DESC LIMIT 50", selectCols, h.queryTableName(), whereClause)
 
 	queryStart := time.Now()
 	queryCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -1728,14 +1732,10 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 	results := make([]map[string]interface{}, 0, len(rows))
 	for _, rawResult := range rows {
 		result := make(map[string]interface{})
-		if v, ok := rawResult["timestamp"]; ok {
-			result["timestamp"] = v
-		}
-		if v, ok := rawResult["raw_log"]; ok {
-			result["raw_log"] = v
-		}
-		if v, ok := rawResult["log_id"]; ok {
-			result["log_id"] = v
+		for _, col := range []string{"timestamp", "raw_log", "log_id", "fractal_id", "_shard_num"} {
+			if v, ok := rawResult[col]; ok {
+				result[col] = v
+			}
 		}
 		results = append(results, result)
 	}
