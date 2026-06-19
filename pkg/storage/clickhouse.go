@@ -863,6 +863,14 @@ func (c *ClickHouseClient) QueryWithID(ctx context.Context, queryID, query strin
 	return c.Query(ctx, query)
 }
 
+// QueryLowPriority executes a query at ClickHouse priority 5, yielding CPU
+// to user-facing queries (priority 0) when both are competing for threads.
+// Use for background work (alert evaluation) that should never starve users.
+func (c *ClickHouseClient) QueryLowPriority(ctx context.Context, query string) ([]map[string]interface{}, error) {
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"priority": 5}))
+	return c.Query(ctx, query)
+}
+
 func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[string]interface{}, error) {
 	rows, err := c.conn.Query(ctx, query)
 	if err != nil {
