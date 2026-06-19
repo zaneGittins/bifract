@@ -850,7 +850,9 @@ func (p *Parser) isHavingCondition() bool {
 	next := p.peek()
 	return next.Type == TokenGreater || next.Type == TokenLess ||
 		next.Type == TokenGreaterEqual || next.Type == TokenLessEqual ||
-		next.Type == TokenEqual || next.Type == TokenNotEqual
+		next.Type == TokenEqual || next.Type == TokenNotEqual ||
+		next.Type == TokenContainsAny || next.Type == TokenStartsWithAny ||
+		next.Type == TokenEndsWithAny
 }
 
 func (p *Parser) isCompoundHavingCondition() bool {
