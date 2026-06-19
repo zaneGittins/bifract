@@ -87,11 +87,11 @@ func (e *Engine) SetNotificationWriter(w engineNotifWriter) { e.notifWriter = w 
 
 const (
 	// maxConcurrent bounds the number of alert evaluations running in
-	// parallel within a single cycle. At 20 workers and ~100ms per alert,
-	// 1000 alerts complete in ~5s — well within the 30s window — while
-	// leaving ClickHouse thread capacity free for user-facing queries.
-	// Alert queries also run at lower CH priority so users always win CPU.
-	maxConcurrent = 20
+	// parallel within a single cycle. Keep this low enough that ClickHouse
+	// isn't saturated — too many concurrent queries raise per-query latency
+	// and hurt throughput. At 8 workers and ~150ms per alert, 1000 alerts
+	// complete in ~20s, well within the 30s window.
+	maxConcurrent = 8
 
 	// circuitBreakerThreshold stops a cycle after this many consecutive
 	// failures, freeing ClickHouse for user queries.
@@ -103,7 +103,7 @@ const (
 	maxEvalWindow = 30 * time.Minute
 
 	// minEvalWindow is the minimum gap between cursor and now before an
-	// evaluation runs. Must exceed the default eval interval (30s) so
+	// evaluation runs. Must exceed the default eval interval (60s) so
 	// caught-up alerts skip most ticks.
 	minEvalWindow = 60 * time.Second
 
