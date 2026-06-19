@@ -1695,7 +1695,7 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 		whereClause += " AND " + fractalCondition
 	}
 
-	selectCols := "toString(timestamp) AS timestamp, raw_log, log_id, fractal_id"
+	selectCols := "timestamp, raw_log, log_id, fractal_id"
 	if h.db.IsCluster() {
 		selectCols += ", toString(_shard_num) AS _shard_num"
 	}

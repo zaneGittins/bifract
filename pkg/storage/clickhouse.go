@@ -739,10 +739,13 @@ func (c *ClickHouseClient) ShardHealth(ctx context.Context) (total, healthy int,
 		return 0, 0, nil
 	}
 	rows, err := c.Query(ctx, fmt.Sprintf(`
-		SELECT count()                              AS total,
-		       countIf(estimated_recovery_time = 0) AS healthy
-		FROM system.clusters
-		WHERE cluster = '%s' AND replica_num = 1`, EscCHStr(c.Cluster)))
+		SELECT count() AS total, countIf(estimated_recovery_time = 0) AS healthy
+		FROM (
+			SELECT shard_num, min(estimated_recovery_time) AS estimated_recovery_time
+			FROM system.clusters
+			WHERE cluster = '%s'
+			GROUP BY shard_num
+		)`, EscCHStr(c.Cluster)))
 	if err != nil || len(rows) == 0 {
 		return 0, 0, err
 	}
