@@ -130,6 +130,10 @@ const App = {
             AlertFeeds.init();
         }
 
+        if (window.Notifications) {
+            Notifications.init();
+        }
+
         if (window.Pagination) {
             Pagination.init((pageResults) => {
                 if (window.QueryExecutor) {

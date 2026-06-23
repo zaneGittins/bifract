@@ -239,8 +239,8 @@ func TestTranslate_Contains(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if result != `CommandLine=/.*powershell.*/i` {
-		t.Errorf("expected CommandLine=/.*powershell.*/i, got %s", result)
+	if result != `CommandLine=~powershell` {
+		t.Errorf("expected CommandLine=~powershell, got %s", result)
 	}
 	assertValidBQL(t, result)
 }
@@ -255,7 +255,7 @@ func TestTranslate_StartsWith(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := `Image=/^C:\\Windows.*/i`
+	expected := `Image=^"C:\\Windows"`
 	if result != expected {
 		t.Errorf("expected %s, got %s", expected, result)
 	}
@@ -272,7 +272,7 @@ func TestTranslate_EndsWith(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := `Image=/.*\\explorer\.exe$/i`
+	expected := `Image=$"\\explorer.exe"`
 	if result != expected {
 		t.Errorf("expected %s, got %s", expected, result)
 	}
@@ -330,8 +330,8 @@ func TestTranslate_ContainsAll(t *testing.T) {
 	if !strings.Contains(result, "AND") {
 		t.Errorf("expected AND in result, got %s", result)
 	}
-	if !strings.Contains(result, `CommandLine=/.*cmd.*/i`) {
-		t.Errorf("expected contains pattern for 'cmd', got %s", result)
+	if !strings.Contains(result, `CommandLine=~cmd`) {
+		t.Errorf("expected native contains for 'cmd', got %s", result)
 	}
 	assertValidBQL(t, result)
 }
@@ -346,7 +346,7 @@ func TestTranslate_EndsWith_Consolidated(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := `Image=/.*(?:\/cat|\/grep|\/tail)$/i`
+	expected := `Image=$"/cat","/grep","/tail"`
 	if result != expected {
 		t.Errorf("expected %s, got %s", expected, result)
 	}
@@ -366,7 +366,7 @@ func TestTranslate_Contains_Consolidated(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := `CommandLine=/.*(?:wget|curl).*/i`
+	expected := `CommandLine=~wget,curl`
 	if result != expected {
 		t.Errorf("expected %s, got %s", expected, result)
 	}
@@ -383,7 +383,7 @@ func TestTranslate_StartsWith_Consolidated(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expected := `Image=/^(?:C:\\Windows|C:\\Temp).*/i`
+	expected := `Image=^"C:\\Windows","C:\\Temp"`
 	if result != expected {
 		t.Errorf("expected %s, got %s", expected, result)
 	}
@@ -461,8 +461,8 @@ func TestTranslate_EndsWithAll_StaysAND(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// |all keeps AND semantics; not consolidated into an alternation.
-	expected := `(CommandLine=/.*cmd.*/i AND CommandLine=/.*whoami.*/i)`
+	// |all keeps AND semantics; not consolidated into a list.
+	expected := `(CommandLine=~cmd AND CommandLine=~whoami)`
 	if result != expected {
 		t.Errorf("expected %s, got %s", expected, result)
 	}
@@ -617,9 +617,9 @@ func TestTranslate_SpecialCharsInValues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Backslash and dot should be escaped in regex
-	if !strings.Contains(result, `\\powershell\.exe`) {
-		t.Errorf("expected escaped special chars, got %s", result)
+	// Backslash in value should produce a quoted BQL string with \\ encoding.
+	if !strings.Contains(result, `"\\powershell.exe"`) {
+		t.Errorf("expected quoted native value with escaped backslash, got %s", result)
 	}
 	assertValidBQL(t, result)
 }
@@ -733,13 +733,12 @@ tags:
 	if !strings.Contains(result, "NOT") {
 		t.Errorf("expected NOT in complex rule, got %s", result)
 	}
-	// Multi-value selections are consolidated into a single alternation regex
-	// rather than OR'd individual matches.
-	if !strings.Contains(result, `Image=/.*(?:\\powershell\.exe|\\pwsh\.exe)$/i`) {
-		t.Errorf("expected consolidated endswith alternation, got %s", result)
+	// Multi-value selections use native operators instead of regex.
+	if !strings.Contains(result, `Image=$"\\powershell.exe","\\pwsh.exe"`) {
+		t.Errorf("expected native endswith list, got %s", result)
 	}
-	if !strings.Contains(result, `CommandLine=/.*(?:Invoke-WebRequest|wget|curl|DownloadString|DownloadFile).*/i`) {
-		t.Errorf("expected consolidated contains alternation, got %s", result)
+	if !strings.Contains(result, `CommandLine=~Invoke-WebRequest,wget,curl,DownloadString,DownloadFile`) {
+		t.Errorf("expected native contains list, got %s", result)
 	}
 
 	// Verify metadata

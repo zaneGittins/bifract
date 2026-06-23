@@ -13,7 +13,11 @@ import (
 //
 //	v2: consolidate OR'd regex values (contains/startswith/endswith/re/keyword)
 //	    into a single alternation regex (one match() per field instead of N).
-const TranslatorVersion = "v2"
+//	v3: contains/startswith/endswith emit native =~/=^/=$ operators instead of
+//	    regex, gaining SIMD multi-pattern search and text-index acceleration.
+//	    Falls back to regex only when a value contains a literal comma (which
+//	    would corrupt the comma-delimited list syntax) or for keyword/re searches.
+const TranslatorVersion = "v3"
 
 // Translate converts a parsed Sigma rule's detection logic into a BQL query string.
 // fieldMapper optionally transforms Sigma field names to match stored field names.
@@ -163,21 +167,84 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 		return "(" + strings.Join(valueExprs, " AND ") + ")", nil
 	}
 
-	// OR semantics. For regex-based match types we consolidate all values into a
-	// single alternation regex so the generated SQL runs one match() per field
-	// instead of one per value. This is a large CPU win over billions of logs and
-	// is semantically identical to OR'ing the individual patterns.
-	// Exact matches stay as OR'd equalities, which ClickHouse evaluates more
-	// cheaply than a regex.
+	// OR semantics.
+	// Keyword searches (no field) always use regex contains on raw_log.
 	if field == "" {
-		// Keyword search on raw_log uses contains semantics.
 		return buildCombinedRegexExpr("", fc.Values, "contains")
 	}
-	if matchType != "exact" {
+	// Exact matches stay as OR'd equalities, cheaper than regex in ClickHouse.
+	if matchType == "exact" {
+		return "(" + strings.Join(valueExprs, " OR ") + ")", nil
+	}
+	// regex type always consolidates into an alternation regex.
+	if matchType == "regex" {
 		return buildCombinedRegexExpr(field, fc.Values, matchType)
 	}
+	// contains/startswith/endswith: use native =~/=^/=$ operators when no value
+	// contains a comma (which would corrupt the comma-delimited list syntax).
+	if !valuesHaveComma(fc.Values) {
+		return buildNativeOpExpr(field, fc.Values, matchType)
+	}
+	return buildCombinedRegexExpr(field, fc.Values, matchType)
+}
 
-	return "(" + strings.Join(valueExprs, " OR ") + ")", nil
+// buildNativeOpExpr emits a =~/=^/=$ expression for OR-semantics
+// contains/startswith/endswith. Values must not contain commas.
+func buildNativeOpExpr(field string, values []string, matchType string) (string, error) {
+	var op string
+	switch matchType {
+	case "contains":
+		op = "=~"
+	case "startswith":
+		op = "=^"
+	case "endswith":
+		op = "=$"
+	default:
+		return "", fmt.Errorf("unknown match type for native op: %s", matchType)
+	}
+	parts := make([]string, len(values))
+	for i, v := range values {
+		parts[i] = encodeBQLNativeValue(v)
+	}
+	return fmt.Sprintf("%s%s%s", field, op, strings.Join(parts, ",")), nil
+}
+
+// encodeBQLNativeValue encodes a value for use in =~/=^/=$ value lists.
+// Values whose characters are all safe for the BQL identifier lexer are
+// returned bare; all others are returned as a double-quoted BQL string.
+func encodeBQLNativeValue(v string) string {
+	safe := len(v) > 0
+	for _, ch := range v {
+		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' ||
+			ch >= '0' && ch <= '9' || ch == '_' || ch == '-' || ch == '.' || ch == '*') {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return v
+	}
+	var b strings.Builder
+	b.WriteRune('"')
+	for _, ch := range v {
+		if ch == '\\' || ch == '"' {
+			b.WriteRune('\\')
+		}
+		b.WriteRune(ch)
+	}
+	b.WriteRune('"')
+	return b.String()
+}
+
+// valuesHaveComma reports whether any value contains a literal comma, which
+// would corrupt the comma-delimited =~/=^/=$ list syntax.
+func valuesHaveComma(values []string) bool {
+	for _, v := range values {
+		if strings.Contains(v, ",") {
+			return true
+		}
+	}
+	return false
 }
 
 // buildCombinedRegexExpr consolidates multiple OR'd values of the same regex
@@ -226,12 +293,21 @@ func buildMatchExpr(field, value, matchType string) (string, error) {
 	case "exact":
 		return fmt.Sprintf("%s=\"%s\"", field, escapeBQLString(value)), nil
 	case "contains":
+		if !strings.Contains(value, ",") {
+			return fmt.Sprintf("%s=~%s", field, encodeBQLNativeValue(value)), nil
+		}
 		escaped := escapeRegex(value)
 		return fmt.Sprintf("%s=/.*%s.*/i", field, escaped), nil
 	case "startswith":
+		if !strings.Contains(value, ",") {
+			return fmt.Sprintf("%s=^%s", field, encodeBQLNativeValue(value)), nil
+		}
 		escaped := escapeRegex(value)
 		return fmt.Sprintf("%s=/^%s.*/i", field, escaped), nil
 	case "endswith":
+		if !strings.Contains(value, ",") {
+			return fmt.Sprintf("%s=$%s", field, encodeBQLNativeValue(value)), nil
+		}
 		escaped := escapeRegex(value)
 		return fmt.Sprintf("%s=/.*%s$/i", field, escaped), nil
 	case "regex":

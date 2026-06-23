@@ -188,10 +188,10 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	return finalizePlan(ctx, assignmentFields, deferredAssignments)
 }
 
-// BuildHistogramSQL generates a lightweight COUNT(*) GROUP BY time-bucket query
-// using only the filter portion of a BQL pipeline (ignoring pipe commands like
-// head, sort, groupby, etc.). This produces an accurate time distribution of
-// all matching logs, independent of any row LIMIT on the main query.
+// BuildHistogramSQL generates a lightweight COUNT(*) GROUP BY time-bucket query.
+// It applies the base filter conditions and, when the pipeline contains computed
+// column commands (e.g. len()), also inlines their downstream filters (e.g. _len > 500)
+// into the WHERE clause so the histogram count matches the results table.
 func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds int) (string, error) {
 	plan := NewQueryPlan()
 	addBaseConditions(plan, opts)
@@ -221,6 +221,16 @@ func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds 
 		}
 	}
 
+	// Inline computed-column filters from HavingConditions into the histogram WHERE.
+	// Only FieldKindAssignment and FieldKindPerRow conditions are included; aggregate
+	// and window conditions reference outputs that don't exist in the flat histogram
+	// query and are intentionally skipped.
+	if len(pipeline.HavingConditions) > 0 {
+		if computedWhere := histogramComputedWhere(pipeline, opts); computedWhere != "" {
+			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, computedWhere)
+		}
+	}
+
 	where := strings.Join(plan.SourceStage().Layer.Where, " AND ")
 	tbl := opts.EffectiveTableName()
 
@@ -234,6 +244,71 @@ func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds 
 		tsCol, bucketSeconds, tbl, where,
 	)
 	return sql, nil
+}
+
+// histogramComputedWhere returns a WHERE clause fragment that makes the histogram
+// respect pipe commands that filter on computed columns (e.g. len(field) | _len > 500).
+// It mirrors the main translator flow — Declare, classifyConditions, Execute,
+// materializeConditions — on a throwaway plan, then reads SourceStage.Layer.Where,
+// which contains two categories of condition:
+//
+//  1. Materialized HavingConditions of kind FieldKindAssignment or FieldKindPerRow
+//     (e.g. _len > 500 resolved to length(fields.`commandline`::String) > 500).
+//     Aggregate and window conditions are classified into other pending buckets
+//     and do not appear here.
+//
+//  2. Raw WHERE conditions appended by Execute handlers directly (e.g. match()
+//     with strict=true appends dictHas(...)). These are also valid histogram filters.
+//
+// Returns "" on any error so the histogram degrades gracefully.
+func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) string {
+	registry := NewFieldRegistry()
+	helperPlan := NewQueryPlan()
+	ctx := &CommandContext{
+		Registry: registry,
+		Plan:     helperPlan,
+		Opts:     opts,
+		Pipeline: pipeline,
+	}
+
+	// Declare phase: populate field kinds in the registry.
+	for i, cmd := range pipeline.Commands {
+		ctx.CmdIndex = i
+		handler := getCommandHandler(cmd.Name)
+		if handler == nil {
+			continue
+		}
+		if err := handler.Declare(cmd, ctx); err != nil {
+			return ""
+		}
+	}
+	for _, a := range pipeline.Assignments {
+		registry.Register(a.Field, FieldKindAssignment, a.Field, -1)
+	}
+
+	// Classify conditions now (before Execute), matching the main translator ordering.
+	// Classification uses field kinds from Declare; SQL generation is deferred to
+	// materializeConditions after Execute populates the resolve expressions.
+	classifyConditions(pipeline.HavingConditions, registry, helperPlan)
+
+	// Execute phase: populate resolve expressions via SetResolveExpr.
+	for i, cmd := range pipeline.Commands {
+		ctx.CmdIndex = i
+		handler := getCommandHandler(cmd.Name)
+		if handler == nil {
+			continue
+		}
+		if err := handler.Execute(cmd, ctx); err != nil {
+			return ""
+		}
+	}
+
+	// Materialize: generate SQL from classified conditions using the now-populated registry.
+	// Only pendingWhereConditions (FieldKindAssignment, FieldKindPerRow) land in
+	// helperPlan.SourceStage().Layer.Where; aggregate and window conditions are ignored.
+	materializeConditions(registry, helperPlan)
+
+	return strings.Join(helperPlan.SourceStage().Layer.Where, " AND ")
 }
 
 // addBaseConditions adds time range and fractal isolation conditions.

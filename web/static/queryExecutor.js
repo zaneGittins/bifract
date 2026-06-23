@@ -376,6 +376,7 @@ const QueryExecutor = {
         this._loadingTimer = setTimeout(() => {
             this._loadingTimer = null;
             this._loadingShown = true;
+            this._outputTypeStatus('loading');
             this._setRunButtonState(true);
             if (this._loadingMode === 'bar') {
                 this._loadingBar('show');
@@ -399,6 +400,11 @@ const QueryExecutor = {
             this._loadingBar('done');
         } else {
             this._loadingBar('hide');
+        }
+        if (this._loadingShown) {
+            this._outputTypeStatus('done');
+        } else {
+            this._outputTypeStatus('reset');
         }
         this._loadingShown = false;
         this._setRunButtonState(false);
@@ -735,6 +741,38 @@ const QueryExecutor = {
                 this._loadingProgress = 4;
                 bar.style.display = 'none';
                 break;
+        }
+    },
+
+    _outputTypeStatus(state) {
+        const spinner = document.getElementById('outputTypeSpinner');
+        const check = document.getElementById('outputTypeCheck');
+        if (!spinner || !check) return;
+        if (state === 'loading') {
+            spinner.classList.add('is-active');
+            clearTimeout(this._checkFadeTimer);
+            check.classList.remove('is-visible', 'is-fading');
+            check.style.display = 'none';
+        } else if (state === 'done') {
+            spinner.classList.remove('is-active');
+            check.style.display = 'block';
+            check.offsetWidth; // force reflow so transition fires
+            check.classList.add('is-visible');
+            check.classList.remove('is-fading');
+            clearTimeout(this._checkFadeTimer);
+            this._checkFadeTimer = setTimeout(() => {
+                check.classList.remove('is-visible');
+                check.classList.add('is-fading');
+                setTimeout(() => {
+                    check.classList.remove('is-fading');
+                    check.style.display = 'none';
+                }, 200);
+            }, 2000);
+        } else {
+            spinner.classList.remove('is-active');
+            clearTimeout(this._checkFadeTimer);
+            check.classList.remove('is-visible', 'is-fading');
+            check.style.display = 'none';
         }
     },
 

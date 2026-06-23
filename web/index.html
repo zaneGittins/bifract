@@ -927,7 +927,17 @@
                 <div class="timeline-inline-stats" id="timelineStats"></div>
             </div>
             <div class="results-header">
-                <span id="outputTypeLabel" class="output-type-label">Table</span>
+                <span class="output-type-wrapper">
+                    <svg id="outputTypeSpinner" class="output-type-spinner" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                        <circle cx="12" cy="12" r="9" stroke-opacity="0.2"/>
+                        <path d="M21 12a9 9 0 0 0-9-9"/>
+                    </svg>
+                    <svg id="outputTypeCheck" class="output-type-check" width="14" height="14" viewBox="0 0 24 24">
+                        <circle cx="12" cy="12" r="12" fill="currentColor"/>
+                        <polyline points="6.5 12.5 10 16 17.5 8" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span id="outputTypeLabel" class="output-type-label">Table</span>
+                </span>
                 <div class="results-controls">
                     <span id="resultsCount" class="result-count">-</span>
                     <span id="executionTime" class="execution-time"></span>
