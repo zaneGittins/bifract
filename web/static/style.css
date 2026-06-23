@@ -2262,13 +2262,6 @@ body.results-fullscreen .results-section {
     opacity: 0.6;
 }
 
-.results-table th.dragging {
-    opacity: 0.5;
-}
-
-.results-table th.drag-over {
-    border-left: 3px solid var(--accent-primary);
-}
 
 .results-table tbody tr {
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);

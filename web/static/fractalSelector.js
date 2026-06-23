@@ -23,7 +23,6 @@ const FractalSelector = {
             <span class="context-pill-sep"></span>
             <div class="context-pill-wrapper" id="fractalSelectorContainer">
                 <button class="context-pill-btn" id="fractalSelectorButton">
-                    <span class="context-pill-icon" id="contextTypeIcon"></span>
                     <span class="context-pill-name" id="fractalSelectorText">Loading...</span>
                     <svg class="context-pill-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none">
                         <path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -88,20 +87,6 @@ const FractalSelector = {
                 background: var(--overlay-light);
             }
 
-            .context-pill-icon {
-                display: flex;
-                align-items: center;
-                flex-shrink: 0;
-                transition: color 0.15s ease;
-            }
-
-            .context-pill-btn[data-type="fractal"] .context-pill-icon {
-                color: var(--accent-secondary);
-            }
-
-            .context-pill-btn[data-type="prism"] .context-pill-icon {
-                color: var(--accent-tertiary);
-            }
 
             .context-pill-name {
                 overflow: hidden;
@@ -631,23 +616,6 @@ const FractalSelector = {
         if (textElement) {
             textElement.textContent = text;
         }
-        this._updateTypeIcon();
-    },
-
-    _updateTypeIcon() {
-        const iconEl = document.getElementById('contextTypeIcon');
-        const btn = document.getElementById('fractalSelectorButton');
-        if (!iconEl) return;
-
-        const isPrism = window.FractalContext && FractalContext.isPrism();
-        if (btn) btn.dataset.type = isPrism ? 'prism' : 'fractal';
-
-        // Same icon shape for both types; color differentiates fractal vs prism via CSS data-type
-        iconEl.innerHTML = `<svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="1.5,1.5 1.5,12.5 12.5,7"/>
-            <line x1="1.5" y1="5.5" x2="7.5" y2="5.5"/>
-            <line x1="1.5" y1="8.5" x2="7.5" y2="8.5"/>
-        </svg>`;
     },
 
     showErrorInMenu(errorMessage) {

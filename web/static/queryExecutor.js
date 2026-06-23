@@ -1119,7 +1119,7 @@ const QueryExecutor = {
                 : '';
             const width = this.columnWidths[field] ? `style="width: ${this.columnWidths[field]}px"` : '';
             const numClass = numericFields.has(field) ? ' numeric-col' : (field === 'raw_log' ? ' raw-log-col' : '');
-            html += `<th class="sortable${numClass}" data-field="${Utils.escapeAttr(field)}" ${width} draggable="true">${Utils.escapeHtml(displayName)}${sortIcon}<div class="column-resizer"></div></th>`;
+            html += `<th class="sortable${numClass}" data-field="${Utils.escapeAttr(field)}" ${width}>${Utils.escapeHtml(displayName)}${sortIcon}<div class="column-resizer"></div></th>`;
         });
         html += (hasRawLog ? '' : '<th class="filler-col"></th>') + '</tr></thead><tbody>';
 
@@ -1197,7 +1197,7 @@ const QueryExecutor = {
             thead.addEventListener('click', (e) => {
                 const header = e.target.closest('th.sortable');
                 if (!header) return;
-                if (e.target.classList.contains('column-resizer') || header.classList.contains('dragging')) return;
+                if (e.target.classList.contains('column-resizer')) return;
                 this.sortByColumn(header.dataset.field);
             });
         }
@@ -1205,8 +1205,6 @@ const QueryExecutor = {
         // Add column resizing handlers
         this.setupColumnResizing();
 
-        // Add column reordering handlers
-        this.setupColumnReordering();
 
         // Add relative time tooltips
         if (window.TimeBar) {
@@ -1259,83 +1257,6 @@ const QueryExecutor = {
 
                 document.addEventListener('mousemove', onMouseMove);
                 document.addEventListener('mouseup', onMouseUp);
-            });
-        });
-    },
-
-    setupColumnReordering() {
-        const headers = document.querySelectorAll('.results-table th.sortable');
-        let draggedElement = null;
-        let draggedField = null;
-
-        headers.forEach(header => {
-            header.addEventListener('dragstart', (e) => {
-                // Only allow drag from the header text area, not the resizer
-                if (e.target.classList.contains('column-resizer')) {
-                    e.preventDefault();
-                    return;
-                }
-
-                draggedElement = header;
-                draggedField = header.dataset.field;
-                header.classList.add('dragging');
-                e.dataTransfer.effectAllowed = 'move';
-            });
-
-            header.addEventListener('dragover', (e) => {
-                if (e.target === draggedElement) return;
-                e.preventDefault();
-                e.dataTransfer.dropEffect = 'move';
-
-                const targetHeader = e.target.closest('th');
-                if (targetHeader && targetHeader !== draggedElement) {
-                    targetHeader.classList.add('drag-over');
-                }
-            });
-
-            header.addEventListener('dragleave', (e) => {
-                const targetHeader = e.target.closest('th');
-                if (targetHeader) {
-                    targetHeader.classList.remove('drag-over');
-                }
-            });
-
-            header.addEventListener('drop', (e) => {
-                e.preventDefault();
-                const targetHeader = e.target.closest('th');
-                if (!targetHeader || targetHeader === draggedElement) return;
-
-                targetHeader.classList.remove('drag-over');
-
-                const targetField = targetHeader.dataset.field;
-
-                // Get current field order
-                const thead = targetHeader.parentElement;
-                const allHeaders = Array.from(thead.querySelectorAll('th.sortable'));
-                let fields = allHeaders.map(h => h.dataset.field);
-
-                // Remove dragged field and insert at target position
-                const draggedIndex = fields.indexOf(draggedField);
-                const targetIndex = fields.indexOf(targetField);
-
-                fields.splice(draggedIndex, 1);
-                fields.splice(targetIndex, 0, draggedField);
-
-                // Save new order
-                this.columnOrder = fields;
-
-                // Re-render with new order
-                if (window.Pagination) {
-                    this.renderPage(Pagination.getCurrentPageResults());
-                } else {
-                    this.renderResults(this.currentResults);
-                }
-            });
-
-            header.addEventListener('dragend', (e) => {
-                header.classList.remove('dragging');
-                // Remove all drag-over classes
-                headers.forEach(h => h.classList.remove('drag-over'));
             });
         });
     },
@@ -1669,7 +1590,7 @@ const QueryExecutor = {
         let html = '<table class="results-table"><thead><tr>';
         fields.forEach(field => {
             const numClass = numericFields.has(field) ? ' numeric-col' : '';
-            html += `<th class="sortable${numClass}" data-field="${Utils.escapeAttr(field)}" draggable="true">${Utils.escapeHtml(field)}<div class="column-resizer"></div></th>`;
+            html += `<th class="sortable${numClass}" data-field="${Utils.escapeAttr(field)}">${Utils.escapeHtml(field)}<div class="column-resizer"></div></th>`;
         });
         html += '<th class="filler-col"></th></tr></thead><tbody>';
 
