@@ -257,6 +257,7 @@ const FractalContext = {
             if (element) {
                 if (id === 'queryInput') {
                     element.value = '';
+                    element.dispatchEvent(new Event('input'));
                 } else if (id === 'error') {
                     element.style.display = 'none';
                 } else {

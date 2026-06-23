@@ -3119,6 +3119,7 @@ body.col-resizing * {
     position: relative;
     flex: 0 0 auto;
     width: 0;
+    margin-top: 1rem;
     margin-left: 0;
     overflow: hidden;
     display: flex;
