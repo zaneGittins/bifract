@@ -341,44 +341,64 @@ const FractalSelector = {
         const menu = document.getElementById('fractalSelectorMenu');
         if (!menu) return;
 
-        let menuHTML = '';
+        const history = this._getUsageHistory();
 
-        this.availableFractals.forEach(fractal => {
-            const isDefault = fractal.is_default;
-            const isCurrent = this.currentFractal && this.currentFractal.id === fractal.id;
-            const roleLabel = fractal.user_role ? fractal.user_role : '';
-            menuHTML += `
-                <button class="fractal-selector-item ${isCurrent ? 'current' : ''}"
-                        onclick="FractalSelector.selectFractal('${Utils.escapeJs(fractal.id)}', '${Utils.escapeJs(fractal.name)}')">
-                    <span class="fractal-selector-item-name">
-                        ${Utils.escapeHtml(fractal.name)}${isDefault ? ' (default)' : ''}
-                        ${roleLabel ? `<span style="font-size:9px;opacity:0.6;margin-left:4px;text-transform:uppercase;">${Utils.escapeHtml(roleLabel)}</span>` : ''}
-                    </span>
-                    ${fractal.description ? `<span class="fractal-selector-item-description">${Utils.escapeHtml(fractal.description)}</span>` : ''}
-                </button>
-            `;
+        const items = [
+            ...this.availableFractals.map(f => ({ ...f, itemType: 'fractal' })),
+            ...this.availablePrisms.map(p => ({ ...p, itemType: 'prism' })),
+        ];
+
+        // Sort by last-used descending; ties broken alphabetically
+        items.sort((a, b) => {
+            const ta = history[a.id] || 0;
+            const tb = history[b.id] || 0;
+            if (tb !== ta) return tb - ta;
+            return a.name.localeCompare(b.name);
         });
 
-        if (this.availablePrisms.length > 0) {
-            if (this.availableFractals.length > 0) {
-                menuHTML += `<div class="fractal-selector-divider"></div>`;
-            }
-            this.availablePrisms.forEach(prism => {
-                const isCurrent = this.currentFractal && this.currentFractal.id === prism.id;
-                menuHTML += `
-                    <button class="fractal-selector-item ${isCurrent ? 'current' : ''}"
-                            onclick="FractalSelector.selectPrism('${Utils.escapeJs(prism.id)}', '${Utils.escapeJs(prism.name)}')">
-                        <span class="fractal-selector-item-name">
-                            ${Utils.escapeHtml(prism.name)}
-                            <span class="prism-badge" style="font-size:9px;padding:1px 4px;margin-left:4px;">PRISM</span>
-                        </span>
-                        ${prism.description ? `<span class="fractal-selector-item-description">${Utils.escapeHtml(prism.description)}</span>` : ''}
-                    </button>
-                `;
-            });
+        if (items.length === 0) {
+            menu.innerHTML = '<div class="fractal-selector-loading">No fractals available</div>';
+            return;
         }
 
-        menu.innerHTML = menuHTML || '<div class="fractal-selector-loading">No fractals available</div>';
+        menu.innerHTML = items.map(item => {
+            const isCurrent = this.currentFractal && this.currentFractal.id === item.id;
+            const isPrism = item.itemType === 'prism';
+            const onclick = isPrism
+                ? `FractalSelector.selectPrism('${Utils.escapeJs(item.id)}', '${Utils.escapeJs(item.name)}')`
+                : `FractalSelector.selectFractal('${Utils.escapeJs(item.id)}', '${Utils.escapeJs(item.name)}')`;
+            const roleLabel = !isPrism && item.user_role ? item.user_role : '';
+            const isDefault = !isPrism && item.is_default;
+            return `
+                <button class="fractal-selector-item ${isCurrent ? 'current' : ''}" onclick="${onclick}">
+                    <span class="fractal-selector-item-name">
+                        ${Utils.escapeHtml(item.name)}${isDefault ? ' (default)' : ''}
+                        ${isPrism ? `<span class="prism-badge" style="font-size:9px;padding:1px 4px;margin-left:4px;">PRISM</span>` : ''}
+                        ${roleLabel ? `<span style="font-size:9px;opacity:0.6;margin-left:4px;text-transform:uppercase;">${Utils.escapeHtml(roleLabel)}</span>` : ''}
+                    </span>
+                    ${item.description ? `<span class="fractal-selector-item-description">${Utils.escapeHtml(item.description)}</span>` : ''}
+                </button>
+            `;
+        }).join('');
+    },
+
+    _getUsageHistory() {
+        try {
+            const raw = localStorage.getItem('bifract_selector_usage');
+            return raw ? JSON.parse(raw) : {};
+        } catch (e) {
+            return {};
+        }
+    },
+
+    _recordUsage(id) {
+        try {
+            const history = this._getUsageHistory();
+            history[id] = Date.now();
+            localStorage.setItem('bifract_selector_usage', JSON.stringify(history));
+        } catch (e) {
+            // localStorage may be unavailable
+        }
     },
 
     selectCurrentFractal() {
@@ -491,8 +511,9 @@ const FractalSelector = {
                 TimeBar.updateFractalName(selectedFractal.name);
             }
 
+            this._recordUsage(fractalId);
+            if (window.FractalContext) FractalContext.clearSearchState();
             this.refreshCurrentView();
-
 
         } catch (error) {
             console.error('Failed to select fractal:', error);
@@ -544,6 +565,8 @@ const FractalSelector = {
                 TimeBar.updateFractalName(prism.name);
             }
 
+            this._recordUsage(prismId);
+            if (window.FractalContext) FractalContext.clearSearchState();
             this.refreshCurrentView();
 
         } catch (error) {
@@ -568,6 +591,9 @@ const FractalSelector = {
         try {
             if (window.FractalContext && typeof FractalContext.notifyFractalChange === 'function') {
                 FractalContext.notifyFractalChange();
+            }
+            if (window.App && typeof App.updateScopedTabVisibility === 'function') {
+                App.updateScopedTabVisibility();
             }
         } catch (error) {
             console.error('Error refreshing current view:', error);

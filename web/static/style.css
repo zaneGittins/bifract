@@ -2279,30 +2279,12 @@ body.col-resizing * {
 }
 
 .results-table tbody tr.has-comments {
-    border-left: 2px solid var(--accent-color, rgba(156, 106, 222, 0.7)) !important;
-}
-
-.results-table tbody tr.has-comments td:first-child {
-    position: relative;
-    padding-left: 1.5rem;
-}
-
-.results-table tbody tr.has-comments td:first-child::before {
-    content: '';
-    position: absolute;
-    left: 0.4rem;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 10px;
-    height: 10px;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239c6ade' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'%3E%3C/path%3E%3C/svg%3E");
-    background-size: contain;
-    background-repeat: no-repeat;
-    opacity: 0.7;
+    border-left: 4px solid rgba(156, 106, 222, 0.85) !important;
+    background: rgba(156, 106, 222, 0.08) !important;
 }
 
 .results-table tbody tr.has-comments:hover {
-    background: var(--bg-hover) !important;
+    background: rgba(156, 106, 222, 0.14) !important;
 }
 
 .results-table tbody tr:last-child {
@@ -3110,7 +3092,14 @@ body.col-resizing * {
     margin-left: 0.625rem;
 }
 
-/* Comments tab split layout */
+/* Comments tab layout: filter bar full-width, split below */
+#commentedView {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
 .comments-split {
     display: flex;
     flex: 1;
@@ -3157,15 +3146,12 @@ body.col-resizing * {
     min-height: 0;
 }
 
-/* Comment block at top of detail panel */
+/* Comment block inside Comment tab pane */
 .cdp-comment-block {
-    padding: 0.625rem 0.75rem;
-    border-bottom: 1px solid var(--border-color);
-    background: var(--bg-tertiary);
+    padding: 0.75rem;
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
-    flex-shrink: 0;
+    gap: 0.5rem;
 }
 
 .cdp-comment-text {

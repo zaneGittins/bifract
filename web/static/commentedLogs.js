@@ -560,106 +560,66 @@ const CommentedLogs = {
         const content = document.getElementById('commentDetailContent');
         if (!panel || !content) return;
 
-        // Update header immediately from comment data
-        const ts = comment.log_timestamp
-            ? new Date(comment.log_timestamp).toLocaleString()
-            : '';
+        // Update header from comment data immediately
         const tsEl = document.getElementById('cdpTimestamp');
-        if (tsEl) tsEl.textContent = ts;
+        if (tsEl) tsEl.textContent = comment.log_timestamp
+            ? new Date(comment.log_timestamp).toLocaleString() : '';
         const badge = document.getElementById('cdpLevelBadge');
-        if (badge) badge.textContent = '';
+        if (badge) { badge.textContent = ''; badge.className = 'log-level-badge'; }
 
         this._updateDetailNav();
-
-        // Show panel with loading state
-        content.innerHTML = '<div class="fields-loading">Loading log...</div>';
         panel.classList.add('open');
 
-        this._fetchAndRenderDetail(comment, content);
+        // Build full tab structure synchronously — Comment tab renders immediately,
+        // Fields/Raw show skeletons until the fetch resolves.
+        this._buildDetailTabs(comment, content);
     },
 
-    async _fetchAndRenderDetail(comment, content) {
-        const logData = await this._fetchLog(comment);
-
-        // Update level badge from fields if available
-        if (logData) {
-            const badge = document.getElementById('cdpLevelBadge');
-            if (badge) {
-                const level = (logData.fields && (logData.fields.level || logData.fields.severity || logData.fields.Level)) || '';
-                if (level) {
-                    badge.textContent = level;
-                    badge.className = 'log-level-badge level-' + level.toLowerCase();
-                }
-            }
-        }
-
+    _buildDetailTabs(comment, content) {
         content.innerHTML = '';
 
-        // Comment block (always shown, no fetch needed)
-        const commentBlock = document.createElement('div');
-        commentBlock.className = 'cdp-comment-block';
-
-        const commentText = document.createElement('div');
-        commentText.className = 'cdp-comment-text comment-markdown';
-        commentText.innerHTML = Utils.renderCommentMarkdown(comment.text || '');
-        commentBlock.appendChild(commentText);
-
-        const meta = document.createElement('div');
-        meta.className = 'cdp-comment-meta';
-        const authorColor = comment.author_gravatar_color || 'var(--accent-primary)';
-        const authorInitial = comment.author_gravatar_initial || (comment.author || '?').charAt(0).toUpperCase();
-        meta.innerHTML = `
-            <span class="gravatar-sm" style="background-color:${authorColor}">${Utils.escapeHtml(authorInitial)}</span>
-            <span>${Utils.escapeHtml(comment.author_display_name || comment.author || '')}</span>
-            <span>&middot;</span>
-            <span>${new Date(comment.created_at).toLocaleString()}</span>
-        `;
-        if (comment.tags && comment.tags.length > 0) {
-            comment.tags.forEach(t => {
-                const tag = document.createElement('span');
-                tag.className = 'cdp-tag';
-                tag.textContent = t;
-                meta.appendChild(tag);
-            });
-        }
-        commentBlock.appendChild(meta);
-        content.appendChild(commentBlock);
-
-        // Tab bar
+        // Tab bar: Comment first, then Fields, Raw Log
         const tabBar = document.createElement('div');
         tabBar.className = 'log-detail-tabs';
 
-        const fieldsTab = document.createElement('button');
-        fieldsTab.className = 'log-detail-tab active';
-        fieldsTab.textContent = 'Fields';
-        fieldsTab.dataset.tab = 'fields';
-
-        const rawTab = document.createElement('button');
-        rawTab.className = 'log-detail-tab';
-        rawTab.textContent = 'Raw Log';
-        rawTab.dataset.tab = 'raw';
-
-        tabBar.appendChild(fieldsTab);
-        tabBar.appendChild(rawTab);
+        const makeTab = (label, key, active) => {
+            const btn = document.createElement('button');
+            btn.className = 'log-detail-tab' + (active ? ' active' : '');
+            btn.textContent = label;
+            btn.dataset.tab = key;
+            tabBar.appendChild(btn);
+            return btn;
+        };
+        makeTab('Comment', 'comment', true);
+        makeTab('Fields', 'fields', false);
+        makeTab('Raw Log', 'raw', false);
         content.appendChild(tabBar);
 
-        // Fields pane
-        const fieldsPane = document.createElement('div');
-        fieldsPane.className = 'log-detail-tab-content active';
-        fieldsPane.dataset.tab = 'fields';
+        const makePane = (key, active) => {
+            const pane = document.createElement('div');
+            pane.className = 'log-detail-tab-content' + (active ? ' active' : '');
+            pane.dataset.tab = key;
+            content.appendChild(pane);
+            return pane;
+        };
+
+        // Comment pane — fully rendered from in-memory data, no fetch needed
+        const commentPane = makePane('comment', true);
+        this._renderCommentPane(commentPane, comment);
+
+        // Fields pane — skeleton until log fetch
+        const fieldsPane = makePane('fields', false);
         const fieldsContainer = document.createElement('div');
         fieldsContainer.className = 'log-fields-container';
+        if (window.LogDetail) LogDetail._renderFieldsSkeleton(fieldsContainer);
         fieldsPane.appendChild(fieldsContainer);
-        content.appendChild(fieldsPane);
 
-        // Raw log pane
-        const rawPane = document.createElement('div');
-        rawPane.className = 'log-detail-tab-content';
-        rawPane.dataset.tab = 'raw';
+        // Raw log pane — blank until log fetch
+        const rawPane = makePane('raw', false);
         const rawDiv = document.createElement('div');
         rawDiv.className = 'raw-log-content';
+        rawDiv.innerHTML = '<div class="fields-loading">Loading...</div>';
         rawPane.appendChild(rawDiv);
-        content.appendChild(rawPane);
 
         // Tab switching
         tabBar.addEventListener('click', e => {
@@ -672,16 +632,66 @@ const CommentedLogs = {
             if (pane) pane.classList.add('active');
         });
 
-        // Render content via LogDetail helpers if available
-        if (logData && window.LogDetail) {
-            LogDetail.renderFields(logData, fieldsContainer);
-            LogDetail.renderRawLog(logData, rawDiv);
-        } else if (!logData) {
-            fieldsContainer.innerHTML = '<div class="fields-loading">Log not found in ClickHouse.</div>';
-            rawDiv.textContent = '';
-        } else {
-            fieldsContainer.innerHTML = '<div class="fields-loading">No fields available.</div>';
+        // Fetch log in background; fill in Fields and Raw when ready
+        this._fetchLog(comment).then(logData => {
+            if (!logData) {
+                fieldsContainer.innerHTML = '<div class="fields-loading">Log not found in ClickHouse.</div>';
+                rawDiv.innerHTML = '';
+                return;
+            }
+            // Update level badge with a named string level only (skip bare integers)
+            const badge = document.getElementById('cdpLevelBadge');
+            if (badge) {
+                const raw = (logData.level || logData.severity || logData.log_level || '');
+                const level = String(raw).trim();
+                const isNamedLevel = level && !/^\d+$/.test(level);
+                badge.textContent = isNamedLevel ? level : '';
+                badge.className = 'log-level-badge' + (isNamedLevel ? ' level-' + level.toLowerCase() : '');
+            }
+            if (window.LogDetail) {
+                LogDetail.renderFields(logData, fieldsContainer);
+                LogDetail.renderRawLog(logData, rawDiv);
+            }
+        });
+    },
+
+    _renderCommentPane(pane, comment) {
+        const authorColor = comment.author_gravatar_color || 'var(--accent-primary)';
+        const authorInitial = comment.author_gravatar_initial
+            || (comment.author || '?').charAt(0).toUpperCase();
+
+        const block = document.createElement('div');
+        block.className = 'cdp-comment-block';
+
+        const text = document.createElement('div');
+        text.className = 'cdp-comment-text comment-markdown';
+        text.innerHTML = Utils.renderCommentMarkdown(comment.text || '');
+        block.appendChild(text);
+
+        const meta = document.createElement('div');
+        meta.className = 'cdp-comment-meta';
+        meta.innerHTML = `
+            <span class="gravatar-sm" style="background-color:${authorColor}">${Utils.escapeHtml(authorInitial)}</span>
+            <span>${Utils.escapeHtml(comment.author_display_name || comment.author || '')}</span>
+            <span>&middot;</span>
+            <span>${new Date(comment.created_at).toLocaleString()}</span>
+        `;
+        (comment.tags || []).forEach(t => {
+            const tag = document.createElement('span');
+            tag.className = 'cdp-tag';
+            tag.textContent = t;
+            meta.appendChild(tag);
+        });
+        block.appendChild(meta);
+
+        if (comment.query) {
+            const qRow = document.createElement('div');
+            qRow.className = 'cdp-comment-meta';
+            qRow.innerHTML = `<span style="opacity:.6">query:</span> <code style="font-size:.68rem">${Utils.escapeHtml(comment.query)}</code>`;
+            block.appendChild(qRow);
         }
+
+        pane.appendChild(block);
     },
 
     closeDetail() {

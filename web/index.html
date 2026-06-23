@@ -1047,55 +1047,57 @@
             <div id="fractalCommentsTabContent" style="display: none;">
         <!-- Commented Logs View -->
         <div id="commentedView" class="auth-required" style="display: none;">
+            <!-- Filter bar stays full-width above the split -->
+            <div class="alerts-filters">
+                <input type="text" id="commentedSearchInput" class="alerts-search"
+                       placeholder="Search comments, log IDs, authors..."
+                       oninput="CommentedLogs.filterComments()" />
+                <select id="commentedTagFilter" class="alerts-filter-select"
+                        onchange="CommentedLogs.filterComments()">
+                    <option value="all">All Tags</option>
+                </select>
+                <select id="commentedAuthorFilter" class="alerts-filter-select"
+                        onchange="CommentedLogs.filterComments()">
+                    <option value="all">All Authors</option>
+                </select>
+                <span id="commentedSelectedCount" class="commented-selected-count"></span>
+                <button id="commentedBulkAddTagBtn" class="btn-secondary btn-sm"
+                        style="display:none;" onclick="CommentedLogs.bulkAddTag()">Add Tag</button>
+                <button id="commentedBulkRemoveTagBtn" class="btn-secondary btn-sm"
+                        style="display:none;" onclick="CommentedLogs.bulkRemoveTag()">Remove Tag</button>
+                <button id="commentedBulkDeleteBtn" class="btn-danger btn-sm"
+                        style="display:none;" onclick="CommentedLogs.bulkDelete()">Delete</button>
+                <span class="filters-spacer"></span>
+                <button id="generateNotebookBtn" class="btn-secondary" style="white-space: nowrap;">Generate Notebook</button>
+                <button id="commentedRefreshBtn" class="btn-secondary">Refresh</button>
+            </div>
+
+            <!-- Split: table on left, detail panel on right -->
             <div class="comments-split">
-            <div id="commentsListView">
-            <section class="commented-logs-section">
-                <div class="alerts-filters">
-                    <input type="text" id="commentedSearchInput" class="alerts-search"
-                           placeholder="Search comments, log IDs, authors..."
-                           oninput="CommentedLogs.filterComments()" />
-                    <select id="commentedTagFilter" class="alerts-filter-select"
-                            onchange="CommentedLogs.filterComments()">
-                        <option value="all">All Tags</option>
-                    </select>
-                    <select id="commentedAuthorFilter" class="alerts-filter-select"
-                            onchange="CommentedLogs.filterComments()">
-                        <option value="all">All Authors</option>
-                    </select>
-                    <span id="commentedSelectedCount" class="commented-selected-count"></span>
-                    <button id="commentedBulkAddTagBtn" class="btn-secondary btn-sm"
-                            style="display:none;" onclick="CommentedLogs.bulkAddTag()">Add Tag</button>
-                    <button id="commentedBulkRemoveTagBtn" class="btn-secondary btn-sm"
-                            style="display:none;" onclick="CommentedLogs.bulkRemoveTag()">Remove Tag</button>
-                    <button id="commentedBulkDeleteBtn" class="btn-danger btn-sm"
-                            style="display:none;" onclick="CommentedLogs.bulkDelete()">Delete</button>
-                    <span class="filters-spacer"></span>
-                    <button id="generateNotebookBtn" class="btn-secondary" style="white-space: nowrap;">Generate Notebook</button>
-                    <button id="commentedRefreshBtn" class="btn-secondary">Refresh</button>
+                <div id="commentsListView">
+                    <section class="commented-logs-section">
+                        <div id="commentedResults">
+                            <div class="loading">Loading comments...</div>
+                        </div>
+                    </section>
                 </div>
 
-                <div id="commentedResults">
-                    <div class="loading">Loading comments...</div>
-                </div>
-            </section>
-            </div>
-
-            <!-- Comment Detail Panel (push layout, mirrors log detail panel) -->
-            <div id="commentDetailPanel" class="comment-detail-panel">
-                <div class="panel-resize-handle" id="cdpResizeHandle"></div>
-                <div class="panel-header">
-                    <div class="panel-header-context">
-                        <span id="cdpLevelBadge" class="log-level-badge"></span>
-                        <span id="cdpTimestamp" class="panel-timestamp"></span>
+                <!-- Comment Detail Panel (push layout, mirrors log detail panel) -->
+                <div id="commentDetailPanel" class="comment-detail-panel">
+                    <div class="panel-resize-handle" id="cdpResizeHandle"></div>
+                    <div class="panel-header">
+                        <div class="panel-header-context">
+                            <span id="cdpLevelBadge" class="log-level-badge"></span>
+                            <span id="cdpTimestamp" class="panel-timestamp"></span>
+                        </div>
+                        <div class="panel-header-actions">
+                            <button id="cdpPrevBtn" class="panel-nav-btn" title="Previous comment">&#8249;</button>
+                            <button id="cdpNextBtn" class="panel-nav-btn" title="Next comment">&#8250;</button>
+                            <button id="cdpCloseBtn" class="close-panel-btn">&times;</button>
+                        </div>
                     </div>
-                    <div class="panel-header-actions">
-                        <button id="cdpPrevBtn" class="panel-nav-btn" title="Previous comment">&#8249;</button>
-                        <button id="cdpNextBtn" class="panel-nav-btn" title="Next comment">&#8250;</button>
-                        <button id="cdpCloseBtn" class="close-panel-btn">&times;</button>
-                    </div>
+                    <div class="panel-body" id="commentDetailContent"></div>
                 </div>
-                <div class="panel-body" id="commentDetailContent"></div>
-            </div>
             </div><!-- end comments-split -->
 
         </div>

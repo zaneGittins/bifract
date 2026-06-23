@@ -809,6 +809,16 @@ const App = {
         }
     },
 
+    // Hide/show tabs that only apply to fractals (not prisms) and vice-versa.
+    // Called from showFractalView and whenever the scope type changes in-place.
+    updateScopedTabVisibility() {
+        const isPrism = window.FractalContext && window.FractalContext.isPrism();
+        const ingestTabBtn = document.getElementById('fractalIngestTabBtn');
+        if (ingestTabBtn) ingestTabBtn.style.display = isPrism ? 'none' : '';
+        const modelsTabBtn = document.getElementById('fractalModelsTabBtn');
+        if (modelsTabBtn) modelsTabBtn.style.display = isPrism ? 'none' : '';
+    },
+
     // Show the fractal view (search / comments / alerts / reference)
     showFractalView(tab = 'search') {
 
@@ -838,18 +848,7 @@ const App = {
         const contextPill = document.getElementById('contextPillContainer');
         if (contextPill) contextPill.style.display = 'flex';
 
-        // Hide tabs that are inherently per-fractal when viewing a prism.
-        // Ingest tokens are per-fractal; analytics models are backed by a
-        // fractal-scoped ClickHouse table and do not populate in a prism.
-        const isPrism = window.FractalContext && window.FractalContext.isPrism();
-        const ingestTabBtn = document.getElementById('fractalIngestTabBtn');
-        if (ingestTabBtn) {
-            ingestTabBtn.style.display = isPrism ? 'none' : '';
-        }
-        const modelsTabBtn = document.getElementById('fractalModelsTabBtn');
-        if (modelsTabBtn) {
-            modelsTabBtn.style.display = isPrism ? 'none' : '';
-        }
+        this.updateScopedTabVisibility();
 
         // Switch to the requested tab
         this.showFractalViewTab(tab);
