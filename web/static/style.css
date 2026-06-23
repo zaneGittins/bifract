@@ -8318,6 +8318,22 @@ tr.perf-danger td {
     transition: margin-right 0.3s ease;
 }
 
+/* Alert editor toolbar selects */
+.time-range-select {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    padding: 6px 10px;
+    font-size: 13px;
+    font-family: inherit;
+}
+
+.time-range-select:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
 /* Editor inline toolbar buttons */
 .editor-back-btn,
 .alert-editor-back-btn,

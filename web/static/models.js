@@ -841,10 +841,32 @@ const AnalyticsModels = {
 
         const sorted = [...days].map(d => String(d).substring(0, 10)).sort();
         const startISO = sorted[0] + 'T00:00:00Z';
-        // End = last day at 23:59:59 UTC
         const endISO = sorted[sorted.length - 1] + 'T23:59:59Z';
 
-        const bql = this._buildSourceQuery(model.definition || {});
+        const def = model.definition || {};
+        const esc = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+
+        let bql = this._buildSourceQuery(def);
+
+        // Append row-specific entity/value filters
+        const rowFilters = [];
+        const mtype = model.model_type || 'rarity';
+        if (mtype === 'rarity') {
+            if (def.partition_key && row.partition_val != null) rowFilters.push(`| ${def.partition_key}=${esc(row.partition_val)}`);
+            if (def.value_key && row.value_val != null)         rowFilters.push(`| ${def.value_key}=${esc(row.value_val)}`);
+        } else {
+            // first_seen uses entity_key; volume_baseline uses entity_val
+            const entityRaw = mtype === 'first_seen' ? row.entity_key : row.entity_val;
+            const fields = Array.isArray(def.key_fields) ? def.key_fields : [];
+            if (fields.length && entityRaw != null) {
+                const parts = String(entityRaw).split('\x1e');
+                fields.forEach((field, i) => rowFilters.push(`| ${field}=${esc(parts[i] ?? '')}`));
+            }
+        }
+        if (rowFilters.length) {
+            if (!bql) rowFilters[0] = rowFilters[0].replace(/^\|\s+/, '');
+            bql = (bql ? bql + '\n' : '') + rowFilters.join('\n');
+        }
 
         if (window.App) App.showFractalViewTab('search');
 

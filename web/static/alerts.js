@@ -2475,7 +2475,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                             histogram = frame.buckets || null;
                             break;
                         case 'rows': {
-                            const incoming = frame.rows || [];
+                            const incoming = frame.data || [];
                             if (!incoming.length) break;
                             rows = rows.concat(incoming);
                             if (firstRows) {
