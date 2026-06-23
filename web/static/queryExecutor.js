@@ -193,6 +193,8 @@ const QueryExecutor = {
         const query = this.stripComments(rawQuery);
         if (!query) return;
 
+        if (window.LogDetail) LogDetail.close();
+
         // Store for use by loadMore()
         this.currentQuery = query;
         this.currentCursor = null;
@@ -1233,17 +1235,29 @@ const QueryExecutor = {
         const resizers = document.querySelectorAll('.column-resizer');
         resizers.forEach(resizer => {
             resizer.addEventListener('mousedown', (e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 const th = resizer.parentElement;
+                const table = th.closest('table');
                 const field = th.dataset.field;
                 const startX = e.pageX;
-                const startWidth = th.offsetWidth;
 
+                // Freeze all column widths and switch to fixed layout so resizing
+                // one column doesn't cause the browser to reflow the others.
+                if (table.style.tableLayout !== 'fixed') {
+                    table.querySelectorAll('thead th:not(.filler-col)').forEach(t => {
+                        t.style.width = t.offsetWidth + 'px';
+                    });
+                    table.style.tableLayout = 'fixed';
+                }
+
+                const startWidth = th.offsetWidth;
                 th.classList.add('resizing');
+                document.body.classList.add('col-resizing');
 
                 const onMouseMove = (e) => {
                     const newWidth = startWidth + (e.pageX - startX);
-                    if (newWidth > 50) { // Minimum column width
+                    if (newWidth > 50) {
                         th.style.width = newWidth + 'px';
                         this.columnWidths[field] = newWidth;
                     }
@@ -1251,6 +1265,7 @@ const QueryExecutor = {
 
                 const onMouseUp = () => {
                     th.classList.remove('resizing');
+                    document.body.classList.remove('col-resizing');
                     document.removeEventListener('mousemove', onMouseMove);
                     document.removeEventListener('mouseup', onMouseUp);
                 };

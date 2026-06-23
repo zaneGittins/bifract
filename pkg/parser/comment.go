@@ -7,7 +7,8 @@ import "strings"
 // the query handler can pre-fetch matching log_ids from PostgreSQL.
 func ExtractCommentParams(pipeline *PipelineNode) (tags []string, keyword string, found bool) {
 	for _, cmd := range pipeline.Commands {
-		if strings.ToLower(cmd.Name) != "comment" {
+		name := strings.ToLower(cmd.Name)
+		if name != "comment" && name != "comments" {
 			continue
 		}
 		found = true

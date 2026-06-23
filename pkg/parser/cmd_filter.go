@@ -124,4 +124,5 @@ func init() {
 	registerCommand(&inHandler{}, "in")
 	registerCommand(&cidrHandler{}, "cidr")
 	registerCommand(&commentHandler{}, "comment")
+	registerCommand(&commentHandler{}, "comments")
 }

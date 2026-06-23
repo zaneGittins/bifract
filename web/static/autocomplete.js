@@ -25,6 +25,7 @@ const Autocomplete = {
         { keyword: 'urldecode(', desc: 'URL-decode field' },
         { keyword: 'hash(', desc: 'Hash fields with cityHash64' },
         { keyword: 'comment(', desc: 'Filter commented logs' },
+        { keyword: 'comments(', desc: 'Filter commented logs' },
         { keyword: 'modifiedZScore(', desc: 'Modified z-score outlier detection' },
         { keyword: 'madOutlier(', desc: 'Outlier detection with threshold' },
         { keyword: 'iqr(', desc: 'Interquartile range' },
@@ -448,6 +449,7 @@ const Autocomplete = {
             args: [],
             example: 'comment()',
         },
+        'comments': { ref: 'comment' },
         'piechart': {
             name: 'piechart',
             signature: 'piechart(limit=N)',

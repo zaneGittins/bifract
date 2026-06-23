@@ -2245,6 +2245,12 @@ body.results-fullscreen .results-section {
     user-select: none;
 }
 
+body.col-resizing,
+body.col-resizing * {
+    cursor: col-resize !important;
+    user-select: none !important;
+}
+
 .column-resizer {
     position: absolute;
     right: 0;
@@ -3102,6 +3108,89 @@ body.results-fullscreen .results-section {
 .log-detail-panel.open {
     width: var(--detail-panel-width, 480px);
     margin-left: 0.625rem;
+}
+
+/* Comments tab split layout */
+.comments-split {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+    overflow: hidden;
+}
+
+#commentsListView {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+}
+
+/* Comment detail panel — mirrors .log-detail-panel */
+.comment-detail-panel {
+    position: relative;
+    flex: 0 0 auto;
+    width: 0;
+    margin-left: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-sm);
+    transition: width 0.25s ease, margin-left 0.25s ease;
+}
+
+.comment-detail-panel.open {
+    width: var(--detail-panel-width, 480px);
+    margin-left: 0.625rem;
+}
+
+.comment-detail-panel .panel-header {
+    padding: 0.5rem 0.75rem;
+}
+
+#commentDetailContent.panel-body {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+/* Comment block at top of detail panel */
+.cdp-comment-block {
+    padding: 0.625rem 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    flex-shrink: 0;
+}
+
+.cdp-comment-text {
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.cdp-comment-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    flex-wrap: wrap;
+}
+
+.cdp-tag {
+    background: rgba(156, 106, 222, 0.12);
+    color: var(--accent-primary);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.65rem;
 }
 
 /* Resize drag handle on left edge */

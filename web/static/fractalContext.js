@@ -215,6 +215,7 @@ const FractalContext = {
 
     // Clear search state when switching fractals
     clearSearchState() {
+        if (window.LogDetail) LogDetail.close();
 
         // Clear QueryExecutor state and cancel any pending requests
         if (window.QueryExecutor) {

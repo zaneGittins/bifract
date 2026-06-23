@@ -7,6 +7,7 @@ import (
 
 type FunctionDoc struct {
 	Name        string   `json:"name"`
+	Aliases     []string `json:"aliases,omitempty"`
 	Category    string   `json:"category"`
 	Description string   `json:"description"`
 	Syntax      string   `json:"syntax"`
@@ -780,6 +781,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			},
 			{
 				Name:        "comment",
+				Aliases:     []string{"comments"},
 				Category:    "Filtering",
 				Description: "Filters logs to only those with comments. Optionally filter by tag labels or keyword search in comment text.",
 				Syntax:      "| comment(tags=tag1,tag2, keyword=\"text\")",

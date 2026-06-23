@@ -8,6 +8,7 @@ const CommentedLogs = {
     pageSize: 25,
     sortColumn: null,
     sortDirection: null,
+    detailCurrentIndex: -1,
 
     async init() {
         const commentedTab = document.getElementById('commentedTabBtn');
@@ -29,6 +30,42 @@ const CommentedLogs = {
         if (generateBtn) {
             generateBtn.addEventListener('click', () => this.showGenerateNotebookModal());
         }
+
+        const closeBtn = document.getElementById('cdpCloseBtn');
+        if (closeBtn) closeBtn.addEventListener('click', () => this.closeDetail());
+
+        const prevBtn = document.getElementById('cdpPrevBtn');
+        if (prevBtn) prevBtn.addEventListener('click', () => this.navigateDetail(-1));
+
+        const nextBtn = document.getElementById('cdpNextBtn');
+        if (nextBtn) nextBtn.addEventListener('click', () => this.navigateDetail(1));
+
+        this._initResizeHandle();
+    },
+
+    _initResizeHandle() {
+        const handle = document.getElementById('cdpResizeHandle');
+        const panel = document.getElementById('commentDetailPanel');
+        if (!handle || !panel) return;
+        let startX, startW;
+        handle.addEventListener('mousedown', e => {
+            startX = e.clientX;
+            startW = panel.offsetWidth;
+            handle.classList.add('dragging');
+            const onMove = ev => {
+                const delta = startX - ev.clientX;
+                const newW = Math.max(300, Math.min(900, startW + delta));
+                panel.style.width = newW + 'px';
+                document.documentElement.style.setProperty('--detail-panel-width', newW + 'px');
+            };
+            const onUp = () => {
+                handle.classList.remove('dragging');
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
     },
 
     async show() {
@@ -97,6 +134,7 @@ const CommentedLogs = {
 
         this.currentPage = 1;
         this.selectedIds.clear();
+        this.closeDetail();
         this.applySorting();
         this.renderTable();
     },
@@ -382,7 +420,10 @@ const CommentedLogs = {
                     </thead>
                     <tbody>`;
 
-        for (const comment of pageComments) {
+        const pageStart = (this.currentPage - 1) * this.pageSize;
+        for (let pi = 0; pi < pageComments.length; pi++) {
+            const comment = pageComments[pi];
+            const globalIndex = pageStart + pi;
             const isSelected = this.selectedIds.has(comment.id);
             const created = new Date(comment.created_at).toLocaleString();
             const textPreview = comment.text.length > 100
@@ -407,6 +448,7 @@ const CommentedLogs = {
 
             html += `
                 <tr class="alert-row" data-comment-id="${comment.id}"
+                    data-index="${globalIndex}"
                     data-log-id="${Utils.escapeHtml(comment.log_id)}"
                     data-log-ts="${Utils.escapeHtml(comment.log_timestamp)}"
                     data-fractal-id="${Utils.escapeHtml(comment.fractal_id || '')}">
@@ -445,10 +487,8 @@ const CommentedLogs = {
     addRowClickHandlers() {
         document.querySelectorAll('#commentedResults .alert-row').forEach(row => {
             row.addEventListener('click', () => {
-                const logId = row.dataset.logId;
-                const logTs = row.dataset.logTs;
-                const fractalId = row.dataset.fractalId;
-                if (logId) this.showLogDetail(logId, logTs, fractalId);
+                const index = parseInt(row.dataset.index, 10);
+                if (!isNaN(index)) this.openDetail(index);
             });
         });
     },
@@ -503,46 +543,183 @@ const CommentedLogs = {
     },
 
     // ============================
-    // Log Detail
+    // Comment Detail Panel
     // ============================
 
-    async showLogDetail(logId, logTimestamp, fractalId) {
-        try {
-            let requestBody = {
-                timestamp: logTimestamp,
-                log_id: logId
-            };
+    openDetail(index) {
+        const comment = this.filteredComments[index];
+        if (!comment) return;
+        this.detailCurrentIndex = index;
 
-            // Use the comment's own fractal_id if available.
-            // For prism-scoped comments, fractal_id is empty - omit it
-            // so the backend searches across all fractals by log_id.
-            if (fractalId) {
-                requestBody.fractal_id = fractalId;
+        // Highlight selected row
+        document.querySelectorAll('#commentedResults .alert-row').forEach(r => {
+            r.classList.toggle('selected', parseInt(r.dataset.index, 10) === index);
+        });
+
+        const panel = document.getElementById('commentDetailPanel');
+        const content = document.getElementById('commentDetailContent');
+        if (!panel || !content) return;
+
+        // Update header immediately from comment data
+        const ts = comment.log_timestamp
+            ? new Date(comment.log_timestamp).toLocaleString()
+            : '';
+        const tsEl = document.getElementById('cdpTimestamp');
+        if (tsEl) tsEl.textContent = ts;
+        const badge = document.getElementById('cdpLevelBadge');
+        if (badge) badge.textContent = '';
+
+        this._updateDetailNav();
+
+        // Show panel with loading state
+        content.innerHTML = '<div class="fields-loading">Loading log...</div>';
+        panel.classList.add('open');
+
+        this._fetchAndRenderDetail(comment, content);
+    },
+
+    async _fetchAndRenderDetail(comment, content) {
+        const logData = await this._fetchLog(comment);
+
+        // Update level badge from fields if available
+        if (logData) {
+            const badge = document.getElementById('cdpLevelBadge');
+            if (badge) {
+                const level = (logData.fields && (logData.fields.level || logData.fields.severity || logData.fields.Level)) || '';
+                if (level) {
+                    badge.textContent = level;
+                    badge.className = 'log-level-badge level-' + level.toLowerCase();
+                }
             }
+        }
 
-            const response = await fetch('/api/v1/logs/by-timestamp', {
+        content.innerHTML = '';
+
+        // Comment block (always shown, no fetch needed)
+        const commentBlock = document.createElement('div');
+        commentBlock.className = 'cdp-comment-block';
+
+        const commentText = document.createElement('div');
+        commentText.className = 'cdp-comment-text comment-markdown';
+        commentText.innerHTML = Utils.renderCommentMarkdown(comment.text || '');
+        commentBlock.appendChild(commentText);
+
+        const meta = document.createElement('div');
+        meta.className = 'cdp-comment-meta';
+        const authorColor = comment.author_gravatar_color || 'var(--accent-primary)';
+        const authorInitial = comment.author_gravatar_initial || (comment.author || '?').charAt(0).toUpperCase();
+        meta.innerHTML = `
+            <span class="gravatar-sm" style="background-color:${authorColor}">${Utils.escapeHtml(authorInitial)}</span>
+            <span>${Utils.escapeHtml(comment.author_display_name || comment.author || '')}</span>
+            <span>&middot;</span>
+            <span>${new Date(comment.created_at).toLocaleString()}</span>
+        `;
+        if (comment.tags && comment.tags.length > 0) {
+            comment.tags.forEach(t => {
+                const tag = document.createElement('span');
+                tag.className = 'cdp-tag';
+                tag.textContent = t;
+                meta.appendChild(tag);
+            });
+        }
+        commentBlock.appendChild(meta);
+        content.appendChild(commentBlock);
+
+        // Tab bar
+        const tabBar = document.createElement('div');
+        tabBar.className = 'log-detail-tabs';
+
+        const fieldsTab = document.createElement('button');
+        fieldsTab.className = 'log-detail-tab active';
+        fieldsTab.textContent = 'Fields';
+        fieldsTab.dataset.tab = 'fields';
+
+        const rawTab = document.createElement('button');
+        rawTab.className = 'log-detail-tab';
+        rawTab.textContent = 'Raw Log';
+        rawTab.dataset.tab = 'raw';
+
+        tabBar.appendChild(fieldsTab);
+        tabBar.appendChild(rawTab);
+        content.appendChild(tabBar);
+
+        // Fields pane
+        const fieldsPane = document.createElement('div');
+        fieldsPane.className = 'log-detail-tab-content active';
+        fieldsPane.dataset.tab = 'fields';
+        const fieldsContainer = document.createElement('div');
+        fieldsContainer.className = 'log-fields-container';
+        fieldsPane.appendChild(fieldsContainer);
+        content.appendChild(fieldsPane);
+
+        // Raw log pane
+        const rawPane = document.createElement('div');
+        rawPane.className = 'log-detail-tab-content';
+        rawPane.dataset.tab = 'raw';
+        const rawDiv = document.createElement('div');
+        rawDiv.className = 'raw-log-content';
+        rawPane.appendChild(rawDiv);
+        content.appendChild(rawPane);
+
+        // Tab switching
+        tabBar.addEventListener('click', e => {
+            const tab = e.target.closest('.log-detail-tab');
+            if (!tab) return;
+            tabBar.querySelectorAll('.log-detail-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            content.querySelectorAll('.log-detail-tab-content').forEach(p => p.classList.remove('active'));
+            const pane = content.querySelector(`.log-detail-tab-content[data-tab="${tab.dataset.tab}"]`);
+            if (pane) pane.classList.add('active');
+        });
+
+        // Render content via LogDetail helpers if available
+        if (logData && window.LogDetail) {
+            LogDetail.renderFields(logData, fieldsContainer);
+            LogDetail.renderRawLog(logData, rawDiv);
+        } else if (!logData) {
+            fieldsContainer.innerHTML = '<div class="fields-loading">Log not found in ClickHouse.</div>';
+            rawDiv.textContent = '';
+        } else {
+            fieldsContainer.innerHTML = '<div class="fields-loading">No fields available.</div>';
+        }
+    },
+
+    closeDetail() {
+        const panel = document.getElementById('commentDetailPanel');
+        if (panel) panel.classList.remove('open');
+        this.detailCurrentIndex = -1;
+        document.querySelectorAll('#commentedResults .alert-row.selected')
+            .forEach(r => r.classList.remove('selected'));
+    },
+
+    navigateDetail(dir) {
+        const next = this.detailCurrentIndex + dir;
+        if (next < 0 || next >= this.filteredComments.length) return;
+        this.openDetail(next);
+    },
+
+    _updateDetailNav() {
+        const idx = this.detailCurrentIndex;
+        const prev = document.getElementById('cdpPrevBtn');
+        const next = document.getElementById('cdpNextBtn');
+        if (prev) prev.disabled = idx <= 0;
+        if (next) next.disabled = idx >= this.filteredComments.length - 1;
+    },
+
+    async _fetchLog(comment) {
+        try {
+            const body = { timestamp: comment.log_timestamp, log_id: comment.log_id };
+            if (comment.fractal_id) body.fractal_id = comment.fractal_id;
+            const resp = await fetch('/api/v1/logs/by-timestamp', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify(requestBody)
+                body: JSON.stringify(body),
             });
-
-            const data = await response.json();
-
-            if (data.success && data.log) {
-                if (window.LogDetail) {
-                    LogDetail.show(data.log);
-                }
-            } else {
-                if (window.Toast) {
-                    Toast.error('Not Found', data.error || 'Log not found in ClickHouse');
-                }
-            }
-        } catch (error) {
-            console.error('[CommentedLogs] Error fetching log details:', error);
-            if (window.Toast) {
-                Toast.error('Network Error', 'Failed to fetch log details');
-            }
+            const data = await resp.json();
+            return (data.success && data.log) ? data.log : null;
+        } catch {
+            return null;
         }
     },
 
