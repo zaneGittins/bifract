@@ -35,7 +35,8 @@ func generateTableDDL(def ModelDefinition, mt ModelType, tableName string) (stri
     fractal_id    LowCardinality(String),
     partition_val String,
     value_val     String,
-    event_count   SimpleAggregateFunction(sum, UInt64)
+    event_count   SimpleAggregateFunction(sum, UInt64),
+    days          AggregateFunction(groupUniqArray(365), Date)
 ) ENGINE = AggregatingMergeTree()
 ORDER BY (fractal_id, partition_val, value_val)
 SETTINGS index_granularity = 8192`, tableName), nil
@@ -46,7 +47,8 @@ SETTINGS index_granularity = 8192`, tableName), nil
     entity_key  String,
     first_seen  SimpleAggregateFunction(min, DateTime64(3)),
     last_seen   SimpleAggregateFunction(max, DateTime64(3)),
-    event_count SimpleAggregateFunction(sum, UInt64)
+    event_count SimpleAggregateFunction(sum, UInt64),
+    days        AggregateFunction(groupUniqArray(365), Date)
 ) ENGINE = AggregatingMergeTree()
 ORDER BY (fractal_id, entity_key)
 SETTINGS index_granularity = 8192`, tableName), nil
@@ -204,7 +206,8 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string) strin
 		b.WriteString(fmt.Sprintf("SELECT fractal_id,\n"))
 		b.WriteString(fmt.Sprintf("    %s AS partition_val,\n", applyLowerIfNeeded(partRef, def.Extractions)))
 		b.WriteString(fmt.Sprintf("    %s AS value_val,\n", applyLowerIfNeeded(valRef, def.Extractions)))
-		b.WriteString("    toUInt64(1) AS event_count\n")
+		b.WriteString("    toUInt64(1) AS event_count,\n")
+		b.WriteString("    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
 		b.WriteString(fmt.Sprintf("WHERE %s != '' AND %s != ''\n", partRef, valRef))
 		b.WriteString(fmt.Sprintf("GROUP BY fractal_id, partition_val, value_val"))
@@ -221,7 +224,8 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string) strin
 		}
 		b.WriteString("    timestamp AS first_seen,\n")
 		b.WriteString("    timestamp AS last_seen,\n")
-		b.WriteString("    toUInt64(1) AS event_count\n")
+		b.WriteString("    toUInt64(1) AS event_count,\n")
+		b.WriteString("    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
 		if len(def.KeyFields) > 0 {
 			guards := make([]string, len(def.KeyFields))
@@ -265,7 +269,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 
 	switch mt {
 	case ModelTypeRarity:
-		b.WriteString(fmt.Sprintf(",\n    %s AS partition_val,\n    %s AS value_val,\n    toUInt64(1) AS event_count\n",
+		b.WriteString(fmt.Sprintf(",\n    %s AS partition_val,\n    %s AS value_val,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days\n",
 			chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey)))
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString("WHERE fractal_id != ''")
@@ -287,7 +291,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			}
 			b.WriteString(fmt.Sprintf(",\n    concat(%s) AS entity_key", strings.Join(parts, ", char(30), ")))
 		}
-		b.WriteString(",\n    timestamp AS first_seen,\n    timestamp AS last_seen,\n    toUInt64(1) AS event_count\n")
+		b.WriteString(",\n    timestamp AS first_seen,\n    timestamp AS last_seen,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString("WHERE fractal_id != ''")
 		for _, fc := range def.Filter {

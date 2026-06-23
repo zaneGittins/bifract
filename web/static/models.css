@@ -642,7 +642,50 @@
 }
 
 .model-data-table tr:hover td {
-    background: rgba(255,255,255,0.03);
+    background: var(--bg-hover, rgba(255,255,255,0.03));
+}
+
+/* Pivot-to-search column */
+.pivot-col-header {
+    width: 42px;
+    min-width: 42px;
+    text-align: center;
+    color: var(--text-muted, #888);
+    font-size: 13px;
+    cursor: default;
+    user-select: none;
+}
+
+.pivot-cell {
+    width: 42px;
+    min-width: 42px;
+    text-align: center;
+    padding: 4px 6px !important;
+}
+
+.row-pivot-btn {
+    display: inline-block;
+    padding: 2px 7px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    background: transparent;
+    border: 1px solid var(--accent-primary, #9c6ade);
+    border-radius: 4px;
+    color: var(--accent-primary, #9c6ade);
+    cursor: pointer;
+    opacity: 0.55;
+    transition: opacity 0.12s, background 0.12s;
+    white-space: nowrap;
+}
+
+.model-data-table tr.has-pivot:hover .row-pivot-btn {
+    opacity: 1;
+}
+
+.row-pivot-btn:hover {
+    background: rgba(156, 106, 222, 0.15);
+    opacity: 1;
 }
 
 /* Form helpers */

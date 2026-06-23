@@ -10,78 +10,12 @@ const Comments = {
     selectedSuggestionIndex: -1, // Currently highlighted suggestion
 
     async init() {
-        // Set up close button for comments panel
-        const closeBtn = document.getElementById('closeCommentsPanelBtn');
-        if (closeBtn) {
-            closeBtn.addEventListener('click', () => this.closePanel());
-        }
-
-        // Set up search button for comments panel
-        const searchBtn = document.getElementById('searchLogBtn');
-        if (searchBtn) {
-            searchBtn.addEventListener('click', () => this.searchForCurrentLog());
-        }
-
-        // Tag input: Enter or comma adds a tag, with autocomplete
-        const tagField = document.getElementById('commentTagField');
-        if (tagField) {
-            tagField.addEventListener('keydown', (e) => {
-                const dropdown = document.getElementById('tagSuggestionsDropdown');
-                const items = dropdown ? dropdown.querySelectorAll('.tag-suggestion-item') : [];
-
-                if (e.key === 'ArrowDown') {
-                    e.preventDefault();
-                    if (items.length > 0) {
-                        this.selectedSuggestionIndex = Math.min(this.selectedSuggestionIndex + 1, items.length - 1);
-                        this.highlightSuggestion(items);
-                    }
-                    return;
-                }
-                if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    if (items.length > 0) {
-                        this.selectedSuggestionIndex = Math.max(this.selectedSuggestionIndex - 1, 0);
-                        this.highlightSuggestion(items);
-                    }
-                    return;
-                }
-                if (e.key === 'Escape') {
-                    this.hideSuggestions();
-                    return;
-                }
-                if (e.key === 'Enter' || e.key === ',') {
-                    e.preventDefault();
-                    // Use selected suggestion if one is highlighted
-                    if (this.selectedSuggestionIndex >= 0 && items.length > 0) {
-                        const val = items[this.selectedSuggestionIndex].dataset.tag;
-                        this.addTag(val);
-                    } else {
-                        const val = tagField.value.replace(/,/g, '').trim();
-                        if (val) this.addTag(val);
-                    }
-                    tagField.value = '';
-                    this.hideSuggestions();
-                } else if (e.key === 'Backspace' && tagField.value === '' && this.pendingTags.length > 0) {
-                    this.pendingTags.pop();
-                    this.renderPendingTags();
-                }
-            });
-
-            tagField.addEventListener('input', () => {
-                this.showSuggestions(tagField.value);
-            });
-
-            tagField.addEventListener('focus', () => {
-                this.showSuggestions(tagField.value);
-            });
-
-            // Close suggestions when clicking outside
-            document.addEventListener('click', (e) => {
-                if (!e.target.closest('.comment-tags-input')) {
-                    this.hideSuggestions();
-                }
-            });
-        }
+        // Close suggestions when clicking outside tag input
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.comment-tags-input')) {
+                this.hideSuggestions();
+            }
+        });
 
         // Event delegation for dynamically created elements
         document.addEventListener('click', (e) => {
@@ -187,7 +121,6 @@ const Comments = {
 
     loadQueryFromComment(query) {
         if (!query) return;
-        this.closePanel();
         if (window.LogDetail) window.LogDetail.close();
         if (window.App && window.App.showFractalViewTab) {
             window.App.showFractalViewTab('search');
@@ -204,64 +137,101 @@ const Comments = {
         }
     },
 
-    async openPanel(logData, isAggregated = false) {
-        const panel = document.getElementById('commentsPanel');
-
-        if (!panel) {
-            console.error('[Comments] Panel element not found!');
-            return;
-        }
-
+    async renderInTab(container, logData) {
         this.currentLogData = logData;
 
-        // For aggregated queries, silently disable comments (no error message)
-        if (isAggregated) {
-            return;
-        }
-
-        // ALWAYS use log_id from ClickHouse - no fallback, no generation
         if (!logData.log_id) {
-            console.error('[Comments] No log_id in logData! Cannot add comments.');
-            console.error('[Comments] Available keys in logData:', Object.keys(logData));
-            if (window.Toast) {
-                Toast.warning('Comments Unavailable', 'This log does not have an ID. Comments are not available.');
-            } else {
-                alert('This log does not have an ID. Cannot add comments.');
-            }
+            container.innerHTML = '<div class="fields-loading">Comments unavailable: no log ID.</div>';
             return;
         }
 
         this.currentLogID = String(logData.log_id);
-
-        // Clear the input and tags
-        const input = document.getElementById('commentInput');
-        if (input) input.value = '';
         this.pendingTags = [];
-        this.renderPendingTags();
-        const tagField = document.getElementById('commentTagField');
-        if (tagField) tagField.value = '';
 
-        // Load comments and known tags in parallel
+        container.innerHTML = `
+            <div class="add-comment-form">
+                <textarea id="commentInput" class="comment-textarea"
+                    placeholder="Share your insights about this log..." rows="3"></textarea>
+                <div class="comment-tags-input" id="commentTagsInput">
+                    <div class="comment-tags-chips" id="commentTagsChips"></div>
+                    <input type="text" id="commentTagField" class="comment-tag-field" placeholder="Add tag..." />
+                </div>
+                <button onclick="Comments.saveComment()" class="btn-primary btn-add-comment">Post Comment</button>
+            </div>
+            <div class="comments-divider"></div>
+            <div class="comments-list" id="commentsList">
+                <div class="fields-loading">Loading...</div>
+            </div>
+        `;
+
+        const tagField = container.querySelector('#commentTagField');
+        if (tagField) this._setupTagField(tagField);
+
         this.fetchKnownTags();
         await this.loadComments(logData);
 
-        // Open the panel
-        panel.classList.add('open');
+        this._updateCommentsTabBadge();
+    },
+
+    _setupTagField(tagField) {
+        tagField.addEventListener('keydown', (e) => {
+            const dropdown = document.getElementById('tagSuggestionsDropdown');
+            const items = dropdown ? dropdown.querySelectorAll('.tag-suggestion-item') : [];
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (items.length > 0) {
+                    this.selectedSuggestionIndex = Math.min(this.selectedSuggestionIndex + 1, items.length - 1);
+                    this.highlightSuggestion(items);
+                }
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (items.length > 0) {
+                    this.selectedSuggestionIndex = Math.max(this.selectedSuggestionIndex - 1, 0);
+                    this.highlightSuggestion(items);
+                }
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                this.hideSuggestions();
+                return;
+            }
+            if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault();
+                if (this.selectedSuggestionIndex >= 0 && items.length > 0) {
+                    const val = items[this.selectedSuggestionIndex].dataset.tag;
+                    this.addTag(val);
+                } else {
+                    const val = tagField.value.replace(/,/g, '').trim();
+                    if (val) this.addTag(val);
+                }
+                tagField.value = '';
+                this.hideSuggestions();
+            } else if (e.key === 'Backspace' && tagField.value === '' && this.pendingTags.length > 0) {
+                this.pendingTags.pop();
+                this.renderPendingTags();
+            }
+        });
+
+        tagField.addEventListener('input', () => this.showSuggestions(tagField.value));
+        tagField.addEventListener('focus', () => this.showSuggestions(tagField.value));
+    },
+
+    _updateCommentsTabBadge() {
+        const commentsTab = document.querySelector('.log-detail-tab[data-tab="comments"]');
+        if (!commentsTab) return;
+        const list = document.getElementById('commentsList');
+        if (!list) return;
+        const count = list.querySelectorAll('.comment-item').length;
+        commentsTab.textContent = count > 0 ? `Comments (${count})` : 'Comments';
     },
 
     closePanel() {
-        const panel = document.getElementById('commentsPanel');
-        if (panel) {
-            panel.classList.remove('open');
-        }
         this.currentLogID = null;
         this.currentLogData = null;
-
-        // Also close the log detail panel
-        const detailPanel = document.getElementById('logDetailPanel');
-        if (detailPanel) {
-            detailPanel.classList.remove('open');
-        }
     },
 
     searchForCurrentLog() {
@@ -272,11 +242,9 @@ const Comments = {
             return;
         }
 
-        // Capture before closePanel clears it
+        // Capture before close clears it
         const logID = this.currentLogID;
 
-        // Close the comment panels
-        this.closePanel();
         if (window.LogDetail) {
             window.LogDetail.close();
         }
@@ -654,9 +622,7 @@ const Comments = {
 
         container.innerHTML = html;
 
-        // Update comment count badge if it exists
-        const countBadge = document.querySelector('.comment-count-badge');
-        if (countBadge) countBadge.textContent = `(${comments.length})`;
+        this._updateCommentsTabBadge();
     },
 
 

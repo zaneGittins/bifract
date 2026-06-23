@@ -44,6 +44,29 @@ const Timeline = {
         }
     },
 
+    // Render pre-bucketed histogram data to explicit elements (alert/model editors).
+    // Does not set up drag-to-filter interaction — purely informational.
+    renderBucketsToEl(buckets, timeRange, canvasEl, sectionEl) {
+        const total = (buckets || []).reduce((a, b) => a + b, 0);
+        if (!buckets || !buckets.length || total === 0) {
+            if (sectionEl) sectionEl.style.display = 'none';
+            return;
+        }
+        if (sectionEl) sectionEl.style.display = 'block';
+        this.currentTimeRange = timeRange;
+        this._currentTotal = total;
+        this._currentPeak = Math.max(...buckets);
+        this._currentBuckets = buckets;
+        setTimeout(() => {
+            if (!canvasEl) return;
+            canvasEl.style.width = '100%';
+            canvasEl.style.display = 'block';
+            if (canvasEl.offsetWidth === 0 || canvasEl.offsetHeight === 0) return;
+            this._drawBars(canvasEl, buckets);
+            this._setupResizeObserver(canvasEl);
+        }, 100);
+    },
+
     // Render from pre-bucketed histogram data (used by default recent logs view)
     renderFromHistogram(buckets, timeRange) {
         const timelineSection = document.getElementById('timelineSection');
@@ -171,7 +194,7 @@ const Timeline = {
 
         const width = canvas.offsetWidth;
         const totalHeight = canvas.offsetHeight;
-        const BAR_AREA_H = 54;
+        const BAR_AREA_H = 59;
         const RULER_H = totalHeight - BAR_AREA_H;
 
         const barWidth = width / buckets.length;
@@ -215,10 +238,16 @@ const Timeline = {
             ctx.restore();
         }
 
+        // Badge geometry hoisted so bars can respect the reserved strip
+        const BADGE_PAD_H = 5, BADGE_PAD_V = 3;
+        const BADGE_H = 12 + BADGE_PAD_V * 2;
+        const BADGE_Y = 5;
+        const BADGE_RESERVE = BADGE_Y + BADGE_H + 2; // px at top cleared for stat badge
+
         // Bars
         buckets.forEach((count, i) => {
             if (count === 0) return;
-            const barH = Math.max((count / maxCount) * (BAR_AREA_H - 4), 2);
+            const barH = Math.max((count / maxCount) * (BAR_AREA_H - BADGE_RESERVE), 2);
             const x = i * barWidth;
             const y = BAR_AREA_H - barH;
 
@@ -289,9 +318,6 @@ const Timeline = {
             const valueFont = `12px ${fontFamily}`;
             const totalStr = total.toLocaleString();
             const peakStr  = peak.toLocaleString();
-            const PAD_H = 5, PAD_V = 3;
-            const badgeH = 12 + PAD_V * 2;
-
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
             ctx.font = labelFont;
@@ -300,16 +326,16 @@ const Timeline = {
             ctx.font = valueFont;
             const w2 = ctx.measureText(totalStr).width;
             const w4 = ctx.measureText(peakStr).width;
-            const badgeW = w1 + w2 + w3 + w4 + PAD_H * 2;
+            const badgeW = w1 + w2 + w3 + w4 + BADGE_PAD_H * 2;
             const badgeX = width - badgeW - 6;
-            const badgeY = 5;
-            const textY  = badgeY + badgeH / 2;
+            const badgeY = BADGE_Y;
+            const textY  = badgeY + BADGE_H / 2;
 
             ctx.save();
             ctx.globalAlpha = 0.85;
             ctx.fillStyle = bgPrimary;
             ctx.beginPath();
-            ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 3);
+            ctx.roundRect(badgeX, badgeY, badgeW, BADGE_H, 3);
             ctx.fill();
             ctx.restore();
 
@@ -318,11 +344,11 @@ const Timeline = {
             ctx.strokeStyle = borderColor;
             ctx.lineWidth = 0.5;
             ctx.beginPath();
-            ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 3);
+            ctx.roundRect(badgeX, badgeY, badgeW, BADGE_H, 3);
             ctx.stroke();
             ctx.restore();
 
-            let cx = badgeX + PAD_H;
+            let cx = badgeX + BADGE_PAD_H;
             ctx.font = labelFont; ctx.fillStyle = textColor; ctx.globalAlpha = 0.9;
             ctx.fillText('Total ', cx, textY); cx += w1;
             ctx.font = valueFont; ctx.fillStyle = textPrimary; ctx.globalAlpha = 1;

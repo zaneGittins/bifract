@@ -421,13 +421,15 @@ SELECT partition_val, value_val,
     event_count AS model_count,
     _total AS model_total,
     round(event_count / _total * 100.0, 4) AS percent,
-    round(((_total - _unique) / _total) * 0.95, 4) AS confidence
+    round(((_total - _unique) / _total) * 0.95, 4) AS confidence,
+    days
 FROM (
-    SELECT partition_val, value_val, event_count,
+    SELECT partition_val, value_val, event_count, days,
         sum(event_count) OVER (PARTITION BY partition_val) AS _total,
         uniqExact(value_val) OVER (PARTITION BY partition_val) AS _unique
     FROM (
-        SELECT partition_val, value_val, sum(event_count) AS event_count
+        SELECT partition_val, value_val, sum(event_count) AS event_count,
+            arraySort(groupUniqArrayMerge(365)(days)) AS days
         FROM %s FINAL
         WHERE fractal_id = '%s'
         GROUP BY partition_val, value_val
@@ -451,6 +453,7 @@ WHERE event_count >= 1`, "`"+tableName+"`", storage.EscCHStr(fractalID))
 	if err != nil {
 		return nil, 0, fmt.Errorf("query rarity data: %w", err)
 	}
+	convertDaysToStrings(rows)
 	return rows, total, nil
 }
 
@@ -464,7 +467,8 @@ func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, se
 SELECT entity_key,
     min(first_seen) AS first_seen,
     max(last_seen) AS last_seen,
-    sum(event_count) AS event_count
+    sum(event_count) AS event_count,
+    arraySort(groupUniqArrayMerge(365)(days)) AS days
 FROM %s FINAL
 WHERE fractal_id = '%s'`, "`"+tableName+"`", storage.EscCHStr(fractalID))
 
@@ -484,6 +488,7 @@ WHERE fractal_id = '%s'`, "`"+tableName+"`", storage.EscCHStr(fractalID))
 	if err != nil {
 		return nil, 0, fmt.Errorf("query first_seen data: %w", err)
 	}
+	convertDaysToStrings(rows)
 	return rows, total, nil
 }
 
@@ -508,10 +513,10 @@ func buildVolumeBaselineScoringSQL(quotedTable, fidEsc string, minBuckets int, t
 		minBuckets = 1
 	}
 	lower, upper := volumeScoreBounds(timeBucket)
-	return fmt.Sprintf(`SELECT entity_val, latest_count, baseline_median, mad, n_buckets, latest_bucket,
+	return fmt.Sprintf(`SELECT entity_val, latest_count, baseline_median, mad, n_buckets, latest_bucket, days,
     if(mad = 0, 0, round(0.6745 * (toFloat64(latest_count) - baseline_median) / mad, 4)) AS z_score
 FROM (
-    SELECT entity_val, latest_count, baseline_median, n_buckets, latest_bucket,
+    SELECT entity_val, latest_count, baseline_median, n_buckets, latest_bucket, days,
         arrayReduce('medianExact', arrayMap(x -> abs(toFloat64(x) - baseline_median), cnts)) AS mad
     FROM (
         SELECT entity_val,
@@ -519,7 +524,8 @@ FROM (
             arrayReduce('medianExact', groupArray(daily_count)) AS baseline_median,
             argMax(daily_count, bucket) AS latest_count,
             max(bucket) AS latest_bucket,
-            count() AS n_buckets
+            count() AS n_buckets,
+            arraySort(groupUniqArray(365)(toDate(bucket))) AS days
         FROM (
             SELECT entity_val, bucket, sum(event_count) AS daily_count
             FROM %s FINAL
@@ -559,6 +565,7 @@ func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalI
 	if err != nil {
 		return nil, 0, fmt.Errorf("query volume_baseline data: %w", err)
 	}
+	convertDaysToStrings(rows)
 	return rows, total, nil
 }
 
@@ -692,6 +699,34 @@ func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter [
 	sql := b.String()
 	results, err := m.ch.Query(ctx, sql)
 	return results, sql, err
+}
+
+// convertDaysToStrings walks rows returned from ClickHouse and converts any
+// "days" column from []time.Time (how the CH driver returns Array(Date)) to
+// []string in YYYY-MM-DD format so the JSON response is predictable.
+func convertDaysToStrings(rows []map[string]interface{}) {
+	for _, row := range rows {
+		v, ok := row["days"]
+		if !ok {
+			continue
+		}
+		switch d := v.(type) {
+		case []time.Time:
+			strs := make([]string, len(d))
+			for i, t := range d {
+				strs[i] = t.UTC().Format("2006-01-02")
+			}
+			row["days"] = strs
+		case []interface{}:
+			strs := make([]string, 0, len(d))
+			for _, elem := range d {
+				if t, ok := elem.(time.Time); ok {
+					strs = append(strs, t.UTC().Format("2006-01-02"))
+				}
+			}
+			row["days"] = strs
+		}
+	}
 }
 
 // ---- Scanning helpers ----

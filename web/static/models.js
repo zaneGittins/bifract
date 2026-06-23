@@ -5,6 +5,7 @@ const AnalyticsModels = {
     currentView: 'list',   // 'list' | 'editor' | 'data'
     selectedModel: null,
     _runSeq: 0,            // monotonic token so only the latest _runQuery renders
+    _queryController: null, // AbortController for the in-flight preview fetch
     _viewerPoll: null,     // interval: poll the open model while its backfill runs
     _listPoll: null,       // interval: poll the listing while any backfill runs
     BACKFILL_WINDOWS: [['24h', 'Last 24h'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['90d', 'Last 90 days']],
@@ -751,15 +752,19 @@ const AnalyticsModels = {
         const headers = cols.map(c => {
             const active = v.sortCol === c ? (v.sortDir === 'asc' ? 'sort-asc' : 'sort-desc') : '';
             return `<th class="${active}" data-col="${c}">${c} <span class="sort-icon"></span></th>`;
-        }).join('');
+        }).join('') + `<th class="pivot-col-header" title="Pivot to Search">↗</th>`;
 
-        const rows = v.rows.map(row => {
+        const rows = v.rows.map((row, idx) => {
+            const days = Array.isArray(row.days) ? row.days : [];
             const cells = cols.map(c => {
                 let val = row[c] ?? '';
                 if (typeof val === 'number') val = val.toLocaleString(undefined, { maximumFractionDigits: 4 });
                 return `<td>${_esc(String(val))}</td>`;
             }).join('');
-            return `<tr>${cells}</tr>`;
+            const pivotCell = days.length
+                ? `<td class="pivot-cell"><button class="row-pivot-btn" data-row="${idx}" title="Search ${days.length} day${days.length === 1 ? '' : 's'} in logs">${days.length}d</button></td>`
+                : `<td class="pivot-cell"></td>`;
+            return `<tr class="${days.length ? 'has-pivot' : ''}">${cells}${pivotCell}</tr>`;
         }).join('');
 
         wrap.innerHTML = `
@@ -781,7 +786,82 @@ const AnalyticsModels = {
                 this._loadViewerData();
             });
         });
+
+        wrap.querySelectorAll('.row-pivot-btn').forEach(btn => {
+            btn.addEventListener('click', e => {
+                e.stopPropagation();
+                const row = v.rows[parseInt(btn.dataset.row)];
+                if (row) this._pivotToSearch(row, m);
+            });
+        });
+
         this._renderPagination();
+    },
+
+    // Build a BQL source query string from a model definition (mirrors GenerateSourceQuery in Go).
+    _buildSourceQuery(def) {
+        const lines = [];
+        const esc = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        const relit = s => {
+            // Wrap as /.../ regex literal, escaping unescaped forward slashes.
+            let out = '/';
+            for (let i = 0; i < s.length; i++) {
+                if (s[i] === '\\' && i + 1 < s.length) { out += s[i] + s[i + 1]; i++; continue; }
+                if (s[i] === '/') out += '\\/';
+                else out += s[i];
+            }
+            return out + '/';
+        };
+        for (const fc of (def.filter || [])) {
+            if (fc.op === 'cidr' || fc.op === '!cidr') continue;
+            if (fc.op === '=')  lines.push(`${fc.field} = ${esc(fc.value)}`);
+            else if (fc.op === '!=') lines.push(`${fc.field} != ${esc(fc.value)}`);
+            else if (fc.op === '~')  lines.push(`${fc.field} = ${relit(fc.value)}`);
+            else if (fc.op === '!~') lines.push(`NOT ${fc.field} = ${relit(fc.value)}`);
+            else lines.push(`${fc.field} = ${esc(fc.value)}`);
+        }
+        for (const fc of (def.filter || [])) {
+            if (fc.op === 'cidr')  lines.push(`| cidr(${fc.field}, ${esc(fc.value)})`);
+            else if (fc.op === '!cidr') lines.push(`| !cidr(${fc.field}, ${esc(fc.value)})`);
+        }
+        for (const ext of (def.extractions || [])) {
+            const from = ext.from_field || 'raw_log';
+            lines.push(`| regex(field=${from}, regex=${esc(ext.pattern)}, as=${ext.output_field})`);
+            if (ext.min_length > 0) {
+                lines.push(`| len(${ext.output_field}, as=${ext.output_field}_len) | ${ext.output_field}_len >= ${ext.min_length}`);
+            }
+            if (ext.lowercase) lines.push(`| lowercase(${ext.output_field})`);
+        }
+        return lines.join('\n');
+    },
+
+    _pivotToSearch(row, model) {
+        const days = Array.isArray(row.days) ? row.days : [];
+        if (!days.length) { Toast.error('No day data available for this row yet.'); return; }
+
+        const sorted = [...days].map(d => String(d).substring(0, 10)).sort();
+        const startISO = sorted[0] + 'T00:00:00Z';
+        // End = last day at 23:59:59 UTC
+        const endISO = sorted[sorted.length - 1] + 'T23:59:59Z';
+
+        const bql = this._buildSourceQuery(model.definition || {});
+
+        if (window.App) App.showFractalViewTab('search');
+
+        const queryInput = document.getElementById('queryInput');
+        if (queryInput) {
+            queryInput.value = bql;
+            if (window.SyntaxHighlight) SyntaxHighlight.updateHighlight('queryInput', 'queryHighlight');
+        }
+
+        if (window.TimePicker) {
+            TimePicker.setState({ type: 'custom', customStart: startISO, customEnd: endISO }, true);
+        }
+
+        if (window.QueryExecutor) {
+            QueryExecutor.pendingActiveDays = sorted;
+            setTimeout(() => QueryExecutor.execute(), 50);
+        }
     },
 
     _renderPagination() {
@@ -894,7 +974,9 @@ const AnalyticsModels = {
         container.innerHTML = `
 <div class="models-view-section model-editor">
     <div class="model-editor-header">
-        <button class="btn-secondary" id="modelEditorCancel">← Cancel</button>
+        <button class="alert-editor-back-btn" id="modelEditorCancel" title="Cancel">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
         <h2>${title}</h2>
         <span style="flex:1"></span>
         <button class="btn-primary" id="modelEditorSave">${saveLabel}</button>
@@ -905,7 +987,10 @@ const AnalyticsModels = {
                 <select id="modelTimeRange" class="model-time-select">
                     ${ranges.map(([v, l]) => `<option value="${v}" ${e.timeRange === v ? 'selected' : ''}>${l}</option>`).join('')}
                 </select>
-                <button class="btn-primary" id="modelRunBtn">Run</button>
+                <button class="search-btn" id="modelRunBtn">
+                    <span class="btn-text">Run</span>
+                    <span class="btn-shortcut">⌃↵</span>
+                </button>
                 <span style="flex:1"></span>
                 <span class="model-results-count" id="modelResultsCount"></span>
             </div>
@@ -919,6 +1004,7 @@ const AnalyticsModels = {
             </div>
             <pre id="modelSqlOutput" class="model-sql-output" style="display:${this._showSQL() ? 'block' : 'none'}"></pre>
             <div id="modelTranslation" class="model-translation"></div>
+            <div id="modelTimelineWrap" class="timeline-inline" style="display:none;"><canvas id="modelTimeline"></canvas></div>
             <div id="modelQueryResults" class="model-query-results"><div class="models-empty">Run the query to preview matching logs and extracted fields.</div></div>
         </div>
         <div class="model-editor-right">
@@ -971,12 +1057,12 @@ const AnalyticsModels = {
             this._loadModels();
         });
         document.getElementById('modelEditorSave').addEventListener('click', () => this._saveModel());
-        document.getElementById('modelRunBtn').addEventListener('click', () => this._runQuery());
+        document.getElementById('modelRunBtn').addEventListener('click', () => this._runOrCancelModel());
         const ta = document.getElementById('modelQueryInput');
         ta.addEventListener('input', ev => { e.query = ev.target.value; this._updateQueryHighlight(); });
         ta.addEventListener('scroll', () => this._syncQueryHighlightScroll());
         ta.addEventListener('keydown', ev => {
-            if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') { ev.preventDefault(); this._runQuery(); }
+            if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') { ev.preventDefault(); this._runOrCancelModel(); }
         });
         this._updateQueryHighlight();
         document.getElementById('modelInsertExample')?.addEventListener('click', () => {
@@ -1302,16 +1388,51 @@ const AnalyticsModels = {
     },
 
     // ---- Run: live preview + translation (parallel) ----
+    _runOrCancelModel() {
+        if (this._queryController) {
+            this._queryController.abort();
+            this._queryController = null;
+            this._setModelRunState(false);
+        } else {
+            this._runQuery();
+        }
+    },
+
+    _setModelRunState(running) {
+        const btn = document.getElementById('modelRunBtn');
+        if (!btn) return;
+        const text = btn.querySelector('.btn-text');
+        const shortcut = btn.querySelector('.btn-shortcut');
+        if (running) {
+            btn.classList.add('is-running');
+            if (text) text.textContent = 'Cancel';
+            if (shortcut) shortcut.style.display = 'none';
+        } else {
+            btn.classList.remove('is-running');
+            if (text) text.textContent = 'Run';
+            if (shortcut) shortcut.style.display = '';
+        }
+    },
+
     async _runQuery() {
         const e = this.editor;
         e.query = (document.getElementById('modelQueryInput')?.value || '').trim();
         e.ran = true;
+
+        // Cancel any prior in-flight fetch before starting fresh.
+        if (this._queryController) this._queryController.abort();
+        const controller = new AbortController();
+        this._queryController = controller;
+
         // Guard against out-of-order completion: only the latest run may render.
         const seq = ++this._runSeq;
         const resultsEl = document.getElementById('modelQueryResults');
         const countEl = document.getElementById('modelResultsCount');
         if (resultsEl) resultsEl.innerHTML = '<div class="loading-spinner"><span class="spinner"></span></div>';
         if (countEl) countEl.textContent = 'Running…';
+        const timelineWrapEl = document.getElementById('modelTimelineWrap');
+        if (timelineWrapEl) timelineWrapEl.style.display = 'none';
+        this._setModelRunState(true);
 
         const { start, end } = this._editorTimeRange();
         const qbody = { query: e.query || '*', start, end };
@@ -1319,57 +1440,85 @@ const AnalyticsModels = {
             qbody.fractal_id = window.FractalContext.currentFractal.id;
         }
 
-        const queryPromise = e.query
-            ? fetch('/api/v1/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(qbody) }).then(r => r.json())
-            : Promise.resolve(null);
-        const parsePromise = this._api('POST', '/models/parse-query', { query: e.query, model_type: e.modelType }).catch(() => null);
+        try {
+            const queryPromise = e.query
+                ? fetch('/api/v1/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', signal: controller.signal, body: JSON.stringify(qbody) }).then(r => r.json())
+                : Promise.resolve(null);
+            const parsePromise = this._api('POST', '/models/parse-query', { query: e.query, model_type: e.modelType }).catch(() => null);
 
-        const [queryData, parseData] = await Promise.all([queryPromise.catch(err => ({ error: err.message })), parsePromise]);
+            const [queryData, parseData] = await Promise.all([queryPromise.catch(err => {
+                if (err.name === 'AbortError') throw err;
+                return { error: err.message };
+            }), parsePromise]);
 
-        // A newer run started while this one was in flight; discard stale results.
-        if (seq !== this._runSeq) return;
+            // A newer run started while this one was in flight; discard stale results.
+            if (seq !== this._runSeq) return;
 
-        // Translation result.
-        if (parseData?.data) {
-            const d = parseData.data;
-            e.parsed = {
-                filter: d.definition?.filter || [],
-                extractions: d.definition?.extractions || [],
-                candidate_fields: d.candidate_fields || [],
-                errors: d.errors || [],
-                warnings: d.warnings || [],
-            };
-            this._renderTranslation();
-            this._renderEditorShape();
-        }
+            // Translation result.
+            if (parseData?.data) {
+                const d = parseData.data;
+                e.parsed = {
+                    filter: d.definition?.filter || [],
+                    extractions: d.definition?.extractions || [],
+                    candidate_fields: d.candidate_fields || [],
+                    errors: d.errors || [],
+                    warnings: d.warnings || [],
+                };
+                this._renderTranslation();
+                this._renderEditorShape();
+            }
 
-        // Live results.
-        const sqlEl = document.getElementById('modelSqlOutput');
-        if (sqlEl) {
-            if (queryData && queryData.sql && window.QueryExecutor) sqlEl.innerHTML = QueryExecutor.highlightSQL(queryData.sql);
-            sqlEl.style.display = (this._showSQL() && queryData && queryData.sql) ? 'block' : 'none';
-        }
-        if (!e.query) {
-            if (resultsEl) resultsEl.innerHTML = '<div class="models-empty">No filter — the model will process all logs in this fractal.</div>';
-            if (countEl) countEl.textContent = '';
-        } else if (queryData && queryData.error) {
-            if (resultsEl) resultsEl.innerHTML = `<div class="query-error"><p>Query Error: ${_esc(queryData.error)}</p></div>`;
+            // Live results.
+            const sqlEl = document.getElementById('modelSqlOutput');
+            if (sqlEl) {
+                if (queryData && queryData.sql && window.QueryExecutor) sqlEl.innerHTML = QueryExecutor.highlightSQL(queryData.sql);
+                sqlEl.style.display = (this._showSQL() && queryData && queryData.sql) ? 'block' : 'none';
+            }
+            // Histogram (present on both success and some error paths from the buffered endpoint)
+            const timelineCanvasEl = document.getElementById('modelTimeline');
+            const timelineWrapEl = document.getElementById('modelTimelineWrap');
+            if (window.Timeline && queryData && queryData.histogram && queryData.time_start) {
+                Timeline.renderBucketsToEl(
+                    queryData.histogram,
+                    { start: queryData.time_start, end: queryData.time_end },
+                    timelineCanvasEl, timelineWrapEl
+                );
+            } else if (timelineWrapEl) {
+                timelineWrapEl.style.display = 'none';
+            }
+
+            if (!e.query) {
+                if (resultsEl) resultsEl.innerHTML = '<div class="models-empty">No filter — the model will process all logs in this fractal.</div>';
+                if (countEl) countEl.textContent = '';
+            } else if (queryData && queryData.error) {
+                if (resultsEl) resultsEl.innerHTML = `<div class="query-error"><p>Query Error: ${_esc(queryData.error)}</p></div>`;
+                if (countEl) countEl.textContent = 'Error';
+            } else if (queryData) {
+                const results = queryData.results || [];
+                e.results = results;
+                e.fieldOrder = queryData.field_order || null;
+                e.resultFields = this._collectResultFields(queryData);
+                // Refresh shape datalists so partition/value keys suggest the fields
+                // actually present in the freshly searched data.
+                this._renderEditorShape();
+                if (countEl) countEl.textContent = `${results.length} result${results.length === 1 ? '' : 's'}`;
+                if (!results.length) {
+                    if (resultsEl) resultsEl.innerHTML = '<div class="models-empty">No matching logs in the selected time range.</div>';
+                } else if (window.QueryExecutor && resultsEl) {
+                    QueryExecutor.renderResultsToElement(results.slice(0, 100), resultsEl, e.fieldOrder, {
+                        allResults: results, isAggregated: queryData.is_aggregated || false, disableDetailView: true
+                    });
+                }
+            }
+        } catch (err) {
+            if (err.name === 'AbortError') return;
+            if (seq !== this._runSeq) return;
+            if (resultsEl) resultsEl.innerHTML = `<div class="query-error"><p>Query Error: ${_esc(err.message)}</p></div>`;
             if (countEl) countEl.textContent = 'Error';
-        } else if (queryData) {
-            const results = queryData.results || [];
-            e.results = results;
-            e.fieldOrder = queryData.field_order || null;
-            e.resultFields = this._collectResultFields(queryData);
-            // Refresh shape datalists so partition/value keys suggest the fields
-            // actually present in the freshly searched data.
-            this._renderEditorShape();
-            if (countEl) countEl.textContent = `${results.length} result${results.length === 1 ? '' : 's'}`;
-            if (!results.length) {
-                if (resultsEl) resultsEl.innerHTML = '<div class="models-empty">No matching logs in the selected time range.</div>';
-            } else if (window.QueryExecutor && resultsEl) {
-                QueryExecutor.renderResultsToElement(results.slice(0, 100), resultsEl, e.fieldOrder, {
-                    allResults: results, isAggregated: queryData.is_aggregated || false, disableDetailView: true
-                });
+        } finally {
+            if (this._queryController === controller) {
+                this._queryController = null;
+                this._setModelRunState(false);
             }
         }
     },

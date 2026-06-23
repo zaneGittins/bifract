@@ -1,9 +1,16 @@
 // Log detail side panel
 const LogDetail = {
+    results: null,
+    currentIndex: -1,
+    isAggregated: false,
+
     init() {
         const closeBtn = document.getElementById('closePanelBtn');
         const panel = document.getElementById('logDetailPanel');
         const sendToChatBtn = document.getElementById('sendToChatBtn');
+        const prevBtn = document.getElementById('panelPrevBtn');
+        const nextBtn = document.getElementById('panelNextBtn');
+        const searchLogBtn = document.getElementById('searchLogBtn');
 
         if (closeBtn) {
             closeBtn.addEventListener('click', () => this.close());
@@ -19,25 +26,130 @@ const LogDetail = {
             });
         }
 
-        // Close on click outside
-        if (panel) {
-            document.addEventListener('click', (e) => {
-                const commentsPanel = document.getElementById('commentsPanel');
-                if (panel.classList.contains('open') &&
-                    !panel.contains(e.target) &&
-                    !e.target.closest('.results-table') &&
-                    !(commentsPanel && commentsPanel.contains(e.target))) {
-                    this.close();
-                }
+        if (prevBtn) {
+            prevBtn.addEventListener('click', () => this.navigateTo(this.currentIndex - 1));
+        }
+
+        if (nextBtn) {
+            nextBtn.addEventListener('click', () => this.navigateTo(this.currentIndex + 1));
+        }
+
+        if (searchLogBtn) {
+            searchLogBtn.addEventListener('click', () => {
+                if (window.Comments) window.Comments.searchForCurrentLog();
             });
         }
 
-        // Close on Escape key
+        // Close on Escape key only when focus is outside the panel
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && panel && panel.classList.contains('open')) {
+            if (e.key === 'Escape' && panel && panel.classList.contains('open') && !panel.contains(e.target)) {
                 this.close();
             }
         });
+
+        this.initResizeHandle();
+    },
+
+    setContext(results, index, isAggregated) {
+        this.results = results;
+        this.currentIndex = index;
+        this.isAggregated = isAggregated;
+    },
+
+    navigateTo(index) {
+        if (!this.results || index < 0 || index >= this.results.length) return;
+        this.currentIndex = index;
+        const logData = this.results[index];
+        let detailData = logData;
+        if (logData._all_fields && typeof logData._all_fields === 'object') {
+            detailData = {
+                ...logData._all_fields,
+                timestamp: logData.timestamp,
+                log_id: logData.log_id,
+                fractal_id: logData.fractal_id,
+                _shard_num: logData._shard_num
+            };
+        }
+        this._updateSelectedRow(index);
+        this.show(detailData, this.isAggregated);
+    },
+
+    _updateSelectedRow(index) {
+        document.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
+        const row = document.querySelector(`.result-row[data-index="${index}"]`);
+        if (row) row.classList.add('selected');
+    },
+
+    initResizeHandle() {
+        const panel = document.getElementById('logDetailPanel');
+        if (!panel) return;
+        const handle = panel.querySelector('.panel-resize-handle');
+        if (!handle) return;
+
+        const saved = localStorage.getItem('logDetailPanelWidth');
+        if (saved) panel.style.setProperty('--detail-panel-width', saved + 'px');
+
+        let startX, startWidth;
+        handle.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            startX = e.clientX;
+            startWidth = panel.offsetWidth;
+            handle.classList.add('dragging');
+            document.body.style.userSelect = 'none';
+
+            const onMove = (e) => {
+                const delta = startX - e.clientX;
+                const w = Math.max(320, Math.min(window.innerWidth * 0.7, startWidth + delta));
+                panel.style.setProperty('--detail-panel-width', w + 'px');
+                // Also set width directly during drag (bypasses transition for responsiveness)
+                panel.style.width = w + 'px';
+            };
+
+            const onUp = () => {
+                handle.classList.remove('dragging');
+                document.body.style.userSelect = '';
+                localStorage.setItem('logDetailPanelWidth', panel.offsetWidth);
+                panel.style.width = '';
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+    },
+
+    _updateNavButtons() {
+        const prevBtn = document.getElementById('panelPrevBtn');
+        const nextBtn = document.getElementById('panelNextBtn');
+        if (prevBtn) prevBtn.disabled = !this.results || this.currentIndex <= 0;
+        if (nextBtn) nextBtn.disabled = !this.results || this.currentIndex >= (this.results.length - 1);
+    },
+
+    _updateHeaderContext(logData) {
+        const levelBadge = document.getElementById('panelLevelBadge');
+        const tsSpan = document.getElementById('panelTimestamp');
+        const srcSpan = document.getElementById('panelSource');
+        const searchLogBtn = document.getElementById('searchLogBtn');
+
+        if (levelBadge) {
+            const level = (logData.level || logData.severity || logData.log_level || '').toLowerCase();
+            levelBadge.textContent = level;
+            levelBadge.className = `log-level-badge${level ? ' level-' + level : ''}`;
+        }
+
+        if (tsSpan) {
+            tsSpan.textContent = logData.timestamp || '';
+        }
+
+        if (srcSpan) {
+            const src = logData.host || logData.source || logData.sourcetype || logData.computer || '';
+            srcSpan.textContent = src;
+        }
+
+        if (searchLogBtn) {
+            searchLogBtn.style.display = (logData.log_id && !this.isAggregated) ? '' : 'none';
+        }
     },
 
     async show(logData, isAggregated = false) {
@@ -47,7 +159,12 @@ const LogDetail = {
         if (!panel || !content) return;
 
         this.currentLogData = logData;
+        this.isAggregated = isAggregated;
         content.innerHTML = '';
+
+        // Update header context
+        this._updateHeaderContext(logData);
+        this._updateNavButtons();
 
         // Build tabs
         const tabBar = document.createElement('div');
@@ -65,6 +182,17 @@ const LogDetail = {
 
         tabBar.appendChild(fieldsTab);
         tabBar.appendChild(rawTab);
+
+        // Comments tab (only for authenticated, non-aggregated)
+        let commentsTab = null;
+        if (!isAggregated && window.Auth && window.Auth.isAuthenticated() && logData.log_id) {
+            commentsTab = document.createElement('button');
+            commentsTab.className = 'log-detail-tab';
+            commentsTab.textContent = 'Comments';
+            commentsTab.dataset.tab = 'comments';
+            tabBar.appendChild(commentsTab);
+        }
+
         content.appendChild(tabBar);
 
         // Fields tab content
@@ -100,6 +228,14 @@ const LogDetail = {
         rawPane.appendChild(rawDiv);
         content.appendChild(rawPane);
 
+        // Comments tab content
+        if (commentsTab) {
+            const commentsPane = document.createElement('div');
+            commentsPane.className = 'log-detail-tab-content';
+            commentsPane.dataset.tab = 'comments';
+            content.appendChild(commentsPane);
+        }
+
         // Tab switching
         tabBar.addEventListener('click', (e) => {
             const tab = e.target.closest('.log-detail-tab');
@@ -108,11 +244,17 @@ const LogDetail = {
             tabBar.querySelectorAll('.log-detail-tab').forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
             content.querySelectorAll('.log-detail-tab-content').forEach(p => p.classList.remove('active'));
-            content.querySelector(`.log-detail-tab-content[data-tab="${target}"]`).classList.add('active');
+            const pane = content.querySelector(`.log-detail-tab-content[data-tab="${target}"]`);
+            if (pane) pane.classList.add('active');
+
+            // Lazy-render comments pane on first activation
+            if (target === 'comments' && pane && !pane.dataset.loaded) {
+                pane.dataset.loaded = '1';
+                if (window.Comments) window.Comments.renderInTab(pane, logData);
+            }
         });
 
         // If fields weren't included in the query result, fetch them lazily.
-        // Otherwise render immediately.
         const hasFields = logData.fields && typeof logData.fields === 'object' && Object.keys(logData.fields).length > 0;
         const hasAllFields = logData._all_fields && typeof logData._all_fields === 'object' && Object.keys(logData._all_fields).length > 0;
         if (!hasFields && !hasAllFields && logData.log_id) {
@@ -122,12 +264,6 @@ const LogDetail = {
         }
 
         panel.classList.add('open');
-
-        if (isAggregated) return;
-
-        if (window.Comments && window.Auth && window.Auth.isAuthenticated()) {
-            window.Comments.openPanel(logData, isAggregated);
-        }
     },
 
     _renderFieldsSkeleton(container) {
@@ -237,7 +373,7 @@ const LogDetail = {
             }
         }
 
-        // raw_log is now in its own tab, skip it here
+        // raw_log is in its own tab, skip it here
 
         const fields = Object.keys(flattenedData);
         const sortedFields = fields.sort((a, b) => {
@@ -377,9 +513,10 @@ const LogDetail = {
             panel.classList.remove('open');
         }
 
-        if (window.Comments) {
-            window.Comments.closePanel();
-        }
+        document.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
+
+        this.results = null;
+        this.currentIndex = -1;
     }
 };
 

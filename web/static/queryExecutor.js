@@ -22,6 +22,7 @@ const QueryExecutor = {
     deferredShareLink: null, // Store share link data waiting for fractals to load
     deferredPollingInterval: null, // Interval for polling fractal availability
     isProcessingSharedQuery: false, // Flag to prevent clearing state during shared query processing
+    pendingActiveDays: null,        // Set before execute() to pass pre-computed days to the query handler (skips preflight)
 
     // Default element configuration for main search view
     elementConfig: {
@@ -69,6 +70,12 @@ const QueryExecutor = {
         // Cancel any in-flight requests from a previous fractal
         if (this.currentRequest) this.currentRequest.abort();
         if (this.currentHistRequest) this.currentHistRequest.abort();
+
+        // Clear any deferred streaming indicator left over from a superseded execute().
+        // execute()'s finally guard (currentRequest === myController) is false by the
+        // time we get here, so it won't clean up after itself.
+        this._clearLoadingTimer();
+        this._endLoadingIndicator();
 
         this.currentRequest = new AbortController();
         this.currentHistRequest = new AbortController();
@@ -268,6 +275,10 @@ const QueryExecutor = {
                 end: this.currentTimeRange.end
             };
             if (this.currentTimeRange.selective) requestBody.selective = true;
+            if (this.pendingActiveDays && this.pendingActiveDays.length) {
+                requestBody.active_days = this.pendingActiveDays;
+                this.pendingActiveDays = null;
+            }
 
             // Include fractal context if FractalContext is available (skip for prisms - server uses session)
             if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
@@ -1172,6 +1183,9 @@ const QueryExecutor = {
                 }
 
                 if (window.LogDetail) {
+                    document.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
+                    row.classList.add('selected');
+                    LogDetail.setContext(results, index, this.isAggregated);
                     LogDetail.show(detailData, this.isAggregated);
                 }
             });

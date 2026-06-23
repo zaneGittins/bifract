@@ -11,143 +11,141 @@ const FractalSelector = {
     },
 
     createSelectorUI() {
-        // Check if selector already exists
-        if (document.getElementById('fractalSelectorContainer')) {
+        if (document.getElementById('fractalSelectorContainer')) return;
+
+        const container = document.getElementById('contextPillContainer');
+        if (!container) {
+            console.warn('[FractalSelector] contextPillContainer not found');
             return;
         }
 
-        // Find the header where we'll add the fractal selector
-        const header = document.querySelector('.header');
-        if (!header) {
-            console.warn('Header element not found for fractal selector');
-            return;
-        }
-
-        // Create fractal selector dropdown HTML
-        const selectorHTML = `
-            <div class="fractal-selector-container" id="fractalSelectorContainer">
-                <div class="fractal-selector-dropdown">
-                    <button class="fractal-selector-button" id="fractalSelectorButton">
-                        <span class="fractal-selector-text" id="fractalSelectorText">Loading...</span>
-                        <span class="fractal-selector-arrow">▼</span>
-                    </button>
-                    <div class="fractal-selector-menu" id="fractalSelectorMenu">
-                        <div class="fractal-selector-loading">
-                            Loading fractals...
-                        </div>
-                    </div>
+        container.innerHTML = `
+            <span class="context-pill-sep"></span>
+            <div class="context-pill-wrapper" id="fractalSelectorContainer">
+                <button class="context-pill-btn" id="fractalSelectorButton">
+                    <span class="context-pill-icon" id="contextTypeIcon"></span>
+                    <span class="context-pill-name" id="fractalSelectorText">Loading...</span>
+                    <svg class="context-pill-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none">
+                        <path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+                <div class="context-pill-menu" id="fractalSelectorMenu">
+                    <div class="fractal-selector-loading">Loading fractals...</div>
                 </div>
             </div>
         `;
 
-        // Insert the selector into the header-right section after userInfo
-        const userInfo = header.querySelector('#userInfo');
-        const headerRight = header.querySelector('.header-right');
-        if (userInfo) {
-            userInfo.insertAdjacentHTML('afterend', selectorHTML);
-        } else if (headerRight) {
-            headerRight.insertAdjacentHTML('beforeend', selectorHTML);
-        } else {
-            header.insertAdjacentHTML('beforeend', selectorHTML);
-        }
-
-        // Add CSS styles
         this.addStyles();
     },
 
     addStyles() {
-        if (document.getElementById('fractalSelectorStyles')) {
-            return; // Styles already added
-        }
+        if (document.getElementById('fractalSelectorStyles')) return;
 
         const styles = `
             <style id="fractalSelectorStyles">
-            .header-right {
-                position: relative;
-            }
-
-            .fractal-selector-container {
-                position: absolute;
-                top: 100%;
-                right: 0;
-                margin-top: 5px;
-                z-index: 1000;
-            }
-
-            .fractal-selector-dropdown {
-                position: relative;
+            /* ---- Context pill: type icon + name inline in header ---- */
+            .context-pill-sep {
                 display: inline-block;
+                width: 1px;
+                height: 18px;
+                background: var(--border-color);
+                margin: 0 6px 0 2px;
+                opacity: 0.5;
+                flex-shrink: 0;
             }
 
-            .fractal-selector-button {
+            .context-pill-wrapper {
+                position: relative;
+                display: flex;
+                align-items: center;
+                flex-shrink: 0;
+            }
+
+            .context-pill-btn {
                 background: transparent;
-                border: 1px solid var(--overlay-border);
-                border-radius: 4px;
-                color: var(--text-secondary);
-                padding: 6px 10px;
+                border: none;
+                border-radius: 5px;
+                color: var(--text-primary);
+                padding: 4px 6px;
                 cursor: pointer;
                 display: flex;
                 align-items: center;
-                gap: 6px;
-                font-size: 12px;
-                line-height: 1.3;
-                min-width: 120px;
-                transition: all 0.2s ease;
-                opacity: 0.8;
-            }
-
-            .fractal-selector-button:hover {
-                background: var(--overlay-subtle);
-                border-color: var(--overlay-border-hover);
-                opacity: 1;
-            }
-
-            .fractal-selector-button.open {
-                background: var(--overlay-light);
-                border-color: var(--accent-color);
-                opacity: 1;
-            }
-
-            .fractal-selector-text {
-                flex: 1;
-                text-align: left;
+                gap: 5px;
+                font-size: 13px;
+                font-weight: 500;
+                font-family: var(--font-main);
+                transition: background 0.15s ease;
                 white-space: nowrap;
+                line-height: 1;
+                max-width: 220px;
+            }
+
+            .context-pill-btn:hover {
+                background: var(--overlay-subtle);
+            }
+
+            .context-pill-btn.open {
+                background: var(--overlay-light);
+            }
+
+            .context-pill-icon {
+                display: flex;
+                align-items: center;
+                flex-shrink: 0;
+                transition: color 0.15s ease;
+            }
+
+            .context-pill-btn[data-type="fractal"] .context-pill-icon {
+                color: var(--accent-secondary);
+            }
+
+            .context-pill-btn[data-type="prism"] .context-pill-icon {
+                color: var(--accent-tertiary);
+            }
+
+            .context-pill-name {
                 overflow: hidden;
                 text-overflow: ellipsis;
-                font-weight: 400;
-                opacity: 0.9;
+                white-space: nowrap;
+                max-width: 180px;
             }
 
-            .fractal-selector-arrow {
-                font-size: 8px;
-                opacity: 0.5;
-                transition: transform 0.2s ease;
+            .context-pill-chevron {
+                flex-shrink: 0;
+                opacity: 0.35;
+                color: var(--text-muted);
+                transition: transform 0.15s ease, opacity 0.15s ease;
             }
 
-            .fractal-selector-button.open .fractal-selector-arrow {
+            .context-pill-btn:hover .context-pill-chevron,
+            .context-pill-btn.open .context-pill-chevron {
+                opacity: 0.65;
+            }
+
+            .context-pill-btn.open .context-pill-chevron {
                 transform: rotate(180deg);
             }
 
-            .fractal-selector-menu {
+            .context-pill-menu {
                 position: absolute;
-                top: 100%;
+                top: calc(100% + 5px);
                 left: 0;
-                right: 0;
+                min-width: 220px;
                 background: var(--bg-secondary);
                 border: 1px solid var(--border-color);
                 border-radius: 6px;
-                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+                box-shadow: 0 4px 16px rgba(0,0,0,0.2);
                 z-index: 1000;
                 display: none;
-                max-height: 300px;
+                max-height: 320px;
                 overflow-y: auto;
-                margin-top: 4px;
             }
 
-            .fractal-selector-menu.show {
+            .context-pill-menu.show {
                 display: block;
             }
 
+            /* ---- Dropdown menu items ---- */
             .fractal-selector-loading {
                 padding: 12px;
                 text-align: center;
@@ -158,15 +156,16 @@ const FractalSelector = {
             .fractal-selector-item {
                 display: block;
                 width: 100%;
-                padding: 10px 12px;
+                padding: 9px 12px;
                 border: none;
                 background: none;
                 color: var(--text-primary);
                 text-align: left;
                 cursor: pointer;
                 font-size: 13px;
+                font-family: var(--font-main);
                 line-height: 1.4;
-                transition: background-color 0.2s ease;
+                transition: background-color 0.15s ease;
                 border-bottom: 1px solid var(--border-color);
             }
 
@@ -190,7 +189,7 @@ const FractalSelector = {
             }
 
             .fractal-selector-item.current .fractal-selector-item-description {
-                color: rgba(255, 255, 255, 0.75);
+                color: rgba(255,255,255,0.75);
             }
 
             .fractal-selector-item.current::after {
@@ -217,43 +216,9 @@ const FractalSelector = {
                 margin: 4px 0;
             }
 
-            .fractal-selector-admin-section {
-                padding: 8px 12px;
-                background: var(--bg-tertiary);
-                border-top: 1px solid var(--border-color);
-            }
-
-            .fractal-selector-admin-button {
-                display: block;
-                width: 100%;
-                padding: 6px 8px;
-                background: var(--accent-color);
-                color: white;
-                border: none;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 12px;
-                text-align: center;
-                transition: background-color 0.2s ease;
-            }
-
-            .fractal-selector-admin-button:hover {
-                background: var(--accent-hover);
-            }
-
             @media (max-width: 768px) {
-                .fractal-selector-container {
-                    margin-right: 8px;
-                }
-
-                .fractal-selector-button {
-                    min-width: 120px;
-                    padding: 6px 10px;
-                    font-size: 13px;
-                }
-
-                .fractal-selector-text {
-                    max-width: 80px;
+                .context-pill-name {
+                    max-width: 90px;
                 }
             }
             </style>
@@ -279,7 +244,7 @@ const FractalSelector = {
 
         // Close dropdown when clicking outside
         document.addEventListener('click', (e) => {
-            if (!e.target.closest('.fractal-selector-container')) {
+            if (!e.target.closest('.context-pill-wrapper')) {
                 this.closeDropdown();
             }
         });
@@ -670,6 +635,32 @@ const FractalSelector = {
         const textElement = document.getElementById('fractalSelectorText');
         if (textElement) {
             textElement.textContent = text;
+        }
+        this._updateTypeIcon();
+    },
+
+    _updateTypeIcon() {
+        const iconEl = document.getElementById('contextTypeIcon');
+        const btn = document.getElementById('fractalSelectorButton');
+        if (!iconEl) return;
+
+        const isPrism = window.FractalContext && FractalContext.isPrism();
+        if (btn) btn.dataset.type = isPrism ? 'prism' : 'fractal';
+
+        if (isPrism) {
+            // Triangular prism: triangle outline + vertical centre line
+            iconEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="7,1.5 13,12.5 1,12.5"/>
+                <line x1="7" y1="1.5" x2="7" y2="12.5"/>
+            </svg>`;
+        } else {
+            // Hexagonal crystal: hexagon + three crossing diameters
+            iconEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="7,1.5 11.5,4.25 11.5,9.75 7,12.5 2.5,9.75 2.5,4.25"/>
+                <line x1="7" y1="1.5" x2="7" y2="12.5"/>
+                <line x1="2.5" y1="4.25" x2="11.5" y2="9.75"/>
+                <line x1="11.5" y1="4.25" x2="2.5" y2="9.75"/>
+            </svg>`;
         }
     },
 

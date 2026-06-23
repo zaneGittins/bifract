@@ -2324,149 +2324,231 @@ throttleField: ${alert.throttle_field}` : ''}`;
         this.currentAlert = null;
     },
 
+    runOrCancelQuery() {
+        if (this.currentTestRequest) {
+            this.currentTestRequest.abort();
+            this.currentTestRequest = null;
+            this._setTestRunButtonState(false);
+        } else {
+            this.testQuery();
+        }
+    },
+
+    _setTestRunButtonState(running) {
+        const btn = document.getElementById('testQueryBtn');
+        if (!btn) return;
+        const text = btn.querySelector('.btn-text');
+        const shortcut = btn.querySelector('.btn-shortcut');
+        if (running) {
+            btn.classList.add('is-running');
+            if (text) text.textContent = 'Cancel';
+            if (shortcut) shortcut.style.display = 'none';
+        } else {
+            btn.classList.remove('is-running');
+            if (text) text.textContent = 'Run';
+            if (shortcut) shortcut.style.display = '';
+        }
+    },
+
     async testQuery() {
         const queryInput = document.getElementById('editorQueryInput');
         const resultsDiv = document.getElementById('queryResults');
         const countDiv = document.getElementById('alertResultsCount');
+        const execTimeEl = document.getElementById('alertExecutionTime');
 
         if (!queryInput || !resultsDiv) return;
 
         const rawQuery = queryInput.value.trim();
         if (!rawQuery) {
-            resultsDiv.innerHTML = '<div class="no-results"><p>Enter a query above to see live results</p></div>';
-            if (countDiv) countDiv.textContent = '0 results';
+            resultsDiv.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">Run a query to see results that would trigger this alert</div></div>';
+            if (countDiv) countDiv.textContent = '';
             return;
         }
 
-        // Strip comment lines (lines starting with //)
         const query = this.stripComments(rawQuery);
         if (!query) {
-            resultsDiv.innerHTML = '<div class="no-results"><p>Enter a query above to see live results</p></div>';
-            if (countDiv) countDiv.textContent = '0 results';
+            resultsDiv.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">Run a query to see results that would trigger this alert</div></div>';
+            if (countDiv) countDiv.textContent = '';
             return;
         }
 
-        // Cancel previous request if still running
+        // Cancel any in-flight request before starting a new one
         if (this.currentTestRequest) {
             this.currentTestRequest.abort();
         }
 
-        // Show loading
+        const controller = new AbortController();
+        this.currentTestRequest = controller;
+        this._setTestRunButtonState(true);
+
         resultsDiv.innerHTML = '<div class="loading-spinner"><span class="spinner"></span></div>';
-        if (countDiv) countDiv.textContent = 'Testing...';
+        if (countDiv) countDiv.textContent = '—';
+        if (execTimeEl) execTimeEl.textContent = '';
+
+        const alertExportBtn = document.getElementById('alertExportCsvBtn');
+        if (alertExportBtn) alertExportBtn.style.display = 'none';
+        this.hideAlertPagination();
+
+        const timeRange = this.getTimeRange();
+        const requestBody = { query, start: timeRange.start, end: timeRange.end };
+        if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
+            requestBody.fractal_id = window.FractalContext.currentFractal.id;
+        }
 
         try {
-            // Get time range like the main search view does
-            const timeRange = this.getTimeRange();
-
-
-            // Create abort controller for cancellation
-            const controller = new AbortController();
-            this.currentTestRequest = controller;
-
-            // Get currently selected fractal for context
-            let requestBody = {
-                query: query,
-                start: timeRange.start,
-                end: timeRange.end
-            };
-
-            if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
-                requestBody.fractal_id = window.FractalContext.currentFractal.id;
-            }
-
-            // Use the same API structure as main search view (no limit parameter)
-            const response = await fetch('/api/v1/query', {
+            const res = await fetch('/api/v1/query/stream', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
                 signal: controller.signal,
-                body: JSON.stringify(requestBody)
+                body: JSON.stringify(requestBody),
             });
 
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.error || `HTTP ${response.status}`);
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.error || `HTTP ${res.status}`);
             }
 
-            const data = await response.json();
-
-
-            // Display SQL output using QueryExecutor's method
-            const sqlOutput = document.getElementById('alertSqlOutput');
-            if (data.sql && sqlOutput && window.QueryExecutor) {
-                sqlOutput.innerHTML = QueryExecutor.highlightSQL(data.sql);
-                // Show SQL preview if user has it enabled
-                const alertSqlPreview = document.querySelector('#alertEditorView .sql-preview');
-                if (alertSqlPreview && window.UserPrefs && UserPrefs.showSQL()) {
-                    alertSqlPreview.style.display = 'block';
-                }
-            }
-
-            if (!data.success) {
-                throw new Error(data.error || 'Query failed');
-            }
-
-            // Store data exactly like the main search view does
-            const results = data.results || [];
-            this.currentResults = results;
-            this.fieldOrder = data.field_order || null;
-            this.isAggregated = data.is_aggregated || false;
-
-            if (countDiv) {
-                countDiv.textContent = `${results.length} results`;
-            }
-
-            if (results.length === 0) {
-                resultsDiv.innerHTML = '<div class="no-results"><p>No results found for this query in the selected time range</p></div>';
-                this.hideAlertPagination();
-            } else {
-                // Use pagination and shared rendering
-                this.alertCurrentPage = 1; // Reset to first page
-                this.showAlertPagination();
-                this.updateAlertPagination();
-
-                // Use QueryExecutor's shared rendering method
-                const targetElement = document.getElementById('queryResults');
-                const pageResults = this.getCurrentAlertPageResults();
-                if (window.QueryExecutor) {
-                    QueryExecutor.renderResultsToElement(pageResults, targetElement, this.fieldOrder, {
-                        allResults: this.currentResults,
-                        isAggregated: this.isAggregated,
-                        disableDetailView: true
-                    });
-                }
-
-                // Show export CSV button when results are available
-                const alertExportBtn = document.getElementById('alertExportCsvBtn');
-                if (alertExportBtn && this.currentResults && this.currentResults.length > 0) {
-                    alertExportBtn.style.display = 'inline-block';
-                }
-            }
-
-            // Clear the request reference
-            this.currentTestRequest = null;
-
-        } catch (error) {
-            this.currentTestRequest = null;
-
-            // Don't show error if request was aborted (user typed while request was running)
-            if (error.name === 'AbortError') {
+            const contentType = res.headers.get('Content-Type') || '';
+            if (!contentType.includes('application/x-ndjson')) {
+                // Auth/parse/translate error short-circuited as plain JSON
+                const data = await res.json().catch(() => ({}));
+                if (!data.success) throw new Error(data.error || 'Query failed');
+                this._applyAlertQueryResult({ results: data.results || [], fieldOrder: data.field_order || null,
+                    isAggregated: data.is_aggregated || false, sql: data.sql }, resultsDiv, countDiv, execTimeEl, alertExportBtn);
                 return;
             }
 
-            console.error('Query test error:', error);
+            await this._consumeAlertStream(res, resultsDiv, countDiv, execTimeEl, alertExportBtn, controller);
+
+        } catch (error) {
+            if (error.name === 'AbortError') return;
             resultsDiv.innerHTML = `<div class="query-error"><p>Query Error: ${Utils.escapeHtml(error.message)}</p></div>`;
             if (countDiv) countDiv.textContent = 'Error';
-
-            // Hide export CSV button when there's an error
-            const alertExportBtn = document.getElementById('alertExportCsvBtn');
-            if (alertExportBtn) {
-                alertExportBtn.style.display = 'none';
+            if (alertExportBtn) alertExportBtn.style.display = 'none';
+        } finally {
+            if (this.currentTestRequest === controller) {
+                this.currentTestRequest = null;
+                this._setTestRunButtonState(false);
             }
+        }
+    },
+
+    async _consumeAlertStream(res, resultsDiv, countDiv, execTimeEl, exportBtn, controller) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        let rows = [];
+        let fieldOrder = null;
+        let isAggregated = false;
+        let firstRows = true;
+        let histogram = null;
+        let histTimeRange = null;
+
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buf += decoder.decode(value, { stream: true });
+
+                const lines = buf.split('\n');
+                buf = lines.pop();
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
+                    let frame;
+                    try { frame = JSON.parse(trimmed); } catch { continue; }
+
+                    switch (frame.type) {
+                        case 'meta':
+                            fieldOrder = frame.field_order || null;
+                            isAggregated = frame.is_aggregated || false;
+                            this.fieldOrder = fieldOrder;
+                            this.isAggregated = isAggregated;
+                            histTimeRange = {
+                                start: frame.time_start || this.getTimeRange().start,
+                                end: frame.time_end || this.getTimeRange().end,
+                            };
+                            break;
+                        case 'histogram':
+                            histogram = frame.buckets || null;
+                            break;
+                        case 'rows': {
+                            const incoming = frame.rows || [];
+                            if (!incoming.length) break;
+                            rows = rows.concat(incoming);
+                            if (firstRows) {
+                                firstRows = false;
+                                resultsDiv.innerHTML = '';
+                            }
+                            this.currentResults = rows;
+                            if (countDiv) countDiv.textContent = `${rows.length} result${rows.length === 1 ? '' : 's'}`;
+                            if (window.QueryExecutor) {
+                                QueryExecutor.renderResultsToElement(rows, resultsDiv, fieldOrder, {
+                                    allResults: rows, isAggregated, disableDetailView: true,
+                                });
+                            }
+                            break;
+                        }
+                        case 'error':
+                            throw new Error(frame.error || 'Query error');
+                        case 'done':
+                            this._applyAlertQueryResult(
+                                { results: rows, fieldOrder, isAggregated, sql: frame.sql, executionMs: frame.execution_ms,
+                                  histogram, histTimeRange },
+                                resultsDiv, countDiv, execTimeEl, exportBtn
+                            );
+                            break;
+                    }
+                }
+            }
+        } finally {
+            reader.releaseLock();
+        }
+    },
+
+    _applyAlertQueryResult({ results, fieldOrder, isAggregated, sql, executionMs, histogram, histTimeRange }, resultsDiv, countDiv, execTimeEl, exportBtn) {
+        this.currentResults = results;
+        this.fieldOrder = fieldOrder;
+        this.isAggregated = isAggregated;
+
+        if (countDiv) countDiv.textContent = `${results.length} result${results.length === 1 ? '' : 's'}`;
+        if (execTimeEl && executionMs) execTimeEl.textContent = `${executionMs}ms`;
+
+        const sqlOutput = document.getElementById('alertSqlOutput');
+        if (sql && sqlOutput && window.QueryExecutor) {
+            sqlOutput.innerHTML = QueryExecutor.highlightSQL(sql);
+            const sqlPreview = document.querySelector('#alertEditorView .sql-preview');
+            if (sqlPreview && window.UserPrefs && UserPrefs.showSQL()) {
+                sqlPreview.style.display = 'block';
+            }
+        }
+
+        // Render histogram if available
+        if (window.Timeline && histogram && histTimeRange) {
+            const canvasEl = document.getElementById('alertTimeline');
+            const sectionEl = document.getElementById('alertTimelineSection');
+            Timeline.renderBucketsToEl(histogram, histTimeRange, canvasEl, sectionEl);
+        } else {
+            const sectionEl = document.getElementById('alertTimelineSection');
+            if (sectionEl) sectionEl.style.display = 'none';
+        }
+
+        if (results.length === 0) {
+            resultsDiv.innerHTML = '<div class="no-results"><p>No results found for this query in the selected time range</p></div>';
+            this.hideAlertPagination();
+        } else {
+            this.alertCurrentPage = 1;
+            this.showAlertPagination();
+            this.updateAlertPagination();
+            const pageResults = this.getCurrentAlertPageResults();
+            if (window.QueryExecutor) {
+                QueryExecutor.renderResultsToElement(pageResults, resultsDiv, fieldOrder, {
+                    allResults: results, isAggregated, disableDetailView: true,
+                });
+            }
+            if (exportBtn && results.length > 0) exportBtn.style.display = 'inline-block';
         }
     },
 
@@ -2559,7 +2641,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             queryInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    this.testQuery();
+                    this.runOrCancelQuery();
                 } else if (e.key === 'Enter' && e.shiftKey) {
                     // Allow new line (default behavior)
                 } else if (e.key === 'Tab') {

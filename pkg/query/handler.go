@@ -58,14 +58,15 @@ func (h *QueryHandler) SetRBACResolver(resolver *rbac.Resolver) {
 }
 
 type QueryRequest struct {
-	Query     string `json:"query"`
-	QueryType string `json:"query_type,omitempty"` // reserved, always treated as "bql"
-	Start     string `json:"start,omitempty"`      // RFC3339 format
-	End       string `json:"end,omitempty"`        // RFC3339 format
-	FractalID string `json:"fractal_id,omitempty"` // Fractal ID for multi-tenant queries
-	Profile   bool   `json:"profile,omitempty"`    // collect per-shard profiling data via system.query_log
-	Cursor    string `json:"cursor,omitempty"`     // opaque token for next-page cursor pagination
-	Selective bool   `json:"selective,omitempty"`  // run active-days preflight and skip empty 8h windows
+	Query      string   `json:"query"`
+	QueryType  string   `json:"query_type,omitempty"`  // reserved, always treated as "bql"
+	Start      string   `json:"start,omitempty"`       // RFC3339 format
+	End        string   `json:"end,omitempty"`         // RFC3339 format
+	FractalID  string   `json:"fractal_id,omitempty"`  // Fractal ID for multi-tenant queries
+	Profile    bool     `json:"profile,omitempty"`     // collect per-shard profiling data via system.query_log
+	Cursor     string   `json:"cursor,omitempty"`      // opaque token for next-page cursor pagination
+	Selective  bool     `json:"selective,omitempty"`   // run active-days preflight and skip empty 8h windows
+	ActiveDays []string `json:"active_days,omitempty"` // pre-computed active days (YYYY-MM-DD); skips preflight when provided
 }
 
 // ProfileShardRow holds per-node metrics fetched from system.query_log.
@@ -1191,10 +1192,19 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			log.Printf("[QueryHandler] Windowed streaming: %d x 8h windows over %s",
 				numWindows, prep.endTime.Sub(prep.startTime).Round(time.Minute))
 
-			// Selective mode: run a cheap preflight query to find which calendar days
-			// have any data at all, then skip 8h windows that fall on empty days.
+			// Selective mode: use pre-computed active days when provided by the
+			// caller (e.g. from model row data), otherwise run the cheap preflight
+			// query to discover which calendar days have data.
 			var activeDays map[string]bool
-			if prep.req.Selective {
+			if len(prep.req.ActiveDays) > 0 {
+				activeDays = make(map[string]bool, len(prep.req.ActiveDays))
+				for _, d := range prep.req.ActiveDays {
+					if len(d) >= 10 {
+						activeDays[d[:10]] = true
+					}
+				}
+				log.Printf("[QueryHandler] Selective windowing: %d pre-computed active days", len(activeDays))
+			} else if prep.req.Selective {
 				activeDaySQL := buildActiveDaysSQL(prep.translationOpts)
 				if dayRows, dayErr := h.db.Query(queryCtx, activeDaySQL); dayErr != nil {
 					log.Printf("[QueryHandler] Active-days preflight failed (non-fatal): %v", dayErr)

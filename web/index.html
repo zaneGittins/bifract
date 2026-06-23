@@ -29,6 +29,7 @@
                 <div class="logo">
                     <img src="/static/logo.png" alt="Bifract" width="40" height="40" style="border-radius: 4px;">
                 </div>
+                <div id="contextPillContainer" style="display: flex; align-items: center; flex-shrink: 0;"></div>
                 <!-- Main View Navigation (inline with logo) -->
                 <nav id="mainViewNav" class="header-nav" style="display: none;">
                     <button id="fractalListingTabBtn" class="nav-tab active">Fractals</button>
@@ -888,7 +889,6 @@
 
                 <button id="executeBtn" class="search-btn">
                     <span class="btn-text">Run</span>
-                    <span class="btn-shortcut">↵</span>
                     <span class="btn-loader" style="display: none;">
                         <span class="spinner"></span>
                     </span>
@@ -919,6 +919,7 @@
             <div id="queryError" class="query-error" style="display: none;"></div>
         </section>
 
+        <div class="search-results-split">
         <!-- Results Section -->
         <section class="results-section">
             <!-- Timeline (integrated into results) -->
@@ -1012,6 +1013,32 @@
                 </div>
             </div>
         </section>
+
+        <!-- Unified Log Detail Panel (right, push layout) -->
+        <div id="logDetailPanel" class="log-detail-panel">
+            <div class="panel-resize-handle"></div>
+            <div class="panel-header">
+                <div class="panel-header-context">
+                    <span id="panelLevelBadge" class="log-level-badge"></span>
+                    <span id="panelTimestamp" class="panel-timestamp"></span>
+                    <span id="panelSource" class="panel-source"></span>
+                </div>
+                <div class="panel-header-actions">
+                    <button id="panelPrevBtn" class="panel-nav-btn" title="Previous event">&#8249;</button>
+                    <button id="panelNextBtn" class="panel-nav-btn" title="Next event">&#8250;</button>
+                    <button id="searchLogBtn" class="panel-nav-btn" title="Search for this log" style="display:none;">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                    </button>
+                    <button id="sendToChatBtn" class="send-to-chat-btn" title="Analyze with AI">
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 0C4.2 1.6 4.8 2.8 5.6 3.6 6.4 4.4 7.6 5 9 5.2 7.6 5.4 6.4 6 5.6 6.8 4.8 7.6 4.2 8.8 4 10.4 3.8 8.8 3.2 7.6 2.4 6.8 1.6 6 .4 5.4 0 5.2 .4 5 1.6 4.4 2.4 3.6 3.2 2.8 3.8 1.6 4 0z"/><path d="M11 6c.12 1 .48 1.72 1 2.24.52.52 1.24.88 2.24 1-1 .12-1.72.48-2.24 1-.52.52-.88 1.24-1 2.24-.12-1-.48-1.72-1-2.24-.52-.52-1.24-.88-2.24-1 1-.12 1.72-.48 2.24-1 .52-.52.88-1.24 1-2.24z"/><path d="M6 11c.08.68.32 1.16.68 1.52.36.36.84.6 1.52.68-.68.08-1.16.32-1.52.68-.36.36-.6.84-.68 1.52-.08-.68-.32-1.16-.68-1.52-.36-.36-.84-.6-1.52-.68.68-.08 1.16-.32 1.52-.68.36-.36.6-.84.68-1.52z"/></svg>
+                    </button>
+                    <button id="closePanelBtn" class="close-panel-btn">&times;</button>
+                </div>
+            </div>
+            <div class="panel-body" id="logDetailContent"></div>
+        </div>
+
+        </div><!-- end search-results-split -->
         </div>
 
             </div>
@@ -2146,11 +2173,9 @@
 
                             <div class="toolbar-spacer"></div>
 
-                            <button id="testQueryBtn" class="search-btn" onclick="Alerts.testQuery()">
-                                <span class="btn-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span>
-                                <span class="btn-loader" style="display: none;">
-                                    <span class="spinner"></span>
-                                </span>
+                            <button id="testQueryBtn" class="search-btn" onclick="Alerts.runOrCancelQuery()">
+                                <span class="btn-text">Run</span>
+                                <span class="btn-shortcut">↵</span>
                             </button>
                             <button id="toggleAlertPanelBtn" class="alert-editor-config-btn" onclick="Alerts.toggleAlertPanel()" title="Toggle configuration panel">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
@@ -2447,64 +2472,6 @@
         </div><!-- End fractalView -->
 
     </div><!-- End container -->
-
-    <!-- Log Detail Side Panel (Left) -->
-    <div id="logDetailPanel" class="log-detail-panel left-panel">
-        <div class="panel-header">
-            <h3>Log Details</h3>
-            <div style="display: flex; align-items: center; gap: 2px;">
-                <button id="sendToChatBtn" class="send-to-chat-btn" title="Analyze with AI">
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 0C4.2 1.6 4.8 2.8 5.6 3.6 6.4 4.4 7.6 5 9 5.2 7.6 5.4 6.4 6 5.6 6.8 4.8 7.6 4.2 8.8 4 10.4 3.8 8.8 3.2 7.6 2.4 6.8 1.6 6 .4 5.4 0 5.2 .4 5 1.6 4.4 2.4 3.6 3.2 2.8 3.8 1.6 4 0z"/><path d="M11 6c.12 1 .48 1.72 1 2.24.52.52 1.24.88 2.24 1-1 .12-1.72.48-2.24 1-.52.52-.88 1.24-1 2.24-.12-1-.48-1.72-1-2.24-.52-.52-1.24-.88-2.24-1 1-.12 1.72-.48 2.24-1 .52-.52.88-1.24 1-2.24z"/><path d="M6 11c.08.68.32 1.16.68 1.52.36.36.84.6 1.52.68-.68.08-1.16.32-1.52.68-.36.36-.6.84-.68 1.52-.08-.68-.32-1.16-.68-1.52-.36-.36-.84-.6-1.52-.68.68-.08 1.16-.32 1.52-.68.36-.36.6-.84.68-1.52z"/></svg>
-                </button>
-                <button id="closePanelBtn" class="close-panel-btn">&times;</button>
-            </div>
-        </div>
-        <div class="panel-body" id="logDetailContent"></div>
-    </div>
-
-    <!-- Comments Side Panel (Right) -->
-    <div id="commentsPanel" class="comments-panel right-panel">
-        <div class="panel-header">
-            <h3>Comments</h3>
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
-                <button id="searchLogBtn" class="icon-btn" title="Search for this log">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="11" cy="11" r="8"></circle>
-                        <path d="m21 21-4.35-4.35"></path>
-                    </svg>
-                </button>
-                <button id="closeCommentsPanelBtn" class="close-panel-btn">&times;</button>
-            </div>
-        </div>
-        <div class="panel-body">
-            <!-- Add Comment Form (at top) -->
-            <div class="add-comment-form">
-                <textarea
-                    id="commentInput"
-                    class="comment-textarea"
-                    placeholder="Share your insights about this log..."
-                    rows="3"
-                ></textarea>
-                <div class="comment-tags-input" id="commentTagsInput">
-                    <div class="comment-tags-chips" id="commentTagsChips"></div>
-                    <input type="text" id="commentTagField" class="comment-tag-field" placeholder="Add tag..." />
-                </div>
-
-                <button onclick="Comments.saveComment()" class="btn-primary btn-add-comment">
-                    Post Comment
-                </button>
-            </div>
-
-            <!-- Comments List -->
-            <div class="comments-divider"></div>
-            <div class="comments-list" id="commentsList">
-                <div class="empty-comments">
-                    <div class="empty-icon">💬</div>
-                    <div class="empty-text">Be the first to drop some knowledge!</div>
-                </div>
-            </div>
-        </div>
-    </div>
 
     <!-- Bottom Time Bar -->
     <div class="time-bar">
