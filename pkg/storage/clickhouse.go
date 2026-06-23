@@ -1091,8 +1091,8 @@ func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time
 	args := []interface{}{logID}
 
 	if !timestamp.IsZero() {
-		query += " AND timestamp = ?"
-		args = append(args, timestamp)
+		query += " AND timestamp = toDateTime64(?, 3, 'UTC')"
+		args = append(args, timestamp.UTC().Format("2006-01-02 15:04:05.000"))
 	}
 	if fractalID != "" {
 		query += " AND fractal_id = ?"

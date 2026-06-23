@@ -2246,11 +2246,20 @@ body.results-fullscreen .results-section {
 }
 
 .column-resizer {
-    display: none !important;
+    position: absolute;
+    right: 0;
+    top: 0;
+    height: 100%;
+    width: 5px;
+    cursor: col-resize;
+    user-select: none;
+    z-index: 1;
 }
 
-.column-resizer:hover {
+.column-resizer:hover,
+.results-table th.resizing .column-resizer {
     background: var(--accent-primary);
+    opacity: 0.6;
 }
 
 .results-table th.dragging {

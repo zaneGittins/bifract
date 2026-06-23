@@ -687,6 +687,8 @@ const App = {
         const fractalViewNav = document.getElementById('fractalViewNav');
         if (mainViewNav) mainViewNav.style.display = 'flex';
         if (fractalViewNav) fractalViewNav.style.display = 'none';
+        const contextPill = document.getElementById('contextPillContainer');
+        if (contextPill) contextPill.style.display = 'none';
 
         // Switch to the requested tab
         this.showMainViewTab(tab);
@@ -833,6 +835,8 @@ const App = {
         const fractalViewNav = document.getElementById('fractalViewNav');
         if (mainViewNav) mainViewNav.style.display = 'none';
         if (fractalViewNav) fractalViewNav.style.display = 'flex';
+        const contextPill = document.getElementById('contextPillContainer');
+        if (contextPill) contextPill.style.display = 'flex';
 
         // Hide tabs that are inherently per-fractal when viewing a prism.
         // Ingest tokens are per-fractal; analytics models are backed by a

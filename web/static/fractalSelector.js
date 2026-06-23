@@ -508,10 +508,6 @@ const FractalSelector = {
 
             this.refreshCurrentView();
 
-            // Show success message
-            if (window.Toast) {
-                Toast.show(`Switched to fractal: ${selectedFractal.name}`, 'success');
-            }
 
         } catch (error) {
             console.error('Failed to select fractal:', error);
@@ -565,7 +561,6 @@ const FractalSelector = {
 
             this.refreshCurrentView();
 
-            if (window.Toast) Toast.show(`Switched to prism: ${prism.name}`, 'success');
         } catch (error) {
             console.error('Failed to select prism:', error);
             if (window.Toast) Toast.show(`Failed to switch prism: ${error.message}`, 'error');
@@ -647,21 +642,12 @@ const FractalSelector = {
         const isPrism = window.FractalContext && FractalContext.isPrism();
         if (btn) btn.dataset.type = isPrism ? 'prism' : 'fractal';
 
-        if (isPrism) {
-            // Triangular prism: triangle outline + vertical centre line
-            iconEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-                <polygon points="7,1.5 13,12.5 1,12.5"/>
-                <line x1="7" y1="1.5" x2="7" y2="12.5"/>
-            </svg>`;
-        } else {
-            // Hexagonal crystal: hexagon + three crossing diameters
-            iconEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-                <polygon points="7,1.5 11.5,4.25 11.5,9.75 7,12.5 2.5,9.75 2.5,4.25"/>
-                <line x1="7" y1="1.5" x2="7" y2="12.5"/>
-                <line x1="2.5" y1="4.25" x2="11.5" y2="9.75"/>
-                <line x1="11.5" y1="4.25" x2="2.5" y2="9.75"/>
-            </svg>`;
-        }
+        // Same icon shape for both types; color differentiates fractal vs prism via CSS data-type
+        iconEl.innerHTML = `<svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="1.5,1.5 1.5,12.5 12.5,7"/>
+            <line x1="1.5" y1="5.5" x2="7.5" y2="5.5"/>
+            <line x1="1.5" y1="8.5" x2="7.5" y2="8.5"/>
+        </svg>`;
     },
 
     showErrorInMenu(errorMessage) {
