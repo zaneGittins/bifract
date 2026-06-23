@@ -937,7 +937,7 @@ func buildContainsAnySQL(fieldRef string, values []string, negate bool) string {
 	}
 	expr := fmt.Sprintf("multiSearchAnyCaseInsensitive(%s, [%s])", fieldRef, strings.Join(quoted, ", "))
 	if negate {
-		return "NOT " + expr
+		return "NOT (" + expr + ")"
 	}
 	return expr
 }

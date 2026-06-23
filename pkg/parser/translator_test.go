@@ -104,6 +104,16 @@ func TestBasicQueries(t *testing.T) {
 			},
 		},
 		{
+			name:  "NOT in pipeline stage wraps contains-any",
+			query: "event_id=1 | image=~notepad | NOT parent_image=~explorer",
+			wantContain: []string{
+				"NOT (multiSearchAnyCaseInsensitive(fields.`parent_image`, ['explorer']))",
+			},
+			wantNotContain: []string{
+				"NOT (multiSearchAnyCaseInsensitive(fields.`image`,",
+			},
+		},
+		{
 			name:  "Count only",
 			query: "* | count()",
 			wantContain: []string{
@@ -1995,6 +2005,47 @@ func TestComputedFieldPipedConditions(t *testing.T) {
 		}
 		if strings.Contains(result.SQL, "fields.`user`") {
 			t.Errorf("user should be a computed field, not JSON field: %s", result.SQL)
+		}
+	})
+
+	t.Run("regex then lowercase on same alias produces single select entry", func(t *testing.T) {
+		// regex(as=x) adds "extract(...) AS x" to Selects; lowercase(x) must REPLACE
+		// that entry with "lower(extract(...)) AS x" rather than appending a second
+		// "... AS x" — which would produce ClickHouse error 179.
+		pipeline, err := ParseQuery(`* | regex(field=contents, regex="(?i)referrerurl=https?://([^/]+)", as=download_domain) | lowercase(download_domain)`)
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Expected no error but got: %v", err)
+		}
+		// Count occurrences of "AS download_domain" — must be exactly one.
+		count := strings.Count(result.SQL, "AS download_domain")
+		if count != 1 {
+			t.Errorf("Expected exactly 1 'AS download_domain' in SELECT, got %d: %s", count, result.SQL)
+		}
+		// The surviving entry must be the lowercased form.
+		if !strings.Contains(result.SQL, "lower(extract(") {
+			t.Errorf("Expected lower(extract(...)) AS download_domain after lowercase(), got: %s", result.SQL)
+		}
+	})
+
+	t.Run("chained regex+lowercase chain does not produce duplicate aliases", func(t *testing.T) {
+		// Full pipeline from the real failing query: three regex+lowercase pairs.
+		query := `* | regex(field=contents, regex="(?i)referrerurl=https?://([^/]+)", as=download_domain) | lowercase(download_domain) | regex(field=download_domain, regex="([^.]+\.[^.]+)$", as=tld) | lowercase(tld)`
+		pipeline, err := ParseQuery(query)
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Expected no error but got: %v", err)
+		}
+		for _, alias := range []string{"download_domain", "tld"} {
+			if count := strings.Count(result.SQL, "AS "+alias); count != 1 {
+				t.Errorf("Expected exactly 1 'AS %s' in SELECT, got %d: %s", alias, count, result.SQL)
+			}
 		}
 	})
 

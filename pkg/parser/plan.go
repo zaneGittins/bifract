@@ -30,6 +30,38 @@ type QueryLayer struct {
 	Limit    string
 }
 
+// UpsertSelect adds expr to the select list, replacing any existing entry with
+// the same output alias. This enforces last-write-wins semantics: when a pipeline
+// transform overwrites a field produced by an earlier command in the same stage
+// (e.g. regex creates "download_domain", then lowercase(download_domain) updates
+// it), the SELECT clause contains exactly one entry for that alias, preventing
+// ClickHouse error 179 (multiple expressions for the same alias).
+//
+// If expr has no extractable alias (bare column reference, no AS clause), it is
+// always appended.
+func (l *QueryLayer) UpsertSelect(expr SelectExpr) {
+	alias := expr.Alias
+	if alias == "" {
+		alias = extractFieldAlias(expr.Expr)
+		if alias == expr.Expr {
+			// No AS clause found; bare expression — always append.
+			l.Selects = append(l.Selects, expr)
+			return
+		}
+	}
+	for i, sel := range l.Selects {
+		existing := sel.Alias
+		if existing == "" {
+			existing = extractFieldAlias(sel.Expr)
+		}
+		if existing == alias {
+			l.Selects[i] = expr
+			return
+		}
+	}
+	l.Selects = append(l.Selects, expr)
+}
+
 // QueryStage represents one aggregation stage in the pipeline.
 // For now there are at most 2 (inner + one chained aggregation).
 // The structure supports N stages for future multi-groupby pipelines.

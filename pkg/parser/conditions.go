@@ -274,11 +274,11 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 		}
 		switch cond.Operator {
 		case "=~":
-			return buildContainsAnySQL(fieldRef, values, false)
+			return buildContainsAnySQL(fieldRef, values, cond.Negate)
 		case "=^":
-			return buildStartsWithAnySQL(fieldRef, values, false)
+			return buildStartsWithAnySQL(fieldRef, values, cond.Negate)
 		case "=$":
-			return buildEndsWithAnySQL(fieldRef, values, false)
+			return buildEndsWithAnySQL(fieldRef, values, cond.Negate)
 		}
 	}
 

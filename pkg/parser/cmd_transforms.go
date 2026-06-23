@@ -75,7 +75,7 @@ func (h *strftimeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	} else {
 		expr = fmt.Sprintf("formatDateTime(toDateTime(%s), '%s', '%s') AS %s", jsonFieldRef(field), escapeString(chFormat), escapeString(timezone), safeAlias)
 	}
-	ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 	src := "timestamp"
 	if field != "timestamp" {
 		src = fmt.Sprintf("toDateTime(%s)", jsonFieldRef(field))
@@ -115,7 +115,7 @@ func (h *lowercaseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		} else {
 			expr = fmt.Sprintf("lower(%s) AS %s", resolveFieldRef(field, ctx.Registry), safeOutput)
 		}
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(outputField, expr)
 	}
 	return nil
@@ -152,7 +152,7 @@ func (h *uppercaseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		} else {
 			expr = fmt.Sprintf("upper(%s) AS %s", resolveFieldRef(field, ctx.Registry), safeOutput)
 		}
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(outputField, expr)
 	}
 	return nil
@@ -203,7 +203,7 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 					}
 
 					expr := fmt.Sprintf("%s AS %s", sqlExpr, safeFieldName)
-					ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+					ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 					ctx.Registry.SetResolveExpr(fieldName, expr)
 				}
 			}
@@ -294,7 +294,7 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 					return fmt.Errorf("regex(): invalid capture name %q: %w", name, err)
 				}
 				expr := fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d] AS %s", fieldRef, escapeString(sqlPattern), i+1, safeName)
-				ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+				ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 				ctx.Registry.SetResolveExpr(safeName, fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d]", fieldRef, escapeString(sqlPattern), i+1))
 			}
 		} else if asName != "" {
@@ -306,11 +306,11 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				return fmt.Errorf("regex(): invalid as name %q: %w", asName, err)
 			}
 			scalarExpr := fmt.Sprintf("extract(%s, '%s')", fieldRef, escapeString(pattern))
-			ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeName)})
+			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeName)})
 			ctx.Registry.SetResolveExpr(safeName, scalarExpr)
 		} else {
 			expr := fmt.Sprintf("extractAllGroups(%s, '%s') AS regex_match", fieldRef, escapeString(sqlPattern))
-			ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 			ctx.Registry.SetResolveExpr("regex_match", expr)
 		}
 	}
@@ -361,7 +361,7 @@ func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 		expr := fmt.Sprintf("replaceRegexpAll(%s, '%s', '%s') AS %s",
 			fieldRef, escapeString(pattern), escapeString(replacement), safeOutput)
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(outputField, expr)
 	}
 	return nil
@@ -417,7 +417,7 @@ func (h *concatHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("concat(): invalid output field: %w", err)
 	}
 	expr := fmt.Sprintf("concat(%s) AS %s", strings.Join(fields, ", "), safeOutput)
-	ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 	ctx.Registry.SetResolveExpr(alias, expr)
 	return nil
 }
@@ -462,7 +462,7 @@ func (h *hashHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("hash(): invalid alias: %w", err)
 	}
 	expr := fmt.Sprintf("hex(cityHash64(%s)) AS %s", strings.Join(hashFields, ", "), safeAlias)
-	ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 	ctx.Registry.SetResolveExpr(safeAlias, fmt.Sprintf("hex(cityHash64(%s))", strings.Join(hashFields, ", ")))
 	return nil
 }
@@ -489,7 +489,7 @@ func (h *nowHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("now(): invalid output field: %w", err)
 	}
 	expr := fmt.Sprintf("now() AS %s", safeOutput)
-	ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 	ctx.Registry.SetResolveExpr(outputField, expr)
 	return nil
 }
@@ -527,7 +527,7 @@ func (h *caseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if len(caseAssignments) > 0 {
 			for _, assignment := range caseAssignments {
 				expr := fmt.Sprintf("%s AS %s", assignment.Expression, assignment.Field)
-				ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+				ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 				ctx.Registry.SetResolveExpr(assignment.Field, expr)
 			}
 		} else if len(whenClauses) > 0 {
@@ -538,7 +538,7 @@ func (h *caseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				caseSQL += " ELSE NULL"
 			}
 			caseSQL += fmt.Sprintf(" END AS %s", outputField)
-			ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: caseSQL})
+			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: caseSQL})
 			ctx.Registry.SetResolveExpr(outputField, caseSQL)
 		}
 	}
@@ -585,7 +585,7 @@ func (h *lenHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return fmt.Errorf("len(): invalid as name %q: %w", outName, err)
 		}
 		expr := fmt.Sprintf("length(%s) AS %s", fieldRef, safeName)
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(safeName, fmt.Sprintf("length(%s)", fieldRef))
 	}
 	return nil
@@ -616,7 +616,7 @@ func (h *levenshteinHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 			ref2 = resolveFieldRef(arg2, ctx.Registry)
 		}
 		expr := fmt.Sprintf("damerauLevenshteinDistance(%s, %s) AS _distance", ref1, ref2)
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr("_distance", fmt.Sprintf("damerauLevenshteinDistance(%s, %s)", ref1, ref2))
 	}
 	return nil
@@ -635,7 +635,7 @@ func (h *base64decodeHandler) Execute(cmd CommandNode, ctx *CommandContext) erro
 		field := cmd.Arguments[0]
 		fieldRef := resolveFieldRef(field, ctx.Registry)
 		expr := fmt.Sprintf("tryBase64Decode(%s) AS _decoded", fieldRef)
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr("_decoded", fmt.Sprintf("tryBase64Decode(%s)", fieldRef))
 	}
 	return nil
@@ -660,7 +660,7 @@ func (h *splitHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		fieldRef := resolveFieldRef(field, ctx.Registry)
 		expr := fmt.Sprintf("splitByString('%s', %s)[%d] AS _split", escapeString(delimiter), fieldRef, index)
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr("_split", fmt.Sprintf("splitByString('%s', %s)[%d]", escapeString(delimiter), fieldRef, index))
 	}
 	return nil
@@ -690,11 +690,11 @@ func (h *substrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				return fmt.Errorf("substr(): length must be numeric, got %q", lengthStr)
 			}
 			expr := fmt.Sprintf("substring(%s, %d, %d) AS _substr", fieldRef, start, length)
-			ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 			ctx.Registry.SetResolveExpr("_substr", fmt.Sprintf("substring(%s, %d, %d)", fieldRef, start, length))
 		} else {
 			expr := fmt.Sprintf("substring(%s, %d) AS _substr", fieldRef, start)
-			ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 			ctx.Registry.SetResolveExpr("_substr", fmt.Sprintf("substring(%s, %d)", fieldRef, start))
 		}
 	}
@@ -714,7 +714,7 @@ func (h *urldecodeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		field := cmd.Arguments[0]
 		fieldRef := resolveFieldRef(field, ctx.Registry)
 		expr := fmt.Sprintf("decodeURLComponent(%s) AS _urldecoded", fieldRef)
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr("_urldecoded", fmt.Sprintf("decodeURLComponent(%s)", fieldRef))
 	}
 	return nil
@@ -736,7 +736,7 @@ func (h *coalesceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			conditions = append(conditions, fmt.Sprintf("%s != '' AND %s IS NOT NULL, %s", ref, ref, ref))
 		}
 		expr := fmt.Sprintf("multiIf(%s, '') AS _coalesced", strings.Join(conditions, ", "))
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr("_coalesced", fmt.Sprintf("multiIf(%s, '')", strings.Join(conditions, ", ")))
 	}
 	return nil
@@ -783,7 +783,7 @@ func (h *sprintfHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		printfArgs = fmt.Sprintf("'%s'", escapeString(formatStr))
 	}
 	expr := fmt.Sprintf("printf(%s) AS %s", printfArgs, safeAlias)
-	ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 	ctx.Registry.SetResolveExpr(safeAlias, fmt.Sprintf("printf(%s)", printfArgs))
 	return nil
 }
@@ -903,7 +903,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		expr := fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '') AS %s",
 			escapeString(chLookupName), escapeString(col), fieldRef, safeCol)
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(col, expr)
 	}
 
@@ -1054,7 +1054,7 @@ func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 		lookupExpr := geoipLookupExpr(col, fieldRef)
 		expr := fmt.Sprintf("%s AS %s", lookupExpr, safeCol)
-		ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects, SelectExpr{Expr: expr})
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(col, expr)
 	}
 
