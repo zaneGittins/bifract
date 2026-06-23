@@ -181,13 +181,14 @@ const Timeline = {
 
         ctx.clearRect(0, 0, width, totalHeight);
 
-        const barStart   = ThemeManager.getCSSVar('--timeline-bar-start');
-        const barEnd     = ThemeManager.getCSSVar('--timeline-bar-end');
-        const textColor  = ThemeManager.getCSSVar('--timeline-text');
+        const barStart    = ThemeManager.getCSSVar('--timeline-bar-start');
+        const barEnd      = ThemeManager.getCSSVar('--timeline-bar-end');
+        const textColor   = ThemeManager.getCSSVar('--timeline-text');
+        const textPrimary = ThemeManager.getCSSVar('--accent-primary');
         const borderColor = ThemeManager.getCSSVar('--border-color');
-        const bgPrimary  = ThemeManager.getCSSVar('--bg-primary');
-        const fontFamily = ThemeManager.getCSSVar('--font-mono') || 'monospace';
-        const rulerFont  = `10px ${fontFamily}`;
+        const bgPrimary   = ThemeManager.getCSSVar('--bg-primary');
+        const fontFamily  = ThemeManager.getCSSVar('--font-mono') || 'monospace';
+        const rulerFont   = `10px ${fontFamily}`;
 
         // Compute ruler ticks — must happen before bar drawing so gridlines render under bars
         ctx.font = rulerFont;
@@ -279,20 +280,21 @@ const Timeline = {
             });
         }
 
-        // Stat badge — top-right of bar area, drawn last so it sits above bars
+        // Stat badge — top-right of bar area.
+        // Labels ("Total", "Peak") bold; numeric values in --text-primary.
         const total = this._currentTotal;
         const peak  = this._currentPeak;
         if (total != null && peak != null && total > 0) {
-            const textPrimary = ThemeManager.getCSSVar('--text-primary');
-            const valueFont = `600 10px ${fontFamily}`;
+            const labelFont = `600 12px ${fontFamily}`;
+            const valueFont = `12px ${fontFamily}`;
             const totalStr = total.toLocaleString();
-            const peakStr = peak.toLocaleString();
+            const peakStr  = peak.toLocaleString();
             const PAD_H = 5, PAD_V = 3;
-            const badgeH = 10 + PAD_V * 2;
+            const badgeH = 12 + PAD_V * 2;
 
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
-            ctx.font = rulerFont;
+            ctx.font = labelFont;
             const w1 = ctx.measureText('Total ').width;
             const w3 = ctx.measureText(' · Peak ').width;
             ctx.font = valueFont;
@@ -301,7 +303,7 @@ const Timeline = {
             const badgeW = w1 + w2 + w3 + w4 + PAD_H * 2;
             const badgeX = width - badgeW - 6;
             const badgeY = 5;
-            const textY = badgeY + badgeH / 2;
+            const textY  = badgeY + badgeH / 2;
 
             ctx.save();
             ctx.globalAlpha = 0.85;
@@ -321,11 +323,11 @@ const Timeline = {
             ctx.restore();
 
             let cx = badgeX + PAD_H;
-            ctx.font = rulerFont; ctx.fillStyle = textColor; ctx.globalAlpha = 0.7;
+            ctx.font = labelFont; ctx.fillStyle = textColor; ctx.globalAlpha = 0.9;
             ctx.fillText('Total ', cx, textY); cx += w1;
             ctx.font = valueFont; ctx.fillStyle = textPrimary; ctx.globalAlpha = 1;
             ctx.fillText(totalStr, cx, textY); cx += w2;
-            ctx.font = rulerFont; ctx.fillStyle = textColor; ctx.globalAlpha = 0.7;
+            ctx.font = labelFont; ctx.fillStyle = textColor; ctx.globalAlpha = 0.9;
             ctx.fillText(' · Peak ', cx, textY); cx += w3;
             ctx.font = valueFont; ctx.fillStyle = textPrimary; ctx.globalAlpha = 1;
             ctx.fillText(peakStr, cx, textY);
