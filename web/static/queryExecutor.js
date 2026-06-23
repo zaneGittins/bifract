@@ -376,6 +376,7 @@ const QueryExecutor = {
         this._loadingTimer = setTimeout(() => {
             this._loadingTimer = null;
             this._loadingShown = true;
+            this._queryHadError = false;
             this._outputTypeStatus('loading');
             this._setRunButtonState(true);
             if (this._loadingMode === 'bar') {
@@ -402,7 +403,7 @@ const QueryExecutor = {
             this._loadingBar('hide');
         }
         if (this._loadingShown) {
-            this._outputTypeStatus('done');
+            if (!this._queryHadError) this._outputTypeStatus('done');
         } else {
             this._outputTypeStatus('reset');
         }
@@ -747,32 +748,29 @@ const QueryExecutor = {
     _outputTypeStatus(state) {
         const spinner = document.getElementById('outputTypeSpinner');
         const check = document.getElementById('outputTypeCheck');
-        if (!spinner || !check) return;
+        const error = document.getElementById('outputTypeError');
+        if (!spinner || !check || !error) return;
+        const hideAll = () => {
+            spinner.classList.remove('is-active');
+            check.classList.remove('is-visible'); check.style.display = 'none';
+            error.classList.remove('is-visible'); error.style.display = 'none';
+        };
+        const show = (el) => {
+            el.style.display = 'block';
+            el.offsetWidth; // force reflow so transition fires
+            el.classList.add('is-visible');
+        };
         if (state === 'loading') {
+            hideAll();
             spinner.classList.add('is-active');
-            clearTimeout(this._checkFadeTimer);
-            check.classList.remove('is-visible', 'is-fading');
-            check.style.display = 'none';
         } else if (state === 'done') {
-            spinner.classList.remove('is-active');
-            check.style.display = 'block';
-            check.offsetWidth; // force reflow so transition fires
-            check.classList.add('is-visible');
-            check.classList.remove('is-fading');
-            clearTimeout(this._checkFadeTimer);
-            this._checkFadeTimer = setTimeout(() => {
-                check.classList.remove('is-visible');
-                check.classList.add('is-fading');
-                setTimeout(() => {
-                    check.classList.remove('is-fading');
-                    check.style.display = 'none';
-                }, 200);
-            }, 2000);
+            hideAll();
+            show(check);
+        } else if (state === 'error') {
+            hideAll();
+            show(error);
         } else {
-            spinner.classList.remove('is-active');
-            clearTimeout(this._checkFadeTimer);
-            check.classList.remove('is-visible', 'is-fading');
-            check.style.display = 'none';
+            hideAll();
         }
     },
 
@@ -1397,6 +1395,8 @@ const QueryExecutor = {
     renderTableError(message) {
         const resultsTable = document.getElementById('resultsTable');
         if (!resultsTable) return;
+        this._queryHadError = true;
+        this._outputTypeStatus('error');
         const safe = message ? Utils.escapeHtml(String(message)) : 'Query failed';
         resultsTable.innerHTML = `<div class="results-error"><span class="results-error-icon">⚠</span><span>${safe}</span></div>`;
         const chartContainer = document.getElementById('chartContainer');

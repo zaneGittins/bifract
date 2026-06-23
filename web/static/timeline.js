@@ -171,7 +171,7 @@ const Timeline = {
 
         const width = canvas.offsetWidth;
         const totalHeight = canvas.offsetHeight;
-        const BAR_AREA_H = 44;
+        const BAR_AREA_H = 54;
         const RULER_H = totalHeight - BAR_AREA_H;
 
         const barWidth = width / buckets.length;
@@ -283,17 +283,25 @@ const Timeline = {
         const total = this._currentTotal;
         const peak  = this._currentPeak;
         if (total != null && peak != null && total > 0) {
-            const badgeText = `Total ${total.toLocaleString()} · Peak ${peak.toLocaleString()}`;
-            ctx.font = rulerFont;
+            const textPrimary = ThemeManager.getCSSVar('--text-primary');
+            const valueFont = `600 10px ${fontFamily}`;
+            const totalStr = total.toLocaleString();
+            const peakStr = peak.toLocaleString();
+            const PAD_H = 5, PAD_V = 3;
+            const badgeH = 10 + PAD_V * 2;
+
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
-            const textW = ctx.measureText(badgeText).width;
-
-            const PAD_H = 5, PAD_V = 3;
-            const badgeW = textW + PAD_H * 2;
-            const badgeH = 10 + PAD_V * 2;   // 16px total
+            ctx.font = rulerFont;
+            const w1 = ctx.measureText('Total ').width;
+            const w3 = ctx.measureText(' · Peak ').width;
+            ctx.font = valueFont;
+            const w2 = ctx.measureText(totalStr).width;
+            const w4 = ctx.measureText(peakStr).width;
+            const badgeW = w1 + w2 + w3 + w4 + PAD_H * 2;
             const badgeX = width - badgeW - 6;
             const badgeY = 5;
+            const textY = badgeY + badgeH / 2;
 
             ctx.save();
             ctx.globalAlpha = 0.85;
@@ -312,10 +320,15 @@ const Timeline = {
             ctx.stroke();
             ctx.restore();
 
-            ctx.font = rulerFont;
-            ctx.fillStyle = textColor;
-            ctx.globalAlpha = 0.9;
-            ctx.fillText(badgeText, badgeX + PAD_H, badgeY + badgeH / 2);
+            let cx = badgeX + PAD_H;
+            ctx.font = rulerFont; ctx.fillStyle = textColor; ctx.globalAlpha = 0.7;
+            ctx.fillText('Total ', cx, textY); cx += w1;
+            ctx.font = valueFont; ctx.fillStyle = textPrimary; ctx.globalAlpha = 1;
+            ctx.fillText(totalStr, cx, textY); cx += w2;
+            ctx.font = rulerFont; ctx.fillStyle = textColor; ctx.globalAlpha = 0.7;
+            ctx.fillText(' · Peak ', cx, textY); cx += w3;
+            ctx.font = valueFont; ctx.fillStyle = textPrimary; ctx.globalAlpha = 1;
+            ctx.fillText(peakStr, cx, textY);
             ctx.globalAlpha = 1;
         }
 
@@ -418,7 +431,7 @@ const Timeline = {
         const rangeDays   = (rangeEnd - rangeStart) / 86400000;
 
         if (intervalMs >= 86400000) {
-            if (crossesYear) return `${MON_NAMES[Mon]} ${D} ’${String(Y).slice(2)}`;
+            if (crossesYear) return `${MON_NAMES[Mon]} ${D} '${String(Y).slice(2)}`;
             if (rangeDays > 14) return `${MON_NAMES[Mon]} ${D}`;
             return `${DAY_NAMES[date.getDay()]} ${D}`;
         }
