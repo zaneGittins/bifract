@@ -1624,6 +1624,43 @@ func TestDFSFunction(t *testing.T) {
 		}
 	})
 
+	t.Run("dfs with include and table", func(t *testing.T) {
+		// Regression: table() after dfs(include=[...]) must reference CTE column aliases
+		// (_computer_name, _image, ...) not JSON subcolumn refs that are invalid inside
+		// SELECT FROM traversal. ClickHouse error 47 (UNKNOWN_IDENTIFIER) was the symptom.
+		pipeline, err := ParseQuery(`event_id=1 | dfs(child=process_guid,parent=parent_process_guid,start="{63047898-ac75-6860-8a04-000000002502}",depth=10,include=[computer_name,image,user,commandline]) | table(computer_name,image,user,commandline)`)
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		sql := result.SQL
+		// Extract the final SELECT (after the closing CTE paren) and verify it uses
+		// CTE alias form (_computer_name AS computer_name), not raw JSON subcolumn refs.
+		cteEnd := strings.LastIndex(sql, ") SELECT")
+		if cteEnd < 0 {
+			t.Fatalf("Could not find final SELECT in SQL: %s", sql)
+		}
+		finalSelect := sql[cteEnd:]
+		if strings.Contains(finalSelect, "fields.`computer_name`") {
+			t.Errorf("Final SELECT must not reference JSON subcolumn directly: %s", finalSelect)
+		}
+		if !strings.Contains(sql, "_computer_name AS computer_name") {
+			t.Errorf("Expected _computer_name AS computer_name in final SELECT, got: %s", sql)
+		}
+		if !strings.Contains(sql, "_image AS image") {
+			t.Errorf("Expected _image AS image in final SELECT, got: %s", sql)
+		}
+		if !strings.Contains(sql, "_user AS user") {
+			t.Errorf("Expected _user AS user in final SELECT, got: %s", sql)
+		}
+		if !strings.Contains(sql, "_commandline AS commandline") {
+			t.Errorf("Expected _commandline AS commandline in final SELECT, got: %s", sql)
+		}
+	})
+
 	t.Run("dfs post-traversal depth filter", func(t *testing.T) {
 		pipeline, err := ParseQuery(`event_id=1 | dfs(child=process_guid, parent=parent_process_guid, include=[image,commandline], start="ABC123") | _depth > 3`)
 		if err != nil {

@@ -193,7 +193,17 @@ func buildTraversalSQL(
 			} else if alias == "_path" || alias == "_node_id" {
 				formattedFields = append(formattedFields, alias)
 			} else {
-				formattedFields = append(formattedFields, field)
+				// For fields that are part of the CTE output (child, parent, or include
+				// fields), the CTE exposes them as _alias, not as JSON subcolumn refs.
+				// table() generates jsonFieldRef expressions that are invalid inside
+				// SELECT FROM traversal; remap them to the CTE column form.
+				lookupAlias := strings.Trim(alias, "`")
+				safeAlias := strings.ReplaceAll(lookupAlias, ".", "_")
+				if seen[lookupAlias] {
+					formattedFields = append(formattedFields, fmt.Sprintf("_%s AS %s", safeAlias, safeAlias))
+				} else {
+					formattedFields = append(formattedFields, field)
+				}
 			}
 		}
 		sql.WriteString(strings.Join(formattedFields, ", "))
