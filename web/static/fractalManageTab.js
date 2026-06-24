@@ -50,7 +50,7 @@ const FractalManageTab = {
 
     },
 
-    show() {
+    show(subPath = '') {
 
         if (window.FractalContext && window.FractalContext.currentFractal) {
             this.currentFractal = window.FractalContext.currentFractal;
@@ -62,10 +62,12 @@ const FractalManageTab = {
                 if (prismSection) prismSection.style.display = '';
                 if (fractalSection) fractalSection.style.display = 'none';
                 this.loadPrismDetails();
+                if (subPath) this.switchPrismSubTab(subPath);
             } else {
                 if (prismSection) prismSection.style.display = 'none';
                 if (fractalSection) fractalSection.style.display = '';
                 this.loadFractalDetails();
+                if (subPath) this.switchSubTab(subPath);
             }
         } else {
             console.error('[FractalManageTab] No current fractal context available');
@@ -79,7 +81,7 @@ const FractalManageTab = {
         const prism = this.currentFractal;
 
         // Reset to overview subtab
-        this.switchPrismSubTab('overview');
+        this.switchPrismSubTab('overview', true);
 
         const title = document.getElementById('managePrismTitle');
         if (title) title.textContent = `Manage Prism: ${prism.name}`;
@@ -277,7 +279,7 @@ const FractalManageTab = {
         const fractal = this.currentFractal;
 
         // Reset to overview subtab
-        this.switchSubTab('overview');
+        this.switchSubTab('overview', true);
 
         // Update title
         const title = document.getElementById('manageFractalTitle');
@@ -662,7 +664,8 @@ const FractalManageTab = {
         }
     },
 
-    switchSubTab(tabName) {
+    switchSubTab(tabName, silent = false) {
+        if (!silent) window.App?.pushSubPath(tabName);
         // Update tab buttons (scoped to the manage subtabs container)
         const tabBar = document.getElementById('manageSubTabs');
         if (tabBar) {
@@ -683,7 +686,8 @@ const FractalManageTab = {
         }
     },
 
-    switchPrismSubTab(tabName) {
+    switchPrismSubTab(tabName, silent = false) {
+        if (!silent) window.App?.pushSubPath(tabName);
         // Update tab buttons (scoped to the prism subtabs container)
         const tabBar = document.getElementById('prismManageSubTabs');
         if (tabBar) {

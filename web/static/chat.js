@@ -42,6 +42,7 @@ const Chat = {
     },
 
     switchSubTab(tab) {
+        window.App?.pushSubPath(tab === 'chat' ? '' : tab);
         this.currentChatSubTab = tab;
         const tabBar = document.getElementById('chatSubTabs');
         if (tabBar) {
@@ -115,9 +116,16 @@ const Chat = {
         }
     },
 
-    show() {
+    show(subPath = '') {
         const fractal = window.FractalContext?.currentFractal;
         if (!fractal) return;
+        if (subPath === 'libraries') {
+            this.loadConversations();
+            this.loadInstructions();
+            this.switchSubTab('libraries');
+            return;
+        }
+        if (subPath) this.currentConversationId = subPath;
         this.loadConversations();
         this.loadInstructions();
     },
@@ -236,6 +244,7 @@ const Chat = {
     },
 
     selectConversation(id) {
+        window.App?.pushSubPath(id);
         this.stopStreaming();
         this.destroyCharts();
         this.currentConversationId = id;

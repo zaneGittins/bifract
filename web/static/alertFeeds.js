@@ -40,7 +40,8 @@ const AlertFeeds = {
     },
 
     showManualAlerts() {
-        this.closeDetailsPanel();
+        window.App?.pushSubPath('');
+        this.closeDetailsPanel(true);
         document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
         document.querySelector('.alerts-sub-tab[data-subtab="manual"]')?.classList.add('active');
 
@@ -61,6 +62,7 @@ const AlertFeeds = {
     },
 
     showFeedAlertsTab() {
+        window.App?.pushSubPath('feeds');
         document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
         document.querySelector('.alerts-sub-tab[data-subtab="feeds"]')?.classList.add('active');
 
@@ -82,6 +84,7 @@ const AlertFeeds = {
     },
 
     showActionsTab() {
+        window.App?.pushSubPath('actions');
         document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
         document.querySelector('.alerts-sub-tab[data-subtab="actions"]')?.classList.add('active');
 
@@ -105,10 +108,14 @@ const AlertFeeds = {
         // Sub-tab switching is handled via onclick attributes in the HTML
     },
 
-    async show() {
-        this.closeDetailsPanel();
+    async show(subPath = '') {
+        this.closeDetailsPanel(true);
         await this.loadFeeds();
         await this.loadFeedAlerts();
+        if (subPath) {
+            const alert = this.feedAlerts?.find(a => a.id === subPath);
+            if (alert) this.showDetailsPanel(alert);
+        }
     },
 
     toggleFeedManagement() {
@@ -635,6 +642,7 @@ const AlertFeeds = {
         const content = document.getElementById('feedAlertDetailsContent');
         if (!panel || !title || !content) return;
 
+        window.App?.pushSubPath(alert.id);
         title.textContent = alert.name;
         this.currentDetailAlert = alert;
 
@@ -749,9 +757,10 @@ const AlertFeeds = {
         document.addEventListener('keydown', this._detailEscHandler);
     },
 
-    closeDetailsPanel() {
+    closeDetailsPanel(silent = false) {
         const panel = document.getElementById('feedAlertDetailsPanel');
         if (panel) panel.classList.remove('open');
+        if (!silent) window.App?.pushSubPath('feeds');
         this.currentDetailAlert = null;
         if (this._detailEscHandler) {
             document.removeEventListener('keydown', this._detailEscHandler);
@@ -762,7 +771,7 @@ const AlertFeeds = {
     editFromPanel() {
         const alert = this.currentDetailAlert;
         if (!alert) return;
-        this.closeDetailsPanel();
+        this.closeDetailsPanel(true);
 
         const feedAlertsView = document.getElementById('feedAlertsView');
         if (feedAlertsView) feedAlertsView.style.display = 'none';

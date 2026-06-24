@@ -40,9 +40,13 @@ const Dictionaries = {
         }
     },
 
-    show() {
+    show(subPath = '') {
         this.bindEvents();
-        this.showListing();
+        if (subPath) {
+            this.openDictionary(subPath);
+        } else {
+            this.showListing();
+        }
     },
 
     bindEvents() {
@@ -225,6 +229,7 @@ const Dictionaries = {
 
     async openDictionary(id) {
         try {
+            window.App?.pushSubPath(id);
             const resp = await fetch(`/api/v1/dictionaries/${id}`, { credentials: 'include' });
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
@@ -306,7 +311,7 @@ const Dictionaries = {
     },
 
     _bindDetailEvents() {
-        document.getElementById('dictBackBtn')?.addEventListener('click', () => this.showListing());
+        document.getElementById('dictBackBtn')?.addEventListener('click', () => { window.App?.pushSubPath(''); this.showListing(); });
         document.getElementById('dictRowSearch')?.addEventListener('input', (e) => {
             this.rowSearch = e.target.value;
             this.rowPage = 0;
@@ -794,6 +799,7 @@ const Dictionaries = {
             if (!data.success) throw new Error(data.error);
             this.showToast('Dictionary deleted', 'success');
             this.allDictionaries = this.allDictionaries.filter(x => x.id !== d.id);
+            window.App?.pushSubPath('');
             this.showListing();
         } catch (e) {
             this.showToast('Failed to delete: ' + e.message, 'error');

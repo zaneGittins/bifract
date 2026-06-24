@@ -342,7 +342,7 @@ const Alerts = {
         });
     },
 
-    async show() {
+    async show(subPath = '') {
         // Ensure alert editor and actions views are hidden when showing alerts list
         const alertEditorView = document.getElementById('alertEditorView');
         const actionsManageView = document.getElementById('actionsManageView');
@@ -353,6 +353,11 @@ const Alerts = {
         await this.loadAlerts();
         this.updateAlertCount();
         this.startPressurePolling();
+
+        if (subPath) {
+            const alert = this.alerts?.find(a => a.id === subPath);
+            if (alert) this.showAlertDetailsPanel(alert);
+        }
     },
 
     startPressurePolling() {
@@ -679,6 +684,7 @@ const Alerts = {
 
         if (!panel || !title || !content) return;
 
+        window.App?.pushSubPath(alert.id);
         title.textContent = alert.name;
         content.innerHTML = this.renderAlertDetails(alert);
 
@@ -699,6 +705,7 @@ const Alerts = {
         if (panel) {
             panel.classList.remove('open');
         }
+        window.App?.pushSubPath('');
         this.currentDetailAlert = null;
         if (this._detailEscHandler) {
             document.removeEventListener('keydown', this._detailEscHandler);

@@ -339,6 +339,14 @@ const FractalListing = {
         }
     },
 
+    // Look up a fractal or prism by ID in the in-memory cache. Used by
+    // routeFromHash to resolve the item name when restoring from a URL hash
+    // that doesn't carry a state object (e.g. cold direct navigation).
+    getById(id, isPrism = false) {
+        const list = isPrism ? this.prisms : this.fractals;
+        return list.find(item => item.id === id) || null;
+    },
+
 };
 
 // Make globally available

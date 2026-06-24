@@ -49,10 +49,30 @@ const AnalyticsModels = {
         this._render();
     },
 
-    show() {
-        // Re-entering the Models tab always returns to the listing. currentView and
-        // the data-viewer/editor state are module-level, so without this reset a tab
-        // switch would re-render the previously opened model with stale (empty) data.
+    show(subPath = '') {
+        if (subPath === 'new') {
+            this._startEditor();
+            return;
+        }
+        if (subPath) {
+            const parts = subPath.split('/');
+            const modelId = parts[0];
+            const isEdit = parts[1] === 'edit';
+            // Load model list then navigate; pushSubPath inside these functions is
+            // deduplicated against the current URL, so no spurious history entry is created.
+            this._api('GET', '/models').then(data => {
+                this.models = data?.data?.models || [];
+                if (isEdit) this._editModel(modelId);
+                else this._openDataViewer(modelId);
+            }).catch(() => {
+                this.currentView = 'list';
+                this.selectedModel = null;
+                this.viewer.model = null;
+                this._render();
+            });
+            return;
+        }
+        // Default: reset to listing.
         this.currentView = 'list';
         this.selectedModel = null;
         this.viewer.model = null;
@@ -248,6 +268,7 @@ const AnalyticsModels = {
             // Deletion is initiated from the model page; return to the listing
             // (_renderListView reloads the models list itself).
             this._stopViewerPoll();
+            window.App?.pushSubPath('');
             this.currentView = 'list';
             this._render();
         } catch (e) {
@@ -262,6 +283,7 @@ const AnalyticsModels = {
     _editModel(id) {
         const m = this.models.find(m => m.id === id);
         if (!m) return;
+        window.App?.pushSubPath(`${id}/edit`);
         const def = m.definition || {};
         const alertCfg = { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5 };
         if (def.alert) Object.assign(alertCfg, def.alert);
@@ -295,6 +317,7 @@ const AnalyticsModels = {
     async _openDataViewer(id) {
         const model = this.models.find(m => m.id === id);
         if (!model) return;
+        window.App?.pushSubPath(id);
         this._stopListPoll();
         this.viewer = { model, rows: [], total: 0, limit: 50, offset: 0, sortCol: '', sortDir: 'desc', search: '', tab: 'data', backfillWindow: '7d', histogram: null };
         this.currentView = 'data';
@@ -328,7 +351,7 @@ const AnalyticsModels = {
 <div class="models-view-section model-data-viewer">
     <div class="model-data-header">
         <div class="model-data-title">${_esc(m.name)}</div>
-        <span class="model-badge ${m.model_type === 'rarity' ? 'badge-active' : 'badge-paused'}">${_esc(m.model_type)}</span>
+        <span class="model-badge badge-${_esc(m.status || 'none')}">${_esc(m.status || 'unknown')}</span>
         <span style="flex:1"></span>
         <button class="btn-secondary" id="modelsBackfillBtn">Backfill</button>
         <button class="btn-secondary" id="modelsExportFromViewer">Export</button>
@@ -433,9 +456,17 @@ const AnalyticsModels = {
 </div>`;
         }).join('');
 
+        let thresholdLine = '';
+        if (h?.metric === 'confidence') {
+            const t = this.viewer.model?.definition?.alert?.confidence_threshold;
+            if (t != null && t >= 0 && t <= 1) {
+                thresholdLine = `<div class="histogram-threshold-line" style="left:calc(12px + (100% - 24px) * ${t})" title="Alert threshold: ${Math.round(t * 100)}%"><span class="histogram-threshold-label">${Math.round(t * 100)}%</span></div>`;
+            }
+        }
+
         el.innerHTML = `
 <div class="histogram-head"><span class="histogram-title">${_esc(metric)} distribution</span></div>
-<div class="histogram-chart">${cols}</div>`;
+<div class="histogram-chart">${cols}${thresholdLine}</div>`;
     },
 
     _fmtNum(v) {
@@ -849,6 +880,7 @@ const AnalyticsModels = {
     BASE_FIELDS: ['raw_log', 'contents', 'commandline', 'target_file', 'src_ip', 'dst_ip', 'user', 'image', 'parent_process', 'process_name'],
 
     _startEditor() {
+        window.App?.pushSubPath('new');
         this.editor = {
             editId: null,
             modelType: 'rarity',
@@ -1457,6 +1489,7 @@ const AnalyticsModels = {
                 });
                 Toast.success('Model created');
             }
+            window.App?.pushSubPath('');
             this.currentView = 'list';
             this._render();
             await this._loadModels();

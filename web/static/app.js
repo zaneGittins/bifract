@@ -154,6 +154,14 @@ const App = {
         // Check status every 30 seconds
         setInterval(() => this.checkStatus(), 30000);
 
+        // Route from URL hash on initial page load (deferred so all module inits complete first).
+        setTimeout(() => {
+            this._navigatingFromPopState = true;
+            this.routeFromHash(null).finally(() => {
+                this._navigatingFromPopState = false;
+            });
+        }, 0);
+
     },
 
     // Tab name sets for hash-based open-in-new-tab support.
@@ -166,14 +174,52 @@ const App = {
         return hash ? base + '#' + hash : base;
     },
 
+    // Build the full hash string for the current navigation state.
+    // Fractal-view tabs: f/{id}/{tab}/{subPath} or p/{id}/{tab}/{subPath}
+    // Main-view tabs: {tab}/{subPath}
+    _buildHash(tab, subPath = '') {
+        let base;
+        if (this.currentViewLevel === 'fractal' && window.FractalContext?.currentFractal) {
+            const prefix = window.FractalContext.isPrism() ? 'p' : 'f';
+            base = `${prefix}/${window.FractalContext.currentFractal.id}/${tab}`;
+        } else {
+            base = tab === 'fractalListing' ? '' : tab;
+        }
+        return subPath ? `${base}/${subPath}` : base;
+    },
+
+    // Build the history.pushState state object for the current fractal/prism context.
+    // Stored alongside the hash so back-button restores can resolve the fractal name
+    // without an extra API call.
+    _buildFractalState() {
+        const fractal = window.FractalContext?.currentFractal;
+        if (!fractal) return null;
+        return {
+            fractalId: fractal.id,
+            fractalName: fractal.name,
+            fractalType: window.FractalContext.currentItemType,
+        };
+    },
+
+    // Called by tab modules when navigating to a sub-view (e.g. model detail,
+    // notebook editor). Suppressed during popstate/init routing so that restoring
+    // state from the URL does not create duplicate history entries.
+    pushSubPath(subPath) {
+        if (this._navigatingFromPopState) return;
+        this._pushHash(this._buildHash(this.currentView, subPath), this._buildFractalState());
+    },
+
     // Bind click + middle-click/ctrl+click on a tab button.
     // Normal click calls handler; middle/ctrl+click opens the tab URL in a new browser tab.
+    // hash may be a string or a zero-arg function that returns the hash at click time
+    // (needed for fractal-view tabs whose URL includes the live fractal ID).
     _bindTab(el, handler, hash) {
         if (!el) return;
         el.addEventListener('click', (e) => {
             if (e.ctrlKey || e.metaKey) {
                 e.preventDefault();
-                window.open(this._tabUrl(hash), '_blank');
+                const h = typeof hash === 'function' ? hash() : hash;
+                window.open(this._tabUrl(h), '_blank');
             } else {
                 handler();
             }
@@ -181,56 +227,112 @@ const App = {
         el.addEventListener('auxclick', (e) => {
             if (e.button === 1) {
                 e.preventDefault();
-                window.open(this._tabUrl(hash), '_blank');
+                const h = typeof hash === 'function' ? hash() : hash;
+                window.open(this._tabUrl(h), '_blank');
             }
         });
     },
 
     // Route from the URL hash on page load and handle browser back/forward.
-    routeFromHash() {
+    // Async because cross-fractal back-navigation must await the server /select
+    // call before rendering the new scope's tab.
+    async routeFromHash(event) {
         const hash = window.location.hash.replace(/^#/, '');
-        if (!hash || hash === 'fractalListing') {
+        const segments = hash ? hash.split('/') : [];
+        const prefix = segments[0] || '';
+
+        if (!prefix || prefix === 'fractalListing') {
             this.showMainView('fractalListing');
             return;
         }
-        if (this._mainTabs.has(hash)) {
-            this.showMainView(hash);
-            return;
-        }
-        if (this._fractalTabs.has(hash)) {
-            if (!FractalContext.currentFractal && window.FractalContext) {
-                // restoreFromStorage is async (it awaits the server /select
-                // call to avoid racing the tab show() handlers against a
-                // stale session). Wrap the follow-up navigation in .then().
-                FractalContext.restoreFromStorage().then(restored => {
-                    if (restored) {
-                        this.showFractalView(hash);
-                    } else {
-                        this.showMainView('fractalListing');
-                    }
-                });
+
+        // Fractal/prism view: f/{id}/{tab}/{subPath...} or p/{id}/{tab}/{subPath...}
+        if (prefix === 'f' || prefix === 'p') {
+            const isPrism = prefix === 'p';
+            const id = segments[1];
+            const tab = segments[2] || 'search';
+            const subPath = segments.slice(3).join('/');
+
+            if (!id || !window.FractalContext) {
+                this.showMainView('fractalListing');
                 return;
             }
-            this.showFractalView(hash);
+
+            if (window.FractalContext.currentFractal?.id !== id) {
+                // Resolve the fractal/prism name — needed to call setCurrentFractal/Prism.
+                // Primary: state object pushed alongside the hash (always present on back nav).
+                // Fallback: in-memory listing cache. Last resort: API fetch.
+                let name = event?.state?.fractalName;
+                if (!name) name = window.FractalListing?.getById(id, isPrism)?.name;
+                if (!name) {
+                    try {
+                        const endpoint = isPrism ? `/api/v1/prisms/${id}` : `/api/v1/fractals/${id}`;
+                        const resp = await fetch(endpoint, { credentials: 'include' });
+                        if (resp.ok) {
+                            const data = await resp.json();
+                            name = data.data?.name || data.name;
+                        }
+                    } catch (_) {}
+                }
+                if (!name) name = id;
+
+                const item = { id, name };
+                if (isPrism) {
+                    await FractalContext.setCurrentPrism(item);
+                } else {
+                    await FractalContext.setCurrentFractal(item);
+                }
+            }
+
+            this.showFractalView(tab, subPath);
             return;
         }
+
+        // Main-view tab (possibly with sub-path)
+        const mainTab = prefix;
+        const subPath = segments.slice(1).join('/');
+        if (this._mainTabs.has(mainTab)) {
+            this.showMainView(mainTab, subPath);
+            return;
+        }
+
+        // Legacy fractal tab format (plain tab name, no context prefix).
+        // Restore context from localStorage and show the tab.
+        if (this._fractalTabs.has(mainTab)) {
+            if (!window.FractalContext?.currentFractal) {
+                const restored = await FractalContext.restoreFromStorage();
+                if (restored) {
+                    this.showFractalView(mainTab, '');
+                } else {
+                    this.showMainView('fractalListing');
+                }
+                return;
+            }
+            this.showFractalView(mainTab, '');
+            return;
+        }
+
         this.showMainView('fractalListing');
     },
 
     // Push a history entry so the browser back button navigates within the app.
-    _pushHash(hash) {
+    // state is stored alongside the hash and recovered via event.state on popstate.
+    _pushHash(hash, state = null) {
         const target = hash ? '#' + hash : '#fractalListing';
         if (window.location.hash !== target) {
-            history.pushState(null, '', target);
+            history.pushState(state, '', target);
         }
     },
 
     // Listen for popstate (browser back/forward) and route accordingly.
     _initPopState() {
-        window.addEventListener('popstate', () => {
+        window.addEventListener('popstate', async (event) => {
             this._navigatingFromPopState = true;
-            this.routeFromHash();
-            this._navigatingFromPopState = false;
+            try {
+                await this.routeFromHash(event);
+            } finally {
+                this._navigatingFromPopState = false;
+            }
         });
     },
 
@@ -252,16 +354,17 @@ const App = {
         this._bindTab(document.getElementById('mainSchemaTabBtn'), () => this.showMainViewTab('schema'), 'schema');
 
         // Fractal View Tab Buttons
-        this._bindTab(document.getElementById('fractalSearchTabBtn'), () => this.showFractalViewTab('search'), 'search');
-        this._bindTab(document.getElementById('fractalCommentsTabBtn'), () => this.showFractalViewTab('comments'), 'comments');
-        this._bindTab(document.getElementById('fractalNotebooksTabBtn'), () => this.showFractalViewTab('notebooks'), 'notebooks');
-        this._bindTab(document.getElementById('fractalDashboardsTabBtn'), () => this.showFractalViewTab('dashboards'), 'dashboards');
-        this._bindTab(document.getElementById('fractalDictionariesTabBtn'), () => this.showFractalViewTab('dictionaries'), 'dictionaries');
-        this._bindTab(document.getElementById('fractalModelsTabBtn'), () => this.showFractalViewTab('models'), 'models');
-        this._bindTab(document.getElementById('fractalChatTabBtn'), () => this.showFractalViewTab('chat'), 'chat');
-        this._bindTab(document.getElementById('fractalAlertsTabBtn'), () => this.showFractalViewTab('alerts'), 'alerts');
-        this._bindTab(document.getElementById('fractalIngestTabBtn'), () => this.showFractalViewTab('ingest'), 'ingest');
-        this._bindTab(document.getElementById('fractalManageTabBtn'), () => this.showFractalViewTab('manage'), 'manage');
+        // Hash is a function so ctrl+click open-in-new-tab captures the live fractal ID.
+        this._bindTab(document.getElementById('fractalSearchTabBtn'), () => this.showFractalViewTab('search'), () => this._buildHash('search'));
+        this._bindTab(document.getElementById('fractalCommentsTabBtn'), () => this.showFractalViewTab('comments'), () => this._buildHash('comments'));
+        this._bindTab(document.getElementById('fractalNotebooksTabBtn'), () => this.showFractalViewTab('notebooks'), () => this._buildHash('notebooks'));
+        this._bindTab(document.getElementById('fractalDashboardsTabBtn'), () => this.showFractalViewTab('dashboards'), () => this._buildHash('dashboards'));
+        this._bindTab(document.getElementById('fractalDictionariesTabBtn'), () => this.showFractalViewTab('dictionaries'), () => this._buildHash('dictionaries'));
+        this._bindTab(document.getElementById('fractalModelsTabBtn'), () => this.showFractalViewTab('models'), () => this._buildHash('models'));
+        this._bindTab(document.getElementById('fractalChatTabBtn'), () => this.showFractalViewTab('chat'), () => this._buildHash('chat'));
+        this._bindTab(document.getElementById('fractalAlertsTabBtn'), () => this.showFractalViewTab('alerts'), () => this._buildHash('alerts'));
+        this._bindTab(document.getElementById('fractalIngestTabBtn'), () => this.showFractalViewTab('ingest'), () => this._buildHash('ingest'));
+        this._bindTab(document.getElementById('fractalManageTabBtn'), () => this.showFractalViewTab('manage'), () => this._buildHash('manage'));
 
         // Query input
         const queryInput = document.getElementById('queryInput');
@@ -651,12 +754,7 @@ const App = {
     currentView: null, // Current tab within the level
 
     // Show the main view (fractal listing / settings / fractal management)
-    showMainView(tab = 'fractalListing') {
-
-        if (!this._navigatingFromPopState) {
-            this._pushHash(tab === 'fractalListing' ? '' : tab);
-        }
-
+    showMainView(tab = 'fractalListing', subPath = '') {
         this.currentViewLevel = 'main';
         this.currentView = tab;
 
@@ -691,10 +789,13 @@ const App = {
         if (contextPill) contextPill.style.display = 'none';
 
         // Switch to the requested tab
-        this.showMainViewTab(tab);
+        this.showMainViewTab(tab, subPath);
     },
 
-    showMainViewTab(tab) {
+    showMainViewTab(tab, subPath = '') {
+        if (!this._navigatingFromPopState) {
+            this._pushHash(this._buildHash(tab, subPath));
+        }
         // Close alert details panel when switching to main view
         if (window.Alerts) {
             Alerts.closeAlertDetailsPanel();
@@ -780,25 +881,25 @@ const App = {
                 if (mainPerformanceContent) mainPerformanceContent.style.display = 'block';
                 if (performanceView) performanceView.style.display = 'block';
                 if (mainPerformanceTab) mainPerformanceTab.classList.add('active');
-                if (window.Performance) Performance.show();
+                if (window.Performance) Performance.show(subPath);
                 break;
             case 'settings':
                 if (mainSettingsContent) mainSettingsContent.style.display = 'block';
                 if (settingsView) settingsView.style.display = 'block';
                 if (mainSettingsTab) mainSettingsTab.classList.add('active');
-                if (window.SettingsView) SettingsView.show();
+                if (window.SettingsView) SettingsView.show(subPath);
                 break;
             case 'context':
                 if (mainContextContent) mainContextContent.style.display = 'block';
                 if (contextLinksView) contextLinksView.style.display = 'block';
                 if (mainContextTab) mainContextTab.classList.add('active');
-                if (window.ContextLinks) ContextLinks.show();
+                if (window.ContextLinks) ContextLinks.show(subPath);
                 break;
             case 'normalizers':
                 if (mainNormalizersContent) mainNormalizersContent.style.display = 'block';
                 if (normalizersView) normalizersView.style.display = 'block';
                 if (mainNormalizersTab) mainNormalizersTab.classList.add('active');
-                if (window.Normalizers) Normalizers.show();
+                if (window.Normalizers) Normalizers.show(subPath);
                 break;
             case 'schema':
                 if (mainSchemaContent) mainSchemaContent.style.display = 'block';
@@ -820,12 +921,7 @@ const App = {
     },
 
     // Show the fractal view (search / comments / alerts / reference)
-    showFractalView(tab = 'search') {
-
-        if (!this._navigatingFromPopState) {
-            this._pushHash(tab);
-        }
-
+    showFractalView(tab = 'search', subPath = '') {
         this.currentViewLevel = 'fractal';
         this.currentView = tab;
 
@@ -851,14 +947,18 @@ const App = {
         this.updateScopedTabVisibility();
 
         // Switch to the requested tab
-        this.showFractalViewTab(tab);
+        this.showFractalViewTab(tab, subPath);
     },
 
-    showFractalViewTab(tab) {
+    showFractalViewTab(tab, subPath = '') {
         // Models are fractal-scoped and never populate in a prism; redirect to
         // search so a prism never lands on an empty Models view.
         if (tab === 'models' && window.FractalContext && window.FractalContext.isPrism()) {
             tab = 'search';
+            subPath = '';
+        }
+        if (!this._navigatingFromPopState) {
+            this._pushHash(this._buildHash(tab, subPath), this._buildFractalState());
         }
 
         // Clear shared query state when navigating away from search tab
@@ -909,7 +1009,7 @@ const App = {
                 Alerts.closeAlertDetailsPanel();
             }
             if (window.AlertFeeds) {
-                AlertFeeds.closeDetailsPanel();
+                AlertFeeds.closeDetailsPanel(true);
             }
         }
 
@@ -1004,6 +1104,7 @@ const App = {
 
                 if (window.Notebooks) {
                     Notebooks.init();
+                    if (subPath) Notebooks.openNotebook(subPath);
                 } else {
                     console.error('[App] Notebooks module not found! Check if notebooks.js loaded properly.');
                 }
@@ -1015,6 +1116,7 @@ const App = {
 
                 if (window.Dashboards) {
                     Dashboards.init();
+                    if (subPath) Dashboards.openDashboard(subPath);
                 } else {
                     console.error('[App] Dashboards module not found! Check if dashboards.js loaded properly.');
                 }
@@ -1024,21 +1126,21 @@ const App = {
                 if (dictionariesView) dictionariesView.style.display = 'block';
                 if (dictionariesTab) dictionariesTab.classList.add('active');
 
-                if (window.Dictionaries) Dictionaries.show();
+                if (window.Dictionaries) Dictionaries.show(subPath);
                 break;
             case 'models':
                 if (modelsContent) modelsContent.style.display = 'block';
                 if (modelsView) modelsView.style.display = 'block';
                 if (modelsTab) modelsTab.classList.add('active');
 
-                if (window.AnalyticsModels) AnalyticsModels.show();
+                if (window.AnalyticsModels) AnalyticsModels.show(subPath);
                 break;
             case 'chat':
                 if (chatContent) chatContent.style.display = 'block';
                 if (chatView) chatView.style.display = 'block';
                 if (chatTab) chatTab.classList.add('active');
 
-                if (window.Chat) Chat.show();
+                if (window.Chat) Chat.show(subPath);
                 break;
             case 'alerts':
                 if (alertsContent) alertsContent.style.display = 'block';
@@ -1049,16 +1151,27 @@ const App = {
                     SyntaxHighlight.updateHighlight('editorQueryInput', 'alertQueryHighlight');
                 }
 
-                // Show the currently active sub-tab (default: manual alerts)
+                // Route to the correct alerts sub-tab based on subPath, falling back
+                // to whichever DOM sub-tab was last active.
                 {
-                    const activeSubTab = document.querySelector('.alerts-sub-tab.active');
-                    const subtab = activeSubTab?.dataset.subtab || 'manual';
-                    if (subtab === 'feeds') {
+                    const showFeeds = subPath === 'feeds' ||
+                        (!subPath && document.querySelector('.alerts-sub-tab.active')?.dataset.subtab === 'feeds');
+                    const showActions = subPath === 'actions' ||
+                        (!subPath && document.querySelector('.alerts-sub-tab.active')?.dataset.subtab === 'actions');
+
+                    if (showActions) {
+                        if (window.AlertFeeds) AlertFeeds.showActionsTab();
+                    } else if (showFeeds) {
+                        document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
+                        document.querySelector('.alerts-sub-tab[data-subtab="feeds"]')?.classList.add('active');
                         if (feedAlertsView) feedAlertsView.style.display = 'block';
-                        if (window.AlertFeeds) AlertFeeds.show();
+                        if (window.AlertFeeds) AlertFeeds.show(subPath === 'feeds' ? '' : subPath);
                     } else {
+                        document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
+                        document.querySelector('.alerts-sub-tab[data-subtab="manual"]')?.classList.add('active');
                         if (alertsView) alertsView.style.display = 'block';
-                        if (window.Alerts) Alerts.show();
+                        const alertSubPath = (subPath && subPath !== 'manual') ? subPath : '';
+                        if (window.Alerts) Alerts.show(alertSubPath);
                     }
                 }
                 break;
@@ -1071,7 +1184,7 @@ const App = {
             case 'manage':
                 if (manageContent) manageContent.style.display = 'block';
                 if (manageTab) manageTab.classList.add('active');
-                if (window.FractalManageTab) FractalManageTab.show();
+                if (window.FractalManageTab) FractalManageTab.show(subPath);
                 break;
         }
     },

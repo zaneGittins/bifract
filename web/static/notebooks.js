@@ -86,7 +86,10 @@ const Notebooks = {
         // Notebook editor events
         const backBtn = document.getElementById('backToNotebooksBtn');
         if (backBtn) {
-            backBtn.addEventListener('click', () => this.showNotebookListing());
+            backBtn.addEventListener('click', () => {
+                window.App?.pushSubPath('');
+                this.showNotebookListing();
+            });
         }
 
         const saveBtn = document.getElementById('saveNotebookBtn');
@@ -538,6 +541,7 @@ const Notebooks = {
                 throw new Error('No notebook ID provided');
             }
 
+            window.App?.pushSubPath(notebookId);
             this.showLoadingState('Loading notebook...');
 
             const response = await fetch(`/api/v1/notebooks/${notebookId}`, {
@@ -3044,6 +3048,7 @@ const Notebooks = {
 
             // If we're currently viewing the deleted notebook, return to listing
             if (this.currentNotebook && this.currentNotebook.id === notebookId) {
+                window.App?.pushSubPath('');
                 this.showNotebookListing();
             } else {
                 // Otherwise just refresh the listing

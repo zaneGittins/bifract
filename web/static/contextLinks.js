@@ -13,8 +13,14 @@ const ContextLinks = {
         this.loadEnabledLinks();
     },
 
-    show() {
-        this.loadContextLinks();
+    show(subPath = '') {
+        if (subPath === 'new') {
+            this.loadContextLinks().then(() => this.openCreateForm());
+        } else if (subPath) {
+            this.loadContextLinks().then(() => this.openEditForm(subPath));
+        } else {
+            this.loadContextLinks();
+        }
     },
 
     hide() {},
@@ -87,6 +93,7 @@ const ContextLinks = {
     },
 
     openCreateForm() {
+        window.App?.pushSubPath('new');
         this.editingId = null;
         const modal = document.getElementById('contextLinkModal');
         if (!modal) return;
@@ -104,6 +111,7 @@ const ContextLinks = {
 
     async openEditForm(id) {
         try {
+            window.App?.pushSubPath(id);
             const data = await HttpUtils.safeFetch(`/api/v1/context-links/${id}`);
             const link = data.data;
             this.editingId = id;
@@ -125,9 +133,10 @@ const ContextLinks = {
         }
     },
 
-    closeModal() {
+    closeModal(silent = false) {
         const modal = document.getElementById('contextLinkModal');
         if (modal) modal.style.display = 'none';
+        if (!silent) window.App?.pushSubPath('');
         this.editingId = null;
     },
 
@@ -171,7 +180,8 @@ const ContextLinks = {
                 });
                 Utils.showNotification('Context link created', 'success');
             }
-            this.closeModal();
+            this.closeModal(true);
+            window.App?.pushSubPath('');
             this.loadContextLinks();
             this.loadEnabledLinks();
         } catch (err) {

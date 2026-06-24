@@ -91,6 +91,7 @@ const Performance = {
     },
 
     switchSubTab(name) {
+        window.App?.pushSubPath(name);
         this.subTab = name;
         sessionStorage.setItem('perfSubTab', name);
         this.applySubTab(name);
@@ -116,9 +117,13 @@ const Performance = {
         });
     },
 
-    async show() {
+    async show(subPath = '') {
         this.isActive = true;
         this.prevCpuTimes = null;
+        if (subPath) {
+            this.subTab = subPath;
+            sessionStorage.setItem('perfSubTab', subPath);
+        }
         this.applySubTab(this.subTab);
         this.loadFractalOptions();
         await this.refresh();

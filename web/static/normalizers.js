@@ -43,7 +43,15 @@ const Normalizers = {
         }
     },
 
-    show() {
+    show(subPath = '') {
+        if (subPath === 'new') {
+            this.openCreateForm();
+            return;
+        }
+        if (subPath) {
+            this.openEditForm(subPath);
+            return;
+        }
         const editor = document.getElementById('normalizerEditorView');
         if (editor) editor.style.display = 'none';
         this.loadNormalizers();
@@ -152,6 +160,7 @@ const Normalizers = {
     },
 
     backToList() {
+        window.App?.pushSubPath('');
         const listView = document.getElementById('normalizersView');
         const editorView = document.getElementById('normalizerEditorView');
         if (editorView) editorView.style.display = 'none';
@@ -233,6 +242,7 @@ const Normalizers = {
     // --- Form open/close ---
 
     openCreateForm() {
+        window.App?.pushSubPath('new');
         this.editingId = null;
 
         document.getElementById('normalizerName').value = '';
@@ -255,6 +265,7 @@ const Normalizers = {
 
     async openEditForm(id) {
         try {
+            window.App?.pushSubPath(id);
             const data = await HttpUtils.safeFetch(`/api/v1/normalizers/${id}`);
             const n = data.data;
             this.editingId = id;

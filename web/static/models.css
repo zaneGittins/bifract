@@ -695,6 +695,26 @@ textarea.full-input {
     border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 10px 12px 8px;
+    position: relative;
+}
+.histogram-threshold-line {
+    position: absolute;
+    top: 10px;
+    bottom: 8px;
+    width: 0;
+    border-left: 2px dashed var(--accent-warning, #e8a838);
+    pointer-events: none;
+    z-index: 1;
+}
+.histogram-threshold-label {
+    position: absolute;
+    top: -4px;
+    left: 4px;
+    font-size: 9px;
+    color: var(--accent-warning, #e8a838);
+    white-space: nowrap;
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    line-height: 1;
 }
 .histogram-col {
     flex: 1;

@@ -87,7 +87,7 @@ const Dashboards = {
 
         const backBtn = document.getElementById('backToDashboardsBtn');
         if (backBtn) {
-            backBtn._dashHandler = () => this.showDashboardListing();
+            backBtn._dashHandler = () => { window.App?.pushSubPath(''); this.showDashboardListing(); };
             backBtn.addEventListener('click', backBtn._dashHandler);
         }
 
@@ -226,6 +226,7 @@ const Dashboards = {
 
     async openDashboard(id) {
         try {
+            window.App?.pushSubPath(id);
             const response = await fetch(`/api/v1/dashboards/${id}`, { credentials: 'include' });
             const data = await response.json();
             if (!data.success) throw new Error(data.error || 'Failed to load dashboard');
@@ -1409,6 +1410,7 @@ const Dashboards = {
 
             if (this.currentDashboard && this.currentDashboard.id === id) {
                 this.currentDashboard = null;
+                window.App?.pushSubPath('');
             }
             this.showDashboardListing();
         } catch (err) {

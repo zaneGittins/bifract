@@ -56,6 +56,7 @@ const SettingsView = {
     },
 
     switchSubTab(tabName) {
+        window.App?.pushSubPath(tabName);
         const tabBar = document.getElementById('settingsSubTabs');
         if (tabBar) {
             tabBar.querySelectorAll('.alerts-sub-tab').forEach(btn => btn.classList.remove('active'));
@@ -67,7 +68,7 @@ const SettingsView = {
         if (panel) panel.style.display = '';
     },
 
-    async show() {
+    async show(subPath = '') {
         // Hide other views
         const searchView = document.getElementById('searchView');
         const commentedView = document.getElementById('commentedView');
@@ -107,6 +108,8 @@ const SettingsView = {
         if (window.GroupsView) {
             GroupsView.loadGroups();
         }
+
+        if (subPath) this.switchSubTab(subPath);
     },
 
     hide() {
