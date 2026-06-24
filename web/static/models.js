@@ -1037,10 +1037,8 @@ const AnalyticsModels = {
             </div>
             <div class="config-section">
                 <div class="config-section-title">Alert</div>
-                <div class="alert-mode-options">
-                    ${this._editorAlertModeOptionsHTML()}
-                </div>
-                <div id="modelAlertConfig">${e.alertMode !== 'none' ? this._editorAlertConfigHTML() : ''}</div>
+                ${!e.editId ? `<p class="config-hint">The alert starts paused. Enable it anytime from the model's data view.</p>` : ''}
+                <div id="modelAlertConfig">${this._editorAlertConfigHTML()}</div>
             </div>
         </div>
     </div>
@@ -1225,21 +1223,6 @@ const AnalyticsModels = {
     },
 
     // ---- Alert config (right panel) ----
-    _editorAlertModeOptionsHTML() {
-        const e = this.editor;
-        const opt = (val, title, desc) => `
-<label class="alert-mode-option ${e.alertMode === val ? 'selected' : ''}">
-    <input type="radio" name="modelAlertMode" value="${val}" ${e.alertMode === val ? 'checked' : ''}>
-    <div class="alert-mode-text">
-        <div class="mode-title">${title}</div>
-        <div class="mode-desc">${desc}</div>
-    </div>
-</label>`;
-        return opt('none', 'Collect data only', "Model runs silently. View its data anytime.")
-            + opt('paused', 'Create alert — paused <em style="color:var(--accent-primary);font-style:normal">(Recommended)</em>', "Alert created but won't fire until enabled.")
-            + opt('active', 'Create alert — active', 'Alert fires immediately when the threshold is exceeded.');
-    },
-
     _editorAlertConfigHTML() {
         const c = this.editor.alertConfig;
         const mt = this.editor.modelType;
@@ -1283,22 +1266,13 @@ const AnalyticsModels = {
 
     _renderEditorAlertConfig() {
         const el = document.getElementById('modelAlertConfig');
-        if (el) { el.innerHTML = this.editor.alertMode !== 'none' ? this._editorAlertConfigHTML() : ''; this._bindAlertConfigEvents(); }
+        if (el) { el.innerHTML = this._editorAlertConfigHTML(); this._bindAlertConfigEvents(); }
     },
 
     _bindEditorDetails() {
         const e = this.editor;
         document.getElementById('modelName').addEventListener('input', ev => { e.name = ev.target.value; });
         document.getElementById('modelDesc').addEventListener('input', ev => { e.description = ev.target.value; });
-        document.querySelectorAll('input[name=modelAlertMode]').forEach(radio => {
-            radio.addEventListener('change', ev => {
-                e.alertMode = ev.target.value;
-                document.querySelectorAll('.alert-mode-option').forEach(opt => {
-                    opt.classList.toggle('selected', opt.querySelector('input').value === e.alertMode);
-                });
-                this._renderEditorAlertConfig();
-            });
-        });
         this._bindAlertConfigEvents();
     },
 
@@ -1568,7 +1542,9 @@ const AnalyticsModels = {
         } else {
             def.key_fields = e.keyFields.filter(Boolean);
         }
-        if (e.alertMode !== 'none') def.alert = { ...e.alertConfig };
+        // Alert thresholds are always configured now; mode is set to paused on
+        // create and preserved on edit (changed ad-hoc from the model's data view).
+        def.alert = { ...e.alertConfig };
 
         const btn = document.getElementById('modelEditorSave');
         if (btn) btn.disabled = true;

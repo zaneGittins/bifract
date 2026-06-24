@@ -503,60 +503,6 @@
     font-family: var(--font-mono, 'IBM Plex Mono', monospace);
 }
 
-/* Alert mode selector */
-.alert-mode-options {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin: 8px 0;
-}
-
-.alert-mode-option {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 10px 12px;
-    border: 2px solid var(--border-color);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: border-color 0.15s;
-}
-
-.alert-mode-option:hover { border-color: var(--accent-primary); }
-.alert-mode-option.selected { border-color: var(--accent-primary); background: rgba(156,106,222,0.08); }
-
-/* Custom radio that reads cleanly in both light and dark themes. */
-.alert-mode-option input[type=radio] {
-    appearance: none;
-    -webkit-appearance: none;
-    flex-shrink: 0;
-    width: 16px;
-    height: 16px;
-    margin: 2px 0 0;
-    border: 2px solid var(--border-color);
-    border-radius: 50%;
-    background: var(--bg-primary, #0f0f1a);
-    cursor: pointer;
-    position: relative;
-    transition: border-color 0.15s;
-}
-.alert-mode-option input[type=radio]:hover { border-color: var(--accent-primary); }
-.alert-mode-option input[type=radio]:checked { border-color: var(--accent-primary); }
-.alert-mode-option input[type=radio]:checked::after {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--accent-primary);
-}
-
-.alert-mode-text .mode-title { font-weight: 500; font-size: 14px; }
-.alert-mode-text .mode-desc  { font-size: 12px; color: var(--text-muted, #888); margin-top: 2px; }
-
 .alert-config-section {
     margin-top: 12px;
     padding: 12px;
