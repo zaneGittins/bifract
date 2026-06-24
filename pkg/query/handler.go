@@ -144,8 +144,12 @@ func histogramBucketSeconds(start, end time.Time) (bucketSec int, bucketCount in
 		bucketSec = 900 // 15 minutes
 	case dur <= 7*24*time.Hour:
 		bucketSec = 3600 // 1 hour
-	default:
+	case dur <= 30*24*time.Hour:
 		bucketSec = 10800 // 3 hours
+	case dur <= 365*24*time.Hour:
+		bucketSec = 86400 // 1 day
+	default:
+		bucketSec = 604800 // 1 week
 	}
 	bucketCount = int(dur.Seconds())/bucketSec + 1
 	return
