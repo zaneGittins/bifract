@@ -67,6 +67,9 @@ const InstructionLibraries = {
         const container = document.getElementById('instructionLibrariesView');
         if (!container) return;
 
+        this._pageEditor = null;
+        container.classList.toggle('il-full-height', this.view === 'editPage');
+
         switch (this.view) {
             case 'list':
                 container.innerHTML = this.renderListView();
@@ -79,8 +82,24 @@ const InstructionLibraries = {
                 break;
             case 'editPage':
                 container.innerHTML = this.renderPageForm();
+                requestAnimationFrame(() => this._initPageEditor());
                 break;
         }
+    },
+
+    _initPageEditor() {
+        const el = document.getElementById('ilPageContent');
+        if (!el || typeof CodeMirror === 'undefined') return;
+        this._pageEditor = CodeMirror.fromTextArea(el, {
+            mode: 'markdown',
+            theme: 'dracula',
+            lineNumbers: false,
+            lineWrapping: true,
+            autofocus: true,
+            indentWithTabs: false,
+            extraKeys: { 'Enter': 'newlineAndIndentContinueMarkdownList' },
+        });
+        this._pageEditor.setSize('100%', '100%');
     },
 
     renderListView() {
@@ -217,13 +236,12 @@ const InstructionLibraries = {
 
             html += `
                 <div class="il-page-row" data-name="${this.esc(page.name)}" data-desc="${this.esc(page.description || '')}">
-                    <div class="il-page-info">
+                    <div class="il-page-info il-page-info-clickable" onclick="InstructionLibraries.showEditPage('${page.id}')">
                         <div class="il-page-name">${pinIcon} ${this.esc(page.name)}</div>
                         ${desc}
                     </div>
                     <div class="il-page-actions">
                         <button class="btn-secondary btn-xs" onclick="InstructionLibraries.togglePin('${page.id}', ${!page.always_include})">${page.always_include ? 'Unpin' : 'Pin'}</button>
-                        <button class="btn-secondary btn-xs" onclick="InstructionLibraries.showEditPage('${page.id}')">Edit</button>
                         <button class="btn-secondary btn-xs btn-danger-text" onclick="InstructionLibraries.deletePage('${page.id}', '${this.esc(page.name)}')">Delete</button>
                     </div>
                 </div>
@@ -496,7 +514,7 @@ const InstructionLibraries = {
         const body = {
             name: name,
             description: document.getElementById('ilPageDesc').value.trim(),
-            content: document.getElementById('ilPageContent').value,
+            content: this._pageEditor ? this._pageEditor.getValue() : document.getElementById('ilPageContent').value,
             always_include: document.getElementById('ilPagePin').checked,
             sort_order: parseInt(document.getElementById('ilPageOrder').value) || 0,
         };
