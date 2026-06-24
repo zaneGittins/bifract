@@ -859,6 +859,124 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 	return nil
 }
 
+// EnsureColdStoragePolicy switches the logs table onto the 'tiered' storage
+// policy when cold storage is enabled. The policy and its disks (hot 'default'
+// volume + cold object-storage volume) must be defined in server config
+// (config.d/storage.xml); this only points the table at it. Idempotent: a no-op
+// when logs is already on the tiered policy.
+func (c *ClickHouseClient) EnsureColdStoragePolicy(ctx context.Context) error {
+	var policy string
+	if err := c.conn.QueryRow(ctx,
+		"SELECT storage_policy FROM system.tables WHERE database = currentDatabase() AND name = 'logs'",
+	).Scan(&policy); err != nil {
+		return fmt.Errorf("failed to read logs storage policy: %w", err)
+	}
+	if policy == "tiered" {
+		return nil
+	}
+	stmt := c.InjectOnCluster("ALTER TABLE logs MODIFY SETTING storage_policy = 'tiered'")
+	if err := c.conn.Exec(ctx, stmt); err != nil {
+		return fmt.Errorf("failed to apply tiered storage policy: %w", err)
+	}
+	log.Printf("Applied 'tiered' storage policy to logs table (was '%s')", policy)
+	return nil
+}
+
+// parsePartitionDate extracts the date element from a ClickHouse partition tuple
+// string of the form ('fractal-id','2024-01-15'). The date is always the final
+// single-quoted token, so we read between the last two quotes.
+func parsePartitionDate(p string) (time.Time, bool) {
+	last := strings.LastIndex(p, "'")
+	if last < 0 {
+		return time.Time{}, false
+	}
+	prev := strings.LastIndex(p[:last], "'")
+	if prev < 0 {
+		return time.Time{}, false
+	}
+	t, err := time.Parse("2006-01-02", p[prev+1:last])
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// MoveOldPartitionsToCold relocates active log partitions older than coldDays for
+// the given fractal from the hot volume to the cold object-storage volume. The
+// data stays in the same logs table and remains queryable in place; this is a
+// per-partition metadata-light move, mirroring the partition-enumeration approach
+// of DeleteLogsByFractalID. Idempotent: parts already on the cold volume report a
+// non-default disk and are skipped, and concurrent-move races are tolerated.
+//
+// PARTITION BY (fractal_id, toDate(timestamp)) makes each partition a single
+// fractal+day, so per-fractal age-based tiering is exact. In cluster mode the
+// move is issued ON CLUSTER (MOVE PARTITION is not auto-replicated) and the
+// partition list is gathered across all replicas.
+func (c *ClickHouseClient) MoveOldPartitionsToCold(ctx context.Context, fractalID string, coldDays int, isDefault bool) (int, error) {
+	source := "system.parts"
+	if c.Cluster != "" {
+		source = fmt.Sprintf("clusterAllReplicas('%s', system.parts)", EscCHStr(c.Cluster))
+	}
+
+	// Only consider parts still on the hot tier. The hot volume is built on the
+	// 'default' disk; parts already moved to cold report their cache disk name.
+	rows, err := c.conn.Query(ctx,
+		"SELECT DISTINCT partition FROM "+source+" WHERE database = currentDatabase() AND table = 'logs' AND active = 1 AND disk_name = 'default'",
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list hot partitions for fractal %s: %w", fractalID, err)
+	}
+
+	prefixes := []string{fmt.Sprintf("('%s','", strings.ReplaceAll(fractalID, "'", "''"))}
+	if isDefault {
+		// Default fractal also owns rows with an empty fractal_id.
+		prefixes = append(prefixes, "('','")
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -coldDays)
+
+	var toMove []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("failed to scan partition: %w", err)
+		}
+		matched := false
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(p, prefix) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		if d, ok := parsePartitionDate(p); ok && d.Before(cutoff) {
+			toMove = append(toMove, p)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("partition query error for fractal %s: %w", fractalID, err)
+	}
+
+	moved := 0
+	for _, partition := range toMove {
+		stmt := c.InjectOnCluster("ALTER TABLE logs MOVE PARTITION " + partition + " TO VOLUME 'cold'")
+		if err := c.conn.Exec(ctx, stmt); err != nil {
+			// Tolerate races: a concurrent merge or background move may already be
+			// relocating the partition. Log and continue rather than failing the run.
+			log.Printf("cold move skipped for partition %s (fractal %s): %v", partition, fractalID, err)
+			continue
+		}
+		moved++
+	}
+	if moved > 0 {
+		log.Printf("Moved %d partitions to cold storage for fractal %s", moved, fractalID)
+	}
+	return moved, nil
+}
+
 // QueryWithID executes a query with a fixed query_id so the run can be
 // correlated with system.query_log entries for profiling.
 func (c *ClickHouseClient) QueryWithID(ctx context.Context, queryID, query string) ([]map[string]interface{}, error) {
@@ -1276,7 +1394,7 @@ func (c *ClickHouseClient) shardHostForNum(ctx context.Context, shardNum uint64)
 
 	hosts := make(map[uint64]string)
 	for rows.Next() {
-		var sn uint32   // system.clusters.shard_num is UInt32
+		var sn uint32 // system.clusters.shard_num is UInt32
 		var hostName string
 		var port uint16 // system.clusters.port is UInt16
 		if err := rows.Scan(&sn, &hostName, &port); err != nil {

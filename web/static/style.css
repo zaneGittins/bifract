@@ -1799,6 +1799,18 @@ body.search-active {
     display: none;
 }
 
+.cold-query-badge {
+    font-size: 0.6875rem;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary, rgba(120, 160, 200, 0.12));
+    border: 1px solid var(--border-color, rgba(120, 160, 200, 0.25));
+    border-radius: 4px;
+    padding: 1px 6px;
+    cursor: default;
+}
+
 .export-btn {
     display: flex;
     align-items: center;

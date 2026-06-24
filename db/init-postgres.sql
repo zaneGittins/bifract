@@ -259,10 +259,8 @@ ALTER TABLE fractals ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT
 -- Retention period in days (NULL = unlimited)
 ALTER TABLE fractals ADD COLUMN IF NOT EXISTS retention_days INTEGER DEFAULT NULL;
 
--- Archive scheduling
-ALTER TABLE fractals ADD COLUMN IF NOT EXISTS archive_schedule VARCHAR(20) DEFAULT 'never';
-ALTER TABLE fractals ADD COLUMN IF NOT EXISTS max_archives INTEGER DEFAULT NULL;
-ALTER TABLE fractals ADD COLUMN IF NOT EXISTS archive_split VARCHAR(10) NOT NULL DEFAULT 'none';
+-- Cold-storage age threshold in days (NULL = never tier to cold object storage)
+ALTER TABLE fractals ADD COLUMN IF NOT EXISTS cold_days INTEGER DEFAULT NULL;
 
 -- Disk quota (NULL = no limit)
 ALTER TABLE fractals ADD COLUMN IF NOT EXISTS disk_quota_bytes BIGINT DEFAULT NULL;
@@ -1274,80 +1272,6 @@ INSERT INTO context_links (short_name, match_fields, validation_regex, context_l
     ('AlienVault OTX - IP', '{ip,src_ip,dst_ip,dest_ip,source_ip,remote_ip,client_ip}', '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', 'https://otx.alienvault.com/indicator/ip/<ATTR_VALUE>', true, true, true, 'admin')
 ON CONFLICT (short_name) DO NOTHING;
 
--- ============================
--- Archive Groups
--- ============================
-
-CREATE TABLE IF NOT EXISTS archive_groups (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    fractal_id UUID NOT NULL REFERENCES fractals(id) ON DELETE CASCADE,
-    split_granularity VARCHAR(10) NOT NULL DEFAULT 'none',
-    status VARCHAR(20) NOT NULL DEFAULT 'in_progress',
-    error_message TEXT,
-    total_log_count BIGINT NOT NULL DEFAULT 0,
-    total_size_bytes BIGINT NOT NULL DEFAULT 0,
-    archive_count INTEGER NOT NULL DEFAULT 0,
-    completed_count INTEGER NOT NULL DEFAULT 0,
-    archive_type VARCHAR(20) NOT NULL DEFAULT 'adhoc',
-    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_archive_groups_fractal_id ON archive_groups(fractal_id);
-
--- ============================
--- Archives
--- ============================
-
-CREATE TABLE IF NOT EXISTS archives (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    fractal_id UUID NOT NULL REFERENCES fractals(id) ON DELETE CASCADE,
-    filename VARCHAR(255) NOT NULL,
-    storage_type VARCHAR(20) NOT NULL DEFAULT 'disk',
-    storage_path TEXT NOT NULL,
-    size_bytes BIGINT NOT NULL DEFAULT 0,
-    log_count BIGINT NOT NULL DEFAULT 0,
-    time_range_start TIMESTAMP,
-    time_range_end TIMESTAMP,
-    status VARCHAR(20) NOT NULL DEFAULT 'in_progress',
-    error_message TEXT,
-    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    archive_type VARCHAR(20) NOT NULL DEFAULT 'adhoc',
-    format_version INTEGER NOT NULL DEFAULT 0,
-    archive_end_ts TIMESTAMP,
-    cursor_ts TIMESTAMP,
-    cursor_id TEXT,
-    restore_lines_sent BIGINT NOT NULL DEFAULT 0,
-    restore_error TEXT,
-    group_id UUID REFERENCES archive_groups(id) ON DELETE CASCADE,
-    period_label VARCHAR(30)
-);
-
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS storage_type VARCHAR(20) NOT NULL DEFAULT 'disk';
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS storage_path TEXT NOT NULL DEFAULT '';
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS size_bytes BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS log_count BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS time_range_start TIMESTAMP;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS time_range_end TIMESTAMP;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'in_progress';
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS error_message TEXT;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS archive_type VARCHAR(20) NOT NULL DEFAULT 'adhoc';
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS format_version INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS archive_end_ts TIMESTAMP;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS cursor_ts TIMESTAMP;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS cursor_id TEXT;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS checksum TEXT;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS restore_lines_sent BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS restore_error TEXT;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS group_id UUID REFERENCES archive_groups(id) ON DELETE CASCADE;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS period_label VARCHAR(30);
-
-CREATE INDEX IF NOT EXISTS idx_archives_fractal_id ON archives(fractal_id);
-CREATE INDEX IF NOT EXISTS idx_archives_group_id ON archives(group_id);
-CREATE INDEX IF NOT EXISTS idx_archives_status ON archives(status);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_archives_active_operation ON archives(fractal_id) WHERE status IN ('in_progress', 'restoring');
-
 -- Sessions table for shared session storage across replicas
 CREATE TABLE IF NOT EXISTS sessions (
     session_id VARCHAR(64) PRIMARY KEY,
@@ -1483,12 +1407,6 @@ DO $$ BEGIN
   ALTER TABLE instruction_pages DROP CONSTRAINT IF EXISTS instruction_pages_created_by_fkey;
   ALTER TABLE instruction_pages ALTER COLUMN created_by DROP NOT NULL;
   ALTER TABLE instruction_pages ADD CONSTRAINT instruction_pages_created_by_fkey
-    FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
-
-  -- archives.created_by
-  ALTER TABLE archives DROP CONSTRAINT IF EXISTS archives_created_by_fkey;
-  ALTER TABLE archives ALTER COLUMN created_by DROP NOT NULL;
-  ALTER TABLE archives ADD CONSTRAINT archives_created_by_fkey
     FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
 
   -- alert_feeds.created_by (already SET NULL, ensure constraint name matches)

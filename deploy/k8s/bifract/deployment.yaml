@@ -109,7 +109,15 @@ spec:
             # Query limits
             - name: BIFRACT_MAX_QUERY_ROWS
               value: "250"
-            # S3 (for backups/archives)
+            # Cold storage tier (none | s3 | azure). When enabled, also inject the
+            # storage.xml + credentials into the ClickHouse pods (see clickhouse/).
+            - name: BIFRACT_COLD_STORAGE_BACKEND
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: COLD_STORAGE_BACKEND
+                  optional: true
+            # S3 (for PostgreSQL backups)
             - name: BIFRACT_S3_ENDPOINT
               valueFrom:
                 secretKeyRef:
@@ -168,8 +176,6 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
           volumeMounts:
-            - name: archives
-              mountPath: /archives
             - name: maxmind-data
               mountPath: /data/maxmind
           resources:
@@ -180,8 +186,6 @@ spec:
               cpu: "2"
               memory: 2Gi
       volumes:
-        - name: archives
-          emptyDir: {}
         - name: maxmind-data
           persistentVolumeClaim:
             claimName: bifract-maxmind

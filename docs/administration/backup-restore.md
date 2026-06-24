@@ -1,30 +1,24 @@
-# Backup, Restore & Archives
+# Backup, Restore & Cold Storage
 
-Bifract provides two data protection features:
+Bifract separates two concerns:
 
-- **PostgreSQL backup/restore**: full system backup of configuration, users, alerts, and metadata via `bifract`.
-- **ClickHouse archive/restore**: per-fractal log data archives via the web UI.
+- **PostgreSQL backup/restore**: full backup of configuration, users, alerts, saved searches, notebooks, and metadata via the `bifract` CLI. Encrypted with AES-256-GCM.
+- **Cold storage tiering**: per-fractal tiering of old log data to low-cost object storage (S3 or Azure Blob), where it stays fully searchable in place via BQL.
 
-Both are encrypted with AES-256-GCM using the `BIFRACT_BACKUP_ENCRYPTION_KEY` generated during setup.
+!!! warning "Cold storage is not a backup"
+    Tiering moves log data to cheaper storage but it is still *live* data: a dropped partition, bad migration, or corruption destroys it just the same. Cold storage covers cost and capacity, not disaster recovery. See [Disaster recovery](#disaster-recovery) for where DR responsibility actually sits.
 
-## Encryption Key
+## Encryption Key (Postgres backups)
 
 The encryption key is generated automatically by `bifract` during installation and stored in your `.env` file as `BIFRACT_BACKUP_ENCRYPTION_KEY`.
 
-**Do not lose this key.** Without it, backups and archives cannot be decrypted. If you migrate or rebuild your Bifract instance, copy the key from your `.env` file.
+**Do not lose this key.** Without it, Postgres backups cannot be decrypted. If you migrate or rebuild your Bifract instance, copy the key from your `.env` file.
 
-## Storage
+## Postgres Backup/Restore
 
-Backups and archives are stored to disk by default. S3-compatible storage (AWS S3, MinIO, DigitalOcean Spaces) is also supported.
+Configuration backups are managed through the `bifract` CLI. These back up the entire PostgreSQL database including users, fractal configurations, alerts, saved searches, notebooks, and all metadata. Postgres backups **do not** contain log data.
 
-### Disk Storage
-
-- **Backups** (bifract): stored in `{install_dir}/backups/`
-- **Archives** (web UI): stored in the `bifract-archives` Docker volume mounted at `/archives`
-
-### S3 Storage
-
-Configure these environment variables in your `.env` file to use S3:
+Backups are stored to disk by default (`{install_dir}/backups/`). S3-compatible storage (AWS S3, MinIO, DigitalOcean Spaces) is also supported via these `.env` variables:
 
 | Variable | Description |
 |----------|-------------|
@@ -33,12 +27,6 @@ Configure these environment variables in your `.env` file to use S3:
 | `BIFRACT_S3_ACCESS_KEY` | Access key ID |
 | `BIFRACT_S3_SECRET_KEY` | Secret access key |
 | `BIFRACT_S3_REGION` | Region (e.g., `us-east-1`) |
-
-When S3 is configured, both backups and archives will use S3 storage. If S3 is not configured, disk storage is used.
-
-## Postgres Backup/Restore
-
-Configuration backups are managed through the `bifract` CLI. These back up the entire PostgreSQL database including users, fractal configurations, alerts, saved searches, notebooks, and all metadata. Postgres backups **do not** contain log data.
 
 ### Creating a Backup
 
@@ -62,26 +50,53 @@ bifract --restore --dir /opt/bifract --restore-file /opt/bifract/backups/bifract
 0 2 * * * /usr/local/bin/bifract --backup --dir /opt/bifract --non-interactive >> /var/log/bifract-backup.log 2>&1
 ```
 
-## ClickHouse Archives
+## Cold Storage Tiering
 
-Per-fractal log archives are managed through the web UI by fractal administrators.
+Cold storage moves a fractal's old log partitions from local (hot) disk to object storage. The data stays in the same `logs` table and remains queryable with the same BQL; only the underlying storage changes. Queries that reach into cold data are correct but slower, and the search UI shows a small **cold storage** badge when a time range includes tiered data.
 
-### Creating an Archive
+Movement is driven hourly: for each fractal with a cold threshold set, partitions older than that threshold are moved to the cold volume (`ALTER TABLE logs MOVE PARTITION ... TO VOLUME 'cold'`). Because the `logs` table is partitioned by `(fractal_id, day)`, tiering is exact per fractal and per day.
 
-1. Navigate to your fractal's **Manage** tab
-2. Scroll to the **Archives** section
-3. Click **Create Archive**
+### Enabling Cold Storage
 
-The archive process runs in the background. The status will show as "Archiving" with a spinner while in progress, and "Completed" when done.
+Cold storage is opt-in and disabled by default.
 
-### Tuning
+**1. Define the storage policy.** Edit `clickhouse/config.d/storage.xml` (mounted into the ClickHouse container). It is inert by default. Copy the body of either `storage.s3.xml.example` or `storage.azure.xml.example` (in the same directory) into it. The policy must keep the existing `default` disk as the `hot` volume; ClickHouse only allows switching a table onto a new policy that still contains its current disks.
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `BIFRACT_ARCHIVE_MAX_MEMORY` | Per-query ClickHouse memory ceiling (bytes) for archive reads | `3000000000` (3GB) |
-| `BIFRACT_ARCHIVE_MAX_DURATION` | Maximum wall-clock time an archive is allowed to run (Go duration string) | `24h` |
-| `BIFRACT_ARCHIVE_MAX_ERROR_TIME` | Maximum cumulative time spent waiting on retries before the archive fails (Go duration string) | `30m` |
+**2. Provide credentials** as environment variables on the **clickhouse** service (consumed by `storage.xml` via `from_env`):
 
-### Deleting an Archive
+=== "S3 / S3-compatible"
 
-Click **Delete** next to any archive to remove it. This deletes both the database record and the stored archive file. This action cannot be undone.
+    | Variable | Description |
+    |----------|-------------|
+    | `BIFRACT_COLD_STORAGE_ENDPOINT` | Full object-storage URL incl. bucket and optional prefix, e.g. `https://my-bucket.s3.us-east-1.amazonaws.com/cold/` |
+    | `BIFRACT_S3_ACCESS_KEY` | Access key ID |
+    | `BIFRACT_S3_SECRET_KEY` | Secret access key |
+    | `BIFRACT_S3_REGION` | Region (blank for MinIO) |
+
+=== "Azure Blob"
+
+    | Variable | Description |
+    |----------|-------------|
+    | `BIFRACT_AZURE_STORAGE_URL` | Blob service URL, e.g. `https://myaccount.blob.core.windows.net/` |
+    | `BIFRACT_AZURE_CONTAINER` | Container name |
+    | `BIFRACT_AZURE_STORAGE_ACCOUNT` | Account name |
+    | `BIFRACT_AZURE_STORAGE_KEY` | Account key |
+
+**3. Tell the app to enable it.** Set `BIFRACT_COLD_STORAGE_BACKEND=s3` (or `azure`) on the bifract app. At startup the app switches the `logs` table onto the `tiered` storage policy.
+
+**4. Set per-fractal thresholds.** In each fractal's **Manage → Lifecycle** tab, set **Move to cold storage after**. It must be less than the deletion (retention) period, or logs would be deleted before they tier.
+
+On Kubernetes, inject the same `storage.xml` and credentials into the ClickHouse pods via your operator's config-file mechanism, and set `COLD_STORAGE_BACKEND` (and the cold credential keys) in the `bifract-secrets` Secret. See `deploy/k8s/clickhouse/clickhouse-installation.yaml`.
+
+### Performance Notes
+
+- The object-storage disk is wrapped in a local read-through **cache** disk (`max_size` in `storage.xml`, default 50 GiB) so cold queries don't fetch from object storage on every granule. Size it to your local disk.
+- Skip indexes and the full-text index travel with the data to cold storage, so indexed BQL searches stay accelerated on cold data.
+- A `move_factor` safety net auto-moves the oldest parts to cold if hot disk approaches full, independent of per-fractal thresholds.
+
+## Disaster Recovery
+
+Decide your DR posture explicitly. Tiering and Postgres backups cover different things:
+
+- **Log data (ClickHouse):** the cold tier gives you object-store **durability** (protection against local disk loss), but not protection against logical deletion, a bad migration, or ransomware. For that, enable object-storage-level **versioning + object lock (WORM)** and, if needed, **cross-region replication** on your cold bucket/container. This is an infrastructure responsibility, configured on the bucket, not in Bifract. Note that a ClickHouse cluster loss is not recoverable from the cold bucket alone, because ClickHouse keeps part metadata on its own nodes; for point-in-time recovery of log data use ClickHouse's native `BACKUP ... TO S3`.
+- **Configuration/metadata (Postgres):** covered by the `bifract` Postgres backup above. Run it on a schedule and store it off-box (S3).

@@ -148,21 +148,12 @@ const AnalyticsModels = {
         wrap.innerHTML = `
 <table class="models-table">
     <thead><tr>
-        <th>Name</th><th>Type</th><th>Status</th><th>Alert</th><th>Updated</th><th></th>
+        <th>Name</th><th>Type</th><th>Status</th><th>Alert</th><th>Updated</th>
     </tr></thead>
     <tbody>${filtered.map(m => this._modelRow(m)).join('')}</tbody>
 </table>`;
-        wrap.querySelectorAll('.btn-view-data').forEach(btn => {
+        wrap.querySelectorAll('.model-name-link').forEach(btn => {
             btn.addEventListener('click', () => this._openDataViewer(btn.dataset.id));
-        });
-        wrap.querySelectorAll('.btn-model-edit').forEach(btn => {
-            btn.addEventListener('click', () => this._editModel(btn.dataset.id));
-        });
-        wrap.querySelectorAll('.btn-model-export').forEach(btn => {
-            btn.addEventListener('click', () => this._exportModel(btn.dataset.id, btn.dataset.name));
-        });
-        wrap.querySelectorAll('.btn-model-delete').forEach(btn => {
-            btn.addEventListener('click', () => this._deleteModel(btn.dataset.id, btn.dataset.name, btn));
         });
         wrap.querySelectorAll('.alert-mode-badge[data-id]').forEach(badge => {
             badge.addEventListener('click', () => this._toggleAlertMode(badge.dataset.id, badge.dataset.mode));
@@ -199,19 +190,11 @@ const AnalyticsModels = {
             : '';
         return `
 <tr>
-    <td><div class="model-name">${_esc(m.name)}</div><div class="model-desc">${_esc(m.description)}</div></td>
+    <td><button class="model-name-link" data-id="${m.id}" title="Open ${_esc(m.name)}">${_esc(m.name)}</button><div class="model-desc">${_esc(m.description)}</div></td>
     <td>${_esc(m.model_type)}</td>
     <td><span class="model-badge ${statusClass}"${errorTitle}>${_esc(m.status)}</span>${backfillBadge}</td>
     <td>${alertBadge}</td>
     <td>${updated}</td>
-    <td>
-        <div class="model-actions">
-            <button class="btn-view-data" data-id="${m.id}">Data</button>
-            <button class="btn-model-edit" data-id="${m.id}">Edit</button>
-            <button class="btn-model-export" data-id="${m.id}" data-name="${_esc(m.name)}">Export</button>
-            <button class="btn-model-delete btn-danger" data-id="${m.id}" data-name="${_esc(m.name)}">Delete</button>
-        </div>
-    </td>
 </tr>`;
     },
 
@@ -257,17 +240,19 @@ const AnalyticsModels = {
         }
     },
 
-    async _deleteModel(id, name, btn) {
-        if (!confirm(`Delete model "${name}"? This cannot be undone.`)) return;
-        if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
+    async _deleteModel(id, name) {
+        if (!confirm(`Delete model "${name}"? This permanently removes the model, its data, and its alert. This cannot be undone.`)) return;
         try {
             await this._api('DELETE', `/models/${id}`);
-            await this._loadModels();
             Toast.success('Model deleted');
+            // Deletion is initiated from the model page; return to the listing
+            // (_renderListView reloads the models list itself).
+            this._stopViewerPoll();
+            this.currentView = 'list';
+            this._render();
         } catch (e) {
             console.error('[Models] delete failed:', e);
             Toast.error('Delete failed: ' + (e.message || 'unknown error'));
-            if (btn) { btn.disabled = false; btn.textContent = 'Delete'; }
         }
     },
 
@@ -346,7 +331,14 @@ const AnalyticsModels = {
         <span class="model-badge ${m.model_type === 'rarity' ? 'badge-active' : 'badge-paused'}">${_esc(m.model_type)}</span>
         <span style="flex:1"></span>
         <button class="btn-secondary" id="modelsBackfillBtn">Backfill</button>
+        <button class="btn-secondary" id="modelsExportFromViewer">Export</button>
         <button class="btn-secondary" id="modelsEditFromViewer">Edit</button>
+        <div class="model-menu-wrap">
+            <button class="btn-secondary model-menu-btn" id="modelsMenuBtn" title="More actions" aria-haspopup="true" aria-label="More actions">&#x22EE;</button>
+            <div class="model-menu" id="modelsMenu" hidden>
+                <button class="model-menu-item danger" id="modelsDeleteItem">Delete model</button>
+            </div>
+        </div>
     </div>
     <div id="modelsBackfillBar" class="model-backfill-bar"></div>
     <div id="modelsHistogramPanel" class="model-histogram-panel"></div>
@@ -366,6 +358,33 @@ const AnalyticsModels = {
         document.getElementById('modelsEditFromViewer').addEventListener('click', () => {
             this._editModel(m.id);
         });
+        document.getElementById('modelsExportFromViewer').addEventListener('click', () => {
+            this._exportModel(m.id, m.name);
+        });
+        const menuBtn = document.getElementById('modelsMenuBtn');
+        const menu = document.getElementById('modelsMenu');
+        menuBtn.addEventListener('click', e => {
+            e.stopPropagation();
+            menu.hidden = !menu.hidden;
+        });
+        document.getElementById('modelsDeleteItem').addEventListener('click', () => {
+            menu.hidden = true;
+            this._deleteModel(m.id, m.name);
+        });
+        // Close the overflow menu on any outside click or Escape. Bound once on
+        // the document so re-renders of this view don't stack listeners.
+        if (!this._menuDocBound) {
+            this._menuDocBound = true;
+            document.addEventListener('click', () => {
+                const mm = document.getElementById('modelsMenu');
+                if (mm) mm.hidden = true;
+            });
+            document.addEventListener('keydown', e => {
+                if (e.key !== 'Escape') return;
+                const mm = document.getElementById('modelsMenu');
+                if (mm) mm.hidden = true;
+            });
+        }
         document.getElementById('modelsDataSearch').addEventListener('input', e => {
             this.viewer.search = e.target.value;
             this.viewer.offset = 0;

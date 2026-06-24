@@ -45,11 +45,23 @@ services:
     container_name: bifract-clickhouse
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      # Cold storage tier config (inert by default; see clickhouse/config.d/storage.xml).
+      # Mounted as a single file so the image's own config.d files are preserved.
+      - ./clickhouse/config.d/storage.xml:/etc/clickhouse-server/config.d/storage.xml:ro
     environment:
       CLICKHOUSE_DB: logs
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-bifract}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      # Cold storage credentials (consumed by storage.xml via from_env when enabled)
+      BIFRACT_COLD_STORAGE_ENDPOINT: ${BIFRACT_COLD_STORAGE_ENDPOINT:-}
+      BIFRACT_S3_ACCESS_KEY: ${BIFRACT_S3_ACCESS_KEY:-}
+      BIFRACT_S3_SECRET_KEY: ${BIFRACT_S3_SECRET_KEY:-}
+      BIFRACT_S3_REGION: ${BIFRACT_S3_REGION:-}
+      BIFRACT_AZURE_STORAGE_URL: ${BIFRACT_AZURE_STORAGE_URL:-}
+      BIFRACT_AZURE_CONTAINER: ${BIFRACT_AZURE_CONTAINER:-}
+      BIFRACT_AZURE_STORAGE_ACCOUNT: ${BIFRACT_AZURE_STORAGE_ACCOUNT:-}
+      BIFRACT_AZURE_STORAGE_KEY: ${BIFRACT_AZURE_STORAGE_KEY:-}
     healthcheck:
       test: ["CMD", "clickhouse-client", "--user", "default", "--password", "${CLICKHOUSE_PASSWORD:-bifract}", "--query", "SELECT 1"]
       interval: 10s
@@ -100,11 +112,11 @@ services:
       BIFRACT_S3_ACCESS_KEY: ${BIFRACT_S3_ACCESS_KEY:-}
       BIFRACT_S3_SECRET_KEY: ${BIFRACT_S3_SECRET_KEY:-}
       BIFRACT_S3_REGION: ${BIFRACT_S3_REGION:-}
+      BIFRACT_COLD_STORAGE_BACKEND: ${BIFRACT_COLD_STORAGE_BACKEND:-none}
       MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
       MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
       MAXMIND_EDITION_IDS: ${MAXMIND_EDITION_IDS:-GeoLite2-City-CSV,GeoLite2-ASN-CSV}
     volumes:
-      - bifract-archives:/archives
       - bifract-maxmind:/data/maxmind
     depends_on:
       postgres:
@@ -119,7 +131,6 @@ volumes:
   clickhouse-data:
   caddy-data:
   caddy-config:
-  bifract-archives:
   bifract-maxmind:
 
 networks:

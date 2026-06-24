@@ -919,6 +919,7 @@
                 </span>
                 <div class="results-controls">
                     <span id="resultsCount" class="result-count">-</span>
+                    <span id="coldQueryBadge" class="cold-query-badge" style="display: none;" title="This time range includes data on cold storage. Results are correct but may be slower.">cold storage</span>
                     <span id="executionTime" class="execution-time"></span>
                     <div class="results-btn-group">
                         <button id="wrapToggleBtn" class="export-btn wrap-toggle-btn" style="display: none;" onclick="QueryExecutor.toggleWrap()" title="Toggle row wrap">wrap</button>
@@ -2003,44 +2004,17 @@
 
                         <div class="setting-item fractal-admin-only">
                             <div class="setting-info">
-                                <label for="manageFractalArchiveSchedule" class="setting-label">Automatic backups</label>
-                                <p class="setting-description">Create encrypted, integrity-verified backups on a schedule. Backups can be restored to any fractal.</p>
+                                <label for="manageFractalColdSelect" class="setting-label">Move to cold storage after</label>
+                                <p class="setting-description">Logs older than this move to low-cost object storage. They stay fully searchable in place (queries are slower). Must be less than the deletion period.</p>
                             </div>
-                            <select id="manageFractalArchiveSchedule" class="setting-select">
-                                <option value="never">Off</option>
-                                <option value="daily">Daily</option>
-                                <option value="weekly">Weekly</option>
-                                <option value="monthly">Monthly</option>
-                            </select>
-                        </div>
-
-                        <div class="setting-item fractal-admin-only" id="archiveSplitSettingRow" style="display:none;">
-                            <div class="setting-info">
-                                <label for="manageFractalArchiveSplit" class="setting-label">Split granularity</label>
-                                <p class="setting-description">Split each scheduled backup into smaller archives by time period.</p>
-                            </div>
-                            <select id="manageFractalArchiveSplit" class="setting-select">
-                                <option value="none">No Split</option>
-                                <option value="day">Daily</option>
-                                <option value="hour">Hourly</option>
-                                <option value="week">Weekly</option>
-                            </select>
-                        </div>
-
-                        <div class="setting-item fractal-admin-only">
-                            <div class="setting-info">
-                                <label for="manageFractalMaxArchives" class="setting-label">Max backups to keep</label>
-                                <p class="setting-description">When exceeded, the oldest backup is automatically removed.</p>
-                            </div>
-                            <select id="manageFractalMaxArchives" class="setting-select">
-                                <option value="">No limit</option>
-                                <option value="1">1</option>
-                                <option value="3">3</option>
-                                <option value="5">5</option>
-                                <option value="7">7</option>
-                                <option value="10">10</option>
-                                <option value="14">14</option>
-                                <option value="30">30</option>
+                            <select id="manageFractalColdSelect" class="setting-select">
+                                <option value="">Off (keep on hot storage)</option>
+                                <option value="7">7 days</option>
+                                <option value="14">14 days</option>
+                                <option value="30">30 days</option>
+                                <option value="60">60 days</option>
+                                <option value="90">90 days</option>
+                                <option value="180">180 days</option>
                             </select>
                         </div>
 
@@ -2061,7 +2035,7 @@
                             <div class="setting-info">
                                 <label for="manageFractalQuotaAction" class="setting-label">When quota is reached</label>
                                 <p class="setting-description">Reject stops accepting new logs (429). Rollover deletes the oldest logs to make room.</p>
-                                <p class="setting-description lifecycle-warning" id="manageQuotaRolloverWarning" style="display:none;">Rollover silently deletes your oldest logs to stay within quota. For sensitive data, pair this with archiving to ensure nothing is permanently lost.</p>
+                                <p class="setting-description lifecycle-warning" id="manageQuotaRolloverWarning" style="display:none;">Rollover silently deletes your oldest logs to stay within quota. For sensitive data, pair this with cold storage so older logs are tiered to cheap storage rather than lost.</p>
                             </div>
                             <select id="manageFractalQuotaAction" class="setting-select">
                                 <option value="reject">Reject new logs</option>
@@ -2071,42 +2045,6 @@
 
                         <div class="setting-item fractal-admin-only" style="justify-content:flex-end;">
                             <button onclick="FractalManageTab.saveDiskQuota()" class="btn-primary btn-sm">Save Quota</button>
-                        </div>
-                    </div>
-
-                    <div class="archives-section">
-                        <div class="section-header-row">
-                            <div>
-                                <h3>Archives</h3>
-                                <p class="section-description">Create encrypted archives of this fractal's log data, or restore from a previous archive.</p>
-                            </div>
-                            <div class="archive-create-controls">
-                                <select id="archiveSplitGranularity" class="setting-select archive-split-select">
-                                    <option value="none">No Split</option>
-                                    <option value="day">Split by Day</option>
-                                    <option value="hour">Split by Hour</option>
-                                    <option value="week">Split by Week</option>
-                                </select>
-                                <button id="createArchiveBtn" class="btn-primary btn-sm" onclick="Archives.createArchive()">Create Archive</button>
-                            </div>
-                        </div>
-                        <div id="archivesList"></div>
-                        <div id="archiveRestoreDialog" class="archive-restore-dialog" style="display:none;">
-                            <div class="archive-restore-dialog-inner">
-                                <h4>Restore Archive</h4>
-                                <p class="section-description" id="archiveRestoreInfo"></p>
-                                <div class="form-group" style="margin: 0.75rem 0;">
-                                    <label for="archiveRestoreTarget">Restore into</label>
-                                    <select id="archiveRestoreTarget" class="form-select">
-                                        <option value="">Loading fractals...</option>
-                                    </select>
-                                    <p class="section-description" style="margin-top: 0.25rem;">Select the fractal to restore logs into.</p>
-                                </div>
-                                <div class="archive-restore-actions">
-                                    <button class="btn-secondary btn-sm" onclick="Archives.cancelRestore()">Cancel</button>
-                                    <button class="btn-primary btn-sm" id="archiveRestoreConfirmBtn" onclick="Archives.executeRestore()">Restore</button>
-                                </div>
-                            </div>
                         </div>
                     </div>
 
@@ -3227,7 +3165,6 @@ throttleTimeSeconds: 3600"></textarea>
     <!-- Fractal selector removed - using main page fractal listing instead -->
     <script src="/static/fractalManagement.js"></script>
     <script src="/static/fractalManageTab.js"></script>
-    <script src="/static/archives.js"></script>
     <script src="/static/apiKeys.js"></script>
     <script src="/static/ingestTokens.js"></script>
     <script src="/static/instructionLibraries.js"></script>

@@ -17,25 +17,12 @@ const FractalManageTab = {
             });
         }
 
-        // Archive schedule selects
-        const archiveScheduleSelect = document.getElementById('manageFractalArchiveSchedule');
-        if (archiveScheduleSelect) {
-            archiveScheduleSelect.addEventListener('change', () => {
-                this.saveArchiveSchedule();
+        // Cold storage select
+        const coldSelect = document.getElementById('manageFractalColdSelect');
+        if (coldSelect) {
+            coldSelect.addEventListener('change', () => {
+                this.saveColdSetting();
                 this.updateLifecycleSummary();
-            });
-        }
-        const maxArchivesSelect = document.getElementById('manageFractalMaxArchives');
-        if (maxArchivesSelect) {
-            maxArchivesSelect.addEventListener('change', () => {
-                this.saveArchiveSchedule();
-                this.updateLifecycleSummary();
-            });
-        }
-        const archiveSplitSelect = document.getElementById('manageFractalArchiveSplit');
-        if (archiveSplitSelect) {
-            archiveSplitSelect.addEventListener('change', () => {
-                this.saveArchiveSchedule();
             });
         }
 
@@ -330,23 +317,10 @@ const FractalManageTab = {
             retentionSelect.value = fractal.retention_days != null ? String(fractal.retention_days) : '';
         }
 
-        // Populate archive schedule selects
-        const archiveScheduleSelect = document.getElementById('manageFractalArchiveSchedule');
-        if (archiveScheduleSelect) {
-            archiveScheduleSelect.value = fractal.archive_schedule || 'never';
-        }
-        const maxArchivesSelect = document.getElementById('manageFractalMaxArchives');
-        if (maxArchivesSelect) {
-            maxArchivesSelect.value = fractal.max_archives != null ? String(fractal.max_archives) : '';
-        }
-        const archiveSplitSelect = document.getElementById('manageFractalArchiveSplit');
-        if (archiveSplitSelect) {
-            archiveSplitSelect.value = fractal.archive_split || 'none';
-        }
-        // Show/hide split setting based on schedule
-        const splitRow = document.getElementById('archiveSplitSettingRow');
-        if (splitRow) {
-            splitRow.style.display = (fractal.archive_schedule && fractal.archive_schedule !== 'never') ? '' : 'none';
+        // Populate cold storage select
+        const coldSelect = document.getElementById('manageFractalColdSelect');
+        if (coldSelect) {
+            coldSelect.value = fractal.cold_days != null ? String(fractal.cold_days) : '';
         }
 
         // Populate disk quota fields
@@ -366,11 +340,6 @@ const FractalManageTab = {
         // Load permissions
         if (window.GroupsView) {
             GroupsView.loadPermissions(fractal.id);
-        }
-
-        // Load archives
-        if (window.Archives) {
-            Archives.loadArchives(fractal.id);
         }
     },
 
@@ -476,28 +445,17 @@ const FractalManageTab = {
         }
     },
 
-    async saveArchiveSchedule() {
+    async saveColdSetting() {
         if (!this.currentFractal) return;
 
-        const scheduleSelect = document.getElementById('manageFractalArchiveSchedule');
-        const maxSelect = document.getElementById('manageFractalMaxArchives');
-        const splitSelect = document.getElementById('manageFractalArchiveSplit');
-        if (!scheduleSelect) return;
+        const select = document.getElementById('manageFractalColdSelect');
+        if (!select) return;
 
-        // Show/hide split setting based on schedule
-        const splitRow = document.getElementById('archiveSplitSettingRow');
-        if (splitRow) {
-            splitRow.style.display = (scheduleSelect.value && scheduleSelect.value !== 'never') ? '' : 'none';
-        }
-
-        const body = {
-            archive_schedule: scheduleSelect.value,
-            max_archives: maxSelect && maxSelect.value !== '' ? parseInt(maxSelect.value, 10) : null,
-            archive_split: splitSelect ? splitSelect.value : 'none'
-        };
+        const value = select.value;
+        const body = { cold_days: value === '' ? null : parseInt(value, 10) };
 
         try {
-            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/archive-schedule`, {
+            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/cold-storage`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -505,17 +463,15 @@ const FractalManageTab = {
             });
 
             const data = await response.json();
-            if (!data.success) throw new Error(data.error || 'Failed to save archive schedule');
+            if (!data.success) throw new Error(data.error || 'Failed to save cold storage');
 
-            this.currentFractal.archive_schedule = body.archive_schedule;
-            this.currentFractal.max_archives = body.max_archives;
-            this.currentFractal.archive_split = body.archive_split;
+            this.currentFractal.cold_days = body.cold_days;
             if (window.FractalContext) FractalContext.currentFractal = this.currentFractal;
 
         } catch (error) {
-            console.error('Failed to save archive schedule:', error);
+            console.error('Failed to save cold storage:', error);
             if (window.Toast) {
-                Toast.error('Archive Schedule Save Failed', error.message);
+                Toast.error('Cold Storage Save Failed', error.message);
             }
         }
     },
@@ -641,26 +597,21 @@ const FractalManageTab = {
         if (!el) return;
 
         const retentionSelect = document.getElementById('manageFractalRetentionSelect');
-        const archiveSelect = document.getElementById('manageFractalArchiveSchedule');
+        const coldSelect = document.getElementById('manageFractalColdSelect');
 
         const retentionDays = retentionSelect ? retentionSelect.value : '';
-        const schedule = archiveSelect ? archiveSelect.value : 'never';
+        const coldDays = coldSelect ? coldSelect.value : '';
 
         const parts = [];
+
+        if (coldDays !== '') {
+            parts.push(`Logs older than ${coldDays} days move to cold storage (still searchable, slower).`);
+        }
 
         if (retentionDays === '') {
             parts.push('Logs are kept indefinitely.');
         } else {
             parts.push(`Logs older than ${retentionDays} days are deleted hourly.`);
-        }
-
-        if (schedule !== 'never') {
-            parts.push(`Encrypted backups are created ${schedule}.`);
-            if (retentionDays !== '') {
-                parts.push('A 1-day buffer ensures backups complete before deletion.');
-            }
-        } else if (retentionDays !== '') {
-            parts.push('No backups are configured, so deleted logs are gone permanently.');
         }
 
         el.textContent = parts.join(' ');
@@ -724,11 +675,6 @@ const FractalManageTab = {
         document.querySelectorAll('.manage-sub-panel').forEach(panel => panel.style.display = 'none');
         const panel = document.getElementById('manageSubTab' + tabName.charAt(0).toUpperCase() + tabName.slice(1));
         if (panel) panel.style.display = '';
-
-        // Reload archives when switching to lifecycle tab
-        if (tabName === 'lifecycle' && window.Archives && this.currentFractal) {
-            Archives.loadArchives(this.currentFractal.id);
-        }
 
         // Load inline API keys when switching to access tab
         if (tabName === 'access' && window.APIKeys && this.currentFractal) {

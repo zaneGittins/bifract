@@ -6,10 +6,10 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
 	"bifract/pkg/prisms"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
+	"github.com/go-chi/chi/v5"
 )
 
 // SessionManager interface for updating user sessions
@@ -340,8 +340,8 @@ func (h *Handler) HandleSetRetention(w http.ResponseWriter, r *http.Request) {
 	h.sendSuccess(w, "Retention updated successfully", nil)
 }
 
-// HandleSetArchiveSchedule sets the archive schedule for a fractal (fractal admin+).
-func (h *Handler) HandleSetArchiveSchedule(w http.ResponseWriter, r *http.Request) {
+// HandleSetColdStorage sets the cold-storage age threshold for a fractal (fractal admin+).
+func (h *Handler) HandleSetColdStorage(w http.ResponseWriter, r *http.Request) {
 	user := h.getCurrentUser(r)
 	if user == nil {
 		h.sendError(w, http.StatusUnauthorized, "Authentication required")
@@ -360,19 +360,19 @@ func (h *Handler) HandleSetArchiveSchedule(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var req UpdateArchiveScheduleRequest
+	var req UpdateColdStorageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	if err := h.manager.SetArchiveSchedule(r.Context(), fractalID, req.ArchiveSchedule, req.MaxArchives, req.ArchiveSplit); err != nil {
-		log.Printf("[Fractals] Failed to set archive schedule for %s: %v", fractalID, err)
+	if err := h.manager.SetColdDays(r.Context(), fractalID, req.ColdDays); err != nil {
+		log.Printf("[Fractals] Failed to set cold storage for %s: %v", fractalID, err)
 		h.sendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	h.sendSuccess(w, "Archive schedule updated successfully", nil)
+	h.sendSuccess(w, "Cold storage updated successfully", nil)
 }
 
 // HandleSetDiskQuota sets the disk quota and enforcement action for a fractal (fractal admin+).

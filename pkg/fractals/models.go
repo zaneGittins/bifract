@@ -6,20 +6,18 @@ import (
 
 // Fractal represents a log fractal for multi-tenant isolation
 type Fractal struct {
-	ID            string     `json:"id" db:"id"`
-	Name          string     `json:"name" db:"name"`
-	Description   string     `json:"description,omitempty" db:"description"`
-	IsDefault     bool       `json:"is_default" db:"is_default"`
-	IsSystem      bool       `json:"is_system" db:"is_system"`
-	CreatedBy     string     `json:"created_by" db:"created_by"`
-	CreatedAt     time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at" db:"updated_at"`
-	RetentionDays   *int   `json:"retention_days" db:"retention_days"`
-	ArchiveSchedule string `json:"archive_schedule" db:"archive_schedule"`
-	MaxArchives     *int   `json:"max_archives" db:"max_archives"`
-	ArchiveSplit    string `json:"archive_split" db:"archive_split"`
-	DiskQuotaBytes  *int64 `json:"disk_quota_bytes" db:"disk_quota_bytes"`
-	DiskQuotaAction string `json:"disk_quota_action" db:"disk_quota_action"`
+	ID              string    `json:"id" db:"id"`
+	Name            string    `json:"name" db:"name"`
+	Description     string    `json:"description,omitempty" db:"description"`
+	IsDefault       bool      `json:"is_default" db:"is_default"`
+	IsSystem        bool      `json:"is_system" db:"is_system"`
+	CreatedBy       string    `json:"created_by" db:"created_by"`
+	CreatedAt       time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
+	RetentionDays   *int      `json:"retention_days" db:"retention_days"`
+	ColdDays        *int      `json:"cold_days" db:"cold_days"`
+	DiskQuotaBytes  *int64    `json:"disk_quota_bytes" db:"disk_quota_bytes"`
+	DiskQuotaAction string    `json:"disk_quota_action" db:"disk_quota_action"`
 
 	// Statistics (computed via background jobs)
 	LogCount    int64      `json:"log_count" db:"log_count"`
@@ -64,9 +62,9 @@ type APIResponse struct {
 
 // FractalListResponse represents the response for listing fractals and prisms.
 type FractalListResponse struct {
-	Fractals []*Fractal    `json:"fractals"`
-	Prisms   interface{}   `json:"prisms"`
-	Total    int           `json:"total"`
+	Fractals []*Fractal  `json:"fractals"`
+	Prisms   interface{} `json:"prisms"`
+	Total    int         `json:"total"`
 }
 
 // FractalSelectRequest represents the request to select a fractal for the session
@@ -79,11 +77,10 @@ type UpdateRetentionRequest struct {
 	RetentionDays *int `json:"retention_days"` // nil = unlimited
 }
 
-// UpdateArchiveScheduleRequest sets the archive schedule for a fractal
-type UpdateArchiveScheduleRequest struct {
-	ArchiveSchedule string `json:"archive_schedule"` // never, daily, weekly, monthly
-	MaxArchives     *int   `json:"max_archives"`     // nil = unlimited
-	ArchiveSplit    string `json:"archive_split"`    // none, hour, day, week
+// UpdateColdStorageRequest sets the cold-storage age threshold for a fractal.
+// Logs older than ColdDays are moved to the cold object-storage tier.
+type UpdateColdStorageRequest struct {
+	ColdDays *int `json:"cold_days"` // nil = never tier to cold
 }
 
 // UpdateDiskQuotaRequest sets the disk quota for a fractal

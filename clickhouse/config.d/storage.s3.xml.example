@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<!--
+  S3 / S3-compatible (AWS S3, MinIO, Ceph, Spaces) cold storage tier.
+  Copy this content into storage.xml to enable. Credentials are read from
+  environment variables on the clickhouse service (from_env).
+
+  BIFRACT_COLD_STORAGE_ENDPOINT must be the FULL object-storage URL including
+  bucket and an optional path prefix, e.g.
+    https://my-bucket.s3.us-east-1.amazonaws.com/cold/
+    http://minio:9000/bifract-cold/      (MinIO; pair with <region> blank)
+-->
+<clickhouse>
+    <storage_configuration>
+        <disks>
+            <cold_s3>
+                <type>s3</type>
+                <endpoint from_env="BIFRACT_COLD_STORAGE_ENDPOINT"></endpoint>
+                <access_key_id from_env="BIFRACT_S3_ACCESS_KEY"></access_key_id>
+                <secret_access_key from_env="BIFRACT_S3_SECRET_KEY"></secret_access_key>
+                <region from_env="BIFRACT_S3_REGION"></region>
+            </cold_s3>
+            <!-- Local read-through cache so cold queries don't hit S3 per granule. -->
+            <cold_cache>
+                <type>cache</type>
+                <disk>cold_s3</disk>
+                <path>/var/lib/clickhouse/cold_cache/</path>
+                <max_size>53687091200</max_size> <!-- 50 GiB; tune to local disk -->
+            </cold_cache>
+        </disks>
+        <policies>
+            <tiered>
+                <volumes>
+                    <hot>
+                        <disk>default</disk>
+                    </hot>
+                    <cold>
+                        <disk>cold_cache</disk>
+                    </cold>
+                </volumes>
+                <!-- Safety net: auto-move oldest parts to cold when hot is ~90% full. -->
+                <move_factor>0.1</move_factor>
+            </tiered>
+        </policies>
+    </storage_configuration>
+</clickhouse>

@@ -220,6 +220,7 @@ const QueryExecutor = {
 
         // Get time range
         this.currentTimeRange = this.getTimeRange();
+        this.updateColdBadge();
 
         // Capture run metadata; the history entry is recorded on finalize once
         // result count and duration are known (see _finalizeQuery).
@@ -1009,6 +1010,23 @@ const QueryExecutor = {
         }).catch(() => {
             if (window.Toast) Toast.show('Copy failed — clipboard unavailable', 'error');
         });
+    },
+
+    // Show a subtle badge when the query's time range reaches into data that has
+    // been tiered to cold storage (older than the fractal's cold_days). Results are
+    // still correct; the hint just sets the expectation that cold queries are slower.
+    updateColdBadge() {
+        const badge = document.getElementById('coldQueryBadge');
+        if (!badge) return;
+        const coldDays = window.FractalContext?.currentFractal?.cold_days;
+        const start = this.currentTimeRange?.start;
+        let isCold = false;
+        if (coldDays != null && coldDays > 0 && start) {
+            const startMs = new Date(start).getTime();
+            const cutoffMs = Date.now() - coldDays * 86400000;
+            isCold = !isNaN(startMs) && startMs < cutoffMs;
+        }
+        badge.style.display = isCold ? '' : 'none';
     },
 
     getTimeRange() {

@@ -205,23 +205,27 @@ func (m *Manager) SetRetention(ctx context.Context, fractalID string, days *int)
 	return m.storage.SetRetention(ctx, fractalID, days)
 }
 
-// SetArchiveSchedule sets the archive schedule, max archives, and split granularity for a fractal.
-func (m *Manager) SetArchiveSchedule(ctx context.Context, fractalID, schedule string, maxArchives *int, archiveSplit string) error {
+// SetColdDays sets the cold-storage age threshold (in days) for a fractal.
+// Logs older than this are moved to the cold object-storage tier. nil disables
+// tiering. When retention is also set, cold_days must be strictly less than
+// retention_days, otherwise logs would be deleted before they ever tier.
+func (m *Manager) SetColdDays(ctx context.Context, fractalID string, days *int) error {
 	if fractalID == "" {
 		return fmt.Errorf("fractal ID is required")
 	}
-	validSchedules := map[string]bool{"never": true, "daily": true, "weekly": true, "monthly": true}
-	if !validSchedules[schedule] {
-		return fmt.Errorf("invalid archive schedule: must be never, daily, weekly, or monthly")
+	if days != nil && *days < 1 {
+		return fmt.Errorf("cold days must be at least 1")
 	}
-	if maxArchives != nil && *maxArchives < 1 {
-		return fmt.Errorf("max_archives must be at least 1")
+	if days != nil {
+		fractal, err := m.storage.GetFractal(ctx, fractalID)
+		if err != nil {
+			return fmt.Errorf("failed to load fractal: %w", err)
+		}
+		if fractal.RetentionDays != nil && *days >= *fractal.RetentionDays {
+			return fmt.Errorf("cold days (%d) must be less than retention days (%d)", *days, *fractal.RetentionDays)
+		}
 	}
-	validSplits := map[string]bool{"none": true, "hour": true, "day": true, "week": true}
-	if archiveSplit != "" && !validSplits[archiveSplit] {
-		return fmt.Errorf("invalid archive split: must be none, hour, day, or week")
-	}
-	return m.storage.SetArchiveSchedule(ctx, fractalID, schedule, maxArchives, archiveSplit)
+	return m.storage.SetColdDays(ctx, fractalID, days)
 }
 
 // SetDiskQuota sets the disk quota and enforcement action for a fractal.
@@ -239,8 +243,6 @@ func (m *Manager) SetDiskQuota(ctx context.Context, fractalID string, quotaBytes
 }
 
 // EnforceRetention deletes logs that exceed the configured retention period for each fractal.
-// When archive scheduling is enabled, a 1-day buffer is added to the retention cutoff so
-// archives have time to capture logs before they are deleted.
 func (m *Manager) EnforceRetention(ctx context.Context) error {
 	fractals, err := m.storage.ListFractals(ctx)
 	if err != nil {
@@ -251,26 +253,29 @@ func (m *Manager) EnforceRetention(ctx context.Context) error {
 		if fractal.RetentionDays == nil {
 			continue
 		}
-
-		// Skip if an archive operation is currently running on this fractal
-		if fractal.ArchiveSchedule != "" && fractal.ArchiveSchedule != "never" {
-			hasActive, err := m.storage.HasActiveArchive(ctx, fractal.ID)
-			if err == nil && hasActive {
-				fmt.Printf("Retention skipped for fractal %s: archive operation in progress\n", fractal.Name)
-				continue
-			}
-		}
-
-		retentionDays := *fractal.RetentionDays
-
-		// When archive scheduling is enabled, add a 1-day buffer so the scheduled
-		// archive has time to capture logs at the retention boundary before deletion.
-		if fractal.ArchiveSchedule != "" && fractal.ArchiveSchedule != "never" {
-			retentionDays++
-		}
-
-		if err := m.storage.DeleteOldLogs(ctx, fractal.ID, retentionDays, fractal.IsDefault); err != nil {
+		if err := m.storage.DeleteOldLogs(ctx, fractal.ID, *fractal.RetentionDays, fractal.IsDefault); err != nil {
 			fmt.Printf("Retention enforcement failed for fractal %s: %v\n", fractal.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// EnforceColdStorage moves log partitions older than each fractal's cold_days
+// threshold to the cold object-storage tier. It is a no-op for fractals without
+// cold_days set. Runs before EnforceRetention so data tiers before it is deleted.
+func (m *Manager) EnforceColdStorage(ctx context.Context) error {
+	fractals, err := m.storage.ListFractals(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list fractals: %w", err)
+	}
+
+	for _, fractal := range fractals {
+		if fractal.ColdDays == nil {
+			continue
+		}
+		if err := m.storage.MoveOldLogsToCold(ctx, fractal.ID, *fractal.ColdDays, fractal.IsDefault); err != nil {
+			fmt.Printf("Cold-storage tiering failed for fractal %s: %v\n", fractal.Name, err)
 		}
 	}
 

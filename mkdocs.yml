@@ -57,7 +57,7 @@ nav:
     - Prisms: administration/prisms.md
     - API Keys: administration/ingest-tokens.md
     - Schema Fields: administration/schema-fields.md
-    - Backup & Restore: administration/backup-restore.md
+    - Backup & Cold Storage: administration/backup-restore.md
     - Reverse Proxy: administration/reverse-proxy.md
     - Disk Quotas: administration/disk-quotas.md
   - Ingestion:

@@ -80,6 +80,25 @@
     color: var(--text-primary);
 }
 
+/* The model name is the row's navigation affordance (opens the model page). */
+.model-name-link {
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    font-weight: 500;
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: left;
+    transition: color 0.15s;
+}
+.model-name-link:hover {
+    color: var(--accent-primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
 .model-desc {
     color: var(--text-muted, #888);
     font-size: 12px;
@@ -141,32 +160,6 @@
 .backfill-label { font-size: 13px; color: var(--text-primary); font-weight: 500; }
 .backfill-count { font-size: 12px; color: var(--text-muted, #888); }
 .spinner-inline { width: 13px; height: 13px; border-width: 2px; display: inline-block; vertical-align: middle; }
-
-.model-actions {
-    display: flex;
-    gap: 6px;
-    white-space: nowrap;
-}
-
-.model-actions button {
-    padding: 3px 10px;
-    font-size: 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 3px;
-    background: transparent;
-    color: var(--text-primary);
-    cursor: pointer;
-}
-
-.model-actions button:hover {
-    background: var(--bg-hover, rgba(255,255,255,0.06));
-}
-
-.model-actions .btn-danger:hover {
-    background: rgba(255,59,48,0.15);
-    border-color: #ff3b30;
-    color: #ff3b30;
-}
 
 /* Wizard */
 .models-wizard {
@@ -738,6 +731,46 @@ textarea.full-input {
     text-overflow: ellipsis;
     max-width: 100%;
 }
+
+/* Model page overflow (kebab) menu */
+.model-menu-wrap { position: relative; display: inline-flex; }
+
+.model-menu-btn {
+    padding: 5px 10px;
+    line-height: 1;
+    font-size: 16px;
+}
+
+.model-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    min-width: 160px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+    padding: 4px;
+    z-index: 30;
+}
+.model-menu[hidden] { display: none; }
+
+.model-menu-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 8px 10px;
+    font-size: 13px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background 0.12s;
+}
+.model-menu-item:hover { background: var(--bg-hover, rgba(255,255,255,0.06)); }
+.model-menu-item.danger { color: #ff6b6b; }
+.model-menu-item.danger:hover { background: rgba(255,59,48,0.14); }
 
 /* Data viewer toolbar (search) */
 .model-data-toolbar {

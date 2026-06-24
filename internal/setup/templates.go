@@ -187,6 +187,11 @@ func WriteAllFiles(cfg *SetupConfig) error {
 		return err
 	}
 
+	// Cold storage tier config (inert by default; admin enables per docs).
+	if err := CopyEmbeddedFile("templates/clickhouse-storage.xml", filepath.Join(dir, "clickhouse", "config.d", "storage.xml")); err != nil {
+		return err
+	}
+
 	if err := CopyEmbeddedFile("templates/litellm-config.yaml", filepath.Join(dir, "litellm-config.yaml")); err != nil {
 		return err
 	}

@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<!--
+  Cold storage tiering for the logs table.
+
+  This file is mounted into the ClickHouse container at
+  /etc/clickhouse-server/config.d/storage.xml. By default it is INERT (cold
+  storage disabled) so stock installs are unaffected.
+
+  To enable cold storage:
+    1. Copy the body of storage.s3.xml.example (S3 / S3-compatible) OR
+       storage.azure.xml.example (Azure Blob) into this file, replacing the
+       empty <clickhouse/> below.
+    2. Provide the referenced credentials as environment variables on the
+       clickhouse service (see docker-compose.yml / k8s secrets).
+    3. Set BIFRACT_COLD_STORAGE_BACKEND=s3 (or azure) on the bifract app so it
+       switches the logs table onto the 'tiered' storage policy at startup.
+
+  The policy MUST keep the existing 'default' disk as the 'hot' volume:
+  ClickHouse only allows moving a table onto a new policy that still contains
+  its current disks.
+-->
+<clickhouse>
+</clickhouse>

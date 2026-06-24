@@ -8,7 +8,6 @@ import (
 	"bifract/pkg/storage"
 )
 
-
 // Storage handles database operations for fractals
 type Storage struct {
 	pg *storage.PostgresClient
@@ -31,13 +30,13 @@ func (s *Storage) CreateFractal(ctx context.Context, req CreateFractalRequest, c
 		INSERT INTO fractals (name, description, created_by)
 		VALUES ($1, $2, $3)
 		RETURNING id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		          retention_days, archive_schedule, max_archives, COALESCE(archive_split, 'none'), disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		          retention_days, cold_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 	`
 
 	err := s.pg.QueryRow(ctx, query, req.Name, req.Description, createdBy).Scan(
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-		&fractal.RetentionDays, &fractal.ArchiveSchedule, &fractal.MaxArchives, &fractal.ArchiveSplit,
+		&fractal.RetentionDays, &fractal.ColdDays,
 		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 	)
@@ -55,7 +54,7 @@ func (s *Storage) GetFractal(ctx context.Context, fractalID string) (*Fractal, e
 
 	query := `
 		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, archive_schedule, max_archives, COALESCE(archive_split, 'none'), disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		       retention_days, cold_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		WHERE id = $1
 	`
@@ -63,7 +62,7 @@ func (s *Storage) GetFractal(ctx context.Context, fractalID string) (*Fractal, e
 	err := s.pg.QueryRow(ctx, query, fractalID).Scan(
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-		&fractal.RetentionDays, &fractal.ArchiveSchedule, &fractal.MaxArchives, &fractal.ArchiveSplit,
+		&fractal.RetentionDays, &fractal.ColdDays,
 		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 	)
@@ -81,7 +80,7 @@ func (s *Storage) GetFractalByName(ctx context.Context, name string) (*Fractal, 
 
 	query := `
 		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, archive_schedule, max_archives, COALESCE(archive_split, 'none'), disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		       retention_days, cold_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		WHERE name = $1
 	`
@@ -89,7 +88,7 @@ func (s *Storage) GetFractalByName(ctx context.Context, name string) (*Fractal, 
 	err := s.pg.QueryRow(ctx, query, name).Scan(
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-		&fractal.RetentionDays, &fractal.ArchiveSchedule, &fractal.MaxArchives, &fractal.ArchiveSplit,
+		&fractal.RetentionDays, &fractal.ColdDays,
 		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 	)
@@ -107,7 +106,7 @@ func (s *Storage) GetDefaultFractal(ctx context.Context) (*Fractal, error) {
 
 	query := `
 		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, archive_schedule, max_archives, COALESCE(archive_split, 'none'), disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		       retention_days, cold_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		WHERE is_default = true
 		LIMIT 1
@@ -116,7 +115,7 @@ func (s *Storage) GetDefaultFractal(ctx context.Context) (*Fractal, error) {
 	err := s.pg.QueryRow(ctx, query).Scan(
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-		&fractal.RetentionDays, &fractal.ArchiveSchedule, &fractal.MaxArchives, &fractal.ArchiveSplit,
+		&fractal.RetentionDays, &fractal.ColdDays,
 		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 	)
@@ -132,7 +131,7 @@ func (s *Storage) GetDefaultFractal(ctx context.Context) (*Fractal, error) {
 func (s *Storage) ListFractals(ctx context.Context) ([]*Fractal, error) {
 	query := `
 		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, archive_schedule, max_archives, COALESCE(archive_split, 'none'), disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		       retention_days, cold_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		ORDER BY is_default DESC, name ASC
 	`
@@ -149,7 +148,7 @@ func (s *Storage) ListFractals(ctx context.Context) ([]*Fractal, error) {
 		err := rows.Scan(
 			&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 			&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-			&fractal.RetentionDays, &fractal.ArchiveSchedule, &fractal.MaxArchives, &fractal.ArchiveSplit,
+			&fractal.RetentionDays, &fractal.ColdDays,
 			&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 			&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 		)
@@ -169,14 +168,14 @@ func (s *Storage) UpdateFractal(ctx context.Context, fractalID string, req Updat
 		SET name = $2, description = $3, updated_at = NOW()
 		WHERE id = $1
 		RETURNING id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		          retention_days, archive_schedule, max_archives, COALESCE(archive_split, 'none'), disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		          retention_days, cold_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 	`
 
 	fractal := &Fractal{}
 	err := s.pg.QueryRow(ctx, query, fractalID, req.Name, req.Description).Scan(
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-		&fractal.RetentionDays, &fractal.ArchiveSchedule, &fractal.MaxArchives, &fractal.ArchiveSplit,
+		&fractal.RetentionDays, &fractal.ColdDays,
 		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 	)
@@ -200,17 +199,15 @@ func (s *Storage) SetRetention(ctx context.Context, fractalID string, days *int)
 	return nil
 }
 
-// SetArchiveSchedule updates the archive schedule, max archives, and split granularity for a fractal.
-func (s *Storage) SetArchiveSchedule(ctx context.Context, fractalID string, schedule string, maxArchives *int, archiveSplit string) error {
-	if archiveSplit == "" {
-		archiveSplit = "none"
-	}
+// SetColdDays updates the cold-storage age threshold (in days) for a fractal.
+// nil means the fractal never tiers data to cold storage.
+func (s *Storage) SetColdDays(ctx context.Context, fractalID string, days *int) error {
 	_, err := s.pg.Exec(ctx,
-		"UPDATE fractals SET archive_schedule = $2, max_archives = $3, archive_split = $4, updated_at = NOW() WHERE id = $1",
-		fractalID, schedule, maxArchives, archiveSplit,
+		"UPDATE fractals SET cold_days = $2, updated_at = NOW() WHERE id = $1",
+		fractalID, days,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to set archive schedule: %w", err)
+		return fmt.Errorf("failed to set cold days: %w", err)
 	}
 	return nil
 }
@@ -228,17 +225,11 @@ func (s *Storage) SetDiskQuota(ctx context.Context, fractalID string, quotaBytes
 	return nil
 }
 
-// HasActiveArchive checks if a fractal has an in-progress or restoring archive operation.
-func (s *Storage) HasActiveArchive(ctx context.Context, fractalID string) (bool, error) {
-	var count int
-	err := s.pg.QueryRow(ctx,
-		"SELECT COUNT(*) FROM archives WHERE fractal_id = $1 AND status IN ('in_progress', 'restoring')",
-		fractalID,
-	).Scan(&count)
-	if err != nil {
-		return false, fmt.Errorf("check active archive: %w", err)
-	}
-	return count > 0, nil
+// MoveOldLogsToCold tiers logs older than coldDays for the given fractal to the
+// cold object-storage volume, keeping them queryable in place.
+func (s *Storage) MoveOldLogsToCold(ctx context.Context, fractalID string, coldDays int, isDefault bool) error {
+	_, err := s.ch.MoveOldPartitionsToCold(ctx, fractalID, coldDays, isDefault)
+	return err
 }
 
 // DeleteOldLogs removes logs older than retentionDays for the given fractal

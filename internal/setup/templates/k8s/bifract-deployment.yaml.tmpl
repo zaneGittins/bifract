@@ -125,7 +125,14 @@ spec:
               value: "{{.IngestQueueSize}}"
             - name: BIFRACT_INGEST_WORKERS
               value: "{{.IngestWorkers}}"
-            # S3 (for backups/archives)
+            # Cold storage tier (none | s3 | azure)
+            - name: BIFRACT_COLD_STORAGE_BACKEND
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: COLD_STORAGE_BACKEND
+                  optional: true
+            # S3 (for PostgreSQL backups)
             - name: BIFRACT_S3_ENDPOINT
               valueFrom:
                 secretKeyRef:
@@ -237,8 +244,6 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
           volumeMounts:
-            - name: archives
-              mountPath: /archives
             - name: tmp
               mountPath: /tmp
             - name: maxmind-data
@@ -256,8 +261,6 @@ spec:
               cpu: "{{.BifractRes.CPULimit}}"
               memory: {{.BifractRes.MemLimit}}
       volumes:
-        - name: archives
-          emptyDir: {}
         - name: tmp
           emptyDir: {}
         - name: maxmind-data

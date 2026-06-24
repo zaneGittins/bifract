@@ -160,7 +160,7 @@ const FractalListing = {
                             <th>Name</th>
                             <th>Size</th>
                             <th>Retention</th>
-                            <th>Archive</th>
+                            <th>Cold</th>
                             <th>Latest Event</th>
                         </tr>
                     </thead>
@@ -198,7 +198,7 @@ const FractalListing = {
                             <span class="fractal-size">${this.formatRetention(item.retention_days)}</span>
                         </td>
                         <td>
-                            <span class="fractal-size">${this.formatArchive(item.archive_schedule)}</span>
+                            <span class="fractal-size">${this.formatCold(item.cold_days)}</span>
                         </td>
                         <td>
                             <span class="fractal-latest ${this.getLatestEventClass(item.latest_log)}">${latestEvent}</span>
@@ -277,9 +277,9 @@ const FractalListing = {
         return `${days} day${days !== 1 ? 's' : ''}`;
     },
 
-    formatArchive(schedule) {
-        if (!schedule || schedule === 'never') return 'Never';
-        return schedule.charAt(0).toUpperCase() + schedule.slice(1);
+    formatCold(days) {
+        if (days == null || days === 0) return 'Off';
+        return `${days} day${days !== 1 ? 's' : ''}`;
     },
 
     formatLatestEvent(latestLog) {

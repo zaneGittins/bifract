@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<!--
+  Azure Blob Storage cold storage tier.
+  Copy this content into storage.xml to enable. Credentials are read from
+  environment variables on the clickhouse service (from_env).
+
+  BIFRACT_AZURE_STORAGE_URL: blob service URL, e.g.
+    https://myaccount.blob.core.windows.net/
+  BIFRACT_AZURE_CONTAINER:   container name for cold data
+  BIFRACT_AZURE_STORAGE_ACCOUNT / BIFRACT_AZURE_STORAGE_KEY: account credentials
+-->
+<clickhouse>
+    <storage_configuration>
+        <disks>
+            <cold_azure>
+                <type>azure_blob_storage</type>
+                <storage_account_url from_env="BIFRACT_AZURE_STORAGE_URL"></storage_account_url>
+                <container_name from_env="BIFRACT_AZURE_CONTAINER"></container_name>
+                <account_name from_env="BIFRACT_AZURE_STORAGE_ACCOUNT"></account_name>
+                <account_key from_env="BIFRACT_AZURE_STORAGE_KEY"></account_key>
+            </cold_azure>
+            <!-- Local read-through cache so cold queries don't hit Azure per granule. -->
+            <cold_cache>
+                <type>cache</type>
+                <disk>cold_azure</disk>
+                <path>/var/lib/clickhouse/cold_cache/</path>
+                <max_size>53687091200</max_size> <!-- 50 GiB; tune to local disk -->
+            </cold_cache>
+        </disks>
+        <policies>
+            <tiered>
+                <volumes>
+                    <hot>
+                        <disk>default</disk>
+                    </hot>
+                    <cold>
+                        <disk>cold_cache</disk>
+                    </cold>
+                </volumes>
+                <move_factor>0.1</move_factor>
+            </tiered>
+        </policies>
+    </storage_configuration>
+</clickhouse>

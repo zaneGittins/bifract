@@ -16,34 +16,32 @@ import (
 	dbsql "bifract/db"
 	"bifract/pkg/alerts"
 	"bifract/pkg/apikeys"
-	"bifract/pkg/archives"
 	"bifract/pkg/auth"
-	"bifract/pkg/backup"
 	"bifract/pkg/chat"
 	"bifract/pkg/comments"
+	"bifract/pkg/contextlinks"
 	"bifract/pkg/dashboards"
 	"bifract/pkg/dictionaries"
+	"bifract/pkg/feeds"
 	"bifract/pkg/fractals"
-	"bifract/pkg/models"
+	"bifract/pkg/groups"
 	"bifract/pkg/ingest"
 	"bifract/pkg/ingesttokens"
+	"bifract/pkg/instructions"
+	"bifract/pkg/maxmind"
 	"bifract/pkg/metrics"
-	"bifract/pkg/notifications"
+	"bifract/pkg/models"
+	"bifract/pkg/normalizers"
 	"bifract/pkg/notebooks"
+	"bifract/pkg/notifications"
+	"bifract/pkg/oidc"
+	"bifract/pkg/parser"
 	"bifract/pkg/prisms"
 	"bifract/pkg/query"
-	"bifract/pkg/contextlinks"
-	"bifract/pkg/feeds"
-	"bifract/pkg/instructions"
-	"bifract/pkg/groups"
-	"bifract/pkg/normalizers"
-	"bifract/pkg/parser"
-	"bifract/pkg/schemafields"
-	"bifract/pkg/maxmind"
-	"bifract/pkg/oidc"
 	"bifract/pkg/queryhistory"
 	"bifract/pkg/rbac"
 	"bifract/pkg/savedqueries"
+	"bifract/pkg/schemafields"
 	"bifract/pkg/settings"
 	"bifract/pkg/sse"
 	"bifract/pkg/storage"
@@ -217,6 +215,17 @@ func main() {
 	}
 	log.Println("ClickHouse schema ready")
 
+	// When cold storage is enabled, switch the logs table onto the tiered storage
+	// policy (defined in server config). Idempotent; no-op when already applied.
+	coldStorageEnabled := config.ColdStorageBackend != "" && config.ColdStorageBackend != "none"
+	if coldStorageEnabled {
+		if err := db.EnsureColdStoragePolicy(context.Background()); err != nil {
+			log.Printf("Warning: failed to apply cold storage policy: %v", err)
+		} else {
+			log.Printf("Cold storage enabled (backend: %s)", config.ColdStorageBackend)
+		}
+	}
+
 	// Start hot table cleaner: drops expired logs_hot partitions every 5 minutes.
 	hotCleanerCtx, hotCleanerCancel := context.WithCancel(context.Background())
 	defer hotCleanerCancel()
@@ -310,6 +319,13 @@ func main() {
 
 		for range ticker.C {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			// Tier old partitions to cold storage before deleting past retention,
+			// so data is moved to cheap storage rather than lost.
+			if coldStorageEnabled {
+				if err := fractalManager.EnforceColdStorage(ctx); err != nil {
+					log.Printf("Warning: Cold storage tiering failed: %v", err)
+				}
+			}
 			if err := fractalManager.EnforceRetention(ctx); err != nil {
 				log.Printf("Warning: Retention enforcement failed: %v", err)
 			}
@@ -566,27 +582,6 @@ func main() {
 	chatManager.SetPrismFractalResolver(prismManager)
 	log.Println("Instruction library system initialized")
 
-	// Initialize archive system
-	var archiveManager *archives.Manager
-	archiveStorageCfg := backup.StorageConfigFromEnv("/archives")
-	archiveBackend, err := backup.NewStorageBackend(archiveStorageCfg)
-	if err != nil {
-		log.Printf("Warning: archive storage backend not available: %v", err)
-	} else {
-		archiveStore := archives.NewStorage(pg)
-		archiveManager = archives.NewManager(pg, db, archiveBackend, archiveStore)
-		archiveManager.RecoverInterrupted(context.Background())
-		log.Println("Archive system initialized")
-	}
-	archiveHandler := archives.NewHandler(archiveManager, fractalManager, authHandler.RBACResolver(), ingestTokenStorage)
-
-	// Start archive scheduler
-	var archiveScheduler *archives.Scheduler
-	if archiveManager != nil {
-		archiveScheduler = archives.NewScheduler(archiveManager, fractalManager)
-		archiveScheduler.Start()
-	}
-
 	// Setup router
 	r := chi.NewRouter()
 
@@ -715,7 +710,7 @@ func main() {
 			r.Post("/query/stream", queryHandler.HandleQueryStream)
 			r.Get("/query/reference", queryHandler.HandleReference)
 			r.Get("/logs/recent", queryHandler.HandleGetRecentLogs)
-				r.Get("/logs/histogram", queryHandler.HandleGetRecentHistogram)
+			r.Get("/logs/histogram", queryHandler.HandleGetRecentHistogram)
 			r.Post("/logs/by-timestamp", queryHandler.HandleGetLogByTimestamp)
 			r.Get("/logs/fields", queryHandler.HandleGetLogFields)
 			r.Get("/status", statusHandler.HandleStatus)
@@ -878,22 +873,9 @@ func main() {
 			r.Post("/fractals/{id}/select", fractalHandler.HandleSelectFractal)
 			r.Get("/fractals/{id}/stats", fractalHandler.HandleGetStats)
 			r.Put("/fractals/{id}/retention", fractalHandler.HandleSetRetention)
-			r.Put("/fractals/{id}/archive-schedule", fractalHandler.HandleSetArchiveSchedule)
+			r.Put("/fractals/{id}/cold-storage", fractalHandler.HandleSetColdStorage)
 			r.Put("/fractals/{id}/disk-quota", fractalHandler.HandleSetDiskQuota)
 			r.Post("/fractals/stats/refresh", fractalHandler.HandleRefreshStats)
-
-			// Fractal archives (fractal admin or tenant admin, checked in handler)
-			r.Post("/fractals/{id}/archives", archiveHandler.HandleCreateArchive)
-			r.Get("/fractals/{id}/archives", archiveHandler.HandleListArchives)
-			r.Get("/fractals/{id}/archives/{archiveId}", archiveHandler.HandleGetArchive)
-			r.Post("/fractals/{id}/archives/{archiveId}/restore", archiveHandler.HandleRestoreArchive)
-			r.Post("/fractals/{id}/archives/{archiveId}/cancel", archiveHandler.HandleCancelOperation)
-			r.Delete("/fractals/{id}/archives/{archiveId}", archiveHandler.HandleDeleteArchive)
-
-			// Archive groups
-			r.Post("/fractals/{id}/archive-groups/{groupId}/restore", archiveHandler.HandleRestoreGroup)
-			r.Post("/fractals/{id}/archive-groups/{groupId}/cancel", archiveHandler.HandleCancelGroup)
-			r.Delete("/fractals/{id}/archive-groups/{groupId}", archiveHandler.HandleDeleteGroup)
 
 			// Fractal permissions (fractal admin or tenant admin, checked in handler)
 			r.Get("/fractals/{id}/permissions", fractalHandler.HandleListPermissions)
@@ -1173,14 +1155,6 @@ func main() {
 	// Stop the alert engine
 	alertEngine.Stop()
 
-	// Stop archive scheduler and running operations
-	if archiveScheduler != nil {
-		archiveScheduler.Stop()
-	}
-	if archiveManager != nil {
-		archiveManager.Shutdown()
-	}
-
 	// Stop metrics server
 	if metricsServer != nil {
 		metricsServer.Shutdown()
@@ -1228,6 +1202,9 @@ type Config struct {
 	ClickHouseCluster string // Cluster name for ON CLUSTER DDL and ReplicatedMergeTree
 	// Optional single LB endpoint for ingest writes; keeps CLICKHOUSE_HOSTS for schema sync
 	ClickHouseWriteHost string
+
+	// Cold storage tier (object storage). Empty/"none" = disabled.
+	ColdStorageBackend string // "none" | "s3" | "azure"
 
 	// Base URL for external links (e.g. webhook alert_link)
 	BaseURL string
@@ -1277,6 +1254,9 @@ func loadConfig() Config {
 		ClickHouseHosts:     getEnv("CLICKHOUSE_HOSTS", ""),
 		ClickHouseCluster:   getEnv("CLICKHOUSE_CLUSTER", ""),
 		ClickHouseWriteHost: getEnv("CLICKHOUSE_WRITE_HOST", ""),
+
+		// Cold storage tier (object storage)
+		ColdStorageBackend: getEnv("BIFRACT_COLD_STORAGE_BACKEND", "none"),
 
 		// Base URL
 		BaseURL: getEnv("BIFRACT_BASE_URL", ""),
