@@ -654,6 +654,123 @@ FROM (%s)`, threshold, scoring)
 	return result, nil
 }
 
+// histBucket is one bar of a score-distribution histogram.
+type histBucket struct {
+	Label string `json:"label"`
+	Count uint64 `json:"count"`
+}
+
+// GetHistogram returns a type-aware score distribution so creators can see the
+// shape of a model's output: rarity -> confidence (0..1), volume_baseline ->
+// |z-score| bands, first_seen -> event_count on a log scale. It runs over the
+// already aggregated per-model result table (never the raw log table), so it is
+// a single cheap GROUP BY.
+func (m *Manager) GetHistogram(ctx context.Context, model *Model, fractalID string) (map[string]interface{}, error) {
+	tableName := m.readTableName(model)
+	qt := "`" + tableName + "`"
+	fid := storage.EscCHStr(fractalID)
+	switch model.ModelType {
+	case ModelTypeRarity:
+		return m.getRarityHistogram(ctx, qt, fid)
+	case ModelTypeFirstSeen:
+		return m.getFirstSeenHistogram(ctx, qt, fid)
+	case ModelTypeVolumeBaseline:
+		return m.getVolumeBaselineHistogram(ctx, tableName, model.Definition, fid)
+	default:
+		return nil, fmt.Errorf("unknown model type: %s", model.ModelType)
+	}
+}
+
+// runHistogram buckets the rows produced by innerSQL using bucketExpr (which must
+// evaluate to a 0-based bucket index) and returns counts zero-filled to labels so
+// the distribution always has a stable, complete x-axis.
+func (m *Manager) runHistogram(ctx context.Context, innerSQL, bucketExpr string, labels []string) ([]histBucket, error) {
+	q := fmt.Sprintf("SELECT %s AS bucket, count() AS cnt FROM (%s) GROUP BY bucket", bucketExpr, innerSQL)
+	rows, err := m.ch.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	counts := make([]uint64, len(labels))
+	for _, row := range rows {
+		idx := int(numToUint64(row["bucket"]))
+		if idx >= 0 && idx < len(labels) {
+			counts[idx] += numToUint64(row["cnt"])
+		}
+	}
+	out := make([]histBucket, len(labels))
+	for i, l := range labels {
+		out[i] = histBucket{Label: l, Count: counts[i]}
+	}
+	return out, nil
+}
+
+// numToUint64 tolerantly converts a ClickHouse row value to uint64.
+func numToUint64(v interface{}) uint64 {
+	switch n := v.(type) {
+	case uint64:
+		return n
+	case uint32:
+		return uint64(n)
+	case int64:
+		if n > 0 {
+			return uint64(n)
+		}
+	case float64:
+		if n > 0 {
+			return uint64(n)
+		}
+	}
+	return 0
+}
+
+func (m *Manager) getRarityHistogram(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
+	inner := fmt.Sprintf(`
+SELECT round(((_total - _unique) / _total) * 0.95, 4) AS confidence
+FROM (
+    SELECT event_count,
+        sum(event_count) OVER (PARTITION BY partition_val) AS _total,
+        uniqExact(value_val) OVER (PARTITION BY partition_val) AS _unique
+    FROM (
+        SELECT partition_val, value_val, sum(event_count) AS event_count
+        FROM %s FINAL
+        WHERE fractal_id = '%s'
+        GROUP BY partition_val, value_val
+    )
+)
+WHERE event_count >= 1`, qt, fid)
+	labels := []string{"0.0-0.1", "0.1-0.2", "0.2-0.3", "0.3-0.4", "0.4-0.5", "0.5-0.6", "0.6-0.7", "0.7-0.8", "0.8-0.9", "0.9-1.0"}
+	buckets, err := m.runHistogram(ctx, inner, "least(toUInt64(floor(confidence * 10)), 9)", labels)
+	if err != nil {
+		return nil, fmt.Errorf("rarity histogram: %w", err)
+	}
+	return map[string]interface{}{"metric": "confidence", "buckets": buckets}, nil
+}
+
+func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
+	inner := fmt.Sprintf(`
+SELECT toUInt64(sum(event_count)) AS event_count
+FROM %s FINAL
+WHERE fractal_id = '%s'
+GROUP BY entity_key
+HAVING event_count >= 1`, qt, fid)
+	labels := []string{"1-9", "10-99", "100-999", "1K-9.9K", "10K-99K", "100K+"}
+	buckets, err := m.runHistogram(ctx, inner, "least(toUInt64(floor(log10(event_count))), 5)", labels)
+	if err != nil {
+		return nil, fmt.Errorf("first_seen histogram: %w", err)
+	}
+	return map[string]interface{}{"metric": "event_count", "buckets": buckets}, nil
+}
+
+func (m *Manager) getVolumeBaselineHistogram(ctx context.Context, tableName string, def ModelDefinition, fid string) (map[string]interface{}, error) {
+	inner := buildVolumeBaselineScoringSQL("`"+tableName+"`", fid, volumeMinBuckets(def), def.TimeBucket)
+	labels := []string{"0-1", "1-2", "2-3", "3-4", "4-5", "5+"}
+	buckets, err := m.runHistogram(ctx, inner, "least(toUInt64(floor(abs(z_score))), 5)", labels)
+	if err != nil {
+		return nil, fmt.Errorf("volume_baseline histogram: %w", err)
+	}
+	return map[string]interface{}{"metric": "z_score", "buckets": buckets}, nil
+}
+
 // TestExtraction runs a sample extraction against logs and returns matched values plus the generated SQL.
 func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter []FilterCondition, extractions []ExtractionStep) ([]map[string]interface{}, string, error) {
 	tableName := m.ch.ReadTable()

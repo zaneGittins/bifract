@@ -338,6 +338,27 @@ func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, map[string]interface{}{"stats": stats})
 }
 
+// HandleGetHistogram returns a type-aware score distribution for a model so
+// creators can see the shape of its output.
+func (h *Handler) HandleGetHistogram(w http.ResponseWriter, r *http.Request) {
+	model := h.getModelScoped(w, r)
+	if model == nil {
+		return
+	}
+	fractalID, err := h.getFractalID(r)
+	if err != nil {
+		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		return
+	}
+	hist, err := h.manager.GetHistogram(r.Context(), model, fractalID)
+	if err != nil {
+		log.Printf("[Models] get histogram %s: %v", model.ID, err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to fetch model histogram")
+		return
+	}
+	h.respondSuccess(w, map[string]interface{}{"histogram": hist})
+}
+
 // HandleExport returns the model definition as a downloadable YAML file.
 func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	model := h.getModelScoped(w, r)

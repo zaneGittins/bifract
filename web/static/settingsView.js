@@ -350,19 +350,27 @@ const SettingsView = {
     },
 
     showAddUserForm() {
-        document.getElementById('addUserFormSettings').style.display = 'block';
-        document.getElementById('usersListSettings').style.opacity = '0.5';
-        document.getElementById('newUsernameSettings').focus();
+        const modal = document.getElementById('createUserModal');
+        if (modal) modal.style.display = 'flex';
+        // Reset to the form view in case a previous invite result is still shown.
+        document.getElementById('addUserFormSection').style.display = 'block';
+        const inviteSection = document.getElementById('addUserInviteSection');
+        inviteSection.style.display = 'none';
+        inviteSection.innerHTML = '';
+        setTimeout(() => document.getElementById('newUsernameSettings')?.focus(), 100);
     },
 
     hideAddUserForm() {
-        document.getElementById('addUserFormSettings').style.display = 'none';
-        document.getElementById('usersListSettings').style.opacity = '1';
+        const modal = document.getElementById('createUserModal');
+        if (modal) modal.style.display = 'none';
         document.getElementById('newUsernameSettings').value = '';
         document.getElementById('newDisplayNameSettings').value = '';
         document.getElementById('newUserRoleSettings').value = 'user';
         document.getElementById('addUserErrorSettings').textContent = '';
-        this.hideInviteLink();
+        document.getElementById('addUserFormSection').style.display = 'block';
+        const inviteSection = document.getElementById('addUserInviteSection');
+        inviteSection.style.display = 'none';
+        inviteSection.innerHTML = '';
     },
 
     async createUser() {
@@ -393,9 +401,8 @@ const SettingsView = {
             const data = await response.json();
 
             if (data.success) {
-                this.hideAddUserForm();
                 await this.loadUsers();
-                this.showInviteLink(data.data.invite_url, username);
+                this.showInviteInModal(data.data.invite_url, username);
             } else {
                 errorDiv.textContent = data.error || 'Failed to create user';
             }
@@ -403,6 +410,26 @@ const SettingsView = {
             console.error('Error creating user:', error);
             errorDiv.textContent = 'Network error. Please try again.';
         }
+    },
+
+    showInviteInModal(path, username) {
+        const url = window.location.origin + path;
+        document.getElementById('addUserFormSection').style.display = 'none';
+        const section = document.getElementById('addUserInviteSection');
+        section.style.display = 'block';
+        section.innerHTML = `
+            <div class="invite-link-content">
+                <div class="invite-link-header">Invite link for <strong>${Utils.escapeHtml(username)}</strong></div>
+                <div class="invite-link-note">Share this link with the user. It expires in 7 days.</div>
+                <div class="invite-link-row">
+                    <input type="text" class="invite-link-input" value="${Utils.escapeHtml(url)}" readonly id="inviteLinkInputModal">
+                    <button class="btn-primary btn-sm" onclick="SettingsView.copyInviteLink('inviteLinkInputModal')">Copy</button>
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn-secondary" onclick="SettingsView.hideAddUserForm()">Done</button>
+            </div>
+        `;
     },
 
     showInviteLink(path, username) {
@@ -434,8 +461,8 @@ const SettingsView = {
         if (banner) banner.style.display = 'none';
     },
 
-    copyInviteLink() {
-        const input = document.getElementById('inviteLinkInput');
+    copyInviteLink(inputId = 'inviteLinkInput') {
+        const input = document.getElementById(inputId);
         if (input) {
             navigator.clipboard.writeText(input.value);
         }

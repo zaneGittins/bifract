@@ -962,6 +962,7 @@ func main() {
 			r.Delete("/models/{id}", modelHandler.HandleDelete)
 			r.Get("/models/{id}/data", modelHandler.HandleGetData)
 			r.Get("/models/{id}/stats", modelHandler.HandleGetStats)
+			r.Get("/models/{id}/histogram", modelHandler.HandleGetHistogram)
 			r.Get("/models/{id}/export", modelHandler.HandleExport)
 			r.Post("/models/{id}/enable-alert", modelHandler.HandleEnableAlert)
 			r.Post("/models/{id}/disable-alert", modelHandler.HandleDisableAlert)

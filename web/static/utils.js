@@ -44,7 +44,7 @@ const Utils = {
 
     getCurrentUTC() {
         const now = new Date();
-        return now.toISOString().substring(11, 19) + ' UTC';
+        return now.toISOString().substring(11, 19);
     },
 
     respondJSON(w, status, data) {

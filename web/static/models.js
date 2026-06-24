@@ -9,7 +9,6 @@ const AnalyticsModels = {
     _viewerPoll: null,     // interval: poll the open model while its backfill runs
     _listPoll: null,       // interval: poll the listing while any backfill runs
     BACKFILL_WINDOWS: [['24h', 'Last 24h'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['90d', 'Last 90 days']],
-    EXAMPLE_QUERY: 'level = "dns" | regex(field=raw_log, regex="([a-z]+)$", as=tld) | lowercase(tld)',
 
     // Editor state (split-panel: BQL source query on the left, shape/alert on the right)
     editor: {
@@ -44,7 +43,6 @@ const AnalyticsModels = {
         sortDir: 'desc',
         search: '',
         tab: 'data',     // 'data' | 'config'
-        stats: null,
     },
 
     init() {
@@ -197,7 +195,7 @@ const AnalyticsModels = {
         const updated = m.updated_at ? new Date(m.updated_at).toLocaleDateString() : '—';
         const errorTitle = m.status === 'error' && m.error_message ? ` title="${_esc(m.error_message)}"` : '';
         const backfillBadge = m.backfill_status === 'running'
-            ? ` <span class="model-badge badge-backfilling" title="Seeding historical data">⟳ Seeding ${this._backfillPct(m)}%</span>`
+            ? ` <span class="model-badge badge-backfilling" title="Backfilling historical data">⟳ Backfilling ${this._backfillPct(m)}%</span>`
             : '';
         return `
 <tr>
@@ -313,11 +311,11 @@ const AnalyticsModels = {
         const model = this.models.find(m => m.id === id);
         if (!model) return;
         this._stopListPoll();
-        this.viewer = { model, rows: [], total: 0, limit: 50, offset: 0, sortCol: '', sortDir: 'desc', search: '', tab: 'data', stats: null, backfillWindow: '7d' };
+        this.viewer = { model, rows: [], total: 0, limit: 50, offset: 0, sortCol: '', sortDir: 'desc', search: '', tab: 'data', backfillWindow: '7d', histogram: null };
         this.currentView = 'data';
         this._render();
         await this._loadViewerData();
-        this._loadViewerStats();
+        this._loadHistogram();
         if (model.backfill_status === 'running') this._startViewerPoll();
     },
 
@@ -338,17 +336,6 @@ const AnalyticsModels = {
         }
     },
 
-    async _loadViewerStats() {
-        const v = this.viewer;
-        try {
-            const data = await this._api('GET', `/models/${v.model.id}/stats`);
-            v.stats = data?.data?.stats || null;
-            this._renderStatsPanel();
-        } catch (e) {
-            console.error('[Models] loadViewerStats error:', e);
-        }
-    },
-
     _renderDataViewerView(container) {
         const m = this.viewer.model;
         const alertBtn = m.alert_mode === 'active'
@@ -360,15 +347,13 @@ const AnalyticsModels = {
         container.innerHTML = `
 <div class="models-view-section model-data-viewer">
     <div class="model-data-header">
-        <button class="btn-secondary" id="modelsBackBtn">← Back</button>
         <div class="model-data-title">${_esc(m.name)}</div>
         <span class="model-badge ${m.model_type === 'rarity' ? 'badge-active' : 'badge-paused'}">${_esc(m.model_type)}</span>
         <button class="btn-secondary" id="modelsEditFromViewer">Edit</button>
         ${alertBtn}
-        <button class="btn-secondary" id="modelsDataRefresh">↺ Refresh</button>
     </div>
     <div id="modelsBackfillBar" class="model-backfill-bar"></div>
-    <div id="modelsStatsPanel" class="model-stats-panel"></div>
+    <div id="modelsHistogramPanel" class="model-histogram-panel"></div>
     <div class="model-viewer-tabs">
         <button class="viewer-tab ${this.viewer.tab === 'data' ? 'active' : ''}" data-tab="data">Data</button>
         <button class="viewer-tab ${this.viewer.tab === 'config' ? 'active' : ''}" data-tab="config">Configuration</button>
@@ -381,20 +366,10 @@ const AnalyticsModels = {
     <div class="model-data-pagination" id="modelsDataPagination"></div>
 </div>`;
 
-        document.getElementById('modelsBackBtn').addEventListener('click', () => {
-            this._stopViewerPoll();
-            this.currentView = 'list';
-            this._render();
-            this._loadModels();
-        });
         this._renderBackfillBar();
         // Resume progress polling if a backfill is running (e.g. after returning
         // to this view from another tab). _startViewerPoll guards against dupes.
         if (this.viewer.model && this.viewer.model.backfill_status === 'running') this._startViewerPoll();
-        document.getElementById('modelsDataRefresh').addEventListener('click', () => {
-            this._loadViewerData();
-            this._loadViewerStats();
-        });
         document.getElementById('modelsEditFromViewer').addEventListener('click', () => {
             this._editModel(m.id);
         });
@@ -424,44 +399,119 @@ const AnalyticsModels = {
         }
     },
 
-    // ---- Backfill (seed historical data) ----
-    _renderBackfillBar() {
-        const el = document.getElementById('modelsBackfillBar');
-        if (!el) return;
-        const m = this.viewer.model;
-        const st = m.backfill_status || 'none';
+    // ---- Score distribution histogram ----
+    METRIC_LABELS: { confidence: 'Confidence', z_score: 'Anomaly score (|z|)', event_count: 'Event count' },
 
-        // Backfill is only available once the model's table+MV exist.
-        if (m.status !== 'active' && st !== 'running') {
-            el.className = 'model-backfill-bar';
-            el.innerHTML = `<div class="backfill-cta"><span class="backfill-note">Model is initializing…</span></div>`;
+    async _loadHistogram() {
+        const v = this.viewer;
+        if (!v.model) return;
+        try {
+            const data = await this._api('GET', `/models/${v.model.id}/histogram`);
+            v.histogram = data?.data?.histogram || null;
+        } catch (e) {
+            console.error('[Models] loadHistogram error:', e);
+            v.histogram = null;
+        }
+        this._renderHistogram();
+    },
+
+    _renderHistogram() {
+        const el = document.getElementById('modelsHistogramPanel');
+        if (!el) return;
+        const h = this.viewer.histogram;
+        const buckets = (h && Array.isArray(h.buckets)) ? h.buckets : [];
+        const metric = this.METRIC_LABELS[h?.metric] || 'Score';
+        const max = buckets.reduce((m, b) => Math.max(m, Number(b.count || 0)), 0);
+
+        if (!buckets.length || max <= 0) {
+            el.innerHTML = `
+<div class="histogram-head"><span class="histogram-title">${_esc(metric)} distribution</span></div>
+<div class="histogram-empty">Not enough data yet to show a distribution.</div>`;
             return;
         }
 
-        if (st === 'running') {
-            const pct = this._backfillPct(m);
-            el.className = 'model-backfill-bar active';
-            el.innerHTML = `
+        const cols = buckets.map(b => {
+            const cnt = Number(b.count || 0);
+            const pct = max > 0 ? Math.round(cnt / max * 100) : 0;
+            return `<div class="histogram-col" title="${_esc(b.label)}: ${cnt.toLocaleString()}">
+    <span class="histogram-bar-val">${this._fmtNum(cnt)}</span>
+    <div class="histogram-bar-track"><div class="histogram-bar" style="height:${cnt > 0 ? Math.max(pct, 2) : 0}%"></div></div>
+    <span class="histogram-bar-label">${_esc(b.label)}</span>
+</div>`;
+        }).join('');
+
+        el.innerHTML = `
+<div class="histogram-head"><span class="histogram-title">${_esc(metric)} distribution</span></div>
+<div class="histogram-chart">${cols}</div>`;
+    },
+
+    _fmtNum(v) {
+        const n = Number(v);
+        if (isNaN(n)) return '0';
+        if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e4) return (n / 1e3).toFixed(1) + 'K';
+        return n.toLocaleString();
+    },
+
+    // ---- Backfill (seed historical data) ----
+    // The start control lives on the Configuration tab (_renderConfigBackfill);
+    // the header bar only surfaces live progress so it stays visible across tabs.
+    _renderBackfillBar() {
+        this._renderBackfillBanner();
+        this._renderConfigBackfill();
+    },
+
+    // Header banner: running progress only (collapses to nothing otherwise).
+    _renderBackfillBanner() {
+        const el = document.getElementById('modelsBackfillBar');
+        if (!el) return;
+        const m = this.viewer.model;
+        if ((m.backfill_status || 'none') !== 'running') {
+            el.className = 'model-backfill-bar';
+            el.innerHTML = '';
+            return;
+        }
+        const pct = this._backfillPct(m);
+        el.className = 'model-backfill-bar active';
+        el.innerHTML = `
 <div class="backfill-running">
     <div class="backfill-running-head">
         <span class="spinner spinner-inline"></span>
-        <span class="backfill-label">Seeding history…</span>
+        <span class="backfill-label">Backfilling history…</span>
         <span class="backfill-count">${m.backfill_done || 0}/${m.backfill_total || 0} days</span>
         <span class="backfill-spacer"></span>
         <button class="btn-secondary btn-sm" id="backfillCancelBtn">Cancel</button>
     </div>
     <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${pct}%"></div></div>
 </div>`;
-            document.getElementById('backfillCancelBtn')?.addEventListener('click', () => this._cancelBackfill());
+        document.getElementById('backfillCancelBtn')?.addEventListener('click', () => this._cancelBackfill());
+    },
+
+    // Configuration-tab backfill section: status + start/resume control.
+    _renderConfigBackfill() {
+        const el = document.getElementById('modelsConfigBackfill');
+        if (!el) return;
+        const m = this.viewer.model;
+        const st = m.backfill_status || 'none';
+
+        // Backfill is only available once the model's table+MV exist.
+        if (m.status !== 'active' && st !== 'running') {
+            el.innerHTML = `<div class="config-row config-empty">Model is initializing… backfill becomes available once it is active.</div>`;
             return;
         }
 
-        el.className = 'model-backfill-bar';
+        // Running: the live progress bar + cancel live in the header banner (always
+        // visible across tabs), so here we only show a concise status line.
+        if (st === 'running') {
+            el.innerHTML = `<div class="config-row config-empty">Backfilling history… ${m.backfill_done || 0}/${m.backfill_total || 0} days. Progress is shown in the bar above.</div>`;
+            return;
+        }
 
         // Completed: terminal, no re-seed (re-running would double-count). To
         // seed again the user edits the model, which resets and drops data.
         if (st === 'completed') {
-            el.innerHTML = `<div class="backfill-cta"><span class="backfill-note ok">✓ Seeded ${_esc(m.backfill_window || 'history')} of history</span></div>`;
+            el.innerHTML = `<div class="backfill-cta"><span class="backfill-note ok">✓ Backfilled ${_esc(m.backfill_window || 'history')} of history</span></div>`;
             return;
         }
 
@@ -475,37 +525,65 @@ const AnalyticsModels = {
 <div class="backfill-cta">
     ${note}
     <span class="backfill-spacer"></span>
-    <button class="btn-primary btn-sm" id="backfillStartBtn">Resume</button>
+    <button class="btn-primary btn-sm" id="configBackfillResumeBtn">Resume</button>
 </div>`;
-            document.getElementById('backfillStartBtn')?.addEventListener('click', () => this._startBackfill());
+            document.getElementById('configBackfillResumeBtn')?.addEventListener('click', () => this._startBackfill());
             return;
         }
 
-        // Fresh: window picker + seed.
-        const win = this.viewer.backfillWindow || '7d';
-        const pills = this.BACKFILL_WINDOWS.map(([v, l]) =>
-            `<button class="backfill-pill ${v === win ? 'selected' : ''}" data-win="${v}">${l.replace('Last ', '')}</button>`
-        ).join('');
+        // Fresh: launch the backfill modal (window picker + warning).
         el.innerHTML = `
 <div class="backfill-cta">
-    <span class="backfill-note">This model captures new logs from now on. Seed it with historical data.</span>
+    <span class="backfill-note">This model captures new logs from now on. Backfill it with historical data.</span>
     <span class="backfill-spacer"></span>
-    <div class="backfill-pills">${pills}</div>
-    <button class="btn-primary btn-sm" id="backfillStartBtn">Seed history</button>
+    <button class="btn-primary btn-sm" id="configBackfillBtn">Backfill</button>
 </div>`;
-        el.querySelectorAll('.backfill-pill').forEach(p => {
-            p.addEventListener('click', () => {
-                this.viewer.backfillWindow = p.dataset.win;
-                el.querySelectorAll('.backfill-pill').forEach(x => x.classList.toggle('selected', x === p));
-            });
+        document.getElementById('configBackfillBtn')?.addEventListener('click', () => this._openBackfillModal());
+    },
+
+    _openBackfillModal() {
+        document.getElementById('backfillModal')?.remove();
+        const win = this.viewer.backfillWindow || '7d';
+        const opts = this.BACKFILL_WINDOWS.map(([v, l]) =>
+            `<option value="${v}" ${v === win ? 'selected' : ''}>${l}</option>`).join('');
+        const modal = document.createElement('div');
+        modal.id = 'backfillModal';
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+<div class="modal-content" style="width:440px;max-width:95vw;">
+    <div class="modal-header">
+        <h3>Backfill historical data</h3>
+        <button class="modal-close" onclick="document.getElementById('backfillModal').remove()">&#x2715;</button>
+    </div>
+    <div class="modal-body">
+        <div class="form-group">
+            <label>Backfill from</label>
+            <select id="backfillWindowSelect" class="form-input">${opts}</select>
+        </div>
+        <div class="backfill-modal-warning">
+            <span class="backfill-warning-icon">⚠</span>
+            <span>Backfilling is CPU intensive and may take some time depending on how many historical logs match this model. It runs in the background, so you can keep working while it completes.</span>
+        </div>
+    </div>
+    <div class="modal-footer">
+        <button class="btn-secondary" onclick="document.getElementById('backfillModal').remove()">Cancel</button>
+        <button class="btn-primary" id="backfillModalStart">Start Backfill</button>
+    </div>
+</div>`;
+        document.body.appendChild(modal);
+        modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+        document.getElementById('backfillModalStart')?.addEventListener('click', () => {
+            const sel = document.getElementById('backfillWindowSelect');
+            this.viewer.backfillWindow = sel ? sel.value : win;
+            modal.remove();
+            this._startBackfill();
         });
-        document.getElementById('backfillStartBtn')?.addEventListener('click', () => this._startBackfill());
     },
 
     async _startBackfill() {
         const m = this.viewer.model;
         const window = this.viewer.backfillWindow || '7d';
-        const btn = document.getElementById('backfillStartBtn');
+        const btn = document.getElementById('configBackfillBtn') || document.getElementById('configBackfillResumeBtn');
         if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
         try {
             const data = await this._api('POST', `/models/${m.id}/backfill`, { window });
@@ -558,9 +636,9 @@ const AnalyticsModels = {
         if (model.backfill_status !== 'running') {
             this._stopViewerPoll();
             if (prev === 'running') {
-                // Just finished: refresh the rows + stats once so seeded data shows.
+                // Just finished: refresh the rows + distribution so backfilled data shows.
                 this._loadViewerData();
-                this._loadViewerStats();
+                this._loadHistogram();
                 if (model.backfill_status === 'completed') Toast.success('Backfill complete');
                 else if (model.backfill_status === 'failed') Toast.error('Backfill failed: ' + (model.backfill_error || 'error'));
             }
@@ -572,94 +650,6 @@ const AnalyticsModels = {
             this._renderConfigPanel();
         } else {
             this._renderDataTable();
-        }
-    },
-
-    _renderStatsPanel() {
-        const el = document.getElementById('modelsStatsPanel');
-        if (!el) return;
-        const v = this.viewer;
-        const s = v.stats;
-        if (!s) { el.innerHTML = ''; return; }
-
-        if (v.model.model_type === 'rarity') {
-            const totalRows = this._fmtNum(s.total_rows);
-            const parts = this._fmtNum(s.distinct_partitions);
-            const topParts = Array.isArray(s.top_partitions) ? s.top_partitions : [];
-            const maxCnt = topParts.reduce((m, r) => Math.max(m, Number(r.cnt || 0)), 1);
-
-            const barsHTML = topParts.map(r => {
-                const pct = Math.round(Number(r.cnt || 0) / maxCnt * 100);
-                return `<div class="stat-bar-row">
-                    <span class="stat-bar-label" title="${_esc(String(r.partition_val || ''))}">${_esc(String(r.partition_val || '').substring(0, 24))}</span>
-                    <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${pct}%"></div></div>
-                    <span class="stat-bar-val">${this._fmtNum(r.cnt)}</span>
-                </div>`;
-            }).join('');
-
-            el.innerHTML = `
-<div class="model-stats-bar">
-    <div class="stat-card">
-        <div class="stat-value">${totalRows}</div>
-        <div class="stat-label">Total Rows</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-value">${parts}</div>
-        <div class="stat-label">Partitions</div>
-    </div>
-    ${topParts.length ? `<div class="stat-card stat-card-wide">
-        <div class="stat-label">Top Partitions by Event Count</div>
-        <div class="stat-bars">${barsHTML}</div>
-    </div>` : ''}
-</div>`;
-        } else if (v.model.model_type === 'volume_baseline') {
-            const hasData = Number(s.total_entities) > 0;
-            const total = this._fmtNum(s.total_entities);
-            const anomalous = hasData ? this._fmtNum(s.anomalous) : '—';
-            const maxZ = hasData && s.max_z != null ? Number(s.max_z).toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—';
-
-            el.innerHTML = `
-<div class="model-stats-bar">
-    <div class="stat-card">
-        <div class="stat-value">${total}</div>
-        <div class="stat-label">Entities Scored</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-value">${anomalous}</div>
-        <div class="stat-label">Anomalous</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-value">${maxZ}</div>
-        <div class="stat-label">Max |Z-score|</div>
-    </div>
-</div>`;
-        } else {
-            // first_seen
-            const hasData = Number(s.total_entities) > 0;
-            const total = this._fmtNum(s.total_entities);
-            const newToday = hasData ? this._fmtNum(s.new_today) : '—';
-            const oldest = hasData ? this._fmtDate(s.oldest_seen) : '—';
-            const newest = hasData ? this._fmtDate(s.newest_seen) : '—';
-
-            el.innerHTML = `
-<div class="model-stats-bar">
-    <div class="stat-card">
-        <div class="stat-value">${total}</div>
-        <div class="stat-label">Total Entities</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-value">${newToday}</div>
-        <div class="stat-label">New Today</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-value">${oldest}</div>
-        <div class="stat-label">First Ever Seen</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-value">${newest}</div>
-        <div class="stat-label">Most Recent</div>
-    </div>
-</div>`;
         }
     },
 
@@ -723,10 +713,15 @@ const AnalyticsModels = {
         <div class="config-section-title">Alert</div>
         <div class="config-row"><span class="config-key">Mode:</span> <code>${_esc(m.alert_mode || 'none')}</code></div>
     </div>
+    <div class="config-section">
+        <div class="config-section-title">Historical Backfill</div>
+        <div id="modelsConfigBackfill"></div>
+    </div>
     <div style="margin-top:16px">
         <button class="btn-primary" id="configEditBtn">Edit Configuration</button>
     </div>
 </div>`;
+        this._renderConfigBackfill();
         document.getElementById('configEditBtn')?.addEventListener('click', () => this._editModel(m.id));
     },
 
@@ -738,8 +733,8 @@ const AnalyticsModels = {
         if (!v.rows.length) {
             const seeding = m.backfill_status === 'running';
             wrap.innerHTML = seeding
-                ? '<div class="models-empty">Seeding historical data… rows will appear as each day completes.</div>'
-                : '<div class="models-empty">No data yet — seed historical data above, or new matching logs will appear here as they are ingested.</div>';
+                ? '<div class="models-empty">Backfilling historical data… rows will appear as each day completes.</div>'
+                : '<div class="models-empty">No data yet — backfill historical data from the Configuration tab, or new matching logs will appear here as they are ingested.</div>';
             this._renderPagination();
             return;
         }
@@ -944,20 +939,6 @@ const AnalyticsModels = {
         return result;
     },
 
-    // ---- Formatting helpers ----
-    _fmtNum(v) {
-        const n = Number(v);
-        if (isNaN(n)) return '—';
-        if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
-        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-        if (n >= 1e4) return (n / 1e3).toFixed(1) + 'K';
-        return n.toLocaleString();
-    },
-    _fmtDate(v) {
-        if (!v) return '—';
-        try { return new Date(v).toLocaleDateString(); } catch { return String(v); }
-    },
-
     // ============================
     // Editor (split-panel, BQL-first)
     // ============================
@@ -996,9 +977,6 @@ const AnalyticsModels = {
         container.innerHTML = `
 <div class="models-view-section model-editor">
     <div class="model-editor-header">
-        <button class="alert-editor-back-btn" id="modelEditorCancel" title="Cancel">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-        </button>
         <h2>${title}</h2>
         <span style="flex:1"></span>
         <button class="btn-primary" id="modelEditorSave">${saveLabel}</button>
@@ -1011,7 +989,6 @@ const AnalyticsModels = {
                 </select>
                 <button class="search-btn" id="modelRunBtn">
                     <span class="btn-text">Run</span>
-                    <span class="btn-shortcut">⌃↵</span>
                 </button>
                 <span style="flex:1"></span>
                 <span class="model-results-count" id="modelResultsCount"></span>
@@ -1019,10 +996,6 @@ const AnalyticsModels = {
             <div class="model-query-wrap">
                 <div id="modelQueryHighlight" class="model-query-highlight"></div>
                 <textarea id="modelQueryInput" class="model-query-input" spellcheck="false" placeholder='Filter logs in BQL, or leave empty to use all logs'>${_esc(e.query)}</textarea>
-            </div>
-            <div class="model-query-hint">
-                <span>Narrow with a BQL filter and pull fields out with <code>regex()</code>.</span>
-                <button type="button" class="model-example-link" id="modelInsertExample">Insert example</button>
             </div>
             <pre id="modelSqlOutput" class="model-sql-output" style="display:${this._showSQL() ? 'block' : 'none'}"></pre>
             <div id="modelTranslation" class="model-translation"></div>
@@ -1073,11 +1046,6 @@ const AnalyticsModels = {
     </div>
 </div>`;
 
-        document.getElementById('modelEditorCancel').addEventListener('click', () => {
-            this.currentView = 'list';
-            this._render();
-            this._loadModels();
-        });
         document.getElementById('modelEditorSave').addEventListener('click', () => this._saveModel());
         document.getElementById('modelRunBtn').addEventListener('click', () => this._runOrCancelModel());
         const ta = document.getElementById('modelQueryInput');
@@ -1087,12 +1055,6 @@ const AnalyticsModels = {
             if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') { ev.preventDefault(); this._runOrCancelModel(); }
         });
         this._updateQueryHighlight();
-        document.getElementById('modelInsertExample')?.addEventListener('click', () => {
-            ta.value = this.EXAMPLE_QUERY;
-            e.query = this.EXAMPLE_QUERY;
-            this._updateQueryHighlight();
-            ta.focus();
-        });
         document.getElementById('modelTimeRange').addEventListener('change', ev => { e.timeRange = ev.target.value; if (e.ran) this._runQuery(); });
         if (!e.editId) {
             document.querySelectorAll('#modelTypeCards .model-type-card').forEach(card => {

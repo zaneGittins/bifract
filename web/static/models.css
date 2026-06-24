@@ -126,23 +126,19 @@
 .backfill-note.ok  { color: #34c759; }
 .backfill-note.err { color: #ff6b6b; }
 
-.backfill-pills { display: inline-flex; gap: 4px; }
-.backfill-pill {
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color);
+.backfill-modal-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    background: rgba(255,204,0,0.08);
+    border: 1px solid rgba(255,204,0,0.25);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 12.5px;
+    line-height: 1.5;
     color: var(--text-muted, #888);
-    border-radius: 6px;
-    padding: 4px 10px;
-    font-size: 12px;
-    cursor: pointer;
-    transition: border-color 0.15s, color 0.15s;
 }
-.backfill-pill:hover { border-color: var(--accent-primary); color: var(--text-primary); }
-.backfill-pill.selected {
-    border-color: var(--accent-primary);
-    color: var(--accent-primary);
-    background: rgba(156,106,222,0.10);
-}
+.backfill-warning-icon { color: #ffcc00; font-size: 14px; line-height: 1.4; flex-shrink: 0; }
 
 .backfill-running {
     background: var(--bg-secondary);
@@ -726,70 +722,7 @@ textarea.full-input {
     font-size: 14px;
 }
 
-/* Stats panel */
-.model-stats-panel {
-    flex-shrink: 0;
-}
-
-.model-stats-bar {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.stat-card {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    padding: 10px 14px;
-    min-width: 100px;
-}
-
-.stat-card-wide {
-    flex: 1;
-    min-width: 220px;
-}
-
-.stat-value {
-    font-size: 20px;
-    font-weight: 600;
-    color: var(--text-primary);
-    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
-    line-height: 1.2;
-}
-
-.stat-label {
-    font-size: 11px;
-    color: var(--text-muted, #888);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin-top: 2px;
-}
-
-.stat-bars {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    margin-top: 6px;
-}
-
-.stat-bar-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-}
-
-.stat-bar-label {
-    width: 100px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--text-primary);
-    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
-    flex-shrink: 0;
-}
-
+/* Progress bar (used by backfill) */
 .stat-bar-track {
     flex: 1;
     height: 6px;
@@ -805,12 +738,68 @@ textarea.full-input {
     transition: width 0.3s ease;
 }
 
-.stat-bar-val {
-    width: 40px;
-    text-align: right;
-    color: var(--text-muted, #888);
+/* Score distribution histogram */
+.model-histogram-panel { margin: 0 0 12px; flex-shrink: 0; }
+.model-histogram-panel:empty { display: none; }
+
+.histogram-head { margin-bottom: 6px; }
+.histogram-title {
     font-size: 11px;
-    flex-shrink: 0;
+    color: var(--text-muted, #888);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.histogram-empty {
+    font-size: 13px;
+    color: var(--text-muted, #888);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+}
+.histogram-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px 12px 8px;
+}
+.histogram-col {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+.histogram-bar-val {
+    font-size: 10px;
+    color: var(--text-muted, #888);
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+}
+.histogram-bar-track {
+    width: 100%;
+    height: 72px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+}
+.histogram-bar {
+    width: 100%;
+    max-width: 30px;
+    background: var(--accent-primary, #9c6ade);
+    border-radius: 3px 3px 0 0;
+    transition: height 0.3s ease;
+}
+.histogram-bar-label {
+    font-size: 10px;
+    color: var(--text-secondary, #aaa);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
 }
 
 /* Viewer tabs */
@@ -1058,41 +1047,6 @@ textarea.full-input {
 }
 .model-query-input::placeholder {
     color: var(--text-muted, #888);
-}
-
-/* Subtle helper line under the query input */
-.model-query-hint {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-top: 6px;
-    font-size: 12px;
-    color: var(--text-muted, #888);
-}
-.model-query-hint code {
-    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
-    font-size: 11px;
-    color: var(--text-secondary, #aaa);
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    padding: 1px 5px;
-}
-.model-example-link {
-    flex: none;
-    background: transparent;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    color: var(--text-secondary, #aaa);
-    font-size: 12px;
-    padding: 4px 10px;
-    cursor: pointer;
-    transition: border-color 0.15s ease, color 0.15s ease;
-}
-.model-example-link:hover {
-    border-color: var(--accent-primary);
-    color: var(--accent-primary);
 }
 
 /* Syntax-highlight overlay rendered beneath the transparent textarea text. */

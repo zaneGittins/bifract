@@ -397,33 +397,6 @@
                     <div id="usersListSettings" class="users-list">
                         <div class="loading">Loading users...</div>
                     </div>
-
-                    <!-- Add User Form -->
-                    <div id="addUserFormSettings" class="add-user-form" style="display: none;">
-                        <h4>Add New User</h4>
-                        <div class="form-group">
-                            <label for="newUsernameSettings">Username</label>
-                            <input type="text" id="newUsernameSettings" placeholder="Enter username" required>
-                        </div>
-                        <div class="form-group">
-                            <label for="newDisplayNameSettings">Display Name (optional)</label>
-                            <input type="text" id="newDisplayNameSettings" placeholder="Enter display name">
-                        </div>
-                        <div class="form-group">
-                            <label for="newUserRoleSettings">Role</label>
-                            <select id="newUserRoleSettings" class="role-select">
-                                <option value="user">User</option>
-                                <option value="admin">Tenant Admin</option>
-                            </select>
-                            <p class="help-text">Tenant Admins have full system access. Users can query and comment. Assign fractal-level permissions (viewer/analyst/admin) separately via fractal management.</p>
-                            <p class="help-text">A one-time invite link will be generated for the user to set their password.</p>
-                        </div>
-                        <div class="form-actions">
-                            <button id="createUserBtnSettings" class="btn-primary">Create User</button>
-                            <button id="cancelAddUserBtnSettings" class="btn-secondary">Cancel</button>
-                        </div>
-                        <div id="addUserErrorSettings" class="error-message"></div>
-                    </div>
                 </div>
 
                 </div><!-- end settingsSubTabUsers -->
@@ -2196,7 +2169,6 @@
 
                             <button id="testQueryBtn" class="search-btn" onclick="Alerts.runOrCancelQuery()">
                                 <span class="btn-text">Run</span>
-                                <span class="btn-shortcut">↵</span>
                             </button>
                             <button id="toggleAlertPanelBtn" class="alert-editor-config-btn" onclick="Alerts.toggleAlertPanel()" title="Toggle configuration panel">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
@@ -3112,6 +3084,45 @@ throttleTimeSeconds: 3600"></textarea>
                     <button id="submitCreateGroupBtn" class="btn-primary">Create Group</button>
                     <button id="cancelCreateGroupBtn" class="btn-secondary">Cancel</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add User Modal -->
+    <div id="createUserModal" class="modal" onclick="if(event.target===this)SettingsView.hideAddUserForm()">
+        <div class="modal-content" style="max-width:480px;">
+            <div class="modal-header">
+                <h2>Add New User</h2>
+                <button class="close-btn" onclick="SettingsView.hideAddUserForm()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Form section -->
+                <div id="addUserFormSection">
+                    <div class="form-group">
+                        <label for="newUsernameSettings">Username</label>
+                        <input type="text" id="newUsernameSettings" placeholder="Enter username" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="newDisplayNameSettings">Display Name (optional)</label>
+                        <input type="text" id="newDisplayNameSettings" placeholder="Enter display name">
+                    </div>
+                    <div class="form-group">
+                        <label for="newUserRoleSettings">Role</label>
+                        <select id="newUserRoleSettings" class="role-select">
+                            <option value="user">User</option>
+                            <option value="admin">Tenant Admin</option>
+                        </select>
+                        <p class="help-text">Tenant Admins have full system access. Users can query and comment. Assign fractal-level permissions (viewer/analyst/admin) separately via fractal management.</p>
+                        <p class="help-text">A one-time invite link will be generated for the user to set their password.</p>
+                    </div>
+                    <div class="form-actions">
+                        <button id="createUserBtnSettings" class="btn-primary">Create User</button>
+                        <button id="cancelAddUserBtnSettings" class="btn-secondary">Cancel</button>
+                    </div>
+                    <div id="addUserErrorSettings" class="error-message"></div>
+                </div>
+                <!-- Invite result section -->
+                <div id="addUserInviteSection" style="display:none;"></div>
             </div>
         </div>
     </div>
