@@ -99,6 +99,19 @@ func renderTemplate(name string, data interface{}) (string, error) {
 	return buf.String(), nil
 }
 
+// EnsureColdStorageConfig writes the inert cold-storage config file if it is not
+// already present, so the docker-compose mount of
+// clickhouse/config.d/storage.xml always resolves to a file (never an
+// auto-created directory). It never overwrites an existing storage.xml, so an
+// admin who has enabled cold storage keeps their configuration across upgrades.
+func EnsureColdStorageConfig(dir string) error {
+	path := filepath.Join(dir, "clickhouse", "config.d", "storage.xml")
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	return CopyEmbeddedFile("templates/clickhouse-storage.xml", path)
+}
+
 func CopyEmbeddedFile(name, destPath string) error {
 	content, err := TemplateFS.ReadFile(name)
 	if err != nil {

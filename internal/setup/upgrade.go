@@ -254,6 +254,11 @@ func RunUpgrade(dir string) error {
 	if err := CopyEmbeddedFile("templates/litellm-config.yaml", filepath.Join(dir, "litellm-config.yaml")); err != nil {
 		printWarn(fmt.Sprintf("litellm-config.yaml: %v", err))
 	}
+	// Ensure the cold-storage config exists so the new compose mount resolves;
+	// preserves an admin-populated storage.xml.
+	if err := EnsureColdStorageConfig(dir); err != nil {
+		printWarn(fmt.Sprintf("storage.xml: %v", err))
+	}
 	printDone("Configuration updated")
 
 	docker := &DockerOps{Dir: dir}

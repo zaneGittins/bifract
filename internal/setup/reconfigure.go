@@ -115,6 +115,12 @@ func RunReconfigure(dir string) error {
 		return fmt.Errorf("write docker-compose: %w", err)
 	}
 
+	// Ensure the cold-storage config exists so the compose mount resolves to a
+	// file; never clobbers an admin-populated storage.xml.
+	if err := EnsureColdStorageConfig(dir); err != nil {
+		return fmt.Errorf("write storage.xml: %w", err)
+	}
+
 	envContent := RenderEnvFile(cfg)
 	// Preserve manually-configured keys not managed by the setup wizard.
 	preserveKeys := []string{
