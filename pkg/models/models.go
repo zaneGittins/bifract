@@ -1,6 +1,37 @@
 package models
 
-import "time"
+import (
+	"context"
+	"time"
+)
+
+// LinkedAlertSpec describes the alert backing an analytics model. It is kept free
+// of any alerts-package types so the models package never imports pkg/alerts
+// (which already imports pkg/models for model_lookup support, so the reverse
+// would be an import cycle). The alerts package provides an adapter that
+// satisfies LinkedAlertManager.
+type LinkedAlertSpec struct {
+	Name        string
+	Description string
+	QueryString string
+	Severity    string
+	Enabled     bool
+	FractalID   string
+	PrismID     string
+	CreatedBy   string
+}
+
+// LinkedAlertManager is satisfied by *alerts.Manager. It lets the model manager
+// create, update, toggle, and delete the normal alert that backs a model without
+// importing the alerts package. Updates preserve operator-managed fields
+// (actions, throttle, enabled, severity) that live on the Alerts page; the model
+// owns only name, description, and the generated detection query.
+type LinkedAlertManager interface {
+	CreateLinkedAlert(ctx context.Context, spec LinkedAlertSpec) (string, error)
+	UpdateLinkedAlert(ctx context.Context, alertID string, spec LinkedAlertSpec) error
+	DeleteLinkedAlert(ctx context.Context, alertID string) error
+	SetLinkedAlertEnabled(ctx context.Context, alertID string, enabled bool) error
+}
 
 type ModelType string
 

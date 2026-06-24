@@ -338,27 +338,20 @@ const AnalyticsModels = {
 
     _renderDataViewerView(container) {
         const m = this.viewer.model;
-        const alertBtn = m.alert_mode === 'active'
-            ? `<button id="modelDataAlertToggle" class="btn-secondary">Pause Alert</button>`
-            : m.alert_mode === 'paused'
-                ? `<button id="modelDataAlertToggle" class="btn-primary">Enable Alert</button>`
-                : '';
 
         container.innerHTML = `
 <div class="models-view-section model-data-viewer">
     <div class="model-data-header">
         <div class="model-data-title">${_esc(m.name)}</div>
         <span class="model-badge ${m.model_type === 'rarity' ? 'badge-active' : 'badge-paused'}">${_esc(m.model_type)}</span>
+        <span style="flex:1"></span>
+        <button class="btn-secondary" id="modelsBackfillBtn">Backfill</button>
         <button class="btn-secondary" id="modelsEditFromViewer">Edit</button>
-        ${alertBtn}
     </div>
     <div id="modelsBackfillBar" class="model-backfill-bar"></div>
     <div id="modelsHistogramPanel" class="model-histogram-panel"></div>
-    <div class="model-viewer-tabs">
-        <button class="viewer-tab ${this.viewer.tab === 'data' ? 'active' : ''}" data-tab="data">Data</button>
-        <button class="viewer-tab ${this.viewer.tab === 'config' ? 'active' : ''}" data-tab="config">Configuration</button>
-        <div class="viewer-tab-spacer"></div>
-        <input type="text" id="modelsDataSearch" class="models-search" placeholder="Search..." value="${_esc(this.viewer.search)}" style="${this.viewer.tab !== 'data' ? 'visibility:hidden' : ''}">
+    <div class="model-data-toolbar">
+        <input type="text" id="modelsDataSearch" class="models-search" placeholder="Search..." value="${_esc(this.viewer.search)}">
     </div>
     <div class="model-data-table-wrap" id="modelsDataTableWrap">
         <div class="models-empty">Loading...</div>
@@ -368,7 +361,7 @@ const AnalyticsModels = {
 
         this._renderBackfillBar();
         // Resume progress polling if a backfill is running (e.g. after returning
-        // to this view from another tab). _startViewerPoll guards against dupes.
+        // to this view). _startViewerPoll guards against dupes.
         if (this.viewer.model && this.viewer.model.backfill_status === 'running') this._startViewerPoll();
         document.getElementById('modelsEditFromViewer').addEventListener('click', () => {
             this._editModel(m.id);
@@ -378,25 +371,6 @@ const AnalyticsModels = {
             this.viewer.offset = 0;
             this._loadViewerData();
         });
-        container.querySelectorAll('.viewer-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                this.viewer.tab = tab.dataset.tab;
-                container.querySelectorAll('.viewer-tab').forEach(t => t.classList.toggle('active', t === tab));
-                const searchEl = document.getElementById('modelsDataSearch');
-                if (searchEl) searchEl.style.visibility = this.viewer.tab === 'data' ? '' : 'hidden';
-                this._renderViewerContent();
-            });
-        });
-        if (document.getElementById('modelDataAlertToggle')) {
-            document.getElementById('modelDataAlertToggle').addEventListener('click', () => {
-                const endpoint = m.alert_mode === 'active' ? '/disable-alert' : '/enable-alert';
-                this._api('POST', `/models/${m.id}${endpoint}`).then(() => {
-                    m.alert_mode = m.alert_mode === 'active' ? 'paused' : 'active';
-                    this._renderDataViewerView(container);
-                    Toast.success(m.alert_mode === 'active' ? 'Alert activated' : 'Alert paused');
-                });
-            });
-        }
     },
 
     // ---- Score distribution histogram ----
@@ -455,11 +429,50 @@ const AnalyticsModels = {
     },
 
     // ---- Backfill (seed historical data) ----
-    // The start control lives on the Configuration tab (_renderConfigBackfill);
-    // the header bar only surfaces live progress so it stays visible across tabs.
+    // The header "Backfill" button starts/resumes; the banner below the header
+    // surfaces live progress (with a cancel control) while a backfill runs.
     _renderBackfillBar() {
         this._renderBackfillBanner();
-        this._renderConfigBackfill();
+        this._renderBackfillButton();
+    },
+
+    // Header Backfill button: label + handler reflect the model's backfill state.
+    _renderBackfillButton() {
+        const btn = document.getElementById('modelsBackfillBtn');
+        if (!btn) return;
+        const m = this.viewer.model;
+        const st = m.backfill_status || 'none';
+        btn.className = 'btn-secondary';
+        btn.onclick = null;
+
+        if (m.status !== 'active' && st !== 'running') {
+            btn.disabled = true;
+            btn.textContent = 'Backfill';
+            btn.title = 'Available once the model finishes initializing';
+            return;
+        }
+        if (st === 'running') {
+            btn.disabled = true;
+            btn.textContent = 'Backfilling…';
+            btn.title = 'Backfill in progress';
+            return;
+        }
+        if (st === 'completed') {
+            btn.disabled = true;
+            btn.textContent = 'Backfilled';
+            btn.title = `Backfilled ${m.backfill_window || 'history'} of history`;
+            return;
+        }
+        btn.disabled = false;
+        if (st === 'failed' || st === 'cancelled') {
+            btn.textContent = 'Resume Backfill';
+            btn.title = `Backfill ${st} at ${m.backfill_done || 0}/${m.backfill_total || 0} days`;
+            btn.onclick = () => this._startBackfill();
+        } else {
+            btn.textContent = 'Backfill';
+            btn.title = 'Seed this model with historical data';
+            btn.onclick = () => this._openBackfillModal();
+        }
     },
 
     // Header banner: running progress only (collapses to nothing otherwise).
@@ -486,59 +499,6 @@ const AnalyticsModels = {
     <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${pct}%"></div></div>
 </div>`;
         document.getElementById('backfillCancelBtn')?.addEventListener('click', () => this._cancelBackfill());
-    },
-
-    // Configuration-tab backfill section: status + start/resume control.
-    _renderConfigBackfill() {
-        const el = document.getElementById('modelsConfigBackfill');
-        if (!el) return;
-        const m = this.viewer.model;
-        const st = m.backfill_status || 'none';
-
-        // Backfill is only available once the model's table+MV exist.
-        if (m.status !== 'active' && st !== 'running') {
-            el.innerHTML = `<div class="config-row config-empty">Model is initializing… backfill becomes available once it is active.</div>`;
-            return;
-        }
-
-        // Running: the live progress bar + cancel live in the header banner (always
-        // visible across tabs), so here we only show a concise status line.
-        if (st === 'running') {
-            el.innerHTML = `<div class="config-row config-empty">Backfilling history… ${m.backfill_done || 0}/${m.backfill_total || 0} days. Progress is shown in the bar above.</div>`;
-            return;
-        }
-
-        // Completed: terminal, no re-seed (re-running would double-count). To
-        // seed again the user edits the model, which resets and drops data.
-        if (st === 'completed') {
-            el.innerHTML = `<div class="backfill-cta"><span class="backfill-note ok">✓ Backfilled ${_esc(m.backfill_window || 'history')} of history</span></div>`;
-            return;
-        }
-
-        // Failed / cancelled: offer Resume (continues from the saved cursor; no
-        // window picker, no double-count of already-seeded days).
-        if (st === 'failed' || st === 'cancelled') {
-            const note = st === 'failed'
-                ? `<span class="backfill-note err" title="${_esc(m.backfill_error || '')}">Backfill failed at ${m.backfill_done || 0}/${m.backfill_total || 0} days</span>`
-                : `<span class="backfill-note">Backfill cancelled at ${m.backfill_done || 0}/${m.backfill_total || 0} days</span>`;
-            el.innerHTML = `
-<div class="backfill-cta">
-    ${note}
-    <span class="backfill-spacer"></span>
-    <button class="btn-primary btn-sm" id="configBackfillResumeBtn">Resume</button>
-</div>`;
-            document.getElementById('configBackfillResumeBtn')?.addEventListener('click', () => this._startBackfill());
-            return;
-        }
-
-        // Fresh: launch the backfill modal (window picker + warning).
-        el.innerHTML = `
-<div class="backfill-cta">
-    <span class="backfill-note">This model captures new logs from now on. Backfill it with historical data.</span>
-    <span class="backfill-spacer"></span>
-    <button class="btn-primary btn-sm" id="configBackfillBtn">Backfill</button>
-</div>`;
-        document.getElementById('configBackfillBtn')?.addEventListener('click', () => this._openBackfillModal());
     },
 
     _openBackfillModal() {
@@ -583,7 +543,7 @@ const AnalyticsModels = {
     async _startBackfill() {
         const m = this.viewer.model;
         const window = this.viewer.backfillWindow || '7d';
-        const btn = document.getElementById('configBackfillBtn') || document.getElementById('configBackfillResumeBtn');
+        const btn = document.getElementById('modelsBackfillBtn');
         if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
         try {
             const data = await this._api('POST', `/models/${m.id}/backfill`, { window });
@@ -645,84 +605,9 @@ const AnalyticsModels = {
         }
     },
 
+    // The data viewer is data-only; configuration lives in the editor (Edit).
     _renderViewerContent() {
-        if (this.viewer.tab === 'config') {
-            this._renderConfigPanel();
-        } else {
-            this._renderDataTable();
-        }
-    },
-
-    _renderConfigPanel() {
-        const wrap = document.getElementById('modelsDataTableWrap');
-        if (!wrap) return;
-        const m = this.viewer.model;
-        const def = m.definition || {};
-        const el = document.getElementById('modelsDataPagination');
-        if (el) el.innerHTML = '';
-
-        const filterHTML = (def.filter && def.filter.length)
-            ? def.filter.map(f => `<div class="config-row"><code>${_esc(f.field)}</code> <span class="config-op">${_esc(f.op)}</span> <code>${_esc(f.value)}</code></div>`).join('')
-            : '<div class="config-row config-empty">No filters — processes all logs</div>';
-
-        const extHTML = (def.extractions && def.extractions.length)
-            ? def.extractions.map((e, i) => `<div class="config-row">
-                <span class="config-num">${i + 1}</span>
-                <code>${_esc(e.from_field)}</code>
-                <span class="config-op">→</span>
-                <code class="config-pattern">${_esc(e.pattern)}</code>
-                <span class="config-op">→</span>
-                <code>${_esc(e.output_field)}</code>
-                ${e.lowercase ? '<span class="config-tag">lowercase</span>' : ''}
-                ${e.min_length > 0 ? `<span class="config-tag">min ${e.min_length}</span>` : ''}
-            </div>`).join('')
-            : '<div class="config-row config-empty">No extractions — uses raw log fields</div>';
-
-        let shapeHTML = '';
-        if (m.model_type === 'rarity') {
-            shapeHTML = `
-<div class="config-row"><span class="config-key">Partition key:</span> <code>${_esc(def.partition_key || '—')}</code></div>
-<div class="config-row"><span class="config-key">Value key:</span> <code>${_esc(def.value_key || '—')}</code></div>
-<div class="config-row"><span class="config-key">Min sample:</span> <code>${def.min_sample || 5}</code></div>`;
-        } else if (m.model_type === 'volume_baseline') {
-            const keys = (def.key_fields || []).join(', ') || '—';
-            shapeHTML = `
-<div class="config-row"><span class="config-key">Entity fields:</span> <code>${_esc(keys)}</code></div>
-<div class="config-row"><span class="config-key">Bucket:</span> <code>${_esc(def.time_bucket || 'day')}</code></div>
-<div class="config-row"><span class="config-key">Min history:</span> <code>${def.min_sample || 7}</code></div>`;
-        } else {
-            const keys = (def.key_fields || []).join(', ') || '—';
-            shapeHTML = `<div class="config-row"><span class="config-key">Key fields:</span> <code>${_esc(keys)}</code></div>`;
-        }
-
-        wrap.innerHTML = `
-<div class="model-config-panel">
-    <div class="config-section">
-        <div class="config-section-title">Filters</div>
-        ${filterHTML}
-    </div>
-    <div class="config-section">
-        <div class="config-section-title">Extractions</div>
-        ${extHTML}
-    </div>
-    <div class="config-section">
-        <div class="config-section-title">Shape</div>
-        ${shapeHTML}
-    </div>
-    <div class="config-section">
-        <div class="config-section-title">Alert</div>
-        <div class="config-row"><span class="config-key">Mode:</span> <code>${_esc(m.alert_mode || 'none')}</code></div>
-    </div>
-    <div class="config-section">
-        <div class="config-section-title">Historical Backfill</div>
-        <div id="modelsConfigBackfill"></div>
-    </div>
-    <div style="margin-top:16px">
-        <button class="btn-primary" id="configEditBtn">Edit Configuration</button>
-    </div>
-</div>`;
-        this._renderConfigBackfill();
-        document.getElementById('configEditBtn')?.addEventListener('click', () => this._editModel(m.id));
+        this._renderDataTable();
     },
 
     _renderDataTable() {
@@ -734,7 +619,7 @@ const AnalyticsModels = {
             const seeding = m.backfill_status === 'running';
             wrap.innerHTML = seeding
                 ? '<div class="models-empty">Backfilling historical data… rows will appear as each day completes.</div>'
-                : '<div class="models-empty">No data yet — backfill historical data from the Configuration tab, or new matching logs will appear here as they are ingested.</div>';
+                : '<div class="models-empty">No data yet — use the Backfill button to seed historical data, or new matching logs will appear here as they are ingested.</div>';
             this._renderPagination();
             return;
         }
@@ -1036,8 +921,8 @@ const AnalyticsModels = {
                 </div>
             </div>
             <div class="config-section">
-                <div class="config-section-title">Alert</div>
-                ${!e.editId ? `<p class="config-hint">The alert starts paused. Enable it anytime from the model's data view.</p>` : ''}
+                <div class="config-section-title">Detection</div>
+                <p class="config-hint">Thresholds that decide when this model flags a result. A paused alert is created with these thresholds${e.editId ? '' : ' on save'} — enable it and configure actions, throttling, and severity from the Alerts page.</p>
                 <div id="modelAlertConfig">${this._editorAlertConfigHTML()}</div>
             </div>
         </div>
@@ -1254,12 +1139,6 @@ const AnalyticsModels = {
         }
         return `
 <div class="alert-config-section">
-    <div class="field-group">
-        <label>Severity</label>
-        <select id="alertSeverity">
-            ${['low', 'medium', 'high', 'critical'].map(s => `<option ${c.severity === s ? 'selected' : ''}>${s}</option>`).join('')}
-        </select>
-    </div>
     ${typeFields}
 </div>`;
     },
@@ -1278,7 +1157,6 @@ const AnalyticsModels = {
 
     _bindAlertConfigEvents() {
         const c = this.editor.alertConfig;
-        document.getElementById('alertSeverity')?.addEventListener('change', ev => { c.severity = ev.target.value; });
         document.getElementById('alertConfidence')?.addEventListener('change', ev => { c.confidence_threshold = parseFloat(ev.target.value); });
         document.getElementById('alertPercent')?.addEventListener('change', ev => { c.percent_threshold = parseFloat(ev.target.value); });
         document.getElementById('alertZThreshold')?.addEventListener('change', ev => { c.z_threshold = parseFloat(ev.target.value); });

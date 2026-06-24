@@ -110,21 +110,12 @@
 .model-backfill-bar { margin: 0 0 12px; }
 .model-backfill-bar:empty { display: none; }
 
-.backfill-cta, .backfill-running-head {
+.backfill-running-head {
     display: flex;
     align-items: center;
     gap: 10px;
 }
-.backfill-cta {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 10px 12px;
-}
 .backfill-spacer { flex: 1; }
-.backfill-note { font-size: 13px; color: var(--text-muted, #888); }
-.backfill-note.ok  { color: #34c759; }
-.backfill-note.err { color: #ff6b6b; }
 
 .backfill-modal-warning {
     display: flex;
@@ -748,42 +739,15 @@ textarea.full-input {
     max-width: 100%;
 }
 
-/* Viewer tabs */
-.model-viewer-tabs {
+/* Data viewer toolbar (search) */
+.model-data-toolbar {
     display: flex;
     align-items: center;
-    gap: 4px;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 0;
+    gap: 8px;
+    margin-bottom: 10px;
     flex-shrink: 0;
 }
-
-.viewer-tab {
-    padding: 6px 14px;
-    font-size: 13px;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--text-muted, #888);
-    cursor: pointer;
-    margin-bottom: -1px;
-    transition: color 0.15s, border-color 0.15s;
-}
-
-.viewer-tab:hover { color: var(--text-primary); }
-
-.viewer-tab.active {
-    color: var(--accent-primary);
-    border-bottom-color: var(--accent-primary);
-}
-
-.viewer-tab-spacer { flex: 1; }
-
-/* Config panel */
-.model-config-panel {
-    padding: 4px 0;
-    max-width: 720px;
-}
+.model-data-toolbar .models-search { margin-left: auto; }
 
 .config-section {
     margin-bottom: 20px;

@@ -361,6 +361,8 @@ func main() {
 	alertEngine.SetModelManager(modelManager)
 	alertEngine.SetNotificationWriter(notifWriter)
 	alertManager := alerts.NewManager(pg, alertEngine, normalizerManager)
+	// Let models own a backing alert (their detection query) via the alerts manager.
+	modelManager.SetAlertManager(alertManager)
 
 	if err := alertEngine.RefreshAlerts(context.Background()); err != nil {
 		log.Printf("Warning: Failed to load initial alerts cache: %v", err)

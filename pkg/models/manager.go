@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -21,6 +22,11 @@ type Manager struct {
 	pg   *storage.PostgresClient
 	ch   *storage.ClickHouseClient
 	chDB string
+
+	// alerts is the adapter used to keep a model's backing alert in sync. It is
+	// wired post-construction (SetAlertManager) to avoid an import cycle. May be
+	// nil in setups without alerting, in which case linked-alert work is skipped.
+	alerts LinkedAlertManager
 
 	// Backfill engine state. The backfill seeds a model from historical logs via
 	// INSERT...SELECT (no DDL), throttled to avoid overwhelming ClickHouse.
@@ -42,6 +48,12 @@ func NewManager(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Manag
 		bfSem:     make(chan struct{}, cfg.concurrency),
 		bfCancels: make(map[string]context.CancelFunc),
 	}
+}
+
+// SetAlertManager wires in the adapter that manages a model's backing alert.
+// Wired post-construction to avoid an import cycle with pkg/alerts.
+func (m *Manager) SetAlertManager(a LinkedAlertManager) {
+	m.alerts = a
 }
 
 // SetBackfillHealth injects the health signal the backfill engine yields to
@@ -76,7 +88,8 @@ func (m *Manager) List(ctx context.Context, fractalID string) ([]*Model, error) 
 		        status, alert_mode, COALESCE(linked_alert_id::text,''), error_message,
 		        COALESCE(created_by,''), created_at, updated_at,
 		        backfill_status, backfill_window, backfill_total, backfill_done,
-		        backfill_started_at, backfill_error
+		        backfill_started_at, backfill_error,
+		        (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id)
 		 FROM analytics_models WHERE fractal_id = $1 ORDER BY name`, fractalID)
 	if err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
@@ -105,7 +118,8 @@ func (m *Manager) Get(ctx context.Context, id string) (*Model, error) {
 		        status, alert_mode, COALESCE(linked_alert_id::text,''), error_message,
 		        COALESCE(created_by,''), created_at, updated_at,
 		        backfill_status, backfill_window, backfill_total, backfill_done,
-		        backfill_started_at, backfill_error
+		        backfill_started_at, backfill_error,
+		        (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id)
 		 FROM analytics_models WHERE id = $1`, id)
 	model, err := scanModelRow(row)
 	if err == sql.ErrNoRows {
@@ -190,6 +204,24 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 		return nil, fmt.Errorf("update ch names: %w", err)
 	}
 
+	// Create the backing alert (paused). It is the single source of truth for
+	// alert state; the operator enables it and configures actions/throttle on the
+	// Alerts page. Best-effort: a failure here must not fail model creation, the
+	// alert can be (re)created on a later update.
+	if m.alerts != nil {
+		mo := &Model{
+			ID: id, FractalID: fractalID, Name: req.Name, Description: req.Description,
+			ModelType: req.ModelType, Definition: req.Definition, CreatedBy: createdBy,
+		}
+		alertID, aerr := m.alerts.CreateLinkedAlert(ctx, m.alertSpec(mo, false))
+		if aerr != nil {
+			log.Printf("model %s: create linked alert: %v", id, aerr)
+		} else if alertID != "" {
+			_, _ = m.pg.Exec(ctx,
+				`UPDATE analytics_models SET linked_alert_id = $1::uuid WHERE id = $2`, alertID, id)
+		}
+	}
+
 	// Create ClickHouse objects in a background goroutine so the HTTP handler
 	// returns immediately. ON CLUSTER DDL takes 30-70s in some deployments;
 	// blocking the request causes duplicate submissions and a stuck UI.
@@ -209,48 +241,138 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 	return m.Get(ctx, id)
 }
 
-// Update updates a model's definition and rebuilds ClickHouse objects (data resets).
+// Update updates a model's definition. ClickHouse objects (and the model's data)
+// are only rebuilt when the detection definition changed -- the filter,
+// extractions, or shape that determine what gets captured. Editing only
+// metadata (name, description) or alert thresholds preserves the existing data
+// and any completed/in-flight backfill. The model type cannot change.
 func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Model, error) {
 	existing, err := m.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	// A rebuild drops and recreates the model's data, so any in-flight backfill
-	// is now stale: cancel it before touching the table it writes to.
-	m.CancelBackfill(id)
+	rebuild := detectionChanged(existing.Definition, req.Definition)
+
+	if rebuild {
+		// A rebuild drops and recreates the model's data, so any in-flight backfill
+		// is now stale: cancel it before touching the table it writes to.
+		m.CancelBackfill(id)
+	}
 
 	defJSON, _ := json.Marshal(req.Definition)
 	_, err = m.pg.Exec(ctx,
-		`UPDATE analytics_models SET name=$1, description=$2, definition=$3, alert_mode=$4, updated_at=NOW()
-		 WHERE id=$5`,
-		req.Name, req.Description, string(defJSON), req.AlertMode, id)
+		`UPDATE analytics_models SET name=$1, description=$2, definition=$3, updated_at=NOW()
+		 WHERE id=$4`,
+		req.Name, req.Description, string(defJSON), id)
 	if err != nil {
 		return nil, fmt.Errorf("update model: %w", err)
 	}
 
-	// Rebuild CH objects (drops old data, forward-only).
-	// Use a background context so slow ON CLUSTER DDL does not race the HTTP deadline.
-	ddlCtx, ddlCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer ddlCancel()
-	_, _ = m.pg.Exec(ctx, `UPDATE analytics_models SET status='rebuilding' WHERE id=$1`, id)
-	if err := m.dropCHObjects(ddlCtx, existing.CHTableName, existing.CHMVName); err != nil {
-		log.Printf("model %s: drop CH objects during update: %v", id, err)
+	if rebuild {
+		// Rebuild CH objects (drops old data, forward-only).
+		// Use a background context so slow ON CLUSTER DDL does not race the HTTP deadline.
+		ddlCtx, ddlCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer ddlCancel()
+		_, _ = m.pg.Exec(ctx, `UPDATE analytics_models SET status='rebuilding' WHERE id=$1`, id)
+		if err := m.dropCHObjects(ddlCtx, existing.CHTableName, existing.CHMVName); err != nil {
+			log.Printf("model %s: drop CH objects during update: %v", id, err)
+		}
+		if err := m.createCHObjects(ddlCtx, id, req.Definition, existing.ModelType, existing.CHTableName, existing.CHMVName); err != nil {
+			_, _ = m.pg.Exec(context.Background(), `UPDATE analytics_models SET status='error', error_message=$1 WHERE id=$2`,
+				err.Error(), id)
+			return nil, fmt.Errorf("recreate clickhouse objects: %w", err)
+		}
+		// Data was dropped; reset backfill state so the data viewer re-offers the
+		// "Seed history" CTA against the new definition.
+		_, _ = m.pg.Exec(context.Background(),
+			`UPDATE analytics_models SET status='active', error_message='',
+			    backfill_status='none', backfill_window='', backfill_total=0, backfill_done=0,
+			    backfill_anchor=NULL, backfill_started_at=NULL, backfill_error=''
+			 WHERE id=$1`, id)
 	}
-	if err := m.createCHObjects(ddlCtx, id, req.Definition, existing.ModelType, existing.CHTableName, existing.CHMVName); err != nil {
-		_, _ = m.pg.Exec(context.Background(), `UPDATE analytics_models SET status='error', error_message=$1 WHERE id=$2`,
-			err.Error(), id)
-		return nil, fmt.Errorf("recreate clickhouse objects: %w", err)
+
+	updated, err := m.Get(ctx, id)
+	if err != nil {
+		return nil, err
 	}
-	// Data was dropped; reset backfill state so the data viewer re-offers the
-	// "Seed history" CTA against the new definition.
-	_, _ = m.pg.Exec(context.Background(),
-		`UPDATE analytics_models SET status='active', error_message='',
-		    backfill_status='none', backfill_window='', backfill_total=0, backfill_done=0,
-		    backfill_anchor=NULL, backfill_started_at=NULL, backfill_error=''
-		 WHERE id=$1`, id)
+
+	// Keep the backing alert's detection query in sync (name, thresholds, filter
+	// may have changed). Operator-managed fields (actions, throttle, enabled,
+	// severity) are preserved by the adapter. Create one lazily if it is missing
+	// (e.g. the alert was deleted on the Alerts page, or predates this feature).
+	m.syncLinkedAlert(ctx, updated)
 
 	return m.Get(ctx, id)
+}
+
+// detectionChanged reports whether the parts of a definition that determine what
+// data a model captures changed. Alert thresholds and min_sample are scored at
+// query time and never alter the stored table, so they are intentionally
+// excluded -- changing only those must not drop the model's data.
+func detectionChanged(a, b ModelDefinition) bool {
+	return !reflect.DeepEqual(a.Filter, b.Filter) ||
+		!reflect.DeepEqual(a.Extractions, b.Extractions) ||
+		a.PartitionKey != b.PartitionKey ||
+		a.ValueKey != b.ValueKey ||
+		!reflect.DeepEqual(a.KeyFields, b.KeyFields) ||
+		a.TimeBucket != b.TimeBucket
+}
+
+// syncLinkedAlert updates the model's backing alert query, creating it if absent.
+// Best-effort: alert sync failures are logged, not surfaced as model errors.
+func (m *Manager) syncLinkedAlert(ctx context.Context, model *Model) {
+	if m.alerts == nil {
+		return
+	}
+	if model.LinkedAlertID == "" {
+		alertID, err := m.alerts.CreateLinkedAlert(ctx, m.alertSpec(model, false))
+		if err != nil {
+			log.Printf("model %s: create linked alert on update: %v", model.ID, err)
+			return
+		}
+		if alertID != "" {
+			_, _ = m.pg.Exec(ctx,
+				`UPDATE analytics_models SET linked_alert_id = $1::uuid WHERE id = $2`, alertID, model.ID)
+		}
+		return
+	}
+	if err := m.alerts.UpdateLinkedAlert(ctx, model.LinkedAlertID, m.alertSpec(model, false)); err != nil {
+		log.Printf("model %s: update linked alert %s: %v", model.ID, model.LinkedAlertID, err)
+	}
+}
+
+// linkedAlertName derives the backing alert's display name. Manual alert names
+// are globally unique (idx_alerts_name_manual) while model names are not, so a
+// short, stable fragment of the model UUID is appended to guarantee uniqueness
+// (across same-named models and across fractals) and to let operators correlate
+// the alert back to its model on the Alerts page.
+func linkedAlertName(modelName, modelID string) string {
+	frag := strings.ReplaceAll(modelID, "-", "")
+	if len(frag) > 8 {
+		frag = frag[:8]
+	}
+	return fmt.Sprintf("%s (model %s)", modelName, frag)
+}
+
+// alertSpec builds the LinkedAlertSpec for a model: the generated detection query
+// plus identity/scoping. Severity defaults to medium; it is only used at creation
+// (updates preserve the alert's current severity).
+func (m *Manager) alertSpec(model *Model, enabled bool) LinkedAlertSpec {
+	sev := "medium"
+	if model.Definition.Alert != nil && model.Definition.Alert.Severity != "" {
+		sev = model.Definition.Alert.Severity
+	}
+	return LinkedAlertSpec{
+		Name:        linkedAlertName(model.Name, model.ID),
+		Description: model.Description,
+		QueryString: GenerateQuery(model.Name, model.Definition, model.ModelType),
+		Severity:    sev,
+		Enabled:     enabled,
+		FractalID:   model.FractalID,
+		PrismID:     model.PrismID,
+		CreatedBy:   model.CreatedBy,
+	}
 }
 
 // Delete removes the model from Postgres immediately, then drops ClickHouse
@@ -263,6 +385,13 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	}
 	// Stop any in-flight backfill before its target table is dropped.
 	m.CancelBackfill(id)
+	// Delete the backing alert so it does not linger as an orphan referencing a
+	// model that no longer exists. Best-effort; a failure must not block deletion.
+	if m.alerts != nil && model.LinkedAlertID != "" {
+		if err := m.alerts.DeleteLinkedAlert(ctx, model.LinkedAlertID); err != nil {
+			log.Printf("model %s: delete linked alert %s: %v", id, model.LinkedAlertID, err)
+		}
+	}
 	// Remove from Postgres first so the UI sees it gone immediately.
 	if _, err = m.pg.Exec(ctx, `DELETE FROM analytics_models WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("delete model: %w", err)
@@ -278,17 +407,34 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// SetAlertMode updates the alert_mode and optionally the linked_alert_id.
-func (m *Manager) SetAlertMode(ctx context.Context, id, alertMode, linkedAlertID string) error {
-	if linkedAlertID != "" {
-		_, err := m.pg.Exec(ctx,
-			`UPDATE analytics_models SET alert_mode=$1, linked_alert_id=$2, updated_at=NOW() WHERE id=$3`,
-			alertMode, linkedAlertID, id)
+// SetAlertEnabled enables or pauses a model's backing alert. The alert's enabled
+// flag is the source of truth (the model's alert_mode is derived from it on read),
+// so this toggles the alert and mirrors the mode into the column as a fallback.
+func (m *Manager) SetAlertEnabled(ctx context.Context, id string, enabled bool) error {
+	model, err := m.Get(ctx, id)
+	if err != nil {
 		return err
 	}
-	_, err := m.pg.Exec(ctx,
-		`UPDATE analytics_models SET alert_mode=$1, updated_at=NOW() WHERE id=$2`,
-		alertMode, id)
+	// Lazily create the backing alert if it is missing (deleted on the Alerts
+	// page, or a model predating linked alerts), then apply the requested state.
+	if model.LinkedAlertID == "" {
+		m.syncLinkedAlert(ctx, model)
+		if model, err = m.Get(ctx, id); err != nil {
+			return err
+		}
+	}
+	if m.alerts == nil || model.LinkedAlertID == "" {
+		return fmt.Errorf("no alert is linked to this model")
+	}
+	if err := m.alerts.SetLinkedAlertEnabled(ctx, model.LinkedAlertID, enabled); err != nil {
+		return err
+	}
+	mode := "paused"
+	if enabled {
+		mode = "active"
+	}
+	_, err = m.pg.Exec(ctx,
+		`UPDATE analytics_models SET alert_mode=$1, updated_at=NOW() WHERE id=$2`, mode, id)
 	return err
 }
 
@@ -861,6 +1007,7 @@ func scanModel(rows interface {
 func scanModelRow(row modelScannable) (*Model, error) {
 	var mo Model
 	var defRaw []byte
+	var alertEnabled sql.NullBool
 	err := row.Scan(
 		&mo.ID, &mo.FractalID, &mo.PrismID,
 		&mo.Name, &mo.Description, &mo.ModelType,
@@ -869,12 +1016,25 @@ func scanModelRow(row modelScannable) (*Model, error) {
 		&mo.CreatedBy, &mo.CreatedAt, &mo.UpdatedAt,
 		&mo.BackfillStatus, &mo.BackfillWindow, &mo.BackfillTotal, &mo.BackfillDone,
 		&mo.BackfillStartedAt, &mo.BackfillError,
+		&alertEnabled,
 	)
 	if err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(defRaw, &mo.Definition); err != nil {
 		mo.Definition = ModelDefinition{}
+	}
+	// Derive the alert mode from the backing alert so it stays accurate no matter
+	// where the alert was toggled (the Alerts page, the model list, the API). The
+	// stored alert_mode column is a fallback when there is no linked alert.
+	if mo.LinkedAlertID != "" {
+		if alertEnabled.Valid && alertEnabled.Bool {
+			mo.AlertMode = "active"
+		} else {
+			mo.AlertMode = "paused"
+		}
+	} else {
+		mo.AlertMode = "none"
 	}
 	return &mo, nil
 }

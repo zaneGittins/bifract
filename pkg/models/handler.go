@@ -254,7 +254,7 @@ func (h *Handler) HandleEnableAlert(w http.ResponseWriter, r *http.Request) {
 	if model == nil {
 		return
 	}
-	if err := h.manager.SetAlertMode(r.Context(), model.ID, "active", ""); err != nil {
+	if err := h.manager.SetAlertEnabled(r.Context(), model.ID, true); err != nil {
 		h.respondError(w, http.StatusInternalServerError, "Failed to enable alert")
 		return
 	}
@@ -270,7 +270,7 @@ func (h *Handler) HandleDisableAlert(w http.ResponseWriter, r *http.Request) {
 	if model == nil {
 		return
 	}
-	if err := h.manager.SetAlertMode(r.Context(), model.ID, "paused", ""); err != nil {
+	if err := h.manager.SetAlertEnabled(r.Context(), model.ID, false); err != nil {
 		h.respondError(w, http.StatusInternalServerError, "Failed to disable alert")
 		return
 	}
