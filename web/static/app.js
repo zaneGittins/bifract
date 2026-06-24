@@ -793,6 +793,8 @@ const App = {
     },
 
     showMainViewTab(tab, subPath = '') {
+        this.currentViewLevel = 'main';
+        this.currentView = tab;
         if (!this._navigatingFromPopState) {
             this._pushHash(this._buildHash(tab, subPath));
         }
@@ -957,6 +959,11 @@ const App = {
             tab = 'search';
             subPath = '';
         }
+        // Keep currentView in sync regardless of whether this was called via
+        // showFractalView() (which sets it) or directly from a tab button click
+        // (which does not). pushSubPath() uses this.currentView to build hashes.
+        this.currentViewLevel = 'fractal';
+        this.currentView = tab;
         if (!this._navigatingFromPopState) {
             this._pushHash(this._buildHash(tab, subPath), this._buildFractalState());
         }
