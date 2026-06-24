@@ -415,6 +415,10 @@ const Timeline = {
         const endDate   = new Date(endMs);
 
         for (const interval of INTERVALS) {
+            // Skip intervals that would produce more ticks than the canvas can show —
+            // avoids generating millions of objects + measureText calls for wide ranges.
+            if (duration / interval > canvasWidth * 2) continue;
+
             const firstTick = this._firstTickAfter(startMs, interval);
             if (firstTick > endMs) continue;
 

@@ -270,7 +270,8 @@ const App = {
                         const resp = await fetch(endpoint, { credentials: 'include' });
                         if (resp.ok) {
                             const data = await resp.json();
-                            name = data.data?.name || data.name;
+                            // Fractal API wraps the object under "index"; prism API returns it directly
+                            name = data.data?.index?.name || data.data?.name || data.name;
                         }
                     } catch (_) {}
                 }
