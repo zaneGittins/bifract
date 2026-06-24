@@ -68,6 +68,7 @@ const InstructionLibraries = {
         if (!container) return;
 
         this._pageEditor = null;
+        if (this._themeObserver) { this._themeObserver.disconnect(); this._themeObserver = null; }
         container.classList.toggle('il-full-height', this.view === 'editPage');
 
         switch (this.view) {
