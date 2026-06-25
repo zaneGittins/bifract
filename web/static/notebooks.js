@@ -177,6 +177,8 @@ const Notebooks = {
     async showNotebookListing() {
         document.getElementById('notebookListing').style.display = 'block';
         document.getElementById('notebookEditor').style.display = 'none';
+        const fab = document.getElementById('notebookTOCFab');
+        if (fab) fab.style.display = 'none';
 
         this.currentNotebook = null;
         this.stopPresenceTracking();
@@ -645,6 +647,8 @@ const Notebooks = {
 
         listingEl.style.display = 'none';
         editorEl.style.display = 'block';
+        const fab = document.getElementById('notebookTOCFab');
+        if (fab) fab.style.display = 'flex';
 
         // Update notebook title immediately
         const titleEl = document.getElementById('notebookTitle');
@@ -1222,10 +1226,27 @@ const Notebooks = {
     scrollToSection(sectionId) {
         const el = document.querySelector(`[data-section-id="${sectionId}"]`);
         if (el) {
-            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            this._smoothScrollToElement(el);
             el.style.outline = '2px solid var(--accent-primary)';
             setTimeout(() => { el.style.outline = ''; }, 2000);
         }
+    },
+
+    _smoothScrollToElement(el, duration = 280) {
+        const rect = el.getBoundingClientRect();
+        const targetY = window.scrollY + rect.top - Math.max(0, (window.innerHeight - rect.height) / 2);
+        const startY = window.scrollY;
+        const diff = targetY - startY;
+        if (Math.abs(diff) < 1) return;
+        const startTime = performance.now();
+        const step = (now) => {
+            const elapsed = now - startTime;
+            const t = Math.min(elapsed / duration, 1);
+            const ease = 1 - Math.pow(1 - t, 3);
+            window.scrollTo(0, startY + diff * ease);
+            if (t < 1) requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
     },
 
     /**
@@ -2716,6 +2737,11 @@ const Notebooks = {
         if ((e.ctrlKey || e.metaKey) && e.key === 's' && this.isEditing) {
             e.preventDefault();
             this.saveCurrentNotebook();
+        }
+        // F8 — toggle section navigator
+        if (e.key === 'F8' && this.isEditing) {
+            e.preventDefault();
+            this.toggleTOC();
         }
     },
 

@@ -10425,7 +10425,7 @@ div.vis-tooltip {
     overflow: hidden;
     transition: width 0.25s ease, opacity 0.2s ease, border-color 0.25s ease;
     position: sticky;
-    top: 70px;
+    top: 12px;
     align-self: flex-start;
 }
 
@@ -10557,6 +10557,33 @@ div.vis-tooltip {
 
 .notebook-toc-toggle-btn {
     padding: 5px 7px;
+}
+
+/* TOC quick-access FAB — fixed tab on right edge, visible when mid-notebook */
+.notebook-toc-fab {
+    position: fixed;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 200;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-right: none;
+    border-radius: 6px 0 0 6px;
+    padding: 10px 5px;
+    cursor: pointer;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+    box-shadow: var(--shadow-sm);
+}
+
+.notebook-toc-fab:hover {
+    background: var(--bg-hover);
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
 }
 
 /* Notebook Header */
@@ -13388,7 +13415,7 @@ div.vis-tooltip {
     align-items: center;
     flex-wrap: wrap;
     gap: 5px;
-    padding: 6px 12px;
+    padding: 6px 0;
     border-bottom: 1px solid var(--border-color);
     background: var(--bg-secondary);
     font-size: 0.7rem;
