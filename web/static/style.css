@@ -10296,6 +10296,11 @@ div.vis-tooltip {
 }
 
 /* Shared Kebab Menu */
+.kebab-th {
+    width: 36px;
+    padding: 0 !important;
+}
+
 .kebab-cell {
     width: 36px;
     padding-right: 10px !important;
@@ -10308,19 +10313,20 @@ div.vis-tooltip {
 }
 
 .kebab-btn {
-    opacity: 0;
+    opacity: 0.3;
     transition: opacity 0.15s;
     background: none;
     border: none;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     cursor: pointer;
-    padding: 2px 6px;
+    padding: 4px 8px;
     border-radius: 4px;
-    font-size: 1.1rem;
+    font-size: 1.2rem;
     line-height: 1;
 }
 
 .kebab-btn:hover {
+    opacity: 1;
     color: var(--text-primary);
     background: var(--bg-tertiary);
 }
@@ -10336,15 +10342,13 @@ div.vis-tooltip {
 
 .kebab-menu {
     display: none;
-    position: absolute;
-    right: 0;
-    top: calc(100% + 4px);
+    position: fixed;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 6px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
-    z-index: 200;
-    min-width: 120px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    z-index: 1000;
+    min-width: 130px;
     padding: 4px 0;
 }
 

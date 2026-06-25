@@ -278,13 +278,25 @@ const KebabMenu = {
                 document.querySelectorAll('.kebab-wrapper.open').forEach(w => w.classList.remove('open'));
             }
         });
+        document.addEventListener('scroll', () => {
+            document.querySelectorAll('.kebab-wrapper.open').forEach(w => w.classList.remove('open'));
+        }, true);
+    },
+    _position(wrapper, btn) {
+        const menu = wrapper.querySelector('.kebab-menu');
+        const rect = btn.getBoundingClientRect();
+        menu.style.top = (rect.bottom + 4) + 'px';
+        menu.style.left = (rect.right - menu.offsetWidth) + 'px';
     },
     toggle(event, btn) {
         event.stopPropagation();
         const wrapper = btn.closest('.kebab-wrapper');
         const isOpen = wrapper.classList.contains('open');
         document.querySelectorAll('.kebab-wrapper.open').forEach(w => w.classList.remove('open'));
-        if (!isOpen) wrapper.classList.add('open');
+        if (!isOpen) {
+            wrapper.classList.add('open');
+            requestAnimationFrame(() => KebabMenu._position(wrapper, btn));
+        }
     }
 };
 window.KebabMenu = KebabMenu;
