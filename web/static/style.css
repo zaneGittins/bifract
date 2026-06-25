@@ -10407,7 +10407,7 @@ div.vis-tooltip {
 .notebook-body {
     display: flex;
     align-items: flex-start;
-    gap: 4px;
+    gap: 2px;
 }
 
 .notebook-content {

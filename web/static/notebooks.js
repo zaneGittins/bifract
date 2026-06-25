@@ -135,12 +135,24 @@ const Notebooks = {
             tocPanel.addEventListener('wheel', (e) => {
                 if (tocPanel.classList.contains('collapsed')) return;
                 e.preventDefault();
+                if (this._tocScrollLock) return;
+                this._tocScrollLock = true;
+                setTimeout(() => { this._tocScrollLock = false; }, 120);
                 const dir = e.deltaY > 0 ? 1 : -1;
                 const sections = [...(this.currentNotebook?.sections || [])]
                     .sort((a, b) => a.order_index - b.order_index);
                 const cur = sections.findIndex(s => s.id === this._currentTOCActiveId);
                 const next = sections[Math.max(0, Math.min(sections.length - 1, cur + dir))];
-                if (next) this.scrollToSection(next.id);
+                if (!next) return;
+                // Instant jump for wheel nav — no animation to fight
+                const el = document.querySelector(`[data-section-id="${next.id}"]`);
+                if (el) {
+                    const targetY = window.scrollY + el.getBoundingClientRect().top - (window.innerHeight - el.offsetHeight) / 2;
+                    window.scrollTo(0, Math.max(0, targetY));
+                    el.style.outline = '2px solid var(--accent-primary)';
+                    setTimeout(() => { el.style.outline = ''; }, 2000);
+                    this._updateTOCActive(next.id);
+                }
             }, { passive: false });
         }
 
