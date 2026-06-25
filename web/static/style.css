@@ -10577,12 +10577,83 @@ div.vis-tooltip {
 .section-controls {
     display: flex;
     gap: 6px;
+    align-items: center;
     opacity: 0;
     transition: opacity 0.15s ease;
 }
 
 .notebook-section:hover .section-controls {
     opacity: 1;
+}
+
+.section-kebab-wrapper {
+    position: relative;
+}
+
+.section-kebab-btn {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    line-height: 1;
+    letter-spacing: 1px;
+}
+
+.section-kebab-btn:hover {
+    background: var(--accent-primary);
+    color: white;
+    border-color: var(--accent-primary);
+}
+
+.section-kebab-menu {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-lg);
+    min-width: 140px;
+    z-index: 1000;
+    overflow: hidden;
+}
+
+.section-kebab-menu.open {
+    display: block;
+}
+
+.section-kebab-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.section-kebab-menu button:hover {
+    background: var(--bg-tertiary);
+}
+
+.section-kebab-menu button.kebab-danger {
+    color: var(--error-color, #e74c3c);
+}
+
+.section-kebab-menu button.kebab-danger:hover {
+    background: rgba(231, 76, 60, 0.1);
+}
+
+.kebab-divider {
+    height: 1px;
+    background: var(--border-color);
+    margin: 2px 0;
 }
 
 .section-control-btn {

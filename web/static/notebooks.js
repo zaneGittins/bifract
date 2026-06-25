@@ -123,6 +123,16 @@ const Notebooks = {
             document.addEventListener('keydown', this.keyboardHandler);
         }
 
+        // Close kebab menus on outside click
+        if (!this.kebabCloseHandler) {
+            this.kebabCloseHandler = (e) => {
+                if (!e.target.closest('.section-kebab-wrapper')) {
+                    document.querySelectorAll('.section-kebab-menu.open').forEach(m => m.classList.remove('open'));
+                }
+            };
+            document.addEventListener('click', this.kebabCloseHandler);
+        }
+
     },
 
     /**
@@ -132,6 +142,10 @@ const Notebooks = {
         if (this.keyboardHandler) {
             document.removeEventListener('keydown', this.keyboardHandler);
             this.keyboardHandler = null;
+        }
+        if (this.kebabCloseHandler) {
+            document.removeEventListener('click', this.kebabCloseHandler);
+            this.kebabCloseHandler = null;
         }
     },
 
@@ -721,8 +735,15 @@ const Notebooks = {
                 ${targetBtn}
                 ${playBtn}
                 <button class="section-move-btn section-move-up" onclick="Notebooks.moveSectionUp('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Up">↑</button>
-                <button class="section-move-btn section-move-down" onclick="Notebooks.moveSectionDown('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 8px;" title="Move Down">↓</button>
-                <button class="section-control-btn" onclick="Notebooks.deleteSection('${section.id}')">Delete</button>
+                <button class="section-move-btn section-move-down" onclick="Notebooks.moveSectionDown('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Down">↓</button>
+                <div class="section-kebab-wrapper">
+                    <button class="section-kebab-btn" onclick="Notebooks.toggleSectionKebab('${section.id}', event)" title="More options">⋯</button>
+                    <div class="section-kebab-menu" id="kebab-menu-${section.id}">
+                        <button onclick="Notebooks.moveSectionToTop('${section.id}')">Move to top</button>
+                        <div class="kebab-divider"></div>
+                        <button class="kebab-danger" onclick="Notebooks.deleteSection('${section.id}')">Delete</button>
+                    </div>
+                </div>
             `;
         } else {
             titleHtml = `
@@ -735,10 +756,17 @@ const Notebooks = {
                 ${section.section_type === 'query' ? `<button class="execute-query-btn" onclick="Notebooks.executeQuerySection('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="Execute Query">▶</button><button onclick="Notebooks.showRowColoringPanel('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.75rem; margin-right: 8px;" title="Conditional Formatting">&#9881;</button>` : ''}
                 ${section.section_type === 'ai_summary' || section.section_type === 'ai_attack_chain' ? `<button class="execute-query-btn" onclick="Notebooks.generateAISummary('${section.id}')" id="ai-summary-btn-${section.id}" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="${section.section_type === 'ai_attack_chain' ? 'Regenerate Attack Chain' : 'Generate AI Summary'}">▶</button>` : ''}
                 <button class="section-move-btn section-move-up" onclick="Notebooks.moveSectionUp('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Up">↑</button>
-                <button class="section-move-btn section-move-down" onclick="Notebooks.moveSectionDown('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 8px;" title="Move Down">↓</button>
+                <button class="section-move-btn section-move-down" onclick="Notebooks.moveSectionDown('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Down">↓</button>
                 ${section.section_type !== 'ai_summary' && section.section_type !== 'ai_attack_chain' ? `<button class="section-control-btn" onclick="Notebooks.toggleEditSection('${section.id}')">Edit</button>` : ''}
-                ${section.section_type !== 'ai_summary' && section.section_type !== 'ai_attack_chain' ? `<button class="section-control-btn" onclick="Notebooks.duplicateSection('${section.id}')">Duplicate</button>` : ''}
-                <button class="section-control-btn" onclick="Notebooks.deleteSection('${section.id}')">Delete</button>
+                <div class="section-kebab-wrapper">
+                    <button class="section-kebab-btn" onclick="Notebooks.toggleSectionKebab('${section.id}', event)" title="More options">⋯</button>
+                    <div class="section-kebab-menu" id="kebab-menu-${section.id}">
+                        <button onclick="Notebooks.moveSectionToTop('${section.id}')">Move to top</button>
+                        ${section.section_type !== 'ai_summary' && section.section_type !== 'ai_attack_chain' ? `<button onclick="Notebooks.duplicateSection('${section.id}')">Duplicate</button>` : ''}
+                        <div class="kebab-divider"></div>
+                        <button class="kebab-danger" onclick="Notebooks.deleteSection('${section.id}')">Delete</button>
+                    </div>
+                </div>
             `;
         }
 
@@ -3898,6 +3926,41 @@ const Notebooks = {
         } catch (error) {
             this.showError(`Error moving section: ${error.message}`);
         }
+    },
+
+    async moveSectionToTop(sectionId) {
+        if (!this.currentNotebook) return;
+        const currentIndex = this.currentNotebook.sections.findIndex(s => s.id === sectionId);
+        if (currentIndex <= 0) return;
+
+        const sections = [...this.currentNotebook.sections];
+        const [section] = sections.splice(currentIndex, 1);
+        sections.unshift(section);
+        sections.forEach((s, i) => { s.order_index = i; });
+
+        try {
+            const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/reorder`, {
+                method: 'POST',
+                headers: { ...this.sseHeaders(), 'Accept': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ section_order: sections.map(s => s.id) })
+            });
+            if (!response.ok) throw new Error(`Failed to reorder: ${response.statusText}`);
+            const result = await response.json();
+            if (!result.success) throw new Error(result.error || 'Failed to reorder');
+            this.currentNotebook.sections = sections;
+            this.renderNotebookSections();
+        } catch (error) {
+            this.showError(`Error moving section: ${error.message}`);
+        }
+    },
+
+    toggleSectionKebab(sectionId, event) {
+        event.stopPropagation();
+        const menu = document.getElementById(`kebab-menu-${sectionId}`);
+        const isOpen = menu.classList.contains('open');
+        document.querySelectorAll('.section-kebab-menu.open').forEach(m => m.classList.remove('open'));
+        if (!isOpen) menu.classList.add('open');
     },
 
     /**
