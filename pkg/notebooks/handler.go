@@ -388,20 +388,21 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 
 	// Convert storage types to response types
 	notebookResponse := Notebook{
-		ID:                   notebook.ID,
-		Name:                 notebook.Name,
-		Description:          notebook.Description,
-		TimeRangeType:        notebook.TimeRangeType,
-		TimeRangeStart:       notebook.TimeRangeStart,
-		TimeRangeEnd:         notebook.TimeRangeEnd,
-		MaxResultsPerSection: notebook.MaxResultsPerSection,
-		FractalID:            notebook.FractalID,
-		CreatedBy:            notebook.CreatedBy,
-		AuthorDisplayName:    notebook.AuthorDisplayName,
-		AuthorGravatarColor:  notebook.AuthorGravatarColor,
+		ID:                    notebook.ID,
+		Name:                  notebook.Name,
+		Description:           notebook.Description,
+		TimeRangeType:         notebook.TimeRangeType,
+		TimeRangeStart:        notebook.TimeRangeStart,
+		TimeRangeEnd:          notebook.TimeRangeEnd,
+		MaxResultsPerSection:  notebook.MaxResultsPerSection,
+		FractalID:             notebook.FractalID,
+		Variables:             notebook.Variables,
+		CreatedBy:             notebook.CreatedBy,
+		AuthorDisplayName:     notebook.AuthorDisplayName,
+		AuthorGravatarColor:   notebook.AuthorGravatarColor,
 		AuthorGravatarInitial: notebook.AuthorGravatarInitial,
-		CreatedAt:            notebook.CreatedAt,
-		UpdatedAt:            notebook.UpdatedAt,
+		CreatedAt:             notebook.CreatedAt,
+		UpdatedAt:             notebook.UpdatedAt,
 	}
 
 	// Convert sections
@@ -418,6 +419,7 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 			LastResults:     section.LastResults,
 			ChartType:       section.ChartType,
 			ChartConfig:     section.ChartConfig,
+			Tags:            section.Tags,
 			CreatedAt:       section.CreatedAt,
 			UpdatedAt:       section.UpdatedAt,
 		})
@@ -586,7 +588,7 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	if req.Content == "" && req.SectionType != "ai_summary" {
+	if req.Content == "" && req.SectionType != "ai_summary" && req.SectionType != "ai_attack_chain" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{
 			Success: false,
@@ -1704,12 +1706,19 @@ func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Re
 	}
 
 	hasAISummary := false
+	hasAIAttackChain := false
 	for i, sec := range imported.Sections {
 		if sec.Type == "ai_summary" {
 			if hasAISummary {
 				continue
 			}
 			hasAISummary = true
+		}
+		if sec.Type == "ai_attack_chain" {
+			if hasAIAttackChain {
+				continue
+			}
+			hasAIAttackChain = true
 		}
 		section := storage.NotebookSection{
 			NotebookID:  created.ID,
@@ -1947,7 +1956,9 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 			for _, s := range sections {
 				sql := fmt.Sprintf(
 					"SELECT timestamp, raw_log, log_id, toString(fields) AS fields FROM %s WHERE fractal_id = '%s' AND log_id = '%s' LIMIT 1",
-					h.ch.ReadTable(), s.FractalID, s.LogID,
+					h.ch.ReadTable(),
+					strings.ReplaceAll(s.FractalID, "'", "\\'"),
+					strings.ReplaceAll(s.LogID, "'", "\\'"),
 				)
 				rows, err := h.ch.Query(context.Background(), sql)
 				if err != nil {
