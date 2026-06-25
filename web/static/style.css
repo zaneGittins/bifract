@@ -10709,6 +10709,7 @@ div.vis-tooltip {
     margin: 2px 0;
 }
 
+
 .section-control-btn {
     padding: 4px 6px;
     border: none;
@@ -10761,8 +10762,6 @@ div.vis-tooltip {
 
 .markdown-preview {
     padding: 12px;
-    overflow-y: auto;
-    max-height: 400px;
 }
 
 .markdown-preview {
@@ -11209,8 +11208,7 @@ div.vis-tooltip {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     background: var(--bg-primary);
-    max-height: 400px;
-    overflow: auto;
+    overflow-x: auto;
 }
 
 /* Add Section */

@@ -139,6 +139,10 @@ const Notebooks = {
      * Remove event listeners
      */
     unbindEvents() {
+        if (this._sectionObserver) {
+            this._sectionObserver.disconnect();
+            this._sectionObserver = null;
+        }
         if (this.keyboardHandler) {
             document.removeEventListener('keydown', this.keyboardHandler);
             this.keyboardHandler = null;
@@ -666,6 +670,11 @@ const Notebooks = {
      * Render notebook sections
      */
     renderNotebookSections() {
+        if (this._sectionObserver) {
+            this._sectionObserver.disconnect();
+            this._sectionObserver = null;
+        }
+
         const container = document.getElementById('notebookSections');
 
         if (!container) {
@@ -692,10 +701,27 @@ const Notebooks = {
         // Sort sections by order_index
         const sections = this.currentNotebook.sections.sort((a, b) => a.order_index - b.order_index);
 
-        container.innerHTML = sections.map(section => this.renderSection(section)).join('');
+        container.innerHTML = sections.map(section => this.renderSection(section, true)).join('');
 
         // Bind section events
         this.bindSectionEvents();
+
+        // Lazy-render section content as sections scroll into view
+        this._sectionObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (!entry.isIntersecting) return;
+                const sectionEl = entry.target;
+                const contentEl = sectionEl.querySelector('.section-content');
+                if (!contentEl || contentEl.dataset.rendered === 'true') return;
+                const sectionId = sectionEl.dataset.sectionId;
+                const section = this.currentNotebook?.sections.find(s => s.id === sectionId);
+                if (!section) return;
+                contentEl.innerHTML = this.renderSectionContent(section);
+                contentEl.dataset.rendered = 'true';
+                this._sectionObserver.unobserve(sectionEl);
+            });
+        }, { rootMargin: '300px' });
+        container.querySelectorAll('.notebook-section').forEach(el => this._sectionObserver.observe(el));
 
         this.activeTagFilters = [];
         this.updateTagFilterBar();
@@ -704,7 +730,7 @@ const Notebooks = {
     /**
      * Render a single section
      */
-    renderSection(section) {
+    renderSection(section, lazy = false) {
         let titleHtml = '';
         let controlsHtml = '';
 
@@ -739,8 +765,8 @@ const Notebooks = {
                 ${searchBtn}
                 ${targetBtn}
                 ${playBtn}
-                <button class="section-move-btn section-move-up" onclick="Notebooks.moveSectionUp('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Up">↑</button>
-                <button class="section-move-btn section-move-down" onclick="Notebooks.moveSectionDown('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Down">↓</button>
+                <button class="section-move-btn section-move-up" onclick="Notebooks.moveSectionUp('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Up">⬆</button>
+                <button class="section-move-btn section-move-down" onclick="Notebooks.moveSectionDown('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Down">⬇</button>
                 <div class="section-kebab-wrapper">
                     <button class="section-kebab-btn" onclick="Notebooks.toggleSectionKebab('${section.id}', event)" title="More options">⋯</button>
                     <div class="section-kebab-menu" id="kebab-menu-${section.id}">
@@ -760,8 +786,8 @@ const Notebooks = {
             controlsHtml = `
                 ${section.section_type === 'query' ? `<button class="execute-query-btn" onclick="Notebooks.executeQuerySection('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="Execute Query">▶</button><button onclick="Notebooks.showRowColoringPanel('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.75rem; margin-right: 8px;" title="Conditional Formatting">&#9881;</button>` : ''}
                 ${section.section_type === 'ai_summary' || section.section_type === 'ai_attack_chain' ? `<button class="execute-query-btn" onclick="Notebooks.generateAISummary('${section.id}')" id="ai-summary-btn-${section.id}" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="${section.section_type === 'ai_attack_chain' ? 'Regenerate Attack Chain' : 'Generate AI Summary'}">▶</button>` : ''}
-                <button class="section-move-btn section-move-up" onclick="Notebooks.moveSectionUp('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Up">↑</button>
-                <button class="section-move-btn section-move-down" onclick="Notebooks.moveSectionDown('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Down">↓</button>
+                <button class="section-move-btn section-move-up" onclick="Notebooks.moveSectionUp('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Up">⬆</button>
+                <button class="section-move-btn section-move-down" onclick="Notebooks.moveSectionDown('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px;" title="Move Down">⬇</button>
                 ${section.section_type !== 'ai_summary' && section.section_type !== 'ai_attack_chain' ? `<button class="section-control-btn" onclick="Notebooks.toggleEditSection('${section.id}')">Edit</button>` : ''}
                 <div class="section-kebab-wrapper">
                     <button class="section-kebab-btn" onclick="Notebooks.toggleSectionKebab('${section.id}', event)" title="More options">⋯</button>
@@ -785,8 +811,8 @@ const Notebooks = {
                         ${controlsHtml}
                     </div>
                 </div>
-                <div class="section-content" id="section-content-${section.id}">
-                    ${this.renderSectionContent(section)}
+                <div class="section-content" id="section-content-${section.id}" data-rendered="${lazy ? 'false' : 'true'}">
+                    ${lazy ? '' : this.renderSectionContent(section)}
                 </div>
             </div>
         `;
@@ -1308,6 +1334,7 @@ const Notebooks = {
             const contentContainer = document.getElementById(`section-content-${sectionId}`);
             if (contentContainer) {
                 contentContainer.innerHTML = this.renderSectionContent(section);
+                contentContainer.dataset.rendered = 'true';
             }
         } catch (error) {
             console.error('[Notebooks] Error executing comment context query:', error);
@@ -1388,6 +1415,7 @@ const Notebooks = {
                 const sectionContentEl = document.getElementById(`section-content-${sectionId}`);
                 if (sectionContentEl) {
                     sectionContentEl.innerHTML = this.renderAttackChainSection(section);
+                    sectionContentEl.dataset.rendered = 'true';
                 }
             } else {
                 if (contentDiv) {
@@ -1877,6 +1905,7 @@ const Notebooks = {
         const contentContainer = document.getElementById(`section-content-${sectionId}`);
         if (contentContainer) {
             contentContainer.innerHTML = this.renderSectionContent(section);
+            contentContainer.dataset.rendered = 'true';
         }
     },
 
@@ -1970,6 +1999,7 @@ const Notebooks = {
             if (sectionContainer && contentContainer) {
                 const newContent = this.renderSectionContent(section);
                 contentContainer.innerHTML = newContent;
+                contentContainer.dataset.rendered = 'true';
             } else {
                 console.error('[Notebooks] Could not find containers to re-render section');
             }
@@ -2150,6 +2180,7 @@ const Notebooks = {
             const contentEl = document.getElementById(`section-content-${sectionId}`);
             if (contentEl) {
                 contentEl.innerHTML = this.renderSectionContent(section);
+                contentEl.dataset.rendered = 'true';
             }
 
             if (window.Toast) Toast.show('Formatting rules saved', 'success');
@@ -2449,6 +2480,7 @@ const Notebooks = {
         const contentEl = document.getElementById(`section-content-${data.id}`);
         if (contentEl) {
             contentEl.innerHTML = this.renderSectionContent(section);
+            contentEl.dataset.rendered = 'true';
         }
     },
 
@@ -2469,6 +2501,7 @@ const Notebooks = {
         const contentEl = document.getElementById(`section-content-${data.id}`);
         if (contentEl) {
             contentEl.innerHTML = this.renderSectionContent(section);
+            contentEl.dataset.rendered = 'true';
         }
     },
 
