@@ -1151,6 +1151,9 @@
                                     </button>
                                     <button id="runAllSectionsBtn" class="btn-secondary" title="Run all query sections">Run All</button>
                                     <button id="notebookSettingsBtn" class="btn-secondary">Settings</button>
+                                    <button id="notebookTOCBtn" class="btn-secondary notebook-toc-toggle-btn" title="Toggle section navigator">
+                                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="1" y1="3" x2="3.5" y2="3" stroke-width="2.5"/><line x1="5.5" y1="3" x2="15" y2="3"/><line x1="1" y1="8" x2="3.5" y2="8" stroke-width="2.5"/><line x1="5.5" y1="8" x2="15" y2="8"/><line x1="1" y1="13" x2="3.5" y2="13" stroke-width="2.5"/><line x1="5.5" y1="13" x2="15" y2="13"/></svg>
+                                    </button>
                                     <button id="saveNotebookBtn" class="btn-primary">Save</button>
                                 </div>
                             </div>
@@ -1161,14 +1164,28 @@
                             <!-- Tag Filter Bar (shown when notebook has tagged sections) -->
                             <div id="notebookTagFilter" class="notebook-tag-filter" style="display:none"></div>
 
-                            <!-- Notebook Sections Container -->
-                            <div id="notebookSections" class="notebook-sections">
-                                <!-- Notebook sections will be dynamically added here -->
-                            </div>
+                            <!-- Notebook Body: sections + TOC panel -->
+                            <div class="notebook-body">
+                                <div class="notebook-content">
+                                    <div id="notebookSections" class="notebook-sections"></div>
+                                    <div class="add-section-container">
+                                        <button id="addSectionBtn" class="btn-add-section">+ Add Section</button>
+                                    </div>
+                                </div>
 
-                            <!-- Add Section Button -->
-                            <div class="add-section-container">
-                                <button id="addSectionBtn" class="btn-add-section">+ Add Section</button>
+                                <!-- Section Navigator TOC -->
+                                <div id="notebookTOC" class="notebook-toc collapsed">
+                                    <div class="notebook-toc-inner">
+                                        <div class="notebook-toc-header">
+                                            <span class="notebook-toc-title">Sections</span>
+                                            <button class="notebook-toc-close" id="notebookTOCClose" title="Close navigator">✕</button>
+                                        </div>
+                                        <div class="notebook-toc-search-wrap">
+                                            <input type="text" id="notebookTOCSearch" class="notebook-toc-search" placeholder="Search sections…" autocomplete="off">
+                                        </div>
+                                        <div id="notebookTOCList" class="notebook-toc-list"></div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </section>

@@ -15,6 +15,9 @@ const Notebooks = {
     searchQuery: '',
     isEditing: false,
     aiEnabled: false,
+    _tocObserver: null,
+    _tocVisibleSections: new Set(),
+    _currentTOCActiveId: null,
 
     /**
      * Initialize the notebooks module
@@ -117,6 +120,15 @@ const Notebooks = {
             sendToChatBtn.addEventListener('click', () => this.sendNotebookToChat());
         }
 
+        const tocBtn = document.getElementById('notebookTOCBtn');
+        if (tocBtn) tocBtn.addEventListener('click', () => this.toggleTOC());
+
+        const tocClose = document.getElementById('notebookTOCClose');
+        if (tocClose) tocClose.addEventListener('click', () => this.toggleTOC());
+
+        const tocSearch = document.getElementById('notebookTOCSearch');
+        if (tocSearch) tocSearch.addEventListener('input', (e) => this.filterTOC(e.target.value));
+
         // Global keyboard shortcuts
         if (!this.keyboardHandler) {
             this.keyboardHandler = (e) => this.handleKeyboardShortcuts(e);
@@ -143,6 +155,12 @@ const Notebooks = {
             this._sectionObserver.disconnect();
             this._sectionObserver = null;
         }
+        if (this._tocObserver) {
+            this._tocObserver.disconnect();
+            this._tocObserver = null;
+        }
+        this._tocVisibleSections.clear();
+        this._currentTOCActiveId = null;
         if (this.keyboardHandler) {
             document.removeEventListener('keydown', this.keyboardHandler);
             this.keyboardHandler = null;
@@ -725,6 +743,8 @@ const Notebooks = {
 
         this.activeTagFilters = [];
         this.updateTagFilterBar();
+        this.renderTOCList();
+        this._setupTOCObserver();
     },
 
     /**
@@ -2417,6 +2437,8 @@ const Notebooks = {
         this.bindSectionEvents();
         this.updateTagFilterBar();
         this.applyTagFilter();
+        this.renderTOCList();
+        if (this._tocObserver) this._tocObserver.observe(newEl);
     },
 
     /**
@@ -2436,8 +2458,10 @@ const Notebooks = {
 
         this.currentNotebook.sections = this.currentNotebook.sections.filter(s => s.id !== sectionId);
         if (el) el.remove();
+        this._tocVisibleSections.delete(sectionId);
 
         this.updateTagFilterBar();
+        this.renderTOCList();
 
         // Show empty state if no sections left
         if (this.currentNotebook.sections.length === 0) {
@@ -2482,6 +2506,8 @@ const Notebooks = {
             contentEl.innerHTML = this.renderSectionContent(section);
             contentEl.dataset.rendered = 'true';
         }
+        // Title may have changed
+        if (data.title !== undefined) this.renderTOCList();
     },
 
     /**
@@ -2527,6 +2553,7 @@ const Notebooks = {
             const el = container.querySelector(`[data-section-id="${section.id}"]`);
             if (el) container.appendChild(el);
         }
+        this.renderTOCList();
     },
 
     /**
@@ -2923,9 +2950,9 @@ const Notebooks = {
                         </div>
                         <div class="form-group">
                             <label for="edit-content-${section.id}">Markdown Content</label>
-                            <textarea id="edit-content-${section.id}" rows="8" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary); font-family: var(--font-mono); font-size: 0.9rem; line-height: 1.5; resize: vertical;">${Utils.escapeHtml(section.content || '')}</textarea>
+                            <textarea id="edit-content-${section.id}" style="width: 100%; min-height: 200px; padding: 10px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary); font-family: var(--font-mono); font-size: 0.9rem; line-height: 1.5; resize: vertical; box-sizing: border-box;">${Utils.escapeHtml(section.content || '')}</textarea>
                         </div>
-                        <div class="markdown-preview" style="margin-top: 10px; padding: 10px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-tertiary); max-height: 200px; overflow-y: auto;">
+                        <div class="markdown-preview" style="margin-top: 10px; padding: 10px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-tertiary);">
                             <div class="preview-content" id="preview-content-${section.id}">
                                 ${this.renderMarkdownToHtml(section.content)}
                             </div>
@@ -2948,8 +2975,8 @@ const Notebooks = {
                         <div class="form-group">
                             <label for="edit-content-${section.id}">BQL Query</label>
                             <div class="query-input-wrapper" style="position: relative; width: 100%;">
-                                <div id="edit-highlight-${section.id}" class="query-highlight" style="position: absolute; top: 0; left: 0; width: 100%; height: 150px; padding: 10px; border: 1px solid transparent; border-radius: 4px; background: transparent; font-family: var(--font-mono); font-size: 0.9rem; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; overflow: hidden; pointer-events: none; z-index: 1;"></div>
-                                <textarea id="edit-content-${section.id}" rows="6" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" style="position: relative; width: 100%; height: 150px; padding: 10px; border: 1px solid var(--border-color); border-radius: 4px; background: transparent; color: transparent; caret-color: var(--text-primary); font-family: var(--font-mono); font-size: 0.9rem; line-height: 1.5; resize: vertical; z-index: 2;">${Utils.escapeHtml(section.content || '')}</textarea>
+                                <div id="edit-highlight-${section.id}" class="query-highlight" style="position: absolute; top: 0; left: 0; width: 100%; min-height: 200px; padding: 10px; border: 1px solid transparent; border-radius: 4px; background: transparent; font-family: var(--font-mono); font-size: 0.9rem; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; overflow: hidden; pointer-events: none; z-index: 1;"></div>
+                                <textarea id="edit-content-${section.id}" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" style="position: relative; width: 100%; min-height: 200px; padding: 10px; border: 1px solid var(--border-color); border-radius: 4px; background: transparent; color: transparent; caret-color: var(--text-primary); font-family: var(--font-mono); font-size: 0.9rem; line-height: 1.5; resize: vertical; z-index: 2; box-sizing: border-box;">${Utils.escapeHtml(section.content || '')}</textarea>
                             </div>
                         </div>
                     </div>
@@ -2984,14 +3011,27 @@ const Notebooks = {
             }
         }
 
-        // Focus the content textarea
+        // Focus the content textarea and auto-expand to fit existing content
         const contentTextarea = document.getElementById(`edit-content-${section.id}`);
         if (contentTextarea) {
+            // Expand to content height (minimum enforced by min-height CSS)
+            contentTextarea.style.height = 'auto';
+            contentTextarea.style.height = contentTextarea.scrollHeight + 'px';
+
+            // Keep highlight overlay in sync for query sections
+            if (section.section_type === 'query') {
+                const highlightDiv = document.getElementById(`edit-highlight-${section.id}`);
+                if (highlightDiv) highlightDiv.style.height = contentTextarea.style.height;
+                contentTextarea.addEventListener('input', () => {
+                    contentTextarea.style.height = 'auto';
+                    contentTextarea.style.height = contentTextarea.scrollHeight + 'px';
+                    if (highlightDiv) highlightDiv.style.height = contentTextarea.style.height;
+                });
+            }
+
             contentTextarea.focus();
-            // Move cursor to end
             contentTextarea.setSelectionRange(contentTextarea.value.length, contentTextarea.value.length);
 
-            // Set up syntax highlighting if this is a query section
             if (section.section_type === 'query') {
                 this.initializeQuerySyntaxHighlighting(section.id);
             }
@@ -4001,6 +4041,133 @@ const Notebooks = {
             this.showError(`Error moving section: ${error.message}`);
         }
     },
+
+    // ── Section Navigator (TOC) ──────────────────────────────────────────────
+
+    toggleTOC() {
+        const panel = document.getElementById('notebookTOC');
+        if (!panel) return;
+        const opening = panel.classList.contains('collapsed');
+        panel.classList.toggle('collapsed', !opening);
+        if (opening) {
+            this.renderTOCList();
+            this._setupTOCObserver();
+            setTimeout(() => {
+                const search = document.getElementById('notebookTOCSearch');
+                if (search) search.focus();
+            }, 260);
+        } else {
+            if (this._tocObserver) {
+                this._tocObserver.disconnect();
+                this._tocObserver = null;
+            }
+            this._tocVisibleSections.clear();
+            this._currentTOCActiveId = null;
+        }
+    },
+
+    renderTOCList(filterQuery) {
+        const list = document.getElementById('notebookTOCList');
+        if (!list) return;
+        const panel = document.getElementById('notebookTOC');
+        if (!panel || panel.classList.contains('collapsed')) return;
+
+        const q = (filterQuery !== undefined ? filterQuery : (document.getElementById('notebookTOCSearch')?.value || '')).toLowerCase();
+        const sections = [...(this.currentNotebook?.sections || [])].sort((a, b) => a.order_index - b.order_index);
+
+        const typeColor = {
+            markdown:       'var(--text-muted)',
+            query:          'var(--accent-primary)',
+            comment_context:'#d4a054',
+            ai_summary:     '#9c6ade',
+            ai_attack_chain:'#e07a8b',
+        };
+        const typeLabel = {
+            markdown:       'Markdown',
+            query:          'Query',
+            comment_context:'Comment',
+            ai_summary:     'AI Summary',
+            ai_attack_chain:'Attack Chain',
+        };
+
+        if (sections.length === 0) {
+            list.innerHTML = '<div class="notebook-toc-empty">No sections</div>';
+            return;
+        }
+
+        let anyVisible = false;
+        list.innerHTML = sections.map(section => {
+            const raw = section.title || typeLabel[section.section_type] || 'Untitled';
+            const title = Utils.escapeHtml(raw);
+            const color = typeColor[section.section_type] || 'var(--text-muted)';
+            const matches = !q || raw.toLowerCase().includes(q) || (typeLabel[section.section_type] || '').toLowerCase().includes(q);
+            if (matches) anyVisible = true;
+            return `<div class="notebook-toc-item${matches ? '' : ' toc-hidden'}" data-section-id="${section.id}" onclick="Notebooks.scrollToSection('${section.id}')" title="${title}">
+                <span class="toc-type-dot" style="background:${color}"></span>
+                <span class="toc-item-label">${title}</span>
+            </div>`;
+        }).join('');
+
+        if (!anyVisible) {
+            list.innerHTML += '<div class="notebook-toc-empty">No matches</div>';
+        }
+
+        // Re-apply active highlight after re-render
+        if (this._currentTOCActiveId) this._updateTOCActive(this._currentTOCActiveId);
+    },
+
+    filterTOC(query) {
+        this.renderTOCList(query);
+    },
+
+    _setupTOCObserver() {
+        const panel = document.getElementById('notebookTOC');
+        if (!panel || panel.classList.contains('collapsed')) return;
+
+        if (this._tocObserver) {
+            this._tocObserver.disconnect();
+            this._tocObserver = null;
+        }
+        this._tocVisibleSections.clear();
+
+        this._tocObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                const id = entry.target.dataset.sectionId;
+                if (entry.isIntersecting) {
+                    this._tocVisibleSections.add(id);
+                } else {
+                    this._tocVisibleSections.delete(id);
+                }
+            });
+
+            // Highlight the topmost section that has any part in the viewport
+            let activeId = null;
+            let minTop = Infinity;
+            for (const id of this._tocVisibleSections) {
+                const el = document.querySelector(`[data-section-id="${id}"]`);
+                if (el) {
+                    const top = el.getBoundingClientRect().top;
+                    if (top < minTop) { minTop = top; activeId = id; }
+                }
+            }
+            this._updateTOCActive(activeId);
+        }, { threshold: 0 });
+
+        document.querySelectorAll('.notebook-section').forEach(el => {
+            this._tocObserver.observe(el);
+        });
+    },
+
+    _updateTOCActive(sectionId) {
+        this._currentTOCActiveId = sectionId;
+        document.querySelectorAll('.notebook-toc-item').forEach(item => {
+            const isActive = item.dataset.sectionId === sectionId;
+            item.classList.toggle('active', isActive);
+            if (isActive) item.scrollIntoView({ block: 'nearest' });
+        });
+    },
+
+    // ────────────────────────────────────────────────────────────────────────
 
     toggleSectionKebab(sectionId, event) {
         event.stopPropagation();
