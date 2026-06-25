@@ -896,7 +896,7 @@ const Notebooks = {
         try {
             const res = await fetch(`/api/v1/notebooks/${notebookId}/sections/${sectionId}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this.sseHeaders(),
                 credentials: 'include',
                 body: JSON.stringify({ tags: newTags }),
             });

@@ -682,15 +682,22 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 		Message: "Section updated successfully",
 	})
 
+	sseData := map[string]interface{}{"id": sectionID}
+	if req.Title != nil {
+		sseData["title"] = req.Title
+	}
+	if req.Content != nil {
+		sseData["content"] = req.Content
+	}
+	if req.ChartConfig != nil {
+		sseData["chart_config"] = req.ChartConfig
+	}
+	if req.Tags != nil {
+		sseData["tags"] = *req.Tags
+	}
 	h.broadcastSSE(r, notebookID, sse.Event{
 		Type: sse.SectionUpdated,
-		Data: map[string]interface{}{
-			"id":           sectionID,
-			"title":        req.Title,
-			"content":      req.Content,
-			"chart_config": req.ChartConfig,
-			"tags":         req.Tags,
-		},
+		Data: sseData,
 	})
 }
 
