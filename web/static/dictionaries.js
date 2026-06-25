@@ -146,7 +146,7 @@ const Dictionaries = {
     <td style="color:var(--text-secondary);font-size:0.88rem;">${this.esc(d.description || '')}</td>
     <td style="color:var(--text-secondary);">${d.columns ? d.columns.length : 0}</td>
     <td style="color:var(--text-secondary);">${(d.row_count || 0).toLocaleString()}</td>
-    <td class="dict-list-actions"><button class="btn-action danger" data-id="${d.id}" data-action="delete">Delete</button></td>
+    <td class="kebab-cell"><div class="kebab-wrapper"><button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button><div class="kebab-menu"><button class="kebab-item danger" data-id="${d.id}" data-action="delete">Delete</button></div></div></td>
 </tr>`).join('');
 
         tbody.querySelectorAll('.dict-link').forEach(a => {

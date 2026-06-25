@@ -128,19 +128,6 @@
     font-size: 0.75rem;
 }
 
-.actions-cell {
-    width: 180px;
-}
-
-.api-key-actions {
-    display: flex;
-    gap: 0.5rem;
-    justify-content: flex-start;
-    flex-wrap: wrap;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.15s;
-}
 
 .api-key-status {
     padding: 0.25rem 0.75rem;
@@ -196,11 +183,6 @@
     font-weight: 500;
 }
 
-.api-key-actions {
-    display: flex;
-    gap: 0.5rem;
-    justify-content: flex-end;
-}
 
 /* Small action buttons for tables */
 .btn-small {

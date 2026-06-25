@@ -10295,38 +10295,87 @@ div.vis-tooltip {
     border-bottom: none;
 }
 
-/* Notebook Actions */
-.notebook-actions {
-    display: flex;
-    gap: 8px;
+/* Shared Kebab Menu */
+.kebab-cell {
+    width: 36px;
+    padding-right: 10px !important;
+    text-align: right;
+}
+
+.kebab-wrapper {
+    position: relative;
+    display: inline-block;
+}
+
+.kebab-btn {
     opacity: 0;
-    pointer-events: none;
     transition: opacity 0.15s;
-}
-
-.notebooks-table tbody tr:hover .notebook-actions {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.btn-action {
-    padding: 4px 8px;
+    background: none;
     border: none;
-    border-radius: 4px;
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    font-size: 0.8rem;
+    color: var(--text-muted);
     cursor: pointer;
-    transition: var(--transition);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 1.1rem;
+    line-height: 1;
 }
 
-.btn-action:hover {
-    background: var(--accent-primary);
-    color: white;
+.kebab-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
 }
 
-.btn-action.danger:hover {
-    background: var(--error);
+.notebooks-table tbody tr:hover .kebab-btn,
+.dashboards-table tbody tr:hover .kebab-btn,
+.api-key-row:hover .kebab-btn,
+.dict-list-row:hover .kebab-btn,
+.il-page-row:hover .kebab-btn,
+.kebab-wrapper.open .kebab-btn {
+    opacity: 1;
+}
+
+.kebab-menu {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    z-index: 200;
+    min-width: 120px;
+    padding: 4px 0;
+}
+
+.kebab-wrapper.open .kebab-menu {
+    display: block;
+}
+
+.kebab-item {
+    display: block;
+    width: 100%;
+    padding: 7px 14px;
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.1s;
+    white-space: nowrap;
+}
+
+.kebab-item:hover {
+    background: var(--bg-hover);
+}
+
+.kebab-item.danger {
+    color: var(--error);
+}
+
+.kebab-item.danger:hover {
+    background: rgba(239, 68, 68, 0.08);
 }
 
 /* Notebook Pagination */
@@ -11573,18 +11622,6 @@ div.vis-tooltip {
     border-bottom: none;
 }
 
-.dashboard-actions {
-    display: flex;
-    gap: 8px;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.15s;
-}
-
-.dashboards-table tbody tr:hover .dashboard-actions {
-    opacity: 1;
-    pointer-events: auto;
-}
 
 .dash-link {
     color: var(--accent-secondary);
@@ -13092,17 +13129,16 @@ div.vis-tooltip {
     font-size: 0.65rem;
     font-weight: 500;
     background: var(--bg-tertiary);
-    border: 1px solid var(--border-color);
-    color: var(--text-secondary);
+    border: 1px solid var(--chip-color, var(--border-color));
+    color: var(--chip-color, var(--text-secondary));
     cursor: pointer;
-    transition: border-color 0.15s, color 0.15s;
+    transition: opacity 0.15s;
     white-space: nowrap;
     user-select: none;
 }
 
 .section-tag-chip:hover {
-    border-color: var(--accent-primary);
-    color: var(--accent-primary);
+    opacity: 0.75;
 }
 
 .section-tag-remove {
@@ -13150,14 +13186,14 @@ div.vis-tooltip {
 }
 
 .section-tag-input {
-    font-size: 0.65rem;
-    padding: 1px 6px;
+    font-size: 0.72rem;
+    padding: 2px 8px;
     border-radius: 3px;
     border: 1px solid var(--accent-primary);
     background: var(--bg-secondary);
     color: var(--text-primary);
     outline: none;
-    width: 90px;
+    width: 140px;
 }
 
 .section-tag-dropdown {
@@ -13215,22 +13251,22 @@ div.vis-tooltip {
     font-size: 0.68rem;
     cursor: pointer;
     background: var(--bg-tertiary);
-    border: 1px solid var(--border-color);
-    color: var(--text-secondary);
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    border: 1px solid var(--chip-color, var(--border-color));
+    color: var(--chip-color, var(--text-secondary));
+    transition: opacity 0.15s, background 0.15s, color 0.15s;
     white-space: nowrap;
     user-select: none;
 }
 
 .filter-chip:hover {
-    border-color: var(--accent-primary);
-    color: var(--accent-primary);
+    opacity: 0.75;
 }
 
 .filter-chip.active {
-    background: var(--accent-primary);
-    border-color: var(--accent-primary);
+    background: var(--chip-color, var(--accent-primary));
+    border-color: var(--chip-color, var(--accent-primary));
     color: #fff;
+    opacity: 1;
 }
 
 .filter-count {

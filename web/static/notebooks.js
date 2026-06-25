@@ -236,10 +236,15 @@ const Notebooks = {
                 </td>
                 <td>${this.formatRelativeTime(notebook.created_at)}</td>
                 <td>${this.formatRelativeTime(notebook.updated_at)}</td>
-                <td class="notebook-actions">
-                    <button class="btn-action" onclick="Notebooks.exportNotebook('${notebook.id}')">Export</button>
-                    <button class="btn-action" onclick="Notebooks.duplicateNotebook('${notebook.id}')">Duplicate</button>
-                    <button class="btn-action danger" onclick="Notebooks.deleteNotebook('${Utils.escapeJs(notebook.id)}', '${Utils.escapeJs(notebook.name)}')">Delete</button>
+                <td class="kebab-cell">
+                    <div class="kebab-wrapper">
+                        <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button>
+                        <div class="kebab-menu">
+                            <button class="kebab-item" onclick="Notebooks.exportNotebook('${notebook.id}')">Export</button>
+                            <button class="kebab-item" onclick="Notebooks.duplicateNotebook('${notebook.id}')">Duplicate</button>
+                            <button class="kebab-item danger" onclick="Notebooks.deleteNotebook('${Utils.escapeJs(notebook.id)}', '${Utils.escapeJs(notebook.name)}')">Delete</button>
+                        </div>
+                    </div>
                 </td>
             </tr>
         `).join('');
@@ -791,11 +796,19 @@ const Notebooks = {
 
     // ── Tag rendering ────────────────────────────────────────────────────────
 
+    tagColorFor(tag) {
+        const palette = ['#9c6ade','#6bcf7f','#5bbce4','#e07a8b','#d4a054','#ca6be0','#5bc4b5','#e07a4f','#7a9de0','#b5c44f'];
+        let h = 0;
+        for (let i = 0; i < tag.length; i++) h = (h * 31 + tag.charCodeAt(i)) >>> 0;
+        return palette[h % palette.length];
+    },
+
     renderTagsArea(section) {
         const tags = (section.tags || []);
-        const chips = tags.map(t =>
-            `<span class="section-tag-chip" data-tag="${Utils.escapeHtml(t)}" onclick="Notebooks.onTagChipClick('${Utils.escapeJs(t)}')">${Utils.escapeHtml(t)}<button class="section-tag-remove" data-section-id="${section.id}" data-tag="${Utils.escapeHtml(t)}" onclick="event.stopPropagation();Notebooks.removeTagFromSection('${section.id}','${Utils.escapeJs(t)}')" title="Remove tag">×</button></span>`
-        ).join('');
+        const chips = tags.map(t => {
+            const color = this.tagColorFor(t);
+            return `<span class="section-tag-chip" data-tag="${Utils.escapeHtml(t)}" style="--chip-color:${color}" onclick="Notebooks.onTagChipClick('${Utils.escapeJs(t)}')">${Utils.escapeHtml(t)}<button class="section-tag-remove" data-section-id="${section.id}" data-tag="${Utils.escapeHtml(t)}" onclick="event.stopPropagation();Notebooks.removeTagFromSection('${section.id}','${Utils.escapeJs(t)}')" title="Remove tag">×</button></span>`;
+        }).join('');
         return `<span class="section-tags-area" id="section-tags-${section.id}">${chips}<button class="section-tag-add" data-section-id="${section.id}" onclick="Notebooks.openTagInput('${section.id}',this)" title="Add tag">+</button></span>`;
     },
 
@@ -965,9 +978,10 @@ const Notebooks = {
         }
 
         const active = this.activeTagFilters || [];
-        const tagChips = Array.from(allTags).sort().map(t =>
-            `<span class="filter-chip${active.includes(t) ? ' active' : ''}" data-tag="${Utils.escapeHtml(t)}" onclick="Notebooks.toggleTagFilter('${Utils.escapeJs(t)}')">${Utils.escapeHtml(t)}</span>`
-        ).join('');
+        const tagChips = Array.from(allTags).sort().map(t => {
+            const color = this.tagColorFor(t);
+            return `<span class="filter-chip${active.includes(t) ? ' active' : ''}" data-tag="${Utils.escapeHtml(t)}" style="--chip-color:${color}" onclick="Notebooks.toggleTagFilter('${Utils.escapeJs(t)}')">${Utils.escapeHtml(t)}</span>`;
+        }).join('');
 
         const matchCount = this._getFilteredSectionCount();
         const total = (this.currentNotebook.sections || []).length;

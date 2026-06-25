@@ -270,3 +270,21 @@ const Utils = {
 
 // Make globally available
 window.Utils = Utils;
+
+const KebabMenu = {
+    init() {
+        document.addEventListener('click', e => {
+            if (e.target.matches('.kebab-item') || !e.target.closest('.kebab-wrapper')) {
+                document.querySelectorAll('.kebab-wrapper.open').forEach(w => w.classList.remove('open'));
+            }
+        });
+    },
+    toggle(event, btn) {
+        event.stopPropagation();
+        const wrapper = btn.closest('.kebab-wrapper');
+        const isOpen = wrapper.classList.contains('open');
+        document.querySelectorAll('.kebab-wrapper.open').forEach(w => w.classList.remove('open'));
+        if (!isOpen) wrapper.classList.add('open');
+    }
+};
+window.KebabMenu = KebabMenu;

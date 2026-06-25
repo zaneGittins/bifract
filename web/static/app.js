@@ -147,6 +147,10 @@ const App = {
             QueryExecutor.restoreTimeRangeFromStorage();
         }
 
+        if (window.KebabMenu) {
+            KebabMenu.init();
+        }
+
         this.setupEventListeners();
         this._initPopState();
         this.checkStatus();

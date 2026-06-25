@@ -249,9 +249,12 @@ const InstructionLibraries = {
                         <div class="il-page-name">${pinIcon} ${this.esc(page.name)}</div>
                         ${desc}
                     </div>
-                    <div class="il-page-actions">
-                        <button class="btn-secondary btn-xs" onclick="InstructionLibraries.togglePin('${page.id}', ${!page.always_include})">${page.always_include ? 'Unpin' : 'Pin'}</button>
-                        <button class="btn-secondary btn-xs btn-danger-text" onclick="InstructionLibraries.deletePage('${page.id}', '${this.esc(page.name)}')">Delete</button>
+                    <div class="kebab-wrapper">
+                        <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button>
+                        <div class="kebab-menu">
+                            <button class="kebab-item" onclick="InstructionLibraries.togglePin('${page.id}', ${!page.always_include})">${page.always_include ? 'Unpin' : 'Pin'}</button>
+                            <button class="kebab-item danger" onclick="InstructionLibraries.deletePage('${page.id}', '${this.esc(page.name)}')">Delete</button>
+                        </div>
                     </div>
                 </div>
             `;

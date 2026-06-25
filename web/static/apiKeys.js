@@ -443,16 +443,17 @@ const APIKeys = {
                             <span class="created-by">${Utils.escapeHtml(key.created_by)}</span>
                         </div>
                     </td>
-                    <td class="actions-cell">
-                        <div class="api-key-actions">
-                            <button class="btn-small toggle-api-key-btn ${key.is_active ? 'btn-warning' : 'btn-success'}"
-                                    data-key-id="${key.id}">
-                                ${key.is_active ? 'Deactivate' : 'Activate'}
-                            </button>
-                            <button class="btn-small delete-api-key-btn btn-danger"
-                                    data-key-id="${key.id}">
-                                Delete
-                            </button>
+                    <td class="kebab-cell">
+                        <div class="kebab-wrapper">
+                            <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button>
+                            <div class="kebab-menu">
+                                <button class="kebab-item toggle-api-key-btn" data-key-id="${key.id}">
+                                    ${key.is_active ? 'Deactivate' : 'Activate'}
+                                </button>
+                                <button class="kebab-item danger delete-api-key-btn" data-key-id="${key.id}">
+                                    Delete
+                                </button>
+                            </div>
                         </div>
                     </td>
                 </tr>

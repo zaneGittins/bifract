@@ -197,9 +197,14 @@ const Dashboards = {
                 <td>${Utils.escapeHtml(d.time_range_type || '')}</td>
                 <td>${this.formatDate(d.created_at)}</td>
                 <td>${this.formatDate(d.updated_at)}</td>
-                <td class="dashboard-actions">
-                    <button class="btn-action" onclick="Dashboards.exportDashboard('${d.id}')">Export</button>
-                    <button class="btn-action danger" onclick="Dashboards.deleteDashboardById('${d.id}')">Delete</button>
+                <td class="kebab-cell">
+                    <div class="kebab-wrapper">
+                        <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button>
+                        <div class="kebab-menu">
+                            <button class="kebab-item" onclick="Dashboards.exportDashboard('${d.id}')">Export</button>
+                            <button class="kebab-item danger" onclick="Dashboards.deleteDashboardById('${d.id}')">Delete</button>
+                        </div>
+                    </div>
                 </td>
             </tr>
         `).join('');

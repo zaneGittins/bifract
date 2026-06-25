@@ -452,16 +452,6 @@
     padding: 4px 8px;
 }
 
-.dict-list-actions {
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.15s;
-}
-
-.dict-list-row:hover .dict-list-actions {
-    opacity: 1;
-    pointer-events: auto;
-}
 
 .dict-new-row .dict-td-num {
     background: rgba(156, 106, 222, 0.08);
