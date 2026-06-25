@@ -88,19 +88,27 @@ const InstructionLibraries = {
         }
     },
 
+    _cmTheme() {
+        return document.documentElement.getAttribute('data-theme') === 'light' ? 'eclipse' : 'dracula';
+    },
+
     _initPageEditor() {
         const el = document.getElementById('ilPageContent');
         if (!el || typeof CodeMirror === 'undefined') return;
         this._pageEditor = CodeMirror.fromTextArea(el, {
             mode: 'markdown',
-            theme: 'dracula',
+            theme: this._cmTheme(),
             lineNumbers: false,
             lineWrapping: true,
             autofocus: true,
             indentWithTabs: false,
             extraKeys: { 'Enter': 'newlineAndIndentContinueMarkdownList' },
         });
-        this._pageEditor.setSize('100%', '100%');
+        this._pageEditor.setSize(null, null);
+        this._themeObserver = new MutationObserver(() => {
+            if (this._pageEditor) this._pageEditor.setOption('theme', this._cmTheme());
+        });
+        this._themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     },
 
     renderListView() {
