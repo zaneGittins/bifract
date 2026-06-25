@@ -129,6 +129,21 @@ const Notebooks = {
         const tocSearch = document.getElementById('notebookTOCSearch');
         if (tocSearch) tocSearch.addEventListener('input', (e) => this.filterTOC(e.target.value));
 
+        // Wheel over TOC → jump between sections; page scroll is unaffected
+        const tocPanel = document.getElementById('notebookTOC');
+        if (tocPanel) {
+            tocPanel.addEventListener('wheel', (e) => {
+                if (tocPanel.classList.contains('collapsed')) return;
+                e.preventDefault();
+                const dir = e.deltaY > 0 ? 1 : -1;
+                const sections = [...(this.currentNotebook?.sections || [])]
+                    .sort((a, b) => a.order_index - b.order_index);
+                const cur = sections.findIndex(s => s.id === this._currentTOCActiveId);
+                const next = sections[Math.max(0, Math.min(sections.length - 1, cur + dir))];
+                if (next) this.scrollToSection(next.id);
+            }, { passive: false });
+        }
+
         // Global keyboard shortcuts
         if (!this.keyboardHandler) {
             this.keyboardHandler = (e) => this.handleKeyboardShortcuts(e);
@@ -1232,7 +1247,7 @@ const Notebooks = {
         }
     },
 
-    _smoothScrollToElement(el, duration = 280) {
+    _smoothScrollToElement(el, duration = 325) {
         const rect = el.getBoundingClientRect();
         const targetY = window.scrollY + rect.top - Math.max(0, (window.innerHeight - rect.height) / 2);
         const startY = window.scrollY;
