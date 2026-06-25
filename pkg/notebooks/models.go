@@ -55,6 +55,9 @@ type NotebookSection struct {
 	ChartType      *string         `json:"chart_type,omitempty"`
 	ChartConfig    json.RawMessage `json:"chart_config,omitempty"`
 
+	// Tags for filtering/grouping sections
+	Tags []string `json:"tags,omitempty"`
+
 	// Timestamps
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -94,10 +97,11 @@ type UpdateNotebookRequest struct {
 
 // CreateSectionRequest represents the request to create a new section
 type CreateSectionRequest struct {
-	SectionType string  `json:"section_type"` // 'markdown', 'query', 'ai_summary', 'comment_context', or 'ai_attack_chain'
-	Title       *string `json:"title,omitempty"`
-	Content     string  `json:"content"`
-	OrderIndex  int     `json:"order_index"`
+	SectionType string    `json:"section_type"` // 'markdown', 'query', 'ai_summary', 'comment_context', or 'ai_attack_chain'
+	Title       *string   `json:"title,omitempty"`
+	Content     string    `json:"content"`
+	OrderIndex  int       `json:"order_index"`
+	Tags        []string  `json:"tags,omitempty"`
 }
 
 // UpdateSectionRequest represents the request to update a section
@@ -105,6 +109,7 @@ type UpdateSectionRequest struct {
 	Title       *string     `json:"title,omitempty"`
 	Content     *string     `json:"content,omitempty"`
 	ChartConfig interface{} `json:"chart_config,omitempty"`
+	Tags        *[]string   `json:"tags,omitempty"`
 }
 
 // ReorderSectionsRequest represents the request to reorder sections

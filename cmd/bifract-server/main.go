@@ -796,6 +796,7 @@ func main() {
 				r.Put("/notebooks/{id}/variables", notebookHandler.HandleUpdateVariables)
 				r.Post("/notebooks/{id}/presence", notebookHandler.HandleUpdatePresence)
 				r.Get("/notebooks/{id}/presence", notebookHandler.HandleGetPresence)
+				r.Get("/notebooks/{id}/tags", notebookHandler.HandleGetNotebookTags)
 				r.Get("/notebooks/{id}/export", notebookHandler.HandleExportNotebook)
 				r.Get("/notebooks/{id}/events", notebookHandler.HandleSSE)
 			})

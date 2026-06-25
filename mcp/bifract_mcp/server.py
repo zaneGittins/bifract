@@ -610,6 +610,7 @@ async def add_notebook_section(
     content: str,
     title: str = "",
     order_index: int = -1,
+    tags: list[str] | None = None,
 ) -> str:
     """
     Add a new section to an existing notebook.
@@ -622,6 +623,7 @@ async def add_notebook_section(
                  For 'query' sections this is the BQL query string.
         title: Optional section title.
         order_index: Position in the notebook (0-based). Use -1 to append at the end.
+        tags: Optional list of tags to categorize this section (e.g. ['timeline', 'lateral-movement']).
 
     Returns:
         The created section details including its ID.
@@ -646,6 +648,8 @@ async def add_notebook_section(
     }
     if title:
         body["title"] = title
+    if tags is not None:
+        body["tags"] = tags
 
     try:
         result = await _post(f"/notebooks/{notebook_id}/sections", body)

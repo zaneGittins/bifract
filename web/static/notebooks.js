@@ -677,6 +677,9 @@ const Notebooks = {
 
         // Bind section events
         this.bindSectionEvents();
+
+        this.activeTagFilters = [];
+        this.updateTagFilterBar();
     },
 
     /**
@@ -699,9 +702,9 @@ const Notebooks = {
 
             titleHtml = `
                 <span class="section-drag-handle" draggable="true" style="cursor: grab; user-select: none; padding: 4px;">⋮⋮</span>
-                <span class="gravatar-sm" style="background-color: ${gravatarColor}">${gravatarInitial}</span>
-                <span class="section-type-text" style="font-weight: 500;">${displayName}</span>
+                <span class="section-type-text" style="font-weight: 400; color: var(--text-muted); font-size: 0.8rem;">${displayName}</span>
                 ${commentedAt ? `<span style="color: var(--text-muted); font-size: 0.75rem; margin-left: 4px;">${commentedAt}</span>` : ''}
+                ${this.renderTagsArea(section)}
             `;
 
             // Search icon (magnifying glass) to open query in search view
@@ -725,6 +728,7 @@ const Notebooks = {
             titleHtml = `
                 <span class="section-drag-handle" draggable="true" style="cursor: grab; user-select: none; padding: 4px;">⋮⋮</span>
                 <span class="section-type-text">${section.title ? Utils.escapeHtml(section.title) : 'Untitled Section'}</span>
+                ${this.renderTagsArea(section)}
             `;
 
             controlsHtml = `
@@ -755,6 +759,235 @@ const Notebooks = {
         `;
 
         return sectionHtml;
+    },
+
+    // ── Tag rendering ────────────────────────────────────────────────────────
+
+    renderTagsArea(section) {
+        const tags = (section.tags || []);
+        const chips = tags.map(t =>
+            `<span class="section-tag-chip" data-tag="${Utils.escapeHtml(t)}" onclick="Notebooks.onTagChipClick('${Utils.escapeJs(t)}')">${Utils.escapeHtml(t)}<button class="section-tag-remove" data-section-id="${section.id}" data-tag="${Utils.escapeHtml(t)}" onclick="event.stopPropagation();Notebooks.removeTagFromSection('${section.id}','${Utils.escapeJs(t)}')" title="Remove tag">×</button></span>`
+        ).join('');
+        return `<span class="section-tags-area" id="section-tags-${section.id}">${chips}<button class="section-tag-add" data-section-id="${section.id}" onclick="Notebooks.openTagInput('${section.id}',this)" title="Add tag">+</button></span>`;
+    },
+
+    onTagChipClick(tag) {
+        this.toggleTagFilter(tag);
+    },
+
+    openTagInput(sectionId, btn) {
+        if (document.getElementById(`tag-input-${sectionId}`)) return;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.id = `tag-input-${sectionId}`;
+        input.className = 'section-tag-input';
+        input.placeholder = 'tag name…';
+        input.setAttribute('autocomplete', 'off');
+
+        const dropdown = document.createElement('div');
+        dropdown.className = 'section-tag-dropdown';
+        dropdown.id = `tag-dropdown-${sectionId}`;
+
+        const wrapper = document.createElement('span');
+        wrapper.className = 'section-tag-input-wrapper';
+        wrapper.appendChild(input);
+        wrapper.appendChild(dropdown);
+
+        btn.replaceWith(wrapper);
+        input.focus();
+
+        const notebookId = this.currentNotebook ? this.currentNotebook.id : null;
+        if (notebookId && !this._tagCache) {
+            fetch(`/api/v1/notebooks/${notebookId}/tags`, { credentials: 'include' })
+                .then(r => r.json())
+                .then(d => { this._tagCache = d.tags || []; this._renderTagDropdown(sectionId, input.value); })
+                .catch(() => {});
+        } else {
+            this._renderTagDropdown(sectionId, input.value);
+        }
+
+        input.addEventListener('input', () => this._renderTagDropdown(sectionId, input.value));
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const highlighted = dropdown.querySelector('.tag-option.highlighted');
+                const val = highlighted ? highlighted.dataset.tag : input.value.trim().toLowerCase().replace(/[^a-z0-9_\-\.]/g, '-');
+                if (val) this._commitTagInput(sectionId, val, wrapper);
+            } else if (e.key === 'Escape') {
+                this._cancelTagInput(sectionId, wrapper);
+            } else if (e.key === 'ArrowDown') {
+                this._moveDropdownHighlight(sectionId, 1);
+                e.preventDefault();
+            } else if (e.key === 'ArrowUp') {
+                this._moveDropdownHighlight(sectionId, -1);
+                e.preventDefault();
+            }
+        });
+
+        input.addEventListener('blur', (e) => {
+            setTimeout(() => {
+                if (!document.getElementById(`tag-input-${sectionId}`)) return;
+                const val = input.value.trim().toLowerCase().replace(/[^a-z0-9_\-\.]/g, '-');
+                if (val) this._commitTagInput(sectionId, val, wrapper);
+                else this._cancelTagInput(sectionId, wrapper);
+            }, 150);
+        });
+    },
+
+    _renderTagDropdown(sectionId, query) {
+        const dropdown = document.getElementById(`tag-dropdown-${sectionId}`);
+        if (!dropdown) return;
+        const allTags = this._tagCache || [];
+        const section = this.currentNotebook && this.currentNotebook.sections.find(s => s.id === sectionId);
+        const existing = new Set(section ? (section.tags || []) : []);
+        const q = (query || '').toLowerCase();
+        const matches = allTags.filter(t => !existing.has(t) && (q === '' || t.includes(q)));
+        if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+        dropdown.innerHTML = matches.map(t => `<div class="tag-option" data-tag="${Utils.escapeHtml(t)}" onmousedown="event.preventDefault();Notebooks._commitTagInput('${sectionId}','${Utils.escapeJs(t)}',document.getElementById('tag-input-${sectionId}').closest('.section-tag-input-wrapper'))">${Utils.escapeHtml(t)}</div>`).join('');
+        dropdown.style.display = 'block';
+    },
+
+    _moveDropdownHighlight(sectionId, dir) {
+        const dropdown = document.getElementById(`tag-dropdown-${sectionId}`);
+        if (!dropdown) return;
+        const opts = Array.from(dropdown.querySelectorAll('.tag-option'));
+        if (!opts.length) return;
+        const cur = opts.findIndex(o => o.classList.contains('highlighted'));
+        const next = Math.max(0, Math.min(opts.length - 1, cur + dir));
+        opts.forEach(o => o.classList.remove('highlighted'));
+        opts[next].classList.add('highlighted');
+    },
+
+    async _commitTagInput(sectionId, tag, wrapper) {
+        if (!tag) return;
+        this._cancelTagInput(sectionId, wrapper);
+        await this.addTagToSection(sectionId, tag);
+    },
+
+    _cancelTagInput(sectionId, wrapper) {
+        const tagsArea = document.getElementById(`section-tags-${sectionId}`);
+        if (tagsArea && wrapper && wrapper.parentNode === tagsArea) {
+            const section = this.currentNotebook && this.currentNotebook.sections.find(s => s.id === sectionId);
+            if (section) this._refreshTagsAreaDOM(sectionId, section);
+        }
+    },
+
+    async addTagToSection(sectionId, tag) {
+        tag = tag.trim().toLowerCase().replace(/[^a-z0-9_\-\.]/g, '-');
+        if (!tag) return;
+        const section = this.currentNotebook && this.currentNotebook.sections.find(s => s.id === sectionId);
+        if (!section) return;
+        const existing = section.tags || [];
+        if (existing.includes(tag)) return;
+        const newTags = [...existing, tag];
+        await this._saveTagsForSection(sectionId, newTags, section);
+    },
+
+    async removeTagFromSection(sectionId, tag) {
+        const section = this.currentNotebook && this.currentNotebook.sections.find(s => s.id === sectionId);
+        if (!section) return;
+        const newTags = (section.tags || []).filter(t => t !== tag);
+        await this._saveTagsForSection(sectionId, newTags, section);
+    },
+
+    async _saveTagsForSection(sectionId, newTags, section) {
+        const notebookId = this.currentNotebook.id;
+        try {
+            const res = await fetch(`/api/v1/notebooks/${notebookId}/sections/${sectionId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ tags: newTags }),
+            });
+            if (!res.ok) throw new Error('Failed to save tags');
+            section.tags = newTags;
+            this._tagCache = null; // invalidate cache
+            this._refreshTagsAreaDOM(sectionId, section);
+            this.updateTagFilterBar();
+            this.applyTagFilter();
+        } catch (err) {
+            console.error('[Notebooks] Failed to save tags:', err);
+            if (window.Toast) Toast.show('Failed to save tag', 'error');
+        }
+    },
+
+    _refreshTagsAreaDOM(sectionId, section) {
+        const area = document.getElementById(`section-tags-${sectionId}`);
+        if (!area) return;
+        const tmp = document.createElement('div');
+        tmp.innerHTML = this.renderTagsArea(section);
+        const newArea = tmp.firstElementChild;
+        area.parentNode.replaceChild(newArea, area);
+    },
+
+    // ── Tag filter bar ───────────────────────────────────────────────────────
+
+    updateTagFilterBar() {
+        if (!this.currentNotebook) return;
+        const allTags = new Set();
+        (this.currentNotebook.sections || []).forEach(s => (s.tags || []).forEach(t => allTags.add(t)));
+        const bar = document.getElementById('notebookTagFilter');
+        if (!bar) return;
+
+        if (allTags.size === 0) {
+            bar.style.display = 'none';
+            this.activeTagFilters = [];
+            return;
+        }
+
+        const active = this.activeTagFilters || [];
+        const tagChips = Array.from(allTags).sort().map(t =>
+            `<span class="filter-chip${active.includes(t) ? ' active' : ''}" data-tag="${Utils.escapeHtml(t)}" onclick="Notebooks.toggleTagFilter('${Utils.escapeJs(t)}')">${Utils.escapeHtml(t)}</span>`
+        ).join('');
+
+        const matchCount = this._getFilteredSectionCount();
+        const total = (this.currentNotebook.sections || []).length;
+        const countHtml = active.length > 0 ? `<span class="filter-count">${matchCount} of ${total} sections</span>` : '';
+        const clearHtml = active.length > 0 ? `<button class="filter-clear-btn" onclick="Notebooks.clearTagFilters()">Clear</button>` : '';
+
+        bar.innerHTML = `<span class="filter-label">Filter:</span>${tagChips}${countHtml}${clearHtml}`;
+        bar.style.display = 'flex';
+    },
+
+    toggleTagFilter(tag) {
+        if (!this.activeTagFilters) this.activeTagFilters = [];
+        const idx = this.activeTagFilters.indexOf(tag);
+        if (idx >= 0) this.activeTagFilters.splice(idx, 1);
+        else this.activeTagFilters.push(tag);
+        this.updateTagFilterBar();
+        this.applyTagFilter();
+    },
+
+    clearTagFilters() {
+        this.activeTagFilters = [];
+        this.updateTagFilterBar();
+        this.applyTagFilter();
+    },
+
+    _getFilteredSectionCount() {
+        if (!this.currentNotebook) return 0;
+        const active = this.activeTagFilters || [];
+        if (active.length === 0) return (this.currentNotebook.sections || []).length;
+        return (this.currentNotebook.sections || []).filter(s =>
+            active.every(t => (s.tags || []).includes(t))
+        ).length;
+    },
+
+    applyTagFilter() {
+        const active = this.activeTagFilters || [];
+        const container = document.getElementById('notebookSections');
+        if (!container) return;
+        container.querySelectorAll('.notebook-section').forEach(el => {
+            const sectionId = el.dataset.sectionId;
+            const section = this.currentNotebook && this.currentNotebook.sections.find(s => s.id === sectionId);
+            if (!section) return;
+            if (active.length === 0 || active.every(t => (section.tags || []).includes(t))) {
+                el.style.display = '';
+            } else {
+                el.style.display = 'none';
+            }
+        });
     },
 
     /**
@@ -2109,6 +2342,8 @@ const Notebooks = {
         setTimeout(() => { newEl.style.backgroundColor = ''; }, 1500);
 
         this.bindSectionEvents();
+        this.updateTagFilterBar();
+        this.applyTagFilter();
     },
 
     /**
@@ -2128,6 +2363,8 @@ const Notebooks = {
 
         this.currentNotebook.sections = this.currentNotebook.sections.filter(s => s.id !== sectionId);
         if (el) el.remove();
+
+        this.updateTagFilterBar();
 
         // Show empty state if no sections left
         if (this.currentNotebook.sections.length === 0) {
@@ -2159,6 +2396,12 @@ const Notebooks = {
         if (data.title !== undefined) section.title = data.title;
         if (data.content !== undefined) section.content = data.content;
         if (data.chart_config !== undefined) section.chart_config = data.chart_config;
+        if (data.tags !== undefined) {
+            section.tags = data.tags;
+            this._refreshTagsAreaDOM(data.id, section);
+            this.updateTagFilterBar();
+            this.applyTagFilter();
+        }
 
         // Re-render just this section's content
         const contentEl = document.getElementById(`section-content-${data.id}`);
@@ -2399,7 +2642,9 @@ const Notebooks = {
             this.aiEnabled = data.ai_enabled || false;
         } catch { this.aiEnabled = false; }
         const hasAISummary = this.currentNotebook?.sections?.some(s => s.section_type === 'ai_summary');
+        const hasAIAttackChain = this.currentNotebook?.sections?.some(s => s.section_type === 'ai_attack_chain');
         const showAISummary = this.aiEnabled && !hasAISummary;
+        const showAIAttackChain = this.aiEnabled && !hasAIAttackChain;
 
         // Create the menu HTML
         const menuHtml = `
@@ -2412,6 +2657,9 @@ const Notebooks = {
                 </button>
                 ${showAISummary ? `<button class="add-section-option" onclick="Notebooks.addSection('ai_summary')" style="display: block; width: 100%; padding: 12px 16px; border: none; background: none; color: var(--text-primary); font-size: 0.9rem; text-align: left; cursor: pointer; transition: var(--transition);" onmouseover="this.style.backgroundColor='var(--bg-hover)'; this.style.color='var(--accent-primary)'" onmouseout="this.style.backgroundColor='none'; this.style.color='var(--text-primary)'">
                     Add AI Summary
+                </button>` : ''}
+                ${showAIAttackChain ? `<button class="add-section-option" onclick="Notebooks.addSection('ai_attack_chain')" style="display: block; width: 100%; padding: 12px 16px; border: none; background: none; color: var(--text-primary); font-size: 0.9rem; text-align: left; cursor: pointer; transition: var(--transition);" onmouseover="this.style.backgroundColor='var(--bg-hover)'; this.style.color='var(--accent-primary)'" onmouseout="this.style.backgroundColor='none'; this.style.color='var(--text-primary)'">
+                    Add AI Attack Chain Summary
                 </button>` : ''}
                 <button class="add-section-option" onclick="Notebooks.closeAddSectionMenu()" style="display: block; width: 100%; padding: 12px 16px; border: none; border-top: 1px solid var(--border-color); background: none; color: var(--text-muted); font-size: 0.9rem; text-align: left; cursor: pointer; transition: var(--transition); margin-top: 4px;" onmouseover="this.style.backgroundColor='var(--bg-hover)'; this.style.color='var(--text-primary)'" onmouseout="this.style.backgroundColor='none'; this.style.color='var(--text-muted)'">
                     Cancel
@@ -2478,6 +2726,9 @@ const Notebooks = {
                 defaultContent = '// Add your BQL query here\n// Example: level=error | multi(count()) | groupby(service)';
             } else if (sectionType === 'ai_summary') {
                 title = 'AI Summary';
+                defaultContent = '';
+            } else if (sectionType === 'ai_attack_chain') {
+                title = 'AI Attack Chain Summary';
                 defaultContent = '';
             }
 

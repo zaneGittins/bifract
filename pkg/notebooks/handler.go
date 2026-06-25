@@ -556,16 +556,16 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 	}
 
 	// Validate input
-	if req.SectionType != "markdown" && req.SectionType != "query" && req.SectionType != "ai_summary" {
+	if req.SectionType != "markdown" && req.SectionType != "query" && req.SectionType != "ai_summary" && req.SectionType != "ai_attack_chain" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{
 			Success: false,
-			Error:   "section_type must be 'markdown', 'query', or 'ai_summary'",
+			Error:   "section_type must be 'markdown', 'query', 'ai_summary', or 'ai_attack_chain'",
 		})
 		return
 	}
 
-	if req.SectionType == "ai_summary" {
+	if req.SectionType == "ai_summary" || req.SectionType == "ai_attack_chain" {
 		if !h.aiEnabled() {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(Response{Success: false, Error: "AI is not configured"})
@@ -574,9 +574,9 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 		sections, err := h.pg.GetNotebookSections(r.Context(), notebookID)
 		if err == nil {
 			for _, s := range sections {
-				if s.SectionType == "ai_summary" {
+				if s.SectionType == req.SectionType {
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(Response{Success: false, Error: "Only one AI Summary section is allowed per notebook"})
+					json.NewEncoder(w).Encode(Response{Success: false, Error: "Only one section of this AI type is allowed per notebook"})
 					return
 				}
 			}
@@ -602,6 +602,7 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 		Title:       req.Title,
 		Content:     req.Content,
 		OrderIndex:  req.OrderIndex,
+		Tags:        req.Tags,
 	}
 
 	newSection, err := h.pg.InsertNotebookSection(r.Context(), section)
@@ -663,7 +664,7 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 			chartConfigJSON = &s
 		}
 	}
-	err = h.pg.UpdateNotebookSection(r.Context(), sectionID, req.Title, req.Content, renderedContent, chartConfigJSON)
+	err = h.pg.UpdateNotebookSection(r.Context(), sectionID, req.Title, req.Content, renderedContent, chartConfigJSON, req.Tags)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{
@@ -682,10 +683,11 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 	h.broadcastSSE(r, notebookID, sse.Event{
 		Type: sse.SectionUpdated,
 		Data: map[string]interface{}{
-			"id":         sectionID,
-			"title":      req.Title,
-			"content":    req.Content,
+			"id":           sectionID,
+			"title":        req.Title,
+			"content":      req.Content,
 			"chart_config": req.ChartConfig,
+			"tags":         req.Tags,
 		},
 	})
 }
@@ -1233,7 +1235,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 			return
 		}
 
-		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, section.Title, &result, nil, nil)
+		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, section.Title, &result, nil, nil, nil)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to save attack chain summary"})
@@ -1255,7 +1257,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 			return
 		}
 
-		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, section.Title, &summary, nil, nil)
+		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, section.Title, &summary, nil, nil, nil)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to save summary"})
@@ -1522,7 +1524,36 @@ type sectionYAML struct {
 	Content     string      `yaml:"content"`
 	ChartType   string      `yaml:"chart_type,omitempty"`
 	ChartConfig interface{} `yaml:"chart_config,omitempty"`
+	Tags        []string    `yaml:"tags,omitempty"`
 	OrderIndex  int         `yaml:"order_index"`
+}
+
+// HandleGetNotebookTags returns all distinct tags used across sections of a notebook.
+func (h *NotebookHandler) HandleGetNotebookTags(w http.ResponseWriter, r *http.Request) {
+	notebookID := chi.URLParam(r, "id")
+
+	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		return
+	}
+	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		return
+	}
+
+	tags, err := h.pg.GetNotebookSectionTags(r.Context(), notebookID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to retrieve tags"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"tags": tags})
 }
 
 // HandleExportNotebook exports a notebook as YAML
@@ -1579,6 +1610,9 @@ func (h *NotebookHandler) HandleExportNotebook(w http.ResponseWriter, r *http.Re
 			if err := json.Unmarshal(s.ChartConfig, &cfg); err == nil {
 				sec.ChartConfig = cfg
 			}
+		}
+		if len(s.Tags) > 0 {
+			sec.Tags = s.Tags
 		}
 		export.Sections = append(export.Sections, sec)
 	}
@@ -1695,6 +1729,9 @@ func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Re
 			if cfgJSON, err := json.Marshal(sec.ChartConfig); err == nil {
 				section.ChartConfig = cfgJSON
 			}
+		}
+		if len(sec.Tags) > 0 {
+			section.Tags = sec.Tags
 		}
 		if _, err := h.pg.InsertNotebookSection(r.Context(), section); err != nil {
 			fmt.Printf("[Notebooks] Failed to import section %d: %v\n", i, err)
@@ -1982,7 +2019,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 					return
 				}
 				aiTitle := "AI Attack Chain Summary"
-				if err := h.pg.UpdateNotebookSection(context.Background(), aiSectionID, &aiTitle, &result, nil, nil); err != nil {
+				if err := h.pg.UpdateNotebookSection(context.Background(), aiSectionID, &aiTitle, &result, nil, nil, nil); err != nil {
 					log.Printf("[Notebooks] Failed to save AI attack chain: %v", err)
 				}
 			} else {
@@ -1992,7 +2029,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 					return
 				}
 				aiTitle := "AI Summary"
-				if err := h.pg.UpdateNotebookSection(context.Background(), aiSectionID, &aiTitle, &summary, nil, nil); err != nil {
+				if err := h.pg.UpdateNotebookSection(context.Background(), aiSectionID, &aiTitle, &summary, nil, nil, nil); err != nil {
 					log.Printf("[Notebooks] Failed to save AI summary: %v", err)
 				}
 			}

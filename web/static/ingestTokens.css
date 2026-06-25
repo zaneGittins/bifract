@@ -203,6 +203,19 @@
     gap: 0.5rem;
 }
 
+.token-row-btns {
+    display: flex;
+    gap: 0.25rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+}
+
+.ingest-token-row:hover .token-row-btns {
+    opacity: 1;
+    pointer-events: auto;
+}
+
 /* Pagination - matches notebooks-pagination */
 .ingest-pagination {
     display: flex;

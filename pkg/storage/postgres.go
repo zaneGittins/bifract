@@ -1473,6 +1473,7 @@ type NotebookSection struct {
 	LastResults     json.RawMessage `json:"last_results,omitempty"`
 	ChartType       *string         `json:"chart_type,omitempty"`
 	ChartConfig     json.RawMessage `json:"chart_config,omitempty"`
+	Tags            []string        `json:"tags,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 }
@@ -1828,12 +1829,16 @@ func (c *PostgresClient) DeleteNotebook(ctx context.Context, id string) error {
 // InsertNotebookSection creates a new notebook section
 func (c *PostgresClient) InsertNotebookSection(ctx context.Context, section NotebookSection) (*NotebookSection, error) {
 	var newSection NotebookSection
+	tags := section.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 	err := c.db.QueryRowContext(ctx, `
-		INSERT INTO notebook_sections (notebook_id, section_type, title, content, rendered_content, order_index, chart_type, chart_config)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO notebook_sections (notebook_id, section_type, title, content, rendered_content, order_index, chart_type, chart_config, tags)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, notebook_id, section_type, title, content, rendered_content, order_index,
-		          last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), created_at, updated_at
-	`, section.NotebookID, section.SectionType, section.Title, section.Content, section.RenderedContent, section.OrderIndex, section.ChartType, section.ChartConfig).Scan(
+		          last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), created_at, updated_at
+	`, section.NotebookID, section.SectionType, section.Title, section.Content, section.RenderedContent, section.OrderIndex, section.ChartType, section.ChartConfig, pq.Array(tags)).Scan(
 		&newSection.ID,
 		&newSection.NotebookID,
 		&newSection.SectionType,
@@ -1845,6 +1850,7 @@ func (c *PostgresClient) InsertNotebookSection(ctx context.Context, section Note
 		&newSection.LastResults,
 		&newSection.ChartType,
 		&newSection.ChartConfig,
+		pq.Array(&newSection.Tags),
 		&newSection.CreatedAt,
 		&newSection.UpdatedAt,
 	)
@@ -1860,7 +1866,7 @@ func (c *PostgresClient) InsertNotebookSection(ctx context.Context, section Note
 func (c *PostgresClient) GetNotebookSections(ctx context.Context, notebookID string) ([]NotebookSection, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, notebook_id, section_type, title, content, rendered_content, order_index,
-		       last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), created_at, updated_at
+		       last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), created_at, updated_at
 		FROM notebook_sections
 		WHERE notebook_id = $1
 		ORDER BY order_index ASC
@@ -1886,6 +1892,7 @@ func (c *PostgresClient) GetNotebookSections(ctx context.Context, notebookID str
 			&section.LastResults,
 			&section.ChartType,
 			&section.ChartConfig,
+			pq.Array(&section.Tags),
 			&section.CreatedAt,
 			&section.UpdatedAt,
 		)
@@ -1903,7 +1910,7 @@ func (c *PostgresClient) GetNotebookSection(ctx context.Context, sectionID strin
 	var section NotebookSection
 	err := c.db.QueryRowContext(ctx, `
 		SELECT id, notebook_id, section_type, title, content, rendered_content, order_index,
-		       last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), created_at, updated_at
+		       last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), created_at, updated_at
 		FROM notebook_sections
 		WHERE id = $1
 	`, sectionID).Scan(
@@ -1918,6 +1925,7 @@ func (c *PostgresClient) GetNotebookSection(ctx context.Context, sectionID strin
 		&section.LastResults,
 		&section.ChartType,
 		&section.ChartConfig,
+		pq.Array(&section.Tags),
 		&section.CreatedAt,
 		&section.UpdatedAt,
 	)
@@ -1932,8 +1940,37 @@ func (c *PostgresClient) GetNotebookSection(ctx context.Context, sectionID strin
 	return &section, nil
 }
 
+// GetNotebookSectionTags returns all distinct tags used across sections of a notebook, sorted.
+func (c *PostgresClient) GetNotebookSectionTags(ctx context.Context, notebookID string) ([]string, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT DISTINCT UNNEST(tags) AS tag
+		FROM notebook_sections
+		WHERE notebook_id = $1
+		  AND tags IS NOT NULL
+		  AND array_length(tags, 1) > 0
+		ORDER BY tag ASC
+	`, notebookID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query notebook section tags: %w", err)
+	}
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, fmt.Errorf("failed to scan tag: %w", err)
+		}
+		tags = append(tags, tag)
+	}
+	if tags == nil {
+		tags = []string{}
+	}
+	return tags, nil
+}
+
 // UpdateNotebookSection updates a notebook section
-func (c *PostgresClient) UpdateNotebookSection(ctx context.Context, sectionID string, title *string, content *string, renderedContent *string, chartConfig *string) error {
+func (c *PostgresClient) UpdateNotebookSection(ctx context.Context, sectionID string, title *string, content *string, renderedContent *string, chartConfig *string, tags *[]string) error {
 	setParts := []string{}
 	args := []interface{}{}
 	argIndex := 1
@@ -1956,6 +1993,11 @@ func (c *PostgresClient) UpdateNotebookSection(ctx context.Context, sectionID st
 	if chartConfig != nil {
 		setParts = append(setParts, fmt.Sprintf("chart_config = $%d::jsonb", argIndex))
 		args = append(args, chartConfig)
+		argIndex++
+	}
+	if tags != nil {
+		setParts = append(setParts, fmt.Sprintf("tags = $%d", argIndex))
+		args = append(args, pq.Array(*tags))
 		argIndex++
 	}
 

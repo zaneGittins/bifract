@@ -141,12 +141,12 @@ const Dictionaries = {
         if (emptyEl) emptyEl.style.display = 'none';
 
         tbody.innerHTML = dicts.map(d => `
-<tr>
+<tr class="dict-list-row">
     <td><a href="#" class="dict-link" data-id="${d.id}">${this.esc(d.name)}${d.is_global ? ' <span class="dict-global-badge">Global</span>' : ''}</a></td>
     <td style="color:var(--text-secondary);font-size:0.88rem;">${this.esc(d.description || '')}</td>
     <td style="color:var(--text-secondary);">${d.columns ? d.columns.length : 0}</td>
     <td style="color:var(--text-secondary);">${(d.row_count || 0).toLocaleString()}</td>
-    <td><button class="btn-action danger" data-id="${d.id}" data-action="delete">Delete</button></td>
+    <td class="dict-list-actions"><button class="btn-action danger" data-id="${d.id}" data-action="delete">Delete</button></td>
 </tr>`).join('');
 
         tbody.querySelectorAll('.dict-link').forEach(a => {

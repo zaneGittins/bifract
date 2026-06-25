@@ -587,9 +587,11 @@ CREATE TABLE IF NOT EXISTS notebook_sections (
     last_results JSONB,
     chart_type VARCHAR(50),
     chart_config JSONB,
+    tags TEXT[] DEFAULT '{}',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+ALTER TABLE notebook_sections ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';
 
 -- Allow ai_summary and comment_context section types (for upgrades where table already exists with old constraint)
 ALTER TABLE notebook_sections DROP CONSTRAINT IF EXISTS notebook_sections_section_type_check;
@@ -616,6 +618,7 @@ CREATE INDEX IF NOT EXISTS idx_notebook_sections_notebook_id ON notebook_section
 CREATE INDEX IF NOT EXISTS idx_notebook_sections_order ON notebook_sections(notebook_id, order_index);
 CREATE INDEX IF NOT EXISTS idx_notebook_sections_type ON notebook_sections(section_type);
 CREATE INDEX IF NOT EXISTS idx_notebook_sections_created_at ON notebook_sections(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notebook_sections_tags ON notebook_sections USING GIN (tags);
 
 CREATE INDEX IF NOT EXISTS idx_notebook_presence_notebook_id ON notebook_presence(notebook_id);
 CREATE INDEX IF NOT EXISTS idx_notebook_presence_last_seen ON notebook_presence(last_seen_at DESC);

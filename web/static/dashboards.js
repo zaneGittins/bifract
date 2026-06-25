@@ -197,7 +197,7 @@ const Dashboards = {
                 <td>${Utils.escapeHtml(d.time_range_type || '')}</td>
                 <td>${this.formatDate(d.created_at)}</td>
                 <td>${this.formatDate(d.updated_at)}</td>
-                <td>
+                <td class="dashboard-actions">
                     <button class="btn-action" onclick="Dashboards.exportDashboard('${d.id}')">Export</button>
                     <button class="btn-action danger" onclick="Dashboards.deleteDashboardById('${d.id}')">Delete</button>
                 </td>

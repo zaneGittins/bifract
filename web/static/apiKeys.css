@@ -54,6 +54,11 @@
     background: var(--bg-hover);
 }
 
+.api-key-row:hover .api-key-actions {
+    opacity: 1;
+    pointer-events: auto;
+}
+
 .api-key-row.active {
     border-left: 3px solid var(--success);
 }
@@ -132,6 +137,9 @@
     gap: 0.5rem;
     justify-content: flex-start;
     flex-wrap: wrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
 }
 
 .api-key-status {
