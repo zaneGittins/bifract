@@ -115,9 +115,9 @@ func RunReconfigure(dir string) error {
 		return fmt.Errorf("write docker-compose: %w", err)
 	}
 
-	// Ensure the cold-storage config exists so the compose mount resolves to a
-	// file; never clobbers an admin-populated storage.xml.
-	if err := EnsureColdStorageConfig(dir); err != nil {
+	// Render the cold-storage config from the configured backend (inert when
+	// unset). The compose mount always resolves to a file.
+	if err := WriteColdStorageConfig(dir, existingEnv["BIFRACT_COLD_STORAGE_BACKEND"]); err != nil {
 		return fmt.Errorf("write storage.xml: %w", err)
 	}
 
@@ -130,6 +130,11 @@ func RunReconfigure(dir string) error {
 		"BIFRACT_OIDC_ISSUER_URL", "BIFRACT_OIDC_CLIENT_ID", "BIFRACT_OIDC_CLIENT_SECRET",
 		"BIFRACT_OIDC_REDIRECT_URL", "BIFRACT_OIDC_SCOPES", "BIFRACT_OIDC_DEFAULT_ROLE",
 		"BIFRACT_OIDC_ALLOWED_DOMAINS", "BIFRACT_OIDC_BUTTON_TEXT",
+		// Cold storage tier (set => preserved; unset => not added)
+		"BIFRACT_COLD_STORAGE_BACKEND", "BIFRACT_COLD_STORAGE_ENDPOINT", "BIFRACT_COLD_STORAGE_CACHE_SIZE",
+		"BIFRACT_AZURE_STORAGE_URL", "BIFRACT_AZURE_CONTAINER", "BIFRACT_AZURE_STORAGE_ACCOUNT", "BIFRACT_AZURE_STORAGE_KEY",
+		// Dashboard executor tuning (set => preserved; unset => app defaults apply)
+		"BIFRACT_DASHBOARD_WORKERS", "BIFRACT_DASHBOARD_MIN_REFRESH", "BIFRACT_DASHBOARD_TICK",
 	}
 	for _, key := range preserveKeys {
 		if v, ok := existingEnv[key]; ok && v != "" {

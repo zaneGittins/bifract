@@ -89,12 +89,6 @@ type UpdateWidgetRequest struct {
 	ChartConfig  interface{} `json:"chart_config,omitempty"`
 }
 
-// UpdateWidgetResultsRequest saves cached query results
-type UpdateWidgetResultsRequest struct {
-	LastResults    string  `json:"last_results"`
-	ChartType      *string `json:"chart_type,omitempty"`
-}
-
 // UpdateWidgetLayoutRequest saves widget position/size
 type UpdateWidgetLayoutRequest struct {
 	PosX   int `json:"pos_x"`
@@ -106,6 +100,20 @@ type UpdateWidgetLayoutRequest struct {
 // UpdateVariablesRequest saves dashboard variables
 type UpdateVariablesRequest struct {
 	Variables json.RawMessage `json:"variables"`
+}
+
+// UpdateRefreshIntervalRequest sets the server-side auto-refresh cadence in
+// seconds: 0 = off/manual, -1 = auto (derived from time range), >0 = fixed.
+type UpdateRefreshIntervalRequest struct {
+	RefreshInterval int `json:"refresh_interval"`
+}
+
+// ExecuteResponse returns server-executed widget results to the requester.
+type ExecuteResponse struct {
+	Success   bool            `json:"success"`
+	Error     string          `json:"error,omitempty"`
+	ChartType string          `json:"chart_type,omitempty"`
+	Data      json.RawMessage `json:"data,omitempty"`
 }
 
 // Response is the standard API response envelope

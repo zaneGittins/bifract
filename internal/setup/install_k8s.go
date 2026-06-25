@@ -24,109 +24,109 @@ type ResourceProfile struct {
 
 // SizeProfile defines resource allocations for all components at a given scale.
 type SizeProfile struct {
-	Name           string
-	Description    string
-	CHShards       int
-	CHReplicas     int
-	ClickHouse     ResourceProfile
-	CHKeeper       ResourceProfile
-	Bifract        ResourceProfile
-	Postgres       ResourceProfile
-	Caddy          ResourceProfile
-	CaddyShipper   ResourceProfile
-	LiteLLM        ResourceProfile
+	Name            string
+	Description     string
+	CHShards        int
+	CHReplicas      int
+	ClickHouse      ResourceProfile
+	CHKeeper        ResourceProfile
+	Bifract         ResourceProfile
+	Postgres        ResourceProfile
+	Caddy           ResourceProfile
+	CaddyShipper    ResourceProfile
+	LiteLLM         ResourceProfile
 	IngestQueueSize int
 	IngestWorkers   int
 }
 
 var sizeProfiles = []SizeProfile{
 	{
-		Name:        "Dev",
-		Description: "Development/testing, ~1-10 GB/day (3 nodes, 4 vCPU / 8GB each)",
-		CHShards:    1,
-		CHReplicas:  2,
-		ClickHouse:  ResourceProfile{"2", "3", "4Gi", "5Gi"},
-		CHKeeper:    ResourceProfile{"250m", "500m", "256Mi", "512Mi"},
-		Bifract:     ResourceProfile{"500m", "1", "512Mi", "1Gi"},
-		Postgres:    ResourceProfile{"500m", "1", "512Mi", "1Gi"},
-		Caddy:       ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
-		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:     ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
+		Name:            "Dev",
+		Description:     "Development/testing, ~1-10 GB/day (3 nodes, 4 vCPU / 8GB each)",
+		CHShards:        1,
+		CHReplicas:      2,
+		ClickHouse:      ResourceProfile{"2", "3", "4Gi", "5Gi"},
+		CHKeeper:        ResourceProfile{"250m", "500m", "256Mi", "512Mi"},
+		Bifract:         ResourceProfile{"500m", "1", "512Mi", "1Gi"},
+		Postgres:        ResourceProfile{"500m", "1", "512Mi", "1Gi"},
+		Caddy:           ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
+		CaddyShipper:    ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
+		LiteLLM:         ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
 		IngestQueueSize: 100,
 		IngestWorkers:   4,
 	},
 	{
-		Name:        "X-Small",
-		Description: "Staging/light production, ~10-50 GB/day (3 nodes, 8 vCPU / 16GB each)",
-		CHShards:    1,
-		CHReplicas:  2,
-		ClickHouse:  ResourceProfile{"6", "8", "8Gi", "12Gi"},
-		CHKeeper:    ResourceProfile{"250m", "1", "512Mi", "1Gi"},
-		Bifract:     ResourceProfile{"500m", "2", "512Mi", "2Gi"},
-		Postgres:    ResourceProfile{"500m", "1", "512Mi", "1Gi"},
-		Caddy:       ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
-		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:     ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
+		Name:            "X-Small",
+		Description:     "Staging/light production, ~10-50 GB/day (3 nodes, 8 vCPU / 16GB each)",
+		CHShards:        1,
+		CHReplicas:      2,
+		ClickHouse:      ResourceProfile{"6", "8", "8Gi", "12Gi"},
+		CHKeeper:        ResourceProfile{"250m", "1", "512Mi", "1Gi"},
+		Bifract:         ResourceProfile{"500m", "2", "512Mi", "2Gi"},
+		Postgres:        ResourceProfile{"500m", "1", "512Mi", "1Gi"},
+		Caddy:           ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
+		CaddyShipper:    ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
+		LiteLLM:         ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
 		IngestQueueSize: 200,
 		IngestWorkers:   4,
 	},
 	{
-		Name:        "Small",
-		Description: "Light production, ~50-200 GB/day (3 nodes, 16 vCPU / 32GB each)",
-		CHShards:    1,
-		CHReplicas:  2,
-		ClickHouse:  ResourceProfile{"10", "12", "12Gi", "24Gi"},
-		CHKeeper:    ResourceProfile{"250m", "1", "512Mi", "1Gi"},
-		Bifract:     ResourceProfile{"1", "2", "1Gi", "2Gi"},
-		Postgres:    ResourceProfile{"500m", "2", "1Gi", "2Gi"},
-		Caddy:       ResourceProfile{"200m", "1", "256Mi", "512Mi"},
-		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:     ResourceProfile{"250m", "1", "512Mi", "1Gi"},
+		Name:            "Small",
+		Description:     "Light production, ~50-200 GB/day (3 nodes, 16 vCPU / 32GB each)",
+		CHShards:        1,
+		CHReplicas:      2,
+		ClickHouse:      ResourceProfile{"10", "12", "12Gi", "24Gi"},
+		CHKeeper:        ResourceProfile{"250m", "1", "512Mi", "1Gi"},
+		Bifract:         ResourceProfile{"1", "2", "1Gi", "2Gi"},
+		Postgres:        ResourceProfile{"500m", "2", "1Gi", "2Gi"},
+		Caddy:           ResourceProfile{"200m", "1", "256Mi", "512Mi"},
+		CaddyShipper:    ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
+		LiteLLM:         ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		IngestQueueSize: 300,
 		IngestWorkers:   6,
 	},
 	{
-		Name:        "Medium",
-		Description: "Production workloads, ~200-500 GB/day (3 nodes, 24 vCPU / 48GB each)",
-		CHShards:    2,
-		CHReplicas:  2,
-		ClickHouse:  ResourceProfile{"8", "12", "12Gi", "24Gi"},
-		CHKeeper:    ResourceProfile{"500m", "2", "1Gi", "2Gi"},
-		Bifract:     ResourceProfile{"1", "4", "1Gi", "4Gi"},
-		Postgres:    ResourceProfile{"500m", "2", "1Gi", "4Gi"},
-		Caddy:       ResourceProfile{"250m", "1", "256Mi", "1Gi"},
-		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:     ResourceProfile{"250m", "1", "512Mi", "1Gi"},
+		Name:            "Medium",
+		Description:     "Production workloads, ~200-500 GB/day (3 nodes, 24 vCPU / 48GB each)",
+		CHShards:        2,
+		CHReplicas:      2,
+		ClickHouse:      ResourceProfile{"8", "12", "12Gi", "24Gi"},
+		CHKeeper:        ResourceProfile{"500m", "2", "1Gi", "2Gi"},
+		Bifract:         ResourceProfile{"1", "4", "1Gi", "4Gi"},
+		Postgres:        ResourceProfile{"500m", "2", "1Gi", "4Gi"},
+		Caddy:           ResourceProfile{"250m", "1", "256Mi", "1Gi"},
+		CaddyShipper:    ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
+		LiteLLM:         ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		IngestQueueSize: 500,
 		IngestWorkers:   8,
 	},
 	{
-		Name:        "Large",
-		Description: "High-volume production, ~500 GB-2 TB/day (3 nodes, 32 vCPU / 96GB each)",
-		CHShards:    3,
-		CHReplicas:  2,
-		ClickHouse:  ResourceProfile{"8", "16", "16Gi", "32Gi"},
-		CHKeeper:    ResourceProfile{"500m", "2", "1Gi", "2Gi"},
-		Bifract:     ResourceProfile{"2", "4", "2Gi", "8Gi"},
-		Postgres:    ResourceProfile{"1", "4", "2Gi", "8Gi"},
-		Caddy:       ResourceProfile{"500m", "2", "512Mi", "1Gi"},
-		CaddyShipper: ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:     ResourceProfile{"500m", "1", "1Gi", "1Gi"},
+		Name:            "Large",
+		Description:     "High-volume production, ~500 GB-2 TB/day (3 nodes, 32 vCPU / 96GB each)",
+		CHShards:        3,
+		CHReplicas:      2,
+		ClickHouse:      ResourceProfile{"8", "16", "16Gi", "32Gi"},
+		CHKeeper:        ResourceProfile{"500m", "2", "1Gi", "2Gi"},
+		Bifract:         ResourceProfile{"2", "4", "2Gi", "8Gi"},
+		Postgres:        ResourceProfile{"1", "4", "2Gi", "8Gi"},
+		Caddy:           ResourceProfile{"500m", "2", "512Mi", "1Gi"},
+		CaddyShipper:    ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
+		LiteLLM:         ResourceProfile{"500m", "1", "1Gi", "1Gi"},
 		IngestQueueSize: 1000,
 		IngestWorkers:   8,
 	},
 	{
-		Name:        "X-Large",
-		Description: "Very high-volume production, ~2-10 TB/day (6 nodes, 32 vCPU / 96GB each)",
-		CHShards:    6,
-		CHReplicas:  2,
-		ClickHouse:  ResourceProfile{"8", "16", "16Gi", "32Gi"},
-		CHKeeper:    ResourceProfile{"1", "2", "2Gi", "4Gi"},
-		Bifract:     ResourceProfile{"4", "8", "4Gi", "16Gi"},
-		Postgres:    ResourceProfile{"2", "4", "4Gi", "16Gi"},
-		Caddy:       ResourceProfile{"1", "4", "1Gi", "2Gi"},
-		CaddyShipper: ResourceProfile{"10m", "200m", "32Mi", "128Mi"},
-		LiteLLM:     ResourceProfile{"500m", "2", "1Gi", "2Gi"},
+		Name:            "X-Large",
+		Description:     "Very high-volume production, ~2-10 TB/day (6 nodes, 32 vCPU / 96GB each)",
+		CHShards:        6,
+		CHReplicas:      2,
+		ClickHouse:      ResourceProfile{"8", "16", "16Gi", "32Gi"},
+		CHKeeper:        ResourceProfile{"1", "2", "2Gi", "4Gi"},
+		Bifract:         ResourceProfile{"4", "8", "4Gi", "16Gi"},
+		Postgres:        ResourceProfile{"2", "4", "4Gi", "16Gi"},
+		Caddy:           ResourceProfile{"1", "4", "1Gi", "2Gi"},
+		CaddyShipper:    ResourceProfile{"10m", "200m", "32Mi", "128Mi"},
+		LiteLLM:         ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		IngestQueueSize: 2000,
 		IngestWorkers:   16,
 	},
@@ -156,9 +156,21 @@ type K8sConfig struct {
 	// MaxmindPVCAccessMode and MaxmindPVCStorageClass preserve user-customized
 	// PVC settings (e.g. ReadWriteMany + azurefile-csi for Azure) across upgrades.
 	// Empty values fall back to defaults (ReadWriteOnce, no storageClassName).
-	MaxmindPVCAccessMode  string
+	MaxmindPVCAccessMode   string
 	MaxmindPVCStorageClass string
+
+	// Dashboard executor tuning. Zero means "use default"; preserved across upgrades.
+	DashboardTick       int
+	DashboardMinRefresh int
+	DashboardWorkers    int
 }
+
+// Dashboard executor defaults (mirror the server's getEnvInt fallbacks).
+const (
+	defaultDashboardTick       = 5
+	defaultDashboardMinRefresh = 10
+	defaultDashboardWorkers    = 4
+)
 
 // K8s wizard steps
 type k8sStep int
@@ -845,17 +857,28 @@ type k8sTemplateData struct {
 	// User-configured secrets (preserved during upgrades, empty on fresh install)
 	UserSecrets map[string]string
 
+	// ColdStorageRender ("" / "s3" / "azure") gates the ClickHouse storage-config
+	// injection. Derived from which cold credentials are present (not the app's
+	// COLD_STORAGE_BACKEND on/off flag), so pausing tiering keeps the 'tiered'
+	// policy defined and ClickHouse boots. See coldStorageRenderMode.
+	ColdStorageRender string
+
 	// ImagePullSecrets preserves manually-added pull secret names across upgrades.
 	ImagePullSecrets []string
 
 	// MaxmindPVCAccessMode and MaxmindPVCStorageClass carry user-customized PVC
 	// settings through upgrades. Empty = use template defaults.
-	MaxmindPVCAccessMode  string
+	MaxmindPVCAccessMode   string
 	MaxmindPVCStorageClass string
 
 	// IngestQueueSize and IngestWorkers tune the bifract ingest queue.
 	IngestQueueSize int
 	IngestWorkers   int
+
+	// Dashboard executor tuning (resolved to defaults when unset).
+	DashboardTick       int
+	DashboardMinRefresh int
+	DashboardWorkers    int
 }
 
 // k8sManifestFile maps an embedded template to its output path.
@@ -880,44 +903,64 @@ var k8sManifests = []k8sManifestFile{
 	{"templates/k8s/network-policies.yaml.tmpl", "network-policies.yaml"},
 }
 
+// coldStorageRenderMode returns "s3"/"azure"/"" for the ClickHouse storage-config
+// injection, based on which cold credentials are present. It is intentionally
+// independent of the app's COLD_STORAGE_BACKEND on/off flag: once a table is on
+// the 'tiered' policy, the policy must stay defined or ClickHouse won't boot, so
+// pausing tiering (backend=none) must NOT tear the storage config down. Full
+// removal happens by clearing the cold credentials (after rebuilding the table).
+func coldStorageRenderMode(secrets map[string]string) string {
+	switch {
+	case secrets["COLD_STORAGE_ENDPOINT"] != "":
+		return "s3"
+	case secrets["AZURE_STORAGE_URL"] != "":
+		return "azure"
+	}
+	return ""
+}
+
 func writeK8sManifests(cfg *K8sConfig) error {
 	if cfg.UserSecrets == nil {
 		cfg.UserSecrets = make(map[string]string)
 	}
 	data := k8sTemplateData{
-		ImageTag:            cfg.ImageTag,
-		ImagePullSecrets:    cfg.ImagePullSecrets,
-		Domain:              cfg.Domain,
-		CHShards:            cfg.CHShards,
-		CHReplicas:          cfg.CHReplicas,
-		CHStorageGB:         cfg.CHStorageGB,
-		CHStorageStr:        formatStorageSize(cfg.CHStorageGB),
-		CHPasswordHash:      fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
-		CHHostsList:         buildCHHostsList(cfg.CHShards, cfg.CHReplicas),
-		PostgresPassword:    cfg.PostgresPassword,
-		ClickHousePassword:  cfg.ClickHousePassword,
-		PasswordPepper:      cfg.PasswordPepper,
-		AdminPasswordHash:   cfg.AdminPasswordHash,
-		FeedEncryptionKey:   cfg.FeedEncryptionKey,
-		BackupEncryptionKey: cfg.BackupEncryptionKey,
-		LiteLLMMasterKey:    cfg.LiteLLMMasterKey,
-		UserSecrets:         cfg.UserSecrets,
-		IPBlock:              buildIPBlock(cfg),
-		IPBlockIngest:        buildIPBlockIngest(cfg),
-		MTLSEnabled:          cfg.MTLSEnabled,
-		MTLSCACert:           indentPEM(cfg.MTLSCACert, "    "),
-		MTLSCAKey:            indentPEM(cfg.MTLSCAKey, "    "),
-		MaxmindPVCAccessMode:  cfg.MaxmindPVCAccessMode,
+		ImageTag:               cfg.ImageTag,
+		ImagePullSecrets:       cfg.ImagePullSecrets,
+		Domain:                 cfg.Domain,
+		CHShards:               cfg.CHShards,
+		CHReplicas:             cfg.CHReplicas,
+		CHStorageGB:            cfg.CHStorageGB,
+		CHStorageStr:           formatStorageSize(cfg.CHStorageGB),
+		CHPasswordHash:         fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
+		CHHostsList:            buildCHHostsList(cfg.CHShards, cfg.CHReplicas),
+		PostgresPassword:       cfg.PostgresPassword,
+		ClickHousePassword:     cfg.ClickHousePassword,
+		PasswordPepper:         cfg.PasswordPepper,
+		AdminPasswordHash:      cfg.AdminPasswordHash,
+		FeedEncryptionKey:      cfg.FeedEncryptionKey,
+		BackupEncryptionKey:    cfg.BackupEncryptionKey,
+		LiteLLMMasterKey:       cfg.LiteLLMMasterKey,
+		UserSecrets:            cfg.UserSecrets,
+		ColdStorageRender:      coldStorageRenderMode(cfg.UserSecrets),
+		IPBlock:                buildIPBlock(cfg),
+		IPBlockIngest:          buildIPBlockIngest(cfg),
+		MTLSEnabled:            cfg.MTLSEnabled,
+		MTLSCACert:             indentPEM(cfg.MTLSCACert, "    "),
+		MTLSCAKey:              indentPEM(cfg.MTLSCAKey, "    "),
+		MaxmindPVCAccessMode:   cfg.MaxmindPVCAccessMode,
 		MaxmindPVCStorageClass: cfg.MaxmindPVCStorageClass,
-		IngestQueueSize:       cfg.SizeProfile.IngestQueueSize,
-		IngestWorkers:         cfg.SizeProfile.IngestWorkers,
-		CH:                   cfg.SizeProfile.ClickHouse,
-		CHKeeper:            cfg.SizeProfile.CHKeeper,
-		BifractRes:          cfg.SizeProfile.Bifract,
-		PostgresRes:         cfg.SizeProfile.Postgres,
-		CaddyRes:            cfg.SizeProfile.Caddy,
-		CaddyShipper:        cfg.SizeProfile.CaddyShipper,
-		LiteLLMRes:          cfg.SizeProfile.LiteLLM,
+		IngestQueueSize:        cfg.SizeProfile.IngestQueueSize,
+		IngestWorkers:          cfg.SizeProfile.IngestWorkers,
+		DashboardTick:          fallbackInt(cfg.DashboardTick, defaultDashboardTick),
+		DashboardMinRefresh:    fallbackInt(cfg.DashboardMinRefresh, defaultDashboardMinRefresh),
+		DashboardWorkers:       fallbackInt(cfg.DashboardWorkers, defaultDashboardWorkers),
+		CH:                     cfg.SizeProfile.ClickHouse,
+		CHKeeper:               cfg.SizeProfile.CHKeeper,
+		BifractRes:             cfg.SizeProfile.Bifract,
+		PostgresRes:            cfg.SizeProfile.Postgres,
+		CaddyRes:               cfg.SizeProfile.Caddy,
+		CaddyShipper:           cfg.SizeProfile.CaddyShipper,
+		LiteLLMRes:             cfg.SizeProfile.LiteLLM,
 	}
 
 	for _, m := range k8sManifests {

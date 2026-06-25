@@ -108,19 +108,27 @@ const Dashboards = {
             timeRangeBtn._dashHandler = () => this.showTimeRangeModal();
             timeRangeBtn.addEventListener('click', timeRangeBtn._dashHandler);
         }
+
+        const refreshSelect = document.getElementById('dashboardRefreshSelect');
+        if (refreshSelect) {
+            refreshSelect._dashHandler = () => this.updateRefreshInterval(parseInt(refreshSelect.value, 10));
+            refreshSelect.addEventListener('change', refreshSelect._dashHandler);
+        }
     },
 
     unbindEvents() {
         const ids = [
             'createDashboardBtn', 'dashboardSearchInput',
             'dashboardsPrevBtn', 'dashboardsNextBtn', 'backToDashboardsBtn',
-            'addWidgetBtn', 'deleteDashboardBtn', 'dashboardTimeRangeBtn'
+            'addWidgetBtn', 'deleteDashboardBtn', 'dashboardTimeRangeBtn',
+            'dashboardRefreshSelect'
         ];
         ids.forEach(id => {
             const el = document.getElementById(id);
             if (el && el._dashHandler) {
                 el.removeEventListener('click', el._dashHandler);
                 el.removeEventListener('input', el._dashHandler);
+                el.removeEventListener('change', el._dashHandler);
                 delete el._dashHandler;
             }
         });
@@ -240,6 +248,9 @@ const Dashboards = {
 
             const titleEl = document.getElementById('dashboardTitle');
             if (titleEl) titleEl.textContent = this.currentDashboard.name;
+
+            const refreshSelect = document.getElementById('dashboardRefreshSelect');
+            if (refreshSelect) refreshSelect.value = String(this.currentDashboard.refresh_interval ?? 0);
 
             this.renderVariablesBar();
             this.renderDashboardGrid();
@@ -558,57 +569,29 @@ const Dashboards = {
         if (execBtn) { execBtn.innerHTML = '<span class="spinner"></span>'; execBtn.disabled = true; }
 
         try {
-            const timeRange = this.getDashboardTimeRange();
-            let query = widget.query_content || '';
-            if (this.currentDashboard.variables && this.currentDashboard.variables.length > 0) {
-                for (const v of this.currentDashboard.variables) {
-                    if (v.name) query = query.replaceAll('@' + v.name, v.value || '*');
-                }
-            }
-            const requestBody = {
-                query: query,
-                query_type: 'bql',
-                start: timeRange.start,
-                end: timeRange.end
-            };
-            if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
-                requestBody.fractal_id = window.FractalContext.currentFractal.id;
-            }
-
-            const response = await fetch('/api/v1/query', {
+            // Execution runs server-side against the dashboard's stored scope,
+            // time range and variables. The backend persists the results as the
+            // authoritative cache and pushes them to other viewers over SSE; the
+            // direct response lets this client render immediately.
+            const response = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets/${widgetId}/execute`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify(requestBody)
+                headers: this.sseHeaders(),
+                credentials: 'include'
             });
             const data = await response.json();
 
             if (!data.success) throw new Error(data.error || 'Query failed');
 
-            const resultData = {
-                results: data.results || [],
-                count: (data.results || []).length,
-                execution_ms: data.execution_ms || 0,
-                sql: data.sql || '',
-                chart_type: data.chart_type || 'table',
-                chart_config: data.chart_config || {},
-                field_order: data.field_order || [],
-                is_aggregated: data.is_aggregated || false
-            };
+            const resultData = data.data || {};
+            resultData.results = resultData.results || [];
+            resultData.chart_type = resultData.chart_type || data.chart_type || 'table';
+            resultData.chart_config = resultData.chart_config || {};
+            resultData.field_order = resultData.field_order || [];
 
             // Update widget in local state
             widget.last_results = JSON.stringify(resultData);
             widget.last_executed_at = new Date().toISOString();
-            if (data.chart_type) widget.chart_type = data.chart_type;
-
-            // Save results to backend (fire-and-forget)
-            const chartType = data.chart_type || widget.chart_type || 'table';
-            fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets/${widgetId}/results`, {
-                method: 'PUT',
-                headers: this.sseHeaders(),
-                credentials: 'include',
-                body: JSON.stringify({ last_results: widget.last_results, chart_type: chartType })
-            }).catch(() => {});
+            if (resultData.chart_type) widget.chart_type = resultData.chart_type;
 
             this.renderWidgetResults(widgetId, resultData);
         } catch (err) {
@@ -1456,6 +1439,32 @@ const Dashboards = {
         modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
     },
 
+    async updateRefreshInterval(seconds) {
+        if (!this.currentDashboard) return;
+        if (isNaN(seconds)) seconds = 0;
+        try {
+            const resp = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/refresh-interval`, {
+                method: 'PUT',
+                headers: this.sseHeaders(),
+                credentials: 'include',
+                body: JSON.stringify({ refresh_interval: seconds })
+            });
+            const data = await resp.json();
+            if (!data.success) throw new Error(data.error || 'Failed');
+            this.currentDashboard.refresh_interval = seconds;
+            if (seconds === 0) {
+                this.showSuccess('Auto-refresh disabled');
+            } else if (seconds < 0) {
+                this.showSuccess('Auto-refresh set to Auto');
+            } else {
+                this.showSuccess('Auto-refresh updated');
+            }
+        } catch (err) {
+            console.error('[Dashboards] Failed to update refresh interval:', err);
+            this.showError('Failed to update auto-refresh');
+        }
+    },
+
     async saveTimeRange() {
         if (!this.currentDashboard) return;
         const val = document.getElementById('dtrSelect')?.value;
@@ -1813,13 +1822,15 @@ const Dashboards = {
         this.renderVariablesBar();
     },
 
-    updateVariableValue(name, value) {
+    async updateVariableValue(name, value) {
         if (!this.currentDashboard || !this.currentDashboard.variables) return;
 
         const v = this.currentDashboard.variables.find(v => v.name === name);
         if (v) {
             v.value = value;
-            this.saveVariables();
+            // Persist before refreshing: server-side execution substitutes from
+            // the stored variable values, so the save must land first.
+            await this.saveVariables();
             this.autoExecuteAllWidgets();
         }
     },

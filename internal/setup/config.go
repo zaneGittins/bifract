@@ -17,10 +17,10 @@ const (
 type IPAccessMode string
 
 const (
-	IPAccessRestrictApp  IPAccessMode = "restrict-app"
-	IPAccessRestrictAll  IPAccessMode = "restrict-all"
-	IPAccessMTLSApp      IPAccessMode = "mtls-app"
-	IPAccessAll          IPAccessMode = "all"
+	IPAccessRestrictApp IPAccessMode = "restrict-app"
+	IPAccessRestrictAll IPAccessMode = "restrict-all"
+	IPAccessMTLSApp     IPAccessMode = "mtls-app"
+	IPAccessAll         IPAccessMode = "all"
 )
 
 type SetupConfig struct {
@@ -31,13 +31,13 @@ type SetupConfig struct {
 	CertPath   string
 	KeyPath    string
 
-	PostgresPassword   string
-	ClickHousePassword string
-	LiteLLMMasterKey   string
-	AdminPassword      string
-	AdminPasswordHash  string
-	PasswordPepper     string
-	FeedEncryptionKey    string
+	PostgresPassword    string
+	ClickHousePassword  string
+	LiteLLMMasterKey    string
+	AdminPassword       string
+	AdminPasswordHash   string
+	PasswordPepper      string
+	FeedEncryptionKey   string
 	BackupEncryptionKey string
 
 	S3Endpoint  string
@@ -46,7 +46,10 @@ type SetupConfig struct {
 	S3SecretKey string
 	S3Region    string
 
-	ImageTag     string
+	// ColdStorageBackend selects the ClickHouse cold tier: "" / "none" / "s3" / "azure".
+	ColdStorageBackend string
+
+	ImageTag string
 
 	SecureCookies bool
 	CORSOrigins   string

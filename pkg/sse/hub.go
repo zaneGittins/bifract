@@ -1,6 +1,7 @@
 package sse
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -102,6 +103,22 @@ func (h *Hub) Broadcast(room string, event Event, excludeClientID string) {
 			// Drop event for slow client rather than blocking.
 		}
 	}
+}
+
+// RoomsWithPrefix returns the names of all rooms that currently have at least
+// one connected client and whose name starts with prefix. Used to discover
+// which dashboards have live viewers without scanning the database.
+func (h *Hub) RoomsWithPrefix(prefix string) []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	var rooms []string
+	for room, clients := range h.rooms {
+		if len(clients) > 0 && strings.HasPrefix(room, prefix) {
+			rooms = append(rooms, room)
+		}
+	}
+	return rooms
 }
 
 // RoomClients returns the client info for all clients in a room.

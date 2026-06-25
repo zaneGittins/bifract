@@ -40,6 +40,9 @@ const CommentedLogs = {
         const nextBtn = document.getElementById('cdpNextBtn');
         if (nextBtn) nextBtn.addEventListener('click', () => this.navigateDetail(1));
 
+        const targetBtn = document.getElementById('cdpTargetBtn');
+        if (targetBtn) targetBtn.addEventListener('click', () => this.searchForCurrentLog());
+
         this._initResizeHandle();
     },
 
@@ -687,7 +690,19 @@ const CommentedLogs = {
         if (comment.query) {
             const qRow = document.createElement('div');
             qRow.className = 'cdp-comment-meta';
-            qRow.innerHTML = `<span style="opacity:.6">query:</span> <code style="font-size:.68rem">${Utils.escapeHtml(comment.query)}</code>`;
+            const label = document.createElement('span');
+            label.style.opacity = '.6';
+            label.textContent = 'query:';
+            const code = document.createElement('code');
+            code.className = 'cdp-query-link';
+            code.style.fontSize = '.68rem';
+            code.style.cursor = 'pointer';
+            code.textContent = comment.query;
+            code.title = 'Run this query in search';
+            code.addEventListener('click', () => this._runSearch(comment.query));
+            qRow.appendChild(label);
+            qRow.appendChild(document.createTextNode(' '));
+            qRow.appendChild(code);
             block.appendChild(qRow);
         }
 
@@ -706,6 +721,34 @@ const CommentedLogs = {
         const next = this.detailCurrentIndex + dir;
         if (next < 0 || next >= this.filteredComments.length) return;
         this.openDetail(next);
+    },
+
+    // Jump to the search view and run an exact log_id query for the current comment's log.
+    searchForCurrentLog() {
+        const comment = this.filteredComments[this.detailCurrentIndex];
+        if (!comment || !comment.log_id) {
+            if (window.Toast) Toast.warning('No Log', 'No log ID available for this comment');
+            return;
+        }
+        this._runSearch(`log_id="${comment.log_id}"`);
+    },
+
+    // Switch to the search view, load a BQL query and execute it.
+    _runSearch(query) {
+        if (!query) return;
+        this.closeDetail();
+        if (window.App && window.App.showFractalViewTab) {
+            window.App.showFractalViewTab('search');
+        }
+        const queryInput = document.getElementById('queryInput');
+        if (!queryInput) return;
+        queryInput.value = query;
+        if (window.SyntaxHighlight) {
+            SyntaxHighlight.updateHighlight('queryInput', 'queryHighlight');
+        }
+        if (window.QueryExecutor && window.QueryExecutor.execute) {
+            setTimeout(() => window.QueryExecutor.execute(), 100);
+        }
     },
 
     _updateDetailNav() {

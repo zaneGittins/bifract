@@ -2247,6 +2247,7 @@ type Dashboard struct {
 	TimeRangeType         string            `json:"time_range_type"`
 	TimeRangeStart        *time.Time        `json:"time_range_start,omitempty"`
 	TimeRangeEnd          *time.Time        `json:"time_range_end,omitempty"`
+	RefreshInterval       int               `json:"refresh_interval"`
 	FractalID             string            `json:"fractal_id,omitempty"`
 	PrismID               string            `json:"prism_id,omitempty"`
 	Variables             json.RawMessage   `json:"variables"`
@@ -2324,6 +2325,7 @@ func (c *PostgresClient) GetDashboard(ctx context.Context, id string) (*Dashboar
 	var scanFractalID, scanPrismID sql.NullString
 	err := c.db.QueryRowContext(ctx, `
 		SELECT d.id, d.name, d.description, d.time_range_type, d.time_range_start, d.time_range_end,
+		       COALESCE(d.refresh_interval, 0),
 		       d.fractal_id, d.prism_id, COALESCE(d.variables, '[]'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
 		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM dashboards d
@@ -2331,6 +2333,7 @@ func (c *PostgresClient) GetDashboard(ctx context.Context, id string) (*Dashboar
 		WHERE d.id = $1
 	`, id).Scan(
 		&d.ID, &d.Name, &d.Description, &d.TimeRangeType, &d.TimeRangeStart, &d.TimeRangeEnd,
+		&d.RefreshInterval,
 		&scanFractalID, &scanPrismID, &d.Variables, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
 		&d.AuthorDisplayName, &d.AuthorGravatarColor, &d.AuthorGravatarInitial,
 	)
@@ -2449,6 +2452,20 @@ func (c *PostgresClient) UpdateDashboardVariables(ctx context.Context, id string
 	return nil
 }
 
+// UpdateDashboardRefreshInterval sets the server-side auto-refresh interval in
+// seconds. 0 disables auto-refresh (manual only); -1 means "auto" (the executor
+// derives the cadence from the dashboard time range).
+func (c *PostgresClient) UpdateDashboardRefreshInterval(ctx context.Context, id string, seconds int) error {
+	_, err := c.db.ExecContext(ctx, `
+		UPDATE dashboards SET refresh_interval = $1, updated_at = NOW()
+		WHERE id = $2
+	`, seconds, id)
+	if err != nil {
+		return fmt.Errorf("failed to update dashboard refresh interval: %w", err)
+	}
+	return nil
+}
+
 func (c *PostgresClient) DeleteDashboard(ctx context.Context, id string) error {
 	_, err := c.db.ExecContext(ctx, `DELETE FROM dashboards WHERE id = $1`, id)
 	if err != nil {
@@ -2500,6 +2517,27 @@ func (c *PostgresClient) GetDashboardWidgets(ctx context.Context, dashboardID st
 		widgets = append(widgets, w)
 	}
 	return widgets, nil
+}
+
+// GetDashboardWidget fetches a single widget by ID.
+func (c *PostgresClient) GetDashboardWidget(ctx context.Context, widgetID string) (*DashboardWidget, error) {
+	var w DashboardWidget
+	err := c.db.QueryRowContext(ctx, `
+		SELECT id, dashboard_id, title, query_content, chart_type, COALESCE(chart_config, 'null'::jsonb), pos_x, pos_y, width, height, last_executed_at, COALESCE(last_results, 'null'::jsonb), created_at, updated_at
+		FROM dashboard_widgets
+		WHERE id = $1
+	`, widgetID).Scan(
+		&w.ID, &w.DashboardID, &w.Title, &w.QueryContent, &w.ChartType, &w.ChartConfig,
+		&w.PosX, &w.PosY, &w.Width, &w.Height, &w.LastExecutedAt, &w.LastResults,
+		&w.CreatedAt, &w.UpdatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("widget not found")
+		}
+		return nil, fmt.Errorf("failed to get dashboard widget: %w", err)
+	}
+	return &w, nil
 }
 
 func (c *PostgresClient) UpdateDashboardWidget(ctx context.Context, widgetID string, title, queryContent, chartType, chartConfig *string) error {

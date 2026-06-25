@@ -111,10 +111,16 @@ ALTER TABLE chat_instructions ADD CONSTRAINT chat_instructions_created_by_fkey
   FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
 
 -- archives.created_by (was missing ON DELETE clause entirely)
-ALTER TABLE archives DROP CONSTRAINT IF EXISTS archives_created_by_fkey;
-ALTER TABLE archives ALTER COLUMN created_by DROP NOT NULL;
-ALTER TABLE archives ADD CONSTRAINT archives_created_by_fkey
-  FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+-- Guarded: the archives table is deprecated and absent on fresh installs
+-- (see migration 025), so this stanza must be a no-op when it doesn't exist.
+ALTER TABLE IF EXISTS archives DROP CONSTRAINT IF EXISTS archives_created_by_fkey;
+ALTER TABLE IF EXISTS archives ALTER COLUMN created_by DROP NOT NULL;
+DO $$ BEGIN
+  IF to_regclass('public.archives') IS NOT NULL THEN
+    ALTER TABLE archives ADD CONSTRAINT archives_created_by_fkey
+      FOREIGN KEY (created_by) REFERENCES users(username) ON DELETE SET NULL;
+  END IF;
+END $$;
 
 -- alert_feeds.created_by (ensure constraint is correct)
 ALTER TABLE alert_feeds DROP CONSTRAINT IF EXISTS alert_feeds_created_by_fkey;

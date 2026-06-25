@@ -15,9 +15,9 @@
     3. Set BIFRACT_COLD_STORAGE_BACKEND=s3 (or azure) on the bifract app so it
        switches the logs table onto the 'tiered' storage policy at startup.
 
-  The policy MUST keep the existing 'default' disk as the 'hot' volume:
+  The policy's hot volume MUST be named 'default' (with the 'default' disk):
   ClickHouse only allows moving a table onto a new policy that still contains
-  its current disks.
+  the volume from its current policy, and the default policy's volume is 'default'.
 -->
 <clickhouse>
 </clickhouse>

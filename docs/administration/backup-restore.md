@@ -60,7 +60,7 @@ Movement is driven hourly: for each fractal with a cold threshold set, partition
 
 Cold storage is opt-in and disabled by default.
 
-**1. Define the storage policy.** Edit `clickhouse/config.d/storage.xml` (mounted into the ClickHouse container). It is inert by default. Copy the body of either `storage.s3.xml.example` or `storage.azure.xml.example` (in the same directory) into it. The policy must keep the existing `default` disk as the `hot` volume; ClickHouse only allows switching a table onto a new policy that still contains its current disks.
+**1. Define the storage policy.** Edit `clickhouse/config.d/storage.xml` (mounted into the ClickHouse container). It is inert by default. Copy the body of either `storage.s3.xml.example` or `storage.azure.xml.example` (in the same directory) into it. The hot volume **must be named `default`** (with the `default` disk): ClickHouse only allows switching a table onto a new policy that still contains the volume from its current policy, and the implicit default policy's volume is named `default`.
 
 **2. Provide credentials** as environment variables on the **clickhouse** service (consumed by `storage.xml` via `from_env`):
 
@@ -93,6 +93,20 @@ On Kubernetes, inject the same `storage.xml` and credentials into the ClickHouse
 - The object-storage disk is wrapped in a local read-through **cache** disk (`max_size` in `storage.xml`, default 50 GiB) so cold queries don't fetch from object storage on every granule. Size it to your local disk.
 - Skip indexes and the full-text index travel with the data to cold storage, so indexed BQL searches stay accelerated on cold data.
 - A `move_factor` safety net auto-moves the oldest parts to cold if hot disk approaches full, independent of per-fractal thresholds.
+
+### Disabling Cold Storage
+
+Once the `logs` table is on the `tiered` policy, ClickHouse pins it there (the policy can't be removed by `ALTER`, and the server won't start if the policy is undefined). So:
+
+- **Pause tiering (recommended):** set `BIFRACT_COLD_STORAGE_BACKEND=none` (k8s: the `COLD_STORAGE_BACKEND` secret) and re-run reconfigure. New data stops tiering; existing cold data stays searchable. **Keep the cold credentials / `storage.xml` in place** so the policy stays defined.
+- **Reclaim the bucket:** additionally `ALTER TABLE logs DROP PARTITION ...` the cold partitions. The (now empty) cold disk must remain defined.
+- **Remove completely:** rebuild the `logs` table onto the `default` policy (new table, copy hot data, drop, rename). Only then is it safe to clear the cold credentials / delete `storage.xml`.
+
+Do not delete `storage.xml` (or the cold credentials on k8s) while `logs` is still on `tiered` — ClickHouse will fail to start.
+
+### Changing the Cold Target
+
+Treat the cold bucket/account as fixed once data is tiered. Cold parts are bound to the disk's endpoint, so changing the bucket/account/region or switching S3↔Azure makes existing cold data unreadable (the objects are stranded in the old store). The tooling will repoint the disk on reconfigure without warning. To actually move to a new target: `ALTER TABLE logs MOVE PARTITION ... TO VOLUME 'default'` for all cold partitions (needs local disk space), change the credentials, then let it re-tier.
 
 ## Disaster Recovery
 

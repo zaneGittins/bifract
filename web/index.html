@@ -1067,6 +1067,9 @@
                         <div class="panel-header-actions">
                             <button id="cdpPrevBtn" class="panel-nav-btn" title="Previous comment">&#8249;</button>
                             <button id="cdpNextBtn" class="panel-nav-btn" title="Next comment">&#8250;</button>
+                            <button id="cdpTargetBtn" class="panel-nav-btn" title="Search for this log">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="1" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="1" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="23" y2="12"/></svg>
+                            </button>
                             <button id="cdpCloseBtn" class="close-panel-btn">&times;</button>
                         </div>
                     </div>
@@ -1220,6 +1223,14 @@
                                 </div>
                                 <div class="dashboard-controls">
                                     <div id="dashboardPresence" class="notebook-presence"></div>
+                                    <select id="dashboardRefreshSelect" class="dashboard-refresh-select" title="Server-side auto-refresh">
+                                        <option value="0">Auto-refresh: Off</option>
+                                        <option value="-1">Auto</option>
+                                        <option value="30">Every 30s</option>
+                                        <option value="60">Every 1m</option>
+                                        <option value="300">Every 5m</option>
+                                        <option value="900">Every 15m</option>
+                                    </select>
                                     <button id="dashboardTimeRangeBtn" class="btn-secondary">Time Range</button>
                                     <button id="addWidgetBtn" class="btn-primary">+ Add Widget</button>
                                     <button id="deleteDashboardBtn" class="btn-secondary" style="color:var(--error);">Delete</button>

@@ -15,8 +15,15 @@ CREATE TABLE IF NOT EXISTS archive_groups (
 
 CREATE INDEX IF NOT EXISTS idx_archive_groups_fractal_id ON archive_groups(fractal_id);
 
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS group_id UUID REFERENCES archive_groups(id) ON DELETE CASCADE;
-ALTER TABLE archives ADD COLUMN IF NOT EXISTS period_label VARCHAR(30);
-CREATE INDEX IF NOT EXISTS idx_archives_group_id ON archives(group_id);
+-- Guarded: the archives table is deprecated and absent on fresh installs
+-- (see migration 025), so these are no-ops there. archive_groups above and the
+-- fractals column below are dropped by migration 025 on fresh installs.
+ALTER TABLE IF EXISTS archives ADD COLUMN IF NOT EXISTS group_id UUID REFERENCES archive_groups(id) ON DELETE CASCADE;
+ALTER TABLE IF EXISTS archives ADD COLUMN IF NOT EXISTS period_label VARCHAR(30);
+DO $$ BEGIN
+  IF to_regclass('public.archives') IS NOT NULL THEN
+    CREATE INDEX IF NOT EXISTS idx_archives_group_id ON archives(group_id);
+  END IF;
+END $$;
 
 ALTER TABLE fractals ADD COLUMN IF NOT EXISTS archive_split VARCHAR(10) NOT NULL DEFAULT 'none';

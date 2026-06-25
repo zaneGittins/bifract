@@ -3184,6 +3184,17 @@ body.col-resizing * {
     flex-wrap: wrap;
 }
 
+.cdp-query-link {
+    color: var(--accent-primary);
+    border-bottom: 1px dashed transparent;
+    transition: border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.cdp-query-link:hover {
+    border-bottom-color: var(--accent-primary);
+    opacity: 0.85;
+}
+
 .cdp-tag {
     background: rgba(156, 106, 222, 0.12);
     color: var(--accent-primary);
@@ -11527,6 +11538,27 @@ div.vis-tooltip {
     display: flex;
     gap: 10px;
     align-items: center;
+}
+
+.dashboard-refresh-select {
+    padding: 0.45rem 0.65rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.dashboard-refresh-select:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
+}
+
+.dashboard-refresh-select:focus {
+    outline: none;
+    border-color: var(--accent-primary);
 }
 
 /* Dashboard Grid */

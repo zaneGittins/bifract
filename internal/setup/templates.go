@@ -99,17 +99,29 @@ func renderTemplate(name string, data interface{}) (string, error) {
 	return buf.String(), nil
 }
 
-// EnsureColdStorageConfig writes the inert cold-storage config file if it is not
-// already present, so the docker-compose mount of
-// clickhouse/config.d/storage.xml always resolves to a file (never an
-// auto-created directory). It never overwrites an existing storage.xml, so an
-// admin who has enabled cold storage keeps their configuration across upgrades.
-func EnsureColdStorageConfig(dir string) error {
+// WriteColdStorageConfig (re)generates clickhouse/config.d/storage.xml from the
+// selected cold-storage backend, so the docker-compose mount always resolves to
+// a file (never an auto-created directory).
+//
+//   - "s3"  / "azure": render the matching storage policy (overwrite). The XML
+//     reads credentials from the clickhouse service env via from_env, so secrets
+//     stay only in .env.
+//   - anything else (unset / "none"): write the inert placeholder only if the
+//     file is missing, so an existing or manually-customized storage.xml is left
+//     untouched and cold storage is never forced on.
+func WriteColdStorageConfig(dir, backend string) error {
 	path := filepath.Join(dir, "clickhouse", "config.d", "storage.xml")
-	if _, err := os.Stat(path); err == nil {
-		return nil
+	switch backend {
+	case "s3":
+		return CopyEmbeddedFile("templates/clickhouse-storage-s3.xml", path)
+	case "azure":
+		return CopyEmbeddedFile("templates/clickhouse-storage-azure.xml", path)
+	default:
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+		return CopyEmbeddedFile("templates/clickhouse-storage.xml", path)
 	}
-	return CopyEmbeddedFile("templates/clickhouse-storage.xml", path)
 }
 
 func CopyEmbeddedFile(name, destPath string) error {
@@ -200,8 +212,9 @@ func WriteAllFiles(cfg *SetupConfig) error {
 		return err
 	}
 
-	// Cold storage tier config (inert by default; admin enables per docs).
-	if err := CopyEmbeddedFile("templates/clickhouse-storage.xml", filepath.Join(dir, "clickhouse", "config.d", "storage.xml")); err != nil {
+	// Cold storage tier config, rendered from the selected backend (inert when
+	// none). Fresh installs default to disabled; admins enable via env + reconfigure.
+	if err := WriteColdStorageConfig(dir, cfg.ColdStorageBackend); err != nil {
 		return err
 	}
 

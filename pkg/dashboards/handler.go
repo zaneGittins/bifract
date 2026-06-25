@@ -23,6 +23,7 @@ type DashboardHandler struct {
 	fractalManager *fractals.Manager
 	rbacResolver   *rbac.Resolver
 	sseHub         *sse.Hub
+	executor       *Executor
 }
 
 // SetRBACResolver sets the RBAC resolver for fractal-level access checks.
@@ -33,6 +34,12 @@ func (h *DashboardHandler) SetRBACResolver(resolver *rbac.Resolver) {
 // SetSSEHub sets the SSE hub for live update broadcasting.
 func (h *DashboardHandler) SetSSEHub(hub *sse.Hub) {
 	h.sseHub = hub
+}
+
+// SetExecutor wires the server-side widget executor used for on-demand and
+// background dashboard refreshes.
+func (h *DashboardHandler) SetExecutor(e *Executor) {
+	h.executor = e
 }
 
 // broadcastSSE sends an SSE event to all clients viewing this dashboard,
@@ -454,44 +461,6 @@ func (h *DashboardHandler) HandleUpdateWidget(w http.ResponseWriter, r *http.Req
 	})
 }
 
-func (h *DashboardHandler) HandleUpdateWidgetResults(w http.ResponseWriter, r *http.Request) {
-	dashboardID := chi.URLParam(r, "id")
-	widgetID := chi.URLParam(r, "widget_id")
-
-	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
-	if err != nil {
-		jsonError(w, "Dashboard not found")
-		return
-	}
-	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
-		return
-	}
-
-	var req UpdateWidgetResultsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body")
-		return
-	}
-
-	err = h.pg.UpdateDashboardWidgetResults(r.Context(), widgetID, req.LastResults, req.ChartType)
-	if err != nil {
-		jsonError(w, "Failed to update widget results")
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Widget results updated"})
-
-	h.broadcastSSE(r, dashboardID, sse.Event{
-		Type: sse.WidgetResultsUpdated,
-		Data: map[string]interface{}{
-			"id":           widgetID,
-			"last_results": req.LastResults,
-			"chart_type":   req.ChartType,
-		},
-	})
-}
-
 func (h *DashboardHandler) HandleUpdateWidgetLayout(w http.ResponseWriter, r *http.Request) {
 	dashboardID := chi.URLParam(r, "id")
 	widgetID := chi.URLParam(r, "widget_id")
@@ -654,6 +623,99 @@ func (h *DashboardHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Response{Success: true, Message: "Variables updated"})
+}
+
+// HandleUpdateRefreshInterval sets the dashboard's server-side auto-refresh
+// cadence. Accepts 0 (off), -1 (auto), or a positive number of seconds.
+func (h *DashboardHandler) HandleUpdateRefreshInterval(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
+	if err != nil {
+		jsonError(w, "Dashboard not found")
+		return
+	}
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
+		return
+	}
+
+	var req UpdateRefreshIntervalRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body")
+		return
+	}
+
+	// Normalize: clamp any negative value to -1 (auto); the executor enforces the
+	// concrete minimum-interval floor at runtime.
+	if req.RefreshInterval < -1 {
+		req.RefreshInterval = -1
+	}
+
+	if err := h.pg.UpdateDashboardRefreshInterval(r.Context(), id, req.RefreshInterval); err != nil {
+		jsonError(w, "Failed to update refresh interval")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(Response{Success: true, Message: "Refresh interval updated"})
+}
+
+// HandleExecuteWidget runs a single widget server-side, persists the results as
+// the authoritative cache, broadcasts them to other viewers, and returns the
+// payload to the requester for immediate rendering.
+func (h *DashboardHandler) HandleExecuteWidget(w http.ResponseWriter, r *http.Request) {
+	dashboardID := chi.URLParam(r, "id")
+	widgetID := chi.URLParam(r, "widget_id")
+
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
+	if err != nil {
+		jsonError(w, "Dashboard not found")
+		return
+	}
+	// Viewer can execute: this is a read of log data (writing only the canonical
+	// result cache), mirroring the query endpoint's permission model.
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleViewer) {
+		return
+	}
+	if h.executor == nil {
+		jsonError(w, "Executor unavailable")
+		return
+	}
+
+	resultJSON, chartType, err := h.executor.ExecuteWidgetByID(r.Context(), dashboardID, widgetID, r.Header.Get("X-SSE-Client-ID"))
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		json.NewEncoder(w).Encode(ExecuteResponse{Success: false, Error: err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(ExecuteResponse{Success: true, ChartType: chartType, Data: resultJSON})
+}
+
+// HandleExecuteDashboard runs every widget of a dashboard server-side. Results
+// are pushed to all viewers (including the requester) over SSE.
+func (h *DashboardHandler) HandleExecuteDashboard(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
+	if err != nil {
+		jsonError(w, "Dashboard not found")
+		return
+	}
+	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleViewer) {
+		return
+	}
+	if h.executor == nil {
+		jsonError(w, "Executor unavailable")
+		return
+	}
+
+	if err := h.executor.ExecuteDashboardNow(r.Context(), id, ""); err != nil {
+		jsonError(w, "Failed to execute dashboard")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(Response{Success: true, Message: "Dashboard executed"})
 }
 
 func jsonError(w http.ResponseWriter, msg string) {

@@ -125,6 +125,13 @@ spec:
               value: "{{.IngestQueueSize}}"
             - name: BIFRACT_INGEST_WORKERS
               value: "{{.IngestWorkers}}"
+            # Dashboard executor tuning
+            - name: BIFRACT_DASHBOARD_WORKERS
+              value: "{{.DashboardWorkers}}"
+            - name: BIFRACT_DASHBOARD_MIN_REFRESH
+              value: "{{.DashboardMinRefresh}}"
+            - name: BIFRACT_DASHBOARD_TICK
+              value: "{{.DashboardTick}}"
             # Cold storage tier (none | s3 | azure)
             - name: BIFRACT_COLD_STORAGE_BACKEND
               valueFrom:

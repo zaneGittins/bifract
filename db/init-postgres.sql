@@ -639,6 +639,7 @@ CREATE TABLE IF NOT EXISTS dashboards (
     time_range_type VARCHAR(20) NOT NULL DEFAULT 'last1h',
     time_range_start TIMESTAMP,
     time_range_end TIMESTAMP,
+    refresh_interval INTEGER NOT NULL DEFAULT 0,
     fractal_id UUID NOT NULL REFERENCES fractals(id) ON DELETE CASCADE,
     variables JSONB DEFAULT '[]',
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
@@ -646,6 +647,8 @@ CREATE TABLE IF NOT EXISTS dashboards (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS variables JSONB DEFAULT '[]';
+-- Server-side auto-refresh cadence (seconds): 0 = off/manual, -1 = auto (derived from time range).
+ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS refresh_interval INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS dashboard_widgets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

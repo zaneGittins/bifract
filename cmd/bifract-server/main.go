@@ -549,6 +549,17 @@ func main() {
 	sseHub := sse.NewHub()
 	notebookHandler.SetSSEHub(sseHub)
 	dashboardHandler.SetSSEHub(sseHub)
+
+	// Background dashboard executor: presence-gated, backpressure-aware periodic
+	// refresh of widgets for dashboards that currently have live viewers. It
+	// yields to ingestion via the ingest queue's health signal.
+	dashboardExecutor := dashboards.NewExecutor(pg, queryHandler, sseHub, ingestQueue, dashboards.ExecutorConfig{
+		Tick:        time.Duration(getEnvInt("BIFRACT_DASHBOARD_TICK", 5)) * time.Second,
+		MinInterval: time.Duration(getEnvInt("BIFRACT_DASHBOARD_MIN_REFRESH", 10)) * time.Second,
+		Workers:     getEnvInt("BIFRACT_DASHBOARD_WORKERS", 4),
+	})
+	dashboardHandler.SetExecutor(dashboardExecutor)
+	dashboardExecutor.Start()
 	alertHandler := alerts.NewHandlerWithFractals(alertManager, fractalManager)
 	alertHandler.SetRBACResolver(authHandler.RBACResolver())
 
@@ -799,10 +810,12 @@ func main() {
 				r.Delete("/dashboards/{id}", dashboardHandler.HandleDeleteDashboard)
 				r.Post("/dashboards/{id}/widgets", dashboardHandler.HandleCreateWidget)
 				r.Put("/dashboards/{id}/widgets/{widget_id}", dashboardHandler.HandleUpdateWidget)
-				r.Put("/dashboards/{id}/widgets/{widget_id}/results", dashboardHandler.HandleUpdateWidgetResults)
 				r.Put("/dashboards/{id}/widgets/{widget_id}/layout", dashboardHandler.HandleUpdateWidgetLayout)
 				r.Delete("/dashboards/{id}/widgets/{widget_id}", dashboardHandler.HandleDeleteWidget)
 				r.Put("/dashboards/{id}/variables", dashboardHandler.HandleUpdateVariables)
+				r.Put("/dashboards/{id}/refresh-interval", dashboardHandler.HandleUpdateRefreshInterval)
+				r.Post("/dashboards/{id}/execute", dashboardHandler.HandleExecuteDashboard)
+				r.Post("/dashboards/{id}/widgets/{widget_id}/execute", dashboardHandler.HandleExecuteWidget)
 				r.Post("/dashboards/{id}/presence", dashboardHandler.HandleUpdatePresence)
 				r.Get("/dashboards/{id}/presence", dashboardHandler.HandleGetPresence)
 				r.Get("/dashboards/{id}/export", dashboardHandler.HandleExportDashboard)
@@ -1131,6 +1144,9 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
+
+	// Stop the background dashboard executor (waits for in-flight refreshes)
+	dashboardExecutor.Stop()
 
 	// Stop the distribution queue monitor
 	distMonitor.Stop()
