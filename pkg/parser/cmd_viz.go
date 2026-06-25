@@ -196,6 +196,15 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		field := extractFunctionField(function, "min")
 		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("min(%s)", cast), Alias: "_min"})
+	} else if strings.Contains(function, "groupby(") {
+		field := extractFunctionField(function, "groupby")
+		if field != "" {
+			ref := resolveFieldRef(field, ctx.Registry)
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: ref, Alias: field})
+			source.Layer.GroupBy = append(source.Layer.GroupBy, ref)
+		}
+		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
+		source.Layer.OrderBy = append([]string{"_count DESC"}, source.Layer.OrderBy...)
 	}
 
 	source.Layer.GroupBy = append(source.Layer.GroupBy, bucketExpr)

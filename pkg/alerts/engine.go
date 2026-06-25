@@ -17,6 +17,7 @@ import (
 	"bifract/pkg/settings"
 	"bifract/pkg/storage"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 	"github.com/lib/pq"
 	"github.com/robfig/cron/v3"
 )
@@ -508,8 +509,30 @@ func collectAlertExtraFields(alert *Alert) []string {
 	return fields
 }
 
+// isUnrecoverableChError reports whether err is a ClickHouse server exception
+// whose error code indicates the query itself is invalid and will never succeed
+// without being rewritten (e.g. wrong argument count, unknown function, syntax
+// error). Transient failures such as memory limits or timeouts are not included.
+func isUnrecoverableChError(err error) (code int32, ok bool) {
+	var chErr *proto.Exception
+	if !errors.As(err, &chErr) {
+		return 0, false
+	}
+	switch chErr.Code {
+	case 34, 36, 42, // NUMBER_OF_ARGUMENTS_DOESNT_MATCH variants
+		43, 53, 70, // ILLEGAL_TYPE_OF_ARGUMENT, TYPE_MISMATCH, CANNOT_CONVERT_TYPE
+		46, 63,     // UNKNOWN_FUNCTION, UNKNOWN_AGGREGATE_FUNCTION
+		47,         // UNKNOWN_IDENTIFIER
+		62,         // SYNTAX_ERROR
+		6, 27, 72:  // CANNOT_PARSE_TEXT, CANNOT_PARSE_INPUT_ASSERTION_FAILED, CANNOT_PARSE_NUMBER
+		return chErr.Code, true
+	}
+	return 0, false
+}
+
 // runAlertQuery translates and executes an alert query with timeout handling.
-// On timeout the alert is auto-disabled and a descriptive error is returned.
+// On timeout or an unrecoverable CH error the alert is auto-disabled and a
+// health notification is raised.
 func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.QueryOptions, timeoutSec int) ([]map[string]interface{}, error) {
 	sql, err := parser.TranslateToSQL(alert.ParsedQuery, opts)
 	if err != nil {
@@ -528,6 +551,18 @@ func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.Qu
 				log.Printf("[Alert Engine] Failed to disable alert '%s': %v", alert.Name, disableErr)
 			}
 			return nil, fmt.Errorf("query timed out after %ds", timeoutSec)
+		}
+		if code, ok := isUnrecoverableChError(err); ok {
+			reason := fmt.Sprintf("Auto-disabled: unrecoverable query error (code %d): %v", code, err)
+			log.Printf("[Alert Engine] Alert '%s' has unrecoverable query error (code %d), disabling", alert.Name, code)
+			if disableErr := e.disableAlertWithReason(ctx, alert.ID, reason); disableErr != nil {
+				log.Printf("[Alert Engine] Failed to disable alert '%s': %v", alert.Name, disableErr)
+			} else if e.notifWriter != nil {
+				go e.notifWriter.Write("alerts.unrecoverable_error", "warning",
+					fmt.Sprintf("Alert Auto-Disabled: %s", alert.Name),
+					fmt.Sprintf("Alert '%s' was auto-disabled due to an unrecoverable ClickHouse error (code %d). The alert BQL must be corrected before re-enabling.", alert.Name, code))
+			}
+			return nil, fmt.Errorf("query failed with unrecoverable error (code %d): %w", code, err)
 		}
 		return nil, fmt.Errorf("query failed: %w", err)
 	}

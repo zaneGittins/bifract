@@ -18,7 +18,7 @@ func (h *sortHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return nil
 	}
 
-	field := cmd.Arguments[0]
+	field := strings.TrimPrefix(cmd.Arguments[0], "field=")
 	direction := "ASC"
 
 	for _, arg := range cmd.Arguments[1:] {
