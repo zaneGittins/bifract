@@ -726,22 +726,11 @@ const Autocomplete = {
     _rehighlight(input) {
         if (!window.SyntaxHighlight) return;
         const id = input.id || '';
+        // search/alert also re-sync height (the inserted text may change line count).
         if (id === 'queryInput') { SyntaxHighlight.updateHighlight('queryInput', 'queryHighlight'); return; }
         if (id === 'editorQueryInput') { SyntaxHighlight.updateHighlight('editorQueryInput', 'alertQueryHighlight'); return; }
-
-        let hl = null;
-        if (id === 'modelQueryInput') hl = document.getElementById('modelQueryHighlight');
-        else if (id.startsWith('wie-q-')) hl = document.getElementById(id.replace('wie-q-', 'wie-h-'));
-        else if (id.startsWith('edit-content-')) hl = document.getElementById(id.replace('edit-content-', 'edit-highlight-'));
-        else {
-            const wrapper = input.closest('.query-input-wrapper');
-            if (wrapper) hl = wrapper.querySelector('.query-highlight');
-        }
-        if (hl) {
-            hl.innerHTML = SyntaxHighlight.highlight(input.value, SyntaxHighlight.errorRanges[id]) + '<br/>';
-            hl.scrollTop = input.scrollTop;
-            hl.scrollLeft = input.scrollLeft;
-        }
+        // Everything else: reuse the single textarea->overlay mapping + repaint.
+        SyntaxHighlight.repaintEditor(input);
     },
 
     // Open the menu on Ctrl+Space. (Not Cmd+Space -- that is macOS Spotlight.)

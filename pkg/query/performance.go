@@ -339,7 +339,7 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 	// Parse time range. `since`/`bucketSec` drive the persisted CPU history read;
 	// `interval` bounds the live query_log scan (capped at 24h for long ranges).
 	rangeParam := r.URL.Query().Get("range")
-	since, bucketSec := metricRange(rangeParam)
+	since, bucketSec := MetricRange(rangeParam)
 	interval := "1 HOUR"
 	switch rangeParam {
 	case "8h":
@@ -465,9 +465,10 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 	respondJSON(w, http.StatusOK, result)
 }
 
-// metricRange maps a UI range param to a lookback window and bucket width
-// (seconds) for persisted metric series.
-func metricRange(rangeParam string) (time.Duration, int) {
+// MetricRange maps a UI range param to a lookback window and bucket width
+// (seconds) for persisted metric series. Exported so other handlers (e.g. the
+// system pressure endpoint serving dist-queue history) share one mapping.
+func MetricRange(rangeParam string) (time.Duration, int) {
 	switch rangeParam {
 	case "8h":
 		return 8 * time.Hour, 300
@@ -483,12 +484,15 @@ func metricRange(rangeParam string) (time.Duration, int) {
 }
 
 // cpuPoints formats persisted metric points into the {time, value} shape the
-// CPU chart expects: a string timestamp and a one-decimal percentage.
+// CPU chart expects: a Unix timestamp (seconds) and a one-decimal percentage.
+// Time is emitted as an epoch (not a preformatted string) so the frontend can
+// render axis labels in the viewer's local timezone, matching the dist-queue
+// and alert-latency charts.
 func cpuPoints(points []storage.MetricPoint) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(points))
 	for _, p := range points {
 		out = append(out, map[string]interface{}{
-			"time":  p.Bucket.UTC().Format("2006-01-02 15:04:05"),
+			"time":  p.Bucket.Unix(),
 			"value": math.Round(p.Value*10) / 10,
 		})
 	}
@@ -748,7 +752,7 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 	// Alert evaluation latency trend from persisted samples (Postgres), so it
 	// survives restarts instead of being rebuilt in-memory only while the tab is
 	// open. The collector records avg(last_execution_time_ms) every 30s.
-	execSince, execBucket := metricRange(r.URL.Query().Get("range"))
+	execSince, execBucket := MetricRange(r.URL.Query().Get("range"))
 	execHist := []map[string]interface{}{}
 	if points, err := h.pg.QueryMetricSeries(r.Context(), "alert_exec_ms", execSince, execBucket); err != nil {
 		log.Printf("[AlertStats] exec history query failed: %v", err)

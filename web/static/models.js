@@ -1030,7 +1030,7 @@ const AnalyticsModels = {
         const ta = document.getElementById('modelQueryInput');
         const hl = document.getElementById('modelQueryHighlight');
         if (!ta || !hl || !window.SyntaxHighlight) return;
-        hl.innerHTML = SyntaxHighlight.highlight(ta.value, SyntaxHighlight.errorRanges['modelQueryInput']) + '<br/>';
+        hl.innerHTML = SyntaxHighlight.highlight(ta.value, SyntaxHighlight.errorRanges['modelQueryInput'], SyntaxHighlight.matchRanges['modelQueryInput']) + '<br/>';
         this._syncQueryHighlightScroll();
     },
 

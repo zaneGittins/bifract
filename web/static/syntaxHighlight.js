@@ -4,12 +4,40 @@ const SyntaxHighlight = {
     // Each value is {start, end} in rune (code point) offsets, or absent.
     errorRanges: {},
 
+    // Per-input matched-bracket pair {a, b} (two code-point offsets), keyed by
+    // input id. Ephemeral: recomputed on every caret move, cleared on blur.
+    matchRanges: {},
+
     init() {
         // Initialize main search query input
         this.initializeQueryInput('queryInput', 'queryHighlight');
 
         // Initialize alert editor query input
         this.initializeQueryInput('editorQueryInput', 'alertQueryHighlight');
+
+        this._initBracketMatching();
+    },
+
+    // _initBracketMatching wires a single document-level caret listener that
+    // highlights the bracket pair surrounding the caret in whichever query
+    // editor is focused. selectionchange fires for the focused textarea on both
+    // caret movement and typing, so one listener covers every editor (search,
+    // alerts, notebooks, dashboards, models) with no per-editor wiring.
+    _initBracketMatching() {
+        if (this._bracketInit) return;
+        this._bracketInit = true;
+        document.addEventListener('selectionchange', () => {
+            const el = document.activeElement;
+            if (!el || el.tagName !== 'TEXTAREA' || !this._highlightElFor(el)) return;
+            if (this.refreshMatch(el)) this.repaintEditor(el);
+        });
+        // Clear the pair highlight when an editor loses focus.
+        document.addEventListener('focusout', (e) => {
+            const el = e.target;
+            if (!el || !el.id || this.matchRanges[el.id] === undefined) return;
+            delete this.matchRanges[el.id];
+            this.repaintEditor(el);
+        });
     },
 
     initializeQueryInput(inputId, highlightId) {
@@ -39,22 +67,32 @@ const SyntaxHighlight = {
 
         const text = queryInput.value;
 
-        const highlighted = this.highlight(text, this.errorRanges[inputId]);
+        const highlighted = this.highlight(text, this.errorRanges[inputId], this.matchRanges[inputId]);
 
         queryHighlight.innerHTML = highlighted + '<br/>';
         this.syncScroll(inputId, highlightId);
         this.syncHeight(inputId, highlightId);
     },
 
-    // setError underlines the rune span [start, end) in the given input and
-    // re-renders. A zero-width span (start === end) renders as a caret marker.
-    // Pass a falsy range to clear.
-    setError(inputId, highlightId, range) {
+    // setErrorRange stores (or clears) the error span for an input WITHOUT
+    // repainting. It stamps the exact query text the span was computed against;
+    // highlight() only paints the underline while the text still matches, so a
+    // stale span can never land on unrelated text after a programmatic .value
+    // change (e.g. switching alerts or reopening an editor). Pass a falsy range
+    // to clear.
+    setErrorRange(inputId, range) {
         if (range && Number.isInteger(range.start) && Number.isInteger(range.end) && range.end >= range.start) {
-            this.errorRanges[inputId] = { start: range.start, end: range.end };
+            const input = document.getElementById(inputId);
+            this.errorRanges[inputId] = { start: range.start, end: range.end, query: input ? input.value : null };
         } else {
             delete this.errorRanges[inputId];
         }
+    },
+
+    // setError stores the span and repaints. A zero-width span (start === end)
+    // renders as a caret marker.
+    setError(inputId, highlightId, range) {
+        this.setErrorRange(inputId, range);
         this.updateHighlight(inputId, highlightId);
     },
 
@@ -62,6 +100,117 @@ const SyntaxHighlight = {
         if (this.errorRanges[inputId] === undefined) return;
         delete this.errorRanges[inputId];
         if (highlightId) this.updateHighlight(inputId, highlightId);
+    },
+
+    // _highlightElFor returns the highlight overlay element paired with a query
+    // textarea, or null if the element is not a query editor we manage. This is
+    // the single mapping from textarea -> overlay used by caret-driven repaints.
+    _highlightElFor(input) {
+        const id = (input && input.id) || '';
+        if (id === 'queryInput') return document.getElementById('queryHighlight');
+        if (id === 'editorQueryInput') return document.getElementById('alertQueryHighlight');
+        if (id === 'modelQueryInput') return document.getElementById('modelQueryHighlight');
+        if (id.startsWith('wie-q-')) return document.getElementById(id.replace('wie-q-', 'wie-h-'));
+        if (id.startsWith('edit-content-')) return document.getElementById(id.replace('edit-content-', 'edit-highlight-'));
+        const w = input && input.closest ? input.closest('.query-input-wrapper') : null;
+        return w ? w.querySelector('.query-highlight') : null;
+    },
+
+    // repaintEditor re-renders an editor's overlay with its current error and
+    // bracket-match decorations.
+    repaintEditor(input) {
+        const hl = this._highlightElFor(input);
+        if (!hl) return;
+        const id = input.id || '';
+        hl.innerHTML = this.highlight(input.value, this.errorRanges[id], this.matchRanges[id]) + '<br/>';
+        hl.scrollTop = input.scrollTop;
+        hl.scrollLeft = input.scrollLeft;
+    },
+
+    // refreshMatch recomputes the bracket pair around the caret for an editor.
+    // Returns true when the highlighted pair changed (so the caller repaints).
+    refreshMatch(input) {
+        const id = input.id || '';
+        if (!this._highlightElFor(input)) return false;
+        let pair = null;
+        // Only for a collapsed caret (not an active selection).
+        if (input.selectionStart === input.selectionEnd) {
+            const caret = [...input.value.slice(0, input.selectionStart)].length; // code-point offset
+            pair = this._findMatchPair(input.value, caret);
+        }
+        const prev = this.matchRanges[id];
+        const key = p => (p ? p.a + ':' + p.b : '');
+        if (key(prev) === key(pair)) return false;
+        if (pair) this.matchRanges[id] = pair;
+        else delete this.matchRanges[id];
+        return true;
+    },
+
+    // _bracketSegments returns every bracket character in the text as
+    // {pos, ch} with absolute code-point offsets, reusing the tokenizer so that
+    // brackets inside strings/regex (which are not hl-bracket segments) are
+    // naturally excluded.
+    _bracketSegments(text) {
+        const lines = text.split('\n');
+        let off = 0;
+        const out = [];
+        for (const line of lines) {
+            if (line.trim() && !/^\s*\/\//.test(line)) {
+                let p = 0;
+                for (const seg of this.highlightLine(line)) {
+                    const len = [...seg.t].length;
+                    if (seg.c === 'hl-bracket' && len === 1) out.push({ pos: off + p, ch: seg.t });
+                    p += len;
+                }
+            }
+            off += [...line].length + 1; // +1 for the stripped '\n'
+        }
+        return out;
+    },
+
+    // _pairMap builds a bidirectional index->index map of matched brackets via a
+    // typed stack. Mismatched/unbalanced brackets are simply absent from the map.
+    _pairMap(brackets) {
+        const opensTo = { '(': ')', '[': ']', '{': '}' };
+        const closeTo = { ')': '(', ']': '[', '}': '{' };
+        const stack = [];
+        const map = {};
+        for (let k = 0; k < brackets.length; k++) {
+            const ch = brackets[k].ch;
+            if (opensTo[ch]) {
+                stack.push(k);
+            } else if (closeTo[ch] && stack.length) {
+                const top = stack[stack.length - 1];
+                if (brackets[top].ch === closeTo[ch]) {
+                    stack.pop();
+                    map[top] = k;
+                    map[k] = top;
+                }
+                // A closer whose top-of-stack type differs is left unmatched.
+            }
+        }
+        return map;
+    },
+
+    // _findMatchPair returns {a, b} code-point offsets of the bracket adjacent to
+    // the caret and its partner, or null. A bracket just left of the caret takes
+    // precedence over one just right (matches common editor behavior).
+    _findMatchPair(text, caret) {
+        const brackets = this._bracketSegments(text);
+        if (!brackets.length) return null;
+        let idx = -1;
+        for (let k = 0; k < brackets.length; k++) {
+            if (brackets[k].pos === caret - 1) { idx = k; break; }
+        }
+        if (idx === -1) {
+            for (let k = 0; k < brackets.length; k++) {
+                if (brackets[k].pos === caret) { idx = k; break; }
+            }
+        }
+        if (idx === -1) return null;
+        const map = this._pairMap(brackets);
+        if (!(idx in map)) return null;
+        return { a: brackets[idx].pos, b: brackets[map[idx]].pos };
     },
 
     syncScroll(inputId, highlightId) {
@@ -107,12 +256,18 @@ const SyntaxHighlight = {
         }
     },
 
-    highlight(text, errorRange) {
+    highlight(text, errorRange, matchPair) {
         if (!text) return '';
 
         // Split into lines first
         const lines = text.split('\n');
-        const hasErr = errorRange && Number.isInteger(errorRange.start) && Number.isInteger(errorRange.end);
+        // Only apply a span that was computed against this exact text. A stamped
+        // query that no longer matches means the text changed out from under the
+        // span (e.g. a programmatic load), so the underline is stale -> skip it.
+        const hasErr = errorRange && Number.isInteger(errorRange.start) && Number.isInteger(errorRange.end)
+            && (errorRange.query == null || errorRange.query === text);
+        const matchPositions = (matchPair && Number.isInteger(matchPair.a) && Number.isInteger(matchPair.b))
+            ? [matchPair.a, matchPair.b] : null;
 
         // Track the code-point offset of each line start so a global error span
         // (rune offsets from the backend) can be mapped to line-local offsets.
@@ -125,17 +280,22 @@ const SyntaxHighlight = {
             cpOffset = lineEnd + 1; // +1 for the '\n' that split() removed
 
             const local = hasErr ? this.localErrorRange(errorRange, lineStart, lineEnd, lineLen) : null;
+            let matchSet = null;
+            if (matchPositions) {
+                const locals = matchPositions.filter(p => p >= lineStart && p < lineEnd).map(p => p - lineStart);
+                if (locals.length) matchSet = new Set(locals);
+            }
 
             // Blank/whitespace-only lines have no glyphs to underline.
             if (!line.trim()) return this.escapeHtml(line);
 
             // Check for comments first
             if (/^\s*\/\//.test(line)) {
-                return this.renderSegments([{ t: line, c: 'hl-comment' }], local);
+                return this.renderSegments([{ t: line, c: 'hl-comment' }], local, matchSet);
             }
 
             // Process the line character by character to avoid HTML corruption
-            return this.renderSegments(this.highlightLine(line), local);
+            return this.renderSegments(this.highlightLine(line), local, matchSet);
         }).join('\n');
     },
 
@@ -164,9 +324,10 @@ const SyntaxHighlight = {
     },
 
     // renderSegments emits HTML for the tokenized segments, wrapping the portion
-    // that falls inside the error range (line-local code-point offsets) with the
-    // hl-error class. Segments that straddle the error boundary are split.
-    renderSegments(segments, err) {
+    // inside the error range (line-local code-point offsets) with hl-error and
+    // any single-char bracket segment whose start is in matchSet with hl-match.
+    // Segments that straddle the error boundary are split.
+    renderSegments(segments, err, matchSet) {
         let out = '';
         let pos = 0;
         for (const seg of segments) {
@@ -175,22 +336,28 @@ const SyntaxHighlight = {
             const segEnd = pos + cps.length;
             pos = segEnd;
 
+            // Gate on hl-bracket (not just single-char) so a stale match offset
+            // can never decorate an unrelated token like '=', '|' or '*'.
+            const isMatch = !!(matchSet && seg.c === 'hl-bracket' && cps.length === 1 && matchSet.has(segStart));
+
             if (!err || err.end <= segStart || err.start >= segEnd) {
-                out += this.wrapSeg(seg.t, seg.c, false);
+                out += this.wrapSeg(seg.t, seg.c, false, isMatch);
                 continue;
             }
             const a = Math.max(segStart, err.start);
             const b = Math.min(segEnd, err.end);
-            if (a > segStart) out += this.wrapSeg(cps.slice(0, a - segStart).join(''), seg.c, false);
-            out += this.wrapSeg(cps.slice(a - segStart, b - segStart).join(''), seg.c, true);
-            if (b < segEnd) out += this.wrapSeg(cps.slice(b - segStart).join(''), seg.c, false);
+            if (a > segStart) out += this.wrapSeg(cps.slice(0, a - segStart).join(''), seg.c, false, false);
+            out += this.wrapSeg(cps.slice(a - segStart, b - segStart).join(''), seg.c, true, isMatch);
+            if (b < segEnd) out += this.wrapSeg(cps.slice(b - segStart).join(''), seg.c, false, false);
         }
         return out;
     },
 
-    wrapSeg(text, cls, isErr) {
+    wrapSeg(text, cls, isErr, isMatch) {
         if (text === '') return '';
-        const c = isErr ? (cls ? cls + ' hl-error' : 'hl-error') : cls;
+        let c = cls || '';
+        if (isErr) c = (c ? c + ' ' : '') + 'hl-error';
+        if (isMatch) c = (c ? c + ' ' : '') + 'hl-match';
         return `<span class="${c}">${this.escapeHtml(text)}</span>`;
     },
 

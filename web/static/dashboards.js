@@ -1196,7 +1196,7 @@ const Dashboards = {
         const highlightEl = document.getElementById(hid);
         if (queryEl && highlightEl && window.SyntaxHighlight) {
             const doHighlight = () => {
-                highlightEl.innerHTML = SyntaxHighlight.highlight(queryEl.value, SyntaxHighlight.errorRanges[tid]) + '<br/>';
+                highlightEl.innerHTML = SyntaxHighlight.highlight(queryEl.value, SyntaxHighlight.errorRanges[tid], SyntaxHighlight.matchRanges[tid]) + '<br/>';
                 highlightEl.scrollTop = queryEl.scrollTop;
             };
             doHighlight();

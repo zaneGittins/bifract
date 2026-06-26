@@ -20,15 +20,16 @@ const App = {
             SyntaxHighlight.init();
         }
 
-        // Live, debounced BQL validation for the main search box: underline the
-        // offending span and surface the message before the query is ever run.
+        // Live, debounced BQL validation for the main search box. While typing we
+        // only draw the subtle inline underline (+ hover tooltip); the louder
+        // error banner is reserved for an explicit run. Editing also dismisses a
+        // stale banner from a previous run so it never lingers over new text.
         if (window.QueryValidate && window.QueryExecutor) {
             QueryValidate.attach({
                 inputId: 'queryInput',
                 highlightId: 'queryHighlight',
                 getFractalId: () => window.FractalContext?.currentFractal?.id || undefined,
-                onError: (msg, res) => QueryExecutor.showQueryError(msg, res.error_pos),
-                onClear: () => QueryExecutor.clearQueryError(),
+                onEdit: () => QueryExecutor.clearQueryError(),
             });
             // Alert editor query box (static markup, shares the search-input pattern).
             QueryValidate.attach({

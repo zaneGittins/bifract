@@ -4269,7 +4269,7 @@ const Notebooks = {
         // Use the same highlighting logic as the main search bar (BQL mode)
         let highlighted;
         if (typeof SyntaxHighlight !== 'undefined' && SyntaxHighlight.highlight) {
-            highlighted = SyntaxHighlight.highlight(text, SyntaxHighlight.errorRanges[inputId]);
+            highlighted = SyntaxHighlight.highlight(text, SyntaxHighlight.errorRanges[inputId], SyntaxHighlight.matchRanges[inputId]);
         } else {
             // Fallback to plain text with basic styling if syntax highlighter not available
             highlighted = `<span style="color: var(--text-primary);">${Utils.escapeHtml(text)}</span>`;

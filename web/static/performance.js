@@ -157,7 +157,7 @@ const Performance = {
             // are always fetched; processes only for Activity; ingest only for
             // Storage. This keeps each poll scoped to what the active tab shows.
             const metPromise = fetch(`/api/v1/admin/metrics?range=${this.timeRange}`, { credentials: 'include' });
-            const pressurePromise = fetch('/api/v1/system/pressure', { credentials: 'include' });
+            const pressurePromise = fetch(`/api/v1/system/pressure?range=${this.timeRange}`, { credentials: 'include' });
             const procPromise = tab === 'activity'
                 ? fetch('/api/v1/admin/processes', { credentials: 'include' })
                 : null;
@@ -520,18 +520,14 @@ const Performance = {
         const showDate = longRange || this.timeRange === '8h' || this.timeRange === '24h';
         const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
+        // time is a Unix epoch (seconds); render labels in the viewer's local
+        // timezone so the CPU axis matches the dist-queue/alert charts.
         const extractLabel = (rawTime) => {
-            const t = String(rawTime || '');
-            const parts = t.split(' ');
-            if (!showDate) {
-                return (parts.length > 1 ? parts[1] : parts[0]).substring(0, 5);
-            }
-            if (parts.length < 2) return t;
-            const dp = parts[0].split('-');
-            const mon = dp.length >= 2 ? (months[parseInt(dp[1], 10) - 1] || dp[1]) : dp[0];
-            const day = dp.length >= 3 ? parseInt(dp[2], 10) : '';
-            const hhmm = parts[1].substring(0, 5);
-            return longRange ? `${mon} ${day} ${hhmm}` : `${mon} ${day} ${hhmm}`;
+            const d = new Date(Number(rawTime) * 1000);
+            if (isNaN(d.getTime())) return String(rawTime || '');
+            const hhmm = d.toTimeString().slice(0, 5);
+            if (!showDate) return hhmm;
+            return `${months[d.getMonth()]} ${d.getDate()} ${hhmm}`;
         };
 
         const extractTime = (p) => extractLabel(p.time);
@@ -544,7 +540,7 @@ const Performance = {
             for (const points of Object.values(cpuHistoryNodes)) {
                 for (const p of points) timeSet.add(String(p.time || ''));
             }
-            const sortedTimes = Array.from(timeSet).sort();
+            const sortedTimes = Array.from(timeSet).sort((a, b) => Number(a) - Number(b));
             labels = sortedTimes.map(t => extractLabel(t));
 
             const nodes = Object.keys(cpuHistoryNodes).sort();
@@ -1132,6 +1128,18 @@ const Performance = {
         container.innerHTML = html;
     },
 
+    // epochLabel formats a Unix timestamp (seconds) as a local-time axis label,
+    // adding a "Mon D" date prefix for ranges longer than 1h so points across
+    // days stay unambiguous. Shared by the dist-queue and alert-trend charts.
+    epochLabel(unixSec) {
+        const d = new Date(Number(unixSec) * 1000);
+        if (isNaN(d.getTime())) return '';
+        const hhmm = d.toTimeString().slice(0, 5);
+        if (this.timeRange === '1h') return hhmm;
+        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        return `${months[d.getMonth()]} ${d.getDate()} ${hhmm}`;
+    },
+
     renderDistQueueChart(history) {
         const canvas = document.getElementById('perfDistQueueChart');
         const placeholder = document.getElementById('perfDistQueuePlaceholder');
@@ -1153,10 +1161,7 @@ const Performance = {
         const chartBorder = cv('--chart-border') || '#24243e';
         const color = cv('--accent-primary') || '#9c6ade';
 
-        const labels = history.map(s => {
-            const d = new Date(s.time * 1000);
-            return d.toTimeString().slice(0, 5);
-        });
+        const labels = history.map(s => this.epochLabel(s.time));
         const values = history.map(s => s.data_files);
 
         if (this.distQueueChart) {
@@ -1238,10 +1243,7 @@ const Performance = {
         const chartBorder = cv('--chart-border') || '#24243e';
         const color = cv('--info') || '#60a5fa';
 
-        const labels = history.map(s => {
-            const d = new Date(s.time * 1000);
-            return d.toTimeString().slice(0, 5);
-        });
+        const labels = history.map(s => this.epochLabel(s.time));
         const values = history.map(s => s.avg_ms);
 
         if (this.alertTrendChart) {

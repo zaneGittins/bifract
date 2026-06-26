@@ -57,13 +57,21 @@ func NewDistributionMonitor(ch *ClickHouseClient, pg *PostgresClient, onEvent fu
 	return m
 }
 
-// History returns recent distribution queue samples from Postgres (oldest first)
-// so the chart survives restarts. Returns nil when persistence is unavailable.
-func (m *DistributionMonitor) History(ctx context.Context) []DistQueueSample {
+// History returns distribution queue samples from Postgres (oldest first) over
+// the given lookback window and bucket width, so the chart survives restarts and
+// honors the System tab's range selector. Non-positive args fall back to the
+// default 2h/60s window. Returns nil when persistence is unavailable.
+func (m *DistributionMonitor) History(ctx context.Context, since time.Duration, bucketSec int) []DistQueueSample {
 	if m.pg == nil {
 		return nil
 	}
-	pts, err := m.pg.QueryMetricSeries(ctx, distQueueMetric, distQueueWindow, distQueueBucketSec)
+	if since <= 0 {
+		since = distQueueWindow
+	}
+	if bucketSec <= 0 {
+		bucketSec = distQueueBucketSec
+	}
+	pts, err := m.pg.QueryMetricSeries(ctx, distQueueMetric, since, bucketSec)
 	if err != nil {
 		log.Printf("[DistributionMonitor] history query failed: %v", err)
 		return nil

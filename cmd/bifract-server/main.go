@@ -741,7 +741,8 @@ func main() {
 						"broken_data_files": s.BrokenDataFiles,
 						"error_count":       s.ErrorCount,
 					}
-					resp["distribution_queue_history"] = distMonitor.History(r.Context())
+					distSince, distBucket := query.MetricRange(r.URL.Query().Get("range"))
+					resp["distribution_queue_history"] = distMonitor.History(r.Context(), distSince, distBucket)
 				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(resp)

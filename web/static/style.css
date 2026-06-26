@@ -1275,6 +1275,34 @@ body {
     text-underline-offset: 0.18em;
 }
 
+/* Matching bracket pair around the caret. Uses background + box-shadow only
+   (no border/padding/margin) so it never changes glyph metrics and the overlay
+   stays pixel-aligned with the textarea beneath it. */
+.hl-match {
+    background: var(--accent-glow, rgba(99, 102, 241, 0.25));
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px var(--accent-primary, #6366f1);
+}
+
+/* Hover popover showing a query editor's current pre-run error message.
+   pointer-events:none so moving toward it never steals the hover (no flicker). */
+.query-error-popover {
+    position: absolute;
+    z-index: 10000;
+    padding: 6px 10px;
+    font-size: 0.75rem;
+    line-height: 1.45;
+    color: var(--text-primary);
+    background: var(--bg-secondary, #1b1d26);
+    border: 1px solid var(--error, #ef4444);
+    border-left: 3px solid var(--error, #ef4444);
+    border-radius: 5px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
+    white-space: normal;
+    word-break: break-word;
+}
+
 /* Allow normal text selection - some visual artifacts are acceptable */
 
 .search-input {
