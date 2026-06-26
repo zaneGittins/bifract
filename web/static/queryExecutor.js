@@ -316,7 +316,7 @@ const QueryExecutor = {
                 try { data = await res.json(); } catch (e) {}
                 if (!res.ok || !data.success) {
                     const msg = data.error || `Query failed (${res.status})`;
-                    this.showError(msg, data.error_type);
+                    this.showError(msg, data.error_type, data.error_pos);
                     this.renderTableError(msg);
                     return;
                 }
@@ -527,7 +527,7 @@ const QueryExecutor = {
                     }
                     break;
                 case 'error':
-                    this.showError(frame.error || 'Query failed', frame.error_type);
+                    this.showError(frame.error || 'Query failed', frame.error_type, frame.error_pos);
                     this.renderTableError(frame.error || 'Query failed');
                     break;
                 case 'done':
@@ -1371,13 +1371,13 @@ const QueryExecutor = {
         if (chartContainer) chartContainer.style.display = 'none';
     },
 
-    showError(message, errorType) {
+    showError(message, errorType, errorPos) {
         // Parse/translate errors point at a position in the BQL the user just
         // typed, so render them persistently under the editor rather than in an
         // auto-dismissing toast they'd lose while fixing the query. Execution and
         // timeout errors are not tied to the cursor, so a toast is fine.
         if (errorType === 'parse' || errorType === 'translate') {
-            this.showQueryError(message);
+            this.showQueryError(message, errorPos);
         } else if (window.Toast) {
             Toast.error('Query Error', message);
         } else {
@@ -1399,7 +1399,11 @@ const QueryExecutor = {
         }
     },
 
-    showQueryError(message) {
+    showQueryError(message, errorPos) {
+        // Underline the offending span in the editor when the backend pinpointed it.
+        if (window.QueryValidate) {
+            QueryValidate.applyResult('queryInput', 'queryHighlight', { error_pos: errorPos, error: message });
+        }
         const el = document.getElementById('queryError');
         if (!el) {
             // Fall back to a toast if the inline element is missing.
@@ -1422,6 +1426,8 @@ const QueryExecutor = {
     },
 
     clearQueryError() {
+        if (window.QueryValidate) QueryValidate.applyResult('queryInput', 'queryHighlight', {});
+        else if (window.SyntaxHighlight) SyntaxHighlight.clearError('queryInput', 'queryHighlight');
         const el = document.getElementById('queryError');
         if (el) {
             el.style.display = 'none';

@@ -989,6 +989,15 @@ const AnalyticsModels = {
             if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') { ev.preventDefault(); this._runOrCancelModel(); }
         });
         this._updateQueryHighlight();
+        // Live BQL validation: underline the offending span as the user types.
+        if (window.QueryValidate) {
+            this._detachQueryValidate = QueryValidate.attach({
+                inputId: 'modelQueryInput',
+                highlightId: 'modelQueryHighlight',
+                getFractalId: () => e.fractalId || window.FractalContext?.currentFractal?.id || undefined,
+                rerender: () => this._updateQueryHighlight(),
+            });
+        }
         document.getElementById('modelTimeRange').addEventListener('change', ev => { e.timeRange = ev.target.value; if (e.ran) this._runQuery(); });
         if (!e.editId) {
             document.querySelectorAll('#modelTypeCards .model-type-card').forEach(card => {
@@ -1021,7 +1030,7 @@ const AnalyticsModels = {
         const ta = document.getElementById('modelQueryInput');
         const hl = document.getElementById('modelQueryHighlight');
         if (!ta || !hl || !window.SyntaxHighlight) return;
-        hl.innerHTML = SyntaxHighlight.highlight(ta.value) + '<br/>';
+        hl.innerHTML = SyntaxHighlight.highlight(ta.value, SyntaxHighlight.errorRanges['modelQueryInput']) + '<br/>';
         this._syncQueryHighlightScroll();
     },
 

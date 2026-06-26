@@ -47,7 +47,8 @@ const (
 type Token struct {
 	Type  TokenType
 	Value string
-	Pos   int // start offset (rune index) of the token in the source input
+	Pos   int // start offset (rune index, inclusive) of the token in the source input
+	End   int // end offset (rune index, exclusive) of the token in the source input
 }
 
 type Lexer struct {
@@ -165,6 +166,10 @@ func (l *Lexer) NextToken() Token {
 
 	// Start offset of this token: l.ch is the rune at index l.pos-1.
 	startPos := l.pos - 1
+	// endPos, when set >= 0, overrides the default end-of-token offset. The
+	// identifier branch sets it before its function-vs-field lookahead, which
+	// skips trailing whitespace and would otherwise inflate the token span.
+	endPos := -1
 
 	var tok Token
 
@@ -277,6 +282,9 @@ func (l *Lexer) NextToken() Token {
 	default:
 		if unicode.IsLetter(l.ch) || l.ch == '_' {
 			ident := l.readIdentifier()
+			// Capture the identifier's true end before the function-vs-field
+			// lookahead below (skipWhitespace) advances past trailing spaces.
+			endPos = l.pos - 1
 			// Check if it's a keyword
 			switch strings.ToUpper(ident) {
 			case "AND":
@@ -314,6 +322,19 @@ func (l *Lexer) NextToken() Token {
 
 	l.lastType = tok.Type
 	tok.Pos = startPos
+	// After consuming a token, l.ch is the first rune NOT part of it, sitting at
+	// index l.pos-1. That is the exclusive end offset. For EOF nothing is
+	// consumed, so End == Pos (a zero-width caret at the end of input). The
+	// identifier branch sets endPos explicitly to avoid counting whitespace its
+	// lookahead skipped.
+	if endPos >= 0 {
+		tok.End = endPos
+	} else {
+		tok.End = l.pos - 1
+	}
+	if tok.End < startPos {
+		tok.End = startPos
+	}
 	return tok
 }
 
@@ -322,7 +343,7 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 	for {
 		tok := l.NextToken()
 		if tok.Type == TokenError {
-			return nil, fmt.Errorf("unexpected character %q in query", tok.Value)
+			return nil, newPosError(tok, "unexpected character %q in query", tok.Value)
 		}
 		tokens = append(tokens, tok)
 		if tok.Type == TokenEOF {

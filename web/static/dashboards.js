@@ -1196,13 +1196,22 @@ const Dashboards = {
         const highlightEl = document.getElementById(hid);
         if (queryEl && highlightEl && window.SyntaxHighlight) {
             const doHighlight = () => {
-                highlightEl.innerHTML = SyntaxHighlight.highlight(queryEl.value) + '<br/>';
+                highlightEl.innerHTML = SyntaxHighlight.highlight(queryEl.value, SyntaxHighlight.errorRanges[tid]) + '<br/>';
                 highlightEl.scrollTop = queryEl.scrollTop;
             };
             doHighlight();
             queryEl.addEventListener('input', doHighlight);
             queryEl.addEventListener('scroll', () => { highlightEl.scrollTop = queryEl.scrollTop; });
             queryEl.focus();
+            // Live BQL validation: underline the offending span as the user types.
+            if (window.QueryValidate) {
+                QueryValidate.attach({
+                    inputId: tid,
+                    highlightId: hid,
+                    getFractalId: () => window.FractalContext?.currentFractal?.id || undefined,
+                    rerender: doHighlight,
+                });
+            }
         }
     },
 

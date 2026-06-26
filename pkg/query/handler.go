@@ -110,6 +110,7 @@ type QueryResponse struct {
 	SQL       string                   `json:"sql,omitempty"`
 	Error     string                   `json:"error,omitempty"`
 	ErrorType string                   `json:"error_type,omitempty"` // "parse", "translate", "execution", "timeout" - lets the UI route display
+	ErrorPos  *ErrorSpan               `json:"error_pos,omitempty"`  // rune span of the offending text, for editor underlining
 
 	ExecutionMs  int64                  `json:"execution_ms,omitempty"`
 	FieldOrder   []string               `json:"field_order,omitempty"`
@@ -123,6 +124,24 @@ type QueryResponse struct {
 	Profile      *ProfileData           `json:"profile,omitempty"`      // Per-shard profiling data (only when requested)
 	NextCursor   string                 `json:"next_cursor,omitempty"`  // Cursor token for next page (non-aggregated only)
 	HasMore      bool                   `json:"has_more,omitempty"`     // True when more rows exist beyond this page
+}
+
+// ErrorSpan is the rune (code point) offset range of an error in the original
+// query string. Start is inclusive, End exclusive. Editors use it to underline
+// the offending text. Offsets are code-point indices, not byte offsets, so the
+// frontend must index by code point too.
+type ErrorSpan struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+// errorSpanFrom returns the ErrorSpan for an error that carries position info,
+// or nil when it does not (e.g. translator semantic errors).
+func errorSpanFrom(err error) *ErrorSpan {
+	if start, end, ok := parser.ErrorPosition(err); ok {
+		return &ErrorSpan{Start: start, End: end}
+	}
+	return nil
 }
 
 // cursorPageSize is the number of raw log rows returned per cursor page.
@@ -416,6 +435,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 			Error:     "Parse error: " + err.Error(),
 			ErrorType: "parse",
 			Query:     req.Query,
+			ErrorPos:  errorSpanFrom(err),
 		})
 		return
 	}
@@ -583,6 +603,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 			Error:     "Query error: " + err.Error(),
 			ErrorType: "translate",
 			Query:     req.Query,
+			ErrorPos:  errorSpanFrom(err),
 		})
 		return
 	}
@@ -666,6 +687,158 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		translationOpts:     opts,
 	}
 	return
+}
+
+// ValidateResponse is the result of a parse+translate-only validation. It never
+// touches ClickHouse, so it is cheap enough to call live as the user types.
+type ValidateResponse struct {
+	Valid     bool       `json:"valid"`
+	Error     string     `json:"error,omitempty"`
+	ErrorType string     `json:"error_type,omitempty"` // "parse" or "translate"
+	ErrorPos  *ErrorSpan `json:"error_pos,omitempty"`
+}
+
+// HandleValidate parses and translates a BQL query WITHOUT executing it, so the
+// editor can surface syntax/semantic errors (and their source span for
+// underlining) live without hitting ClickHouse. It loads dictionaries/models
+// best-effort so functions like match() and model_lookup() resolve the same way
+// they would at execution time, avoiding false-positive errors.
+func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Viewer+ required, same as executing a query.
+	user, ok := r.Context().Value("user").(*storage.User)
+	if !ok || user == nil {
+		respondJSON(w, http.StatusUnauthorized, ValidateResponse{Valid: false, Error: "Authentication required"})
+		return
+	}
+	fractalRole := rbac.RoleFromContext(r.Context())
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleViewer) && !rbac.HasAccess(user, prismRole, rbac.RoleViewer) {
+		respondJSON(w, http.StatusForbidden, ValidateResponse{Valid: false, Error: "Insufficient permissions"})
+		return
+	}
+
+	var req QueryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondJSON(w, http.StatusBadRequest, ValidateResponse{Valid: false, Error: "Invalid request body"})
+		return
+	}
+
+	// An empty query is not an error to flag while typing.
+	if strings.TrimSpace(req.Query) == "" {
+		respondJSON(w, http.StatusOK, ValidateResponse{Valid: true})
+		return
+	}
+	const maxQueryLength = 10000
+	if len(req.Query) > maxQueryLength {
+		respondJSON(w, http.StatusOK, ValidateResponse{
+			Valid:     false,
+			Error:     fmt.Sprintf("Query too long (%d chars, max %d)", len(req.Query), maxQueryLength),
+			ErrorType: "parse",
+		})
+		return
+	}
+
+	pipeline, err := parser.ParseQuery(req.Query)
+	if err != nil {
+		respondJSON(w, http.StatusOK, ValidateResponse{
+			Valid:     false,
+			Error:     "Parse error: " + err.Error(),
+			ErrorType: "parse",
+			ErrorPos:  errorSpanFrom(err),
+		})
+		return
+	}
+
+	// Resolve fractal/prism context best-effort for dictionary/model loading.
+	// Honor a caller-supplied fractal only when the user can access it (mirrors
+	// prepareQuery); otherwise fall back to the session context. This prevents
+	// probing another fractal's dictionary/model names through validation.
+	selectedIndex := req.FractalID
+	if selectedIndex != "" && !user.IsAdmin && h.rbacResolver != nil {
+		role := h.rbacResolver.ResolveRole(r.Context(), user, selectedIndex)
+		if !rbac.HasAccess(user, role, rbac.RoleViewer) {
+			selectedIndex = ""
+		}
+	}
+	if selectedIndex == "" {
+		selectedIndex, _ = h.getSelectedIndex(r)
+	}
+	var prismFractalIDs []string
+	selectedPrismID, _ := r.Context().Value("selected_prism").(string)
+	isPrismContext := selectedPrismID != "" && req.FractalID == ""
+	if isPrismContext && h.prismManager != nil {
+		prismFractalIDs, _ = h.prismManager.GetMemberFractalIDs(r.Context(), selectedPrismID)
+	}
+
+	var dictMappings map[string]map[string]string
+	if h.dictionaryManager != nil {
+		if isPrismContext {
+			dictMappings, _ = h.dictionaryManager.ListDictionaryMappings(r.Context(), "", selectedPrismID)
+		} else if selectedIndex != "" {
+			dictMappings, _ = h.dictionaryManager.ListDictionaryMappings(r.Context(), selectedIndex, "")
+		}
+	}
+
+	var modelInfos map[string]parser.AnalyticsModelInfo
+	if h.modelManager != nil && selectedIndex != "" {
+		if infos, err := h.modelManager.ListModelInfos(r.Context(), selectedIndex); err == nil {
+			modelInfos = make(map[string]parser.AnalyticsModelInfo, len(infos))
+			for name, mi := range infos {
+				modelInfos[name] = parser.AnalyticsModelInfo{
+					ID:         mi.ID,
+					TableName:  mi.TableName,
+					ModelType:  string(mi.ModelType),
+					MinSample:  mi.MinSample,
+					TimeBucket: mi.TimeBucket,
+					FractalID:  mi.FractalID,
+				}
+			}
+		}
+	}
+
+	// Time range affects only the generated WHERE clause, which we discard; fall
+	// back to a nominal 1h window when the request omits or malforms it.
+	startTime, endTime, err := h.parseTimeRange(req.Start, req.End)
+	if err != nil {
+		endTime = time.Now()
+		startTime = endTime.Add(-time.Hour)
+	}
+
+	fractalIDForQuery := selectedIndex
+	if isPrismContext {
+		fractalIDForQuery = ""
+	}
+	_, _, hasComment := parser.ExtractCommentParams(pipeline)
+	opts := parser.QueryOptions{
+		StartTime:             startTime,
+		EndTime:               endTime,
+		MaxRows:               h.maxRows,
+		FractalID:             fractalIDForQuery,
+		FractalIDs:            prismFractalIDs,
+		IncludeEmptyFractalID: false,
+		Dictionaries:          dictMappings,
+		Models:                modelInfos,
+		HasCommentFilter:      hasComment,
+		GeoIPEnabled:          h.geoIPEnabled,
+		TableName:             h.queryTableName(),
+		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
+	}
+	if _, err := parser.TranslateToSQLWithOrder(pipeline, opts); err != nil {
+		respondJSON(w, http.StatusOK, ValidateResponse{
+			Valid:     false,
+			Error:     "Query error: " + err.Error(),
+			ErrorType: "translate",
+			ErrorPos:  errorSpanFrom(err),
+		})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, ValidateResponse{Valid: true})
 }
 
 // HandleQuery executes a BQL search and returns the full result set in one

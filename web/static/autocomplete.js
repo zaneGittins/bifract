@@ -738,7 +738,7 @@ const Autocomplete = {
             if (wrapper) hl = wrapper.querySelector('.query-highlight');
         }
         if (hl) {
-            hl.innerHTML = SyntaxHighlight.highlight(input.value) + '<br/>';
+            hl.innerHTML = SyntaxHighlight.highlight(input.value, SyntaxHighlight.errorRanges[id]) + '<br/>';
             hl.scrollTop = input.scrollTop;
             hl.scrollLeft = input.scrollLeft;
         }

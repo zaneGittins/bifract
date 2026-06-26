@@ -1264,6 +1264,17 @@ body {
     color: var(--text-primary);
 }
 
+/* Red wavy underline marking the span of a pre-execution query error. Applied
+   on the highlight overlay (transparent glyphs); text-decoration still renders.
+   Global so it works across every editor surface (search, alerts, notebooks,
+   dashboards, models). */
+.hl-error {
+    text-decoration: underline wavy var(--error, #ef4444);
+    text-decoration-skip-ink: none;
+    -webkit-text-decoration: underline wavy var(--error, #ef4444);
+    text-underline-offset: 0.18em;
+}
+
 /* Allow normal text selection - some visual artifacts are acceptable */
 
 .search-input {

@@ -107,16 +107,27 @@ func (p *Parser) checkIterationLimit() error {
 
 func (p *Parser) current() Token {
 	if p.pos >= len(p.tokens) {
-		return Token{Type: TokenEOF}
+		return p.eofToken()
 	}
 	return p.tokens[p.pos]
 }
 
 func (p *Parser) peek() Token {
 	if p.pos+1 >= len(p.tokens) {
-		return Token{Type: TokenEOF}
+		return p.eofToken()
 	}
 	return p.tokens[p.pos+1]
+}
+
+// eofToken returns a synthetic EOF token positioned at the end of the input so
+// that "expected X, got EOF" errors underline a caret at the end of the query
+// rather than at offset 0.
+func (p *Parser) eofToken() Token {
+	if n := len(p.tokens); n > 0 {
+		last := p.tokens[n-1]
+		return Token{Type: TokenEOF, Pos: last.End, End: last.End}
+	}
+	return Token{Type: TokenEOF}
 }
 
 func (p *Parser) advance() {
@@ -126,7 +137,7 @@ func (p *Parser) advance() {
 func (p *Parser) expect(tokenType TokenType) (Token, error) {
 	tok := p.current()
 	if tok.Type != tokenType {
-		return tok, fmt.Errorf("expected token %s, got %s", tokenType, tok.Type)
+		return tok, newPosError(tok, "expected token %s, got %s", tokenType, tok.Type)
 	}
 	p.advance()
 	return tok, nil
@@ -290,7 +301,8 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		// If the parser position hasn't moved, we're stuck on a token that
 		// no branch consumed. Break to avoid an infinite loop.
 		if p.pos == startPos {
-			return nil, fmt.Errorf("unexpected token in pipeline: %s (%q)", p.current().Type, p.current().Value)
+			cur := p.current()
+			return nil, newPosError(cur, "unexpected token in pipeline: %s (%q)", cur.Type, cur.Value)
 		}
 	}
 
@@ -528,7 +540,7 @@ func (p *Parser) parseValueList() ([]string, error) {
 			val = tok.Value
 		default:
 			if len(values) == 0 {
-				return nil, fmt.Errorf("expected value in list, got %s", tok.Type)
+				return nil, newPosError(tok, "expected value in list, got %s", tok.Type)
 			}
 			return values, nil
 		}
@@ -548,7 +560,7 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 	// Field name
 	tok := p.current()
 	if tok.Type != TokenField {
-		return nil, fmt.Errorf("expected field name, got %s", tok.Type)
+		return nil, newPosError(tok, "expected field name, got %s", tok.Type)
 	}
 	cond.Field = tok.Value
 	p.advance()
@@ -584,7 +596,7 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 		cond.Operator = "=$"
 		p.advance()
 	default:
-		return nil, fmt.Errorf("expected comparison operator (=, !=, >, <, >=, <=, =~, =^, =$), got %s", opTok.Type)
+		return nil, newPosError(opTok, "expected comparison operator (=, !=, >, <, >=, <=, =~, =^, =$), got %s", opTok.Type)
 	}
 
 	// Multi-value operators: parse comma-separated list and return early
@@ -620,7 +632,7 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 			cond.Value = "-" + numTok.Value
 			p.advance()
 		} else {
-			return nil, fmt.Errorf("expected number after '-', got %s", numTok.Type)
+			return nil, newPosError(numTok, "expected number after '-', got %s", numTok.Type)
 		}
 	} else if valTok.Type == TokenMultiply {
 		// * wildcard - could be bare "*" or a pattern like "*powershell*"
@@ -643,7 +655,7 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 			cond.Value = "*"
 		}
 	} else {
-		return nil, fmt.Errorf("expected value, got %s", valTok.Type)
+		return nil, newPosError(valTok, "expected value, got %s", valTok.Type)
 	}
 
 	return cond, nil
@@ -654,7 +666,7 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 
 	tok := p.current()
 	if tok.Type != TokenFunction {
-		return nil, fmt.Errorf("expected function name, got %s", tok.Type)
+		return nil, newPosError(tok, "expected function name, got %s", tok.Type)
 	}
 	cmd.Name = strings.ToLower(tok.Value)
 	p.advance()
@@ -715,7 +727,7 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 					cmd.Arguments = append(cmd.Arguments, argTok.Value)
 					p.advance()
 				} else {
-					return nil, fmt.Errorf("unexpected token in array: %s", argTok.Type)
+					return nil, newPosError(argTok, "unexpected token in array: %s", argTok.Type)
 				}
 
 				// Check for comma
@@ -766,7 +778,7 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 								paramName += ","
 								p.advance()
 							} else {
-								return nil, fmt.Errorf("unexpected token in array parameter: %s", p.current().Type)
+								return nil, newPosError(p.current(), "unexpected token in array parameter: %s", p.current().Type)
 							}
 						}
 						if p.current().Type == TokenRBracket {
@@ -830,7 +842,7 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 					} else if p.current().Type == TokenComma {
 						p.advance()
 					} else {
-						return nil, fmt.Errorf("unexpected token in array: %s", p.current().Type)
+						return nil, newPosError(p.current(), "unexpected token in array: %s", p.current().Type)
 					}
 				}
 				if p.current().Type == TokenRBracket {
@@ -838,7 +850,7 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 				}
 				cmd.Arguments = append(cmd.Arguments, strings.Join(arrParts, ","))
 			} else {
-				return nil, fmt.Errorf("unexpected token in function arguments: %s", argTok.Type)
+				return nil, newPosError(argTok, "unexpected token in function arguments: %s", argTok.Type)
 			}
 
 			// Check for comma
@@ -1063,7 +1075,7 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 	// Field name (could be an aggregate like 'count' or a regular field)
 	fieldTok := p.current()
 	if fieldTok.Type != TokenField && fieldTok.Type != TokenValue {
-		return nil, fmt.Errorf("expected field name in HAVING condition, got %s", fieldTok.Type)
+		return nil, newPosError(fieldTok, "expected field name in HAVING condition, got %s", fieldTok.Type)
 	}
 	having.Field = fieldTok.Value
 	p.advance()
@@ -1090,7 +1102,7 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 	case TokenEndsWithAny:
 		having.Operator = "=$"
 	default:
-		return nil, fmt.Errorf("expected comparison operator in HAVING condition, got %s", opTok.Type)
+		return nil, newPosError(opTok, "expected comparison operator in HAVING condition, got %s", opTok.Type)
 	}
 	p.advance()
 
@@ -1124,14 +1136,14 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 			having.Value = "-" + numTok.Value
 			p.advance()
 		} else {
-			return nil, fmt.Errorf("expected number after '-' in HAVING condition, got %s", numTok.Type)
+			return nil, newPosError(numTok, "expected number after '-' in HAVING condition, got %s", numTok.Type)
 		}
 	} else if valTok.Type == TokenMultiply {
 		// * wildcard means "any non-empty value"
 		having.Value = "*"
 		p.advance()
 	} else {
-		return nil, fmt.Errorf("expected value in HAVING condition, got %s", valTok.Type)
+		return nil, newPosError(valTok, "expected value in HAVING condition, got %s", valTok.Type)
 	}
 
 	return having, nil
@@ -1159,7 +1171,7 @@ func (p *Parser) parseAssignment() (*AssignmentNode, error) {
 	// Field name
 	fieldTok := p.current()
 	if fieldTok.Type != TokenField {
-		return nil, fmt.Errorf("expected field name in assignment, got %s", fieldTok.Type)
+		return nil, newPosError(fieldTok, "expected field name in assignment, got %s", fieldTok.Type)
 	}
 	assignment.Field = fieldTok.Value
 	p.advance()
@@ -1167,7 +1179,7 @@ func (p *Parser) parseAssignment() (*AssignmentNode, error) {
 	// := operator
 	assignTok := p.current()
 	if assignTok.Type != TokenAssign {
-		return nil, fmt.Errorf("expected := in assignment, got %s", assignTok.Type)
+		return nil, newPosError(assignTok, "expected := in assignment, got %s", assignTok.Type)
 	}
 	p.advance()
 
@@ -1189,7 +1201,7 @@ func (p *Parser) parseCaseCommand() (*CommandNode, error) {
 	// Expect {
 	lbrace, err := p.expect(TokenLBrace)
 	if err != nil {
-		return nil, fmt.Errorf("expected '{' after case, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '{' after case, got %s", p.current().Type)
 	}
 
 	// Consume the block body, tracking nested brace depth so that nested case/chain
@@ -1215,7 +1227,7 @@ func (p *Parser) parseCaseCommand() (*CommandNode, error) {
 closed:
 	rbrace, err := p.expect(TokenRBrace)
 	if err != nil {
-		return nil, fmt.Errorf("expected '}' to close case block, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '}' to close case block, got %s", p.current().Type)
 	}
 	caseBody.WriteString("}")
 
@@ -1236,7 +1248,7 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 
 	// Expect (
 	if _, err := p.expect(TokenLParen); err != nil {
-		return nil, fmt.Errorf("expected '(' after chain, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '(' after chain, got %s", p.current().Type)
 	}
 
 	// Parse arguments: grouping fields and optional within=DURATION
@@ -1272,16 +1284,16 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 
 	// Expect )
 	if _, err := p.expect(TokenRParen); err != nil {
-		return nil, fmt.Errorf("expected ')' after chain arguments, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected ')' after chain arguments, got %s", p.current().Type)
 	}
 
 	if len(groupFields) == 0 {
-		return nil, fmt.Errorf("chain() requires at least one grouping field, e.g. chain(user)")
+		return nil, newPosError(p.current(), "chain() requires at least one grouping field, e.g. chain(user)")
 	}
 
 	// Expect {
 	if _, err := p.expect(TokenLBrace); err != nil {
-		return nil, fmt.Errorf("expected '{' after chain(...), got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '{' after chain(...), got %s", p.current().Type)
 	}
 
 	// Capture raw tokens from the block body (avoids double-tokenization of regex literals).
@@ -1293,7 +1305,7 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 
 	// Expect }
 	if _, err := p.expect(TokenRBrace); err != nil {
-		return nil, fmt.Errorf("expected '}' to close chain block, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '}' to close chain block, got %s", p.current().Type)
 	}
 
 	// Arguments: [0]=groupFields (comma-separated), [1]=within (optional)
@@ -1312,7 +1324,7 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 
 	// Expect (
 	if _, err := p.expect(TokenLParen); err != nil {
-		return nil, fmt.Errorf("expected '(' after join, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '(' after join, got %s", p.current().Type)
 	}
 
 	// Parse arguments: join key, optional type=, max=, include=[]
@@ -1346,7 +1358,7 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 						val += ","
 						p.advance()
 					} else {
-						return nil, fmt.Errorf("unexpected token in array: %s", p.current().Type)
+						return nil, newPosError(p.current(), "unexpected token in array: %s", p.current().Type)
 					}
 				}
 				if p.current().Type == TokenRBracket {
@@ -1364,12 +1376,12 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 
 	// Expect )
 	if _, err := p.expect(TokenRParen); err != nil {
-		return nil, fmt.Errorf("expected ')' after join arguments, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected ')' after join arguments, got %s", p.current().Type)
 	}
 
 	// Expect {
 	if _, err := p.expect(TokenLBrace); err != nil {
-		return nil, fmt.Errorf("expected '{' after join(...), got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '{' after join(...), got %s", p.current().Type)
 	}
 
 	// Consume block body as raw string, tracking brace depth for nested case/chain blocks
@@ -1396,7 +1408,7 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 
 	// Expect closing }
 	if _, err := p.expect(TokenRBrace); err != nil {
-		return nil, fmt.Errorf("expected '}' to close join block, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '}' to close join block, got %s", p.current().Type)
 	}
 
 	// Arguments: [0]=block body, [1..N]=parsed params (key, type=, max=, include=)
@@ -1447,7 +1459,7 @@ func (p *Parser) parseExprAtom(expr *strings.Builder) (TokenType, error) {
 		}
 		expr.WriteString(sub)
 		if p.current().Type != TokenRParen {
-			return TokenEOF, fmt.Errorf("expected ')' in expression, got %s", p.current().Type)
+			return TokenEOF, newPosError(p.current(), "expected ')' in expression, got %s", p.current().Type)
 		}
 		expr.WriteString(")")
 		p.advance()
@@ -1477,7 +1489,7 @@ func (p *Parser) parseExprAtom(expr *strings.Builder) (TokenType, error) {
 		}
 		return tok.Type, nil
 	default:
-		return TokenEOF, fmt.Errorf("expected value, field, string or function in expression, got %s", tok.Type)
+		return TokenEOF, newPosError(tok, "expected value, field, string or function in expression, got %s", tok.Type)
 	}
 }
 

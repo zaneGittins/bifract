@@ -370,17 +370,24 @@ window.BifractCharts = {
 
         const fields = opts.fields || Object.keys(data[0] || {});
         const timeField = fields.find(f => f === 'time_bucket') || fields[0];
-        const valueFields = fields.filter(f =>
+        const cfg = opts.config || {};
+        // When the backend names the value series explicitly (e.g. percent()),
+        // use those as the series and treat nothing as a grouping dimension.
+        const explicitValues = Array.isArray(cfg.valueFields)
+            ? cfg.valueFields.filter(f => fields.includes(f))
+            : null;
+        const valueFields = (explicitValues && explicitValues.length) ? explicitValues : fields.filter(f =>
             f !== timeField && f !== 'time_bucket' &&
             (f === '_count' || f === 'count' ||
              f === '_sum' || f === '_avg' || f === '_min' || f === '_max' ||
              f.startsWith('sum_') || f.startsWith('avg_') || f.startsWith('min_') ||
              f.startsWith('max_') || f.startsWith('bucket_') || f.startsWith('stddev_'))
         );
-        const groupFields = fields.filter(f => f !== timeField && !valueFields.includes(f));
+        const groupFields = (explicitValues && explicitValues.length)
+            ? []
+            : fields.filter(f => f !== timeField && !valueFields.includes(f));
         const cv = this._cv();
         const valueField = valueFields[0] || fields[1];
-        const cfg = opts.config || {};
         const unit = cfg.unit;
         const pal = this._palette(cfg, this.SERIES_COLORS);
 
@@ -412,20 +419,27 @@ window.BifractCharts = {
 
             labels = Object.values(groups)[0].map(r => String(r[timeField] || ''));
         } else {
-            const seriesLabel = valueField.replace(/_/g, ' ');
-            const color = this._override(cfg, seriesLabel, 0) || (this._hasCustomColors(cfg) ? pal[0] : cv('--chart-accent'));
+            // One overlaid area per value field. A single value field keeps the
+            // accent colour; multiple (e.g. percent() series) get palette colours
+            // with a translucent fill so overlapping areas remain readable.
             labels = data.map(r => String(r[timeField] || ''));
-            datasets = [{
-                label: seriesLabel,
-                data: data.map(r => parseFloat(r[valueField]) || 0),
-                borderColor: color,
-                backgroundColor: color + '20',
-                fill: true,
-                tension: 0.3,
-                pointRadius: 2,
-                pointHoverRadius: 5,
-                borderWidth: 2
-            }];
+            const multi = valueFields.length > 1;
+            datasets = valueFields.map((vf, idx) => {
+                const seriesLabel = vf.replace(/_/g, ' ');
+                const color = this._override(cfg, vf, idx) || this._override(cfg, seriesLabel, idx) ||
+                    (multi ? pal[idx % pal.length] : (this._hasCustomColors(cfg) ? pal[0] : cv('--chart-accent')));
+                return {
+                    label: seriesLabel,
+                    data: data.map(r => parseFloat(r[vf]) || 0),
+                    borderColor: color,
+                    backgroundColor: color + (multi ? '80' : '20'),
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: multi ? 0 : 2,
+                    pointHoverRadius: 5,
+                    borderWidth: 2
+                };
+            });
         }
 
         const chart = new Chart(canvas, {
@@ -450,7 +464,10 @@ window.BifractCharts = {
                     } : {})
                 },
                 scales: this._themedScales({
-                    y: unit ? { ticks: { color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 11 }, callback: (v) => this.formatValue(v, unit) } } : undefined,
+                    y: (unit || cfg.yLabel) ? {
+                        title: cfg.yLabel ? { display: true, text: cfg.yLabel, color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 12, weight: '600' } } : undefined,
+                        ticks: unit ? { color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 11 }, callback: (v) => this.formatValue(v, unit) } : undefined
+                    } : undefined,
                     x: {
                         ticks: {
                             color: cv('--chart-text-secondary'),

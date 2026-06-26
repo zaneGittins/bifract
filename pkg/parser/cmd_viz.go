@@ -196,6 +196,34 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		field := extractFunctionField(function, "min")
 		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("min(%s)", cast), Alias: "_min"})
+	} else if strings.Contains(function, "percent(") {
+		// percent(f1, f2, ...): one series per field giving the share of rows in
+		// each bucket where that (boolean) field is truthy. Fields resolve through
+		// the registry so case()/computed boolean columns are inlined.
+		fields := parseTimechartFieldList(function, "percent")
+		var percentFields []string
+		for _, f := range fields {
+			safe, err := sanitizeIdentifier(f)
+			if err != nil {
+				return fmt.Errorf("timechart percent(): %w", err)
+			}
+			// Resolve BEFORE re-registering so a case()/computed boolean column is
+			// inlined as its CASE expression, not referenced by its own alias.
+			ref := resolveFieldRef(f, ctx.Registry)
+			expr := fmt.Sprintf("round(100.0 * countIf(toString(%s) IN ('true', '1')) / count(*), 2)", ref)
+			// Upsert so a same-named per-row column from a prior case() is replaced
+			// by this aggregate rather than duplicated; re-register as an aggregate
+			// output so stage assembly keeps it (a per-row alias would be stripped).
+			source.Layer.UpsertSelect(SelectExpr{Expr: expr, Alias: safe})
+			ctx.Registry.Register(f, FieldKindAggregate, f, ctx.CmdIndex)
+			ctx.Registry.SetResolveExpr(f, f)
+			ctx.Plan.aggregationOutputs[f] = expr
+			percentFields = append(percentFields, f)
+		}
+		ctx.Plan.IsAggregated = true
+		ctx.Plan.ChartConfig["valueFields"] = percentFields
+		ctx.Plan.ChartConfig["unit"] = "percent"
+		ctx.Plan.ChartConfig["yLabel"] = "Percent"
 	} else if strings.Contains(function, "groupby(") {
 		fields, distinct := parseTimechartGroupBy(function)
 		if distinct && len(fields) > 0 {
@@ -228,37 +256,44 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
-// parseTimechartGroupBy extracts the field list and distinct flag from a
-// timechart function=groupby(field[,field...][,distinct=true]) spec. With
-// distinct, the result is a single cardinality series; otherwise rows are
-// grouped by the field(s) and counted per bucket.
-func parseTimechartGroupBy(function string) (fields []string, distinct bool) {
-	const prefix = "groupby("
+// parseTimechartFieldList extracts the comma-separated field list from a
+// timechart function spec like name(field[,field...]). A leading field= prefix
+// on any entry is stripped.
+func parseTimechartFieldList(function, name string) []string {
+	prefix := name + "("
 	start := strings.Index(function, prefix)
 	if start < 0 {
-		return nil, false
+		return nil
 	}
 	inner := function[start+len(prefix):]
 	if i := strings.LastIndex(inner, ")"); i >= 0 {
 		inner = inner[:i]
 	}
+	var fields []string
 	for _, part := range strings.Split(inner, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
+		fields = append(fields, strings.TrimPrefix(part, "field="))
+	}
+	return fields
+}
+
+// parseTimechartGroupBy extracts the field list and distinct flag from a
+// timechart function=groupby(field[,field...][,distinct=true]) spec. With
+// distinct, the result is a single cardinality series; otherwise rows are
+// grouped by the field(s) and counted per bucket.
+func parseTimechartGroupBy(function string) (fields []string, distinct bool) {
+	for _, part := range parseTimechartFieldList(function, "groupby") {
 		switch part {
 		case "distinct=true", "unique=true":
 			distinct = true
-			continue
 		case "distinct=false", "unique=false":
 			distinct = false
-			continue
+		default:
+			fields = append(fields, part)
 		}
-		if strings.HasPrefix(part, "field=") {
-			part = strings.TrimPrefix(part, "field=")
-		}
-		fields = append(fields, part)
 	}
 	return fields, distinct
 }

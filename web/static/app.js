@@ -20,6 +20,24 @@ const App = {
             SyntaxHighlight.init();
         }
 
+        // Live, debounced BQL validation for the main search box: underline the
+        // offending span and surface the message before the query is ever run.
+        if (window.QueryValidate && window.QueryExecutor) {
+            QueryValidate.attach({
+                inputId: 'queryInput',
+                highlightId: 'queryHighlight',
+                getFractalId: () => window.FractalContext?.currentFractal?.id || undefined,
+                onError: (msg, res) => QueryExecutor.showQueryError(msg, res.error_pos),
+                onClear: () => QueryExecutor.clearQueryError(),
+            });
+            // Alert editor query box (static markup, shares the search-input pattern).
+            QueryValidate.attach({
+                inputId: 'editorQueryInput',
+                highlightId: 'alertQueryHighlight',
+                getFractalId: () => window.FractalContext?.currentFractal?.id || undefined,
+            });
+        }
+
         if (window.BQLLang) {
             BQLLang.load();
         }
