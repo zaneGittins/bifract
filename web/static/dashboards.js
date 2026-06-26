@@ -32,6 +32,14 @@ const Dashboards = {
         if (window.FractalContext && typeof FractalContext.subscribe === 'function') {
             FractalContext.subscribe('Dashboards', () => this.onFractalChange());
         }
+        if (!this._kebabCloseHandler) {
+            this._kebabCloseHandler = (e) => {
+                if (!e.target.closest('.widget-kebab-wrapper')) {
+                    document.querySelectorAll('.widget-kebab-menu.open').forEach(m => m.classList.remove('open'));
+                }
+            };
+            document.addEventListener('click', this._kebabCloseHandler);
+        }
     },
 
     onFractalChange() {
@@ -535,9 +543,15 @@ const Dashboards = {
                 <span class="widget-title">${Utils.escapeHtml(title)}</span>
                 <div class="widget-actions">
                     <button class="widget-btn widget-execute-btn" title="Re-execute" onclick="Dashboards.executeWidget('${widget.id}')">&#9654;</button>
-                    <button class="widget-btn widget-config-btn" title="Conditional formatting" onclick="Dashboards.showRowColoringPanel('${widget.id}')" style="font-size:0.75rem;">&#9881;</button>
-                    <button class="widget-btn widget-edit-btn" title="Edit" onclick="Dashboards.showInlineWidgetEdit('${widget.id}')">&#9998;</button>
-                    <button class="widget-btn widget-delete-btn" title="Delete" onclick="Dashboards.deleteWidget('${widget.id}')">&#x2715;</button>
+                    <div class="widget-kebab-wrapper">
+                        <button class="widget-btn widget-kebab-btn" title="More options" onclick="Dashboards.toggleWidgetKebab('${widget.id}', event)">&#x22EF;</button>
+                        <div class="widget-kebab-menu" id="widget-kebab-menu-${widget.id}">
+                            <button onclick="Dashboards.showInlineWidgetEdit('${widget.id}')">Edit</button>
+                            <button onclick="Dashboards.showRowColoringPanel('${widget.id}')">Conditional formatting</button>
+                            <div class="kebab-divider"></div>
+                            <button class="kebab-danger" onclick="Dashboards.deleteWidget('${widget.id}')">Delete</button>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="widget-content" id="wc-${widget.id}">
@@ -547,6 +561,15 @@ const Dashboards = {
         `;
 
         return el;
+    },
+
+    toggleWidgetKebab(widgetId, event) {
+        event.stopPropagation();
+        const menu = document.getElementById(`widget-kebab-menu-${widgetId}`);
+        if (!menu) return;
+        const isOpen = menu.classList.contains('open');
+        document.querySelectorAll('.widget-kebab-menu.open').forEach(m => m.classList.remove('open'));
+        if (!isOpen) menu.classList.add('open');
     },
 
     // =====================

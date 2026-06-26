@@ -28,6 +28,7 @@ type User struct {
 	AuthProvider        string     `json:"auth_provider"`
 	OIDCSubject         string     `json:"-"`
 	ForcePasswordChange bool       `json:"force_password_change,omitempty"`
+	Enabled             bool       `json:"enabled"`
 }
 
 type Comment struct {
@@ -117,7 +118,7 @@ func (c *PostgresClient) GetUser(ctx context.Context, username string) (*User, e
 	err := c.db.QueryRowContext(ctx, `
 		SELECT username, password_hash, display_name, gravatar_color, gravatar_initial,
 		       created_at, last_login, is_admin, COALESCE(auth_provider, 'local'),
-		       COALESCE(force_password_change, FALSE)
+		       COALESCE(force_password_change, FALSE), COALESCE(enabled, TRUE)
 		FROM users
 		WHERE username = $1
 	`, username).Scan(
@@ -131,6 +132,7 @@ func (c *PostgresClient) GetUser(ctx context.Context, username string) (*User, e
 		&user.IsAdmin,
 		&user.AuthProvider,
 		&user.ForcePasswordChange,
+		&user.Enabled,
 	)
 
 	if err == sql.ErrNoRows {
@@ -179,7 +181,7 @@ func (c *PostgresClient) ListUsers(ctx context.Context) ([]User, error) {
 		SELECT username, display_name, gravatar_color, gravatar_initial,
 		       created_at, last_login, is_admin,
 		       (invite_token_hash IS NOT NULL) AS invite_pending,
-		       COALESCE(auth_provider, 'local')
+		       COALESCE(auth_provider, 'local'), COALESCE(enabled, TRUE)
 		FROM users
 		ORDER BY created_at DESC
 	`)
@@ -202,6 +204,7 @@ func (c *PostgresClient) ListUsers(ctx context.Context) ([]User, error) {
 			&user.IsAdmin,
 			&user.InvitePending,
 			&user.AuthProvider,
+			&user.Enabled,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user: %w", err)
@@ -231,7 +234,8 @@ func (c *PostgresClient) GetUserByOIDCSubject(ctx context.Context, subject strin
 	user := &User{}
 	err := c.db.QueryRowContext(ctx, `
 		SELECT username, display_name, gravatar_color, gravatar_initial,
-		       created_at, last_login, is_admin, auth_provider, oidc_subject
+		       created_at, last_login, is_admin, auth_provider, oidc_subject,
+		       COALESCE(enabled, TRUE)
 		FROM users
 		WHERE oidc_subject = $1
 	`, subject).Scan(
@@ -244,6 +248,7 @@ func (c *PostgresClient) GetUserByOIDCSubject(ctx context.Context, subject strin
 		&user.IsAdmin,
 		&user.AuthProvider,
 		&user.OIDCSubject,
+		&user.Enabled,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -291,6 +296,25 @@ func (c *PostgresClient) UpdateUser(ctx context.Context, username string, displa
 
 	if err != nil {
 		return fmt.Errorf("failed to update user: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("user not found: %s", username)
+	}
+	return nil
+}
+
+// SetUserEnabled enables or disables a user account. A disabled user cannot
+// log in and is locked out of any active session on their next request.
+func (c *PostgresClient) SetUserEnabled(ctx context.Context, username string, enabled bool) error {
+	result, err := c.db.ExecContext(ctx,
+		`UPDATE users SET enabled = $2 WHERE username = $1`,
+		username, enabled)
+	if err != nil {
+		return fmt.Errorf("failed to update user enabled state: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {

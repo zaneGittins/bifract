@@ -261,7 +261,11 @@ const SettingsView = {
             </td>`;
             html += `<td><span class="role-badge role-${user.role}">${user.role === 'admin' ? 'Tenant Admin' : 'User'}</span></td>`;
 
-            if (user.invite_pending) {
+            const isDisabled = user.enabled === false;
+
+            if (isDisabled) {
+                html += `<td><span class="role-badge role-disabled">Disabled</span></td>`;
+            } else if (user.invite_pending) {
                 html += `<td><span class="role-badge role-pending">Invite pending</span></td>`;
             } else {
                 html += `<td class="text-muted">${lastLogin}</td>`;
@@ -278,6 +282,13 @@ const SettingsView = {
                 html += `<button class="btn-invite-reset" onclick="SettingsView.resetInvite('${Utils.escapeJs(user.username)}')" title="Regenerate invite link">Resend Invite</button>`;
             } else if (!isSelf && isAdmin) {
                 html += `<button class="btn-secondary btn-sm" onclick="SettingsView.resetPassword('${Utils.escapeJs(user.username)}')">Reset Password</button>`;
+            }
+            if (!isSelf && isAdmin && !user.invite_pending) {
+                if (isDisabled) {
+                    html += `<button class="btn-secondary btn-sm" onclick="SettingsView.setUserEnabled('${Utils.escapeJs(user.username)}', true)">Enable</button>`;
+                } else {
+                    html += `<button class="btn-secondary btn-sm" onclick="SettingsView.setUserEnabled('${Utils.escapeJs(user.username)}', false)">Disable</button>`;
+                }
             }
             if (!isSelf) {
                 html += `<button class="btn-delete-user" onclick="SettingsView.deleteUser('${Utils.escapeJs(user.username)}')">Delete</button>`;
@@ -348,6 +359,33 @@ const SettingsView = {
             }
         } catch (error) {
             console.error('Error updating user:', error);
+            if (window.Toast) Toast.error('Error', 'Network error');
+        }
+    },
+
+    async setUserEnabled(username, enabled) {
+        const action = enabled ? 'enable' : 'disable';
+        if (!enabled && !confirm(`Disable @${username}? They will be signed out and unable to log in until re-enabled.`)) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/v1/users/${encodeURIComponent(username)}/enabled`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ enabled })
+            });
+
+            const data = await response.json();
+            if (data.success) {
+                if (window.Toast) Toast.success('Success', data.message || `User ${action}d`);
+                await this.loadUsers();
+            } else {
+                if (window.Toast) Toast.error('Error', data.error || `Failed to ${action} user`);
+            }
+        } catch (error) {
+            console.error(`Error trying to ${action} user:`, error);
             if (window.Toast) Toast.error('Error', 'Network error');
         }
     },

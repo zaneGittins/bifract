@@ -329,6 +329,13 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block login for existing accounts that have been disabled.
+	if user != nil && !user.Enabled {
+		h.logAuthEvent("oidc_login_failed", user.Username, ip, "account disabled")
+		http.Redirect(w, r, "/login.html?error=account_disabled", http.StatusFound)
+		return
+	}
+
 	// JIT provisioning: create user if not found
 	if user == nil {
 		username := deriveUsername(claims.Email, claims.PreferredUsername, claims.Sub)

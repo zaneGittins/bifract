@@ -5389,6 +5389,11 @@ body {
     color: #f59e0b;
 }
 
+.role-disabled {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+
 .user-actions-cell {
     display: flex;
     gap: 0.5rem;
@@ -11961,6 +11966,12 @@ div.vis-tooltip {
     display: flex;
     gap: 4px;
     flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.dashboard-widget:hover .widget-actions {
+    opacity: 1;
 }
 
 .widget-btn {
@@ -11982,6 +11993,59 @@ div.vis-tooltip {
 
 .widget-delete-btn:hover {
     color: var(--error);
+}
+
+/* Widget kebab menu */
+.widget-kebab-wrapper {
+    position: relative;
+}
+
+.widget-kebab-btn {
+    font-size: 0.9rem;
+    letter-spacing: 1px;
+}
+
+.widget-kebab-menu {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-lg);
+    min-width: 160px;
+    z-index: 1000;
+    overflow: hidden;
+}
+
+.widget-kebab-menu.open {
+    display: block;
+}
+
+.widget-kebab-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.widget-kebab-menu button:hover {
+    background: var(--bg-tertiary);
+}
+
+.widget-kebab-menu button.kebab-danger {
+    color: var(--error-color, #e74c3c);
+}
+
+.widget-kebab-menu button.kebab-danger:hover {
+    background: rgba(231, 76, 60, 0.1);
 }
 
 /* Widget query preview (collapsed, readonly) */

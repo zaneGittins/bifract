@@ -466,6 +466,8 @@
                     this.showError('Authentication failed. Please try again or contact your administrator.');
                 } else if (error === 'oidc_domain') {
                     this.showError('Your email domain is not authorized for this application.');
+                } else if (error === 'account_disabled') {
+                    this.showError('This account has been disabled. Please contact an administrator.');
                 }
 
                 // Check OIDC availability

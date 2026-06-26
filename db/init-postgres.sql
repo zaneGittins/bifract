@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS users (
     is_admin BOOLEAN DEFAULT FALSE,
     auth_provider VARCHAR(20) NOT NULL DEFAULT 'local',
     oidc_subject VARCHAR(255),
-    force_password_change BOOLEAN NOT NULL DEFAULT FALSE
+    force_password_change BOOLEAN NOT NULL DEFAULT FALSE,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE
 );
 
 -- Ensure OIDC columns exist (handles case where table was created by container init without them)
@@ -91,6 +92,7 @@ CREATE TRIGGER user_gravatar_trigger
 ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_token_hash VARCHAR(255);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_expires_at TIMESTAMP;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS force_password_change BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
 -- Insert default admin user
 -- Generated with: bcrypt.GenerateFromPassword([]byte("bifract"), 10)

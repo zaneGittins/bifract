@@ -524,6 +524,16 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block login for disabled accounts
+	if !user.Enabled {
+		h.logAuthEvent("login_failed", req.Username, ip, "account disabled")
+		json.NewEncoder(w).Encode(Response{
+			Success: false,
+			Error:   "This account has been disabled. Please contact an administrator.",
+		})
+		return
+	}
+
 	// Block password login for OIDC-provisioned users
 	if user.AuthProvider == "oidc" {
 		json.NewEncoder(w).Encode(Response{
@@ -1059,6 +1069,20 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 			if session, exists := h.getSession(cookie.Value); exists {
 				// Session auth successful - load user from database
 				if user, err := h.pg.GetUser(r.Context(), session.Username); err == nil {
+					// Lock out users whose account was disabled. Because the
+					// user is loaded fresh from the DB each request, this takes
+					// effect on the next request even with an active session.
+					// Logout stays reachable so the client can clear its cookie.
+					if !user.Enabled && r.URL.Path != "/api/v1/auth/logout" {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusForbidden)
+						json.NewEncoder(w).Encode(Response{
+							Success: false,
+							Error:   "Your account has been disabled.",
+						})
+						return
+					}
+
 					ctx := context.WithValue(r.Context(), "user", user)
 					ctx = context.WithValue(ctx, "auth_type", "session")
 					ctx = context.WithValue(ctx, "selected_fractal", session.SelectedFractal)
@@ -1236,6 +1260,7 @@ func (h *AuthHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 			"created_at":       u.CreatedAt,
 			"last_login":       u.LastLogin,
 			"invite_pending":   u.InvitePending,
+			"enabled":          u.Enabled,
 		}
 	}
 
@@ -1358,6 +1383,65 @@ func (h *AuthHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Response{Success: true, Message: "User updated successfully"})
+}
+
+// HandleSetUserEnabled allows an admin to enable or disable a user account.
+// Disabling locks the user out of new logins and terminates active sessions.
+func (h *AuthHandler) HandleSetUserEnabled(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	user := r.Context().Value("user").(*storage.User)
+	if !user.IsAdmin {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Only administrators can enable or disable users"})
+		return
+	}
+
+	rawUsername := chi.URLParam(r, "username")
+	if rawUsername == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Username is required"})
+		return
+	}
+	username, err := url.PathUnescape(rawUsername)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid username"})
+		return
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		return
+	}
+
+	// Prevent locking yourself out.
+	if username == user.Username && !req.Enabled {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Cannot disable your own account"})
+		return
+	}
+
+	if err := h.pg.SetUserEnabled(r.Context(), username, req.Enabled); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to update user"})
+		return
+	}
+
+	// Terminate active sessions so a disabled user is logged out immediately.
+	if !req.Enabled {
+		h.invalidateUserSessions(username)
+	}
+
+	msg := "User enabled successfully"
+	if !req.Enabled {
+		msg = "User disabled successfully"
+	}
+	json.NewEncoder(w).Encode(Response{Success: true, Message: msg})
 }
 
 // ============================

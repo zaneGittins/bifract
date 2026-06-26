@@ -1067,6 +1067,7 @@ func main() {
 			r.Post("/auth/admin-reset-password", authHandler.HandleAdminResetPassword)
 			r.Get("/users", authHandler.HandleListUsers)
 			r.Put("/users/{username}", authHandler.HandleUpdateUser)
+			r.Put("/users/{username}/enabled", authHandler.HandleSetUserEnabled)
 			r.Delete("/users", authHandler.HandleDeleteUser)
 			r.Get("/users/mtls-status", authHandler.HandleMTLSStatus)
 			r.Post("/users/{username}/client-cert", authHandler.HandleGenerateClientCert)
