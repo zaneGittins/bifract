@@ -197,13 +197,26 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("min(%s)", cast), Alias: "_min"})
 	} else if strings.Contains(function, "groupby(") {
-		field := extractFunctionField(function, "groupby")
-		if field != "" {
-			ref := resolveFieldRef(field, ctx.Registry)
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: ref, Alias: field})
-			source.Layer.GroupBy = append(source.Layer.GroupBy, ref)
+		fields, distinct := parseTimechartGroupBy(function)
+		if distinct && len(fields) > 0 {
+			// Cardinality over time: count distinct values (or tuples) of the
+			// field(s) within each bucket as a single series.
+			refs := make([]string, len(fields))
+			for i, f := range fields {
+				refs[i] = resolveFieldRef(f, ctx.Registry)
+			}
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
+				Expr:  fmt.Sprintf("uniqExact(%s)", strings.Join(refs, ", ")),
+				Alias: "_count",
+			})
+		} else {
+			for _, f := range fields {
+				ref := resolveFieldRef(f, ctx.Registry)
+				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: ref, Alias: f})
+				source.Layer.GroupBy = append(source.Layer.GroupBy, ref)
+			}
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
 		}
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
 		source.Layer.OrderBy = append([]string{"_count DESC"}, source.Layer.OrderBy...)
 	}
 
@@ -213,6 +226,41 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.ChartType = "timechart"
 	ctx.Plan.ChartConfig["span"] = span
 	return nil
+}
+
+// parseTimechartGroupBy extracts the field list and distinct flag from a
+// timechart function=groupby(field[,field...][,distinct=true]) spec. With
+// distinct, the result is a single cardinality series; otherwise rows are
+// grouped by the field(s) and counted per bucket.
+func parseTimechartGroupBy(function string) (fields []string, distinct bool) {
+	const prefix = "groupby("
+	start := strings.Index(function, prefix)
+	if start < 0 {
+		return nil, false
+	}
+	inner := function[start+len(prefix):]
+	if i := strings.LastIndex(inner, ")"); i >= 0 {
+		inner = inner[:i]
+	}
+	for _, part := range strings.Split(inner, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		switch part {
+		case "distinct=true", "unique=true":
+			distinct = true
+			continue
+		case "distinct=false", "unique=false":
+			distinct = false
+			continue
+		}
+		if strings.HasPrefix(part, "field=") {
+			part = strings.TrimPrefix(part, "field=")
+		}
+		fields = append(fields, part)
+	}
+	return fields, distinct
 }
 
 // graphWorldHandler handles graphWorld(lat=field, lon=field, label=field, limit=N)

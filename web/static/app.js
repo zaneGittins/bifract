@@ -1288,22 +1288,43 @@ const App = {
                 return Math.max(1, Math.round(mirror.offsetHeight / lineHeight));
             };
 
+            const caretLine = () => {
+                const before = textarea.value.substring(0, textarea.selectionStart);
+                return (before.match(/\n/g) || []).length;
+            };
+
+            // Subtly brighten the gutter number for the caret's current line.
+            const setActive = (idx) => {
+                const prev = gutter.querySelector('.ql-cur');
+                if (prev) prev.classList.remove('ql-cur');
+                if (idx == null) return;
+                const el = gutter.querySelector('span[data-ln="' + idx + '"]');
+                if (el) el.classList.add('ql-cur');
+            };
+            const refreshActive = () => setActive(document.activeElement === textarea ? caretLine() : null);
+
             const update = () => {
                 const cs = window.getComputedStyle(textarea);
                 const lineHeight = parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) * 1.5);
                 const lines = textarea.value.split('\n');
-                const parts = [];
+                const rows = [];
                 for (let i = 0; i < lines.length; i++) {
-                    parts.push(String(i + 1));
+                    rows.push('<span data-ln="' + i + '">' + (i + 1) + '</span>');
                     // Pad the continuation rows of a wrapped line with blanks.
                     const extra = rowsForLine(lines[i], cs, lineHeight) - 1;
-                    for (let r = 0; r < extra; r++) parts.push('');
+                    for (let r = 0; r < extra; r++) rows.push('<span></span>');
                 }
-                gutter.textContent = parts.join('\n');
+                gutter.innerHTML = rows.join('\n');
+                refreshActive();
                 gutter.scrollTop = textarea.scrollTop;
             };
 
             textarea.addEventListener('input', update);
+            // Caret can move without changing text (arrows, click): re-mark only.
+            textarea.addEventListener('keyup', refreshActive);
+            textarea.addEventListener('click', refreshActive);
+            textarea.addEventListener('focus', refreshActive);
+            textarea.addEventListener('blur', () => setActive(null));
             textarea.addEventListener('scroll', () => {
                 gutter.scrollTop = textarea.scrollTop;
             });

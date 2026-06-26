@@ -1231,6 +1231,12 @@ body {
     border-radius: 4px 0 0 4px;
 }
 
+/* Current line: a brightness + weight bump on just its number. */
+.query-line-numbers span.ql-cur {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
 .query-highlight {
     position: absolute;
     top: 1px;
@@ -9602,6 +9608,17 @@ input[type="number"]::-webkit-outer-spin-button {
 .chart-container > canvas {
     max-width: 100%;
     max-height: 400px;
+}
+
+/* Inside dashboard widgets the chart must track the widget's resizable box,
+   not the global 400px standalone-chart cap. Let Chart.js responsive sizing fill
+   the widget instead. */
+.widget-content .chart-container {
+    min-height: 0;
+}
+
+.widget-content .chart-container > canvas {
+    max-height: none;
 }
 
 .chart-container .heatmap-container canvas {

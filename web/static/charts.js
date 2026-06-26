@@ -372,9 +372,10 @@ window.BifractCharts = {
         const timeField = fields.find(f => f === 'time_bucket') || fields[0];
         const valueFields = fields.filter(f =>
             f !== timeField && f !== 'time_bucket' &&
-            (f === '_count' || f === 'count' || f.startsWith('sum_') ||
-             f.startsWith('avg_') || f.startsWith('min_') || f.startsWith('max_') ||
-             f.startsWith('bucket_') || f.startsWith('stddev_'))
+            (f === '_count' || f === 'count' ||
+             f === '_sum' || f === '_avg' || f === '_min' || f === '_max' ||
+             f.startsWith('sum_') || f.startsWith('avg_') || f.startsWith('min_') ||
+             f.startsWith('max_') || f.startsWith('bucket_') || f.startsWith('stddev_'))
         );
         const groupFields = fields.filter(f => f !== timeField && !valueFields.includes(f));
         const cv = this._cv();
@@ -546,9 +547,10 @@ window.BifractCharts = {
 
         if (data && data.length > 0) {
             valueField = fields.find(f =>
-                f === '_count' || f === 'count' || f.startsWith('sum_') ||
-                f.startsWith('avg_') || f.startsWith('min_') || f.startsWith('max_') ||
-                f.startsWith('stddev_')
+                f === '_count' || f === 'count' ||
+                f === '_sum' || f === '_avg' || f === '_min' || f === '_max' ||
+                f.startsWith('sum_') || f.startsWith('avg_') || f.startsWith('min_') ||
+                f.startsWith('max_') || f.startsWith('stddev_')
             ) || fields[0];
 
             const val = data[0][valueField];

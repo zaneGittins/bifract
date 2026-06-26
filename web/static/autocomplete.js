@@ -529,6 +529,10 @@ const Autocomplete = {
 
     _refilterMenu(textarea) {
         const ctx = this._computeContext(textarea);
+        // Once the caret reaches a spot with nothing to complete (e.g. right after
+        // a closing ")" or a finished value), close the menu so Enter runs the
+        // query instead of accepting a stray suggestion from the full list.
+        if (!this._isCompletable(ctx)) { this._hideMenu(); return; }
         const items = this._buildItems(ctx);
         if (!items.length) { this._hideMenu(); return; }
         this._ctx = ctx;
