@@ -1423,11 +1423,21 @@ func splitTopLevelArgs(s string) []string {
 	var parts []string
 	depth := 0
 	start := 0
+	var quote rune
 	for i, ch := range s {
+		// Ignore separators inside quoted strings (e.g. sprintf("%d,%d", ...)).
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
 		switch ch {
-		case '(':
+		case '\'', '"':
+			quote = ch
+		case '(', '[':
 			depth++
-		case ')':
+		case ')', ']':
 			depth--
 		case ',':
 			if depth == 0 {
@@ -1440,6 +1450,47 @@ func splitTopLevelArgs(s string) []string {
 		parts = append(parts, strings.TrimSpace(s[start:]))
 	}
 	return parts
+}
+
+// aggregatingCommands lists pipeline commands that collapse rows via GROUP BY or
+// aggregate functions. It is used to decide whether a field assignment occurs
+// before aggregation (and so must be inlined as a per-row value) or after it
+// (computed post-GROUP BY in the outer formatter). Keep in sync with the
+// aggregating command handlers registered in cmd_aggregate.go / cmd_viz.go.
+var aggregatingCommands = map[string]bool{
+	"groupby": true, "multi": true, "count": true, "sum": true, "avg": true,
+	"max": true, "min": true, "median": true, "percentile": true,
+	"stddev": true, "stdDev": true, "skewness": true, "skew": true,
+	"kurtosis": true, "kurt": true, "frequency": true, "iqr": true,
+	"selectfirst": true, "selectlast": true, "top": true, "mad": true,
+	"bucket": true, "timechart": true, "piechart": true, "barchart": true,
+	"singleval": true, "heatmap": true, "histogram": true,
+	"modifiedzscore": true, "modifiedz": true, "mzscore": true,
+	"madoutlier": true, "outlier": true,
+}
+
+// firstAggregatingCommandIndex returns the index of the first command that
+// aggregates, or len(commands) if none do.
+func firstAggregatingCommandIndex(commands []CommandNode) int {
+	for i, cmd := range commands {
+		if aggregatingCommands[cmd.Name] {
+			return i
+		}
+	}
+	return len(commands)
+}
+
+// unwrapList strips a single surrounding [ ... ] from a list-style argument and
+// returns the inner content. Function-call arguments preserve brackets verbatim
+// from the source, so the bracketed list form (e.g. multi([f1, f2])) and the
+// plain form (multi(f1, f2)) must both be accepted. Input that is not
+// bracket-wrapped is returned unchanged.
+func unwrapList(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		return strings.TrimSpace(s[1 : len(s)-1])
+	}
+	return s
 }
 
 // processStatsFn processes a single multi sub-function (e.g. "count(field=x,distinct=true,as=y)")

@@ -752,7 +752,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 			selectFields := selectExprStrings(source.Layer.Selects)
 			if strings.HasPrefix(funcDef, "multi(") {
-				inner := funcDef[len("multi(") : len(funcDef)-1]
+				inner := unwrapList(funcDef[len("multi(") : len(funcDef)-1])
 				for _, fn := range splitTopLevelArgs(inner) {
 					if processStatsFn(fn, &selectFields, computedFields, ctx.Registry) {
 						ctx.Plan.IsAggregated = true

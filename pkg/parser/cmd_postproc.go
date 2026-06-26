@@ -80,7 +80,12 @@ func (h *headHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			n = parsed
 		}
 	}
-	source.Layer.OrderBy = []string{"timestamp ASC"}
+	// On aggregated stages timestamp is neither grouped nor aggregated, so
+	// ordering by it is invalid (ClickHouse error 215). Keep the existing
+	// ordering (e.g. a prior sort) and just take its first N rows.
+	if !isAggregatedStage(ctx.Plan, source) {
+		source.Layer.OrderBy = []string{"timestamp ASC"}
+	}
 	source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
 	return nil
 }
@@ -100,9 +105,44 @@ func (h *tailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			n = parsed
 		}
 	}
-	source.Layer.OrderBy = []string{"timestamp DESC"}
+	// On aggregated stages timestamp is neither grouped nor aggregated, so
+	// ordering by it is invalid (ClickHouse error 215). The "last N" rows are
+	// the first N of the reversed existing ordering.
+	if isAggregatedStage(ctx.Plan, source) {
+		source.Layer.OrderBy = reverseOrderBy(source.Layer.OrderBy)
+	} else {
+		source.Layer.OrderBy = []string{"timestamp DESC"}
+	}
 	source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
 	return nil
+}
+
+// isAggregatedStage reports whether the given stage produces aggregated rows,
+// in which case ordering by raw columns like timestamp is invalid.
+func isAggregatedStage(plan *QueryPlan, stage *QueryStage) bool {
+	return plan.IsAggregated || len(stage.Layer.GroupBy) > 0
+}
+
+// reverseOrderBy flips the direction of each ORDER BY term so that the tail of
+// a result set becomes its head. Terms without an explicit direction default to
+// ASC in ClickHouse, so they become DESC.
+func reverseOrderBy(order []string) []string {
+	if len(order) == 0 {
+		return order
+	}
+	flipped := make([]string, len(order))
+	for i, term := range order {
+		t := strings.TrimSpace(term)
+		switch {
+		case strings.HasSuffix(strings.ToUpper(t), " DESC"):
+			flipped[i] = t[:len(t)-len(" DESC")] + " ASC"
+		case strings.HasSuffix(strings.ToUpper(t), " ASC"):
+			flipped[i] = t[:len(t)-len(" ASC")] + " DESC"
+		default:
+			flipped[i] = t + " DESC"
+		}
+	}
+	return flipped
 }
 
 // dedupHandler handles dedup(field1, field2, ...) using LIMIT 1 BY

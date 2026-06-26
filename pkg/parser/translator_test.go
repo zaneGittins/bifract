@@ -4953,6 +4953,61 @@ func TestCaseGeneralCommands(t *testing.T) {
 	})
 }
 
+// TestAggregationPipelineFixes covers a set of related multi-stage/aggregation
+// translator bugs: multi() bracketed list parsing, table() projecting an
+// aggregated stage's outputs, position-aware (pre-aggregation) field
+// assignments, and the raw JSON `fields` column never leaking to the driver.
+func TestAggregationPipelineFixes(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:   1000,
+	}
+
+	t.Run("multi bracketed list keeps every sub-function and alias", func(t *testing.T) {
+		sql := mustTranslate(t, `a=x | groupby(host,function=multi([avg(cpu,as=avg_cpu),count(as=data_points)]))`, opts)
+		for _, want := range []string{"avg(toFloat64OrNull(fields.`cpu`::String)) AS avg_cpu", "COUNT(*) AS data_points"} {
+			if !strings.Contains(sql, want) {
+				t.Errorf("missing %q in: %s", want, sql)
+			}
+		}
+		if strings.Contains(sql, "AS _count") {
+			t.Errorf("count alias data_points was lost to _count: %s", sql)
+		}
+	})
+
+	t.Run("table after groupby projects outputs, no raw-field re-resolution", func(t *testing.T) {
+		sql := mustTranslate(t, `a=x | groupby(host,function=multi([avg(cpu,as=avg_cpu),count(as=data_points)])) | table([host,avg_cpu,data_points])`, opts)
+		if strings.Contains(sql, "fields.`avg_cpu`") || strings.Contains(sql, "fields.`data_points`") {
+			t.Errorf("aggregate outputs re-resolved as raw JSON: %s", sql)
+		}
+		if strings.Contains(sql, "GROUP BY host, host") {
+			t.Errorf("group key duplicated into GROUP BY: %s", sql)
+		}
+	})
+
+	t.Run("pre-aggregation assignment is inlined into aggregate and filter", func(t *testing.T) {
+		sql := mustTranslate(t, `a=x | cpu := cpu * 100 | cpu > 0 | groupby(host,function=avg(cpu,as=avg_cpu))`, opts)
+		if !strings.Contains(sql, "toFloat64OrNull(fields.`cpu`::String)*100") {
+			t.Errorf("assignment not inlined into aggregate: %s", sql)
+		}
+		// The scaled value must appear in the WHERE, not be deferred post-aggregation.
+		if !strings.Contains(sql, "toFloat64OrNull(fields.`cpu`::String)*100 > 0") {
+			t.Errorf("assignment not applied in filter: %s", sql)
+		}
+	})
+
+	t.Run("assignment query does not project raw JSON fields column", func(t *testing.T) {
+		sql := mustTranslate(t, `a=x | cpu := cpu * 100`, opts)
+		// Inner subquery may carry `fields` to compute the math, but the outer
+		// projection must never select the raw JSON column (driver cannot scan it).
+		outer := sql[:strings.Index(sql, " FROM (")]
+		if strings.Contains(outer, " fields") || strings.HasSuffix(outer, "fields") {
+			t.Errorf("raw fields column leaked to final projection: %s", outer)
+		}
+	})
+}
+
 func mustParse(t *testing.T, q string) *PipelineNode {
 	t.Helper()
 	p, err := ParseQuery(q)

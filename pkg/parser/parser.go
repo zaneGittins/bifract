@@ -78,6 +78,7 @@ type AssignmentNode struct {
 	Field          string
 	Expression     string    // Right side of the := operator
 	ExpressionType TokenType // Type of the expression token
+	CmdIndex       int       // number of pipeline commands that precede this assignment
 }
 
 func (a AssignmentNode) Type() string { return "assignment" }
@@ -232,6 +233,10 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			if err != nil {
 				return nil, err
 			}
+			// Record position relative to commands so the translator can tell a
+			// pre-aggregation assignment (inlined per-row) from a post-aggregation
+			// one (computed after the GROUP BY).
+			assignment.CmdIndex = len(pipeline.Commands)
 			pipeline.Assignments = append(pipeline.Assignments, *assignment)
 		} else if p.isHavingCondition() {
 			// Check if this is a HAVING condition (field operator value) or compound HAVING condition

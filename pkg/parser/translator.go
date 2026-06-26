@@ -115,16 +115,30 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	// ---------------------------------------------------------------
 	var assignmentFields []string
 	var deferredAssignments []AssignmentNode
+	firstAgg := firstAggregatingCommandIndex(pipeline.Commands)
 	for _, assignment := range pipeline.Assignments {
 		safeField, err := sanitizeIdentifier(assignment.Field)
 		if err != nil {
 			return nil, fmt.Errorf("invalid assignment field: %w", err)
 		}
 
+		// An assignment is "pre-aggregation" when an aggregating command follows
+		// it in the pipeline. Its value must be inlined per-row so aggregations
+		// and filters reference the computed value; it must NOT be deferred to the
+		// post-aggregation formatter, where the underlying JSON fields no longer
+		// exist after the GROUP BY collapses rows.
+		preAggregation := firstAgg < len(pipeline.Commands) && assignment.CmdIndex <= firstAgg
+
 		expr := assignment.Expression
 		isMathExpr := assignment.ExpressionType == TokenValue &&
 			(strings.ContainsAny(expr, "+*/()") || strings.Contains(expr, " - ") || strings.Contains(expr, " -") || strings.Contains(expr, "- "))
 		if isMathExpr {
+			if preAggregation {
+				sqlExpr := convertMathExprToSQL(expr, registry, assignment.Field)
+				registry.Register(safeField, FieldKindAssignment, sqlExpr, -1)
+				registry.SetResolveExpr(safeField, sqlExpr)
+				continue
+			}
 			deferredAssignments = append(deferredAssignments, assignment)
 			continue
 		}
@@ -915,7 +929,7 @@ func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAss
 		return []SelectExpr{
 			{Expr: "toString(timestamp) as timestamp"},
 			{Expr: "raw_log"},
-			{Expr: "fields"},
+			{Expr: "toString(fields) AS fields"},
 		}
 	}
 
@@ -924,6 +938,13 @@ func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAss
 		alias := extractFieldAlias(field)
 		if alias == "timestamp" {
 			formatters = append(formatters, SelectExpr{Expr: "toString(timestamp) as timestamp"})
+		} else if field == "fields" {
+			// The raw JSON `fields` column is kept in the inner SELECT only so
+			// deferred math assignments can reference fields.`x`. The ClickHouse
+			// driver cannot scan the native JSON type, so it must never be
+			// projected to the final result. (Table commands use the explicit
+			// toString(fields) form, which is unaffected by this guard.)
+			continue
 		} else if alias != "" {
 			formatters = append(formatters, SelectExpr{Expr: alias})
 		}

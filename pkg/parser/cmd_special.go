@@ -18,6 +18,15 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.HasTableCmd = true
 	source := ctx.Plan.CurrentStage()
 
+	// When a prior command already aggregated (groupby, multi, stats, etc.),
+	// table() is a pure projection over the existing outputs: keep their SELECT
+	// expressions and just restrict/reorder to the requested columns. Re-deriving
+	// them as raw JSON fields (fields.`x`) or re-adding them to GROUP BY would be
+	// wrong, since they are computed columns of this stage, not log columns.
+	if ctx.Plan.IsAggregated || len(source.Layer.GroupBy) > 0 {
+		return h.executeProjection(cmd, ctx, source)
+	}
+
 	// Clear existing selects (table replaces default)
 	source.Layer.Selects = nil
 
@@ -168,6 +177,67 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				source.Layer.GroupBy = append(source.Layer.GroupBy, resolveFieldRef(field, ctx.Registry))
 			}
 		}
+	}
+	return nil
+}
+
+// executeProjection handles table() applied to an already-aggregated stage.
+// table() then acts as a pure projection over the prior aggregation's outputs,
+// so it finalizes that stage and selects the requested columns from it as a
+// subquery (the same staging the chained-groupby path uses). This avoids
+// re-resolving aggregate/group outputs as raw JSON fields or re-grouping them.
+func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, prevStage *QueryStage) error {
+	// Finalize the aggregated stage so its group keys and aggregate columns are
+	// materialized into its SELECT before we project from it.
+	if err := assembleGroupBySelects(ctx, prevStage, nil); err != nil {
+		return fmt.Errorf("table (stage finalize): %w", err)
+	}
+	prevOutputs := make(map[string]bool)
+	for _, sel := range prevStage.Layer.Selects {
+		if alias := strings.Trim(extractFieldAlias(sel.String()), "`"); alias != "" {
+			prevOutputs[alias] = true
+		}
+	}
+
+	ctx.Plan.PushStage()
+	ctx.Plan.IsAggregated = false
+	ctx.Plan.aggregationOutputs = make(map[string]string)
+	ctx.Plan.outerAggregations = nil
+	ctx.Plan.outerAggFieldOrder = nil
+	ctx.Registry.ScopeToOutputs(prevOutputs)
+
+	newStage := ctx.Plan.CurrentStage()
+	newStage.Layer.Selects = nil
+	for _, field := range cmd.Arguments {
+		if strings.HasPrefix(field, "limit=") {
+			if n, err := validateInt(strings.TrimPrefix(field, "limit=")); err == nil {
+				newStage.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
+			}
+			continue
+		}
+		ctx.Plan.TableHasExplicitColumns = true
+
+		// The bare count keyword maps to the prior stage's default _count output.
+		name := strings.Trim(field, "`")
+		if name == "count" || name == "count()" {
+			name = "_count"
+		}
+		if prevOutputs[name] {
+			newStage.Layer.Selects = append(newStage.Layer.Selects, SelectExpr{Expr: name})
+			continue
+		}
+		// Not produced by the aggregated stage. It may be produced by a later
+		// layer (e.g. a post-aggregation assignment computed in the outer
+		// formatter); leave it to that layer rather than emitting a wrong raw
+		// fields.`x` reference here.
+		if entry := ctx.Registry.Get(name); entry != nil && entry.Kind != FieldKindBase && entry.Kind != FieldKindJSON {
+			continue
+		}
+		safe, err := sanitizeIdentifier(name)
+		if err != nil {
+			return fmt.Errorf("table(): %w", err)
+		}
+		newStage.Layer.Selects = append(newStage.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", name, safe)})
 	}
 	return nil
 }
