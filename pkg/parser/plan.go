@@ -21,13 +21,13 @@ func (s SelectExpr) String() string {
 
 // QueryLayer holds the parts of a single SQL query level.
 type QueryLayer struct {
-	Selects  []SelectExpr
-	Where    []string
-	GroupBy  []string
-	Having   []string
-	OrderBy  []string
-	LimitBy  string
-	Limit    string
+	Selects []SelectExpr
+	Where   []string
+	GroupBy []string
+	Having  []string
+	OrderBy []string
+	LimitBy string
+	Limit   string
 }
 
 // UpsertSelect adds expr to the select list, replacing any existing entry with
@@ -72,19 +72,19 @@ type QueryStage struct {
 
 // QueryPlan holds the structured representation of a query before rendering to SQL.
 type QueryPlan struct {
-	Stages       []QueryStage  // pipeline of aggregation stages (first = innermost)
-	WindowLayers []QueryLayer  // z-score, histogram wrapping (applied after all stages)
-	DeferredWhere []string     // conditions on window fields
-	DeferredOrder []string     // ORDER BY on window fields
-	DeferredLimit string       // LIMIT when sorting by window fields
-	Formatters      []SelectExpr // outer SELECT: timestamp formatting, deferred math
-	FormatterOrderBy []string   // ORDER BY lifted to formatter outer SELECT for streaming
-	FormatterLimit   string     // LIMIT lifted to formatter outer SELECT for streaming
+	Stages           []QueryStage // pipeline of aggregation stages (first = innermost)
+	WindowLayers     []QueryLayer // z-score, histogram wrapping (applied after all stages)
+	DeferredWhere    []string     // conditions on window fields
+	DeferredOrder    []string     // ORDER BY on window fields
+	DeferredLimit    string       // LIMIT when sorting by window fields
+	Formatters       []SelectExpr // outer SELECT: timestamp formatting, deferred math
+	FormatterOrderBy []string     // ORDER BY lifted to formatter outer SELECT for streaming
+	FormatterLimit   string       // LIMIT lifted to formatter outer SELECT for streaming
 
 	FieldOrder   []string
 	IsAggregated bool
 	HasGroupBy   bool
-	GroupByCount int            // number of groupby commands encountered (for multi-groupby)
+	GroupByCount int // number of groupby commands encountered (for multi-groupby)
 	ChartType    string
 	ChartConfig  map[string]interface{}
 
@@ -102,7 +102,7 @@ type QueryPlan struct {
 	TraversalDepth   int
 
 	// AnalyzeFields-specific fields
-	AnalyzeFieldsList     []string
+	AnalyzeFieldsList      []string
 	AnalyzeFieldsScanLimit int
 
 	// Histogram-specific fields
@@ -116,12 +116,12 @@ type QueryPlan struct {
 	ZScoreFilters      []string
 
 	// Join-specific fields
-	IsJoin       bool
-	JoinType     string   // "inner" or "left"
-	JoinKey      string   // field to join on
-	JoinSubSQL   string   // translated subquery SQL
-	JoinInclude  []string // fields to include from subquery (empty = all)
-	JoinMaxRows  int      // max rows for subquery safety limit
+	IsJoin      bool
+	JoinType    string   // "inner" or "left"
+	JoinKey     string   // field to join on
+	JoinSubSQL  string   // translated subquery SQL
+	JoinInclude []string // fields to include from subquery (empty = all)
+	JoinMaxRows int      // max rows for subquery safety limit
 
 	// ModelLookup-specific fields (set by model_lookup() BQL command)
 	ModelLookupSQL    string   // pre-built scoring subquery SQL
@@ -129,7 +129,7 @@ type QueryPlan struct {
 	ModelLookupFields []string // output field names added to outer SELECT
 
 	// Table command tracking
-	HasTableCmd            bool
+	HasTableCmd             bool
 	TableHasExplicitColumns bool
 
 	// Pending conditions: classified by kind after Declare, materialized after Execute
@@ -138,9 +138,9 @@ type QueryPlan struct {
 	pendingDeferredConditions []HavingCondition
 
 	// Chained aggregation state (for sum/avg/etc. on prior aggregation outputs)
-	outerAggregations  []string            // expressions for outer (chained) aggregation query
-	outerAggFieldOrder []string            // field order for outer aggregation results
-	aggregationOutputs map[string]string   // tracks agg aliases (_count, _sum, etc.) -> SQL expression
+	outerAggregations  []string          // expressions for outer (chained) aggregation query
+	outerAggFieldOrder []string          // field order for outer aggregation results
+	aggregationOutputs map[string]string // tracks agg aliases (_count, _sum, etc.) -> SQL expression
 }
 
 // NewQueryPlan creates a plan with a single source stage.
@@ -163,6 +163,22 @@ func (p *QueryPlan) CurrentStage() *QueryStage {
 // SourceStage returns the innermost (FROM logs) stage.
 func (p *QueryPlan) SourceStage() *QueryStage {
 	return &p.Stages[0]
+}
+
+// havingStage returns the stage that post-aggregation (HAVING) conditions bind
+// to: the outermost stage that has a GROUP BY. For single-stage queries this is
+// the source stage; for chained groupby (groupby | groupby) it is the last
+// pushed groupby stage, so the filter applies to the final aggregates rather
+// than the inner ones. Chained-aggregation wrapper stages (sum/avg on a prior
+// aggregate) are appended after materialization, so at materialize time this
+// correctly resolves to the groupby stage that produced the referenced aggregate.
+func (p *QueryPlan) havingStage() *QueryStage {
+	for i := len(p.Stages) - 1; i >= 0; i-- {
+		if len(p.Stages[i].Layer.GroupBy) > 0 {
+			return &p.Stages[i]
+		}
+	}
+	return p.SourceStage()
 }
 
 // PushStage adds a new empty stage to the pipeline.

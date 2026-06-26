@@ -4720,3 +4720,102 @@ func TestJoinFunction(t *testing.T) {
 		})
 	}
 }
+
+// TestChainedGroupByAndAggregateFilters covers post-aggregation filters across
+// multi-stage groupby pipelines and multi()/bare aggregate aliases. These
+// regression-guard two classes of bug:
+//  1. A carried/redefined aggregate (e.g. _count after a second groupby) must
+//     NOT be wrapped in toFloat64OrZero() -- it is already a numeric UInt64, and
+//     toFloat64OrZero only accepts String (ClickHouse type mismatch otherwise).
+//  2. The HAVING must bind to the OUTER (final) groupby stage, and aggregate
+//     aliases produced during Execute (multi(), bare count) must route to HAVING,
+//     not WHERE.
+func TestChainedGroupByAndAggregateFilters(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:   1000,
+	}
+
+	tests := []struct {
+		name           string
+		query          string
+		wantContain    []string
+		wantNotContain []string
+	}{
+		{
+			name:  "chained groupby filter on _count binds to outer stage, no coercion",
+			query: "* | groupby(computer_name,user) | groupby(user) | _count > 5",
+			wantContain: []string{
+				"GROUP BY user HAVING _count > 5",
+			},
+			wantNotContain: []string{
+				"toFloat64OrZero(_count)",
+			},
+		},
+		{
+			name:  "chained groupby filter on bare count name",
+			query: "* | groupby(computer_name,user) | groupby(user) | count > 5",
+			wantContain: []string{
+				"HAVING _count > 5",
+			},
+			wantNotContain: []string{
+				"toFloat64OrZero(_count)",
+			},
+		},
+		{
+			name:  "single-stage bare count filter is HAVING not coerced",
+			query: "* | groupby(user) | count > 5",
+			wantContain: []string{
+				"HAVING _count > 5",
+			},
+			wantNotContain: []string{
+				"toFloat64OrZero(_count)",
+			},
+		},
+		{
+			name:  "multi() aggregate filter routes to HAVING not WHERE",
+			query: "* | groupby(user) | multi(avg(response_time), max(bytes)) | _avg > 3",
+			wantContain: []string{
+				"HAVING _avg > 3",
+			},
+			wantNotContain: []string{
+				"AND _avg > 3 GROUP BY",
+			},
+		},
+		{
+			name:  "chained aggregation (sum on groupby) HAVING unchanged",
+			query: "* | groupby(host) | sum(bytes) | _sum > 100",
+			wantContain: []string{
+				"HAVING _sum > 100",
+			},
+			wantNotContain: []string{
+				"toFloat64OrZero(_sum)",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pipeline, err := ParseQuery(tt.query)
+			if err != nil {
+				t.Fatalf("Failed to parse query: %v", err)
+			}
+			result, err := TranslateToSQLWithOrder(pipeline, opts)
+			if err != nil {
+				t.Fatalf("Failed to translate query: %v", err)
+			}
+			sql := result.SQL
+			for _, want := range tt.wantContain {
+				if !strings.Contains(sql, want) {
+					t.Errorf("SQL should contain %q\nGot: %s", want, sql)
+				}
+			}
+			for _, notWant := range tt.wantNotContain {
+				if strings.Contains(sql, notWant) {
+					t.Errorf("SQL should NOT contain %q\nGot: %s", notWant, sql)
+				}
+			}
+		})
+	}
+}

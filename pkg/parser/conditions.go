@@ -148,8 +148,11 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 	if clause := materializeCondGroup(plan.pendingWhereConditions, registry); clause != "" {
 		source.Layer.Where = append(source.Layer.Where, clause)
 	}
+	// HAVING binds to the outermost aggregation stage, not the innermost source
+	// stage, so chained-groupby filters apply to the final aggregates.
 	if clause := materializeCondGroup(plan.pendingHavingConditions, registry); clause != "" {
-		source.Layer.Having = append(source.Layer.Having, clause)
+		havingStage := plan.havingStage()
+		havingStage.Layer.Having = append(havingStage.Layer.Having, clause)
 	}
 	if clause := materializeCondGroup(plan.pendingDeferredConditions, registry); clause != "" {
 		plan.DeferredWhere = append(plan.DeferredWhere, clause)
@@ -297,7 +300,10 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 			return fmt.Sprintf("%s %s '%s'", fieldRef, cond.Operator, escapeString(cond.Value))
 		}
 		isPerRow := entry != nil && entry.Kind == FieldKindPerRow
-		isComputed := entry != nil && (entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow)
+		// Bare aggregate names (count/sum/avg with no registry entry) resolve to the
+		// numeric _count/_sum/_avg aliases and must not be coerced via toFloat64OrZero.
+		isAggFallback := entry == nil && (cond.Field == "count" || cond.Field == "sum" || cond.Field == "avg")
+		isComputed := isAggFallback || (entry != nil && (entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow))
 		if isPerRow {
 			return fmt.Sprintf("toFloat64OrZero(%s) %s %s", fieldRef, cond.Operator, cond.Value)
 		}

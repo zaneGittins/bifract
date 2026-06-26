@@ -111,12 +111,6 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	}
 
 	// ---------------------------------------------------------------
-	// 4. CONDITION CLASSIFICATION: classify HavingConditions by kind.
-	//    SQL generation is deferred to after Execute (step 6b).
-	// ---------------------------------------------------------------
-	classifyConditions(pipeline.HavingConditions, registry, plan)
-
-	// ---------------------------------------------------------------
 	// 5. Process field assignments
 	// ---------------------------------------------------------------
 	var assignmentFields []string
@@ -177,9 +171,15 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	}
 
 	// ---------------------------------------------------------------
-	// 6b. CONDITION MATERIALIZATION: generate SQL from classified
-	//     conditions using registry populated by Execute phase.
+	// 6b. CONDITION CLASSIFICATION + MATERIALIZATION.
+	//     Classification runs AFTER Execute so the registry fully reflects every
+	//     produced field: aggregate aliases from multi()/function=, and aggregates
+	//     redefined across multi-stage groupby boundaries. Routing a post-pipe
+	//     filter (WHERE vs HAVING) by Declare-time kinds alone misroutes those
+	//     (e.g. _avg from multi() would land in WHERE). Materialization then emits
+	//     SQL from the now-complete registry and binds HAVING to its proper stage.
 	// ---------------------------------------------------------------
+	classifyConditions(pipeline.HavingConditions, registry, plan)
 	materializeConditions(registry, plan)
 
 	// ---------------------------------------------------------------
@@ -286,11 +286,6 @@ func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) string {
 		registry.Register(a.Field, FieldKindAssignment, a.Field, -1)
 	}
 
-	// Classify conditions now (before Execute), matching the main translator ordering.
-	// Classification uses field kinds from Declare; SQL generation is deferred to
-	// materializeConditions after Execute populates the resolve expressions.
-	classifyConditions(pipeline.HavingConditions, registry, helperPlan)
-
 	// Execute phase: populate resolve expressions via SetResolveExpr.
 	for i, cmd := range pipeline.Commands {
 		ctx.CmdIndex = i
@@ -302,6 +297,10 @@ func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) string {
 			return ""
 		}
 	}
+
+	// Classify after Execute (matching the main translator ordering) so the
+	// registry fully reflects every produced field kind before routing.
+	classifyConditions(pipeline.HavingConditions, registry, helperPlan)
 
 	// Materialize: generate SQL from classified conditions using the now-populated registry.
 	// Only pendingWhereConditions (FieldKindAssignment, FieldKindPerRow) land in

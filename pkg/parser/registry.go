@@ -6,11 +6,11 @@ import "strings"
 type FieldKind int
 
 const (
-	FieldKindBase       FieldKind = iota // timestamp, raw_log, log_id
-	FieldKindJSON                        // fields.`name`.:String
-	FieldKindPerRow                      // strftime, lowercase, eval, etc.
-	FieldKindAggregate                   // COUNT(*), sum(), etc.
-	FieldKindWindow                      // _modified_z, _is_outlier (from window wrappers)
+	FieldKindBase      FieldKind = iota // timestamp, raw_log, log_id
+	FieldKindJSON                       // fields.`name`.:String
+	FieldKindPerRow                     // strftime, lowercase, eval, etc.
+	FieldKindAggregate                  // COUNT(*), sum(), etc.
+	FieldKindWindow                     // _modified_z, _is_outlier (from window wrappers)
 	// FieldKindAssignment: per-row scalar already numeric (len, levenshtein, := assignments).
 	// Always routes to WHERE — it is computed before aggregation, never after.
 	// Differs from FieldKindPerRow only in that no toFloat64OrZero() coercion is needed.
@@ -174,17 +174,36 @@ func (r *FieldRegistry) FieldsOfKind(kind FieldKind) []string {
 }
 
 // ScopeToOutputs resets the registry so only the given output fields remain.
-// Each output field is re-registered as a base-like column (it references a
-// subquery alias, not a JSON path). This is used when pushing a new groupby
+// Each output field becomes a plain column reference to the previous stage's
+// subquery alias (not a JSON path). This is used when pushing a new groupby
 // stage: the new stage should only see the previous stage's output columns.
+//
+// Crucially, the transition is TYPE-PRESERVING. A column that was numeric in the
+// prior stage (an aggregate output such as _count/_sum, a numeric assignment, or a
+// window value) is re-registered as FieldKindAssignment so that downstream numeric
+// comparisons reference it bare. Wrapping such a column in toFloat64OrZero() (which
+// only accepts String) would raise a ClickHouse type error. String-typed columns
+// (carried group keys) stay FieldKindBase, which still coerces on numeric compare.
+// In both cases ResolveAs is the bare alias so references resolve to the column,
+// never to a fields.`name` JSON path.
 func (r *FieldRegistry) ScopeToOutputs(outputs map[string]bool) {
+	prev := r.fields
 	r.fields = make(map[string]*FieldEntry)
 	r.order = nil
 	for name := range outputs {
+		kind := FieldKindBase
+		if e, ok := prev[name]; ok {
+			switch e.Kind {
+			case FieldKindAggregate, FieldKindAssignment, FieldKindWindow:
+				// Already numeric in the prior stage: no coercion downstream.
+				kind = FieldKindAssignment
+			}
+		}
 		r.fields[name] = &FieldEntry{
 			Name:       name,
-			Kind:       FieldKindBase, // treat prior output as a plain column reference
+			Kind:       kind,
 			Expr:       name,
+			ResolveAs:  name,
 			ProducedBy: -1,
 		}
 		r.order = append(r.order, name)
@@ -202,4 +221,3 @@ func (r *FieldRegistry) AllComputed() map[string]bool {
 	}
 	return result
 }
-

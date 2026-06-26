@@ -56,6 +56,9 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		newSource.Layer.Selects = append(newSource.Layer.Selects, SelectExpr{Expr: "COUNT(*) AS _count"})
 		ctx.Plan.IsAggregated = true
 		ctx.Plan.aggregationOutputs["_count"] = "COUNT(*)"
+		// The outer COUNT(*) is a fresh aggregate of this stage; register its kind
+		// and bare resolve so HAVING _count > N is typed numeric, not coerced.
+		ctx.Registry.Register("_count", FieldKindAggregate, "_count", ctx.CmdIndex)
 		ctx.Registry.SetResolveExpr("_count", "_count")
 		return nil
 	}
@@ -123,9 +126,9 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 // simpleAggHandler handles sum, avg, max, min, median aggregation commands.
 type simpleAggHandler struct {
-	name     string // "sum", "avg", "max", "min", "median"
-	alias    string // "_sum", "_avg", "_max", "_min", "_median"
-	chFunc   string // "sum", "avg", "max", "min", "median"
+	name   string // "sum", "avg", "max", "min", "median"
+	alias  string // "_sum", "_avg", "_max", "_min", "_median"
+	chFunc string // "sum", "avg", "max", "min", "median"
 }
 
 func (h *simpleAggHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
@@ -746,7 +749,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 			selectFields := selectExprStrings(source.Layer.Selects)
 			if strings.HasPrefix(funcDef, "multi(") {
-				inner := funcDef[len("multi("): len(funcDef)-1]
+				inner := funcDef[len("multi(") : len(funcDef)-1]
 				for _, fn := range splitTopLevelArgs(inner) {
 					if processStatsFn(fn, &selectFields, computedFields, ctx.Registry) {
 						ctx.Plan.IsAggregated = true
@@ -817,13 +820,20 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.IsAggregated = true
 	}
 
-	// Register _count aggregation output. In multi-stage pipelines,
-	// skip this: the new stage should not pre-populate aggregationOutputs
-	// because subsequent aggregation commands (sum, avg, etc.) need to
-	// operate directly on the stage's SELECT, not the chained wrapper path.
+	// Register _count's kind and bare resolve expression so post-aggregation
+	// filters (HAVING _count > N) treat it as a numeric aggregate of THIS stage,
+	// not a JSON string. This must happen even in multi-stage pipelines, where
+	// ScopeToOutputs reset the carried _count: the new groupby produces a fresh
+	// COUNT(*) that redefines it.
+	if !hasFunction {
+		ctx.Registry.Register("_count", FieldKindAggregate, "_count", ctx.CmdIndex)
+		ctx.Registry.SetResolveExpr("_count", "_count")
+	}
+	// aggregationOutputs drives the chained-aggregation wrapper (sum/avg on a prior
+	// aggregation output). Only the first, non-multi-stage groupby seeds it so that
+	// chaining still operates on the stage SELECT rather than the wrapper path.
 	if !isMultiStage {
 		ctx.Plan.aggregationOutputs["_count"] = "COUNT(*)"
-		ctx.Registry.SetResolveExpr("_count", "_count")
 	}
 	return nil
 }
