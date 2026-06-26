@@ -216,6 +216,22 @@ CREATE INDEX IF NOT EXISTS idx_webhook_actions_name ON webhook_actions(name);
 CREATE INDEX IF NOT EXISTS idx_alert_executions_alert_id ON alert_executions(alert_id);
 CREATE INDEX IF NOT EXISTS idx_alert_executions_triggered_at ON alert_executions(triggered_at DESC);
 
+-- System metrics time-series: persisted health samples (CPU%, alert evaluation
+-- latency) shown on the System -> Overview/Alerts tabs. Stored in Postgres
+-- rather than ClickHouse on purpose: this is health data ABOUT ClickHouse, so it
+-- must stay readable when ClickHouse is degraded or restarting, and must not be
+-- subject to ClickHouse's own metric-log TTL. Generic (metric, node, fractal_id)
+-- shape so new series can be added without schema changes. Retention is enforced
+-- by the app (default 30 days, BIFRACT_METRICS_RETENTION_DAYS) via periodic DELETE.
+CREATE TABLE IF NOT EXISTS system_metrics (
+    ts         TIMESTAMPTZ      NOT NULL,
+    metric     TEXT             NOT NULL,
+    node       TEXT             NOT NULL DEFAULT '',
+    fractal_id TEXT             NOT NULL DEFAULT '',
+    value      DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_system_metrics_metric_ts ON system_metrics (metric, ts);
+
 -- Triggers for updated_at on alert tables
 DROP TRIGGER IF EXISTS update_alerts_updated_at ON alerts;
 CREATE TRIGGER update_alerts_updated_at BEFORE UPDATE ON alerts

@@ -231,6 +231,10 @@ const SettingsView = {
         const container = document.getElementById('usersListSettings');
         if (!container) return;
 
+        // Keep the rendered set so the Edit modal can resolve display name/role by
+        // username instead of threading them (unescaped) through inline onclick handlers.
+        this._users = users;
+
         if (users.length === 0) {
             container.innerHTML = '<div class="no-data">Only the default admin user exists</div>';
             return;
@@ -271,28 +275,37 @@ const SettingsView = {
                 html += `<td class="text-muted">${lastLogin}</td>`;
             }
 
+            const u = Utils.escapeJs(user.username);
             html += `<td class="user-actions-cell">`;
+
+            // Primary inline action: Edit (opens a modal; identity is never edited in place).
             if (isAdmin) {
-                html += `<button class="btn-edit-user" onclick="SettingsView.editUserInline(this.closest('tr'), '${Utils.escapeJs(user.username)}', '${Utils.escapeJs(user.display_name)}', '${Utils.escapeJs(user.role)}')">Edit</button>`;
+                html += `<button class="btn-edit-user" onclick="SettingsView.openEditUserModal('${u}')">Edit</button>`;
             }
+
+            // Secondary / destructive actions collapse into a kebab overflow menu.
+            const items = [];
             if (this.mtlsEnabled && isAdmin && !user.invite_pending) {
-                html += `<button class="btn-cert-download" onclick="SettingsView.downloadClientCert('${Utils.escapeJs(user.username)}')" title="Download mTLS client certificate">Cert</button>`;
+                items.push(`<button class="kebab-item" onclick="SettingsView.downloadClientCert('${u}')">Download mTLS Cert</button>`);
             }
-            if (user.invite_pending) {
-                html += `<button class="btn-invite-reset" onclick="SettingsView.resetInvite('${Utils.escapeJs(user.username)}')" title="Regenerate invite link">Resend Invite</button>`;
+            if (user.invite_pending && isAdmin) {
+                items.push(`<button class="kebab-item" onclick="SettingsView.resetInvite('${u}')">Resend Invite</button>`);
             } else if (!isSelf && isAdmin) {
-                html += `<button class="btn-secondary btn-sm" onclick="SettingsView.resetPassword('${Utils.escapeJs(user.username)}')">Reset Password</button>`;
+                items.push(`<button class="kebab-item" onclick="SettingsView.resetPassword('${u}')">Reset Password</button>`);
             }
             if (!isSelf && isAdmin && !user.invite_pending) {
-                if (isDisabled) {
-                    html += `<button class="btn-secondary btn-sm" onclick="SettingsView.setUserEnabled('${Utils.escapeJs(user.username)}', true)">Enable</button>`;
-                } else {
-                    html += `<button class="btn-secondary btn-sm" onclick="SettingsView.setUserEnabled('${Utils.escapeJs(user.username)}', false)">Disable</button>`;
-                }
+                items.push(isDisabled
+                    ? `<button class="kebab-item" onclick="SettingsView.setUserEnabled('${u}', true)">Enable</button>`
+                    : `<button class="kebab-item" onclick="SettingsView.setUserEnabled('${u}', false)">Disable</button>`);
             }
-            if (!isSelf) {
-                html += `<button class="btn-delete-user" onclick="SettingsView.deleteUser('${Utils.escapeJs(user.username)}')">Delete</button>`;
-            } else {
+            if (!isSelf && isAdmin) {
+                items.push(`<button class="kebab-item danger" onclick="SettingsView.deleteUser('${u}')">Delete</button>`);
+            }
+
+            if (items.length) {
+                html += `<div class="kebab-wrapper"><button class="kebab-btn" onclick="KebabMenu.toggle(event,this)" title="More actions">&#8942;</button><div class="kebab-menu">${items.join('')}</div></div>`;
+            }
+            if (isSelf) {
                 html += '<span class="text-muted">You</span>';
             }
             html += `</td></tr>`;
@@ -302,44 +315,44 @@ const SettingsView = {
         container.innerHTML = html;
     },
 
-    editUserInline(row, username, displayName, role) {
-        // Replace the row content with editable fields
-        const cells = row.querySelectorAll('td');
-        if (!cells || cells.length < 4) return;
+    openEditUserModal(username) {
+        const user = (this._users || []).find(x => x.username === username);
+        if (!user) return;
+        const modal = document.getElementById('editUserModal');
+        if (!modal) return;
+        this._editUserUsername = username;
+        document.getElementById('editUserUsername').value = '@' + username;
+        document.getElementById('editUserDisplayName').value = user.display_name || '';
+        const roleSelect = document.getElementById('editUserRole');
+        roleSelect.value = user.role;
+        document.getElementById('editUserError').textContent = '';
 
-        // Replace display name with input
-        const nameDiv = cells[0].querySelector('.user-name');
-        if (nameDiv) {
-            const input = document.createElement('input');
-            input.type = 'text';
-            input.value = displayName;
-            input.className = 'edit-user-input';
-            input.id = 'editDisplayName';
-            nameDiv.replaceWith(input);
-            input.focus();
-            input.select();
-        }
-
-        // Replace role badge with select
-        cells[1].innerHTML = `<select id="editUserRole" class="edit-user-select">
-            <option value="user" ${role === 'user' ? 'selected' : ''}>User</option>
-            <option value="admin" ${role === 'admin' ? 'selected' : ''}>Tenant Admin</option>
-        </select>`;
-
-        // Replace actions with save/cancel
-        cells[3].innerHTML = `
-            <button class="btn-primary btn-sm" onclick="event.stopPropagation(); SettingsView.saveUserEdit('${Utils.escapeJs(username)}')">Save</button>
-            <button class="btn-secondary btn-sm" onclick="event.stopPropagation(); SettingsView.loadUsers()">Cancel</button>
-        `;
-
+        // Prevent changing your own role (an admin could otherwise lock themselves out).
+        const currentUser = Auth.getCurrentUser();
+        const isSelf = currentUser && currentUser.username === username;
+        roleSelect.disabled = isSelf;
+        document.getElementById('editUserRoleHint').style.display = isSelf ? 'none' : 'block';
+        document.getElementById('editUserRoleSelfNote').style.display = isSelf ? 'block' : 'none';
+        modal.style.display = 'flex';
+        setTimeout(() => document.getElementById('editUserDisplayName')?.focus(), 100);
     },
 
-    async saveUserEdit(username) {
-        const displayName = document.getElementById('editDisplayName')?.value.trim();
+    hideEditUserModal() {
+        const modal = document.getElementById('editUserModal');
+        if (modal) modal.style.display = 'none';
+        this._editUserUsername = null;
+    },
+
+    async saveUserEdit() {
+        const username = this._editUserUsername;
+        if (!username) return;
+        const displayName = document.getElementById('editUserDisplayName')?.value.trim();
         const role = document.getElementById('editUserRole')?.value;
+        const errorDiv = document.getElementById('editUserError');
+        errorDiv.textContent = '';
 
         if (!displayName) {
-            if (window.Toast) Toast.error('Error', 'Display name cannot be empty');
+            errorDiv.textContent = 'Display name cannot be empty';
             return;
         }
 
@@ -353,13 +366,14 @@ const SettingsView = {
 
             const data = await response.json();
             if (data.success) {
+                this.hideEditUserModal();
                 await this.loadUsers();
             } else {
-                if (window.Toast) Toast.error('Error', data.error || 'Failed to update user');
+                errorDiv.textContent = data.error || 'Failed to update user';
             }
         } catch (error) {
             console.error('Error updating user:', error);
-            if (window.Toast) Toast.error('Error', 'Network error');
+            errorDiv.textContent = 'Network error. Please try again.';
         }
     },
 

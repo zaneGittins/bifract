@@ -3101,6 +3101,41 @@ throttleTimeSeconds: 3600"></textarea>
         </div>
     </div>
 
+    <!-- Edit User Modal -->
+    <div id="editUserModal" class="modal" onclick="if(event.target===this)SettingsView.hideEditUserModal()">
+        <div class="modal-content" style="max-width:480px;">
+            <div class="modal-header">
+                <h2>Edit User</h2>
+                <button class="close-btn" onclick="SettingsView.hideEditUserModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="editUserUsername">Username</label>
+                    <input type="text" id="editUserUsername" disabled>
+                    <p class="help-text">Usernames are permanent and cannot be changed.</p>
+                </div>
+                <div class="form-group">
+                    <label for="editUserDisplayName">Display Name</label>
+                    <input type="text" id="editUserDisplayName" placeholder="Enter display name">
+                </div>
+                <div class="form-group">
+                    <label for="editUserRole">Role</label>
+                    <select id="editUserRole" class="role-select">
+                        <option value="user">User</option>
+                        <option value="admin">Tenant Admin</option>
+                    </select>
+                    <p class="help-text" id="editUserRoleHint">Tenant Admins have full system access. Users can query and comment.</p>
+                    <p class="help-text" id="editUserRoleSelfNote" style="display:none;">You cannot change your own role.</p>
+                </div>
+                <div class="form-actions">
+                    <button class="btn-primary" onclick="SettingsView.saveUserEdit()">Save Changes</button>
+                    <button class="btn-secondary" onclick="SettingsView.hideEditUserModal()">Cancel</button>
+                </div>
+                <div id="editUserError" class="error-message"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- Create Ingest Token Modal -->
     <div id="createIngestTokenModal" class="modal" onclick="if(event.target===this)IngestTokens.hideCreateModal()">
         <div class="modal-content" style="max-width:560px;">
@@ -3192,6 +3227,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/alerts.js"></script>
     <script src="/static/alertFeeds.js"></script>
     <script src="/static/charts.js"></script>
+    <script src="/static/format-panel.js"></script>
     <script src="/static/notebooks.js"></script>
     <script src="/static/dashboards.js"></script>
     <script src="/static/dictionaries.js"></script>

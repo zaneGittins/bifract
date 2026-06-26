@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"math"
@@ -9,136 +10,42 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
-	"sync"
 	"time"
 
 	"bifract/pkg/storage"
 )
 
-// cpuSample holds a single CPU measurement.
-type cpuSample struct {
-	Time  time.Time
-	Value float64 // CPU% (0-100)
-}
-
-// MetricsCollector polls system.asynchronous_metrics via the existing
-// ClickHouse connection and stores CPU history in a ring buffer.
-// In multi-node setups each node is queried individually so that
-// per-node CPU% is accurate.
+// MetricsCollector polls ClickHouse CPU% and alert evaluation latency on a fixed
+// interval and persists them to Postgres so the System tab's CPU and alert
+// latency charts survive process restarts and ClickHouse outages. Health history
+// lives in Postgres (not ClickHouse) on purpose: it must stay readable when
+// ClickHouse itself is degraded, which is exactly when these charts matter.
+// In multi-node setups each ClickHouse node is queried individually so per-node
+// CPU% is accurate.
 type MetricsCollector struct {
-	mu sync.RWMutex
-	// Single-node: only "history" is populated.
-	history []cpuSample
-	// Multi-node: per-node history keyed by address.
-	nodeHistory map[string][]cpuSample
-	maxAge      time.Duration
-	db          *storage.ClickHouseClient
-	stop        chan struct{}
+	db            *storage.ClickHouseClient
+	pg            *storage.PostgresClient
+	retentionDays int
+	lastPruneAt   time.Time
+	stop          chan struct{}
 }
 
 const (
-	collectInterval = 30 * time.Second
-	maxHistoryAge   = 25 * time.Hour // keep slightly more than 24h
+	collectInterval   = 30 * time.Second
+	metricsPruneEvery = time.Hour
 )
 
-// cpuLogSQLTemplate queries system.asynchronous_metric_log for long-range CPU history.
-// Arguments: bucket interval string (e.g. "1 HOUR"), lookback in seconds.
-var cpuLogSQLTemplate = `
-SELECT
-    toStartOfInterval(event_time, INTERVAL %s) AS bucket,
-    avgIf(value, metric = 'OSUserTime')    AS user_t,
-    avgIf(value, metric = 'OSNiceTime')    AS nice_t,
-    avgIf(value, metric = 'OSSystemTime')  AS sys_t,
-    avgIf(value, metric = 'OSIdleTime')    AS idle_t,
-    avgIf(value, metric = 'OSIOWaitTime')  AS iowait_t,
-    avgIf(value, metric = 'OSIrqTime')     AS irq_t,
-    avgIf(value, metric = 'OSSoftIrqTime') AS softirq_t,
-    avgIf(value, metric = 'OSStealTime')   AS steal_t
-FROM system.asynchronous_metric_log
-WHERE metric IN ('OSUserTime','OSNiceTime','OSSystemTime','OSIdleTime',
-                 'OSIOWaitTime','OSIrqTime','OSSoftIrqTime','OSStealTime')
-    AND event_time > now() - INTERVAL %d SECOND
-GROUP BY bucket
-ORDER BY bucket`
-
-func cpuPointsFromLogRows(rows []map[string]interface{}) []map[string]interface{} {
-	var points []map[string]interface{}
-	for _, row := range rows {
-		var t time.Time
-		switch v := row["bucket"].(type) {
-		case time.Time:
-			t = v
-		default:
-			continue
-		}
-		busy := toFloat64(row["user_t"]) + toFloat64(row["nice_t"]) + toFloat64(row["sys_t"]) +
-			toFloat64(row["irq_t"]) + toFloat64(row["softirq_t"]) + toFloat64(row["steal_t"])
-		total := busy + toFloat64(row["idle_t"]) + toFloat64(row["iowait_t"])
-		var pct float64
-		if total > 0 {
-			pct = math.Round(busy/total*1000) / 10
-			if pct < 0 {
-				pct = 0
-			} else if pct > 100 {
-				pct = 100
-			}
-		}
-		points = append(points, map[string]interface{}{
-			"time":  t.UTC().Format("2006-01-02 15:04:05"),
-			"value": pct,
-		})
+// NewMetricsCollector creates and starts a background collector. retentionDays
+// bounds how long persisted samples are kept (default 30 when <= 0).
+func NewMetricsCollector(db *storage.ClickHouseClient, pg *storage.PostgresClient, retentionDays int) *MetricsCollector {
+	if retentionDays <= 0 {
+		retentionDays = 30
 	}
-	return points
-}
-
-// CPUHistoryLog queries system.asynchronous_metric_log for long-range CPU history (single-node).
-func (mc *MetricsCollector) CPUHistoryLog(ctx context.Context, since time.Duration, bucketInterval string) ([]map[string]interface{}, error) {
-	sql := fmt.Sprintf(cpuLogSQLTemplate, bucketInterval, int64(since.Seconds()))
-	rows, err := mc.db.Query(ctx, sql)
-	if err != nil {
-		return nil, err
-	}
-	return cpuPointsFromLogRows(rows), nil
-}
-
-// CPUHistoryLogNodes queries system.asynchronous_metric_log per node for long-range CPU history.
-// Returns nil when running in single-node mode.
-func (mc *MetricsCollector) CPUHistoryLogNodes(ctx context.Context, since time.Duration, bucketInterval string) map[string][]map[string]interface{} {
-	addrs := mc.db.Addrs()
-	if len(addrs) <= 1 {
-		return nil
-	}
-	sql := fmt.Sprintf(cpuLogSQLTemplate, bucketInterval, int64(since.Seconds()))
-	result := make(map[string][]map[string]interface{}, len(addrs))
-	for _, addr := range addrs {
-		conn, err := storage.OpenClickHouseAddr(addr, mc.db.User, mc.db.Password)
-		if err != nil {
-			log.Printf("[MetricsCollector] log query: failed to connect to %s: %v", addr, err)
-			continue
-		}
-		rows, qErr := storage.QueryConn(ctx, conn, sql)
-		conn.Close()
-		if qErr != nil {
-			log.Printf("[MetricsCollector] log query failed for node %s: %v", addr, qErr)
-			continue
-		}
-		if points := cpuPointsFromLogRows(rows); len(points) > 0 {
-			result[addr] = points
-		}
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
-}
-
-// NewMetricsCollector creates and starts a background collector.
-func NewMetricsCollector(db *storage.ClickHouseClient) *MetricsCollector {
 	mc := &MetricsCollector{
-		nodeHistory: make(map[string][]cpuSample),
-		maxAge:      maxHistoryAge,
-		db:          db,
-		stop:        make(chan struct{}),
+		db:            db,
+		pg:            pg,
+		retentionDays: retentionDays,
+		stop:          make(chan struct{}),
 	}
 	go mc.run()
 	return mc
@@ -170,24 +77,46 @@ const cpuMetricsSQL = `SELECT metric, value FROM system.asynchronous_metrics
 		'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
 	)`
 
+// collect samples CPU% per ClickHouse node plus the average alert evaluation
+// latency, then persists everything to Postgres in a single batched insert.
 func (mc *MetricsCollector) collect() {
+	var samples []storage.SystemMetricSample
+
 	addrs := mc.db.Addrs()
 	if len(addrs) <= 1 {
-		// Single-node: query via the shared connection pool.
-		mc.collectNode("_single", nil)
+		// Single-node: query via the shared connection pool. Stored under the
+		// empty node so reads treat it as a single aggregate series.
+		if pct, ok := mc.sampleCPU("_single", nil); ok {
+			samples = append(samples, storage.SystemMetricSample{Metric: "cpu", Value: pct})
+		}
 	} else {
-		// Multi-node: query each node individually so deltas stay
-		// within the same host and never produce cross-node nonsense.
+		// Multi-node: query each node individually so CPU% stays per-host.
 		for _, addr := range addrs {
 			a := addr
-			mc.collectNode(addr, &a)
+			if pct, ok := mc.sampleCPU(addr, &a); ok {
+				samples = append(samples, storage.SystemMetricSample{Metric: "cpu", Node: addr, Value: pct})
+			}
 		}
 	}
+
+	if avg, ok := mc.sampleAlertLatency(); ok {
+		samples = append(samples, storage.SystemMetricSample{Metric: "alert_exec_ms", Value: avg})
+	}
+
+	if len(samples) > 0 && mc.pg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := mc.pg.InsertSystemMetrics(ctx, time.Now(), samples); err != nil {
+			log.Printf("[MetricsCollector] failed to persist metrics: %v", err)
+		}
+		cancel()
+	}
+
+	mc.maybePrune()
 }
 
-// collectNode samples CPU jiffies from a single ClickHouse node and records
-// the delta-based CPU% in the appropriate history slice.
-func (mc *MetricsCollector) collectNode(key string, addr *string) {
+// sampleCPU queries instantaneous OS CPU ratios from a single ClickHouse node
+// and returns CPU% (0-100). addr is nil for the shared single-node connection.
+func (mc *MetricsCollector) sampleCPU(key string, addr *string) (float64, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -197,7 +126,7 @@ func (mc *MetricsCollector) collectNode(key string, addr *string) {
 		conn, openErr := storage.OpenClickHouseAddr(*addr, mc.db.User, mc.db.Password)
 		if openErr != nil {
 			log.Printf("[MetricsCollector] failed to connect to %s: %v", *addr, openErr)
-			return
+			return 0, false
 		}
 		defer conn.Close()
 		rows, err = storage.QueryConn(ctx, conn, cpuMetricsSQL)
@@ -206,7 +135,7 @@ func (mc *MetricsCollector) collectNode(key string, addr *string) {
 	}
 	if err != nil {
 		log.Printf("[MetricsCollector] failed to query CPU metrics (node %s): %v", key, err)
-		return
+		return 0, false
 	}
 
 	var user, nice, sys, idle, iowait, irq, softirq, steal float64
@@ -237,7 +166,7 @@ func (mc *MetricsCollector) collectNode(key string, addr *string) {
 	total := busy + idle + iowait
 	if total <= 0 {
 		log.Printf("[MetricsCollector] OS CPU metrics not available (node %s)", key)
-		return
+		return 0, false
 	}
 
 	// Modern ClickHouse (23+) reports OS* metrics as instantaneous ratios
@@ -249,119 +178,52 @@ func (mc *MetricsCollector) collectNode(key string, addr *string) {
 	} else if pct > 100 {
 		pct = 100
 	}
-
-	now := time.Now()
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-
-	sample := cpuSample{Time: now, Value: pct}
-	if key == "_single" {
-		mc.history = append(mc.history, sample)
-	} else {
-		mc.nodeHistory[key] = append(mc.nodeHistory[key], sample)
-	}
-
-	// Trim old samples for this key.
-	cutoff := now.Add(-mc.maxAge)
-	if key == "_single" {
-		mc.history = trimSamples(mc.history, cutoff)
-	} else {
-		mc.nodeHistory[key] = trimSamples(mc.nodeHistory[key], cutoff)
-	}
+	return pct, true
 }
 
-func trimSamples(samples []cpuSample, cutoff time.Time) []cpuSample {
-	start := 0
-	for start < len(samples) && samples[start].Time.Before(cutoff) {
-		start++
+// sampleAlertLatency returns the average last evaluation latency (ms) across
+// enabled alerts, mirroring the Alerts tab summary so the persisted trend
+// matches the displayed average.
+func (mc *MetricsCollector) sampleAlertLatency() (float64, bool) {
+	if mc.pg == nil {
+		return 0, false
 	}
-	return samples[start:]
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var avg sql.NullFloat64
+	err := mc.pg.QueryRow(ctx,
+		`SELECT AVG(last_execution_time_ms) FROM alerts
+		  WHERE enabled = true AND last_execution_time_ms IS NOT NULL`).Scan(&avg)
+	if err != nil || !avg.Valid {
+		return 0, false
+	}
+	return avg.Float64, true
 }
 
-// CPUHistory returns collected CPU samples for the given time range (single-node).
-func (mc *MetricsCollector) CPUHistory(since time.Duration, bucketSize time.Duration) []map[string]interface{} {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-	return bucketSamples(mc.history, since, bucketSize)
-}
-
-// CPUHistoryNodes returns per-node CPU history keyed by node address.
-// Returns nil when running in single-node mode.
-func (mc *MetricsCollector) CPUHistoryNodes(since time.Duration, bucketSize time.Duration) map[string][]map[string]interface{} {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-	if len(mc.nodeHistory) == 0 {
-		return nil
+// maybePrune deletes samples older than the retention window once per hour.
+func (mc *MetricsCollector) maybePrune() {
+	if mc.pg == nil || time.Since(mc.lastPruneAt) < metricsPruneEvery {
+		return
 	}
-	result := make(map[string][]map[string]interface{}, len(mc.nodeHistory))
-	for node, samples := range mc.nodeHistory {
-		if points := bucketSamples(samples, since, bucketSize); len(points) > 0 {
-			result[node] = points
-		}
+	mc.lastPruneAt = time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if n, err := mc.pg.PruneSystemMetrics(ctx, mc.retentionDays); err != nil {
+		log.Printf("[MetricsCollector] retention prune failed: %v", err)
+	} else if n > 0 {
+		log.Printf("[MetricsCollector] pruned %d old system_metrics rows", n)
 	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
-}
-
-func bucketSamples(samples []cpuSample, since time.Duration, bucketSize time.Duration) []map[string]interface{} {
-	cutoff := time.Now().Add(-since)
-
-	type bucket struct {
-		sum   float64
-		count int
-	}
-	buckets := map[int64]*bucket{}
-	var bucketKeys []int64
-
-	for _, s := range samples {
-		if s.Time.Before(cutoff) {
-			continue
-		}
-		key := s.Time.Truncate(bucketSize).Unix()
-		b, ok := buckets[key]
-		if !ok {
-			b = &bucket{}
-			buckets[key] = b
-			bucketKeys = append(bucketKeys, key)
-		}
-		b.sum += s.Value
-		b.count++
-	}
-
-	sort.Slice(bucketKeys, func(i, j int) bool { return bucketKeys[i] < bucketKeys[j] })
-
-	var points []map[string]interface{}
-	for _, key := range bucketKeys {
-		b := buckets[key]
-		t := time.Unix(key, 0).UTC()
-		points = append(points, map[string]interface{}{
-			"time":  t.Format("2006-01-02 15:04:05"),
-			"value": math.Round(b.sum/float64(b.count)*10) / 10,
-		})
-	}
-	return points
-}
-
-type alertExecSample struct {
-	Time  int64 `json:"time"`
-	AvgMs int64 `json:"avg_ms"`
 }
 
 type PerformanceHandler struct {
 	db        *storage.ClickHouseClient
 	pg        *storage.PostgresClient
 	collector *MetricsCollector
-
-	execHistMu   sync.Mutex
-	execHist     []alertExecSample // capped at 120 samples
-	execHistLast time.Time
 }
 
-func NewPerformanceHandler(db *storage.ClickHouseClient, pg *storage.PostgresClient) *PerformanceHandler {
-	mc := NewMetricsCollector(db)
-	log.Printf("[Performance] Started metrics collector for %d node(s)", len(db.Addrs()))
+func NewPerformanceHandler(db *storage.ClickHouseClient, pg *storage.PostgresClient, metricsRetentionDays int) *PerformanceHandler {
+	mc := NewMetricsCollector(db, pg, metricsRetentionDays)
+	log.Printf("[Performance] Started metrics collector for %d node(s), %dd retention", len(db.Addrs()), mc.retentionDays)
 	return &PerformanceHandler{db: db, pg: pg, collector: mc}
 }
 
@@ -474,34 +336,16 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Parse time range
+	// Parse time range. `since`/`bucketSec` drive the persisted CPU history read;
+	// `interval` bounds the live query_log scan (capped at 24h for long ranges).
+	rangeParam := r.URL.Query().Get("range")
+	since, bucketSec := metricRange(rangeParam)
 	interval := "1 HOUR"
-	var since time.Duration
-	var bucketSize time.Duration
-	var useMetricLog bool
-	var logBucketInterval string
-	switch r.URL.Query().Get("range") {
+	switch rangeParam {
 	case "8h":
 		interval = "8 HOUR"
-		since = 8 * time.Hour
-		bucketSize = 5 * time.Minute
-	case "24h":
+	case "24h", "7d", "30d":
 		interval = "24 HOUR"
-		since = 24 * time.Hour
-		bucketSize = 15 * time.Minute
-	case "7d":
-		interval = "24 HOUR" // cap query_log to last 24h
-		since = 7 * 24 * time.Hour
-		useMetricLog = true
-		logBucketInterval = "1 HOUR"
-	case "30d":
-		interval = "24 HOUR"
-		since = 30 * 24 * time.Hour
-		useMetricLog = true
-		logBucketInterval = "4 HOUR"
-	default:
-		since = 1 * time.Hour
-		bucketSize = 1 * time.Minute
 	}
 
 	result := map[string]interface{}{
@@ -596,26 +440,59 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 		result["disk"] = diskRows[0]
 	}
 
-	// CPU history: use asynchronous_metric_log for long ranges, in-memory buffer otherwise.
-	if useMetricLog {
-		if points, err := h.collector.CPUHistoryLog(r.Context(), since, logBucketInterval); err == nil && len(points) > 0 {
-			result["cpu_history"] = points
-		} else if err != nil {
-			log.Printf("[Performance] asynchronous_metric_log query failed: %v", err)
-		}
-		if nodeHistory := h.collector.CPUHistoryLogNodes(r.Context(), since, logBucketInterval); nodeHistory != nil {
-			result["cpu_history_nodes"] = nodeHistory
-		}
-	} else {
-		if cpuHistory := h.collector.CPUHistory(since, bucketSize); len(cpuHistory) > 0 {
-			result["cpu_history"] = cpuHistory
-		}
-		if nodeHistory := h.collector.CPUHistoryNodes(since, bucketSize); nodeHistory != nil {
-			result["cpu_history_nodes"] = nodeHistory
+	// CPU history from persisted samples (Postgres) so it survives process
+	// restarts and remains readable when ClickHouse itself is degraded. The read
+	// mirrors how the collector tags samples: per-node series in multi-node
+	// deployments, a single aggregate series otherwise.
+	if h.pg != nil {
+		if len(h.db.Addrs()) > 1 {
+			if nodes, err := h.pg.QueryMetricSeriesByNode(r.Context(), "cpu", since, bucketSec); err != nil {
+				log.Printf("[Performance] cpu node history query failed: %v", err)
+			} else if nodes != nil {
+				nodeMap := make(map[string][]map[string]interface{}, len(nodes))
+				for node, pts := range nodes {
+					nodeMap[node] = cpuPoints(pts)
+				}
+				result["cpu_history_nodes"] = nodeMap
+			}
+		} else if points, err := h.pg.QueryMetricSeries(r.Context(), "cpu", since, bucketSec); err != nil {
+			log.Printf("[Performance] cpu history query failed: %v", err)
+		} else if len(points) > 0 {
+			result["cpu_history"] = cpuPoints(points)
 		}
 	}
 
 	respondJSON(w, http.StatusOK, result)
+}
+
+// metricRange maps a UI range param to a lookback window and bucket width
+// (seconds) for persisted metric series.
+func metricRange(rangeParam string) (time.Duration, int) {
+	switch rangeParam {
+	case "8h":
+		return 8 * time.Hour, 300
+	case "24h":
+		return 24 * time.Hour, 900
+	case "7d":
+		return 7 * 24 * time.Hour, 3600
+	case "30d":
+		return 30 * 24 * time.Hour, 14400
+	default:
+		return 1 * time.Hour, 60
+	}
+}
+
+// cpuPoints formats persisted metric points into the {time, value} shape the
+// CPU chart expects: a string timestamp and a one-decimal percentage.
+func cpuPoints(points []storage.MetricPoint) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(points))
+	for _, p := range points {
+		out = append(out, map[string]interface{}{
+			"time":  p.Bucket.UTC().Format("2006-01-02 15:04:05"),
+			"value": math.Round(p.Value*10) / 10,
+		})
+	}
+	return out
 }
 
 // partitionRe extracts the fractal_id and date from a system.parts partition
@@ -840,7 +717,6 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-
 	result := map[string]interface{}{"success": true}
 
 	// All stats sourced from alerts.last_execution_time_ms — updated on every
@@ -869,23 +745,22 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 		"max_ms":       int64(math.Round(maxMs)),
 	}
 
-	// Append a history sample at most once per minute, only when scan succeeded.
-	now := time.Now()
-	h.execHistMu.Lock()
-	if scanErr == nil && now.Sub(h.execHistLast) >= 55*time.Second {
-		h.execHist = append(h.execHist, alertExecSample{
-			Time:  now.Unix(),
-			AvgMs: int64(math.Round(avgMs)),
-		})
-		if len(h.execHist) > 120 {
-			h.execHist = h.execHist[len(h.execHist)-120:]
+	// Alert evaluation latency trend from persisted samples (Postgres), so it
+	// survives restarts instead of being rebuilt in-memory only while the tab is
+	// open. The collector records avg(last_execution_time_ms) every 30s.
+	execSince, execBucket := metricRange(r.URL.Query().Get("range"))
+	execHist := []map[string]interface{}{}
+	if points, err := h.pg.QueryMetricSeries(r.Context(), "alert_exec_ms", execSince, execBucket); err != nil {
+		log.Printf("[AlertStats] exec history query failed: %v", err)
+	} else {
+		for _, p := range points {
+			execHist = append(execHist, map[string]interface{}{
+				"time":   p.Bucket.Unix(),
+				"avg_ms": int64(math.Round(p.Value)),
+			})
 		}
-		h.execHistLast = now
 	}
-	execHistCopy := make([]alertExecSample, len(h.execHist))
-	copy(execHistCopy, h.execHist)
-	h.execHistMu.Unlock()
-	result["exec_history"] = execHistCopy
+	result["exec_history"] = execHist
 
 	// Exec time distribution: count of enabled alerts in each latency bucket.
 	distRow := h.pg.QueryRow(r.Context(),

@@ -13,7 +13,112 @@ window.BifractCharts = {
         '#06b6d4', '#8b5fbf', '#f97316', '#84cc16', '#14b8a6'
     ],
 
+    // Named categorical palettes selectable from the Format panel.
+    // 'default' falls back to the per-chart-type defaults above.
+    PALETTES: {
+        colorblind: ['#0072B2', '#E69F00', '#009E73', '#D55E00', '#CC79A7', '#56B4E9', '#F0E442', '#999999'],
+        warm:       ['#ef4444', '#f97316', '#f59e0b', '#eab308', '#ec4899', '#fb7185', '#fbbf24', '#d946ef'],
+        cool:       ['#3b82f6', '#06b6d4', '#10b981', '#8b5cf6', '#14b8a6', '#6366f1', '#0ea5e9', '#22d3ee'],
+        mono:       ['#9c6ade', '#b794f6', '#8b5fbf', '#a855f7', '#7c3aed', '#c4b5fd', '#6d28d9', '#ddd6fe']
+    },
+
+    // Resolve the active palette array for a config, or the supplied fallback
+    // when no named palette is selected ('default').
+    _palette(config, fallback) {
+        const name = config && config.colors && config.colors.palette;
+        return (name && name !== 'default' && this.PALETTES[name]) ? this.PALETTES[name] : fallback;
+    },
+
+    // Per-series/per-slice color override. Keyed by series label (by-value, e.g.
+    // a pie slice or timechart group) with an index fallback (__series_N).
+    _override(config, label, idx) {
+        const o = config && config.colors && config.colors.overrides;
+        if (!o) return null;
+        return o[label] || o['__series_' + idx] || null;
+    },
+
+    _hasCustomColors(config) {
+        const c = config && config.colors;
+        return !!(c && (c.palette && c.palette !== 'default' || (c.overrides && Object.keys(c.overrides).length)));
+    },
+
+    // Returns an array of colors aligned to labels, honoring overrides then palette.
+    seriesColors(labels, config, fallbackArr) {
+        const pal = this._palette(config, fallbackArr);
+        return labels.map((l, i) => this._override(config, l, i) || pal[i % pal.length]);
+    },
+
+    // Whether legend display is forced on/off by config; returns {} to keep the
+    // chart's own default.
+    _legendDisplay(config) {
+        if (config && config.legend && typeof config.legend.show === 'boolean') {
+            return { display: config.legend.show };
+        }
+        return {};
+    },
+
     // ---- Shared formatters ----
+
+    // Unit-aware value formatter used by single-value tiles, axes and tooltips.
+    // unit = { type: 'number'|'bytes'|'bytes_si'|'duration_ms'|'duration_s'|'percent'|'none', decimals: number|null }
+    formatValue(num, unit) {
+        if (num === null || num === undefined || num === '') return '';
+        const n = typeof num === 'number' ? num : parseFloat(num);
+        if (isNaN(n)) return String(num);
+        const type = (unit && unit.type) || 'number';
+        const dec = unit && unit.decimals != null && unit.decimals !== '' ? parseInt(unit.decimals, 10) : null;
+        switch (type) {
+            case 'none':
+                return Number.isInteger(n) ? n.toLocaleString() : String(n);
+            case 'percent':
+                return (dec != null ? n.toFixed(dec) : (Number.isInteger(n) ? n.toLocaleString() : n.toFixed(2))) + '%';
+            case 'bytes':
+                return this._formatBytes(n, 1024, dec);
+            case 'bytes_si':
+                return this._formatBytes(n, 1000, dec);
+            case 'duration_ms':
+                return this._formatDuration(n, dec);
+            case 'duration_s':
+                return this._formatDuration(n * 1000, dec);
+            case 'number':
+            default:
+                return this._formatNumber(n, dec);
+        }
+    },
+
+    _formatNumber(n, dec) {
+        if (n === 0) return '0';
+        const abs = Math.abs(n);
+        const d = dec != null ? dec : 1;
+        if (abs >= 1e9) return (n / 1e9).toFixed(d) + 'B';
+        if (abs >= 1e6) return (n / 1e6).toFixed(d) + 'M';
+        if (abs >= 1e4) return (n / 1e3).toFixed(d) + 'K';
+        if (dec != null) return n.toFixed(dec);
+        return Number.isInteger(n) ? n.toLocaleString() : n.toFixed(2);
+    },
+
+    _formatBytes(n, base, dec) {
+        const units = base === 1024
+            ? ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']
+            : ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+        const abs = Math.abs(n);
+        if (abs < base) return n + ' B';
+        let i = Math.floor(Math.log(abs) / Math.log(base));
+        i = Math.min(i, units.length - 1);
+        const d = dec != null ? dec : 1;
+        return (n / Math.pow(base, i)).toFixed(d) + ' ' + units[i];
+    },
+
+    _formatDuration(ms, dec) {
+        const abs = Math.abs(ms);
+        const d = dec != null ? dec : 1;
+        if (abs < 0.001) return (ms * 1e6).toFixed(d) + 'ns';
+        if (abs < 1) return (ms * 1000).toFixed(d) + 'µs';
+        if (abs < 1000) return (dec != null ? ms.toFixed(dec) : +ms.toFixed(2)) + 'ms';
+        if (abs < 60000) return (ms / 1000).toFixed(d) + 's';
+        if (abs < 3600000) return (ms / 60000).toFixed(d) + 'm';
+        return (ms / 3600000).toFixed(d) + 'h';
+    },
 
     formatSingleValue(num) {
         if (num === 0) return '0';
@@ -167,13 +272,16 @@ window.BifractCharts = {
         const canvas = document.createElement('canvas');
         wrapper.appendChild(canvas);
 
+        const cfg = opts.config || {};
+        const unit = cfg.unit;
+
         const chart = new Chart(canvas, {
             type: 'pie',
             data: {
                 labels,
                 datasets: [{
                     data: values,
-                    backgroundColor: this.PIE_COLORS.slice(0, values.length),
+                    backgroundColor: this.seriesColors(labels, cfg, this.PIE_COLORS),
                     borderColor: cv('--chart-border'),
                     borderWidth: 2
                 }]
@@ -182,8 +290,13 @@ window.BifractCharts = {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
-                    legend: this._themedLegend('bottom', { labels: { color: cv('--chart-text'), font: { family: 'Inter', size: 12 }, padding: 20 } }),
-                    tooltip: this._themedTooltip()
+                    legend: Object.assign(
+                        this._themedLegend('bottom', { labels: { color: cv('--chart-text'), font: { family: 'Inter', size: 12 }, padding: 20 } }),
+                        this._legendDisplay(cfg)
+                    ),
+                    tooltip: Object.assign(this._themedTooltip(), unit ? {
+                        callbacks: { label: (c) => ` ${c.label}: ${this.formatValue(c.raw, unit)}` }
+                    } : {})
                 },
                 layout: { padding: 20 }
             }
@@ -212,6 +325,11 @@ window.BifractCharts = {
         const labels = topItems.map(i => i.label);
         const values = topItems.map(i => i.value);
 
+        const cfg = opts.config || {};
+        const unit = cfg.unit;
+        const custom = this._hasCustomColors(cfg);
+        const barColors = custom ? this.seriesColors(labels, cfg, this.SERIES_COLORS) : cv('--chart-accent');
+
         const chart = new Chart(canvas, {
             type: 'bar',
             data: {
@@ -219,8 +337,8 @@ window.BifractCharts = {
                 datasets: [{
                     label: valueField.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()),
                     data: values,
-                    backgroundColor: cv('--chart-accent'),
-                    borderColor: cv('--chart-accent-dark'),
+                    backgroundColor: barColors,
+                    borderColor: custom ? barColors : cv('--chart-accent-dark'),
                     borderWidth: 1
                 }]
             },
@@ -228,10 +346,13 @@ window.BifractCharts = {
                 responsive: true,
                 maintainAspectRatio: opts.maintainAspectRatio !== false,
                 plugins: {
-                    legend: this._themedLegend('top'),
-                    tooltip: this._themedTooltip()
+                    legend: Object.assign(this._themedLegend('top'), this._legendDisplay(cfg)),
+                    tooltip: Object.assign(this._themedTooltip(), unit ? {
+                        callbacks: { label: (c) => ` ${this.formatValue(c.raw, unit)}` }
+                    } : {})
                 },
                 scales: this._themedScales({
+                    y: unit ? { ticks: { color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 11 }, callback: (v) => this.formatValue(v, unit) } } : undefined,
                     x: { ticks: { color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 11 }, maxRotation: 45, minRotation: 0 } }
                 }),
                 layout: { padding: 20 }
@@ -258,6 +379,9 @@ window.BifractCharts = {
         const groupFields = fields.filter(f => f !== timeField && !valueFields.includes(f));
         const cv = this._cv();
         const valueField = valueFields[0] || fields[1];
+        const cfg = opts.config || {};
+        const unit = cfg.unit;
+        const pal = this._palette(cfg, this.SERIES_COLORS);
 
         let datasets, labels;
 
@@ -270,26 +394,31 @@ window.BifractCharts = {
                 groups[key].push(row);
             });
 
-            datasets = Object.entries(groups).map(([key, rows], idx) => ({
-                label: key,
-                data: rows.map(r => parseFloat(r[valueField]) || 0),
-                borderColor: this.SERIES_COLORS[idx % this.SERIES_COLORS.length],
-                backgroundColor: this.SERIES_COLORS[idx % this.SERIES_COLORS.length] + '20',
-                fill: true,
-                tension: 0.3,
-                pointRadius: 2,
-                pointHoverRadius: 5,
-                borderWidth: 2
-            }));
+            datasets = Object.entries(groups).map(([key, rows], idx) => {
+                const color = this._override(cfg, key, idx) || pal[idx % pal.length];
+                return {
+                    label: key,
+                    data: rows.map(r => parseFloat(r[valueField]) || 0),
+                    borderColor: color,
+                    backgroundColor: color + '20',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 2,
+                    pointHoverRadius: 5,
+                    borderWidth: 2
+                };
+            });
 
             labels = Object.values(groups)[0].map(r => String(r[timeField] || ''));
         } else {
+            const seriesLabel = valueField.replace(/_/g, ' ');
+            const color = this._override(cfg, seriesLabel, 0) || (this._hasCustomColors(cfg) ? pal[0] : cv('--chart-accent'));
             labels = data.map(r => String(r[timeField] || ''));
             datasets = [{
-                label: valueField.replace(/_/g, ' '),
+                label: seriesLabel,
                 data: data.map(r => parseFloat(r[valueField]) || 0),
-                borderColor: cv('--chart-accent'),
-                backgroundColor: cv('--chart-accent') + '20',
+                borderColor: color,
+                backgroundColor: color + '20',
                 fill: true,
                 tension: 0.3,
                 pointRadius: 2,
@@ -314,10 +443,13 @@ window.BifractCharts = {
                             usePointStyle: true,
                             pointStyle: 'circle'
                         }
-                    }),
-                    tooltip: this._themedTooltip()
+                    }, this._legendDisplay(cfg)),
+                    tooltip: Object.assign(this._themedTooltip(), unit ? {
+                        callbacks: { label: (c) => ` ${c.dataset.label}: ${this.formatValue(c.raw, unit)}` }
+                    } : {})
                 },
                 scales: this._themedScales({
+                    y: unit ? { ticks: { color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 11 }, callback: (v) => this.formatValue(v, unit) } } : undefined,
                     x: {
                         ticks: {
                             color: cv('--chart-text-secondary'),
@@ -408,6 +540,10 @@ window.BifractCharts = {
         let label = '';
         let valueField = '';
 
+        const cfg = opts.config || {};
+        const unit = cfg.unit;
+        let numValue = NaN;
+
         if (data && data.length > 0) {
             valueField = fields.find(f =>
                 f === '_count' || f === 'count' || f.startsWith('sum_') ||
@@ -416,27 +552,48 @@ window.BifractCharts = {
             ) || fields[0];
 
             const val = data[0][valueField];
-            const numValue = parseFloat(val);
-            rawValue = isNaN(numValue) ? String(val) : this.formatSingleValue(numValue);
-            label = (opts.config && opts.config.label) || valueField.replace(/_/g, ' ');
+            numValue = parseFloat(val);
+            if (isNaN(numValue)) {
+                rawValue = String(val);
+            } else {
+                rawValue = unit ? this.formatValue(numValue, unit) : this.formatSingleValue(numValue);
+            }
+            label = cfg.label || valueField.replace(/_/g, ' ');
         }
 
-        // Conditional formatting
+        // Threshold-based formatting (Stat). Falls back to legacy row-coloring
+        // rules when no thresholds are configured.
         let valueStyle = '';
-        const rules = opts.coloringRules || [];
-        for (const rule of rules) {
-            if (!rule.column) continue;
-            if (rule.column === valueField && data && data.length > 0) {
-                const cellVal = data[0][valueField];
-                if (this._evaluateRule(cellVal, rule)) {
-                    valueStyle = `color: ${rule.color || '#8b5cf6'};`;
-                    break;
+        let containerStyle = '';
+        const stat = cfg.stat || {};
+        const thresholds = stat.thresholds || [];
+        let matchedColor = null;
+
+        if (thresholds.length > 0 && !isNaN(numValue)) {
+            for (const t of thresholds) {
+                if (this._matchThreshold(numValue, t)) { matchedColor = t.color || '#8b5cf6'; break; }
+            }
+        } else {
+            const rules = opts.coloringRules || [];
+            for (const rule of rules) {
+                if (!rule.column) continue;
+                if (rule.column === valueField && data && data.length > 0) {
+                    if (this._evaluateRule(data[0][valueField], rule)) { matchedColor = rule.color || '#8b5cf6'; break; }
                 }
             }
         }
 
+        if (matchedColor) {
+            if ((stat.colorMode || 'value') === 'background') {
+                containerStyle = `background:${matchedColor}1a;border:1px solid ${matchedColor};border-radius:10px;`;
+                valueStyle = `color:${matchedColor};`;
+            } else {
+                valueStyle = `color:${matchedColor};`;
+            }
+        }
+
         const html = `
-            <div class="singleval-display">
+            <div class="singleval-display" style="${containerStyle}">
                 <div class="singleval-value" style="${valueStyle}">${Utils.escapeHtml(rawValue)}</div>
                 <div class="singleval-label">${Utils.escapeHtml(label)}</div>
             </div>
@@ -448,6 +605,19 @@ window.BifractCharts = {
         el.innerHTML = html;
         if (container) container.appendChild(el.firstElementChild);
         return el.firstElementChild;
+    },
+
+    _matchThreshold(n, t) {
+        const v = parseFloat(t.value);
+        if (isNaN(v)) return false;
+        switch (t.op || '>=') {
+            case '>':  return n > v;
+            case '>=': return n >= v;
+            case '<':  return n < v;
+            case '<=': return n <= v;
+            case '=':  return n === v;
+            default:   return false;
+        }
     },
 
     _evaluateRule(cellVal, rule) {

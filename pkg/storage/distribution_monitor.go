@@ -4,9 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sync"
+	"math"
 	"sync/atomic"
 	"time"
+)
+
+// dist_queue is the system_metrics series name for the distribution queue depth.
+// Cluster-only: only written while the monitor is polling (never single-node).
+const (
+	distQueueMetric    = "dist_queue"
+	distQueueWindow    = 2 * time.Hour
+	distQueueBucketSec = 60
 )
 
 // DistQueueSample is a single time-series data point for the distribution queue.
@@ -29,19 +37,19 @@ type DistributionQueueStats struct {
 // Only active in cluster mode — Start is a no-op for single-node deployments.
 type DistributionMonitor struct {
 	ch      *ClickHouseClient
+	pg      *PostgresClient
 	onEvent func(event string, fields map[string]string)
 	state   atomic.Value // stores DistributionQueueStats
 	stop    chan struct{}
-
-	histMu  sync.Mutex
-	hist    []DistQueueSample // capped at 120 samples (~2 hours at 60s poll)
 }
 
 // NewDistributionMonitor creates a monitor. onEvent is called with system-fractal
-// event names (ch.distribution.*) on health state transitions.
-func NewDistributionMonitor(ch *ClickHouseClient, onEvent func(string, map[string]string)) *DistributionMonitor {
+// event names (ch.distribution.*) on health state transitions. pg persists the
+// queue depth time-series so it survives restarts (may be nil to disable).
+func NewDistributionMonitor(ch *ClickHouseClient, pg *PostgresClient, onEvent func(string, map[string]string)) *DistributionMonitor {
 	m := &DistributionMonitor{
 		ch:      ch,
+		pg:      pg,
 		onEvent: onEvent,
 		stop:    make(chan struct{}),
 	}
@@ -49,12 +57,21 @@ func NewDistributionMonitor(ch *ClickHouseClient, onEvent func(string, map[strin
 	return m
 }
 
-// History returns a copy of recent distribution queue samples (oldest first).
-func (m *DistributionMonitor) History() []DistQueueSample {
-	m.histMu.Lock()
-	defer m.histMu.Unlock()
-	out := make([]DistQueueSample, len(m.hist))
-	copy(out, m.hist)
+// History returns recent distribution queue samples from Postgres (oldest first)
+// so the chart survives restarts. Returns nil when persistence is unavailable.
+func (m *DistributionMonitor) History(ctx context.Context) []DistQueueSample {
+	if m.pg == nil {
+		return nil
+	}
+	pts, err := m.pg.QueryMetricSeries(ctx, distQueueMetric, distQueueWindow, distQueueBucketSec)
+	if err != nil {
+		log.Printf("[DistributionMonitor] history query failed: %v", err)
+		return nil
+	}
+	out := make([]DistQueueSample, 0, len(pts))
+	for _, p := range pts {
+		out = append(out, DistQueueSample{Time: p.Bucket.Unix(), DataFiles: int64(math.Round(p.Value))})
+	}
 	return out
 }
 
@@ -159,12 +176,13 @@ func (m *DistributionMonitor) poll(prevErrorCount *int64, wasDegraded *bool) {
 		Healthy:         healthy,
 	})
 
-	m.histMu.Lock()
-	m.hist = append(m.hist, DistQueueSample{Time: time.Now().Unix(), DataFiles: dataFiles})
-	if len(m.hist) > 120 {
-		m.hist = m.hist[len(m.hist)-120:]
+	if m.pg != nil {
+		if err := m.pg.InsertSystemMetrics(ctx, time.Now(), []SystemMetricSample{
+			{Metric: distQueueMetric, Value: float64(dataFiles)},
+		}); err != nil {
+			log.Printf("[DistributionMonitor] failed to persist queue depth: %v", err)
+		}
 	}
-	m.histMu.Unlock()
 }
 
 func distMonInt64(v interface{}) int64 {

@@ -10203,6 +10203,179 @@ div.vis-tooltip {
     padding: 20px 0;
 }
 
+/* Type-aware Format panel sections */
+.format-section {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.format-section:first-child {
+    padding-top: 0;
+}
+
+.format-section:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.format-section-title {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
+.fmt-label {
+    display: block;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin: 10px 0 4px;
+}
+
+.fmt-label:first-child {
+    margin-top: 0;
+}
+
+.fmt-select,
+.fmt-input {
+    width: 100%;
+    padding: 7px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    box-sizing: border-box;
+    cursor: pointer;
+}
+
+.fmt-input {
+    cursor: text;
+}
+
+.fmt-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+    line-height: 1.4;
+}
+
+.fmt-empty {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    padding: 30px 10px;
+    line-height: 1.5;
+}
+
+.fmt-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.fmt-check input {
+    cursor: pointer;
+}
+
+/* Per-series color list */
+.fmt-series-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.fmt-series-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.fmt-series-name {
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 1;
+}
+
+/* Native color picker used alongside swatches */
+.rule-color-custom {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    background: none;
+    cursor: pointer;
+    flex-shrink: 0;
+    overflow: hidden;
+}
+
+.rule-color-custom::-webkit-color-swatch-wrapper { padding: 0; }
+.rule-color-custom::-webkit-color-swatch { border: none; border-radius: 50%; }
+.rule-color-custom::-moz-color-swatch { border: none; border-radius: 50%; }
+
+.fmt-reset {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.9rem;
+    padding: 2px 4px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.fmt-reset:hover { color: var(--text-primary); }
+
+/* Stat thresholds */
+.fmt-mode {
+    margin-bottom: 10px;
+}
+
+.fmt-thr-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.fmt-select-sm {
+    padding: 6px 4px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    cursor: pointer;
+    flex-shrink: 0;
+    min-width: 52px;
+    text-align: center;
+}
+
+.fmt-input-sm {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    box-sizing: border-box;
+}
+
+.fmt-thr-row .rule-color-swatches { flex-wrap: wrap; }
+
 /* ================================================
    Notebook Styles
    ================================================ */
@@ -10338,6 +10511,7 @@ div.vis-tooltip {
 
 .notebooks-table tbody tr:hover .kebab-btn,
 .dashboards-table tbody tr:hover .kebab-btn,
+.users-table tbody tr:hover .kebab-btn,
 .api-key-row:hover .kebab-btn,
 .dict-list-row:hover .kebab-btn,
 .il-page-row:hover .kebab-btn,

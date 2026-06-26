@@ -835,7 +835,7 @@ const Notebooks = {
             `;
 
             controlsHtml = `
-                ${section.section_type === 'query' ? `<button class="execute-query-btn" onclick="Notebooks.executeQuerySection('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="Execute Query">▶</button><button onclick="Notebooks.showRowColoringPanel('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.75rem; margin-right: 8px;" title="Conditional Formatting">&#9881;</button>` : ''}
+                ${section.section_type === 'query' ? `<button class="execute-query-btn" onclick="Notebooks.executeQuerySection('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="Execute Query">▶</button><button onclick="Notebooks.openFormatPanel('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.75rem; margin-right: 8px;" title="Format">&#9881;</button>` : ''}
                 ${section.section_type === 'ai_summary' || section.section_type === 'ai_attack_chain' ? `<button class="execute-query-btn" onclick="Notebooks.generateAISummary('${section.id}')" id="ai-summary-btn-${section.id}" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="${section.section_type === 'ai_attack_chain' ? 'Regenerate Attack Chain' : 'Generate AI Summary'}">▶</button>` : ''}
                 <button class="section-move-btn section-move-up" onclick="Notebooks.moveSectionUp('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px; display: inline-flex; align-items: center; justify-content: center;" title="Move Up"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 10 8 5 13 10"/></svg></button>
                 <button class="section-move-btn section-move-down" onclick="Notebooks.moveSectionDown('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px; display: inline-flex; align-items: center; justify-content: center;" title="Move Down"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 8 11 13 6"/></svg></button>
@@ -1677,10 +1677,15 @@ const Notebooks = {
         `;
 
         setTimeout(() => {
-            this.renderChartOnCanvas(chartId, results);
+            this.renderChartOnCanvas(chartId, results, sectionConfig);
         }, 500);
 
         return chartHtml;
+    },
+
+    // Merge query-time config (limit/span) with user formatting (colors/unit/etc).
+    mergeChartConfig(results, sectionConfig) {
+        return Object.assign({}, results.chart_config || {}, sectionConfig || {});
     },
 
     renderGraphInNotebook(containerId, results) {
@@ -1693,7 +1698,7 @@ const Notebooks = {
         });
     },
 
-    renderChartOnCanvas(chartId, results) {
+    renderChartOnCanvas(chartId, results, sectionConfig) {
         const canvas = document.getElementById(chartId);
         if (!canvas) return;
 
@@ -1701,7 +1706,7 @@ const Notebooks = {
             BifractCharts.renderOnCanvas(canvas, results.chart_type, {
                 data: results.results,
                 fields: results.field_order,
-                config: results.chart_config || {},
+                config: this.mergeChartConfig(results, sectionConfig),
                 maintainAspectRatio: true
             });
         } catch (error) {
@@ -1715,7 +1720,7 @@ const Notebooks = {
         return BifractCharts.renderSingleVal(null, {
             data: results.results,
             fields: results.field_order,
-            config: results.chart_config || {},
+            config: this.mergeChartConfig(results, sectionConfig),
             coloringRules: (sectionConfig && sectionConfig.row_coloring_rules) || [],
             returnHtml: true
         });
@@ -2093,168 +2098,66 @@ const Notebooks = {
     // Row Coloring Panel
     // =====================
 
-    showRowColoringPanel(sectionId) {
+    openFormatPanel(sectionId) {
         const section = this.currentNotebook && this.currentNotebook.sections
             ? this.currentNotebook.sections.find(s => s.id === sectionId) : null;
         if (!section) return;
 
-        // Remove existing panel immediately (not animated) to avoid duplicate DOM IDs
-        const oldPanel = document.getElementById('rowColoringPanel');
-        const oldOverlay = document.getElementById('rowColoringOverlay');
-        if (oldPanel) oldPanel.remove();
-        if (oldOverlay) oldOverlay.remove();
+        let cached = {};
+        if (section.last_results) {
+            try {
+                let raw = section.last_results;
+                if (typeof raw === 'string') {
+                    if (/^[A-Za-z0-9+/=]+$/.test(raw)) {
+                        try { raw = atob(raw); } catch (e) { /* use as-is */ }
+                    }
+                    raw = JSON.parse(raw);
+                }
+                cached = raw || {};
+            } catch (e) { cached = {}; }
+        }
+        const chartType = (cached && cached.chart_type) || 'table';
+        const original = JSON.parse(JSON.stringify(this.parseSectionChartConfig(section) || {}));
 
-        const config = this.parseSectionChartConfig(section);
-        const rules = config.row_coloring_rules || [];
-
-        const overlay = document.createElement('div');
-        overlay.className = 'row-coloring-overlay';
-        overlay.id = 'rowColoringOverlay';
-        overlay.addEventListener('click', () => this.closeRowColoringPanel());
-        document.body.appendChild(overlay);
-
-        const panel = document.createElement('div');
-        panel.className = 'row-coloring-panel';
-        panel.id = 'rowColoringPanel';
-        panel.dataset.sectionId = sectionId;
-        panel.innerHTML = `
-            <div class="panel-header">
-                <h3>Conditional Formatting</h3>
-                <button class="widget-btn" onclick="Notebooks.closeRowColoringPanel()" style="background:none;border:none;color:var(--text-primary);cursor:pointer;font-size:1.1rem;">&#x2715;</button>
-            </div>
-            <div class="panel-body">
-                <p style="font-size:0.8rem;color:var(--text-secondary);margin:0 0 12px 0;">Highlight cells or rows where a column matches a condition.</p>
-                <div id="rowColoringRules">
-                    ${rules.length === 0 ? '<div class="row-coloring-empty">No rules configured</div>' : ''}
-                </div>
-                <button class="btn-sm btn-secondary" onclick="Notebooks.addRowColoringRule()" style="margin-top:8px;width:100%;">+ Add Rule</button>
-            </div>
-            <div class="panel-footer">
-                <button class="btn-secondary" onclick="Notebooks.closeRowColoringPanel()">Cancel</button>
-                <button class="btn-primary" onclick="Notebooks.saveRowColoringRules()">Save</button>
-            </div>
-        `;
-        document.body.appendChild(panel);
-
-        rules.forEach(rule => this.addRowColoringRule(rule));
-
-        requestAnimationFrame(() => {
-            overlay.classList.add('open');
-            panel.classList.add('open');
+        BifractFormat.open({
+            chartType,
+            config: this.parseSectionChartConfig(section),
+            fields: cached.field_order || [],
+            results: cached.results || [],
+            onPreview: (cfg) => { section.chart_config = cfg; this.rerenderSectionContent(section); },
+            onCancel: () => { section.chart_config = original; this.rerenderSectionContent(section); },
+            onSave: (cfg) => this.saveSectionFormat(sectionId, cfg)
         });
     },
 
-    closeRowColoringPanel() {
-        const panel = document.getElementById('rowColoringPanel');
-        const overlay = document.getElementById('rowColoringOverlay');
-        if (panel) {
-            panel.classList.remove('open');
-            setTimeout(() => panel.remove(), 300);
-        }
-        if (overlay) {
-            overlay.classList.remove('open');
-            setTimeout(() => overlay.remove(), 300);
+    rerenderSectionContent(section) {
+        const contentEl = document.getElementById(`section-content-${section.id}`);
+        if (contentEl) {
+            contentEl.innerHTML = this.renderSectionContent(section);
+            contentEl.dataset.rendered = 'true';
         }
     },
 
-    addRowColoringRule(existing) {
-        const container = document.getElementById('rowColoringRules');
-        if (!container) return;
-
-        const empty = container.querySelector('.row-coloring-empty');
-        if (empty) empty.remove();
-
-        const op = (existing && existing.operator) || '=';
-        const target = (existing && existing.target) || 'row';
-
-        const rule = document.createElement('div');
-        rule.className = 'row-coloring-rule';
-        rule.innerHTML = `
-            <div class="rule-row-top">
-                <input type="text" class="rule-column" placeholder="Column" value="${Utils.escapeHtml((existing && existing.column) || '')}">
-                <select class="rule-operator">
-                    <option value="=" ${op === '=' ? 'selected' : ''}>=</option>
-                    <option value="contains" ${op === 'contains' ? 'selected' : ''}>contains</option>
-                    <option value=">" ${op === '>' ? 'selected' : ''}>&gt;</option>
-                    <option value=">=" ${op === '>=' ? 'selected' : ''}>&gt;=</option>
-                    <option value="<" ${op === '<' ? 'selected' : ''}>&lt;</option>
-                    <option value="<=" ${op === '<=' ? 'selected' : ''}>&lt;=</option>
-                </select>
-                <input type="text" class="rule-value" placeholder="Value" value="${Utils.escapeHtml((existing && existing.value) || '')}">
-                <button class="remove-rule-btn" onclick="this.closest('.row-coloring-rule').remove()">&#x2715;</button>
-            </div>
-            <div class="rule-row-bottom">
-                <div class="rule-target-toggle">
-                    <button type="button" class="rule-target-btn ${target === 'cell' ? 'active' : ''}" data-target="cell" onclick="this.parentElement.querySelectorAll('.rule-target-btn').forEach(b=>b.classList.remove('active'));this.classList.add('active')">Cell</button>
-                    <button type="button" class="rule-target-btn ${target === 'row' ? 'active' : ''}" data-target="row" onclick="this.parentElement.querySelectorAll('.rule-target-btn').forEach(b=>b.classList.remove('active'));this.classList.add('active')">Row</button>
-                </div>
-                <div class="rule-color-swatches">
-                    ${['#ef4444','#f97316','#eab308','#22c55e','#14b8a6','#3b82f6','#8b5cf6','#ec4899'].map(c =>
-                        `<button type="button" class="rule-swatch${(existing && existing.color) === c || (!existing && c === '#8b5cf6') ? ' active' : ''}" data-color="${c}" style="background:${c};" onclick="this.closest('.rule-color-swatches').querySelectorAll('.rule-swatch').forEach(s=>s.classList.remove('active'));this.classList.add('active')"></button>`
-                    ).join('')}
-                </div>
-                <input type="hidden" class="rule-color" value="${(existing && existing.color) || '#8b5cf6'}">
-            </div>
-        `;
-        // Sync swatch clicks to hidden input
-        rule.querySelectorAll('.rule-swatch').forEach(sw => {
-            sw.addEventListener('click', () => {
-                rule.querySelector('.rule-color').value = sw.dataset.color;
-            });
-        });
-        container.appendChild(rule);
-    },
-
-    async saveRowColoringRules() {
-        const panel = document.getElementById('rowColoringPanel');
-        if (!panel) return;
-
-        const sectionId = panel.dataset.sectionId;
+    async saveSectionFormat(sectionId, cfg) {
         const section = this.currentNotebook && this.currentNotebook.sections
             ? this.currentNotebook.sections.find(s => s.id === sectionId) : null;
         if (!section) return;
-
-        const ruleEls = panel.querySelectorAll('.row-coloring-rule');
-        const rules = [];
-        ruleEls.forEach(el => {
-            const column = el.querySelector('.rule-column').value.trim();
-            const value = el.querySelector('.rule-value').value.trim();
-            const operator = el.querySelector('.rule-operator').value;
-            const color = el.querySelector('.rule-color').value;
-            const activeTarget = el.querySelector('.rule-target-btn.active');
-            const target = activeTarget ? activeTarget.dataset.target : 'row';
-            if (column) {
-                rules.push({ column, operator, value, color, target });
-            }
-        });
-
-        const config = this.parseSectionChartConfig(section);
-        config.row_coloring_rules = rules;
-
         try {
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/${sectionId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ chart_config: config })
+                body: JSON.stringify({ chart_config: cfg })
             });
             const data = await response.json();
             if (!data.success) throw new Error(data.error || 'Failed to save');
 
-            section.chart_config = config;
-            this.closeRowColoringPanel();
-
-            // Re-render section
-            const contentEl = document.getElementById(`section-content-${sectionId}`);
-            if (contentEl) {
-                contentEl.innerHTML = this.renderSectionContent(section);
-                contentEl.dataset.rendered = 'true';
-            }
-
-            if (window.Toast) Toast.show('Formatting rules saved', 'success');
+            section.chart_config = cfg;
+            this.rerenderSectionContent(section);
+            if (window.Toast) Toast.show('Formatting saved', 'success');
         } catch (err) {
-            console.error('[Notebooks] Failed to save formatting rules:', err);
-            if (window.Toast) Toast.show('Failed to save formatting rules', 'error');
+            console.error('[Notebooks] Failed to save formatting:', err);
+            if (window.Toast) Toast.show('Failed to save formatting', 'error');
         }
     },
 

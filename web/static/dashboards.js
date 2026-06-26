@@ -544,10 +544,10 @@ const Dashboards = {
                 <div class="widget-actions">
                     <button class="widget-btn widget-execute-btn" title="Re-execute" onclick="Dashboards.executeWidget('${widget.id}')">&#9654;</button>
                     <div class="widget-kebab-wrapper">
-                        <button class="widget-btn widget-kebab-btn" title="More options" onclick="Dashboards.toggleWidgetKebab('${widget.id}', event)">&#x22EF;</button>
+                        <button class="widget-btn widget-kebab-btn" title="More options" onclick="Dashboards.toggleWidgetKebab('${widget.id}', event)">&#x22EE;</button>
                         <div class="widget-kebab-menu" id="widget-kebab-menu-${widget.id}">
                             <button onclick="Dashboards.showInlineWidgetEdit('${widget.id}')">Edit</button>
-                            <button onclick="Dashboards.showRowColoringPanel('${widget.id}')">Conditional formatting</button>
+                            <button onclick="Dashboards.openFormatPanel('${widget.id}')">Formatting</button>
                             <div class="kebab-divider"></div>
                             <button class="kebab-danger" onclick="Dashboards.deleteWidget('${widget.id}')">Delete</button>
                         </div>
@@ -735,13 +735,20 @@ const Dashboards = {
         `;
 
         setTimeout(() => {
-            this.renderChartOnCanvas(chartId, results);
+            this.renderChartOnCanvas(chartId, results, widgetConfig);
         }, 300);
 
         return chartHtml;
     },
 
-    renderChartOnCanvas(chartId, results) {
+    // Query-time config (limit/span/field) lives on results.chart_config; user
+    // formatting (colors/unit/legend/stat) lives on the widget's chart_config.
+    // Merge so charts receive both; formatting keys win on any overlap.
+    mergeChartConfig(results, widgetConfig) {
+        return Object.assign({}, results.chart_config || {}, widgetConfig || {});
+    },
+
+    renderChartOnCanvas(chartId, results, widgetConfig) {
         const canvas = document.getElementById(chartId);
         if (!canvas) return;
 
@@ -749,7 +756,7 @@ const Dashboards = {
             BifractCharts.renderOnCanvas(canvas, results.chart_type, {
                 data: results.results,
                 fields: results.field_order,
-                config: results.chart_config || {},
+                config: this.mergeChartConfig(results, widgetConfig),
                 maintainAspectRatio: false,
                 height: '100%'
             });
@@ -762,7 +769,7 @@ const Dashboards = {
         return BifractCharts.renderSingleVal(null, {
             data: results.results,
             fields: results.field_order,
-            config: results.chart_config || {},
+            config: this.mergeChartConfig(results, widgetConfig),
             coloringRules: (widgetConfig && widgetConfig.row_coloring_rules) || [],
             returnHtml: true
         });
@@ -1514,175 +1521,63 @@ const Dashboards = {
     },
 
     // =====================
-    // Row Coloring Panel
+    // Format Panel (type-aware, shared with notebooks via BifractFormat)
     // =====================
 
-    showRowColoringPanel(widgetId) {
+    openFormatPanel(widgetId) {
         const widget = this.currentDashboard && this.currentDashboard.widgets
             ? this.currentDashboard.widgets.find(w => w.id === widgetId) : null;
         if (!widget) return;
 
-        // Remove existing panel immediately (not animated) to avoid duplicate DOM IDs
-        const oldPanel = document.getElementById('rowColoringPanel');
-        const oldOverlay = document.getElementById('rowColoringOverlay');
-        if (oldPanel) oldPanel.remove();
-        if (oldOverlay) oldOverlay.remove();
+        let cached = {};
+        if (widget.last_results) {
+            try { cached = typeof widget.last_results === 'string' ? JSON.parse(widget.last_results) : widget.last_results; } catch (e) { cached = {}; }
+        }
+        const chartType = (cached && cached.chart_type) || widget.chart_type || 'table';
+        const original = JSON.parse(JSON.stringify(this.parseChartConfig(widget.chart_config) || {}));
 
-        const config = this.parseChartConfig(widget.chart_config);
-        const rules = config.row_coloring_rules || [];
-
-        const overlay = document.createElement('div');
-        overlay.className = 'row-coloring-overlay';
-        overlay.id = 'rowColoringOverlay';
-        overlay.addEventListener('click', () => this.closeRowColoringPanel());
-        document.body.appendChild(overlay);
-
-        const panel = document.createElement('div');
-        panel.className = 'row-coloring-panel';
-        panel.id = 'rowColoringPanel';
-        panel.dataset.widgetId = widgetId;
-        panel.innerHTML = `
-            <div class="panel-header">
-                <h3>Conditional Formatting</h3>
-                <button class="widget-btn" onclick="Dashboards.closeRowColoringPanel()" style="font-size:1.1rem;">&#x2715;</button>
-            </div>
-            <div class="panel-body">
-                <p style="font-size:0.8rem;color:var(--text-secondary);margin:0 0 12px 0;">Highlight cells or rows where a column matches a condition.</p>
-                <div id="rowColoringRules">
-                    ${rules.length === 0 ? '<div class="row-coloring-empty">No rules configured</div>' : ''}
-                </div>
-                <button class="btn-sm btn-secondary" onclick="Dashboards.addRowColoringRule()" style="margin-top:8px;width:100%;">+ Add Rule</button>
-            </div>
-            <div class="panel-footer">
-                <button class="btn-secondary" onclick="Dashboards.closeRowColoringPanel()">Cancel</button>
-                <button class="btn-primary" onclick="Dashboards.saveRowColoringRules()">Save</button>
-            </div>
-        `;
-        document.body.appendChild(panel);
-
-        // Add existing rules
-        rules.forEach(rule => this.addRowColoringRule(rule));
-
-        // Animate open
-        requestAnimationFrame(() => {
-            overlay.classList.add('open');
-            panel.classList.add('open');
+        BifractFormat.open({
+            chartType,
+            config: this.parseChartConfig(widget.chart_config),
+            fields: cached.field_order || [],
+            results: cached.results || [],
+            onPreview: (cfg) => { widget.chart_config = cfg; this.renderWidgetFromCache(widgetId); },
+            onCancel: () => { widget.chart_config = original; this.renderWidgetFromCache(widgetId); },
+            onSave: (cfg) => this.saveWidgetFormat(widgetId, cfg)
         });
     },
 
-    closeRowColoringPanel() {
-        const panel = document.getElementById('rowColoringPanel');
-        const overlay = document.getElementById('rowColoringOverlay');
-        if (panel) {
-            panel.classList.remove('open');
-            setTimeout(() => panel.remove(), 300);
-        }
-        if (overlay) {
-            overlay.classList.remove('open');
-            setTimeout(() => overlay.remove(), 300);
-        }
+    renderWidgetFromCache(widgetId) {
+        const widget = this.currentDashboard && this.currentDashboard.widgets
+            ? this.currentDashboard.widgets.find(w => w.id === widgetId) : null;
+        if (!widget || !widget.last_results) return;
+        let resultData;
+        try {
+            resultData = typeof widget.last_results === 'string' ? JSON.parse(widget.last_results) : widget.last_results;
+        } catch (e) { return; }
+        this.renderWidgetResults(widgetId, resultData);
     },
 
-    addRowColoringRule(existing) {
-        const container = document.getElementById('rowColoringRules');
-        if (!container) return;
-
-        // Remove empty message
-        const empty = container.querySelector('.row-coloring-empty');
-        if (empty) empty.remove();
-
-        const op = (existing && existing.operator) || '=';
-        const target = (existing && existing.target) || 'row';
-
-        const rule = document.createElement('div');
-        rule.className = 'row-coloring-rule';
-        rule.innerHTML = `
-            <div class="rule-row-top">
-                <input type="text" class="rule-column" placeholder="Column" value="${Utils.escapeHtml((existing && existing.column) || '')}">
-                <select class="rule-operator">
-                    <option value="=" ${op === '=' ? 'selected' : ''}>=</option>
-                    <option value="contains" ${op === 'contains' ? 'selected' : ''}>contains</option>
-                    <option value=">" ${op === '>' ? 'selected' : ''}>&gt;</option>
-                    <option value=">=" ${op === '>=' ? 'selected' : ''}>&gt;=</option>
-                    <option value="<" ${op === '<' ? 'selected' : ''}>&lt;</option>
-                    <option value="<=" ${op === '<=' ? 'selected' : ''}>&lt;=</option>
-                </select>
-                <input type="text" class="rule-value" placeholder="Value" value="${Utils.escapeHtml((existing && existing.value) || '')}">
-                <button class="remove-rule-btn" onclick="this.closest('.row-coloring-rule').remove()">&#x2715;</button>
-            </div>
-            <div class="rule-row-bottom">
-                <div class="rule-target-toggle">
-                    <button type="button" class="rule-target-btn ${target === 'cell' ? 'active' : ''}" data-target="cell" onclick="this.parentElement.querySelectorAll('.rule-target-btn').forEach(b=>b.classList.remove('active'));this.classList.add('active')">Cell</button>
-                    <button type="button" class="rule-target-btn ${target === 'row' ? 'active' : ''}" data-target="row" onclick="this.parentElement.querySelectorAll('.rule-target-btn').forEach(b=>b.classList.remove('active'));this.classList.add('active')">Row</button>
-                </div>
-                <div class="rule-color-swatches">
-                    ${['#ef4444','#f97316','#eab308','#22c55e','#14b8a6','#3b82f6','#8b5cf6','#ec4899'].map(c =>
-                        `<button type="button" class="rule-swatch${(existing && existing.color) === c || (!existing && c === '#8b5cf6') ? ' active' : ''}" data-color="${c}" style="background:${c};" onclick="this.closest('.rule-color-swatches').querySelectorAll('.rule-swatch').forEach(s=>s.classList.remove('active'));this.classList.add('active')"></button>`
-                    ).join('')}
-                </div>
-                <input type="hidden" class="rule-color" value="${(existing && existing.color) || '#8b5cf6'}">
-            </div>
-        `;
-        // Sync swatch clicks to hidden input
-        rule.querySelectorAll('.rule-swatch').forEach(sw => {
-            sw.addEventListener('click', () => {
-                rule.querySelector('.rule-color').value = sw.dataset.color;
-            });
-        });
-        container.appendChild(rule);
-    },
-
-    async saveRowColoringRules() {
-        const panel = document.getElementById('rowColoringPanel');
-        if (!panel) return;
-
-        const widgetId = panel.dataset.widgetId;
+    async saveWidgetFormat(widgetId, cfg) {
         const widget = this.currentDashboard && this.currentDashboard.widgets
             ? this.currentDashboard.widgets.find(w => w.id === widgetId) : null;
         if (!widget) return;
-
-        const ruleEls = panel.querySelectorAll('.row-coloring-rule');
-        const rules = [];
-        ruleEls.forEach(el => {
-            const column = el.querySelector('.rule-column').value.trim();
-            const value = el.querySelector('.rule-value').value.trim();
-            const operator = el.querySelector('.rule-operator').value;
-            const color = el.querySelector('.rule-color').value;
-            const activeTarget = el.querySelector('.rule-target-btn.active');
-            const target = activeTarget ? activeTarget.dataset.target : 'row';
-            if (column) {
-                rules.push({ column, operator, value, color, target });
-            }
-        });
-
-        // Merge with existing chart_config
-        const config = this.parseChartConfig(widget.chart_config);
-        config.row_coloring_rules = rules;
-
         try {
             const response = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets/${widgetId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ chart_config: config })
+                body: JSON.stringify({ chart_config: cfg })
             });
             const data = await response.json();
             if (!data.success) throw new Error(data.error || 'Failed to save');
 
-            widget.chart_config = config;
-            this.closeRowColoringPanel();
-
-            // Re-render widget if it has cached results
-            if (widget.last_results) {
-                const resultData = typeof widget.last_results === 'string'
-                    ? JSON.parse(widget.last_results) : widget.last_results;
-                this.renderWidgetResults(widgetId, resultData);
-            }
-
-            this.showSuccess('Row coloring rules saved');
+            widget.chart_config = cfg;
+            this.renderWidgetFromCache(widgetId);
+            this.showSuccess('Formatting saved');
         } catch (err) {
-            console.error('[Dashboards] Failed to save row coloring rules:', err);
-            this.showError('Failed to save row coloring rules');
+            console.error('[Dashboards] Failed to save formatting:', err);
+            this.showError('Failed to save formatting');
         }
     },
 

@@ -456,7 +456,7 @@ func main() {
 
 	// Distribution queue monitor (cluster mode only) — polls system.distribution_queue
 	// every 60s and writes ch.distribution.* events to the system fractal on health changes.
-	distMonitor := storage.NewDistributionMonitor(dbIngest, func(event string, fields map[string]string) {
+	distMonitor := storage.NewDistributionMonitor(dbIngest, pg, func(event string, fields map[string]string) {
 		ingestQueue.WriteSystemEvent(event, fields)
 		switch event {
 		case "ch.distribution.broken_data":
@@ -497,7 +497,7 @@ func main() {
 	}
 	statusHandler := query.NewStatusHandler(db, pg)
 	statusHandler.SetQuotaClearer(quotaManager)
-	performanceHandler := query.NewPerformanceHandler(db, pg)
+	performanceHandler := query.NewPerformanceHandler(db, pg, getEnvInt("BIFRACT_METRICS_RETENTION_DAYS", 30))
 	settingsHandler := settings.NewHandler(pg)
 
 	// Create API key handler and storage
@@ -739,7 +739,7 @@ func main() {
 						"broken_data_files": s.BrokenDataFiles,
 						"error_count":       s.ErrorCount,
 					}
-					resp["distribution_queue_history"] = distMonitor.History()
+					resp["distribution_queue_history"] = distMonitor.History(r.Context())
 				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(resp)
