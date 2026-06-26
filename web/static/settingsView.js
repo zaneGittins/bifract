@@ -241,7 +241,7 @@ const SettingsView = {
         }
 
         let html = '<table class="users-table"><thead><tr>';
-        html += '<th>User</th><th>Role</th><th>Status</th><th>Actions</th>';
+        html += '<th>User</th><th>Role</th><th>Status</th><th class="kebab-th"></th>';
         html += '</tr></thead><tbody>';
 
         const currentUser = Auth.getCurrentUser();
@@ -251,14 +251,21 @@ const SettingsView = {
             const lastLogin = user.last_login ? new Date(user.last_login).toLocaleString() : 'Never';
             const isAdmin = currentUser && currentUser.is_admin;
 
+            const u = Utils.escapeJs(user.username);
+
+            // Primary action: clicking the user's identity opens the Edit modal
+            // (mirrors notebooks/dashboards opening on name-click). Admins only.
+            const infoClick = isAdmin ? ` user-info-clickable" onclick="SettingsView.openEditUserModal('${u}')" title="Edit user"` : '"';
+            const selfTag = isSelf ? ' <span class="user-self-tag">You</span>' : '';
+
             html += `<tr>`;
             html += `<td>
                 <div class="user-cell">
                     <div class="gravatar" style="background-color: ${user.gravatar_color}">
                         ${user.gravatar_initial}
                     </div>
-                    <div class="user-info">
-                        <div class="user-name">${Utils.escapeHtml(user.display_name)}</div>
+                    <div class="user-info${infoClick}>
+                        <div class="user-name">${Utils.escapeHtml(user.display_name)}${selfTag}</div>
                         <div class="user-username">@${Utils.escapeHtml(user.username)}</div>
                     </div>
                 </div>
@@ -275,15 +282,7 @@ const SettingsView = {
                 html += `<td class="text-muted">${lastLogin}</td>`;
             }
 
-            const u = Utils.escapeJs(user.username);
-            html += `<td class="user-actions-cell">`;
-
-            // Primary inline action: Edit (opens a modal; identity is never edited in place).
-            if (isAdmin) {
-                html += `<button class="btn-edit-user" onclick="SettingsView.openEditUserModal('${u}')">Edit</button>`;
-            }
-
-            // Secondary / destructive actions collapse into a kebab overflow menu.
+            // Secondary / destructive actions live in a hover-revealed kebab overflow menu.
             const items = [];
             if (this.mtlsEnabled && isAdmin && !user.invite_pending) {
                 items.push(`<button class="kebab-item" onclick="SettingsView.downloadClientCert('${u}')">Download mTLS Cert</button>`);
@@ -302,11 +301,9 @@ const SettingsView = {
                 items.push(`<button class="kebab-item danger" onclick="SettingsView.deleteUser('${u}')">Delete</button>`);
             }
 
+            html += `<td class="kebab-cell">`;
             if (items.length) {
                 html += `<div class="kebab-wrapper"><button class="kebab-btn" onclick="KebabMenu.toggle(event,this)" title="More actions">&#8942;</button><div class="kebab-menu">${items.join('')}</div></div>`;
-            }
-            if (isSelf) {
-                html += '<span class="text-muted">You</span>';
             }
             html += `</td></tr>`;
         });

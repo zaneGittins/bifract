@@ -449,15 +449,26 @@ func (h *DashboardHandler) HandleUpdateWidget(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Response{Success: true, Message: "Widget updated successfully"})
 
+	// Only broadcast fields that were actually provided. A partial update (e.g.
+	// formatting-only, which sends just chart_config) must not emit null
+	// query_content/title, or remote viewers would wipe those fields locally.
+	data := map[string]interface{}{"id": widgetID}
+	if req.Title != nil {
+		data["title"] = *req.Title
+	}
+	if req.QueryContent != nil {
+		data["query_content"] = *req.QueryContent
+	}
+	if req.ChartType != nil {
+		data["chart_type"] = *req.ChartType
+	}
+	if req.ChartConfig != nil {
+		data["chart_config"] = req.ChartConfig
+	}
+
 	h.broadcastSSE(r, dashboardID, sse.Event{
 		Type: sse.WidgetUpdated,
-		Data: map[string]interface{}{
-			"id":            widgetID,
-			"title":         req.Title,
-			"query_content": req.QueryContent,
-			"chart_type":    req.ChartType,
-			"chart_config":  req.ChartConfig,
-		},
+		Data: data,
 	})
 }
 

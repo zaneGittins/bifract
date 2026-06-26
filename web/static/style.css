@@ -5360,6 +5360,27 @@ body {
     color: var(--text-muted);
 }
 
+.user-info-clickable {
+    cursor: pointer;
+}
+
+.user-info-clickable:hover .user-name {
+    color: var(--accent-primary);
+}
+
+.user-self-tag {
+    margin-left: 0.375rem;
+    padding: 0.0625rem 0.375rem;
+    border-radius: 8px;
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    vertical-align: middle;
+}
+
 .role-badge {
     display: inline-block;
     padding: 0.25rem 0.625rem;

@@ -2145,7 +2145,7 @@ const Notebooks = {
         try {
             const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/${sectionId}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this.sseHeaders(),
                 credentials: 'include',
                 body: JSON.stringify({ chart_config: cfg })
             });
@@ -2440,10 +2440,11 @@ const Notebooks = {
         const el = document.querySelector(`[data-section-id="${data.id}"]`);
         if (el && el.classList.contains('editing')) return;
 
-        // Update local data
-        if (data.title !== undefined) section.title = data.title;
-        if (data.content !== undefined) section.content = data.content;
-        if (data.chart_config !== undefined) section.chart_config = data.chart_config;
+        // Update local data. Use != null so an omitted/null field in a partial
+        // update never clobbers existing state.
+        if (data.title != null) section.title = data.title;
+        if (data.content != null) section.content = data.content;
+        if (data.chart_config != null) section.chart_config = data.chart_config;
         if (data.tags !== undefined) {
             section.tags = data.tags;
             this._refreshTagsAreaDOM(data.id, section);

@@ -406,10 +406,12 @@ const Dashboards = {
         const contentEl = document.getElementById(`wc-${data.id}`);
         if (contentEl && contentEl._editingWidget) return;
 
-        if (data.title !== undefined) widget.title = data.title;
-        if (data.query_content !== undefined) widget.query_content = data.query_content;
-        if (data.chart_type !== undefined) widget.chart_type = data.chart_type;
-        if (data.chart_config !== undefined) widget.chart_config = data.chart_config;
+        // Use != null so a null/omitted field never clobbers existing state
+        // (partial updates only carry the fields that changed).
+        if (data.title != null) widget.title = data.title;
+        if (data.query_content != null) widget.query_content = data.query_content;
+        if (data.chart_type != null) widget.chart_type = data.chart_type;
+        if (data.chart_config != null) widget.chart_config = data.chart_config;
 
         // Update title in header
         const widgetEl = document.querySelector(`.dashboard-widget[data-widget-id="${data.id}"]`);
@@ -1565,7 +1567,7 @@ const Dashboards = {
         try {
             const response = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets/${widgetId}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this.sseHeaders(),
                 credentials: 'include',
                 body: JSON.stringify({ chart_config: cfg })
             });
