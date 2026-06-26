@@ -1211,7 +1211,13 @@ func parseStatsFunctionParams(fn string, funcName string) map[string]string {
 
 // convertMathExprToSQL converts a math expression string to SQL, resolving field references.
 // Known computed fields (from aggregations) are referenced by alias; other identifiers become JSON subcolumn refs.
-func convertMathExprToSQL(expr string, registry *FieldRegistry) string {
+// selfField optionally names the assignment being defined; if an identifier matches it the registry is bypassed
+// so that self-referential assignments (e.g. x := x * 100) resolve x as a JSON field rather than a nonexistent alias.
+func convertMathExprToSQL(expr string, registry *FieldRegistry, selfField ...string) string {
+	currentField := ""
+	if len(selfField) > 0 {
+		currentField = selfField[0]
+	}
 	var result strings.Builder
 	i := 0
 	runes := []rune(expr)
@@ -1234,8 +1240,8 @@ func convertMathExprToSQL(expr string, registry *FieldRegistry) string {
 				i++
 			}
 			ident := string(runes[start:i])
-			if registry.Has(ident) {
-				// Reference the alias directly (available from inner subquery)
+			if registry.Has(ident) && ident != currentField {
+				// Reference the alias directly (available from inner subquery or same outer SELECT)
 				result.WriteString(ident)
 			} else {
 				result.WriteString(fmt.Sprintf("toFloat64OrNull(%s)", jsonFieldRef(ident)))

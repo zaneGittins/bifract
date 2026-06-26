@@ -394,6 +394,23 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		assembleNonGroupBySelects(ctx, activeStage, assignmentFields)
 	}
 
+	// Deferred math assignments run in the formatter outer SELECT, which wraps the
+	// inner query as a subquery. JSON sub-column expressions (fields.`name`) generated
+	// from those assignments require `fields` to be present in the inner SELECT.
+	// Add it here if it is absent and there are deferred assignments to process.
+	if len(deferredAssignments) > 0 && !plan.IsAggregated {
+		hasFields := false
+		for _, sel := range activeStage.Layer.Selects {
+			if extractFieldAlias(sel.String()) == "fields" {
+				hasFields = true
+				break
+			}
+		}
+		if !hasFields {
+			activeStage.Layer.Selects = append(activeStage.Layer.Selects, SelectExpr{Expr: "fields"})
+		}
+	}
+
 	// --- Set default ORDER BY and LIMIT ---
 	defaultTimeOrder := false
 	if len(activeStage.Layer.OrderBy) == 0 && len(activeStage.Layer.GroupBy) == 0 && !plan.IsAggregated {
@@ -924,7 +941,7 @@ func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAss
 		}
 		for _, da := range deferredAssignments {
 			safeName, _ := sanitizeIdentifier(da.Field)
-			sqlExpr := convertMathExprToSQL(da.Expression, registry)
+			sqlExpr := convertMathExprToSQL(da.Expression, registry, da.Field)
 			formatters = append(formatters, SelectExpr{Expr: fmt.Sprintf("%s AS %s", sqlExpr, safeName)})
 		}
 	}

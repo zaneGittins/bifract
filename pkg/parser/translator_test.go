@@ -1312,7 +1312,9 @@ func TestMathAssignment(t *testing.T) {
 	})
 
 	t.Run("field multiply scalar", func(t *testing.T) {
-		// Regression: * was missing from isMathExpr check, causing "invalid numeric assignment" error
+		// Regression: self-referential assignment (cpupercent := cpupercent * 100) must resolve
+		// the RHS identifier as a JSON field (fields.`cpupercent`), not as a bare column alias
+		// that doesn't exist in the inner subquery.
 		pipeline, err := ParseQuery("* | cpupercent := cpupercent * 100")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
@@ -1322,11 +1324,16 @@ func TestMathAssignment(t *testing.T) {
 			t.Fatalf("Translation failed: %v", err)
 		}
 		sql := result.SQL
-		if !strings.Contains(sql, "cpupercent*100") {
-			t.Errorf("Expected cpupercent*100 in SQL, got: %s", sql)
+		// RHS must resolve to a JSON sub-column, not a bare undefined alias
+		if !strings.Contains(sql, "fields.`cpupercent`") {
+			t.Errorf("Expected fields.`cpupercent` JSON ref in SQL, got: %s", sql)
 		}
 		if !strings.Contains(sql, "AS cpupercent") {
 			t.Errorf("Expected AS cpupercent in SQL, got: %s", sql)
+		}
+		// `fields` must appear in the inner SELECT so the formatter outer SELECT can reference it
+		if strings.Count(sql, "fields") < 2 {
+			t.Errorf("Expected `fields` in both inner SELECT and outer expression, got: %s", sql)
 		}
 		found := false
 		for _, f := range result.FieldOrder {
