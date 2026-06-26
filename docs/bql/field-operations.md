@@ -39,7 +39,7 @@ Uses `cityHash64` internally. Useful for creating composite keys for dictionary 
 
 ## Case Statements
 
-Conditionally assign field values:
+Evaluate conditional branches in order. Each branch is written as `condition | commands`, branches are separated by `;`, and `*` is the default branch:
 
 ```
 case {
@@ -49,15 +49,42 @@ case {
 }
 ```
 
-Conditions support `=`, `!=`, `>`, `<`, and regex patterns:
+### Conditions
+
+A branch condition accepts any filter operator (`=`, `!=`, `=~` contains-any, `=^` starts-with, `=$` ends-with, `>`, `<`, `>=`, `<=`, and `=/regex/`) as well as `in(...)` and `cidr(...)`:
 
 ```
 case {
-  user=/admin/i | role := "admin" ;
-  bytes>1000000 | size := "large" ;
-  * | size := "small"
+  image=~powershell,pwsh     | tool := "shell" ;
+  cidr(src_ip, "10.0.0.0/8") | zone := "internal" ;
+  * | tool := "other"
 }
 ```
+
+### Multiple commands per branch
+
+A branch can run several pipe commands. Field assignments and per-row transforms (`regex`, `eval`, `lowercase`, and others) apply only to rows matching the branch:
+
+```
+case {
+  level=error | sev := "high" | regex(field=raw_log, pattern="code=(?<code>[0-9]+)") ;
+  * | sev := "low"
+}
+```
+
+### Aggregations per branch
+
+Aggregations inside a branch compile to single-pass conditional aggregates (ClickHouse `-If` combinators), producing one column per branch aggregation in a single scan:
+
+```
+case {
+  image=~powershell | count() | sum(bytes) ;
+  image=~explorer   | count() ;
+  * | count()
+}
+```
+
+Structural commands (`groupby`, `sort`, `limit`, `join`, `chain`, window functions, and charts) cannot be used inside a branch. Place them after the `case` (for example, `case { ... } | groupby(tool)`).
 
 ## String Operations
 

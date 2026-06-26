@@ -2842,6 +2842,91 @@ body.col-resizing * {
     font-weight: 400;
 }
 
+/* Query autocomplete dropdown (caret-anchored, all query editors) */
+.ac-dropdown {
+    position: fixed;
+    z-index: 10001;
+    min-width: 240px;
+    max-width: 460px;
+    max-height: 280px;
+    overflow-y: auto;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-lg);
+    padding: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+}
+
+.ac-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.5rem;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+.ac-item.selected {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.ac-icon {
+    flex-shrink: 0;
+    width: 1.1rem;
+    text-align: center;
+    font-weight: 700;
+    font-size: 0.75rem;
+    opacity: 0.85;
+}
+
+.ac-icon-fn { color: var(--syntax-function); }
+.ac-icon-field { color: var(--info); }
+.ac-icon-value { color: var(--text-primary); }
+.ac-icon-kw { color: var(--syntax-keyword); }
+
+.ac-label {
+    flex-shrink: 0;
+    color: var(--text-primary);
+}
+
+.ac-label b {
+    color: var(--accent-secondary);
+    font-weight: 700;
+}
+
+.ac-desc {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.ac-detail {
+    flex-shrink: 0;
+    margin-left: auto;
+    padding-left: 0.75rem;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    opacity: 0.8;
+}
+
+/* Inline ghost suggestion (shell-style autosuggest after the caret) */
+.ac-ghost {
+    position: fixed;
+    z-index: 9998;
+    display: none;
+    pointer-events: none;
+    white-space: pre;
+    color: var(--text-muted);
+    opacity: 0.6;
+}
+
 /* Function hint popup (? key) */
 .function-hint {
     display: none;

@@ -684,7 +684,7 @@ func validateGeneratedSQL(sql string) error {
 }
 
 // stripStringLiterals removes the content of all single-quoted string literals
-// from SQL, replacing them with empty strings. Handles escaped quotes (\'').
+// from SQL, replacing them with empty strings. Handles escaped quotes (\”).
 // This allows checking the SQL structure without matching against user-supplied
 // search values that might legitimately contain SQL keywords.
 func stripStringLiterals(sql string) string {
@@ -1258,12 +1258,12 @@ func convertMathExprToSQL(expr string, registry *FieldRegistry, selfField ...str
 func convertTimeFormat(bqlFormat string) string {
 	// Convert common format patterns to ClickHouse
 	format := bqlFormat
-	format = strings.ReplaceAll(format, "%Y", "%Y")   // Year (4 digits)
-	format = strings.ReplaceAll(format, "%m", "%m")   // Month (01-12)
-	format = strings.ReplaceAll(format, "%d", "%d")   // Day (01-31)
-	format = strings.ReplaceAll(format, "%H", "%H")   // Hour (00-23)
-	format = strings.ReplaceAll(format, "%M", "%M")   // Minute (00-59)
-	format = strings.ReplaceAll(format, "%S", "%S")   // Second (00-59)
+	format = strings.ReplaceAll(format, "%Y", "%Y")    // Year (4 digits)
+	format = strings.ReplaceAll(format, "%m", "%m")    // Month (01-12)
+	format = strings.ReplaceAll(format, "%d", "%d")    // Day (01-31)
+	format = strings.ReplaceAll(format, "%H", "%H")    // Hour (00-23)
+	format = strings.ReplaceAll(format, "%M", "%M")    // Minute (00-59)
+	format = strings.ReplaceAll(format, "%S", "%S")    // Second (00-59)
 	format = strings.ReplaceAll(format, "%R", "%H:%M") // Hour:Minute
 
 	// Handle some common patterns
@@ -1325,239 +1325,6 @@ func getBucketExpression(n int, unit string) string {
 	}
 	// For arbitrary intervals use toStartOfInterval
 	return fmt.Sprintf("toStartOfInterval(timestamp, INTERVAL %d %s)", n, unit)
-}
-
-// parseCaseConditions parses case syntax: { condition | result ; condition2 | result2 ; * | default }
-func parseCaseConditions(caseExpr string) ([]string, string, []AssignmentNode) {
-	var whenClauses []string
-	var defaultClause string
-
-	// Track assignments by field name to avoid conflicts
-	fieldAssignments := make(map[string][]string) // field -> list of "WHEN condition THEN value"
-	defaultAssignments := make(map[string]string) // field -> default value
-
-	// Remove outer braces and split by semicolon
-	caseExpr = strings.Trim(caseExpr, "{}")
-	conditions := strings.Split(caseExpr, ";")
-
-	for _, condition := range conditions {
-		condition = strings.TrimSpace(condition)
-		if condition == "" {
-			continue
-		}
-
-		// Split condition by pipe: "field=value | result" or "field=value | field2:=result"
-		parts := strings.Split(condition, "|")
-		if len(parts) != 2 {
-			continue
-		}
-
-		conditionPart := strings.TrimSpace(parts[0])
-		resultPart := strings.TrimSpace(parts[1])
-
-		// Handle default case with wildcard
-		if conditionPart == "*" {
-			if strings.Contains(resultPart, ":=") || strings.Contains(resultPart, "=") {
-				// Field assignment in default case: * | status := "nope"
-				var assignParts []string
-				if strings.Contains(resultPart, ":=") {
-					assignParts = strings.SplitN(resultPart, ":=", 2)
-				} else {
-					assignParts = strings.SplitN(resultPart, "=", 2)
-				}
-				if len(assignParts) == 2 {
-					field := strings.TrimSpace(assignParts[0])
-					value := strings.TrimSpace(assignParts[1])
-					value = strings.Trim(value, `"'`)
-					// Store default assignment for this field
-					defaultAssignments[field] = "'" + escapeString(value) + "'"
-				}
-			} else {
-				// Regular default value
-				defaultClause = strings.Trim(resultPart, `"'`)
-				defaultClause = "'" + defaultClause + "'"
-			}
-			continue
-		}
-
-		// Parse the condition (handle regex patterns like /gittinsz/ and /noveloa/i)
-		var sqlCondition string
-		if (strings.Contains(conditionPart, "=/") && strings.Count(conditionPart, "/") >= 2) || strings.Contains(conditionPart, "=(?i)") {
-			// Regex condition: user=/gittinsz/ or user=/noveloa/i or user=(?i)pattern
-			equalPos := strings.Index(conditionPart, "=")
-			if equalPos > 0 {
-				field := strings.TrimSpace(conditionPart[:equalPos])
-				regexPart := strings.TrimSpace(conditionPart[equalPos+1:])
-
-				var pattern string
-
-				if strings.HasPrefix(regexPart, "(?i)") {
-					// Already processed pattern: (?i)admin
-					pattern = regexPart
-				} else {
-					// Raw pattern: /admin/i
-					lastSlash := strings.LastIndex(regexPart, "/")
-					if lastSlash > 0 {
-						rawPattern := regexPart[1:lastSlash] // Remove first /
-						flags := ""
-						if lastSlash < len(regexPart)-1 {
-							flags = regexPart[lastSlash+1:] // Get flags after last /
-						}
-
-						// Handle case-insensitive flag
-						if strings.Contains(flags, "i") {
-							pattern = "(?i)" + rawPattern
-						} else {
-							pattern = rawPattern
-						}
-					}
-				}
-
-				if pattern != "" {
-					if field == "timestamp" {
-						sqlCondition = fmt.Sprintf("match(toString(timestamp), '%s')", escapeString(pattern))
-					} else {
-						sqlCondition = fmt.Sprintf("match(%s, '%s')", jsonFieldRef(field), escapeString(pattern))
-					}
-				}
-			}
-		} else if strings.Contains(conditionPart, "!=") {
-			// Handle field!=value conditions (MUST be checked before = since != contains =)
-			parts := strings.SplitN(conditionPart, "!=", 2)
-			if len(parts) == 2 {
-				field := strings.TrimSpace(parts[0])
-				value := strings.TrimSpace(parts[1])
-				value = strings.Trim(value, `"'`)
-
-				if field == "timestamp" {
-					sqlCondition = fmt.Sprintf("timestamp != '%s'", escapeString(value))
-				} else {
-					sqlCondition = fmt.Sprintf("%s != '%s'", jsonFieldRef(field), escapeString(value))
-				}
-			}
-		} else if strings.Contains(conditionPart, ">=") {
-			parts := strings.SplitN(conditionPart, ">=", 2)
-			if len(parts) == 2 {
-				field := strings.TrimSpace(parts[0])
-				value := strings.TrimSpace(parts[1])
-				if field == "timestamp" {
-					sqlCondition = fmt.Sprintf("timestamp >= '%s'", escapeString(value))
-				} else if err := validateNumeric(value); err == nil {
-					sqlCondition = fmt.Sprintf("toFloat64OrZero(%s) >= %s", jsonFieldRef(field), value)
-				}
-			}
-		} else if strings.Contains(conditionPart, "<=") {
-			parts := strings.SplitN(conditionPart, "<=", 2)
-			if len(parts) == 2 {
-				field := strings.TrimSpace(parts[0])
-				value := strings.TrimSpace(parts[1])
-				if field == "timestamp" {
-					sqlCondition = fmt.Sprintf("timestamp <= '%s'", escapeString(value))
-				} else if err := validateNumeric(value); err == nil {
-					sqlCondition = fmt.Sprintf("toFloat64OrZero(%s) <= %s", jsonFieldRef(field), value)
-				}
-			}
-		} else if strings.Contains(conditionPart, "=") && !strings.Contains(conditionPart, "=/") {
-			// Handle field=value conditions (but not regex patterns)
-			equalsParts := strings.SplitN(conditionPart, "=", 2)
-			if len(equalsParts) == 2 {
-				field := strings.TrimSpace(equalsParts[0])
-				value := strings.TrimSpace(equalsParts[1])
-				value = strings.Trim(value, `"'`)
-
-				if field == "timestamp" {
-					sqlCondition = fmt.Sprintf("timestamp = '%s'", escapeString(value))
-				} else {
-					sqlCondition = fmt.Sprintf("%s = '%s'", jsonFieldRef(field), escapeString(value))
-				}
-			}
-		} else if strings.Contains(conditionPart, ">") {
-			parts := strings.SplitN(conditionPart, ">", 2)
-			if len(parts) == 2 {
-				field := strings.TrimSpace(parts[0])
-				value := strings.TrimSpace(parts[1])
-				if field == "timestamp" {
-					sqlCondition = fmt.Sprintf("timestamp > '%s'", escapeString(value))
-				} else if err := validateNumeric(value); err == nil {
-					sqlCondition = fmt.Sprintf("toFloat64OrZero(%s) > %s", jsonFieldRef(field), value)
-				}
-			}
-		} else if strings.Contains(conditionPart, "<") {
-			parts := strings.SplitN(conditionPart, "<", 2)
-			if len(parts) == 2 {
-				field := strings.TrimSpace(parts[0])
-				value := strings.TrimSpace(parts[1])
-				if field == "timestamp" {
-					sqlCondition = fmt.Sprintf("timestamp < '%s'", escapeString(value))
-				} else if err := validateNumeric(value); err == nil {
-					sqlCondition = fmt.Sprintf("toFloat64OrZero(%s) < %s", jsonFieldRef(field), value)
-				}
-			}
-		}
-
-		if sqlCondition != "" {
-			// Check if result is a field assignment
-			if strings.Contains(resultPart, ":=") || strings.Contains(resultPart, "=") {
-				// Field assignment: status:="ok" or status="ok"
-				var assignParts []string
-				if strings.Contains(resultPart, ":=") {
-					assignParts = strings.SplitN(resultPart, ":=", 2)
-				} else {
-					assignParts = strings.SplitN(resultPart, "=", 2)
-				}
-				if len(assignParts) == 2 {
-					field := strings.TrimSpace(assignParts[0])
-					value := strings.TrimSpace(assignParts[1])
-					value = strings.Trim(value, `"'`)
-
-					// Collect conditional assignment for this field
-					whenClause := fmt.Sprintf("WHEN %s THEN '%s'", sqlCondition, escapeString(value))
-					fieldAssignments[field] = append(fieldAssignments[field], whenClause)
-				}
-			} else {
-				// Regular result value
-				result := strings.Trim(resultPart, `"'`) // Remove quotes
-				result = "'" + escapeString(result) + "'"
-				whenClauses = append(whenClauses, fmt.Sprintf("WHEN %s THEN %s", sqlCondition, result))
-			}
-		}
-	}
-
-	// Build consolidated assignments for each field
-	var assignments []AssignmentNode
-	for field, conditions := range fieldAssignments {
-		// Build CASE expression with all conditions for this field
-		var caseExpr strings.Builder
-		caseExpr.WriteString("CASE ")
-		caseExpr.WriteString(strings.Join(conditions, " "))
-
-		// Add default value if available, otherwise NULL
-		if defaultValue, hasDefault := defaultAssignments[field]; hasDefault {
-			caseExpr.WriteString(" ELSE ")
-			caseExpr.WriteString(defaultValue)
-		} else {
-			caseExpr.WriteString(" ELSE NULL")
-		}
-		caseExpr.WriteString(" END")
-
-		assignments = append(assignments, AssignmentNode{
-			Field:      field,
-			Expression: caseExpr.String(),
-		})
-	}
-
-	// Handle default assignments that don't have conditions (pure defaults)
-	for field, defaultValue := range defaultAssignments {
-		if _, hasConditions := fieldAssignments[field]; !hasConditions {
-			// This is a pure default assignment with no conditions
-			assignments = append(assignments, AssignmentNode{
-				Field:      field,
-				Expression: defaultValue,
-			})
-		}
-	}
-
-	return whenClauses, defaultClause, assignments
 }
 
 // spanToSeconds converts a duration string (e.g., "5m", "1h", "30s") to seconds.

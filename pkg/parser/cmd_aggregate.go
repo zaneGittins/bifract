@@ -103,9 +103,12 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	for _, cmd2 := range ctx.Pipeline.Commands {
 		if cmd2.Name == "case" && len(cmd2.Arguments) > 0 {
 			caseExpr := cmd2.Arguments[0]
-			_, _, caseAssignments := parseCaseConditions(caseExpr)
-			if len(caseAssignments) > 0 {
-				for _, assignment := range caseAssignments {
+			compiled, err := compileCase(caseExpr, ctx.Registry, ctx.Opts)
+			if err != nil {
+				return err
+			}
+			if len(compiled.assignments) > 0 {
+				for _, assignment := range compiled.assignments {
 					if !contains(source.Layer.GroupBy, assignment.Field) {
 						source.Layer.GroupBy = append(source.Layer.GroupBy, assignment.Field)
 					}

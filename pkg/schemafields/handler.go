@@ -60,6 +60,35 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleCatalog returns the known field names (project defaults + user-defined
+// custom fields) for query autocompletion. Unlike HandleList it is not gated to
+// admins: field names are schema, not log content, and every authenticated user
+// already queries against them. The response is a flat, deduplicated name list.
+func (h *Handler) HandleCatalog(w http.ResponseWriter, r *http.Request) {
+	custom, err := h.manager.List(r.Context())
+	if err != nil {
+		log.Printf("[SchemaFields] catalog: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to load schema fields")
+		return
+	}
+	seen := make(map[string]bool, len(ProjectDefaultFields)+len(custom))
+	names := make([]string, 0, len(ProjectDefaultFields)+len(custom))
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	for _, f := range ProjectDefaultFields {
+		add(f.FieldName)
+	}
+	for _, f := range custom {
+		add(f.FieldName)
+	}
+	h.respondSuccess(w, map[string]interface{}{"fields": names})
+}
+
 // HandleCreate adds a custom field, syncs ClickHouse schema, and notifies the parser.
 func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {

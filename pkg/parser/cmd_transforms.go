@@ -505,10 +505,18 @@ func (h *caseHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 		}
 		ctx.Registry.Register(outputField, FieldKindPerRow, outputField, ctx.CmdIndex)
 
-		caseExpr := cmd.Arguments[0]
-		_, _, caseAssignments := parseCaseConditions(caseExpr)
-		for _, assignment := range caseAssignments {
+		compiled, err := compileCase(cmd.Arguments[0], ctx.Registry, ctx.Opts)
+		if err != nil {
+			return err
+		}
+		for _, assignment := range compiled.assignments {
 			ctx.Registry.Register(assignment.Field, FieldKindPerRow, assignment.Field, ctx.CmdIndex)
+		}
+		// Conditional aggregations (count()/sum()/... per branch) are aggregates of
+		// the current stage; register them so downstream groupby/HAVING compose.
+		for _, agg := range compiled.aggregates {
+			ctx.Registry.Register(agg.alias, FieldKindAggregate, agg.alias, ctx.CmdIndex)
+			ctx.Plan.IsAggregated = true
 		}
 	}
 	return nil
@@ -521,25 +529,39 @@ func (h *caseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			outputField = cmd.Arguments[1]
 		}
 
-		caseExpr := cmd.Arguments[0]
-		whenClauses, defaultClause, caseAssignments := parseCaseConditions(caseExpr)
+		compiled, err := compileCase(cmd.Arguments[0], ctx.Registry, ctx.Opts)
+		if err != nil {
+			return err
+		}
+		source := ctx.Plan.CurrentStage()
 
-		if len(caseAssignments) > 0 {
-			for _, assignment := range caseAssignments {
-				expr := fmt.Sprintf("%s AS %s", assignment.Expression, assignment.Field)
-				ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
-				ctx.Registry.SetResolveExpr(assignment.Field, expr)
-			}
-		} else if len(whenClauses) > 0 {
-			caseSQL := fmt.Sprintf("CASE %s", strings.Join(whenClauses, " "))
-			if defaultClause != "" {
-				caseSQL += fmt.Sprintf(" ELSE %s", defaultClause)
+		// Per-row field assignments: each becomes a CASE ... END column.
+		for _, assignment := range compiled.assignments {
+			expr := fmt.Sprintf("%s AS %s", assignment.Expression, assignment.Field)
+			source.Layer.UpsertSelect(SelectExpr{Expr: expr})
+			ctx.Registry.SetResolveExpr(assignment.Field, expr)
+		}
+
+		// Legacy bare-result form: a single output field.
+		if len(compiled.whenClauses) > 0 {
+			caseSQL := fmt.Sprintf("CASE %s", strings.Join(compiled.whenClauses, " "))
+			if compiled.defaultClause != "" {
+				caseSQL += fmt.Sprintf(" ELSE %s", compiled.defaultClause)
 			} else {
 				caseSQL += " ELSE NULL"
 			}
 			caseSQL += fmt.Sprintf(" END AS %s", outputField)
-			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: caseSQL})
+			source.Layer.UpsertSelect(SelectExpr{Expr: caseSQL})
 			ctx.Registry.SetResolveExpr(outputField, caseSQL)
+		}
+
+		// Conditional aggregations via -If combinators (single-pass, N per branch).
+		for _, agg := range compiled.aggregates {
+			source.Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", agg.expr, agg.alias)})
+			ctx.Registry.Register(agg.alias, FieldKindAggregate, agg.alias, ctx.CmdIndex)
+			ctx.Registry.SetResolveExpr(agg.alias, agg.alias)
+			ctx.Plan.aggregationOutputs[agg.alias] = agg.expr
+			ctx.Plan.IsAggregated = true
 		}
 	}
 	return nil

@@ -215,15 +215,17 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			{
 				Name:        "case",
 				Category:    "Transformation",
-				Description: "Conditional field assignment using case statements",
-				Syntax:      "| case { condition | field:=\"value\"; * | field:=\"default\"; }",
+				Description: "Conditional branches evaluated in order, each written as 'condition | commands' and separated by ';' (with '*' as the default branch). Conditions accept any filter operator (=, !=, =~, =^, =$, >, <, >=, <=, regex) plus in() and cidr(). A branch may run several pipe commands: field assignments (field:=value), per-row transforms (regex, eval, lowercase, ...), and aggregations (count, sum, avg, ...) which compile to single-pass conditional (-If) aggregates. Structural commands (groupby, sort, limit, join, chain, window functions, charts) are not allowed inside a branch; place them after the case.",
+				Syntax:      "| case { condition | field:=\"value\"; condition | command(...); * | field:=\"default\"; }",
 				Parameters: []Param{
-					{Name: "conditions", Type: "expression", Required: true, Description: "Case conditions with field assignments"},
+					{Name: "branches", Type: "expression", Required: true, Description: "Semicolon-separated branches; each is 'condition | command(s)', with '*' as the default branch"},
 				},
 				Examples: []string{
-					"| case { level=/error/i | priority:=\"high\"; * | priority:=\"normal\"; }",
-					"| case { status>=400 | category:=\"error\"; status>=200 | category:=\"success\"; }",
-					"| case { user=/admin/i | is_admin:=true; * | is_admin:=false; }",
+					"| case { image=~powershell,pwsh | tool:=\"shell\"; * | tool:=\"other\"; } | groupby(tool)",
+					"| case { status>=500 | sev:=\"crit\"; status>=400 | sev:=\"warn\"; * | sev:=\"ok\"; }",
+					"| case { cidr(src_ip, \"10.0.0.0/8\") | zone:=\"internal\"; * | zone:=\"external\"; }",
+					"| case { level=error | regex(field=raw_log, pattern=\"code=(?<code>[0-9]+)\"); * | code:=\"none\"; }",
+					"| case { image=~powershell | count() | sum(bytes); image=~explorer | count(); * | count(); }",
 				},
 			},
 			{

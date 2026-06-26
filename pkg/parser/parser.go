@@ -87,8 +87,9 @@ const maxParserIterations = 100000
 type Parser struct {
 	tokens         []Token
 	pos            int
-	groupIDCounter int // Tracks parenthetical group IDs
-	iterations     int // Safety counter to prevent infinite loops
+	groupIDCounter int    // Tracks parenthetical group IDs
+	iterations     int    // Safety counter to prevent infinite loops
+	input          []rune // original source, for faithful raw-text capture (case blocks)
 }
 
 func NewParser(tokens []Token) *Parser {
@@ -1161,26 +1162,45 @@ func (p *Parser) parseCaseCommand() (*CommandNode, error) {
 	cmd := &CommandNode{Name: "case"}
 
 	// Expect {
-	if _, err := p.expect(TokenLBrace); err != nil {
+	lbrace, err := p.expect(TokenLBrace)
+	if err != nil {
 		return nil, fmt.Errorf("expected '{' after case, got %s", p.current().Type)
 	}
 
-	// Parse the entire case body as a single argument
+	// Consume the block body, tracking nested brace depth so that nested case/chain
+	// blocks do not terminate this one early. Reconstruct from token values as a
+	// fallback; when the original source is available we slice it directly below for
+	// a faithful copy (token values are lossy: regex slashes, quotes, whitespace).
 	var caseBody strings.Builder
 	caseBody.WriteString("{")
-
-	for p.current().Type != TokenRBrace && p.current().Type != TokenEOF {
+	depth := 1
+	for depth > 0 && p.current().Type != TokenEOF {
+		switch p.current().Type {
+		case TokenLBrace:
+			depth++
+		case TokenRBrace:
+			depth--
+			if depth == 0 {
+				goto closed
+			}
+		}
 		caseBody.WriteString(p.current().Value)
 		p.advance()
 	}
-
-	// Expect }
-	if _, err := p.expect(TokenRBrace); err != nil {
+closed:
+	rbrace, err := p.expect(TokenRBrace)
+	if err != nil {
 		return nil, fmt.Errorf("expected '}' to close case block, got %s", p.current().Type)
 	}
-
 	caseBody.WriteString("}")
-	cmd.Arguments = []string{caseBody.String()}
+
+	// Faithful capture: slice the original source between the braces (inclusive).
+	// rbrace.Pos is the index of '}', lbrace.Pos the index of '{'.
+	if p.input != nil && lbrace.Pos >= 0 && rbrace.Pos < len(p.input) && rbrace.Pos >= lbrace.Pos {
+		cmd.Arguments = []string{string(p.input[lbrace.Pos : rbrace.Pos+1])}
+	} else {
+		cmd.Arguments = []string{caseBody.String()}
+	}
 
 	return cmd, nil
 }
@@ -1444,6 +1464,7 @@ func ParseQuery(query string) (*PipelineNode, error) {
 	}
 
 	parser := NewParser(tokens)
+	parser.input = []rune(query)
 	return parser.Parse()
 }
 

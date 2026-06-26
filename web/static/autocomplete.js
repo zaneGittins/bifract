@@ -1,744 +1,101 @@
-// Query autocomplete
+// Query autocomplete: a caret-anchored suggestion dropdown plus the ? signature
+// hint. All language data (functions, signatures, parameters) comes from the
+// BQLLang registry, which loads the canonical catalog from the backend; field
+// names and values come from FieldStats (the current result set). There is no
+// hardcoded function list here -- adding a BQL function lights up completion and
+// the ? hint automatically.
 const Autocomplete = {
-    suggestions: [
-        { keyword: 'groupBy(', desc: 'Group results by field' },
-        { keyword: 'table([', desc: 'Display specific fields' },
-        { keyword: 'sort(', desc: 'Sort results' },
-        { keyword: 'limit(', desc: 'Limit number of results' },
-        { keyword: 'AND', desc: 'Logical AND operator' },
-        { keyword: 'OR', desc: 'Logical OR operator' },
-        { keyword: 'NOT', desc: 'Logical NOT operator' },
-        { keyword: 'count()', desc: 'Count results' },
-        { keyword: 'sum(', desc: 'Sum numeric field' },
-        { keyword: 'avg(', desc: 'Average numeric field' },
-        { keyword: 'median(', desc: 'Median value of numeric field' },
-        { keyword: 'mad(', desc: 'Median absolute deviation' },
-        { keyword: 'chain(', desc: 'Detect sequential event patterns' },
-        { keyword: 'dedup(', desc: 'Deduplicate by fields' },
-        { keyword: 'cidr(', desc: 'Filter by CIDR range' },
-        { keyword: 'split(', desc: 'Split field by delimiter' },
-        { keyword: 'base64Decode(', desc: 'Decode base64 field' },
-        { keyword: 'len(', desc: 'String length of field' },
-        { keyword: 'coalesce(', desc: 'First non-empty field' },
-        { keyword: 'levenshtein(', desc: 'Edit distance between values' },
-        { keyword: 'substr(', desc: 'Extract substring' },
-        { keyword: 'urldecode(', desc: 'URL-decode field' },
-        { keyword: 'hash(', desc: 'Hash fields with cityHash64' },
-        { keyword: 'comment(', desc: 'Filter commented logs' },
-        { keyword: 'comments(', desc: 'Filter commented logs' },
-        { keyword: 'modifiedZScore(', desc: 'Modified z-score outlier detection' },
-        { keyword: 'madOutlier(', desc: 'Outlier detection with threshold' },
-        { keyword: 'iqr(', desc: 'Interquartile range' },
-        { keyword: 'headTail(', desc: 'Pareto head/tail segmentation' },
-        { keyword: 'frequency(', desc: 'Frequency table with percentages' },
-        { keyword: 'skewness(', desc: 'Population skewness' },
-        { keyword: 'kurtosis(', desc: 'Population excess kurtosis' },
-        { keyword: 'max(', desc: 'Maximum value of field' },
-        { keyword: 'min(', desc: 'Minimum value of field' },
-        { keyword: 'percentile(', desc: 'Percentile values (p50, p75, p99)' },
-        { keyword: 'stdDev(', desc: 'Standard deviation of field' },
-        { keyword: 'selectFirst(', desc: 'Value from earliest event' },
-        { keyword: 'selectLast(', desc: 'Value from latest event' },
-        { keyword: 'collect(', desc: 'Collect values into array' },
-        { keyword: 'top(', desc: 'Top values with frequency' },
-        { keyword: 'head(', desc: 'First N events' },
-        { keyword: 'tail(', desc: 'Last N events' },
-        { keyword: 'regex(', desc: 'Extract with regex pattern' },
-        { keyword: 'replace(', desc: 'Regex find and replace' },
-        { keyword: 'concat(', desc: 'Concatenate fields' },
-        { keyword: 'lowercase(', desc: 'Convert field to lowercase' },
-        { keyword: 'uppercase(', desc: 'Convert field to uppercase' },
-        { keyword: 'eval(', desc: 'Compute field assignment' },
-        { keyword: 'in(', desc: 'Filter by value list' },
-        { keyword: 'multi(', desc: 'Multiple aggregations' },
-        { keyword: 'strftime(', desc: 'Extract time component' },
-        { keyword: 'now(', desc: 'Current timestamp' },
-        { keyword: 'bucket(', desc: 'Time bucketing' },
-        { keyword: 'case', desc: 'Conditional field assignment' },
-        { keyword: 'piechart(', desc: 'Pie chart visualization' },
-        { keyword: 'barchart(', desc: 'Bar chart visualization' },
-        { keyword: 'graph(', desc: 'Relationship graph visualization' },
-        { keyword: 'singleval(', desc: 'Single value display' },
-        { keyword: 'timechart(', desc: 'Time series chart' },
-        { keyword: 'match(', desc: 'Dictionary lookup enrichment' },
-        { keyword: 'bfs(', desc: 'Breadth-first graph traversal' },
-        { keyword: 'dfs(', desc: 'Depth-first graph traversal' },
-        { keyword: 'analyzeFields(', desc: 'Analyze field statistics' },
-        { keyword: 'sprintf(', desc: 'Format string with fields' },
-        { keyword: 'histogram(', desc: 'Numeric distribution histogram' },
-        { keyword: 'heatmap(', desc: '2D density heatmap' },
-        { keyword: 'lookupIP(', desc: 'GeoIP/ASN enrichment (MaxMind)' },
-        { keyword: 'graphWorld(', desc: 'World map visualization' },
-        { keyword: 'join(', desc: 'Join with subquery results' }
-    ],
-    selectedIndex: -1,
-
-    // Function signatures for ? hint popup
-    functionHints: {
-        'groupby': {
-            name: 'groupBy',
-            signature: 'groupBy(field, ..., limit=N, distinct=bool)',
-            args: [
-                { name: 'field', desc: 'Field(s) to group by', required: true },
-                { name: 'limit', desc: 'Max groups to return', required: false },
-                { name: 'distinct', desc: 'Count distinct values (true/false)', required: false },
-            ],
-            example: 'groupBy(hostname, limit=20)',
-        },
-        'table': {
-            name: 'table',
-            signature: 'table([field1, field2, ...])',
-            args: [
-                { name: 'fields', desc: 'Fields to display (comma-separated in brackets)', required: true },
-                { name: 'limit', desc: 'Max rows to return', required: false },
-            ],
-            example: 'table([hostname, level, message])',
-        },
-        'sort': {
-            name: 'sort',
-            signature: 'sort(field, order=asc|desc)',
-            args: [
-                { name: 'field', desc: 'Field to sort by', required: true },
-                { name: 'order', desc: 'Sort direction: asc or desc', required: false },
-            ],
-            example: 'sort(timestamp, order=desc)',
-        },
-        'limit': {
-            name: 'limit',
-            signature: 'limit(n)',
-            args: [
-                { name: 'n', desc: 'Maximum number of results', required: true },
-            ],
-            example: 'limit(100)',
-        },
-        'count': {
-            name: 'count',
-            signature: 'count()',
-            args: [],
-            example: 'count()',
-        },
-        'sum': {
-            name: 'sum',
-            signature: 'sum(field)',
-            args: [
-                { name: 'field', desc: 'Numeric field to sum', required: true },
-            ],
-            example: 'sum(bytes)',
-        },
-        'avg': {
-            name: 'avg',
-            signature: 'avg(field)',
-            args: [
-                { name: 'field', desc: 'Numeric field to average', required: true },
-            ],
-            example: 'avg(response_time)',
-        },
-        'max': {
-            name: 'max',
-            signature: 'max(field)',
-            args: [
-                { name: 'field', desc: 'Field to find maximum value', required: true },
-            ],
-            example: 'max(response_time)',
-        },
-        'min': {
-            name: 'min',
-            signature: 'min(field)',
-            args: [
-                { name: 'field', desc: 'Field to find minimum value', required: true },
-            ],
-            example: 'min(response_time)',
-        },
-        'percentile': {
-            name: 'percentile',
-            signature: 'percentile(field)',
-            args: [
-                { name: 'field', desc: 'Numeric field (returns p50, p75, p99)', required: true },
-            ],
-            example: 'percentile(response_time)',
-        },
-        'stddev': {
-            name: 'stdDev',
-            signature: 'stdDev(field)',
-            args: [
-                { name: 'field', desc: 'Numeric field for standard deviation', required: true },
-            ],
-            example: 'stdDev(response_time)',
-        },
-        'median': {
-            name: 'median',
-            signature: 'median(field)',
-            args: [
-                { name: 'field', desc: 'Numeric field for median value', required: true },
-            ],
-            example: 'median(response_time)',
-        },
-        'mad': {
-            name: 'mad',
-            signature: 'mad(field)',
-            args: [
-                { name: 'field', desc: 'Numeric field for median absolute deviation', required: true },
-            ],
-            example: 'mad(response_time)',
-        },
-        'skewness': {
-            name: 'skewness',
-            signature: 'skewness(field)',
-            args: [
-                { name: 'field', desc: 'Numeric field for population skewness', required: true },
-            ],
-            example: 'skewness(response_time)',
-        },
-        'kurtosis': {
-            name: 'kurtosis',
-            signature: 'kurtosis(field)',
-            args: [
-                { name: 'field', desc: 'Numeric field for population excess kurtosis', required: true },
-            ],
-            example: 'kurtosis(response_time)',
-        },
-        'frequency': {
-            name: 'frequency',
-            signature: 'frequency(field)',
-            args: [
-                { name: 'field', desc: 'Field to produce frequency table for', required: true },
-            ],
-            example: 'frequency(event_name)',
-        },
-        'modifiedzscore': {
-            name: 'modifiedZScore',
-            signature: 'modifiedZScore(field)',
-            args: [
-                { name: 'field', desc: 'Numeric field for modified z-score computation', required: true },
-            ],
-            example: 'modifiedZScore(response_time)',
-        },
-        'madoutlier': {
-            name: 'madOutlier',
-            signature: 'madOutlier(field, threshold)',
-            args: [
-                { name: 'field', desc: 'Numeric field for outlier detection', required: true },
-                { name: 'threshold', desc: 'Modified z-score threshold (default: 3.5)', required: false },
-            ],
-            example: 'madOutlier(latency, 3.5)',
-        },
-        'iqr': {
-            name: 'iqr',
-            signature: 'iqr(field)',
-            args: [
-                { name: 'field', desc: 'Numeric field for interquartile range', required: true },
-            ],
-            example: 'iqr(response_time)',
-        },
-        'headtail': {
-            name: 'headTail',
-            signature: 'headTail(field, threshold)',
-            args: [
-                { name: 'field', desc: 'Field for Pareto analysis', required: true },
-                { name: 'threshold', desc: 'Cumulative % threshold for head/tail (default: 80)', required: false },
-            ],
-            example: 'headTail(event_name)',
-        },
-        'selectfirst': {
-            name: 'selectFirst',
-            signature: 'selectFirst(field)',
-            args: [
-                { name: 'field', desc: 'Field value from earliest event in group', required: true },
-            ],
-            example: 'selectFirst(status)',
-        },
-        'selectlast': {
-            name: 'selectLast',
-            signature: 'selectLast(field)',
-            args: [
-                { name: 'field', desc: 'Field value from latest event in group', required: true },
-            ],
-            example: 'selectLast(status)',
-        },
-        'collect': {
-            name: 'collect',
-            signature: 'collect(field)',
-            args: [
-                { name: 'field', desc: 'Field to collect into array', required: true },
-            ],
-            example: 'collect(hostname)',
-        },
-        'top': {
-            name: 'top',
-            signature: 'top(field, percent=bool, as=alias)',
-            args: [
-                { name: 'field', desc: 'Field to find top values', required: true },
-                { name: 'percent', desc: 'Show as percentage (true/false)', required: false },
-                { name: 'as', desc: 'Output field alias', required: false },
-            ],
-            example: 'top(hostname)',
-        },
-        'head': {
-            name: 'head',
-            signature: 'head(n)',
-            args: [
-                { name: 'n', desc: 'First N events (default: 200)', required: false },
-            ],
-            example: 'head(50)',
-        },
-        'tail': {
-            name: 'tail',
-            signature: 'tail(n)',
-            args: [
-                { name: 'n', desc: 'Last N events (default: 200)', required: false },
-            ],
-            example: 'tail(50)',
-        },
-        'regex': {
-            name: 'regex',
-            signature: 'regex(pattern, field=raw_log)',
-            args: [
-                { name: 'pattern', desc: 'Regex pattern (supports named captures)', required: true },
-                { name: 'field', desc: 'Field to match against (default: raw_log)', required: false },
-            ],
-            example: 'regex("(?<ip>\\d+\\.\\d+\\.\\d+\\.\\d+)", field=raw_log)',
-        },
-        'replace': {
-            name: 'replace',
-            signature: 'replace(pattern, replacement, field=raw_log, as=output)',
-            args: [
-                { name: 'pattern', desc: 'Regex pattern to match', required: true },
-                { name: 'replacement', desc: 'Replacement string', required: true },
-                { name: 'field', desc: 'Field to apply to (default: raw_log)', required: false },
-                { name: 'as', desc: 'Output field name', required: false },
-            ],
-            example: 'replace("\\d+", "***", field=raw_log, as=redacted)',
-        },
-        'concat': {
-            name: 'concat',
-            signature: 'concat([field1, field2, ...], as=output)',
-            args: [
-                { name: 'fields', desc: 'Fields to concatenate (comma-separated in brackets)', required: true },
-                { name: 'as', desc: 'Output field name (default: _concat)', required: false },
-            ],
-            example: 'concat([hostname, level], as=combined)',
-        },
-        'lowercase': {
-            name: 'lowercase',
-            signature: 'lowercase(field, as=output)',
-            args: [
-                { name: 'field', desc: 'Field to convert to lowercase', required: true },
-                { name: 'as', desc: 'Output field name (default: same field)', required: false },
-            ],
-            example: 'lowercase(hostname)',
-        },
-        'uppercase': {
-            name: 'uppercase',
-            signature: 'uppercase(field, as=output)',
-            args: [
-                { name: 'field', desc: 'Field to convert to uppercase', required: true },
-                { name: 'as', desc: 'Output field name (default: same field)', required: false },
-            ],
-            example: 'uppercase(level)',
-        },
-        'eval': {
-            name: 'eval',
-            signature: 'eval(field = expression)',
-            args: [
-                { name: 'field = expr', desc: 'Assign computed value (supports +, * operators)', required: true },
-            ],
-            example: 'eval(total = bytes_in + bytes_out)',
-        },
-        'in': {
-            name: 'in',
-            signature: 'in(field, [v1, v2, ...])',
-            args: [
-                { name: 'field', desc: 'Field to filter on', required: true },
-                { name: 'values', desc: 'List of values to match', required: true },
-            ],
-            example: 'in(level, [error, critical])',
-        },
-        'hash': {
-            name: 'hash',
-            signature: 'hash(field1, field2, ..., as=alias)',
-            args: [
-                { name: 'fields', desc: 'Field(s) to hash together', required: true },
-                { name: 'as', desc: 'Output field name (default: hash_key)', required: false },
-            ],
-            example: 'hash(hostname, process_id, as=session_key)',
-        },
-        'now': {
-            name: 'now',
-            signature: 'now(as=output)',
-            args: [
-                { name: 'as', desc: 'Output field name (default: _now)', required: false },
-            ],
-            example: 'now(as=current_time)',
-        },
-        'bucket': {
-            name: 'bucket',
-            signature: 'bucket(span=duration, function=agg())',
-            args: [
-                { name: 'span', desc: 'Time bucket size (e.g. 1h, 5m, 1d)', required: true },
-                { name: 'function', desc: 'Aggregation function (e.g. count(), sum(field))', required: true },
-            ],
-            example: 'bucket(span=1h, function=count())',
-        },
-        'case': {
-            name: 'case',
-            signature: 'case { condition | result ; ... ; * | default }',
-            args: [
-                { name: 'condition', desc: 'Filter condition for each branch', required: true },
-                { name: 'result', desc: 'Value or field assignment when matched', required: true },
-                { name: '*', desc: 'Default/catch-all branch', required: false },
-            ],
-            example: 'case { level="error" | "bad" ; * | "ok" }',
-        },
-        'multi': {
-            name: 'multi',
-            signature: 'multi(agg1(), agg2(), ...)',
-            args: [
-                { name: 'functions', desc: 'Aggregate functions: count(), sum(), avg(), max(), min(), percentile(), stdDev(), median(), mad(), skewness(), kurtosis(), iqr(), selectFirst(), selectLast(), collect(), top()', required: true },
-            ],
-            example: 'multi(count(), avg(response_time), max(bytes))',
-        },
-        'chain': {
-            name: 'chain',
-            signature: 'chain(field, ..., within=duration) { step1 ; step2 ; ... }',
-            args: [
-                { name: 'field', desc: 'Identity field(s). Single field groups directly. Multiple fields are treated as aliases for the same entity (e.g. user, source_user, target_user).', required: true },
-                { name: 'within', desc: 'Max time window between steps (e.g. 5m)', required: false },
-                { name: '{ steps }', desc: 'Sequential conditions separated by ;', required: true },
-            ],
-            example: 'chain(user, source_user, target_user, within=1d) { event_id=1 | image=/powershell/i ; event_id=10 ; event_id=4625 }',
-        },
-        'match': {
-            name: 'match',
-            signature: 'match(dict=name, field=logfield, column=key, include=[cols], strict=bool)',
-            args: [
-                { name: 'dict', desc: 'Dictionary name', required: true },
-                { name: 'field', desc: 'Log field to look up', required: true },
-                { name: 'column', desc: 'Dictionary key column', required: true },
-                { name: 'include', desc: 'Columns to include from dictionary', required: true },
-                { name: 'strict', desc: 'Only keep matching rows (default: false)', required: false },
-            ],
-            example: 'match(dict=assets, field=ip, column=address, include=[owner, location])',
-        },
-        'lookupIP': {
-            name: 'lookupIP',
-            signature: 'lookupIP(field=ip_field, include=[country,city,asn,as_org])',
-            args: [
-                { name: 'field', desc: 'Field containing the IP address', required: true },
-                { name: 'include', desc: 'Columns: country, city, subdivision, continent, timezone, latitude, longitude, postal_code, asn, as_org', required: true },
-            ],
-            example: 'lookupIP(field=src_ip, include=[country,city,asn])',
-        },
-        'lookupip': { ref: 'lookupIP' },
-        'geoip': { ref: 'lookupIP' },
-        'graphWorld': {
-            name: 'graphWorld',
-            signature: 'graphWorld(lat=field, lon=field, label=field, limit=N)',
-            args: [
-                { name: 'lat', desc: 'Latitude field (default: latitude)', required: false },
-                { name: 'lon', desc: 'Longitude field (default: longitude)', required: false },
-                { name: 'label', desc: 'Field to use as marker label', required: false },
-                { name: 'limit', desc: 'Max number of points (default: 5000)', required: false },
-            ],
-            example: 'lookupIP(field=src_ip, include=[latitude,longitude,country]) | graphWorld(label=country)',
-        },
-        'graphworld': { ref: 'graphWorld' },
-        'worldmap': { ref: 'graphWorld' },
-        'comment': {
-            name: 'comment',
-            signature: 'comment()',
-            args: [],
-            example: 'comment()',
-        },
-        'comments': { ref: 'comment' },
-        'piechart': {
-            name: 'piechart',
-            signature: 'piechart(limit=N)',
-            args: [
-                { name: 'limit', desc: 'Max slices to display (default: 10)', required: false },
-            ],
-            example: 'groupBy(level) | count() | piechart(limit=5)',
-        },
-        'barchart': {
-            name: 'barchart',
-            signature: 'barchart(limit=N)',
-            args: [
-                { name: 'limit', desc: 'Max bars to display (default: 10)', required: false },
-            ],
-            example: 'groupBy(hostname) | count() | barchart()',
-        },
-        'graph': {
-            name: 'graph',
-            signature: 'graph(child=field, parent=field, labels=[fields], limit=N)',
-            args: [
-                { name: 'child', desc: 'Child node field', required: true },
-                { name: 'parent', desc: 'Parent node field', required: true },
-                { name: 'labels', desc: 'Fields to show in node labels', required: false },
-                { name: 'limit', desc: 'Max nodes (default: 100, max: 500)', required: false },
-            ],
-            example: 'graph(child=process_guid, parent=parent_guid, labels=[name])',
-        },
-        'singleval': {
-            name: 'singleval',
-            signature: 'singleval(label="Label")',
-            args: [
-                { name: 'label', desc: 'Display label for the value', required: false },
-            ],
-            example: 'count() | singleval(label="Total Events")',
-        },
-        'timechart': {
-            name: 'timechart',
-            signature: 'timechart(span=duration, function=agg())',
-            args: [
-                { name: 'span', desc: 'Time bucket size (default: 1h)', required: false },
-                { name: 'function', desc: 'Aggregation: count(), sum(), avg(), max(), min()', required: false },
-            ],
-            example: 'timechart(span=5m, function=count())',
-        },
-        'analyzefields': {
-            name: 'analyzeFields',
-            signature: 'analyzeFields(field1, field2, ..., limit=N)',
-            args: [
-                { name: 'fields', desc: 'Fields to analyze (default: all)', required: false },
-                { name: 'limit', desc: 'Max rows to scan (default: 50000)', required: false },
-            ],
-            example: 'service=webapp | analyzeFields()',
-        },
-        'bfs': {
-            name: 'bfs',
-            signature: 'bfs(child=field, parent=field, start=value, depth=N, include=[fields])',
-            args: [
-                { name: 'child', desc: 'Child node field', required: true },
-                { name: 'parent', desc: 'Parent node field', required: true },
-                { name: 'start', desc: 'Starting node value', required: true },
-                { name: 'depth', desc: 'Max traversal depth (default: 10)', required: false },
-                { name: 'include', desc: 'Extra fields to include', required: false },
-            ],
-            example: 'bfs(child=id, parent=parent_id, start="root", depth=5)',
-        },
-        'dfs': {
-            name: 'dfs',
-            signature: 'dfs(child=field, parent=field, start=value, depth=N, include=[fields])',
-            args: [
-                { name: 'child', desc: 'Child node field', required: true },
-                { name: 'parent', desc: 'Parent node field', required: true },
-                { name: 'start', desc: 'Starting node value', required: true },
-                { name: 'depth', desc: 'Max traversal depth (default: 10)', required: false },
-                { name: 'include', desc: 'Extra fields to include', required: false },
-            ],
-            example: 'dfs(child=id, parent=parent_id, start="root", depth=5)',
-        },
-        'len': {
-            name: 'len',
-            signature: 'len(field)',
-            args: [
-                { name: 'field', desc: 'Field to measure string length of', required: true },
-            ],
-            example: 'len(message) | _len > 100',
-        },
-        'levenshtein': {
-            name: 'levenshtein',
-            signature: 'levenshtein(field1, field2)',
-            args: [
-                { name: 's1', desc: 'First field or quoted string', required: true },
-                { name: 's2', desc: 'Second field or quoted string', required: true },
-            ],
-            example: 'levenshtein(process_name, "svchost.exe") | _distance < 3',
-        },
-        'base64decode': {
-            name: 'base64Decode',
-            signature: 'base64Decode(field)',
-            args: [
-                { name: 'field', desc: 'Base64-encoded field to decode', required: true },
-            ],
-            example: 'base64Decode(encoded_command) | _decoded=/powershell/i',
-        },
-        'dedup': {
-            name: 'dedup',
-            signature: 'dedup(field1, field2, ...)',
-            args: [
-                { name: 'fields', desc: 'Fields to deduplicate by (keeps first occurrence)', required: true },
-            ],
-            example: 'dedup(src_ip, dst_ip)',
-        },
-        'cidr': {
-            name: 'cidr',
-            signature: 'cidr(field, "range")',
-            args: [
-                { name: 'field', desc: 'IP address field', required: true },
-                { name: 'range', desc: 'CIDR range (e.g. 10.0.0.0/8)', required: true },
-            ],
-            example: 'cidr(src_ip, "10.0.0.0/8")',
-        },
-        'split': {
-            name: 'split',
-            signature: 'split(field, "delimiter", index)',
-            args: [
-                { name: 'field', desc: 'Field to split', required: true },
-                { name: 'delimiter', desc: 'Delimiter string', required: true },
-                { name: 'index', desc: '1-based index (-1 for last element)', required: true },
-            ],
-            example: 'split(image, "\\\\", -1)',
-        },
-        'substr': {
-            name: 'substr',
-            signature: 'substr(field, start, length)',
-            args: [
-                { name: 'field', desc: 'Field to extract from', required: true },
-                { name: 'start', desc: 'Starting position (1-based)', required: true },
-                { name: 'length', desc: 'Number of characters (default: rest of string)', required: false },
-            ],
-            example: 'substr(message, 1, 50)',
-        },
-        'urldecode': {
-            name: 'urldecode',
-            signature: 'urldecode(field)',
-            args: [
-                { name: 'field', desc: 'URL-encoded field to decode', required: true },
-            ],
-            example: 'urldecode(request_uri)',
-        },
-        'coalesce': {
-            name: 'coalesce',
-            signature: 'coalesce(field1, field2, ...)',
-            args: [
-                { name: 'fields', desc: 'Fields to check in order (returns first non-empty)', required: true },
-            ],
-            example: 'coalesce(user, username, account_name)',
-        },
-        'sprintf': {
-            name: 'sprintf',
-            signature: 'sprintf(format, field1, field2, ..., as=alias)',
-            args: [
-                { name: 'format', desc: 'Printf-style format string (%s, %d, etc.)', required: true },
-                { name: 'fields', desc: 'Fields to substitute into the format string', required: false },
-                { name: 'as', desc: 'Output field name (default: _sprintf)', required: false },
-            ],
-            example: 'sprintf("%s - %s", username, action, as=user_action)',
-        },
-        'strftime': {
-            name: 'strftime',
-            signature: 'strftime(format, field=timestamp, timezone=UTC, as=_time)',
-            args: [
-                { name: 'format', desc: 'strftime format (%H, %b, %a, %Y, %d, etc.)', required: true },
-                { name: 'field', desc: 'Field to format (default: timestamp)', required: false },
-                { name: 'timezone', desc: 'Timezone (default: UTC)', required: false },
-                { name: 'as', desc: 'Output field name (default: _time)', required: false },
-            ],
-            example: 'strftime("%H", as=_hour)',
-        },
-        'histogram': {
-            name: 'histogram',
-            signature: 'histogram(field, buckets=N)',
-            args: [
-                { name: 'field', desc: 'Numeric field to build distribution for', required: true },
-                { name: 'buckets', desc: 'Number of equal-width bins (default: 20)', required: false },
-            ],
-            example: 'histogram(response_time, buckets=30)',
-        },
-        'join': {
-            name: 'join',
-            signature: 'join(key, type=inner|left, max=N, include=[fields]) { subquery }',
-            args: [
-                { name: 'key', desc: 'Field to join on (must exist in both queries)', required: true },
-                { name: 'type', desc: 'Join type: inner (default) or left', required: false },
-                { name: 'max', desc: 'Max subquery rows (default: 10000, max: 100000)', required: false },
-                { name: 'include', desc: 'Fields to include from subquery (default: all)', required: false },
-                { name: '{ subquery }', desc: 'BQL subquery in curly braces', required: true },
-            ],
-            example: 'action="denied" | join(src_ip) { action="login" | groupby(src_ip) | count() }',
-        },
-        'heatmap': {
-            name: 'heatmap',
-            signature: 'heatmap(x=field, y=field, value=agg(), limit=N)',
-            args: [
-                { name: 'x', desc: 'Field for X axis', required: true },
-                { name: 'y', desc: 'Field for Y axis', required: true },
-                { name: 'value', desc: 'Aggregation function (default: count())', required: false },
-                { name: 'limit', desc: 'Max distinct values per axis (default: 50)', required: false },
-            ],
-            example: 'heatmap(x=src_ip, y=dst_port, value=count())',
-        },
-    },
-
-    // State for function hints popup
+    // ---- ? hint state ----
     _hintVisible: false,
-    _hintAnchor: null, // the textarea that triggered the hint
+    _hintAnchor: null,
+
+    // ---- on-demand menu state (the browsable list, opened with Ctrl+Space) ----
+    _menuVisible: false,
+    _acAnchor: null,       // textarea the menu/ghost is attached to
+    _items: [],            // current candidate items
+    _selected: 0,          // highlighted index
+    _ctx: null,            // active completion context
+    _mirror: null,         // cached mirror div for caret measurement
+
+    // ---- inline ghost-text state (the ambient suggestion while typing) ----
+    _ghost: null,          // { suffix, ctx, item, anchor } or null
+
+    // ---- idle reveal: the menu opens itself after a brief typing pause, so the
+    // feature is discoverable without a popup interrupting fast typists. ----
+    _idleTimer: null,
+    _idleDelay: 450,       // ms of no typing before the menu appears
 
     init() {
-        const input = document.getElementById('queryInput');
-        const autocompleteDiv = document.getElementById('autocomplete');
-
-        if (!input || !autocompleteDiv) return;
-
-        input.addEventListener('input', () => {
-            this.show();
-        });
-        input.addEventListener('keydown', (e) => this.handleKeyDown(e));
-
-        // Document-wide listeners for function hints and Tab completion on all query textareas
+        // While typing: drive the inline ghost suggestion (or refilter an open
+        // menu). No popup appears on its own -- the menu is summoned with Ctrl+Space.
         document.addEventListener('input', (e) => {
             if (e.target.tagName === 'TEXTAREA' && this._isQueryTextarea(e.target)) {
                 this._checkHintTrigger(e.target);
-            }
-        });
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && this._hintVisible) {
-                this.hideHint();
-            }
-            // Tab completion on any query textarea (dashboard/notebook editors)
-            if (e.key === 'Tab' && e.target.tagName === 'TEXTAREA' && e.target !== input && this._isQueryTextarea(e.target)) {
-                const best = this._getBestMatch(e.target);
-                if (best) {
-                    e.preventDefault();
-                    e._autocompleteHandled = true;
-                    this._applyCompletion(best.keyword, best.mode, e.target);
+                if (this._hintVisible) {
+                    this._hideMenu();
+                    this._hideGhost();
+                } else {
+                    this._onInput(e.target);
                 }
             }
         });
 
-        // Close on click outside
+        // Capture-phase keys so accept/navigate beats the editors' own Enter/Tab
+        // handlers. Enter is never intercepted while only the ghost shows, so it
+        // always runs the query.
+        document.addEventListener('keydown', (e) => this._onKeyDownCapture(e), true);
+
         document.addEventListener('click', (e) => {
-            const hintPopup = document.getElementById('functionHint');
-            if (!input.contains(e.target) && !autocompleteDiv.contains(e.target)) {
-                this.hide();
+            if (e.target.tagName === 'TEXTAREA' && this._isQueryTextarea(e.target)) {
+                this._onInput(e.target);
             }
-            if (hintPopup && !hintPopup.contains(e.target) &&
-                (!this._hintAnchor || !this._hintAnchor.contains(e.target))) {
-                this.hideHint();
+            this._maybeCloseOnOutsideClick(e);
+        });
+        document.addEventListener('focusout', (e) => {
+            if (e.target === this._acAnchor) {
+                this._hideGhost();
+                setTimeout(() => {
+                    if (document.activeElement !== this._acAnchor) this._hideMenu();
+                }, 150);
             }
         });
+        // Reposition would drift on scroll/resize; just dismiss.
+        document.addEventListener('scroll', (e) => {
+            if (this._acAnchor && (e.target === this._acAnchor || (e.target.contains && e.target.contains(this._acAnchor)))) {
+                this._hideGhost();
+                this._hideMenu();
+            }
+        }, true);
+        window.addEventListener('resize', () => { this._hideGhost(); this._hideMenu(); });
     },
 
-    // Check if a textarea is a query editor (main, alert, notebook, dashboard)
+    // Identify query editors: main search, alert editor, notebook + dashboard
+    // query cells, and the analytics model builder. Markdown notebook cells share
+    // the edit-content- id prefix but are NOT inside .query-input-wrapper, so the
+    // wrapper check correctly excludes them.
     _isQueryTextarea(el) {
-        // Main query input or alert editor
         if (el.classList.contains('search-input')) return true;
-        // Notebook/dashboard editors: textarea inside .query-input-wrapper or with wie-q- id
         if (el.closest('.query-input-wrapper')) return true;
         if (el.id && el.id.startsWith('wie-q-')) return true;
-        // Analytics model builder source-query editor
         if (el.id === 'modelQueryInput') return true;
         return false;
     },
 
-    // Find what function the cursor is currently inside of
+    // ===================== ? signature hint =====================
+
     _getEnclosingFunction(text, cursorPos) {
         const before = text.substring(0, cursorPos);
-        // Walk backwards through the text to find the nearest unmatched open paren
+        // Walk back to the nearest unmatched opener -- "(" for normal calls or "{"
+        // for the brace-structured case command -- and read the name in front of it.
         let depth = 0;
         for (let i = before.length - 1; i >= 0; i--) {
             const ch = before[i];
-            if (ch === ')') {
+            if (ch === ')' || ch === '}') {
                 depth++;
-            } else if (ch === '(') {
+            } else if (ch === '(' || ch === '{') {
                 if (depth === 0) {
-                    // Found unmatched open paren, extract function name before it
-                    const preceding = before.substring(0, i);
-                    const match = preceding.match(/([a-zA-Z_]\w*)$/);
-                    if (match) {
-                        return match[1];
-                    }
-                    return null;
+                    const match = before.substring(0, i).match(/([a-zA-Z_]\w*)\s*$/);
+                    return match ? match[1] : null;
                 }
                 depth--;
             }
@@ -746,7 +103,6 @@ const Autocomplete = {
         return null;
     },
 
-    // Check if a ? at the given position is inside a quoted string
     _isInsideString(text, pos) {
         let inSingle = false;
         let inDouble = false;
@@ -758,41 +114,21 @@ const Autocomplete = {
         return inSingle || inDouble;
     },
 
-    // React to input: show hint if there's a ? trigger, hide if it's gone
     _checkHintTrigger(textarea) {
         if (!textarea) return;
-
         const cursorPos = textarea.selectionStart;
         const text = textarea.value;
         const charBefore = cursorPos > 0 ? text[cursorPos - 1] : '';
 
-        // If the char right before cursor is ?, check if it's a valid trigger
         if (charBefore === '?') {
-            // Must not be inside a quoted string
-            if (this._isInsideString(text, cursorPos - 1)) {
-                this.hideHint();
-                return;
-            }
-
-            // Must be inside a function's parens
-            // Check from position before the ? (so _getEnclosingFunction sees the paren context)
+            if (this._isInsideString(text, cursorPos - 1)) { this.hideHint(); return; }
             const funcName = this._getEnclosingFunction(text, cursorPos - 1);
-            if (funcName) {
-                let hint = this.functionHints[funcName.toLowerCase()];
-                if (hint && hint.ref) {
-                    hint = this.functionHints[hint.ref];
-                }
-                if (hint && hint.signature) {
-                    this._showHint(hint, textarea);
-                    return;
-                }
+            if (funcName && window.BQLLang) {
+                const hint = BQLLang.getHint(funcName);
+                if (hint && hint.signature) { this._showHint(hint, textarea); return; }
             }
         }
-
-        // No valid ? trigger at cursor -- hide if visible
-        if (this._hintVisible) {
-            this.hideHint();
-        }
+        if (this._hintVisible) this.hideHint();
     },
 
     _showHint(hint, textarea) {
@@ -823,10 +159,8 @@ const Autocomplete = {
         }
 
         html += '<div class="fn-hint-example">' + this._escapeHtml(hint.example) + '</div>';
-
         popup.innerHTML = html;
 
-        // Position below the textarea
         const rect = textarea.getBoundingClientRect();
         popup.style.top = (rect.bottom + 4) + 'px';
         popup.style.left = rect.left + 'px';
@@ -835,7 +169,6 @@ const Autocomplete = {
         this._hintVisible = true;
         this._hintAnchor = textarea;
 
-        // Bind dismiss button
         const dismissBtn = popup.querySelector('.fn-hint-dismiss');
         if (dismissBtn) {
             dismissBtn.addEventListener('click', (e) => {
@@ -847,10 +180,20 @@ const Autocomplete = {
 
     hideHint() {
         const popup = document.getElementById('functionHint');
-        if (popup) {
-            popup.style.display = 'none';
-        }
+        if (popup) popup.style.display = 'none';
         this._hintVisible = false;
+    },
+
+    _maybeCloseOnOutsideClick(e) {
+        const dropdown = document.getElementById('bqlAutocomplete');
+        if (this._menuVisible && dropdown && !dropdown.contains(e.target) && e.target !== this._acAnchor) {
+            this._hideMenu();
+        }
+        const hintPopup = document.getElementById('functionHint');
+        if (hintPopup && !hintPopup.contains(e.target) &&
+            (!this._hintAnchor || !this._hintAnchor.contains(e.target))) {
+            this.hideHint();
+        }
     },
 
     _escapeHtml(str) {
@@ -859,198 +202,620 @@ const Autocomplete = {
         return div.innerHTML;
     },
 
-    // Get field names from current results via FieldStats
+    // ===================== field / value sources =====================
+
     _getFieldNames() {
+        // Merge fields seen in the current results (FieldStats) with the fields
+        // known ahead of any query (base columns + configured schema fields), so
+        // completion works even before the first search. Deduplicated.
+        const set = new Set();
         if (window.FieldStats && FieldStats.stats) {
-            return Object.keys(FieldStats.stats);
+            Object.keys(FieldStats.stats).forEach(f => set.add(f));
         }
-        return [];
+        if (window.BQLLang && typeof BQLLang.knownFields === 'function') {
+            BQLLang.knownFields().forEach(f => set.add(f));
+        }
+        return Array.from(set);
     },
 
-    // Get top values for a field from FieldStats
     _getFieldValues(fieldName) {
         if (window.FieldStats && FieldStats.stats && FieldStats.stats[fieldName]) {
-            return FieldStats.stats[fieldName].topValues.map(([val, count]) => ({
-                value: val,
-                count: count
-            }));
+            return (FieldStats.stats[fieldName].topValues || []).map(([val, count]) => ({ value: String(val), count }));
         }
         return [];
     },
 
-    // Detect if cursor is right after field= or field!= and return the field name and partial value
-    _getFieldValueContext(textBeforeCursor) {
-        // Match quoted partial: fieldName="partial (no closing quote yet)
-        const quotedMatch = textBeforeCursor.match(/([a-zA-Z_][\w.]*)(!?=)"([^"]*)$/);
-        if (quotedMatch) {
-            return { field: quotedMatch[1], partial: quotedMatch[3], quoted: true };
+    // ===================== completion context =====================
+
+    // Value position: cursor right after field= / field!= (optionally a partial,
+    // quoted or not). Returns the field, partial text, quote state, and the start
+    // index of the replaceable region.
+    _getValueContext(text, cursorPos) {
+        const before = text.substring(0, cursorPos);
+        // Equality-style operators where the field's top values are useful:
+        // = != =~ =^ =$ (the operator is captured so it never leaks into partial).
+        const quoted = before.match(/([a-zA-Z_][\w.]*)(!?=[~^$]?)"([^"]*)$/);
+        if (quoted) {
+            return { field: quoted[1], partial: quoted[3], quoted: true, start: cursorPos - quoted[3].length };
         }
-        // Match unquoted: fieldName=partial
-        const match = textBeforeCursor.match(/([a-zA-Z_][\w.]*)(!?=)([^"\s]*)$/);
-        if (match) {
-            return { field: match[1], partial: match[3], quoted: false };
+        const bare = before.match(/([a-zA-Z_][\w.]*)(!?=[~^$]?)([^"\s|()\[\]]*)$/);
+        if (bare) {
+            return { field: bare[1], partial: bare[3], quoted: false, start: cursorPos - bare[3].length };
         }
         return null;
     },
 
-    // Detect if cursor is inside function parens and return the partial token being typed
-    _getFunctionArgContext(textBeforeCursor) {
-        // Check if we're inside function parens by looking for unmatched (
+    // True when the cursor sits inside an unmatched "(" (function arguments).
+    _insideParens(before) {
         let depth = 0;
-        let parenPos = -1;
-        for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
-            const ch = textBeforeCursor[i];
+        for (let i = before.length - 1; i >= 0; i--) {
+            const ch = before[i];
             if (ch === ')') depth++;
-            else if (ch === '(') {
-                if (depth === 0) { parenPos = i; break; }
-                depth--;
-            }
+            else if (ch === '(') { if (depth === 0) return true; depth--; }
         }
-        if (parenPos < 0) return null;
-
-        // Extract the token being typed (after last separator: comma, [, space, =)
-        const afterParen = textBeforeCursor.substring(parenPos + 1);
-        const tokenMatch = afterParen.match(/(?:.*[\[,\s=])?\s*([a-zA-Z_][\w.]*)$/);
-        if (tokenMatch && tokenMatch[1]) {
-            return { partial: tokenMatch[1] };
-        }
-        return null;
+        return false;
     },
 
-    // Compute the best Tab-completion match based on current cursor context.
-    // Returns { keyword, mode } or null if no match.
-    _getBestMatch(textarea) {
-        const input = textarea || document.getElementById('queryInput');
-        if (!input) return null;
+    _computeContext(textarea) {
+        const value = textarea.value;
+        const cursorPos = textarea.selectionStart;
+        const before = value.substring(0, cursorPos);
 
-        const value = input.value;
-        const cursorPos = input.selectionStart;
-        const textBeforeCursor = value.substring(0, cursorPos);
+        const vc = this._getValueContext(value, cursorPos);
+        if (vc) {
+            return { kind: 'value', field: vc.field, partial: vc.partial, quoted: vc.quoted, start: vc.start, end: cursorPos };
+        }
 
-        // Priority 1: Field value after = operator
-        const valueCtx = this._getFieldValueContext(textBeforeCursor);
-        if (valueCtx) {
-            const topValues = this._getFieldValues(valueCtx.field);
-            if (topValues.length > 0) {
-                const partial = valueCtx.partial.toLowerCase();
-                const filtered = partial.length > 0
-                    ? topValues.filter(v => v.value.toLowerCase().includes(partial))
-                    : topValues;
-                if (filtered.length > 0) {
-                    return { keyword: filtered[0].value, mode: 'value' };
+        // Token being typed (identifier under the caret).
+        const tokenMatch = before.match(/[a-zA-Z_][\w.]*$/);
+        const partial = tokenMatch ? tokenMatch[0] : '';
+        const start = cursorPos - partial.length;
+        const insideParens = this._insideParens(before);
+        // Empty token only opens the palette at the start of a pipeline segment.
+        const afterPipe = /(^|\|)\s*$/.test(before) || (insideParens && /[(,\s]\s*$/.test(before));
+
+        return { kind: 'token', partial, start, end: cursorPos, insideParens, afterPipe };
+    },
+
+    // ===================== candidate building =====================
+
+    _match(label, partial) {
+        if (!partial) return { ok: true, prefix: true, index: 0 };
+        const l = label.toLowerCase();
+        const p = partial.toLowerCase();
+        const idx = l.indexOf(p);
+        if (idx < 0) return { ok: false };
+        return { ok: true, prefix: idx === 0, index: idx };
+    },
+
+    _buildItems(ctx) {
+        if (ctx.kind === 'value') {
+            const values = this._getFieldValues(ctx.field);
+            const out = [];
+            for (const v of values) {
+                const m = this._match(v.value, ctx.partial);
+                if (!m.ok) continue;
+                const escaped = v.value.replace(/"/g, '\\"');
+                out.push({
+                    kind: 'value',
+                    label: v.value,
+                    insert: ctx.quoted ? escaped : '"' + escaped + '"',
+                    detail: this._formatCount(v.count),
+                    desc: '',
+                    matchIndex: m.index,
+                    matchLen: ctx.partial.length,
+                    _prefix: m.prefix,
+                });
+                if (out.length >= 50) break;
+            }
+            return out;
+        }
+
+        // token context: field names + functions (+ logical keywords at top level)
+        const partial = ctx.partial;
+        const out = [];
+
+        for (const f of this._getFieldNames()) {
+            const m = this._match(f, partial);
+            if (!m.ok) continue;
+            out.push({ kind: 'field', label: f, insert: f, detail: 'field', desc: '', matchIndex: m.index, matchLen: partial.length, _prefix: m.prefix });
+        }
+
+        if (window.BQLLang) {
+            for (const fn of BQLLang.functions) {
+                if (!fn || !fn.name) continue;
+                // Match against the name first, then any alias (for ranking), but
+                // emphasize against the displayed label only.
+                const nameM = this._match(fn.name, partial);
+                let m = nameM;
+                if (!m.ok) {
+                    const alias = (fn.aliases || []).find(a => this._match(a, partial).ok);
+                    if (!alias) continue;
+                    m = this._match(alias, partial);
+                }
+                out.push({
+                    kind: 'function',
+                    label: fn.name,
+                    insert: BQLLang.funcInsertText(fn),
+                    caretBack: BQLLang.funcCaretBack(fn),
+                    detail: fn.category || 'function',
+                    desc: fn.description || '',
+                    matchIndex: nameM.ok ? nameM.index : -1,
+                    matchLen: nameM.ok ? partial.length : 0,
+                    _prefix: m.prefix,
+                });
+            }
+            if (!ctx.insideParens) {
+                for (const kw of BQLLang.keywords) {
+                    const m = this._match(kw.name, partial);
+                    if (!m.ok) continue;
+                    out.push({ kind: 'keyword', label: kw.name, insert: kw.name + ' ', detail: 'logical', desc: kw.desc, matchIndex: m.index, matchLen: partial.length, _prefix: m.prefix });
                 }
             }
         }
 
-        // Priority 2: Field name inside function args (3+ chars)
-        const argCtx = this._getFunctionArgContext(textBeforeCursor);
-        if (argCtx && argCtx.partial.length >= 3) {
-            const fieldNames = this._getFieldNames();
-            const partial = argCtx.partial.toLowerCase();
-            const match = fieldNames.find(f => f.toLowerCase().includes(partial));
-            if (match) {
-                return { keyword: match, mode: 'field' };
+        // Rank: prefix matches first, then field < function < keyword, then earlier
+        // match position, then shorter label, then alphabetical.
+        const order = { field: 0, function: 1, keyword: 2 };
+        out.sort((a, b) => {
+            if (a._prefix !== b._prefix) return a._prefix ? -1 : 1;
+            if (order[a.kind] !== order[b.kind]) return order[a.kind] - order[b.kind];
+            if (a.matchIndex !== b.matchIndex) return a.matchIndex - b.matchIndex;
+            if (a.label.length !== b.label.length) return a.label.length - b.label.length;
+            return a.label.localeCompare(b.label);
+        });
+        return out.slice(0, 50);
+    },
+
+    _formatCount(n) {
+        if (n == null) return '';
+        if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+        if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+        return String(n);
+    },
+
+    // ===================== input handling =====================
+
+    _onInput(textarea) {
+        // Ignore programmatic input on a field the user is not editing (e.g.
+        // loading a saved query, copy-to-query, undo/redo).
+        if (document.activeElement !== textarea) { this._clearIdle(); this._hideMenu(); this._hideGhost(); return; }
+
+        // If the browsable menu is open, keep it in sync with what's typed.
+        if (this._menuVisible) { this._refilterMenu(textarea); return; }
+
+        // Otherwise drive the ambient inline ghost suggestion, and arm the idle
+        // reveal so the menu surfaces if the user pauses.
+        this._computeGhost(textarea);
+        this._scheduleIdleReveal(textarea);
+    },
+
+    _clearIdle() {
+        if (this._idleTimer) { clearTimeout(this._idleTimer); this._idleTimer = null; }
+    },
+
+    _scheduleIdleReveal(textarea) {
+        this._clearIdle();
+        this._idleTimer = setTimeout(() => {
+            this._idleTimer = null;
+            if (document.activeElement !== textarea || this._menuVisible || this._hintVisible) return;
+            // Don't auto-reveal on an empty or match-all (*) query: there is nothing
+            // meaningful to complete yet. Explicit Ctrl+Space still works.
+            const trimmed = textarea.value.trim();
+            if (trimmed === '' || trimmed === '*') return;
+            const ctx = this._computeContext(textarea);
+            if (this._isCompletable(ctx)) this._openMenu(textarea);
+        }, this._idleDelay);
+    },
+
+    // Whether a context is worth revealing the menu for: a value slot, a token
+    // being typed, or the blank start of a pipeline segment.
+    _isCompletable(ctx) {
+        if (ctx.kind === 'value') return true;
+        if (ctx.partial && ctx.partial.length >= 1) return true;
+        return !!ctx.afterPipe;
+    },
+
+    // ===================== inline ghost text =====================
+
+    _computeGhost(textarea) {
+        this._hideGhost();
+
+        const value = textarea.value;
+        const pos = textarea.selectionStart;
+        // Ghost only completes at the end of the input, like a shell autosuggestion;
+        // this keeps it aligned with the transparent-textarea overlay and never
+        // rewrites text the user has already moved past.
+        if (pos !== value.length) return;
+
+        const ctx = this._computeContext(textarea);
+        // Need something to extend: a partial token, or a committed field= value.
+        if (ctx.kind !== 'value' && ctx.partial.length < 1) return;
+
+        const items = this._buildItems(ctx);
+        for (const it of items) {
+            if (!it._prefix) continue; // ghost is a suffix, so prefix matches only
+            const suffix = this._ghostSuffix(ctx, it);
+            if (suffix) {
+                this._ghost = { suffix, ctx, item: it, anchor: textarea };
+                this._acAnchor = textarea;
+                this._renderGhost(textarea, suffix);
+                return;
             }
         }
+    },
 
-        // Priority 3: Bare field name (3+ chars, not after = operator)
-        const lastWord = textBeforeCursor.split(/\s/).pop();
-        if (lastWord && lastWord.length >= 3 && !lastWord.includes('=')) {
-            const fieldNames = this._getFieldNames();
-            const partial = lastWord.toLowerCase();
-            const fieldMatch = fieldNames.find(f => f.toLowerCase().startsWith(partial));
-            if (fieldMatch) {
-                return { keyword: fieldMatch, mode: 'field' };
+    // The text to append after the caret to complete `item`, or null when the
+    // completion cannot be expressed as a clean suffix (e.g. a value needing an
+    // opening quote, or a non-trivial value while unquoted).
+    _ghostSuffix(ctx, item) {
+        const partial = ctx.partial || '';
+        if (item.kind === 'value') {
+            const v = item.label;
+            if (!v.toLowerCase().startsWith(partial.toLowerCase())) return null;
+            const rest = v.slice(partial.length);
+            if (ctx.quoted) {
+                if (/["\\]/.test(v)) return null; // would need escaping; leave to menu
+                return rest + '"';
             }
+            if (!/^[A-Za-z0-9_.:\-]+$/.test(v)) return null; // unquoted only for simple values
+            return rest;
         }
-
-        // Priority 4: Keyword (3+ chars)
-        if (!lastWord || lastWord.length < 3 || lastWord.includes('=')) return null;
-
-        const match = this.suggestions.find(s =>
-            s.keyword.toLowerCase().startsWith(lastWord.toLowerCase())
-        );
-        if (match) {
-            return { keyword: match.keyword, mode: 'keyword' };
-        }
-
-        return null;
+        // function / field / keyword: insert is name + a fixed tail; the label
+        // starts with the partial for prefix matches, so the suffix is the tail.
+        if (!item.insert.toLowerCase().startsWith(partial.toLowerCase())) return null;
+        return item.insert.slice(partial.length);
     },
 
-    show() {
-        // No dropdown -- Tab completion only
-    },
-
-    hide() {
-        // No dropdown to hide
-    },
-
-    handleKeyDown(e) {
-        // Handle Escape to close hint
-        if (e.key === 'Escape' && this._hintVisible) {
-            this.hideHint();
+    _renderGhost(textarea, suffix) {
+        let el = document.getElementById('bqlGhost');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'bqlGhost';
+            el.className = 'ac-ghost';
+            document.body.appendChild(el);
         }
+        const computed = window.getComputedStyle(textarea);
+        ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight', 'tabSize']
+            .forEach(p => { el.style[p] = computed[p]; });
+        el.textContent = suffix;
 
-        if (e.key === 'Tab') {
-            const best = this._getBestMatch(e.target);
-            if (best) {
+        const caret = this._caretCoords(textarea, textarea.value.length);
+        el.style.top = caret.top + 'px';
+        el.style.left = caret.left + 'px';
+        el.style.display = 'block';
+    },
+
+    _hideGhost() {
+        const el = document.getElementById('bqlGhost');
+        if (el) el.style.display = 'none';
+        this._ghost = null;
+        // Any ghost-hiding path (caret move, Escape, blur, recompute) also cancels
+        // a pending idle reveal; the input handler re-arms it when appropriate.
+        this._clearIdle();
+    },
+
+    _acceptGhost() {
+        const g = this._ghost;
+        if (!g) return false;
+        const ta = g.anchor;
+        const value = ta.value;
+        // Caret is at the end (ghost invariant); append the suffix there. A scaffold
+        // (e.g. case { | }) may pull the caret back inside via the item's caretBack.
+        ta.value = value + g.suffix;
+        const caret = ta.value.length - ((g.item && g.item.caretBack) || 0);
+        ta.setSelectionRange(caret, caret);
+        ta.focus();
+        this._hideGhost();
+        this._rehighlight(ta);
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+    },
+
+    // ===================== on-demand menu (Ctrl+Space) =====================
+
+    _openMenu(textarea) {
+        this._hideGhost();
+        if (document.activeElement !== textarea) return;
+        const ctx = this._computeContext(textarea);
+        const items = this._buildItems(ctx);
+        if (!items.length) return;
+        this._ctx = ctx;
+        this._items = items;
+        this._selected = 0;
+        this._acAnchor = textarea;
+        this._renderDropdown(textarea);
+    },
+
+    _refilterMenu(textarea) {
+        const ctx = this._computeContext(textarea);
+        const items = this._buildItems(ctx);
+        if (!items.length) { this._hideMenu(); return; }
+        this._ctx = ctx;
+        this._items = items;
+        this._selected = 0;
+        this._acAnchor = textarea;
+        this._renderDropdown(textarea);
+    },
+
+    _ensureDropdown() {
+        let el = document.getElementById('bqlAutocomplete');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'bqlAutocomplete';
+            el.className = 'ac-dropdown';
+            el.style.display = 'none';
+            document.body.appendChild(el);
+        }
+        return el;
+    },
+
+    _iconFor(kind) {
+        switch (kind) {
+            case 'function': return { glyph: 'ƒ', cls: 'ac-icon-fn' };
+            case 'field': return { glyph: '#', cls: 'ac-icon-field' };
+            case 'value': return { glyph: '"', cls: 'ac-icon-value' };
+            case 'keyword': return { glyph: '&&', cls: 'ac-icon-kw' };
+            default: return { glyph: '*', cls: '' };
+        }
+    },
+
+    _highlightMatch(label, index, len) {
+        const esc = (s) => this._escapeHtml(s);
+        if (len <= 0 || index < 0) return esc(label);
+        return esc(label.slice(0, index)) +
+            '<b>' + esc(label.slice(index, index + len)) + '</b>' +
+            esc(label.slice(index + len));
+    },
+
+    _renderDropdown(textarea) {
+        const el = this._ensureDropdown();
+        const rows = this._items.map((it, i) => {
+            const icon = this._iconFor(it.kind);
+            const sel = i === this._selected ? ' selected' : '';
+            const desc = it.desc ? '<span class="ac-desc">' + this._escapeHtml(it.desc) + '</span>' : '';
+            const detail = it.detail ? '<span class="ac-detail">' + this._escapeHtml(it.detail) + '</span>' : '';
+            return '<div class="ac-item' + sel + '" data-i="' + i + '">' +
+                '<span class="ac-icon ' + icon.cls + '">' + icon.glyph + '</span>' +
+                '<span class="ac-label">' + this._highlightMatch(it.label, it.matchIndex, it.matchLen) + '</span>' +
+                desc + detail +
+                '</div>';
+        }).join('');
+        el.innerHTML = rows;
+
+        // Bind mouse interactions (mousedown keeps the textarea focused).
+        el.querySelectorAll('.ac-item').forEach(row => {
+            const idx = parseInt(row.dataset.i, 10);
+            row.addEventListener('mousedown', (e) => {
                 e.preventDefault();
-                e._autocompleteHandled = true;
-                this._applyCompletion(best.keyword, best.mode, e.target);
-            }
+                this._accept(idx);
+            });
+            row.addEventListener('mouseenter', () => {
+                this._selected = idx;
+                this._syncSelection();
+            });
+        });
+
+        this._position(el, textarea);
+        el.style.display = 'block';
+        this._menuVisible = true;
+        this._scrollSelectedIntoView();
+    },
+
+    _position(el, textarea) {
+        const caret = this._caretCoords(textarea, textarea.selectionStart);
+        // Measure to flip above the caret if it would overflow the viewport.
+        el.style.visibility = 'hidden';
+        el.style.display = 'block';
+        el.style.top = '0px';
+        el.style.left = '0px';
+        const h = el.offsetHeight;
+        const w = el.offsetWidth;
+
+        let top = caret.top + caret.lineHeight + 2;
+        if (top + h > window.innerHeight - 8) {
+            const above = caret.top - h - 2;
+            top = above > 8 ? above : Math.max(8, window.innerHeight - h - 8);
+        }
+        let left = caret.left;
+        if (left + w > window.innerWidth - 8) left = Math.max(8, window.innerWidth - w - 8);
+
+        el.style.top = top + 'px';
+        el.style.left = left + 'px';
+        el.style.visibility = 'visible';
+    },
+
+    // Caret pixel position within a textarea via a mirrored, identically-styled div.
+    _caretCoords(textarea, pos) {
+        const computed = window.getComputedStyle(textarea);
+        let div = this._mirror;
+        if (!div) {
+            div = document.createElement('div');
+            this._mirror = div;
+            document.body.appendChild(div);
+        }
+        const s = div.style;
+        s.position = 'absolute';
+        s.visibility = 'hidden';
+        s.whiteSpace = 'pre-wrap';
+        s.wordWrap = 'break-word';
+        s.overflow = 'hidden';
+        s.top = '0';
+        s.left = '-9999px';
+        const props = ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+            'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+            'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight',
+            'textTransform', 'wordSpacing', 'tabSize'];
+        props.forEach(p => { s[p] = computed[p]; });
+        // Match the textarea's outer box exactly so wrapping (and thus the caret's
+        // line) lines up; border-box + offsetWidth avoids padding/border drift.
+        s.boxSizing = 'border-box';
+        s.width = textarea.offsetWidth + 'px';
+
+        div.textContent = textarea.value.substring(0, pos);
+        const marker = document.createElement('span');
+        marker.textContent = textarea.value.substring(pos) || '.';
+        div.appendChild(marker);
+
+        const rect = textarea.getBoundingClientRect();
+        const lineHeight = parseFloat(computed.lineHeight) || (parseFloat(computed.fontSize) * 1.4);
+        const top = rect.top + marker.offsetTop - textarea.scrollTop;
+        const left = rect.left + marker.offsetLeft - textarea.scrollLeft;
+        div.removeChild(marker);
+        return { top, left, lineHeight };
+    },
+
+    _move(delta) {
+        if (!this._items.length) return;
+        const n = this._items.length;
+        this._selected = (this._selected + delta + n) % n;
+        this._syncSelection();
+        this._scrollSelectedIntoView();
+    },
+
+    _syncSelection() {
+        const el = document.getElementById('bqlAutocomplete');
+        if (!el) return;
+        el.querySelectorAll('.ac-item').forEach((row, i) => {
+            row.classList.toggle('selected', i === this._selected);
+        });
+    },
+
+    _scrollSelectedIntoView() {
+        const el = document.getElementById('bqlAutocomplete');
+        if (!el) return;
+        const row = el.querySelectorAll('.ac-item')[this._selected];
+        if (row) row.scrollIntoView({ block: 'nearest' });
+    },
+
+    _hideMenu() {
+        const el = document.getElementById('bqlAutocomplete');
+        if (el) el.style.display = 'none';
+        this._menuVisible = false;
+        this._items = [];
+        this._ctx = null;
+    },
+
+    _accept(index) {
+        const item = this._items[index];
+        const ctx = this._ctx;
+        const ta = this._acAnchor;
+        if (!item || !ctx || !ta) { this._hideMenu(); return; }
+
+        const value = ta.value;
+        const before = value.substring(0, ctx.start);
+        const after = value.substring(ctx.end);
+        const caret = before.length + item.insert.length - (item.caretBack || 0);
+
+        ta.value = before + item.insert + after;
+        ta.setSelectionRange(caret, caret);
+        ta.focus();
+
+        this._hideMenu();
+        this._rehighlight(ta);
+        // Let editors that track their own state (history, height, model query)
+        // observe the change; the ghost will recompute for the next token.
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+    },
+
+    // Re-render the syntax-highlight overlay for whichever editor was completed.
+    _rehighlight(input) {
+        if (!window.SyntaxHighlight) return;
+        const id = input.id || '';
+        if (id === 'queryInput') { SyntaxHighlight.updateHighlight('queryInput', 'queryHighlight'); return; }
+        if (id === 'editorQueryInput') { SyntaxHighlight.updateHighlight('editorQueryInput', 'alertQueryHighlight'); return; }
+
+        let hl = null;
+        if (id === 'modelQueryInput') hl = document.getElementById('modelQueryHighlight');
+        else if (id.startsWith('wie-q-')) hl = document.getElementById(id.replace('wie-q-', 'wie-h-'));
+        else if (id.startsWith('edit-content-')) hl = document.getElementById(id.replace('edit-content-', 'edit-highlight-'));
+        else {
+            const wrapper = input.closest('.query-input-wrapper');
+            if (wrapper) hl = wrapper.querySelector('.query-highlight');
+        }
+        if (hl) {
+            hl.innerHTML = SyntaxHighlight.highlight(input.value) + '<br/>';
+            hl.scrollTop = input.scrollTop;
+            hl.scrollLeft = input.scrollLeft;
         }
     },
 
-    _applyCompletion(keyword, mode, textarea) {
-        const input = textarea || document.getElementById('queryInput');
-        if (!input) return;
+    // Open the menu on Ctrl+Space. (Not Cmd+Space -- that is macOS Spotlight.)
+    _isMenuTrigger(e) {
+        return e.ctrlKey && !e.metaKey && !e.altKey && (e.code === 'Space' || e.key === ' ');
+    },
 
-        const value = input.value;
-        const cursorPos = input.selectionStart;
-        const textBeforeCursor = value.substring(0, cursorPos);
-        const textAfterCursor = value.substring(cursorPos);
-
-        let newBefore;
-
-        if (mode === 'value') {
-            const escaped = keyword.replace(/"/g, '\\"');
-            const quotedCtx = textBeforeCursor.match(/([a-zA-Z_][\w.]*!?=)"[^"]*$/);
-            if (quotedCtx) {
-                newBefore = textBeforeCursor.replace(/"[^"]*$/, '"' + escaped + '"');
-            } else {
-                newBefore = textBeforeCursor.replace(/([!=]=?)[^"\s]*$/, '$1"' + escaped + '"');
+    _onKeyDownCapture(e) {
+        // ----- browsable menu is open: it owns navigation/accept -----
+        if (this._menuVisible) {
+            if (e.target !== this._acAnchor) return;
+            switch (e.key) {
+                case 'ArrowDown':
+                    e.preventDefault(); e.stopImmediatePropagation(); this._move(1); break;
+                case 'ArrowUp':
+                    e.preventDefault(); e.stopImmediatePropagation(); this._move(-1); break;
+                case 'Enter':
+                case 'Tab':
+                    if (this._items.length) {
+                        e.preventDefault(); e.stopImmediatePropagation();
+                        this._accept(this._selected);
+                    }
+                    break;
+                case 'Escape':
+                    e.preventDefault(); e.stopImmediatePropagation(); this._hideMenu(); break;
+                case 'ArrowLeft':
+                case 'ArrowRight':
+                case 'Home':
+                case 'End':
+                case 'PageUp':
+                case 'PageDown':
+                    // Caret moves without firing input, leaving a stale range; close.
+                    this._hideMenu();
+                    break;
+                default:
+                    break;
             }
-        } else if (mode === 'field') {
-            newBefore = textBeforeCursor.replace(/[a-zA-Z_][\w.]*$/, keyword);
-        } else {
-            // Keyword mode: replace the partial word in-place, no extra space
-            newBefore = textBeforeCursor.replace(/[a-zA-Z_][\w.]*$/, keyword);
+            return;
         }
 
-        const newValue = newBefore + textAfterCursor;
-        input.value = newValue;
-        input.setSelectionRange(newBefore.length, newBefore.length);
-        input.focus();
+        // ----- menu closed: ghost text + Ctrl+Space to summon the menu -----
+        if (e.target.tagName === 'TEXTAREA' && this._isQueryTextarea(e.target) && this._isMenuTrigger(e)) {
+            e.preventDefault(); e.stopImmediatePropagation();
+            this._openMenu(e.target);
+            return;
+        }
 
-        if (window.SyntaxHighlight) {
-            if (input.id === 'queryInput' || input.id === 'editorQueryInput') {
-                SyntaxHighlight.updateHighlight(input.id, input.id === 'queryInput' ? 'queryHighlight' : 'alertQueryHighlight');
-            } else if (input.id) {
-                // Dashboard/notebook editors use fixed-height containers,
-                // so only update highlight content without resizing.
-                let highlightEl = null;
-                if (input.id.startsWith('wie-q-')) {
-                    highlightEl = document.getElementById(input.id.replace('wie-q-', 'wie-h-'));
-                } else if (input.id.startsWith('edit-content-')) {
-                    highlightEl = document.getElementById(input.id.replace('edit-content-', 'edit-highlight-'));
-                }
-                if (highlightEl) {
-                    highlightEl.innerHTML = SyntaxHighlight.highlight(input.value) + '<br/>';
-                    highlightEl.scrollTop = input.scrollTop;
-                }
+        if (this._ghost && e.target === this._acAnchor) {
+            switch (e.key) {
+                case 'Tab':
+                    // Accept the ghost. (Enter is deliberately left alone so it
+                    // always runs the query.)
+                    e.preventDefault(); e.stopImmediatePropagation(); this._acceptGhost(); return;
+                case 'ArrowRight':
+                    // At end-of-input only -- accept like a shell autosuggestion.
+                    if (this._acAnchor.selectionStart === this._acAnchor.value.length) {
+                        e.preventDefault(); e.stopImmediatePropagation(); this._acceptGhost();
+                    } else {
+                        this._hideGhost();
+                    }
+                    return;
+                case 'Escape':
+                    e.preventDefault(); e.stopImmediatePropagation(); this._hideGhost(); return;
+                case 'ArrowLeft':
+                case 'ArrowUp':
+                case 'ArrowDown':
+                case 'Home':
+                case 'End':
+                case 'PageUp':
+                case 'PageDown':
+                    this._hideGhost(); return; // caret leaving the end invalidates it
+                default:
+                    return; // printable keys fall through; input recomputes the ghost
             }
         }
-    }
+
+        if (e.key === 'Escape' && this._hintVisible) this.hideHint();
+    },
 };
 
 // Make globally available

@@ -47,6 +47,7 @@ const (
 type Token struct {
 	Type  TokenType
 	Value string
+	Pos   int // start offset (rune index) of the token in the source input
 }
 
 type Lexer struct {
@@ -161,6 +162,9 @@ func (l *Lexer) readIdentifier() string {
 
 func (l *Lexer) NextToken() Token {
 	l.skipWhitespace()
+
+	// Start offset of this token: l.ch is the rune at index l.pos-1.
+	startPos := l.pos - 1
 
 	var tok Token
 
@@ -309,6 +313,7 @@ func (l *Lexer) NextToken() Token {
 	}
 
 	l.lastType = tok.Type
+	tok.Pos = startPos
 	return tok
 }
 
@@ -329,30 +334,30 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 
 func (t TokenType) String() string {
 	names := map[TokenType]string{
-		TokenEOF:      "EOF",
-		TokenError:    "ERROR",
-		TokenPipe:     "PIPE",
-		TokenField:    "FIELD",
-		TokenValue:    "VALUE",
-		TokenString:   "STRING",
-		TokenRegex:    "REGEX",
-		TokenEqual:       "EQUAL",
-		TokenNotEqual:    "NOTEQUAL",
-		TokenAssign:      "ASSIGN",
-		TokenAnd:         "AND",
-		TokenOr:          "OR",
-		TokenNot:         "NOT",
-		TokenLParen:      "LPAREN",
-		TokenRParen:      "RPAREN",
-		TokenLBracket:    "LBRACKET",
-		TokenRBracket:    "RBRACKET",
-		TokenLBrace:      "LBRACE",
-		TokenRBrace:      "RBRACE",
-		TokenComma:       "COMMA",
-		TokenSemicolon:   "SEMICOLON",
-		TokenFunction:    "FUNCTION",
-		TokenGreater:     "GREATER",
-		TokenLess:        "LESS",
+		TokenEOF:           "EOF",
+		TokenError:         "ERROR",
+		TokenPipe:          "PIPE",
+		TokenField:         "FIELD",
+		TokenValue:         "VALUE",
+		TokenString:        "STRING",
+		TokenRegex:         "REGEX",
+		TokenEqual:         "EQUAL",
+		TokenNotEqual:      "NOTEQUAL",
+		TokenAssign:        "ASSIGN",
+		TokenAnd:           "AND",
+		TokenOr:            "OR",
+		TokenNot:           "NOT",
+		TokenLParen:        "LPAREN",
+		TokenRParen:        "RPAREN",
+		TokenLBracket:      "LBRACKET",
+		TokenRBracket:      "RBRACKET",
+		TokenLBrace:        "LBRACE",
+		TokenRBrace:        "RBRACE",
+		TokenComma:         "COMMA",
+		TokenSemicolon:     "SEMICOLON",
+		TokenFunction:      "FUNCTION",
+		TokenGreater:       "GREATER",
+		TokenLess:          "LESS",
 		TokenGreaterEqual:  "GREATEREQUAL",
 		TokenLessEqual:     "LESSEQUAL",
 		TokenPlus:          "PLUS",

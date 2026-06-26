@@ -20,6 +20,10 @@ const App = {
             SyntaxHighlight.init();
         }
 
+        if (window.BQLLang) {
+            BQLLang.load();
+        }
+
         if (window.Autocomplete) {
             Autocomplete.init();
         }
@@ -398,6 +402,9 @@ const App = {
 
                     // Trigger input event to update syntax highlighting
                     queryInput.dispatchEvent(new Event('input'));
+                } else if (e.code === 'KeyF' && e.altKey && e.shiftKey) {
+                    e.preventDefault();
+                    this.formatQuery(queryInput);
                 } else if (e.key === '/' && e.ctrlKey) {
                     e.preventDefault();
                     this.toggleLineComment(queryInput);
@@ -1258,13 +1265,41 @@ const App = {
             gutter.textContent = '1';
             wrapper.appendChild(gutter);
 
+            // Hidden mirror used to measure how many visual rows each logical line
+            // occupies once wrapped, so the gutter numbers stay aligned with the
+            // text instead of drifting after the first wrapped line.
+            const mirror = document.createElement('div');
+            mirror.setAttribute('aria-hidden', 'true');
+            // pre-wrap with default (normal) overflow-wrap, matching the textarea:
+            // wraps at spaces; long unbroken tokens overflow on a single row.
+            mirror.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;top:0;white-space:pre-wrap;overflow-wrap:normal;word-break:normal;';
+            document.body.appendChild(mirror);
+
+            const rowsForLine = (line, cs, lineHeight) => {
+                const padL = parseFloat(cs.paddingLeft) || 0;
+                const padR = parseFloat(cs.paddingRight) || 0;
+                const contentWidth = textarea.clientWidth - padL - padR;
+                // Hidden/zero-width editor: can't measure wrapping; assume 1 row.
+                if (contentWidth <= 0) return 1;
+                ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight', 'tabSize']
+                    .forEach(p => { mirror.style[p] = cs[p]; });
+                mirror.style.width = contentWidth + 'px';
+                mirror.textContent = line.length ? line : ' ';
+                return Math.max(1, Math.round(mirror.offsetHeight / lineHeight));
+            };
+
             const update = () => {
-                const lines = textarea.value.split('\n').length;
-                let html = '';
-                for (let i = 1; i <= lines; i++) {
-                    html += i + '\n';
+                const cs = window.getComputedStyle(textarea);
+                const lineHeight = parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) * 1.5);
+                const lines = textarea.value.split('\n');
+                const parts = [];
+                for (let i = 0; i < lines.length; i++) {
+                    parts.push(String(i + 1));
+                    // Pad the continuation rows of a wrapped line with blanks.
+                    const extra = rowsForLine(lines[i], cs, lineHeight) - 1;
+                    for (let r = 0; r < extra; r++) parts.push('');
                 }
-                gutter.textContent = html.trimEnd();
+                gutter.textContent = parts.join('\n');
                 gutter.scrollTop = textarea.scrollTop;
             };
 
@@ -1272,9 +1307,97 @@ const App = {
             textarea.addEventListener('scroll', () => {
                 gutter.scrollTop = textarea.scrollTop;
             });
+            // Wrapping changes with the editor width.
+            window.addEventListener('resize', update);
 
             update();
         });
+    },
+
+    // Reformat a BQL query so each top-level pipeline stage sits on its own line.
+    // Pipes inside strings, regex literals, (), [], and {} (e.g. case branches and
+    // regex alternation) are left untouched, so it never corrupts a query.
+    formatBQL(q) {
+        const isRegexStart = (prev) => prev === '' || "=~^$(,[{|".includes(prev);
+        const segments = [];
+        let buf = '';
+        let i = 0;
+        const n = q.length;
+        let dParen = 0, dBracket = 0, dBrace = 0;
+        let prevNonSpace = '';
+
+        while (i < n) {
+            const ch = q[i];
+
+            if (ch === '"' || ch === "'") {
+                const quote = ch;
+                buf += ch; i++;
+                while (i < n) {
+                    if (q[i] === '\\' && i + 1 < n) { buf += q[i] + q[i + 1]; i += 2; continue; }
+                    buf += q[i];
+                    if (q[i] === quote) { i++; break; }
+                    i++;
+                }
+                prevNonSpace = quote;
+                continue;
+            }
+            if (ch === '/' && q[i + 1] === '/') { // line comment
+                while (i < n && q[i] !== '\n') { buf += q[i]; i++; }
+                continue;
+            }
+            if (ch === '/' && isRegexStart(prevNonSpace)) { // regex literal
+                buf += ch; i++;
+                while (i < n) {
+                    if (q[i] === '\\' && i + 1 < n) { buf += q[i] + q[i + 1]; i += 2; continue; }
+                    if (q[i] === '\n') break; // unterminated; bail
+                    buf += q[i];
+                    if (q[i] === '/') { i++; break; }
+                    i++;
+                }
+                while (i < n && /[a-z]/i.test(q[i])) { buf += q[i]; i++; } // flags
+                prevNonSpace = '/';
+                continue;
+            }
+
+            if (ch === '(') dParen++;
+            else if (ch === ')') dParen = Math.max(0, dParen - 1);
+            else if (ch === '[') dBracket++;
+            else if (ch === ']') dBracket = Math.max(0, dBracket - 1);
+            else if (ch === '{') dBrace++;
+            else if (ch === '}') dBrace = Math.max(0, dBrace - 1);
+
+            if (ch === '|' && dParen === 0 && dBracket === 0 && dBrace === 0) {
+                segments.push(buf);
+                buf = '';
+                i++;
+                while (i < n && (q[i] === ' ' || q[i] === '\t')) i++;
+                prevNonSpace = '|';
+                continue;
+            }
+
+            buf += ch;
+            if (ch !== ' ' && ch !== '\t' && ch !== '\n') prevNonSpace = ch;
+            i++;
+        }
+        segments.push(buf);
+
+        const lines = [];
+        segments.map(s => s.trim()).forEach((s, k) => {
+            if (k === 0) { if (s !== '') lines.push(s); }
+            else lines.push('| ' + s);
+        });
+        return lines.join('\n');
+    },
+
+    formatQuery(textarea) {
+        if (!textarea) return;
+        const formatted = this.formatBQL(textarea.value);
+        if (formatted === textarea.value) return;
+        textarea.value = formatted;
+        const end = formatted.length;
+        textarea.setSelectionRange(end, end);
+        // Drive highlight, growth, gutter, and history off the normal input path.
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
     },
 
     initToolbarMenus() {

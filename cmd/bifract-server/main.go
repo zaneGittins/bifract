@@ -720,6 +720,7 @@ func main() {
 			r.Post("/query", queryHandler.HandleQuery)
 			r.Post("/query/stream", queryHandler.HandleQueryStream)
 			r.Get("/query/reference", queryHandler.HandleReference)
+			r.Get("/query/fields", schemaFieldsHandler.HandleCatalog)
 			r.Get("/logs/recent", queryHandler.HandleGetRecentLogs)
 			r.Get("/logs/histogram", queryHandler.HandleGetRecentHistogram)
 			r.Post("/logs/by-timestamp", queryHandler.HandleGetLogByTimestamp)

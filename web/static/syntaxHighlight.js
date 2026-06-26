@@ -58,15 +58,18 @@ const SyntaxHighlight = {
 
         if (!queryInput || !queryHighlight) return;
 
-        const lineCount = (queryInput.value.match(/\n/g) || []).length + 1;
+        // Measure the real rendered content height (scrollHeight) so the box grows
+        // for visually wrapped lines, not just explicit newlines. Resetting height
+        // first lets it both grow and shrink.
         const computedStyle = window.getComputedStyle(queryInput);
-        const lineHeight = parseFloat(computedStyle.lineHeight);
-        const paddingTop = parseFloat(computedStyle.paddingTop);
-        const paddingBottom = parseFloat(computedStyle.paddingBottom);
-        const borderTop = parseFloat(computedStyle.borderTopWidth);
-        const borderBottom = parseFloat(computedStyle.borderBottomWidth);
+        const borderTop = parseFloat(computedStyle.borderTopWidth) || 0;
+        const borderBottom = parseFloat(computedStyle.borderBottomWidth) || 0;
 
-        const contentHeight = lineCount * lineHeight + paddingTop + paddingBottom + borderTop + borderBottom;
+        const prevHeight = queryInput.style.height;
+        queryInput.style.height = 'auto';
+        const contentHeight = queryInput.scrollHeight + borderTop + borderBottom;
+        queryInput.style.height = prevHeight;
+
         const height = Math.max(38, Math.min(contentHeight, 400));
 
         // Respect manually dragged height (stored as minHeight by resize handle)
@@ -147,46 +150,33 @@ const SyntaxHighlight = {
                     matched = true;
                 }
             }
-            // Check for functions
+            // Identifiers: functions, field names, booleans, keywords, or bare values
             else if (/[a-zA-Z_]/.test(line[i])) {
-                const funcMatch = line.substring(i).match(/^(groupBy|count|sum|avg|max|min|percentile|stdDev|median|mad|multi|sort|limit|head|tail|table|regex|replace|concat|lowercase|lower|now|timeChart|timechart|singleval|case|eval|in|piechart|barchart|graph|bucket|match|selectfirst|selectlast|uppercase|chain|bfs|dfs|len|levenshtein|base64Decode|dedup|cidr|split|substr|urldecode|coalesce|hash|comments|comment|collect|top|sprintf|strftime|skewness|kurtosis|frequency|modifiedZScore|madOutlier|iqr|headTail|analyzeFields|histogram|heatmap|lookupIP|lookupip|geoip|graphWorld|graphworld|worldmap|join)(?=\s*\()/i);
-                if (funcMatch) {
-                    result.push(`<span class="hl-function">${this.escapeHtml(funcMatch[0])}</span>`);
-                    i += funcMatch[0].length;
-                    matched = true;
+                const ident = line.substring(i).match(/^[a-zA-Z_][a-zA-Z0-9_.]*/)[0];
+                const rest = line.substring(i + ident.length);
+
+                // Reserved keywords first: AND/OR/NOT are never functions, so they
+                // must win over the "identifier(" rule (e.g. NOT (a=1) is a keyword
+                // before a group, not a function call).
+                if (/^(?:AND|OR|NOT)$/i.test(ident)) {
+                    result.push(`<span class="hl-keyword">${this.escapeHtml(ident)}</span>`);
+                } else if (/^\s*\(/.test(rest) || ident.toLowerCase() === 'case') {
+                    // Function call: an identifier immediately followed by "(" (mirrors
+                    // the backend lexer), plus the brace-style `case` command.
+                    // Intentionally not tied to a hardcoded list so new/renamed
+                    // functions highlight automatically.
+                    result.push(`<span class="hl-function">${this.escapeHtml(ident)}</span>`);
+                } else if (/^\s*(?:!=|>=|<=|=~|=\^|=\$|=|>|<)/.test(rest)) {
+                    // Field name (word before a comparison operator)
+                    result.push(`<span class="hl-field">${this.escapeHtml(ident)}</span>`);
+                } else if (/^(?:true|false)$/i.test(ident)) {
+                    result.push(`<span class="hl-boolean">${this.escapeHtml(ident)}</span>`);
                 } else {
-                    // Check for field names (word before =)
-                    const fieldMatch = line.substring(i).match(/^[a-zA-Z_][a-zA-Z0-9_.]*(?=\s*(?:!=|>=|<=|=~|=\^|=\$|=|>|<))/);
-                    if (fieldMatch) {
-                        result.push(`<span class="hl-field">${this.escapeHtml(fieldMatch[0])}</span>`);
-                        i += fieldMatch[0].length;
-                        matched = true;
-                    } else {
-                        // Check for boolean values
-                        const boolMatch = line.substring(i).match(/^(true|false)\b/i);
-                        if (boolMatch) {
-                            result.push(`<span class="hl-boolean">${this.escapeHtml(boolMatch[0])}</span>`);
-                            i += boolMatch[0].length;
-                            matched = true;
-                        } else {
-                            // Check for keywords
-                            const keywordMatch = line.substring(i).match(/^(AND|OR|NOT)\b/i);
-                            if (keywordMatch) {
-                                result.push(`<span class="hl-keyword">${this.escapeHtml(keywordMatch[0])}</span>`);
-                                i += keywordMatch[0].length;
-                                matched = true;
-                            } else {
-                                // Bare identifier (e.g. values in =~, =^, =$ lists, or plain values after =)
-                                const identMatch = line.substring(i).match(/^[a-zA-Z_][a-zA-Z0-9_.]*/);
-                                if (identMatch) {
-                                    result.push(`<span class="hl-string">${this.escapeHtml(identMatch[0])}</span>`);
-                                    i += identMatch[0].length;
-                                    matched = true;
-                                }
-                            }
-                        }
-                    }
+                    // Bare identifier (values in =~/=^/=$ lists, or plain values after =)
+                    result.push(`<span class="hl-string">${this.escapeHtml(ident)}</span>`);
                 }
+                i += ident.length;
+                matched = true;
             }
             // Check for numbers
             else if (/\d/.test(line[i])) {

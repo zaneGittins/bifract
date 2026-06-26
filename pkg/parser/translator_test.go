@@ -4819,3 +4819,154 @@ func TestChainedGroupByAndAggregateFilters(t *testing.T) {
 		})
 	}
 }
+
+// TestCaseAllStages locks in the case() rewrite: branch conditions are compiled by
+// the canonical engine (so =~, =^, =$, regex, comparisons all work), N per-row
+// assignments per branch, and N conditional aggregations per branch via -If
+// combinators with a negated-OR default predicate.
+func TestCaseAllStages(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:   1000,
+	}
+	tests := []struct {
+		name           string
+		query          string
+		wantContain    []string
+		wantNotContain []string
+	}{
+		{
+			name:  "contains-any operator in case branch matches (regression)",
+			query: `event_id=1 | case { image=~powershell | valid:=true; image=~explorer | valid:=true; * | valid:=false; } | groupby(valid)`,
+			wantContain: []string{
+				"WHEN multiSearchAnyCaseInsensitive(fields.`image`, ['powershell']) THEN 'true'",
+				"WHEN multiSearchAnyCaseInsensitive(fields.`image`, ['explorer']) THEN 'true'",
+				"ELSE 'false'",
+				"GROUP BY valid",
+			},
+			wantNotContain: []string{
+				"= '~powershell'",
+			},
+		},
+		{
+			name:  "N per-row assignments per branch",
+			query: `* | case { status>=500 | sev:="crit" | team:="oncall"; * | sev:="ok" | team:="none"; } | table(sev, team)`,
+			wantContain: []string{
+				"WHEN toFloat64OrZero(fields.`status`::String) >= 500 THEN 'crit'",
+				"WHEN toFloat64OrZero(fields.`status`::String) >= 500 THEN 'oncall'",
+				"AS sev",
+				"AS team",
+			},
+		},
+		{
+			name:  "N conditional aggregations per branch via -If combinators",
+			query: `* | case { image=~powershell | count() | sum(bytes); image=~explorer | count(); * | count(); }`,
+			wantContain: []string{
+				"countIf(multiSearchAnyCaseInsensitive(fields.`image`, ['powershell']))",
+				"sumIf(toFloat64OrNull(fields.`bytes`::String), multiSearchAnyCaseInsensitive(fields.`image`, ['powershell']))",
+				"countIf(multiSearchAnyCaseInsensitive(fields.`image`, ['explorer']))",
+				"countIf(NOT ((multiSearchAnyCaseInsensitive(fields.`image`, ['powershell'])) OR (multiSearchAnyCaseInsensitive(fields.`image`, ['explorer']))))",
+			},
+		},
+		{
+			name:  "starts-with and ends-with operators in case branches",
+			query: `* | case { name=^svc | k:="x"; name=$d | k:="y"; * | k:="z"; } | groupby(k)`,
+			wantContain: []string{
+				"startsWith(lower(fields.`name`::String), 'svc')",
+				"endsWith(lower(fields.`name`::String), 'd')",
+				"ELSE 'z'",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pipeline, err := ParseQuery(tt.query)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			result, err := TranslateToSQLWithOrder(pipeline, opts)
+			if err != nil {
+				t.Fatalf("translate: %v", err)
+			}
+			sql := result.SQL
+			for _, want := range tt.wantContain {
+				if !strings.Contains(sql, want) {
+					t.Errorf("SQL should contain %q\nGot: %s", want, sql)
+				}
+			}
+			for _, notWant := range tt.wantNotContain {
+				if strings.Contains(sql, notWant) {
+					t.Errorf("SQL should NOT contain %q\nGot: %s", notWant, sql)
+				}
+			}
+		})
+	}
+}
+
+// TestCaseGeneralCommands locks in the single-pass conditional model: arbitrary
+// commands and transforms work inside a case branch by running through the real
+// handlers and being conditionalized by the branch predicate. Filters/conditions
+// (in/cidr) become the predicate, per-row transforms (regex/eval/lowercase) become
+// CASE arms, aggregations become -If combinators, and structural commands error.
+func TestCaseGeneralCommands(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:   1000,
+	}
+	t.Run("in() as branch condition", func(t *testing.T) {
+		sql := mustTranslate(t, `* | case { in(program_name, values=[sshd,bash]) | kind:="shell"; * | kind:="other"; } | groupby(kind)`, opts)
+		if !strings.Contains(sql, "WHEN fields.`program_name`::String IN ('sshd', 'bash') THEN 'shell'") {
+			t.Errorf("in() condition not compiled: %s", sql)
+		}
+	})
+	t.Run("cidr() as branch condition", func(t *testing.T) {
+		sql := mustTranslate(t, `* | case { cidr(src_ip, "10.0.0.0/8") | zone:="int"; * | zone:="ext"; } | groupby(zone)`, opts)
+		if !strings.Contains(sql, "isIPAddressInRange(") || !strings.Contains(sql, "THEN 'int'") {
+			t.Errorf("cidr() condition not compiled: %s", sql)
+		}
+	})
+	t.Run("regex transform in branch", func(t *testing.T) {
+		sql := mustTranslate(t, `* | case { level=error | regex(field=raw_log, pattern="code=(?<code>[0-9]+)"); * | x:="ok"; } | table(code)`, opts)
+		if !strings.Contains(sql, "THEN extractAllGroups(raw_log, 'code=(?<code>[0-9]+)')[1][1]") {
+			t.Errorf("regex transform not conditionalized: %s", sql)
+		}
+	})
+	t.Run("eval transform in branch", func(t *testing.T) {
+		sql := mustTranslate(t, `* | case { status>=500 | eval("score = bytes * 2"); * | x:="ok"; } | table(score)`, opts)
+		if !strings.Contains(sql, "THEN toFloat64OrNull(fields.`bytes`::String) * 2") {
+			t.Errorf("eval transform not conditionalized: %s", sql)
+		}
+	})
+	t.Run("structural command rejected", func(t *testing.T) {
+		_, err := TranslateToSQL(mustParse(t, `* | case { level=error | groupby(host); * | x:="y"; }`), opts)
+		if err == nil || !strings.Contains(err.Error(), "cannot be used inside a case branch") {
+			t.Errorf("expected structural rejection, got err=%v", err)
+		}
+	})
+	t.Run("command via := is a clear error", func(t *testing.T) {
+		_, err := TranslateToSQL(mustParse(t, `* | case { level=error | c:=count(); * | x:="y"; }`), opts)
+		if err == nil || !strings.Contains(err.Error(), "bare pipe") {
+			t.Errorf("expected := command error, got err=%v", err)
+		}
+	})
+}
+
+func mustParse(t *testing.T, q string) *PipelineNode {
+	t.Helper()
+	p, err := ParseQuery(q)
+	if err != nil {
+		t.Fatalf("parse %q: %v", q, err)
+	}
+	return p
+}
+
+func mustTranslate(t *testing.T, q string, opts QueryOptions) string {
+	t.Helper()
+	sql, err := TranslateToSQL(mustParse(t, q), opts)
+	if err != nil {
+		t.Fatalf("translate %q: %v", q, err)
+	}
+	return sql
+}
