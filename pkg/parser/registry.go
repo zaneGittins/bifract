@@ -24,6 +24,7 @@ type FieldEntry struct {
 	Expr       string // SQL expression that produces this field
 	ProducedBy int    // command index (-1 for base fields)
 	ResolveAs  string // Override for Resolve(); when set, returned instead of Expr
+	Inline     bool   // when true, references are folded in as the expression, never an alias
 }
 
 // FieldRegistry is a single source of truth for all field metadata in a query pipeline.
@@ -109,6 +110,27 @@ func (r *FieldRegistry) SetResolveExpr(name, expr string) {
 		r.Register(name, FieldKindJSON, expr, -1)
 		r.fields[name].ResolveAs = expr
 	}
+}
+
+// RegisterInlineExpr registers a field whose value is always folded in at each
+// reference because it is never materialized as a SELECT column, e.g. a
+// pre-aggregation assignment that is inlined into the aggregate consuming it.
+// Chained references (b := a * 2) then resolve to the full underlying
+// expression rather than a non-existent alias.
+func (r *FieldRegistry) RegisterInlineExpr(name, expr string, producedBy int) {
+	r.Register(name, FieldKindAssignment, expr, producedBy)
+	entry := r.fields[name]
+	entry.ResolveAs = expr
+	entry.Inline = true
+}
+
+// IsInline reports whether references to the field should be folded in as its
+// expression instead of an alias.
+func (r *FieldRegistry) IsInline(name string) bool {
+	if entry, ok := r.fields[name]; ok {
+		return entry.Inline
+	}
+	return false
 }
 
 // IsAggregate returns true if the field is an aggregate kind.
@@ -207,6 +229,16 @@ func (r *FieldRegistry) ScopeToOutputs(outputs map[string]bool) {
 			ProducedBy: -1,
 		}
 		r.order = append(r.order, name)
+	}
+	// Preserve inline-resolved fields (pre-aggregation assignments folded into
+	// base log fields) that are not themselves carried outputs. They are never
+	// selected as columns, but pre-aggregation conditions bound to the source
+	// stage still resolve through them, and scoping must not strand that.
+	for name, e := range prev {
+		if e.Inline && !outputs[name] {
+			r.fields[name] = e
+			r.order = append(r.order, name)
+		}
 	}
 }
 

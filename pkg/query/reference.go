@@ -635,6 +635,21 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 			{
+				Name:        "logSize",
+				Category:    "Transformation",
+				Description: "Returns the byte size of a log as _size (defaults to the original event, raw_log). Sum or aggregate it to diagnose log growth.",
+				Syntax:      "| logSize()",
+				Parameters: []Param{
+					{Name: "field", Type: "string", Required: false, Description: "Field to measure; defaults to raw_log (the whole event)"},
+					{Name: "as", Type: "string", Required: false, Description: "Output field name; defaults to _size"},
+				},
+				Examples: []string{
+					"| logSize() | sort(_size, desc)",
+					"| logSize() | groupby(computer_name, function=sum(_size))",
+					"| logSize(message, as=_msgsize) | _msgsize > 4096",
+				},
+			},
+			{
 				Name:        "levenshtein",
 				Category:    "Transformation",
 				Description: "Calculates the Damerau-Levenshtein edit distance between two fields or values as _distance",

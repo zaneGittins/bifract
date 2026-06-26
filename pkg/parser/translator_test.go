@@ -1825,6 +1825,62 @@ func TestLenFunction(t *testing.T) {
 	})
 }
 
+func TestLogSizeQueries(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:   1000,
+	}
+
+	t.Run("default measures raw_log as _size", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | logSize()")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "byteSize(raw_log) AS _size") {
+			t.Errorf("Expected byteSize(raw_log) AS _size, got: %s", result.SQL)
+		}
+	})
+
+	t.Run("sum over groupby aggregates the size alias", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | logSize() | groupby(computer_name, function=sum(_size))")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "sum(toFloat64(byteSize(raw_log)))") {
+			t.Errorf("Expected sum() over byteSize(raw_log), got: %s", result.SQL)
+		}
+		if strings.Contains(result.SQL, "fields.`_size`") {
+			t.Errorf("_size should be a computed field, not a JSON field: %s", result.SQL)
+		}
+	})
+
+	t.Run("explicit field with as name", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | logSize(message, as=_msgsize) | _msgsize > 4096")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "byteSize(fields.`message`::String) AS _msgsize") {
+			t.Errorf("Expected byteSize(fields.`message`::String) AS _msgsize, got: %s", result.SQL)
+		}
+		if !strings.Contains(result.SQL, "byteSize(") || !strings.Contains(result.SQL, "> 4096") {
+			t.Errorf("Expected inlined byteSize() > 4096 condition, got: %s", result.SQL)
+		}
+	})
+}
+
 func TestComputedFieldPipedConditions(t *testing.T) {
 	opts := QueryOptions{
 		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -4951,6 +5007,21 @@ func TestCaseGeneralCommands(t *testing.T) {
 			t.Errorf("expected := command error, got err=%v", err)
 		}
 	})
+	t.Run("negative numeric literal in branch condition", func(t *testing.T) {
+		sql := mustTranslate(t, `* | score := 1 + 1 | case { score < -5.0 | t:="LOW"; * | t:="OK"; }`, opts)
+		if !strings.Contains(sql, "< -5.0") {
+			t.Errorf("negative literal not handled: %s", sql)
+		}
+	})
+	t.Run("branch condition resolves a computed column, not raw JSON", func(t *testing.T) {
+		sql := mustTranslate(t, `* | groupby(host,function=selectLast(cpu,as=last)) | ratio := last * 2 | case { ratio > 5.0 | t:="HI"; * | t:="LO"; }`, opts)
+		if !strings.Contains(sql, "toFloat64OrZero(toString(ratio)) > 5.0") {
+			t.Errorf("computed-column condition not resolved to the column: %s", sql)
+		}
+		if strings.Contains(sql, "fields.`ratio`") {
+			t.Errorf("computed column resolved as raw JSON: %s", sql)
+		}
+	})
 }
 
 // TestAggregationPipelineFixes covers a set of related multi-stage/aggregation
@@ -5004,6 +5075,25 @@ func TestAggregationPipelineFixes(t *testing.T) {
 		outer := sql[:strings.Index(sql, " FROM (")]
 		if strings.Contains(outer, " fields") || strings.HasSuffix(outer, "fields") {
 			t.Errorf("raw fields column leaked to final projection: %s", outer)
+		}
+	})
+
+	t.Run("chained pre-aggregation assignments fold in transitively", func(t *testing.T) {
+		sql := mustTranslate(t, `a=x | cpu := cpu * 100 | scaled := cpu * 2 | groupby(host,function=avg(scaled,as=avg_scaled))`, opts)
+		if !strings.Contains(sql, "avg(toFloat64((toFloat64OrNull(fields.`cpu`::String)*100)*2)) AS avg_scaled") {
+			t.Errorf("chained pre-agg assignment not folded: %s", sql)
+		}
+	})
+
+	t.Run("post-aggregation assignment is staged before a column-dropping table", func(t *testing.T) {
+		sql := mustTranslate(t, `a=x | groupby(host,function=multi([selectFirst(cpu,as=first_cpu),selectLast(cpu,as=last_cpu),count(as=n)])) | change_percent := (last_cpu - first_cpu) / first_cpu * 100 | table([host,change_percent,n])`, opts)
+		// change_percent must be computed in a stage that still has its inputs,
+		// referencing the aggregate columns (not raw JSON), even though table drops them.
+		if !strings.Contains(sql, "(last_cpu-first_cpu)/first_cpu*100 AS change_percent") {
+			t.Errorf("post-agg assignment not computed from aggregate columns: %s", sql)
+		}
+		if strings.Contains(sql, "fields.`last_cpu`") || strings.Contains(sql, "fields.`change_percent`") {
+			t.Errorf("post-agg assignment resolved aggregate/computed names as raw JSON: %s", sql)
 		}
 	})
 }

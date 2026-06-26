@@ -613,6 +613,61 @@ func (h *lenHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+// logSizeHandler handles logSize() and logSize(field, as=name).
+// With no field it measures the original event via byteSize(raw_log); pass a
+// field to size a specific column instead. The result is the shared field _size
+// (or the as= name), so it can be summed/aggregated downstream to diagnose log
+// growth, e.g. | logSize() | groupby(channel, function=sum(_size)).
+type logSizeHandler struct{}
+
+// logSizeArgs returns the source field and output name for a logSize() command.
+// The field defaults to raw_log (the original ingested event).
+func logSizeArgs(cmd CommandNode) (field, outName string) {
+	field = "raw_log"
+	outName = "_size"
+	for _, arg := range cmd.Arguments {
+		arg = strings.TrimSpace(arg)
+		if arg == "" {
+			continue
+		}
+		if strings.HasPrefix(arg, "as=") {
+			outName = strings.Trim(strings.TrimPrefix(arg, "as="), `"'`)
+		} else if strings.HasPrefix(arg, "field=") {
+			field = strings.TrimPrefix(arg, "field=")
+		} else {
+			field = arg
+		}
+	}
+	return field, outName
+}
+
+func (h *logSizeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
+	// Numeric SELECT alias, registered like _len so condition/aggregation routing
+	// can reference it by name without re-wrapping in toFloat64OrZero.
+	_, outName := logSizeArgs(cmd)
+	if outName != "" {
+		ctx.Registry.Register(outName, FieldKindAssignment, outName, ctx.CmdIndex)
+	}
+	return nil
+}
+
+func (h *logSizeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	field, outName := logSizeArgs(cmd)
+	if field == "" || outName == "" {
+		return nil
+	}
+	fieldRef := resolveFieldRef(field, ctx.Registry)
+	safeName, err := sanitizeIdentifier(outName)
+	if err != nil {
+		return fmt.Errorf("logSize(): invalid as name %q: %w", outName, err)
+	}
+	// byteSize() returns the estimated uncompressed in-memory byte size per row.
+	expr := fmt.Sprintf("byteSize(%s) AS %s", fieldRef, safeName)
+	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
+	ctx.Registry.SetResolveExpr(safeName, fmt.Sprintf("byteSize(%s)", fieldRef))
+	return nil
+}
+
 // levenshteinHandler handles levenshtein(field1, field2)
 type levenshteinHandler struct{}
 
@@ -1095,6 +1150,7 @@ func init() {
 	registerCommand(&nowHandler{}, "now")
 	registerCommand(&caseHandler{}, "case")
 	registerCommand(&lenHandler{}, "len")
+	registerCommand(&logSizeHandler{}, "logsize")
 	registerCommand(&levenshteinHandler{}, "levenshtein")
 	registerCommand(&base64decodeHandler{}, "base64decode")
 	registerCommand(&splitHandler{}, "split")

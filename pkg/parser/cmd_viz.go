@@ -310,10 +310,10 @@ func (h *graphWorldHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 }
 
 func init() {
-	registerCommand(&piechartHandler{}, "piechart")
-	registerCommand(&barchartHandler{}, "barchart")
+	registerAggregatingCommand(&piechartHandler{}, "piechart")
+	registerAggregatingCommand(&barchartHandler{}, "barchart")
 	registerCommand(&graphHandler{}, "graph")
-	registerCommand(&singlevalHandler{}, "singleval")
-	registerCommand(&timechartHandler{}, "timechart")
+	registerAggregatingCommand(&singlevalHandler{}, "singleval")
+	registerAggregatingCommand(&timechartHandler{}, "timechart")
 	registerCommand(&graphWorldHandler{}, "graphWorld", "graphworld", "worldmap")
 }

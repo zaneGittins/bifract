@@ -62,7 +62,7 @@ type segEffect struct {
 // "regex(...)", "count()", "valid:=true") through the canonical engine against a
 // throwaway sub-context, then partitions its effect into predicate / per-row /
 // aggregate contributions. Structural effects produce an error.
-func harvestSegment(segText string, opts QueryOptions) (segEffect, error) {
+func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry) (segEffect, error) {
 	var eff segEffect
 	segText = strings.TrimSpace(segText)
 	if segText == "" {
@@ -86,7 +86,10 @@ func harvestSegment(segText string, opts QueryOptions) (segEffect, error) {
 	ctx := &CommandContext{Registry: reg, Plan: plan, Opts: opts, Pipeline: pl}
 
 	if pl.Filter != nil {
-		w, err := buildWhereClauseCtx(pl.Filter.Conditions)
+		// Resolve branch-condition fields against the parent pipeline registry so
+		// a computed column (e.g. a prior assignment or aggregate) is referenced
+		// directly instead of as a raw JSON sub-column.
+		w, err := buildWhereClauseCtx(pl.Filter.Conditions, parentReg)
 		if err != nil {
 			return eff, err
 		}
@@ -261,7 +264,7 @@ func compileCase(block string, registry *FieldRegistry, opts QueryOptions) (comp
 		if condText == "*" {
 			bd.isDefault = true
 		} else {
-			eff, err := harvestSegment(condText, opts)
+			eff, err := harvestSegment(condText, opts, registry)
 			if err != nil {
 				return out, err
 			}
@@ -287,7 +290,7 @@ func compileCase(block string, registry *FieldRegistry, opts QueryOptions) (comp
 				}
 				bd.vals = append(bd.vals, caseSel{field: strings.TrimSpace(parts[0]), expr: caseValueSQL(rhs)})
 			case looksLikeCommand(seg):
-				eff, err := harvestSegment(seg, opts)
+				eff, err := harvestSegment(seg, opts, registry)
 				if err != nil {
 					return out, err
 				}

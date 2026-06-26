@@ -135,7 +135,7 @@ func (h *histogramHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func init() {
-	registerCommand(&modifiedZScoreHandler{}, "modifiedzscore", "modifiedz", "mzscore")
-	registerCommand(&madOutlierHandler{}, "madoutlier", "outlier")
-	registerCommand(&histogramHandler{}, "histogram")
+	registerAggregatingCommand(&modifiedZScoreHandler{}, "modifiedzscore", "modifiedz", "mzscore")
+	registerAggregatingCommand(&madOutlierHandler{}, "madoutlier", "outlier")
+	registerAggregatingCommand(&histogramHandler{}, "histogram")
 }

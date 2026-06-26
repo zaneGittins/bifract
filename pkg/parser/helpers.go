@@ -383,12 +383,15 @@ func collectHavingConditionFields(conditions []HavingCondition, fields map[strin
 // buildWhereClause builds a WHERE clause from multiple conditions respecting OR/AND logic and parenthetical grouping.
 // Conditions with the same GroupID > 0 are collected into a group. If GroupNegate is set, the whole group is wrapped in NOT(...).
 func buildWhereClause(conditions []ConditionNode) (string, error) {
-	return buildWhereClauseCtx(conditions)
+	return buildWhereClauseCtx(conditions, nil)
 }
 
 // buildWhereClauseCtx builds the WHERE clause SQL for a list of condition nodes,
-// respecting OR/AND logic, parenthetical grouping, and NOT negation.
-func buildWhereClauseCtx(conditions []ConditionNode) (string, error) {
+// respecting OR/AND logic, parenthetical grouping, and NOT negation. When
+// registry is non-nil, fields that name a computed column (e.g. a prior
+// assignment or aggregate) resolve to that column instead of a raw JSON
+// sub-column; pass nil for queries against the base log fields.
+func buildWhereClauseCtx(conditions []ConditionNode, registry *FieldRegistry) (string, error) {
 	if len(conditions) == 0 {
 		return "", nil
 	}
@@ -417,7 +420,7 @@ func buildWhereClauseCtx(conditions []ConditionNode) (string, error) {
 			// Build inner SQL for the group
 			var inner strings.Builder
 			for j, gc := range group {
-				condSQL, err := translateConditionCtx(gc)
+				condSQL, err := translateConditionCtx(gc, registry)
 				if err != nil {
 					return "", err
 				}
@@ -441,7 +444,7 @@ func buildWhereClauseCtx(conditions []ConditionNode) (string, error) {
 			// The logic connecting this group to the next part is on the last condition
 			parts = append(parts, part{sql: groupSQL, logic: group[len(group)-1].Logic})
 		} else {
-			condSQL, err := translateConditionCtx(cond)
+			condSQL, err := translateConditionCtx(cond, registry)
 			if err != nil {
 				return "", err
 			}
@@ -478,13 +481,13 @@ func fixOperatorPrecedence(sql string) string {
 }
 
 func translateCondition(cond ConditionNode) (string, error) {
-	return translateConditionCtx(cond)
+	return translateConditionCtx(cond, nil)
 }
 
-func translateConditionCtx(cond ConditionNode) (string, error) {
+func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string, error) {
 	// Handle compound nodes by recursively building the inner SQL.
 	if cond.IsCompound {
-		innerSQL, err := buildWhereClauseCtx(cond.Children)
+		innerSQL, err := buildWhereClauseCtx(cond.Children, registry)
 		if err != nil {
 			return "", err
 		}
@@ -499,6 +502,10 @@ func translateConditionCtx(cond ConditionNode) (string, error) {
 	// Handle special fields that exist as direct columns
 	var fieldRef string
 	isJSONField := false
+	// resolvedComputed is set when the field names a computed column produced
+	// earlier in the pipeline (assignment, aggregate, ...). Such a column is
+	// referenced directly rather than as a raw JSON sub-column.
+	resolvedComputed := false
 	switch cond.Field {
 	case "raw_log":
 		fieldRef = "raw_log"
@@ -507,8 +514,27 @@ func translateConditionCtx(cond ConditionNode) (string, error) {
 	case "log_id":
 		fieldRef = "log_id"
 	default:
-		fieldRef = jsonFieldRef(cond.Field)
-		isJSONField = true
+		if registry != nil {
+			if e := registry.Get(cond.Field); e != nil && e.Kind != FieldKindBase && e.Kind != FieldKindJSON {
+				fieldRef = registry.Resolve(cond.Field)
+				resolvedComputed = true
+			}
+		}
+		if !resolvedComputed {
+			fieldRef = jsonFieldRef(cond.Field)
+			isJSONField = true
+		}
+	}
+
+	// numericRef coerces the field to Float64 for comparison. Raw JSON
+	// sub-columns are already String (::String), so toFloat64OrZero suffices; a
+	// resolved computed column may already be numeric, so normalize via
+	// toString() first to keep toFloat64OrZero well-typed across column types.
+	numericRef := func() string {
+		if resolvedComputed {
+			return fmt.Sprintf("toFloat64OrZero(toString(%s))", fieldRef)
+		}
+		return fmt.Sprintf("toFloat64OrZero(%s)", fieldRef)
 	}
 
 	if cond.Value == "*" {
@@ -557,14 +583,21 @@ func translateConditionCtx(cond ConditionNode) (string, error) {
 			// time+fractal partition. No raw_log token pre-filter is added: the value is not
 			// guaranteed to appear verbatim in raw_log (e.g. normalized/derived fields), so
 			// such a pre-filter can drop real matches. raw_log is for unqualified search only.
-			sql = fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
-		case "!=":
-			// For JSON fields, include rows where the field doesn't exist (NULL).
-			// Without this, NULL != 'value' evaluates to NULL (falsy) and
-			// silently excludes rows missing the field.
-			if isJSONField {
-				sql = fmt.Sprintf("(%s IS NULL OR %s != '%s')", fieldRef, fieldRef, escapeString(cond.Value))
+			if resolvedComputed && validateNumeric(cond.Value) == nil {
+				sql = fmt.Sprintf("%s = %s", numericRef(), cond.Value)
 			} else {
+				sql = fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
+			}
+		case "!=":
+			switch {
+			case resolvedComputed && validateNumeric(cond.Value) == nil:
+				sql = fmt.Sprintf("%s != %s", numericRef(), cond.Value)
+			case isJSONField:
+				// For JSON fields, include rows where the field doesn't exist (NULL).
+				// Without this, NULL != 'value' evaluates to NULL (falsy) and
+				// silently excludes rows missing the field.
+				sql = fmt.Sprintf("(%s IS NULL OR %s != '%s')", fieldRef, fieldRef, escapeString(cond.Value))
+			default:
 				sql = fmt.Sprintf("%s != '%s'", fieldRef, escapeString(cond.Value))
 			}
 		case ">", "<", ">=", "<=":
@@ -572,7 +605,7 @@ func translateConditionCtx(cond ConditionNode) (string, error) {
 			if err := validateNumeric(cond.Value); err != nil {
 				return "", fmt.Errorf("numeric comparison: %w", err)
 			}
-			sql = fmt.Sprintf("toFloat64OrZero(%s) %s %s", fieldRef, cond.Operator, cond.Value)
+			sql = fmt.Sprintf("%s %s %s", numericRef(), cond.Operator, cond.Value)
 		default:
 			return "", fmt.Errorf("unsupported operator: %s", cond.Operator)
 		}
@@ -1241,8 +1274,14 @@ func convertMathExprToSQL(expr string, registry *FieldRegistry, selfField ...str
 			}
 			ident := string(runes[start:i])
 			if registry.Has(ident) && ident != currentField {
-				// Reference the alias directly (available from inner subquery or same outer SELECT)
-				result.WriteString(ident)
+				if registry.IsInline(ident) {
+					// Inline-only field (e.g. a pre-aggregation assignment): fold in
+					// its expression, since there is no materialized column to alias.
+					result.WriteString(fmt.Sprintf("(%s)", registry.Resolve(ident)))
+				} else {
+					// Reference the alias directly (available from inner subquery or same outer SELECT)
+					result.WriteString(ident)
+				}
 			} else {
 				result.WriteString(fmt.Sprintf("toFloat64OrNull(%s)", jsonFieldRef(ident)))
 			}
@@ -1452,28 +1491,12 @@ func splitTopLevelArgs(s string) []string {
 	return parts
 }
 
-// aggregatingCommands lists pipeline commands that collapse rows via GROUP BY or
-// aggregate functions. It is used to decide whether a field assignment occurs
-// before aggregation (and so must be inlined as a per-row value) or after it
-// (computed post-GROUP BY in the outer formatter). Keep in sync with the
-// aggregating command handlers registered in cmd_aggregate.go / cmd_viz.go.
-var aggregatingCommands = map[string]bool{
-	"groupby": true, "multi": true, "count": true, "sum": true, "avg": true,
-	"max": true, "min": true, "median": true, "percentile": true,
-	"stddev": true, "stdDev": true, "skewness": true, "skew": true,
-	"kurtosis": true, "kurt": true, "frequency": true, "iqr": true,
-	"selectfirst": true, "selectlast": true, "top": true, "mad": true,
-	"bucket": true, "timechart": true, "piechart": true, "barchart": true,
-	"singleval": true, "heatmap": true, "histogram": true,
-	"modifiedzscore": true, "modifiedz": true, "mzscore": true,
-	"madoutlier": true, "outlier": true,
-}
-
 // firstAggregatingCommandIndex returns the index of the first command that
-// aggregates, or len(commands) if none do.
+// aggregates (collapses rows), or len(commands) if none do. Aggregation is
+// sourced from aggregatingCommandNames, populated at command registration.
 func firstAggregatingCommandIndex(commands []CommandNode) int {
 	for i, cmd := range commands {
-		if aggregatingCommands[cmd.Name] {
+		if aggregatingCommandNames[cmd.Name] {
 			return i
 		}
 	}

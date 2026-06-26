@@ -188,9 +188,13 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 // re-resolving aggregate/group outputs as raw JSON fields or re-grouping them.
 func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, prevStage *QueryStage) error {
 	// Finalize the aggregated stage so its group keys and aggregate columns are
-	// materialized into its SELECT before we project from it.
-	if err := assembleGroupBySelects(ctx, prevStage, nil); err != nil {
-		return fmt.Errorf("table (stage finalize): %w", err)
+	// materialized into its SELECT before we project from it. A prior stage that
+	// has no GROUP BY (e.g. a post-aggregation assignment stage) is already
+	// assembled, so finalizing it would wrongly clear its SELECT.
+	if len(prevStage.Layer.GroupBy) > 0 {
+		if err := assembleGroupBySelects(ctx, prevStage, nil); err != nil {
+			return fmt.Errorf("table (stage finalize): %w", err)
+		}
 	}
 	prevOutputs := make(map[string]bool)
 	for _, sel := range prevStage.Layer.Selects {
@@ -542,5 +546,5 @@ func init() {
 	registerCommand(&bfsHandler{}, "bfs", "dfs")
 	registerCommand(&analyzefieldsHandler{}, "analyzefields")
 	registerCommand(&chainHandler{}, "chain")
-	registerCommand(&heatmapHandler{}, "heatmap")
+	registerAggregatingCommand(&heatmapHandler{}, "heatmap")
 }

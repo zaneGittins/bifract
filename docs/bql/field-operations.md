@@ -136,6 +136,18 @@ Returns the string length of a field as `_len`:
 * | len(message) | sort(_len, desc)
 ```
 
+### Log Size
+
+Returns the byte size of a log as `_size`. With no argument it measures the original event (`raw_log`); pass a field to size that column instead. Useful for diagnosing log growth by summing or aggregating sizes:
+
+```
+* | logSize() | sort(_size, desc)
+* | logSize() | groupby(computer_name, function=sum(_size))
+* | logSize(message, as=_msgsize) | _msgsize > 4096
+```
+
+Sizes are computed at query time via ClickHouse `byteSize()` (estimated uncompressed bytes), so they work retroactively on all logs with no extra storage.
+
 ### Levenshtein Distance
 
 Calculates the Damerau-Levenshtein edit distance between two fields or values as `_distance`:

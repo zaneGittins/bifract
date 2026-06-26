@@ -82,7 +82,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	// 2. Process filter conditions from the parser
 	// ---------------------------------------------------------------
 	if pipeline.Filter != nil {
-		whereSQL, err := buildWhereClauseCtx(pipeline.Filter.Conditions)
+		whereSQL, err := buildWhereClauseCtx(pipeline.Filter.Conditions, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -115,31 +115,39 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	// ---------------------------------------------------------------
 	var assignmentFields []string
 	var deferredAssignments []AssignmentNode
+	// postAggByPos holds post-aggregation math assignments keyed by the number of
+	// commands that precede them, so the Execute loop can materialize each as a
+	// stage at its pipeline position (see applyAssignmentStage).
+	postAggByPos := make(map[int][]AssignmentNode)
 	firstAgg := firstAggregatingCommandIndex(pipeline.Commands)
+	hasAggregation := firstAgg < len(pipeline.Commands)
 	for _, assignment := range pipeline.Assignments {
 		safeField, err := sanitizeIdentifier(assignment.Field)
 		if err != nil {
 			return nil, fmt.Errorf("invalid assignment field: %w", err)
 		}
 
-		// An assignment is "pre-aggregation" when an aggregating command follows
-		// it in the pipeline. Its value must be inlined per-row so aggregations
-		// and filters reference the computed value; it must NOT be deferred to the
-		// post-aggregation formatter, where the underlying JSON fields no longer
-		// exist after the GROUP BY collapses rows.
-		preAggregation := firstAgg < len(pipeline.Commands) && assignment.CmdIndex <= firstAgg
-
 		expr := assignment.Expression
 		isMathExpr := assignment.ExpressionType == TokenValue &&
 			(strings.ContainsAny(expr, "+*/()") || strings.Contains(expr, " - ") || strings.Contains(expr, " -") || strings.Contains(expr, "- "))
 		if isMathExpr {
-			if preAggregation {
+			switch {
+			case hasAggregation && assignment.CmdIndex <= firstAgg:
+				// Pre-aggregation: inline so aggregations/filters reference the
+				// computed value, and so later pre-aggregation assignments
+				// referencing this one fold in the full expression (it is never
+				// materialized as a column).
 				sqlExpr := convertMathExprToSQL(expr, registry, assignment.Field)
-				registry.Register(safeField, FieldKindAssignment, sqlExpr, -1)
-				registry.SetResolveExpr(safeField, sqlExpr)
-				continue
+				registry.RegisterInlineExpr(safeField, sqlExpr, -1)
+			case hasAggregation:
+				// Post-aggregation: materialized as a stage at its pipeline position
+				// (not the outermost formatter) so commands after it -- table, sort,
+				// case -- can reference it even when they drop other columns.
+				postAggByPos[assignment.CmdIndex] = append(postAggByPos[assignment.CmdIndex], assignment)
+			default:
+				// No aggregation in the pipeline: computed in the outer formatter.
+				deferredAssignments = append(deferredAssignments, assignment)
 			}
-			deferredAssignments = append(deferredAssignments, assignment)
 			continue
 		}
 
@@ -174,12 +182,23 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	}
 
 	// ---------------------------------------------------------------
-	// 6. EXECUTE PHASE: every command reads registry, writes to plan
+	// 6. EXECUTE PHASE: every command reads registry, writes to plan.
+	//     Post-aggregation math assignments are materialized as stages at their
+	//     pipeline position (between the commands they sit between), so a later
+	//     projection (e.g. table) cannot strand the columns they depend on.
 	// ---------------------------------------------------------------
-	for i, cmd := range pipeline.Commands {
+	for i := 0; i <= len(pipeline.Commands); i++ {
+		for _, assignment := range postAggByPos[i] {
+			if err := applyAssignmentStage(ctx, assignment); err != nil {
+				return nil, err
+			}
+		}
+		if i == len(pipeline.Commands) {
+			break
+		}
 		ctx.CmdIndex = i
-		handler := getCommandHandler(cmd.Name)
-		if err := handler.Execute(cmd, ctx); err != nil {
+		handler := getCommandHandler(pipeline.Commands[i].Name)
+		if err := handler.Execute(pipeline.Commands[i], ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -529,6 +548,65 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		ChartConfig:      plan.ChartConfig,
 		DefaultTimeOrder: defaultTimeOrder,
 	}, nil
+}
+
+// applyAssignmentStage materializes a post-aggregation math assignment as its
+// own projection stage at its pipeline position. The current aggregation stage
+// is finalized, then a new stage carries every prior output forward plus the
+// computed column, so commands after the assignment (table, sort, case, ...) can
+// reference it. This keeps the assignment correctly positioned instead of
+// hoisting it to the outermost formatter layer, where a later projection may
+// have already dropped the columns it depends on.
+func applyAssignmentStage(ctx *CommandContext, a AssignmentNode) error {
+	prevStage := ctx.Plan.CurrentStage()
+	if len(prevStage.Layer.GroupBy) > 0 {
+		if err := assembleGroupBySelects(ctx, prevStage, nil); err != nil {
+			return fmt.Errorf("assignment %q stage finalize: %w", a.Field, err)
+		}
+	}
+
+	safeField, err := sanitizeIdentifier(a.Field)
+	if err != nil {
+		return fmt.Errorf("invalid assignment field: %w", err)
+	}
+	// Compute against the current registry (aggregate aliases are columns now).
+	sqlExpr := convertMathExprToSQL(a.Expression, ctx.Registry, a.Field)
+
+	// Carry every prior output forward so nothing the assignment or a later
+	// command references is dropped before its stage.
+	var carried []string
+	seen := make(map[string]bool)
+	for _, sel := range prevStage.Layer.Selects {
+		alias := strings.Trim(extractFieldAlias(sel.String()), "`")
+		if alias != "" && !seen[alias] {
+			carried = append(carried, alias)
+			seen[alias] = true
+		}
+	}
+
+	ctx.Plan.PushStage()
+	ctx.Plan.aggregationOutputs = make(map[string]string)
+	ctx.Plan.outerAggregations = nil
+	ctx.Plan.outerAggFieldOrder = nil
+
+	outputs := make(map[string]bool, len(carried)+1)
+	for _, c := range carried {
+		outputs[c] = true
+	}
+	outputs[safeField] = true
+	ctx.Registry.ScopeToOutputs(outputs)
+
+	newStage := ctx.Plan.CurrentStage()
+	for _, c := range carried {
+		newStage.Layer.Selects = append(newStage.Layer.Selects, SelectExpr{Expr: c})
+	}
+	newStage.Layer.Selects = append(newStage.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", sqlExpr, safeField)})
+
+	// The computed value is now a materialized column of this stage; references
+	// resolve to its alias.
+	ctx.Registry.Register(safeField, FieldKindAssignment, safeField, ctx.CmdIndex)
+	ctx.Registry.SetResolveExpr(safeField, safeField)
+	return nil
 }
 
 // assembleGroupBySelects builds the source SELECT for GROUP BY queries using

@@ -612,6 +612,16 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 	} else if valTok.Type == TokenField || valTok.Type == TokenValue {
 		cond.Value = valTok.Value
 		p.advance()
+	} else if valTok.Type == TokenMinus {
+		// Negative numeric literal, e.g. change_percent < -5.0
+		p.advance()
+		numTok := p.current()
+		if numTok.Type == TokenValue || numTok.Type == TokenField {
+			cond.Value = "-" + numTok.Value
+			p.advance()
+		} else {
+			return nil, fmt.Errorf("expected number after '-', got %s", numTok.Type)
+		}
 	} else if valTok.Type == TokenMultiply {
 		// * wildcard - could be bare "*" or a pattern like "*powershell*"
 		p.advance()
@@ -1106,6 +1116,16 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 		having.Value = valTok.Value
 		having.IsRegex = true
 		p.advance()
+	} else if valTok.Type == TokenMinus {
+		// Negative numeric literal, e.g. change_percent < -5.0
+		p.advance()
+		numTok := p.current()
+		if numTok.Type == TokenValue || numTok.Type == TokenField {
+			having.Value = "-" + numTok.Value
+			p.advance()
+		} else {
+			return nil, fmt.Errorf("expected number after '-' in HAVING condition, got %s", numTok.Type)
+		}
 	} else if valTok.Type == TokenMultiply {
 		// * wildcard means "any non-empty value"
 		having.Value = "*"
