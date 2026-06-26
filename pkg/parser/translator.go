@@ -197,8 +197,17 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 			break
 		}
 		ctx.CmdIndex = i
-		handler := getCommandHandler(pipeline.Commands[i].Name)
-		if err := handler.Execute(pipeline.Commands[i], ctx); err != nil {
+		cmd := pipeline.Commands[i]
+		// A per-row transform that runs on a GROUP BY stage would add a
+		// non-grouped column to an aggregate SELECT (invalid, silently dropped).
+		// Move it onto a post-aggregation projection stage first.
+		if transformCommandNames[cmd.Name] && len(ctx.Plan.CurrentStage().Layer.GroupBy) > 0 {
+			if _, err := pushCarryForwardStage(ctx); err != nil {
+				return nil, fmt.Errorf("%s (post-aggregation stage): %w", cmd.Name, err)
+			}
+		}
+		handler := getCommandHandler(cmd.Name)
+		if err := handler.Execute(cmd, ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -550,30 +559,19 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 	}, nil
 }
 
-// applyAssignmentStage materializes a post-aggregation math assignment as its
-// own projection stage at its pipeline position. The current aggregation stage
-// is finalized, then a new stage carries every prior output forward plus the
-// computed column, so commands after the assignment (table, sort, case, ...) can
-// reference it. This keeps the assignment correctly positioned instead of
-// hoisting it to the outermost formatter layer, where a later projection may
-// have already dropped the columns it depends on.
-func applyAssignmentStage(ctx *CommandContext, a AssignmentNode) error {
+// pushCarryForwardStage finalizes the current aggregation stage and pushes a new
+// projection stage that carries every prior output forward as a column. It is
+// used to position a post-aggregation computation (an assignment, or a per-row
+// transform command) after the GROUP BY rather than inside it, where a
+// non-grouped column would be invalid. Returns the carried output names.
+func pushCarryForwardStage(ctx *CommandContext) ([]string, error) {
 	prevStage := ctx.Plan.CurrentStage()
 	if len(prevStage.Layer.GroupBy) > 0 {
 		if err := assembleGroupBySelects(ctx, prevStage, nil); err != nil {
-			return fmt.Errorf("assignment %q stage finalize: %w", a.Field, err)
+			return nil, err
 		}
 	}
 
-	safeField, err := sanitizeIdentifier(a.Field)
-	if err != nil {
-		return fmt.Errorf("invalid assignment field: %w", err)
-	}
-	// Compute against the current registry (aggregate aliases are columns now).
-	sqlExpr := convertMathExprToSQL(a.Expression, ctx.Registry, a.Field)
-
-	// Carry every prior output forward so nothing the assignment or a later
-	// command references is dropped before its stage.
 	var carried []string
 	seen := make(map[string]bool)
 	for _, sel := range prevStage.Layer.Selects {
@@ -589,17 +587,37 @@ func applyAssignmentStage(ctx *CommandContext, a AssignmentNode) error {
 	ctx.Plan.outerAggregations = nil
 	ctx.Plan.outerAggFieldOrder = nil
 
-	outputs := make(map[string]bool, len(carried)+1)
+	outputs := make(map[string]bool, len(carried))
 	for _, c := range carried {
 		outputs[c] = true
 	}
-	outputs[safeField] = true
 	ctx.Registry.ScopeToOutputs(outputs)
 
 	newStage := ctx.Plan.CurrentStage()
 	for _, c := range carried {
 		newStage.Layer.Selects = append(newStage.Layer.Selects, SelectExpr{Expr: c})
 	}
+	return carried, nil
+}
+
+// applyAssignmentStage materializes a post-aggregation math assignment as its
+// own projection stage at its pipeline position, so commands after it (table,
+// sort, case, ...) can reference it instead of it being hoisted to the outermost
+// formatter where a later projection may have dropped the columns it depends on.
+func applyAssignmentStage(ctx *CommandContext, a AssignmentNode) error {
+	safeField, err := sanitizeIdentifier(a.Field)
+	if err != nil {
+		return fmt.Errorf("invalid assignment field: %w", err)
+	}
+	// Compute against the current registry (aggregate aliases are columns now),
+	// before scoping replaces them with bare-alias entries.
+	sqlExpr := convertMathExprToSQL(a.Expression, ctx.Registry, a.Field)
+
+	if _, err := pushCarryForwardStage(ctx); err != nil {
+		return fmt.Errorf("assignment %q stage finalize: %w", a.Field, err)
+	}
+
+	newStage := ctx.Plan.CurrentStage()
 	newStage.Layer.Selects = append(newStage.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", sqlExpr, safeField)})
 
 	// The computed value is now a materialized column of this stage; references

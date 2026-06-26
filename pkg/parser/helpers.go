@@ -1276,11 +1276,15 @@ func convertMathExprToSQL(expr string, registry *FieldRegistry, selfField ...str
 			if registry.Has(ident) && ident != currentField {
 				if registry.IsInline(ident) {
 					// Inline-only field (e.g. a pre-aggregation assignment): fold in
-					// its expression, since there is no materialized column to alias.
+					// its expression, which is already numeric.
 					result.WriteString(fmt.Sprintf("(%s)", registry.Resolve(ident)))
 				} else {
-					// Reference the alias directly (available from inner subquery or same outer SELECT)
-					result.WriteString(ident)
+					// Known column (aggregate output, group key, carried column) used
+					// in arithmetic. It may be String -- selectFirst/selectLast of a JSON
+					// field yield argMin/argMax over fields.`x`::String -- so coerce to
+					// Float64. toString() first keeps toFloat64OrNull well-typed whether
+					// the column is already numeric or a string.
+					result.WriteString(fmt.Sprintf("toFloat64OrNull(toString(%s))", ident))
 				}
 			} else {
 				result.WriteString(fmt.Sprintf("toFloat64OrNull(%s)", jsonFieldRef(ident)))

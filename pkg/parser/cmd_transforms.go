@@ -31,7 +31,7 @@ func (h *strftimeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 		chFmt := convertTimeFormat(formatStr)
 		src := "timestamp"
 		if field != "timestamp" {
-			src = fmt.Sprintf("toDateTime(%s)", jsonFieldRef(field))
+			src = fmt.Sprintf("toDateTime(%s)", resolveFieldRef(field, ctx.Registry))
 		}
 		expr := fmt.Sprintf("formatDateTime(%s, '%s', '%s')", src, escapeString(chFmt), escapeString(timezone))
 		ctx.Registry.Register(alias, FieldKindPerRow, expr, ctx.CmdIndex)
@@ -73,12 +73,12 @@ func (h *strftimeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if field == "timestamp" {
 		expr = fmt.Sprintf("formatDateTime(timestamp, '%s', '%s') AS %s", escapeString(chFormat), escapeString(timezone), safeAlias)
 	} else {
-		expr = fmt.Sprintf("formatDateTime(toDateTime(%s), '%s', '%s') AS %s", jsonFieldRef(field), escapeString(chFormat), escapeString(timezone), safeAlias)
+		expr = fmt.Sprintf("formatDateTime(toDateTime(%s), '%s', '%s') AS %s", resolveFieldRef(field, ctx.Registry), escapeString(chFormat), escapeString(timezone), safeAlias)
 	}
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 	src := "timestamp"
 	if field != "timestamp" {
-		src = fmt.Sprintf("toDateTime(%s)", jsonFieldRef(field))
+		src = fmt.Sprintf("toDateTime(%s)", resolveFieldRef(field, ctx.Registry))
 	}
 	ctx.Registry.SetResolveExpr(safeAlias, fmt.Sprintf("formatDateTime(%s, '%s', '%s')", src, escapeString(chFormat), escapeString(timezone)))
 	return nil
@@ -198,7 +198,7 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 							inner := expression[1 : len(expression)-1]
 							sqlExpr = fmt.Sprintf("'%s'", escapeString(inner))
 						} else {
-							sqlExpr = jsonFieldRef(expression)
+							sqlExpr = resolveFieldRef(expression, ctx.Registry)
 						}
 					}
 
@@ -349,7 +349,7 @@ func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 		fieldRef := "raw_log"
 		if field != "raw_log" && field != "timestamp" {
-			fieldRef = jsonFieldRef(field)
+			fieldRef = resolveFieldRef(field, ctx.Registry)
 		} else if field == "timestamp" {
 			fieldRef = "toString(timestamp)"
 		}
@@ -405,7 +405,7 @@ func (h *concatHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if f == "timestamp" {
 				fields = append(fields, "toString(timestamp)")
 			} else {
-				fields = append(fields, jsonFieldRef(f))
+				fields = append(fields, resolveFieldRef(f, ctx.Registry))
 			}
 		}
 	}
@@ -846,6 +846,10 @@ func (h *sprintfHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			alias = strings.Trim(strings.TrimPrefix(arg, "as="), "\"'")
 			continue
 		}
+		// Accept an optional field= prefix on positional args (by analogy with
+		// avg(field=x) etc.) so it resolves the column rather than a literal
+		// field named "field=x".
+		arg = strings.TrimPrefix(arg, "field=")
 		ref := resolveFieldRef(arg, ctx.Registry)
 		fieldRefs = append(fieldRefs, fmt.Sprintf("ifNull(%s, '')", ref))
 	}
@@ -1139,25 +1143,25 @@ func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func init() {
-	registerCommand(&strftimeHandler{}, "strftime")
-	registerCommand(&lowercaseHandler{}, "lowercase")
-	registerCommand(&uppercaseHandler{}, "uppercase")
-	registerCommand(&evalHandler{}, "eval")
-	registerCommand(&regexHandler{}, "regex")
-	registerCommand(&replaceHandler{}, "replace")
-	registerCommand(&concatHandler{}, "concat")
-	registerCommand(&hashHandler{}, "hash")
-	registerCommand(&nowHandler{}, "now")
-	registerCommand(&caseHandler{}, "case")
-	registerCommand(&lenHandler{}, "len")
-	registerCommand(&logSizeHandler{}, "logsize")
-	registerCommand(&levenshteinHandler{}, "levenshtein")
-	registerCommand(&base64decodeHandler{}, "base64decode")
-	registerCommand(&splitHandler{}, "split")
-	registerCommand(&substrHandler{}, "substr")
-	registerCommand(&urldecodeHandler{}, "urldecode")
-	registerCommand(&coalesceHandler{}, "coalesce")
-	registerCommand(&sprintfHandler{}, "sprintf")
-	registerCommand(&matchHandler{}, "match")
-	registerCommand(&lookupIPHandler{}, "lookupIP", "lookupip", "geoip")
+	registerTransformCommand(&strftimeHandler{}, "strftime")
+	registerTransformCommand(&lowercaseHandler{}, "lowercase")
+	registerTransformCommand(&uppercaseHandler{}, "uppercase")
+	registerTransformCommand(&evalHandler{}, "eval")
+	registerTransformCommand(&regexHandler{}, "regex")
+	registerTransformCommand(&replaceHandler{}, "replace")
+	registerTransformCommand(&concatHandler{}, "concat")
+	registerTransformCommand(&hashHandler{}, "hash")
+	registerTransformCommand(&nowHandler{}, "now")
+	registerTransformCommand(&caseHandler{}, "case")
+	registerTransformCommand(&lenHandler{}, "len")
+	registerTransformCommand(&logSizeHandler{}, "logsize")
+	registerTransformCommand(&levenshteinHandler{}, "levenshtein")
+	registerTransformCommand(&base64decodeHandler{}, "base64decode")
+	registerTransformCommand(&splitHandler{}, "split")
+	registerTransformCommand(&substrHandler{}, "substr")
+	registerTransformCommand(&urldecodeHandler{}, "urldecode")
+	registerTransformCommand(&coalesceHandler{}, "coalesce")
+	registerTransformCommand(&sprintfHandler{}, "sprintf")
+	registerTransformCommand(&matchHandler{}, "match")
+	registerTransformCommand(&lookupIPHandler{}, "lookupIP", "lookupip", "geoip")
 }

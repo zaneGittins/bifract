@@ -45,6 +45,22 @@ func registerAggregatingCommand(handler CommandHandler, names ...string) {
 	}
 }
 
+// transformCommandNames holds the names of per-row transform commands: those
+// that add a computed column to the current row set (sprintf, concat, regex,
+// case, ...). Recorded at registration so the Execute phase can detect when one
+// runs after an aggregation and must operate on a post-aggregation projection
+// stage rather than the GROUP BY stage (where a non-grouped column is invalid).
+var transformCommandNames = map[string]bool{}
+
+// registerTransformCommand registers a per-row transform handler and records
+// every name as a transform.
+func registerTransformCommand(handler CommandHandler, names ...string) {
+	registerCommand(handler, names...)
+	for _, name := range names {
+		transformCommandNames[name] = true
+	}
+}
+
 // getCommandHandler returns the handler for a command name, or nil if not found.
 func getCommandHandler(name string) CommandHandler {
 	return commandHandlers[name]

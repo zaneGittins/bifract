@@ -5085,12 +5085,44 @@ func TestAggregationPipelineFixes(t *testing.T) {
 		}
 	})
 
+	t.Run("unknown aggregation function errors instead of degrading to COUNT(*)", func(t *testing.T) {
+		_, err := TranslateToSQL(mustParse(t, `a=x | groupby(h, function=stats([avg(c,as=ac)]))`), opts)
+		if err == nil || !strings.Contains(err.Error(), "unknown aggregation function") {
+			t.Errorf("expected unknown-function error, got %v", err)
+		}
+		_, err = TranslateToSQL(mustParse(t, `a=x | groupby(h, function=multi([avg(c,as=ac),bogus(c)]))`), opts)
+		if err == nil || !strings.Contains(err.Error(), "unknown aggregation function in multi()") {
+			t.Errorf("expected unknown multi sub-function error, got %v", err)
+		}
+	})
+
+	t.Run("post-aggregation transform is staged and resolves aggregate columns", func(t *testing.T) {
+		sql := mustTranslate(t, `a=x | groupby(h,function=avg(c,as=ac)) | sprintf("%.1f", ac, as=fmtd) | table([h,ac,fmtd])`, opts)
+		// sprintf must reference the aggregate column ac, not raw JSON, and the
+		// fmtd column must survive (it ran on a post-aggregation projection stage).
+		if !strings.Contains(sql, "printf('%.1f', ifNull(ac, '')) AS fmtd") {
+			t.Errorf("post-agg sprintf not staged/resolved: %s", sql)
+		}
+		if strings.Contains(sql, "fields.`ac`") {
+			t.Errorf("aggregate column resolved as raw JSON in transform: %s", sql)
+		}
+	})
+
+	t.Run("sprintf accepts a field= prefix on positional args", func(t *testing.T) {
+		sql := mustTranslate(t, `a=x | groupby(h,function=avg(c,as=ac)) | sprintf("%.1f", field=ac, as=fmtd)`, opts)
+		if strings.Contains(sql, "field=ac") {
+			t.Errorf("field= prefix not stripped: %s", sql)
+		}
+	})
+
 	t.Run("post-aggregation assignment is staged before a column-dropping table", func(t *testing.T) {
 		sql := mustTranslate(t, `a=x | groupby(host,function=multi([selectFirst(cpu,as=first_cpu),selectLast(cpu,as=last_cpu),count(as=n)])) | change_percent := (last_cpu - first_cpu) / first_cpu * 100 | table([host,change_percent,n])`, opts)
 		// change_percent must be computed in a stage that still has its inputs,
-		// referencing the aggregate columns (not raw JSON), even though table drops them.
-		if !strings.Contains(sql, "(last_cpu-first_cpu)/first_cpu*100 AS change_percent") {
-			t.Errorf("post-agg assignment not computed from aggregate columns: %s", sql)
+		// referencing the aggregate columns by alias (coerced to numeric since
+		// selectFirst/selectLast yield String columns), not as raw JSON, even
+		// though table drops them.
+		if !strings.Contains(sql, "toFloat64OrNull(toString(last_cpu))") || !strings.Contains(sql, "AS change_percent") {
+			t.Errorf("post-agg assignment not computed from (coerced) aggregate columns: %s", sql)
 		}
 		if strings.Contains(sql, "fields.`last_cpu`") || strings.Contains(sql, "fields.`change_percent`") {
 			t.Errorf("post-agg assignment resolved aggregate/computed names as raw JSON: %s", sql)

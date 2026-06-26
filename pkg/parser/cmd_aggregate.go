@@ -586,9 +586,10 @@ func (h *multiHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	selectFields := selectExprStrings(source.Layer.Selects)
 	computedFields := ctx.Registry.AllComputed()
 	for _, fn := range cmd.Arguments {
-		if processStatsFn(fn, &selectFields, computedFields, ctx.Registry) {
-			ctx.Plan.IsAggregated = true
+		if !processStatsFn(fn, &selectFields, computedFields, ctx.Registry) {
+			return fmt.Errorf("unknown aggregation function in multi(): %q", fn)
 		}
+		ctx.Plan.IsAggregated = true
 	}
 	// Rebuild selects from the string slice
 	source.Layer.Selects = nil
@@ -754,15 +755,21 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if strings.HasPrefix(funcDef, "multi(") {
 				inner := unwrapList(funcDef[len("multi(") : len(funcDef)-1])
 				for _, fn := range splitTopLevelArgs(inner) {
-					if processStatsFn(fn, &selectFields, computedFields, ctx.Registry) {
-						ctx.Plan.IsAggregated = true
+					if !processStatsFn(fn, &selectFields, computedFields, ctx.Registry) {
+						return fmt.Errorf("unknown aggregation function in multi(): %q", fn)
 					}
+					ctx.Plan.IsAggregated = true
 				}
+			} else if strings.TrimSpace(funcDef) == "" {
+				selectFields = append(selectFields, "COUNT(*) AS _count")
+				ctx.Plan.IsAggregated = true
 			} else if processStatsFn(funcDef, &selectFields, computedFields, ctx.Registry) {
 				ctx.Plan.IsAggregated = true
 			} else {
-				selectFields = append(selectFields, "COUNT(*) AS _count")
-				ctx.Plan.IsAggregated = true
+				// Reject unknown aggregation functions instead of silently degrading
+				// to COUNT(*), which would discard the user's entire spec and return
+				// a plausible-but-wrong result.
+				return fmt.Errorf("unknown aggregation function: %q (did you mean multi([...])?)", funcDef)
 			}
 			source.Layer.Selects = nil
 			for _, sf := range selectFields {
