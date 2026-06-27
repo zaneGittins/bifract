@@ -1017,6 +1017,7 @@ const App = {
         // Disconnect SSE when switching away from notebooks/dashboards
         if (tab !== 'notebooks' && window.Notebooks) {
             Notebooks.disconnectSSE();
+            Notebooks.hideTOC();
         }
         if (tab !== 'dashboards' && window.Dashboards) {
             Dashboards.disconnectSSE();

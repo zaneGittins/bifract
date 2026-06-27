@@ -3115,13 +3115,18 @@ const Notebooks = {
         // Re-render section content
         contentContainer.innerHTML = this.renderSectionContent(section);
 
-        // Update section header with new title
+        // Update section header with new title. Rebuild the full header content
+        // (drag handle + title + tags area) so editing does not strip the tag
+        // controls or break dragging.
         const headerTitle = sectionContainer.querySelector('.section-type');
         if (headerTitle) {
             headerTitle.innerHTML = `
-                <span class="section-drag-handle">⋮⋮</span>
+                <span class="section-drag-handle" draggable="true" style="cursor: grab; user-select: none; padding: 4px;">⋮⋮</span>
                 <span class="section-type-text">${section.title ? Utils.escapeHtml(section.title) : 'Untitled Section'}</span>
+                ${this.renderTagsArea(section)}
             `;
+            // Re-bind drag listeners since the handle node was replaced.
+            this.bindSectionEvents();
         }
 
         // Restore Edit button
@@ -3991,6 +3996,22 @@ const Notebooks = {
     },
 
     // ── Section Navigator (TOC) ──────────────────────────────────────────────
+
+    // Hide the floating TOC button and collapse the navigator. Called when
+    // navigating away from the notebooks tab so the fixed-position FAB does not
+    // bleed onto other pages.
+    hideTOC() {
+        const fab = document.getElementById('notebookTOCFab');
+        if (fab) fab.style.display = 'none';
+        const panel = document.getElementById('notebookTOC');
+        if (panel) panel.classList.add('collapsed');
+        if (this._tocObserver) {
+            this._tocObserver.disconnect();
+            this._tocObserver = null;
+        }
+        this._tocVisibleSections.clear();
+        this._currentTOCActiveId = null;
+    },
 
     toggleTOC() {
         const panel = document.getElementById('notebookTOC');

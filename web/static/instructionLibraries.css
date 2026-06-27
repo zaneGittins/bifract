@@ -1336,3 +1336,7 @@
     background: color-mix(in srgb, var(--accent-primary) 18%, transparent);
     box-shadow: inset 0 0 0 1px var(--accent-primary);
 }
+
+/* Outgoing "Links" - a referenced page that doesn't exist yet */
+.il-backlink.il-link-missing { color: var(--accent-tertiary); }
+.il-backlink.il-link-missing span { text-decoration: underline dashed; text-underline-offset: 2px; }

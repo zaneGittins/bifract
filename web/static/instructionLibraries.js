@@ -386,15 +386,6 @@ const InstructionLibraries = {
         const isEdit = !!this.editingPage;
         const isView = isEdit && this.viewMode === 'view';
         const name = isEdit ? this.escAttr(this.editingPage.name) : this.escAttr(this._prefillPageName || '');
-        const toggle = isEdit
-            ? `<button class="il-mode-toggle" title="${isView ? 'Edit' : 'View (read-only)'}" onclick="InstructionLibraries.setViewMode('${isView ? 'edit' : 'view'}')">${isView ? this._pencilIcon() : this._eyeIcon()}</button>`
-            : '';
-        const kebab = isEdit ? `<span class="kebab-wrapper">
-                            <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">&#8942;</button>
-                            <div class="kebab-menu">
-                                <button class="kebab-item danger" onclick="InstructionLibraries.deletePage('${this.editingPage.id}', '${this.escAttr(this.editingPage.name)}')">Delete page</button>
-                            </div>
-                        </span>` : '';
         return `
             <div class="il-editor">
                 <div class="il-editor-topbar">
@@ -402,13 +393,29 @@ const InstructionLibraries = {
                     <span class="il-mode-pill ${isView ? 'is-view' : 'is-edit'}">${isView ? 'Reading' : 'Editing'}</span>
                     <input type="text" id="ilPageNameInput" class="il-title-input" placeholder="Untitled" value="${name}" ${isView ? 'readonly' : ''}
                         oninput="InstructionLibraries.markDirty()" />
-                    <div class="il-editor-actions">${toggle}${kebab}</div>
+                    <div class="il-editor-actions">${this._editorActionsHtml()}</div>
                 </div>
                 ${isView
                     ? '<div id="ilViewBody" class="il-view"></div>'
                     : '<div id="ilPageEditorHost" class="il-cm-host"></div>'}
             </div>
         `;
+    },
+
+    // Topbar actions (View/Edit toggle + kebab). Only shown once the page exists.
+    // Returned separately so a new page's autosave can reveal them without
+    // re-rendering (and destroying focus on) the editor.
+    _editorActionsHtml() {
+        if (!this.editingPage) return '';
+        const isView = this.viewMode === 'view';
+        const toggle = `<button class="il-mode-toggle" title="${isView ? 'Edit' : 'View (read-only)'}" onclick="InstructionLibraries.setViewMode('${isView ? 'edit' : 'view'}')">${isView ? this._pencilIcon() : this._eyeIcon()}</button>`;
+        const kebab = `<span class="kebab-wrapper">
+                            <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">&#8942;</button>
+                            <div class="kebab-menu">
+                                <button class="kebab-item danger" onclick="InstructionLibraries.deletePage('${this.editingPage.id}', '${this.escAttr(this.editingPage.name)}')">Delete page</button>
+                            </div>
+                        </span>`;
+        return toggle + kebab;
     },
 
     async setViewMode(mode) {
@@ -434,6 +441,10 @@ const InstructionLibraries = {
             <div class="il-context-section">
                 <div class="il-context-head">Outline</div>
                 <div id="ilOutlineList" class="il-outline">${this._outlineHtml(content)}</div>
+            </div>
+            <div class="il-context-section">
+                <div class="il-context-head">Links</div>
+                <div id="ilLinksList" class="il-backlinks">${this._outgoingHtml(content)}</div>
             </div>
             <div class="il-context-section">
                 <div class="il-context-head">Backlinks</div>
@@ -478,6 +489,32 @@ const InstructionLibraries = {
         ).join('');
     },
 
+    // Outgoing [[links]] from the current content (computed live, no backend).
+    _outgoingHtml(content) {
+        const re = /\[\[([^\[\]\n]+)\]\]/g;
+        const seen = new Set();
+        const items = [];
+        let m;
+        while ((m = re.exec(content)) !== null) {
+            const nm = m[1].trim();
+            const key = nm.toLowerCase();
+            if (!nm || seen.has(key)) continue;
+            seen.add(key);
+            const target = this.pages.find(p => p.name.toLowerCase() === key);
+            items.push({ name: nm, id: target ? target.id : null });
+        }
+        if (!items.length) return '<div class="il-context-empty">No links.</div>';
+        return items.map(it => it.id
+            ? `<div class="il-backlink" onclick="InstructionLibraries.openPage('${it.id}')">${this._linkIcon()}<span>${this.esc(it.name)}</span></div>`
+            : `<div class="il-backlink il-link-missing" title="Page not found - click to create" onclick="InstructionLibraries.openWikilink('${this.escAttr(it.name)}')">${this._linkIcon()}<span>${this.esc(it.name)}</span></div>`
+        ).join('');
+    },
+
+    _updateOutgoing() {
+        const el = document.getElementById('ilLinksList');
+        if (el && this._pageEditor) el.innerHTML = this._outgoingHtml(this._pageEditor.getValue());
+    },
+
     _headings(content) {
         const out = [];
         const re = /^(#{1,6})\s+(.+?)\s*$/gm;
@@ -499,7 +536,7 @@ const InstructionLibraries = {
         this._pageEditor = MarkdownEditor.create(host, {
             value,
             livePreview: true,
-            onChange: () => { this.markDirty(); this._updateOutline(); },
+            onChange: () => { this.markDirty(); this._updateOutline(); this._updateOutgoing(); },
             onSave: () => this.savePage(true),
             wikilinkTargets: () => this.pages.map(p => p.name),
             onWikilink: (name) => this.openWikilink(name),
@@ -754,6 +791,13 @@ const InstructionLibraries = {
             }
             this._setSaveState('saved');
             if (silent) {
+                // A brand-new page now exists: reveal the View/Edit + kebab actions
+                // without re-rendering (and unfocusing) the editor.
+                if (!isEdit) {
+                    const actions = document.querySelector('#ilCenter .il-editor-actions');
+                    if (actions) actions.innerHTML = this._editorActionsHtml();
+                    this._newPageFolder = null;
+                }
                 this._renderSidebar();   // reflect new/renamed page without disturbing the editor
                 this.loadBacklinks(this.selectedPageId);
             } else {
