@@ -5,11 +5,30 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	"bifract/pkg/feeds"
 	"bifract/pkg/storage"
 )
+
+// wikilinkRe matches [[Page Name]] references in page content.
+var wikilinkRe = regexp.MustCompile(`\[\[([^\[\]\n]+)\]\]`)
+
+// normalizeLink lowercases and trims a page name/link for case-insensitive matching.
+func normalizeLink(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// extractWikilinks returns the normalized [[targets]] referenced in content.
+func extractWikilinks(content string) []string {
+	matches := wikilinkRe.FindAllStringSubmatch(content, -1)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, normalizeLink(m[1]))
+	}
+	return out
+}
 
 // Manager handles CRUD operations for instruction libraries and pages.
 type Manager struct {
@@ -118,6 +137,52 @@ func (m *Manager) GetDefaultPrismLibrary(ctx context.Context, prismID string) (*
 		return nil, nil
 	}
 	return lib, err
+}
+
+// EnsureDefaultLibrary returns the scope's single default library, creating or
+// promoting one as needed. The product model is exactly one library per
+// fractal/prism, created by default. canCreate gates brand-new creation
+// (analyst+); a viewer with no existing library gets nil.
+func (m *Manager) EnsureDefaultLibrary(ctx context.Context, fractalID, prismID, createdBy string, canCreate bool) (*Library, error) {
+	var def *Library
+	var err error
+	if prismID != "" {
+		def, err = m.GetDefaultPrismLibrary(ctx, prismID)
+	} else {
+		def, err = m.GetDefaultLibrary(ctx, fractalID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if def != nil {
+		return def, nil
+	}
+
+	// No default yet: promote an existing library if one exists (migration-safe,
+	// so pre-existing instruction pages are never hidden).
+	libs, err := m.ListLibraries(ctx, fractalID, prismID)
+	if err != nil {
+		return nil, err
+	}
+	if len(libs) > 0 {
+		if _, err := m.pg.Exec(ctx, `UPDATE instruction_libraries SET is_default = true, updated_at = NOW() WHERE id = $1`, libs[0].ID); err != nil {
+			return nil, fmt.Errorf("promote default library: %w", err)
+		}
+		libs[0].IsDefault = true
+		return libs[0], nil
+	}
+
+	if !canCreate {
+		return nil, nil
+	}
+	req := CreateLibraryRequest{
+		Name:         "Library",
+		Source:       "manual",
+		IsDefault:    true,
+		Branch:       "main",
+		SyncSchedule: "never",
+	}
+	return m.CreateLibrary(ctx, req, fractalID, prismID, createdBy)
 }
 
 // CreateLibrary creates a new library scoped to either a fractal or a prism.
@@ -306,7 +371,7 @@ func (m *Manager) DeleteLibrary(ctx context.Context, id string) error {
 func (m *Manager) ListPages(ctx context.Context, libraryID string) ([]*Page, error) {
 	rows, err := m.pg.Query(ctx, `
 		SELECT id, library_id, name, description, content, always_include, sort_order,
-		       source_path, source_hash, COALESCE(created_by, ''), created_at, updated_at
+		       source_path, source_hash, folder_id, COALESCE(created_by, ''), created_at, updated_at
 		FROM instruction_pages
 		WHERE library_id = $1
 		ORDER BY sort_order ASC, name ASC
@@ -331,7 +396,7 @@ func (m *Manager) ListPages(ctx context.Context, libraryID string) ([]*Page, err
 func (m *Manager) GetPage(ctx context.Context, id string) (*Page, error) {
 	row := m.pg.QueryRow(ctx, `
 		SELECT id, library_id, name, description, content, always_include, sort_order,
-		       source_path, source_hash, COALESCE(created_by, ''), created_at, updated_at
+		       source_path, source_hash, folder_id, COALESCE(created_by, ''), created_at, updated_at
 		FROM instruction_pages
 		WHERE id = $1
 	`, id)
@@ -354,7 +419,7 @@ func (m *Manager) GetPageByName(ctx context.Context, libraryIDs []string, pageNa
 
 	query := fmt.Sprintf(`
 		SELECT id, library_id, name, description, content, always_include, sort_order,
-		       source_path, source_hash, COALESCE(created_by, ''), created_at, updated_at
+		       source_path, source_hash, folder_id, COALESCE(created_by, ''), created_at, updated_at
 		FROM instruction_pages
 		WHERE name = $1 AND library_id IN (%s)
 		LIMIT 1
@@ -368,6 +433,36 @@ func (m *Manager) GetPageByName(ctx context.Context, libraryIDs []string, pageNa
 	return p, err
 }
 
+// PageRef is a lightweight page reference (used for backlinks).
+type PageRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// GetBacklinks returns pages in the same library whose content references
+// [[pageName]] (case-insensitive). Within-library only: page names are unique
+// per library, so resolution is deterministic.
+func (m *Manager) GetBacklinks(ctx context.Context, libraryID, pageName string) ([]PageRef, error) {
+	pages, err := m.ListPages(ctx, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	target := normalizeLink(pageName)
+	refs := make([]PageRef, 0)
+	for _, p := range pages {
+		if normalizeLink(p.Name) == target {
+			continue // skip self-references
+		}
+		for _, link := range extractWikilinks(p.Content) {
+			if link == target {
+				refs = append(refs, PageRef{ID: p.ID, Name: p.Name})
+				break
+			}
+		}
+	}
+	return refs, nil
+}
+
 // CreatePage creates a new page in a library.
 func (m *Manager) CreatePage(ctx context.Context, libraryID string, req CreatePageRequest, createdBy string) (*Page, error) {
 	name := strings.TrimSpace(req.Name)
@@ -377,10 +472,10 @@ func (m *Manager) CreatePage(ctx context.Context, libraryID string, req CreatePa
 
 	var id string
 	err := m.pg.QueryRow(ctx, `
-		INSERT INTO instruction_pages (library_id, name, description, content, always_include, sort_order, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO instruction_pages (library_id, name, description, content, always_include, sort_order, folder_id, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id
-	`, libraryID, name, req.Description, req.Content, req.AlwaysInclude, req.SortOrder, createdBy).Scan(&id)
+	`, libraryID, name, req.Description, req.Content, req.AlwaysInclude, req.SortOrder, req.FolderID, createdBy).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "ip_unique_name") {
 			return nil, fmt.Errorf("a page named %q already exists in this library", name)
@@ -388,6 +483,101 @@ func (m *Manager) CreatePage(ctx context.Context, libraryID string, req CreatePa
 		return nil, fmt.Errorf("create page: %w", err)
 	}
 	return m.GetPage(ctx, id)
+}
+
+// MovePage sets a page's folder (folderID=nil means library root) and position.
+// It deliberately does NOT touch content/name so normal saves never clobber it.
+func (m *Manager) MovePage(ctx context.Context, pageID string, folderID *string, sortOrder int) error {
+	_, err := m.pg.Exec(ctx, `
+		UPDATE instruction_pages SET folder_id = $1, sort_order = $2, updated_at = NOW() WHERE id = $3
+	`, folderID, sortOrder, pageID)
+	if err != nil {
+		return fmt.Errorf("move page: %w", err)
+	}
+	return nil
+}
+
+// --- Folder CRUD (single-level) ---
+
+func scanFolder(s scannable) (*Folder, error) {
+	var f Folder
+	if err := s.Scan(&f.ID, &f.LibraryID, &f.Name, &f.SortOrder, &f.CreatedBy, &f.CreatedAt, &f.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// ListFolders returns all folders for a library, ordered.
+func (m *Manager) ListFolders(ctx context.Context, libraryID string) ([]*Folder, error) {
+	rows, err := m.pg.Query(ctx, `
+		SELECT id, library_id, name, sort_order, COALESCE(created_by, ''), created_at, updated_at
+		FROM instruction_folders WHERE library_id = $1 ORDER BY sort_order ASC, name ASC
+	`, libraryID)
+	if err != nil {
+		return nil, fmt.Errorf("list folders: %w", err)
+	}
+	defer rows.Close()
+	folders := make([]*Folder, 0)
+	for rows.Next() {
+		f, err := scanFolder(rows)
+		if err != nil {
+			return nil, err
+		}
+		folders = append(folders, f)
+	}
+	return folders, nil
+}
+
+// CreateFolder creates a folder at the end of the library's folder list.
+func (m *Manager) CreateFolder(ctx context.Context, libraryID, name, createdBy string) (*Folder, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	var nextOrder int
+	_ = m.pg.QueryRow(ctx, `SELECT COALESCE(MAX(sort_order)+1, 0) FROM instruction_folders WHERE library_id = $1`, libraryID).Scan(&nextOrder)
+	var id string
+	err := m.pg.QueryRow(ctx, `
+		INSERT INTO instruction_folders (library_id, name, sort_order, created_by)
+		VALUES ($1, $2, $3, $4) RETURNING id
+	`, libraryID, name, nextOrder, createdBy).Scan(&id)
+	if err != nil {
+		return nil, fmt.Errorf("create folder: %w", err)
+	}
+	return m.GetFolder(ctx, id)
+}
+
+// GetFolder returns a single folder by id.
+func (m *Manager) GetFolder(ctx context.Context, id string) (*Folder, error) {
+	row := m.pg.QueryRow(ctx, `
+		SELECT id, library_id, name, sort_order, COALESCE(created_by, ''), created_at, updated_at
+		FROM instruction_folders WHERE id = $1
+	`, id)
+	return scanFolder(row)
+}
+
+// UpdateFolder renames and/or reorders a folder.
+func (m *Manager) UpdateFolder(ctx context.Context, id string, req UpdateFolderRequest) (*Folder, error) {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	_, err := m.pg.Exec(ctx, `
+		UPDATE instruction_folders SET name = $1, sort_order = $2, updated_at = NOW() WHERE id = $3
+	`, name, req.SortOrder, id)
+	if err != nil {
+		return nil, fmt.Errorf("update folder: %w", err)
+	}
+	return m.GetFolder(ctx, id)
+}
+
+// DeleteFolder removes a folder. Its pages fall back to the root (FK ON DELETE SET NULL).
+func (m *Manager) DeleteFolder(ctx context.Context, id string) error {
+	_, err := m.pg.Exec(ctx, `DELETE FROM instruction_folders WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete folder: %w", err)
+	}
+	return nil
 }
 
 // UpdatePage updates an existing page.
@@ -562,7 +752,7 @@ func (m *Manager) GetPinnedPages(ctx context.Context, libraryIDs []string) ([]*P
 
 	query := fmt.Sprintf(`
 		SELECT id, library_id, name, description, content, always_include, sort_order,
-		       source_path, source_hash, COALESCE(created_by, ''), created_at, updated_at
+		       source_path, source_hash, folder_id, COALESCE(created_by, ''), created_at, updated_at
 		FROM instruction_pages
 		WHERE library_id IN (%s) AND always_include = true
 		ORDER BY sort_order ASC, name ASC
@@ -727,26 +917,34 @@ func scanLibraryRow(row *sql.Row) (*Library, error) {
 
 func scanPage(s scannable) (*Page, error) {
 	var p Page
+	var folderID sql.NullString
 	err := s.Scan(
 		&p.ID, &p.LibraryID, &p.Name, &p.Description, &p.Content,
 		&p.AlwaysInclude, &p.SortOrder,
-		&p.SourcePath, &p.SourceHash, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt,
+		&p.SourcePath, &p.SourceHash, &folderID, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan page: %w", err)
+	}
+	if folderID.Valid {
+		p.FolderID = &folderID.String
 	}
 	return &p, nil
 }
 
 func scanPageRow(row *sql.Row) (*Page, error) {
 	var p Page
+	var folderID sql.NullString
 	err := row.Scan(
 		&p.ID, &p.LibraryID, &p.Name, &p.Description, &p.Content,
 		&p.AlwaysInclude, &p.SortOrder,
-		&p.SourcePath, &p.SourceHash, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt,
+		&p.SourcePath, &p.SourceHash, &folderID, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if folderID.Valid {
+		p.FolderID = &folderID.String
 	}
 	return &p, nil
 }

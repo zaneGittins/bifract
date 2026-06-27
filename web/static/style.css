@@ -1046,129 +1046,6 @@ body {
     color: var(--text-primary);
 }
 
-/* Query tabs strip */
-.query-tab-new-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    background: transparent;
-    border: none;
-    border-radius: 4px;
-    color: var(--text-muted);
-    font-size: 1rem;
-    line-height: 1;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: var(--transition);
-    margin-left: -0.1rem;
-}
-
-.query-tab-new-btn:hover {
-    color: var(--text-primary);
-    background: var(--bg-hover);
-}
-
-.query-tabs-strip {
-    display: flex;
-    align-items: stretch;
-    gap: 2px;
-    height: 30px;
-    padding: 0 0.25rem;
-    border-bottom: 1px solid var(--border-color);
-    overflow-x: auto;
-    scrollbar-width: none;
-}
-
-.query-tabs-strip::-webkit-scrollbar {
-    display: none;
-}
-
-.query-tab {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0 0.625rem;
-    border-radius: 4px 4px 0 0;
-    border-bottom: 2px solid transparent;
-    color: var(--text-muted);
-    font-size: 0.75rem;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: color 0.15s ease, border-color 0.15s ease;
-    user-select: none;
-    position: relative;
-    max-width: 200px;
-}
-
-.query-tab:hover {
-    color: var(--text-secondary);
-}
-
-.query-tab.active {
-    color: var(--text-primary);
-    border-bottom-color: var(--accent-primary);
-}
-
-.query-tab-index {
-    font-size: 0.65rem;
-    opacity: 0.45;
-    flex-shrink: 0;
-}
-
-.query-tab-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 140px;
-}
-
-.query-tab-close {
-    display: none;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    height: 14px;
-    background: transparent;
-    border: none;
-    border-radius: 3px;
-    color: var(--text-muted);
-    font-size: 0.8rem;
-    line-height: 1;
-    cursor: pointer;
-    flex-shrink: 0;
-    padding: 0;
-    transition: var(--transition);
-}
-
-.query-tab:hover .query-tab-close {
-    display: flex;
-}
-
-.query-tab-close:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-}
-
-.query-tab-add {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 0.5rem;
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    font-size: 1rem;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: var(--transition);
-    align-self: center;
-}
-
-.query-tab-add:hover {
-    color: var(--text-primary);
-}
-
 .query-input-row {
     display: flex;
     align-items: center;
@@ -2197,6 +2074,7 @@ body.results-fullscreen .results-section {
 /* Results Container */
 .results-container {
     overflow-y: auto;
+    overflow-x: auto;
     min-height: 0;
 }
 
@@ -2248,13 +2126,23 @@ body.results-fullscreen .results-section {
     font-size: 0.8125rem;
 }
 
+/* Fixed layout: column widths come from the <colgroup>, so columns stay put
+   as the user pages through results and never reflow to content. Scoped to a
+   modifier class so other .results-table users (perf, dashboards) are unaffected. */
+.results-table.is-fixed {
+    table-layout: fixed;
+}
+
 .results-table .filler-col {
-    width: 100%;
     padding: 0;
 }
 
+/* Filler/flex cols absorb leftover horizontal space under fixed layout. */
+.results-table col.col-filler {
+    width: auto;
+}
+
 .results-table .raw-log-col {
-    width: 100%;
     max-width: none;
 }
 
@@ -2279,6 +2167,12 @@ body.results-fullscreen .results-section {
     border-bottom: 1px solid var(--border-color);
     white-space: nowrap;
     background: var(--bg-tertiary);
+}
+
+/* Fixed-layout headers truncate instead of forcing the column wider. */
+.results-table.is-fixed th {
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .results-table th.sortable {
@@ -2310,19 +2204,62 @@ body.col-resizing * {
 
 .column-resizer {
     position: absolute;
-    right: 0;
+    right: -4px;
     top: 0;
     height: 100%;
-    width: 5px;
+    width: 9px;
     cursor: col-resize;
     user-select: none;
-    z-index: 1;
+    z-index: 5;
+    touch-action: none;
 }
 
-.column-resizer:hover,
-.results-table th.resizing .column-resizer {
+/* Thin centred indicator line, revealed on hover/active for a precise target. */
+.column-resizer::after {
+    content: '';
+    position: absolute;
+    right: 4px;
+    top: 15%;
+    height: 70%;
+    width: 2px;
+    border-radius: 1px;
     background: var(--accent-primary);
-    opacity: 0.6;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+}
+
+.column-resizer:hover::after,
+.results-table th.resizing .column-resizer::after {
+    opacity: 0.85;
+    top: 0;
+    height: 100%;
+}
+
+/* Column drag-to-reorder */
+.results-table.col-reorderable th[data-field] {
+    /* Hint that headers are draggable without losing the sort affordance. */
+    cursor: grab;
+}
+
+.results-table th.reordering {
+    opacity: 0.55;
+    background: rgba(156, 106, 222, 0.12);
+}
+
+body.col-reordering,
+body.col-reordering * {
+    cursor: grabbing !important;
+    user-select: none !important;
+}
+
+.col-drop-indicator {
+    position: fixed;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--accent-primary);
+    box-shadow: 0 0 6px rgba(156, 106, 222, 0.7);
+    z-index: 9999;
+    pointer-events: none;
 }
 
 
@@ -12431,6 +12368,14 @@ div.vis-tooltip {
     overflow: auto;
     padding: 8px;
     min-height: 0;
+}
+
+/* A sticky table header sticks at the scroll container's content edge, so any
+   top padding leaves a strip above it through which rows bleed while scrolling.
+   When the widget body holds a results table, drop the top padding so the
+   header sits flush at the top (charts keep their padding). */
+.widget-content:has(> table.results-table) {
+    padding-top: 0;
 }
 
 .widget-loading {

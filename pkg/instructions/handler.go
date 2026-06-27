@@ -119,6 +119,44 @@ func (h *Handler) requireRole(w http.ResponseWriter, r *http.Request, required r
 	return true
 }
 
+// hasRole reports whether the caller meets a role, without writing a response.
+func (h *Handler) hasRole(r *http.Request, required rbac.Role) bool {
+	user := h.getCurrentUser(r)
+	if user == nil {
+		return false
+	}
+	if user.IsAdmin {
+		return true
+	}
+	fractalRole := rbac.RoleFromContext(r.Context())
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	return rbac.HasAccess(user, fractalRole, required) || rbac.HasAccess(user, prismRole, required)
+}
+
+// HandleEnsureDefaultLibrary returns the scope's single library, auto-creating
+// (or promoting) it. One library per fractal/prism, made by default.
+func (h *Handler) HandleEnsureDefaultLibrary(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRole(w, r, rbac.RoleViewer) {
+		return
+	}
+	fractalID, prismID := h.getScope(r)
+	if fractalID == "" && prismID == "" {
+		h.respond(w, http.StatusBadRequest, nil, "no fractal or prism selected")
+		return
+	}
+	createdBy := ""
+	if user := h.getCurrentUser(r); user != nil {
+		createdBy = user.Username
+	}
+	lib, err := h.manager.EnsureDefaultLibrary(r.Context(), fractalID, prismID, createdBy, h.hasRole(r, rbac.RoleAnalyst))
+	if err != nil {
+		log.Printf("[Instructions] Failed to ensure default library: %v", err)
+		h.respond(w, http.StatusInternalServerError, nil, "failed to load library")
+		return
+	}
+	h.respond(w, http.StatusOK, lib, "")
+}
+
 // --- Library endpoints ---
 
 // HandleListLibraries returns all libraries for the current scope.
@@ -159,10 +197,145 @@ func (h *Handler) HandleGetLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	folders, err := h.manager.ListFolders(r.Context(), id)
+	if err != nil {
+		log.Printf("[Instructions] Failed to list folders for library %s: %v", id, err)
+		h.respond(w, http.StatusInternalServerError, nil, "failed to load folders")
+		return
+	}
+
 	h.respond(w, http.StatusOK, map[string]interface{}{
 		"library": lib,
 		"pages":   pages,
+		"folders": folders,
 	}, "")
+}
+
+// --- Folder + page-move endpoints ---
+
+// getFolderScoped fetches a folder and verifies its library is in the caller's scope.
+func (h *Handler) getFolderScoped(w http.ResponseWriter, r *http.Request, folderID string) *Folder {
+	folder, err := h.manager.GetFolder(r.Context(), folderID)
+	if err != nil {
+		h.respond(w, http.StatusNotFound, nil, "folder not found")
+		return nil
+	}
+	if h.getLibraryScoped(w, r, folder.LibraryID) == nil {
+		return nil
+	}
+	return folder
+}
+
+// HandleListFolders returns the folders for a library.
+func (h *Handler) HandleListFolders(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRole(w, r, rbac.RoleViewer) {
+		return
+	}
+	libraryID := chi.URLParam(r, "id")
+	if h.getLibraryScoped(w, r, libraryID) == nil {
+		return
+	}
+	folders, err := h.manager.ListFolders(r.Context(), libraryID)
+	if err != nil {
+		h.respond(w, http.StatusInternalServerError, nil, "failed to load folders")
+		return
+	}
+	h.respond(w, http.StatusOK, folders, "")
+}
+
+// HandleCreateFolder creates a folder in a library.
+func (h *Handler) HandleCreateFolder(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRole(w, r, rbac.RoleAnalyst) {
+		return
+	}
+	user := h.getCurrentUser(r)
+	libraryID := chi.URLParam(r, "id")
+	if h.getLibraryScoped(w, r, libraryID) == nil {
+		return
+	}
+	var req CreateFolderRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respond(w, http.StatusBadRequest, nil, "invalid request body")
+		return
+	}
+	createdBy := ""
+	if user != nil {
+		createdBy = user.Username
+	}
+	folder, err := h.manager.CreateFolder(r.Context(), libraryID, req.Name, createdBy)
+	if err != nil {
+		h.respond(w, http.StatusBadRequest, nil, err.Error())
+		return
+	}
+	h.respond(w, http.StatusCreated, folder, "")
+}
+
+// HandleUpdateFolder renames/reorders a folder.
+func (h *Handler) HandleUpdateFolder(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRole(w, r, rbac.RoleAnalyst) {
+		return
+	}
+	folderID := chi.URLParam(r, "folderId")
+	if h.getFolderScoped(w, r, folderID) == nil {
+		return
+	}
+	var req UpdateFolderRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respond(w, http.StatusBadRequest, nil, "invalid request body")
+		return
+	}
+	folder, err := h.manager.UpdateFolder(r.Context(), folderID, req)
+	if err != nil {
+		h.respond(w, http.StatusBadRequest, nil, err.Error())
+		return
+	}
+	h.respond(w, http.StatusOK, folder, "")
+}
+
+// HandleDeleteFolder deletes a folder (its pages move to the root).
+func (h *Handler) HandleDeleteFolder(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRole(w, r, rbac.RoleAnalyst) {
+		return
+	}
+	folderID := chi.URLParam(r, "folderId")
+	if h.getFolderScoped(w, r, folderID) == nil {
+		return
+	}
+	if err := h.manager.DeleteFolder(r.Context(), folderID); err != nil {
+		h.respond(w, http.StatusInternalServerError, nil, "failed to delete folder")
+		return
+	}
+	h.respond(w, http.StatusOK, nil, "")
+}
+
+// HandleMovePage moves a page into a folder (or root) at a position.
+func (h *Handler) HandleMovePage(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRole(w, r, rbac.RoleAnalyst) {
+		return
+	}
+	pageID := chi.URLParam(r, "pageId")
+	page := h.getPageScoped(w, r, pageID)
+	if page == nil {
+		return
+	}
+	var req MovePageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respond(w, http.StatusBadRequest, nil, "invalid request body")
+		return
+	}
+	// If a target folder is given, ensure it belongs to the same library.
+	if req.FolderID != nil {
+		folder, err := h.manager.GetFolder(r.Context(), *req.FolderID)
+		if err != nil || folder.LibraryID != page.LibraryID {
+			h.respond(w, http.StatusBadRequest, nil, "invalid target folder")
+			return
+		}
+	}
+	if err := h.manager.MovePage(r.Context(), pageID, req.FolderID, req.SortOrder); err != nil {
+		h.respond(w, http.StatusInternalServerError, nil, "failed to move page")
+		return
+	}
+	h.respond(w, http.StatusOK, nil, "")
 }
 
 // HandleCreateLibrary creates a new library.
@@ -278,6 +451,25 @@ func (h *Handler) HandleGetPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.respond(w, http.StatusOK, page, "")
+}
+
+// HandleGetBacklinks returns pages in the same library that link to this page.
+func (h *Handler) HandleGetBacklinks(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRole(w, r, rbac.RoleViewer) {
+		return
+	}
+	pageID := chi.URLParam(r, "pageId")
+	page := h.getPageScoped(w, r, pageID)
+	if page == nil {
+		return
+	}
+	refs, err := h.manager.GetBacklinks(r.Context(), page.LibraryID, page.Name)
+	if err != nil {
+		log.Printf("[Instructions] Failed to get backlinks for page %s: %v", pageID, err)
+		h.respond(w, http.StatusInternalServerError, nil, "failed to load backlinks")
+		return
+	}
+	h.respond(w, http.StatusOK, refs, "")
 }
 
 // HandleCreatePage creates a new page in a library.

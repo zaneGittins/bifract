@@ -34,11 +34,40 @@ type Page struct {
 	Content       string    `json:"content"`
 	AlwaysInclude bool      `json:"always_include"`
 	SortOrder     int       `json:"sort_order"`
+	FolderID      *string   `json:"folder_id"`
 	SourcePath    string    `json:"source_path,omitempty"`
 	SourceHash    string    `json:"source_hash,omitempty"`
 	CreatedBy     string    `json:"created_by"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// Folder is a single-level organisational container for pages within a library.
+type Folder struct {
+	ID        string    `json:"id"`
+	LibraryID string    `json:"library_id"`
+	Name      string    `json:"name"`
+	SortOrder int       `json:"sort_order"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// CreateFolderRequest is the payload for creating a folder.
+type CreateFolderRequest struct {
+	Name string `json:"name"`
+}
+
+// UpdateFolderRequest renames and/or reorders a folder.
+type UpdateFolderRequest struct {
+	Name      string `json:"name"`
+	SortOrder int    `json:"sort_order"`
+}
+
+// MovePageRequest moves a page into a folder (folder_id=null means library root).
+type MovePageRequest struct {
+	FolderID  *string `json:"folder_id"`
+	SortOrder int     `json:"sort_order"`
 }
 
 // PageSummary is a lightweight page reference used for the AI context index.
@@ -78,11 +107,12 @@ type UpdateLibraryRequest struct {
 
 // CreatePageRequest is the payload for creating a new page.
 type CreatePageRequest struct {
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	Content       string `json:"content"`
-	AlwaysInclude bool   `json:"always_include"`
-	SortOrder     int    `json:"sort_order"`
+	Name          string  `json:"name"`
+	Description   string  `json:"description"`
+	Content       string  `json:"content"`
+	AlwaysInclude bool    `json:"always_include"`
+	SortOrder     int     `json:"sort_order"`
+	FolderID      *string `json:"folder_id"`
 }
 
 // UpdatePageRequest is the payload for updating a page.

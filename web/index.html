@@ -51,6 +51,7 @@
                     <button id="fractalDashboardsTabBtn" class="nav-tab">Dashboards</button>
                     <button id="fractalDictionariesTabBtn" class="nav-tab">Dicts</button>
                     <button id="fractalModelsTabBtn" class="nav-tab">Models</button>
+                    <button id="fractalLibraryTabBtn" class="nav-tab">Library</button>
                     <button id="fractalChatTabBtn" class="nav-tab">Chat</button>
                     <button id="fractalAlertsTabBtn" class="nav-tab">
                         Alerts
@@ -866,12 +867,7 @@
                         <span class="spinner"></span>
                     </span>
                 </button>
-
-                <button id="queryTabAdd" class="query-tab-new-btn" title="New query tab (`t)">+</button>
             </div>
-
-            <!-- Query tabs strip (hidden until 2+ tabs open) -->
-            <div id="queryTabsStrip" class="query-tabs-strip" style="display:none;"></div>
 
             <!-- Query input -->
             <div class="query-input-row">
@@ -1320,18 +1316,20 @@
 
             <!-- Chat Tab Content -->
             <div id="fractalChatTabContent" style="display: none;">
-                <div class="alerts-sub-tabs" id="chatSubTabs">
-                    <button class="alerts-sub-tab active" data-subtab="chat" onclick="Chat.switchSubTab('chat')">Chat</button>
-                    <button class="alerts-sub-tab" data-subtab="libraries" onclick="Chat.switchSubTab('libraries')">Libraries</button>
-                </div>
-                <div id="chatSubTabChat">
                 <div id="chatView" class="auth-required chat-view" style="display: none;">
                     <div class="chat-layout">
                         <!-- Sidebar: conversation list -->
                         <div class="chat-sidebar">
                             <div class="chat-sidebar-header">
                                 <span class="chat-sidebar-title">Conversations</span>
-                                <button id="newConversationBtn" class="chat-new-btn" title="New conversation">+</button>
+                                <div class="chat-sidebar-header-actions">
+                                    <button id="newConversationBtn" class="chat-new-btn" title="New conversation">+</button>
+                                    <button id="chatCollapseBtn" class="chat-rail-btn" title="Hide conversations">
+                                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M10 4L6 8l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                                        </svg>
+                                    </button>
+                                </div>
                             </div>
                             <div class="chat-conv-search-wrap">
                                 <input type="text" id="chatConvSearch" class="chat-conv-search" placeholder="Filter..." />
@@ -1344,6 +1342,18 @@
 
                         <!-- Main chat area -->
                         <div class="chat-main">
+                            <div id="chatSidebarRail" class="chat-sidebar-rail">
+                                <button id="chatExpandBtn" class="chat-rail-btn" title="Show conversations">
+                                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </button>
+                                <button id="chatRailNewBtn" class="chat-rail-btn" title="New conversation">
+                                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                                    </svg>
+                                </button>
+                            </div>
                             <div id="chatEmptyState" class="chat-empty-state">
                                 <div class="chat-empty-icon">
                                     <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1353,68 +1363,78 @@
                                         <circle cx="32" cy="20" r="2" fill="currentColor" opacity="0.4"/>
                                     </svg>
                                 </div>
-                                <p>Select a conversation or create a new one to start chatting with Bot.</p>
+                                <p>Ask about your logs. Start a new conversation to investigate with AI.</p>
                                 <button id="newConversationEmptyBtn" class="btn-primary">New conversation</button>
                             </div>
 
                             <div id="chatActiveArea" style="display: none;" class="chat-active-area">
                                 <div class="chat-header-bar">
                                     <span id="chatConversationTitle" class="chat-conv-title"></span>
-                                    <div class="chat-header-center">
-                                        <select id="chatTimeRange" class="chat-time-select" title="Time range for AI queries">
-                                            <option value="1h">Last 1h</option>
-                                            <option value="6h">Last 6h</option>
-                                            <option value="24h" selected>Last 24h</option>
-                                            <option value="7d">Last 7d</option>
-                                            <option value="30d">Last 30d</option>
-                                            <option value="all">All time</option>
-                                        </select>
-                                        <select id="chatInstructionSelect" class="chat-instruction-select" title="Instructions for this conversation">
-                                            <option value="">Default</option>
-                                        </select>
-                                    </div>
                                     <div class="chat-header-actions">
                                         <button id="clearChatBtn" class="chat-action-btn" title="Clear messages (/clear)">Clear</button>
                                         <button id="deleteChatBtn" class="chat-action-btn chat-action-danger" title="Delete conversation">Delete</button>
                                     </div>
                                 </div>
 
-                                <div id="chatMessages" class="chat-messages"></div>
-
-                                <div id="chatStatusIndicator" class="chat-status-indicator" style="display: none;">
-                                    <svg class="chat-status-sparkle" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path d="M8 0L9.8 6.2L16 8L9.8 9.8L8 16L6.2 9.8L0 8L6.2 6.2L8 0Z" fill="currentColor"/>
-                                    </svg>
-                                    <span id="chatStatusText" class="chat-status-text"></span>
+                                <div class="chat-thread-scroll">
+                                    <div id="chatMessages" class="chat-messages"></div>
                                 </div>
 
-                                <div class="chat-input-row">
-                                    <div class="chat-input-wrapper">
+                                <div class="chat-composer-area">
+                                    <div id="chatStatusIndicator" class="chat-status-indicator" style="display: none;">
+                                        <span class="chat-status-shimmer"></span>
+                                        <span id="chatStatusText" class="chat-status-text"></span>
+                                    </div>
+
+                                    <div class="chat-composer">
                                         <textarea
                                             id="chatInput"
                                             class="chat-input"
-                                            placeholder="Ask about your logs... (Enter to send, Shift+Enter for newline, /clear to reset)"
+                                            placeholder="Ask about your logs..."
                                             rows="1"
                                             spellcheck="false"
                                         ></textarea>
-                                        <button id="chatSendBtn" class="chat-send-btn" title="Send">
-                                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <path d="M14 8L2 2l3 6-3 6 12-6z" fill="currentColor"/>
-                                            </svg>
-                                        </button>
-                                        <button id="chatStopBtn" class="chat-stop-btn" title="Stop" style="display:none" onclick="Chat.stopStreaming()">
-                                            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <rect x="3" y="3" width="10" height="10" rx="2" fill="currentColor"/>
-                                            </svg>
-                                        </button>
+                                        <div class="chat-composer-bar">
+                                            <div class="chat-context-pills">
+                                                <label class="chat-pill chat-time-pill" title="Time range for AI queries">
+                                                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <circle cx="8" cy="8" r="6.2" stroke="currentColor" stroke-width="1.3"/>
+                                                        <path d="M8 4.5V8l2.4 1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                                                    </svg>
+                                                    <select id="chatTimeRange" class="chat-time-select" title="Time range for AI queries">
+                                                        <option value="1h">Last 1h</option>
+                                                        <option value="6h">Last 6h</option>
+                                                        <option value="24h" selected>Last 24h</option>
+                                                        <option value="7d">Last 7d</option>
+                                                        <option value="30d">Last 30d</option>
+                                                        <option value="all">All time</option>
+                                                    </select>
+                                                </label>
+                                            </div>
+                                            <div class="chat-composer-actions">
+                                                <button id="chatSendBtn" class="chat-send-btn" title="Send">
+                                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <path d="M8 13V3M8 3L4 7M8 3l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                                                    </svg>
+                                                </button>
+                                                <button id="chatStopBtn" class="chat-stop-btn" title="Stop" style="display:none" onclick="Chat.stopStreaming()">
+                                                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <rect x="3" y="3" width="10" height="10" rx="2" fill="currentColor"/>
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
-                </div><!-- end chatSubTabChat -->
-                <div id="chatSubTabLibraries" style="display:none;">
+            </div>
+
+            <!-- Library Tab Content -->
+            <div id="fractalLibraryTabContent" style="display: none;">
+                <div id="librariesView" class="auth-required" style="display: none;">
                     <div id="instructionLibrariesView"></div>
                 </div>
             </div>
@@ -3191,12 +3211,9 @@ throttleTimeSeconds: 3600"></textarea>
     <!-- marked.js for markdown rendering -->
     <script defer src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
-    <!-- CodeMirror for instruction library page editor -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5/lib/codemirror.min.css" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5/theme/dracula.min.css" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5/theme/eclipse.min.css" />
-    <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5/lib/codemirror.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5/mode/markdown/markdown.min.js"></script>
+    <!-- CodeMirror 6 (vendored bundle, exposes window.CM6) + themed markdown editor -->
+    <script src="/static/vendor/codemirror6.bundle.js"></script>
+    <script src="/static/markdownEditor.js"></script>
 
     <script src="/static/toast.js"></script>
     <script src="/static/fractalContext.js"></script>
@@ -3241,6 +3258,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/logDetail.js"></script>
     <script src="/static/worldmap.js"></script>
     <script src="/static/fieldStats.js"></script>
+    <script src="/static/columnSizing.js"></script>
     <script src="/static/queryExecutor.js"></script>
     <!-- Fractal selector removed - using main page fractal listing instead -->
     <script src="/static/fractalManagement.js"></script>
@@ -3248,7 +3266,6 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/apiKeys.js"></script>
     <script src="/static/ingestTokens.js"></script>
     <script src="/static/instructionLibraries.js"></script>
-    <script src="/static/queryTabs.js"></script>
     <script src="/static/notifications.js"></script>
     <script src="/static/app.js"></script>
 </body>

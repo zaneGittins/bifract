@@ -11,10 +11,6 @@ const Alerts = {
     // Alert editor state (identical to QueryExecutor)
     currentResults: [],
     fieldOrder: null,
-    sortColumn: null,
-    sortDirection: null,
-    columnWidths: {},
-    columnOrder: null,
     isAggregated: false,
     // Alert editor pagination state
     alertCurrentPage: 1,
@@ -2917,68 +2913,6 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 const isHidden = sqlOutput.style.display === 'none' || !sqlOutput.style.display;
                 sqlOutput.style.display = isHidden ? 'block' : 'none';
                 toggleSqlBtn.textContent = isHidden ? 'Hide SQL' : 'Show SQL';
-            });
-        }
-    },
-
-    // Column sorting for alert editor (identical to main search)
-    addAlertSortHandlers(table) {
-        const headers = table.querySelectorAll('th.sortable');
-        headers.forEach(header => {
-            header.addEventListener('click', (e) => {
-                // Don't trigger sort when clicking resizer or during drag
-                if (e.target.classList.contains('column-resizer') || header.classList.contains('dragging')) {
-                    return;
-                }
-
-                const field = header.dataset.field;
-                this.sortAlertResults(field);
-            });
-        });
-    },
-
-    sortAlertResults(field) {
-        if (this.sortColumn === field) {
-            // Toggle direction if same column
-            this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
-        } else {
-            // New column, default to ascending
-            this.sortColumn = field;
-            this.sortDirection = 'asc';
-        }
-
-        // Sort the results
-        const sorted = [...this.currentResults].sort((a, b) => {
-            let aVal = a[field];
-            let bVal = b[field];
-
-            // Handle null/undefined values
-            if (aVal === null || aVal === undefined) aVal = '';
-            if (bVal === null || bVal === undefined) bVal = '';
-
-            // Convert to strings for comparison
-            aVal = String(aVal).toLowerCase();
-            bVal = String(bVal).toLowerCase();
-
-            if (this.sortDirection === 'asc') {
-                return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
-            } else {
-                return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
-            }
-        });
-
-        // Update results and re-render
-        this.currentResults = sorted;
-        this.alertCurrentPage = 1; // Reset to first page after sort
-        this.updateAlertPagination();
-
-        // Use shared rendering method
-        const targetElement = document.getElementById('queryResults');
-        const pageResults = this.getCurrentAlertPageResults();
-        if (window.QueryExecutor) {
-            QueryExecutor.renderResultsToElement(pageResults, targetElement, this.fieldOrder, {
-                allResults: this.currentResults,
-                isAggregated: this.isAggregated
             });
         }
     },

@@ -35,7 +35,7 @@ const Autocomplete = {
                     this._hideMenu();
                     this._hideGhost();
                 } else {
-                    this._onInput(e.target);
+                    this._onInput(e.target, true);
                 }
             }
         });
@@ -47,7 +47,9 @@ const Autocomplete = {
 
         document.addEventListener('click', (e) => {
             if (e.target.tagName === 'TEXTAREA' && this._isQueryTextarea(e.target)) {
-                this._onInput(e.target);
+                // A click only repositions the caret -- refresh the ambient ghost
+                // but never auto-summon the menu from it. Ctrl+Space still works.
+                this._onInput(e.target, false);
             }
             this._maybeCloseOnOutsideClick(e);
         });
@@ -376,7 +378,7 @@ const Autocomplete = {
 
     // ===================== input handling =====================
 
-    _onInput(textarea) {
+    _onInput(textarea, fromTyping = true) {
         // Ignore programmatic input on a field the user is not editing (e.g.
         // loading a saved query, copy-to-query, undo/redo).
         if (document.activeElement !== textarea) { this._clearIdle(); this._hideMenu(); this._hideGhost(); return; }
@@ -384,10 +386,12 @@ const Autocomplete = {
         // If the browsable menu is open, keep it in sync with what's typed.
         if (this._menuVisible) { this._refilterMenu(textarea); return; }
 
-        // Otherwise drive the ambient inline ghost suggestion, and arm the idle
-        // reveal so the menu surfaces if the user pauses.
+        // Drive the ambient inline ghost suggestion. The idle auto-reveal is armed
+        // only by actual typing -- a click/caret move just repositions and clears
+        // any pending reveal, so moving around a query never pops the menu.
         this._computeGhost(textarea);
-        this._scheduleIdleReveal(textarea);
+        if (fromTyping) this._scheduleIdleReveal(textarea);
+        else this._clearIdle();
     },
 
     _clearIdle() {
@@ -404,16 +408,26 @@ const Autocomplete = {
             const trimmed = textarea.value.trim();
             if (trimmed === '' || trimmed === '*') return;
             const ctx = this._computeContext(textarea);
-            if (this._isCompletable(ctx)) this._openMenu(textarea);
+            if (this._shouldAutoReveal(ctx)) this._openMenu(textarea);
         }, this._idleDelay);
     },
 
     // Whether a context is worth revealing the menu for: a value slot, a token
-    // being typed, or the blank start of a pipeline segment.
+    // being typed, or the blank start of a pipeline segment. Used to keep an
+    // already-open menu alive and to gate the explicit Ctrl+Space path.
     _isCompletable(ctx) {
         if (ctx.kind === 'value') return true;
         if (ctx.partial && ctx.partial.length >= 1) return true;
         return !!ctx.afterPipe;
+    },
+
+    // Stricter gate for the automatic (idle) reveal: only pop the menu once the
+    // user has actually started something to complete -- a value slot (they typed
+    // `field=`) or a partial token. A blank pipeline segment or bare caret never
+    // auto-pops; Ctrl+Space still summons the full list there.
+    _shouldAutoReveal(ctx) {
+        if (ctx.kind === 'value') return true;
+        return !!(ctx.partial && ctx.partial.length >= 1);
     },
 
     // ===================== inline ghost text =====================

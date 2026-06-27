@@ -794,24 +794,22 @@ const Dashboards = {
 
         const rules = (widgetConfig && widgetConfig.row_coloring_rules) || [];
 
-        return `
-            <table class="results-table" style="width:100%;border-collapse:collapse;font-size:0.8rem;">
-                <thead>
-                    <tr>${headers.map(h => `<th style="padding:6px 8px;border-bottom:1px solid var(--border-color);text-align:left;background:var(--bg-tertiary);">${Utils.escapeHtml(h)}</th>`).join('')}</tr>
-                </thead>
-                <tbody>
-                    ${results.slice(0, 100).map(row => {
-                        const rowStyle = this.getRowHighlightStyle(row, rules);
-                        return `<tr style="${rowStyle}">${headers.map(h => {
-                            const val = row[h];
-                            const cellStyle = this.getCellHighlightStyle(row, h, rules);
-                            return `<td style="padding:6px 8px;border-bottom:1px solid var(--border-color);${cellStyle}">${Utils.escapeHtml(typeof val === 'object' ? JSON.stringify(val) : String(val ?? ''))}</td>`;
-                        }).join('')}</tr>`;
-                    }).join('')}
-                </tbody>
-            </table>
-            ${results.length > 100 ? '<div style="padding:8px;text-align:center;color:var(--text-muted);font-size:0.75rem;">Showing first 100 rows</div>' : ''}
-        `;
+        // Shared core renderer: smart sizing + resize/autofit (global delegation),
+        // with dashboard row/cell coloring via hooks. 'dash:' persistence
+        // namespace keeps widths independent from search/notebook tables.
+        const fractalId = (window.FractalContext && FractalContext.currentFractal && FractalContext.currentFractal.id) || 'default';
+        const built = QueryExecutor.buildResultsTable(headers, results, {
+            sizingKey: { fractalId: 'dash:' + fractalId, sig: ColumnSizing.signature(headers) },
+            features: { resize: true, reorder: false, sort: false },
+            maxRows: 100,
+            rowStyle: (row) => this.getRowHighlightStyle(row, rules),
+            cellStyle: (field, row) => this.getCellHighlightStyle(row, field, rules),
+            truncatedNote: '<div style="padding:8px;text-align:center;color:var(--text-muted);font-size:0.75rem;">Showing first 100 rows</div>',
+        });
+        // No extra scroll wrapper: .widget-content already scrolls (and is the
+        // height-constrained sticky-header ancestor); wrapping here would force
+        // overflow-y:auto and break the sticky thead.
+        return built.html;
     },
 
     evaluateRule(cellVal, rule) {

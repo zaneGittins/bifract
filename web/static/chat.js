@@ -7,59 +7,19 @@ const Chat = {
     currentConversationId: null,
     conversations: [],
     instructionLibraries: [],
-    currentChatSubTab: 'chat',
     isStreaming: false,
     currentReader: null,
     loadingInterval: null,
-    loadingMsgIndex: 0,
     initialized: false,
     chatCharts: [],
     autoScroll: true,
     lastUserMessage: null,
     conversationFilter: '',
 
-    loadingMessages: [
-        'Scanning threat vectors...',
-        'Correlating IOCs...',
-        'Querying SIEM...',
-        'Hunting APT patterns...',
-        'Analyzing anomalies...',
-        'Pivoting on indicators...',
-        'Enriching with threat intel...',
-        'De-obfuscating payload...',
-        'Checking lateral movement...',
-        'Parsing PCAP...',
-        'Tracing beaconing behavior...',
-        'Fingerprinting signatures...',
-        'Running heuristics...',
-        'Inspecting egress traffic...',
-    ],
-
     init() {
         if (this.initialized) return;
         this.initialized = true;
         this.bindEvents();
-    },
-
-    switchSubTab(tab) {
-        window.App?.pushSubPath(tab === 'chat' ? '' : tab);
-        this.currentChatSubTab = tab;
-        const tabBar = document.getElementById('chatSubTabs');
-        if (tabBar) {
-            tabBar.querySelectorAll('.alerts-sub-tab').forEach(btn => btn.classList.remove('active'));
-            const activeBtn = tabBar.querySelector(`.alerts-sub-tab[data-subtab="${tab}"]`);
-            if (activeBtn) activeBtn.classList.add('active');
-        }
-        const chatPanel = document.getElementById('chatSubTabChat');
-        const libPanel = document.getElementById('chatSubTabLibraries');
-        if (tab === 'chat') {
-            if (chatPanel) chatPanel.style.display = '';
-            if (libPanel) libPanel.style.display = 'none';
-        } else {
-            if (chatPanel) chatPanel.style.display = 'none';
-            if (libPanel) libPanel.style.display = '';
-            if (window.InstructionLibraries) InstructionLibraries.show();
-        }
     },
 
     bindEvents() {
@@ -106,25 +66,47 @@ const Chat = {
             this.renderConversationList();
         });
 
+        // Sidebar collapse/expand
+        const collapseBtn = document.getElementById('chatCollapseBtn');
+        if (collapseBtn) collapseBtn.addEventListener('click', () => this.toggleSidebar(true));
+        const expandBtn = document.getElementById('chatExpandBtn');
+        if (expandBtn) expandBtn.addEventListener('click', () => this.toggleSidebar(false));
+        const railNewBtn = document.getElementById('chatRailNewBtn');
+        if (railNewBtn) railNewBtn.addEventListener('click', () => this.createConversation());
+        this.applySidebarState();
+
         // Auto-scroll detection: pause when user scrolls up
-        const msgsEl = document.getElementById('chatMessages');
-        if (msgsEl) {
-            msgsEl.addEventListener('scroll', () => {
-                const atBottom = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 40;
+        const scrollEl = document.querySelector('.chat-thread-scroll');
+        if (scrollEl) {
+            scrollEl.addEventListener('scroll', () => {
+                const atBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 40;
                 this.autoScroll = atBottom;
             });
         }
     },
 
+    SIDEBAR_KEY: 'bifract-chat-sidebar-collapsed',
+
+    applySidebarState() {
+        const layout = document.querySelector('.chat-layout');
+        if (!layout) return;
+        // Default to collapsed for a focused first impression; remember the choice after.
+        const stored = localStorage.getItem(this.SIDEBAR_KEY);
+        const collapsed = stored === null ? true : stored === '1';
+        layout.classList.toggle('sidebar-collapsed', collapsed);
+    },
+
+    toggleSidebar(collapsed) {
+        const layout = document.querySelector('.chat-layout');
+        if (!layout) return;
+        if (collapsed === undefined) collapsed = !layout.classList.contains('sidebar-collapsed');
+        layout.classList.toggle('sidebar-collapsed', collapsed);
+        try { localStorage.setItem(this.SIDEBAR_KEY, collapsed ? '1' : '0'); } catch (e) {}
+    },
+
     show(subPath = '') {
         const fractal = window.FractalContext?.currentFractal;
         if (!fractal) return;
-        if (subPath === 'libraries') {
-            this.loadConversations();
-            this.loadInstructions();
-            this.switchSubTab('libraries');
-            return;
-        }
         if (subPath) this.currentConversationId = subPath;
         this.loadConversations();
         this.loadInstructions();
@@ -441,9 +423,11 @@ const Chat = {
         switch (event.type) {
             case 'token':
                 if (!hasContent) { this.clearBubbleLoading(contentEl); contentEl.innerHTML = ''; hasContent = true; }
+                this.setStatus('Writing');
                 this.appendToken(contentEl, event.content);
                 break;
             case 'tool_call':
+                this.setStatus(this._toolStatus(event.tool_name));
                 if (event.tool_name === 'present_results' || event.tool_name === 'render_chart' || event.tool_name === 'think') break;
                 if (!hasContent) { this.clearBubbleLoading(contentEl); contentEl.innerHTML = ''; hasContent = true; }
                 this.renderToolCall(contentEl, event.tool_name, event.tool_args);
@@ -453,6 +437,7 @@ const Chat = {
                 this.renderToolResult(contentEl, event.tool_name, event.tool_result);
                 break;
             case 'think':
+                this.setStatus('Thinking');
                 if (!hasContent) { this.clearBubbleLoading(contentEl); contentEl.innerHTML = ''; hasContent = true; }
                 this.renderThinkBlock(contentEl, event.tool_args);
                 break;
@@ -594,7 +579,7 @@ const Chat = {
     createAssistantBubble() {
         const div = document.createElement('div');
         div.className = 'chat-message chat-message-assistant';
-        div.innerHTML = `<div class="chat-msg-label">Bot</div><div class="chat-msg-content"><span class="chat-loading-text"></span></div>`;
+        div.innerHTML = `<div class="chat-msg-content"><span class="chat-loading-text"></span></div>`;
         return div;
     },
 
@@ -635,84 +620,101 @@ const Chat = {
         }
     },
 
+    // Find or create the unified investigation trace for an assistant turn.
+    // Steps are inserted above the streamed answer text.
+    _traceEl(contentEl) {
+        let trace = contentEl.querySelector(':scope > .chat-trace');
+        if (!trace) {
+            trace = document.createElement('div');
+            trace.className = 'chat-trace';
+            const firstText = contentEl.querySelector('.chat-streaming-text, .chat-msg-text');
+            if (firstText) contentEl.insertBefore(trace, firstText);
+            else contentEl.appendChild(trace);
+        }
+        return trace;
+    },
+
+    _traceStep(label, type) {
+        const step = document.createElement('div');
+        step.className = 'chat-trace-step collapsed';
+        if (type) step.dataset.type = type;
+        step.innerHTML = `
+            <div class="chat-trace-step-header">
+                <span class="chat-trace-node"></span>
+                <span class="chat-trace-chevron">&#9656;</span>
+                <span class="chat-trace-label"></span>
+                <span class="chat-trace-summary"></span>
+            </div>
+            <div class="chat-trace-step-body"></div>
+        `;
+        step.querySelector('.chat-trace-label').textContent = label;
+        step.querySelector('.chat-trace-step-header').addEventListener('click', () => step.classList.toggle('collapsed'));
+        return step;
+    },
+
     renderThinkBlock(contentEl, args) {
         this.trimTrailingWhitespace(contentEl);
-        const div = document.createElement('div');
-        div.className = 'chat-think-block collapsed';
+        const trace = this._traceEl(contentEl);
         const reasoning = args?.reasoning || '';
-        div.innerHTML = `
-            <div class="chat-think-header">
-                <span class="chat-think-chevron">&#9656;</span>
-                <span class="chat-think-label">Thinking</span>
-                <span class="chat-think-summary">${Utils.escapeHtml(reasoning.length > 80 ? reasoning.substring(0, 80) + '...' : reasoning)}</span>
-            </div>
-            <div class="chat-think-content">${Utils.escapeHtml(reasoning)}</div>
-        `;
-        div.querySelector('.chat-think-header').addEventListener('click', () => {
-            div.classList.toggle('collapsed');
-        });
-        contentEl.appendChild(div);
+        const step = this._traceStep('Thinking', 'think');
+        step.querySelector('.chat-trace-summary').textContent = reasoning.length > 90 ? reasoning.slice(0, 90) + '…' : reasoning;
+        const think = document.createElement('div');
+        think.className = 'chat-trace-think';
+        think.textContent = reasoning;
+        step.querySelector('.chat-trace-step-body').appendChild(think);
+        trace.appendChild(step);
     },
 
     renderToolCall(contentEl, toolName, args) {
         this.trimTrailingWhitespace(contentEl);
-        const div = document.createElement('div');
-        div.className = 'chat-tool-call collapsed';
+        const trace = this._traceEl(contentEl);
 
+        let label, summary, query = '';
         if (toolName === 'get_fields') {
-            div.innerHTML = `
-                <div class="chat-tool-header">
-                    <span class="chat-tool-chevron">&#9656;</span>
-                    <span class="chat-tool-name">fields</span>
-                    <span class="chat-tool-summary">discovering available fields</span>
-                </div>
-            `;
+            label = 'Read fields'; summary = 'discovering available fields';
         } else if (toolName === 'search_alerts') {
             const search = args?.search || '';
-            div.innerHTML = `
-                <div class="chat-tool-header">
-                    <span class="chat-tool-chevron">&#9656;</span>
-                    <span class="chat-tool-name">alerts</span>
-                    <span class="chat-tool-summary">${search ? 'searching: ' + Utils.escapeHtml(search) : 'listing all alerts'}</span>
-                </div>
-            `;
+            label = 'Searched alerts'; summary = search ? 'searching: ' + search : 'listing all alerts';
+        } else if (toolName === 'validate_bql') {
+            query = args?.query || ''; label = 'Checked query'; summary = query;
         } else {
-            const query = args?.query || '';
-            const timeMeta = Utils.escapeHtml(document.getElementById('chatTimeRange')?.value || '24h');
-            div.innerHTML = `
-                <div class="chat-tool-header">
-                    <span class="chat-tool-chevron">&#9656;</span>
-                    <span class="chat-tool-name">query</span>
-                    <span class="chat-tool-summary">${Utils.escapeHtml(query)}</span>
-                    <span class="chat-tool-meta">${timeMeta}</span>
-                    <span class="chat-tool-search" title="Open in search">
-                        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="2"/>
-                            <line x1="10.5" y1="10.5" x2="15" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                        </svg>
-                    </span>
-                </div>
-                <pre class="chat-tool-query">${Utils.escapeHtml(query)}</pre>
-            `;
-            // Search icon click -> open in search view
-            div.querySelector('.chat-tool-search').addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.openInSearch(query);
-            });
+            query = args?.query || ''; label = 'Ran query'; summary = query;
         }
-        div.querySelector('.chat-tool-header').addEventListener('click', () => {
-            div.classList.toggle('collapsed');
-        });
-        contentEl.appendChild(div);
+
+        const step = this._traceStep(label, toolName);
+        step.querySelector('.chat-trace-summary').textContent = summary;
+        const header = step.querySelector('.chat-trace-step-header');
+        const body = step.querySelector('.chat-trace-step-body');
+
+        if (query) {
+            const meta = document.createElement('span');
+            meta.className = 'chat-trace-meta';
+            meta.textContent = document.getElementById('chatTimeRange')?.value || '24h';
+            header.appendChild(meta);
+
+            const open = document.createElement('span');
+            open.className = 'chat-trace-open';
+            open.title = 'Open in search';
+            open.innerHTML = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="2"/><line x1="10.5" y1="10.5" x2="15" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+            open.addEventListener('click', (e) => { e.stopPropagation(); this.openInSearch(query); });
+            header.appendChild(open);
+
+            const pre = document.createElement('pre');
+            pre.className = 'chat-trace-query';
+            pre.textContent = query;
+            body.appendChild(pre);
+        }
+        trace.appendChild(step);
     },
 
     renderToolResult(contentEl, toolName, result) {
-        // Find the last tool-call block and attach result to it
-        const toolCalls = contentEl.querySelectorAll('.chat-tool-call');
-        const targetCall = toolCalls[toolCalls.length - 1] || contentEl;
+        // Attach the result to the most recent trace step.
+        const trace = contentEl.querySelector(':scope > .chat-trace');
+        const steps = trace ? trace.querySelectorAll('.chat-trace-step') : [];
+        const targetCall = steps.length ? steps[steps.length - 1].querySelector('.chat-trace-step-body') : contentEl;
 
         const resultDiv = document.createElement('div');
-        resultDiv.className = 'chat-tool-result';
+        resultDiv.className = 'chat-trace-result';
 
         if (result?.error) {
             resultDiv.innerHTML = `<span class="chat-error">Error: ${Utils.escapeHtml(result.error)}</span>`;
@@ -884,45 +886,44 @@ const Chat = {
 
     startLoadingAnimation(contentEl) {
         if (!contentEl) return;
-        this.loadingMsgIndex = Math.floor(Math.random() * this.loadingMessages.length);
-
-        // Show in-bubble loading dot
         const textEl = contentEl.querySelector('.chat-loading-text');
-        if (textEl) textEl.textContent = '...';
-
-        // Show bottom-left status indicator with cycling messages
-        this.showStatusIndicator();
+        if (textEl) textEl.textContent = '';
+        this.setStatus('Thinking');
     },
 
-    // Remove in-bubble "..." but keep the status indicator running
+    // Remove the in-bubble loading marker but keep the status indicator running
     clearBubbleLoading(contentEl) {
         const el = contentEl?.querySelector('.chat-loading-text');
         if (el) el.remove();
     },
 
-    showStatusIndicator() {
-        const indicator = document.getElementById('chatStatusIndicator');
-        const statusText = document.getElementById('chatStatusText');
-        if (indicator) indicator.style.display = 'flex';
-
-        this.loadingMsgIndex = Math.floor(Math.random() * this.loadingMessages.length);
-        const update = () => {
-            if (statusText) {
-                statusText.textContent = this.loadingMessages[this.loadingMsgIndex % this.loadingMessages.length];
-                this.loadingMsgIndex++;
-            }
-        };
-        update();
-        if (!this.loadingInterval) {
-            this.loadingInterval = setInterval(update, 2200);
+    // Map a tool name to an honest, present-tense status label.
+    _toolStatus(name) {
+        switch (name) {
+            case 'get_fields': return 'Reading fields';
+            case 'search_alerts': return 'Searching alerts';
+            case 'validate_bql': return 'Checking query';
+            case 'run_query': return 'Running query';
+            case 'read_instruction_page': return 'Reading library';
+            case 'render_chart': return 'Building chart';
+            case 'present_results': return 'Summarizing';
+            case 'think': return 'Thinking';
+            default: return 'Working';
         }
     },
 
+    // Show the status line with the actual current step (no random phrases).
+    setStatus(text) {
+        const indicator = document.getElementById('chatStatusIndicator');
+        const statusText = document.getElementById('chatStatusText');
+        if (indicator) indicator.style.display = 'flex';
+        if (statusText) statusText.textContent = text + '…';
+    },
+
+    // Back-compat alias.
+    showStatusIndicator() { this.setStatus('Working'); },
+
     hideStatusIndicator() {
-        if (this.loadingInterval) {
-            clearInterval(this.loadingInterval);
-            this.loadingInterval = null;
-        }
         const indicator = document.getElementById('chatStatusIndicator');
         if (indicator) indicator.style.display = 'none';
     },
@@ -958,8 +959,8 @@ const Chat = {
     },
 
     scrollToBottom() {
-        const msgs = document.getElementById('chatMessages');
-        if (msgs) msgs.scrollTop = msgs.scrollHeight;
+        const scrollEl = document.querySelector('.chat-thread-scroll');
+        if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
     },
 
     async analyzeLog(logData) {

@@ -1018,6 +1018,7 @@ func main() {
 			// Alert Feeds
 			// Instruction Libraries
 			r.Get("/instruction-libraries", instructionHandler.HandleListLibraries)
+			r.Get("/instruction-libraries/ensure-default", instructionHandler.HandleEnsureDefaultLibrary)
 			r.Post("/instruction-libraries", instructionHandler.HandleCreateLibrary)
 			r.Get("/instruction-libraries/{id}", instructionHandler.HandleGetLibrary)
 			r.Put("/instruction-libraries/{id}", instructionHandler.HandleUpdateLibrary)
@@ -1025,7 +1026,13 @@ func main() {
 			r.Get("/instruction-libraries/{id}/pages", instructionHandler.HandleListPages)
 			r.Post("/instruction-libraries/{id}/pages", instructionHandler.HandleCreatePage)
 			r.Get("/instruction-libraries/{id}/pages/{pageId}", instructionHandler.HandleGetPage)
+			r.Get("/instruction-libraries/{id}/pages/{pageId}/backlinks", instructionHandler.HandleGetBacklinks)
 			r.Put("/instruction-libraries/{id}/pages/{pageId}", instructionHandler.HandleUpdatePage)
+			r.Patch("/instruction-libraries/{id}/pages/{pageId}/move", instructionHandler.HandleMovePage)
+			r.Get("/instruction-libraries/{id}/folders", instructionHandler.HandleListFolders)
+			r.Post("/instruction-libraries/{id}/folders", instructionHandler.HandleCreateFolder)
+			r.Put("/instruction-libraries/{id}/folders/{folderId}", instructionHandler.HandleUpdateFolder)
+			r.Delete("/instruction-libraries/{id}/folders/{folderId}", instructionHandler.HandleDeleteFolder)
 			r.Delete("/instruction-libraries/{id}/pages/{pageId}", instructionHandler.HandleDeletePage)
 			r.Post("/instruction-libraries/{id}/sync", instructionHandler.HandleSyncLibrary)
 

@@ -1773,29 +1773,20 @@ const Notebooks = {
 
         const rules = (sectionConfig && sectionConfig.row_coloring_rules) || [];
 
-        return `
-            <table class="results-table" style="width: 100%; border-collapse: collapse;">
-                <thead>
-                    <tr>
-                        ${headers.map(header => `<th style="padding: 8px; border-bottom: 1px solid var(--border-color); text-align: left; background: var(--bg-tertiary);">${Utils.escapeHtml(header)}</th>`).join('')}
-                    </tr>
-                </thead>
-                <tbody>
-                    ${results.slice(0, 100).map(row => {
-                        const rowStyle = this.getRowHighlightStyle(row, rules);
-                        return `<tr style="${rowStyle}">
-                            ${headers.map(header => {
-                                const value = row[header];
-                                const displayValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
-                                const cellStyle = this.getCellHighlightStyle(row, header, rules);
-                                return `<td style="padding: 8px; border-bottom: 1px solid var(--border-color); font-size: 0.85rem;${cellStyle}">${Utils.escapeHtml(displayValue)}</td>`;
-                            }).join('')}
-                        </tr>`;
-                    }).join('')}
-                </tbody>
-            </table>
-            ${results.length > 100 ? '<div style="padding: 10px; text-align: center; color: var(--text-muted); font-size: 0.8rem;">Showing first 100 results</div>' : ''}
-        `;
+        // Shared core renderer: smart sizing + resize/autofit (global delegation),
+        // with notebook row/cell coloring supplied via hooks. Scoped to a 'nb:'
+        // persistence namespace so widths stay independent from search tables.
+        const fractalId = (window.FractalContext && FractalContext.currentFractal && FractalContext.currentFractal.id) || 'default';
+        const built = QueryExecutor.buildResultsTable(headers, results, {
+            sizingKey: { fractalId: 'nb:' + fractalId, sig: ColumnSizing.signature(headers) },
+            features: { resize: true, reorder: false, sort: false },
+            maxRows: 100,
+            rowStyle: (row) => this.getRowHighlightStyle(row, rules),
+            cellStyle: (field, row) => this.getCellHighlightStyle(row, field, rules),
+            truncatedNote: '<div style="padding: 10px; text-align: center; color: var(--text-muted); font-size: 0.8rem;">Showing first 100 results</div>',
+        });
+        // .query-results-container already provides horizontal scroll; no wrapper.
+        return built.html;
     },
 
     evaluateRule(cellVal, rule) {

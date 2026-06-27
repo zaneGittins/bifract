@@ -4,7 +4,6 @@ const QueryExecutor = {
     currentTimeRange: null,
     sortColumn: null,
     sortDirection: null,
-    columnWidths: {},
     columnOrder: null,
     isAggregated: false,
     limitHit: null,
@@ -1094,6 +1093,18 @@ const QueryExecutor = {
             }
         }
 
+        // Layout key for this fractal + query shape (order-independent), used
+        // for both persisted widths and persisted column order.
+        const fractalId = this.currentFractalId || 'default';
+        const sizingSig = ColumnSizing.signature(fields);
+
+        // Hydrate any saved column order for this layout (once per result set;
+        // cleared on fractal switch). A share-link/explicit order takes priority.
+        if (this.columnOrder === null || this.columnOrder === undefined) {
+            const savedOrder = ColumnSizing.loadOrder(fractalId, sizingSig);
+            if (savedOrder && savedOrder.length) this.columnOrder = savedOrder;
+        }
+
         // Apply custom column order if available
         if (this.columnOrder && this.columnOrder.length > 0) {
             const orderedFields = [];
@@ -1123,113 +1134,202 @@ const QueryExecutor = {
         // log_id stays in the row data so the detail pane can still fetch by it.
         if (hasRawLog) fields = fields.filter(f => f !== 'log_id');
 
-        // Build table with sortable headers
-        const numericFields = new Set(fields.filter(field =>
+        this._sizingFractalId = fractalId;
+        this._sizingSig = sizingSig;
+        this._displayFields = fields.slice();
+
+        // Build via the shared core renderer with the full interaction set.
+        const built = this.buildResultsTable(fields, results, {
+            sizingKey: { fractalId, sig: sizingSig },
+            features: { resize: true, reorder: true, sort: true },
+            sortColumn: this.sortColumn,
+            sortDirection: this.sortDirection,
+            rowClass: (row) => (window.Comments && Comments.hasComments(row)) ? 'has-comments' : '',
+            onSort: (field) => this.sortByColumn(field),
+            onReorder: (field, targetIndex) => this._applyReorder(field, targetIndex),
+            onRowClick: (row, index, rowEl) => {
+                let detailData = row;
+                if (row._all_fields && typeof row._all_fields === 'object') {
+                    detailData = {
+                        ...row._all_fields,
+                        timestamp: row.timestamp,
+                        log_id: row.log_id,
+                        fractal_id: row.fractal_id,
+                        _shard_num: row._shard_num
+                    };
+                }
+                if (window.LogDetail) {
+                    document.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
+                    rowEl.classList.add('selected');
+                    LogDetail.setContext(results, index, this.isAggregated);
+                    LogDetail.show(detailData, this.isAggregated);
+                }
+            },
+            afterMount: () => { if (window.TimeBar) TimeBar.addRelativeTimeTooltips(); },
+        });
+
+        resultsTable.innerHTML = built.html;
+        built.mount(resultsTable);
+    },
+
+    // ---- Shared results-table renderer -------------------------------------
+    // Single source of truth for every results table (main search, alert/model
+    // editors, notebooks, dashboards). Given a final ordered `fields` list and
+    // `results`, returns { html, mount(root) }: insert `html` wherever, then call
+    // mount(root) on the inserted container to wire sizing/resize/reorder/sort/
+    // row-click and lazy JSON highlighting. Surface-specific behaviour is
+    // supplied through hooks rather than forked implementations.
+    _tableSeq: 0,
+
+    _computeNumericFields(fields, results) {
+        return new Set(fields.filter(field =>
             results.length > 0 && results.every(r => {
                 const v = r[field];
                 return v !== undefined && v !== null && v !== '' && !isNaN(Number(v));
             })
         ));
+    },
 
-        let html = '<table class="results-table"><thead><tr>';
+    _defaultCellHTML(field, value, numericFields) {
+        let cellClass = field === 'timestamp' ? 'timestamp-cell'
+            : field === 'raw_log' ? 'raw-log-col'
+            : (numericFields.has(field) ? 'numeric-col' : '');
+        let html;
+        if (typeof value === 'object' && value !== null) {
+            html = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(JSON.stringify(value))}</span>`;
+            cellClass += ' json-cell';
+        } else if (value === undefined || value === null) {
+            html = '-';
+            cellClass += ' null-cell';
+        } else if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
+            html = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(value)}</span>`;
+            cellClass += ' json-cell';
+        } else {
+            html = Utils.escapeHtml(String(value));
+        }
+        return { html, cellClass };
+    },
+
+    buildResultsTable(fields, results, opts = {}) {
+        const features = Object.assign({ resize: true, reorder: false, sort: false }, opts.features || {});
+        const rows = (opts.maxRows && results.length > opts.maxRows) ? results.slice(0, opts.maxRows) : results;
+        // Detect numeric columns and sample widths over the rows we actually
+        // render (not the full result set), so capped tables stay cheap.
+        const numericFields = opts.numeric === false ? new Set() : this._computeNumericFields(fields, rows);
+        const fractalId = (opts.sizingKey && opts.sizingKey.fractalId) || 'default';
+        const sig = (opts.sizingKey && opts.sizingKey.sig) || ColumnSizing.signature(fields);
+        const sizing = ColumnSizing.resolve(fractalId, fields, rows, numericFields, sig);
+
+        const seq = ++this._tableSeq;
+
+        let tableClass = 'results-table is-fixed';
+        if (features.reorder) tableClass += ' col-reorderable';
+
+        // Stamp the persistence key so the globally-delegated resize/autofit
+        // handler can save widths without any per-table wiring.
+        const sizeAttrs = features.resize
+            ? ` data-colsize-fractal="${Utils.escapeAttr(fractalId)}" data-colsize-sig="${Utils.escapeAttr(sig)}"`
+            : '';
+
+        let html = `<table class="${tableClass}" data-table-id="${seq}"${sizeAttrs}>` + ColumnSizing.buildColgroup(fields, sizing) + '<thead><tr>';
         fields.forEach(field => {
-            const displayName = field;
-            const sortIcon = this.sortColumn === field
-                ? (this.sortDirection === 'asc' ? ' ▲' : ' ▼')
-                : '';
-            const width = this.columnWidths[field] ? `style="width: ${this.columnWidths[field]}px"` : '';
+            const sortable = features.sort ? ' sortable' : '';
+            const sortIcon = (features.sort && opts.sortColumn === field)
+                ? (opts.sortDirection === 'asc' ? ' ▲' : ' ▼') : '';
             const numClass = numericFields.has(field) ? ' numeric-col' : (field === 'raw_log' ? ' raw-log-col' : '');
-            html += `<th class="sortable${numClass}" data-field="${Utils.escapeAttr(field)}" ${width}>${Utils.escapeHtml(displayName)}${sortIcon}<div class="column-resizer"></div></th>`;
+            const resizer = features.resize ? '<div class="column-resizer"></div>' : '';
+            html += `<th class="${sortable.trim()}${numClass}" data-field="${Utils.escapeAttr(field)}">${Utils.escapeHtml(field)}${sortIcon}${resizer}</th>`;
         });
-        html += (hasRawLog ? '' : '<th class="filler-col"></th>') + '</tr></thead><tbody>';
+        html += (sizing.hasFiller ? '<th class="filler-col"></th>' : '') + '</tr></thead><tbody>';
 
-        results.forEach((result, index) => {
-            // Check if this log has comments
-            const hasComments = window.Comments && Comments.hasComments(result);
-            const rowClass = hasComments ? 'result-row has-comments' : 'result-row';
-
-            html += '<tr class="' + rowClass + '" data-index="' + index + '">';
+        rows.forEach((result, index) => {
+            const extra = opts.rowClass ? (opts.rowClass(result, index) || '') : '';
+            const rowStyle = opts.rowStyle ? (opts.rowStyle(result, index) || '') : '';
+            html += `<tr class="result-row${extra ? ' ' + extra : ''}" data-index="${index}"${rowStyle ? ` style="${rowStyle}"` : ''}>`;
             fields.forEach(field => {
-                let value = result[field];
-                let cellClass = field === 'timestamp' ? 'timestamp-cell'
-                    : field === 'raw_log' ? 'raw-log-col'
-                    : (numericFields.has(field) ? 'numeric-col' : '');
-
-                if (typeof value === 'object' && value !== null) {
-                    const jsonStr = JSON.stringify(value);
-                    value = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(jsonStr)}</span>`;
-                    cellClass += ' json-cell';
-                } else if (value === undefined || value === null) {
-                    value = '-';
-                    cellClass += ' null-cell';
-                } else if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
-                    value = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(value)}</span>`;
-                    cellClass += ' json-cell';
+                const value = result[field];
+                let cellHtml, cellClass;
+                const custom = opts.cellRender ? opts.cellRender(field, value, result) : null;
+                if (custom !== null && custom !== undefined) {
+                    cellHtml = custom;
+                    cellClass = field === 'timestamp' ? 'timestamp-cell' : (numericFields.has(field) ? 'numeric-col' : '');
                 } else {
-                    value = Utils.escapeHtml(String(value));
+                    const d = this._defaultCellHTML(field, value, numericFields);
+                    cellHtml = d.html;
+                    cellClass = d.cellClass;
                 }
-
-                html += `<td class="${cellClass}">${value}</td>`;
+                const cellStyle = opts.cellStyle ? (opts.cellStyle(field, result) || '') : '';
+                html += `<td class="${cellClass}"${cellStyle ? ` style="${cellStyle}"` : ''}>${cellHtml}</td>`;
             });
-            html += (hasRawLog ? '' : '<td class="filler-col"></td>') + '</tr>';
+            html += (sizing.hasFiller ? '<td class="filler-col"></td>' : '') + '</tr>';
         });
 
         html += '</tbody></table>';
-        resultsTable.innerHTML = html;
+        if (opts.truncatedNote && results.length > rows.length) html += opts.truncatedNote;
 
-        // Lazy-highlight JSON cells as they scroll into view
-        this.lazyHighlightJSON(resultsTable);
+        const self = this;
+        const mount = (root) => {
+            if (!root) return null;
+            const table = root.querySelector(`table[data-table-id="${seq}"]`);
+            if (!table) return null;
 
-        // Event delegation for row clicks
-        const tbody = resultsTable.querySelector('tbody');
-        if (tbody) {
-            tbody.addEventListener('click', (e) => {
-                if (e.target.classList.contains('column-resizer')) return;
-                const row = e.target.closest('.result-row');
-                if (!row) return;
+            if (opts.lazyJson !== false) self.lazyHighlightJSON(root);
 
-                const index = parseInt(row.dataset.index);
-                const logData = results[index];
+            // Resize + autofit are handled by ColumnSizing's global delegation
+            // (keyed off the data-colsize-* attributes), so no wiring here.
 
-                let detailData = logData;
-                if (logData._all_fields && typeof logData._all_fields === 'object') {
-                    detailData = {
-                        ...logData._all_fields,
-                        timestamp: logData.timestamp,
-                        log_id: logData.log_id,
-                        fractal_id: logData.fractal_id,
-                        _shard_num: logData._shard_num
-                    };
-                }
+            if (features.reorder && opts.onReorder) {
+                ColumnSizing.attachReordering(table, opts.onReorder);
+            }
 
-                if (window.LogDetail) {
-                    document.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
-                    row.classList.add('selected');
-                    LogDetail.setContext(results, index, this.isAggregated);
-                    LogDetail.show(detailData, this.isAggregated);
-                }
-            });
-        }
+            if (features.sort && opts.onSort) {
+                const thead = table.querySelector('thead');
+                if (thead) thead.addEventListener('click', (e) => {
+                    const header = e.target.closest('th[data-field]');
+                    if (!header) return;
+                    if (e.target.classList.contains('column-resizer')) return;
+                    // Swallow the click that trails a drag-to-reorder so it doesn't sort.
+                    const now = (window.performance ? performance.now() : Date.now());
+                    if (self._lastReorderTs && (now - self._lastReorderTs) < 300) return;
+                    opts.onSort(header.dataset.field);
+                });
+            }
 
-        // Event delegation for sortable header clicks
-        const thead = resultsTable.querySelector('thead');
-        if (thead) {
-            thead.addEventListener('click', (e) => {
-                const header = e.target.closest('th.sortable');
-                if (!header) return;
-                if (e.target.classList.contains('column-resizer')) return;
-                this.sortByColumn(header.dataset.field);
-            });
-        }
+            if (opts.onRowClick) {
+                const tbody = table.querySelector('tbody');
+                if (tbody) tbody.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('column-resizer')) return;
+                    const rowEl = e.target.closest('.result-row');
+                    if (!rowEl) return;
+                    const index = parseInt(rowEl.dataset.index);
+                    opts.onRowClick(rows[index], index, rowEl, e);
+                });
+            }
 
-        // Add column resizing handlers
-        this.setupColumnResizing();
+            if (opts.afterMount) opts.afterMount(root, table);
+            return table;
+        };
 
+        return { html, mount, sizing, numericFields, seq };
+    },
 
-        // Add relative time tooltips
-        if (window.TimeBar) {
-            TimeBar.addRelativeTimeTooltips();
-        }
+    // Splice a dragged column into the persisted display order and re-render.
+    _applyReorder(field, targetIndex) {
+        const order = (this._displayFields || []).slice();
+        const from = order.indexOf(field);
+        if (from === -1) return;
+        order.splice(from, 1);
+        let to = (from < targetIndex) ? targetIndex - 1 : targetIndex;
+        to = Math.max(0, Math.min(order.length, to));
+        if (to === from) return;
+        order.splice(to, 0, field);
+
+        this.columnOrder = order;
+        if (this._sizingSig) ColumnSizing.saveOrder(this._sizingFractalId || 'default', this._sizingSig, order);
+        this._lastReorderTs = (window.performance ? performance.now() : Date.now());
+
+        const page = window.Pagination ? Pagination.getCurrentPageResults() : this.currentResults;
+        this.renderResults(page);
     },
 
     // Update comment highlighting on already-rendered rows
@@ -1246,51 +1346,6 @@ const QueryExecutor = {
             if (Comments.hasComments(logData)) {
                 row.classList.add('has-comments');
             }
-        });
-    },
-
-    setupColumnResizing() {
-        const resizers = document.querySelectorAll('.column-resizer');
-        resizers.forEach(resizer => {
-            resizer.addEventListener('mousedown', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const th = resizer.parentElement;
-                const table = th.closest('table');
-                const field = th.dataset.field;
-                const startX = e.pageX;
-
-                // Freeze all column widths and switch to fixed layout so resizing
-                // one column doesn't cause the browser to reflow the others.
-                if (table.style.tableLayout !== 'fixed') {
-                    table.querySelectorAll('thead th:not(.filler-col)').forEach(t => {
-                        t.style.width = t.offsetWidth + 'px';
-                    });
-                    table.style.tableLayout = 'fixed';
-                }
-
-                const startWidth = th.offsetWidth;
-                th.classList.add('resizing');
-                document.body.classList.add('col-resizing');
-
-                const onMouseMove = (e) => {
-                    const newWidth = startWidth + (e.pageX - startX);
-                    if (newWidth > 50) {
-                        th.style.width = newWidth + 'px';
-                        this.columnWidths[field] = newWidth;
-                    }
-                };
-
-                const onMouseUp = () => {
-                    th.classList.remove('resizing');
-                    document.body.classList.remove('col-resizing');
-                    document.removeEventListener('mousemove', onMouseMove);
-                    document.removeEventListener('mouseup', onMouseUp);
-                };
-
-                document.addEventListener('mousemove', onMouseMove);
-                document.addEventListener('mouseup', onMouseUp);
-            });
         });
     },
 
@@ -1559,44 +1614,9 @@ const QueryExecutor = {
         }
     },
 
-    // Render results for alert editor (reuses main rendering logic)
-    renderForAlertEditor(results, fieldOrder, elementsConfig) {
-        const elements = this.getElements(elementsConfig);
-
-        if (!elements.resultsTable || !results || results.length === 0) {
-            if (elements.resultsTable) {
-                elements.resultsTable.innerHTML = '<div class="no-results">No results found</div>';
-            }
-            return;
-        }
-
-        // Store field order for rendering
-        const originalFieldOrder = this.fieldOrder;
-        this.fieldOrder = fieldOrder;
-
-        // Use existing renderResults logic but with different target element
-        const originalResultsTable = document.getElementById(this.elementConfig.resultsTable);
-        const alertResultsTable = elements.resultsTable;
-
-        // Temporarily replace the target element ID
-        const originalId = alertResultsTable.id;
-        const tempId = this.elementConfig.resultsTable + '_temp';
-        alertResultsTable.id = tempId;
-
-        // Store original element config and temporarily use alert config
-        const originalConfig = this.elementConfig;
-        this.elementConfig = elementsConfig;
-
-        // Call existing renderResults method
-        this.renderResults(results);
-
-        // Restore original configuration
-        this.elementConfig = originalConfig;
-        alertResultsTable.id = originalId;
-        this.fieldOrder = originalFieldOrder;
-    },
-
-    // Simple method to render results to any target element
+    // Render results to any target element (alert editor, model search, ...).
+    // Thin wrapper over the shared core: resize + autofit + persistence, no sort
+    // or reorder, optional detail-view on row click.
     renderResultsToElement(results, targetElement, fieldOrder = null, options = {}) {
         if (!targetElement || !results || results.length === 0) {
             if (targetElement) {
@@ -1605,97 +1625,39 @@ const QueryExecutor = {
             return;
         }
 
-        // Use field order from backend if available
         let fields = [];
         if (fieldOrder && fieldOrder.length > 0) {
             fields = fieldOrder.filter(f => f !== 'fractal_id');
-        } else if (results.length > 0) {
-            const firstResult = results[0];
-            for (const key of Object.keys(firstResult)) {
-                if (key !== '_all_fields' && key !== 'fractal_id') {
-                    fields.push(key);
-                }
+        } else {
+            for (const key of Object.keys(results[0])) {
+                if (key !== '_all_fields' && key !== 'fractal_id') fields.push(key);
             }
         }
 
-        // Build table with sortable headers
-        const numericFields = new Set(fields.filter(field =>
-            results.length > 0 && results.every(r => {
-                const v = r[field];
-                return v !== undefined && v !== null && v !== '' && !isNaN(Number(v));
-            })
-        ));
+        const embedFractalId = (window.FractalContext && FractalContext.currentFractal && FractalContext.currentFractal.id) || 'embed';
 
-        let html = '<table class="results-table"><thead><tr>';
-        fields.forEach(field => {
-            const numClass = numericFields.has(field) ? ' numeric-col' : '';
-            html += `<th class="sortable${numClass}" data-field="${Utils.escapeAttr(field)}">${Utils.escapeHtml(field)}<div class="column-resizer"></div></th>`;
-        });
-        html += '<th class="filler-col"></th></tr></thead><tbody>';
-
-        results.forEach((result, index) => {
-            const hasComments = window.Comments && Comments.hasComments(result);
-            const rowClass = hasComments ? 'result-row has-comments' : 'result-row';
-
-            html += '<tr class="' + rowClass + '" data-index="' + index + '">';
-            fields.forEach(field => {
-                let value = result[field];
-                let cellClass = field === 'timestamp' ? 'timestamp-cell' : (numericFields.has(field) ? 'numeric-col' : '');
-
-                if (typeof value === 'object' && value !== null) {
-                    const jsonStr = JSON.stringify(value);
-                    value = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(jsonStr)}</span>`;
-                    cellClass += ' json-cell';
-                } else if (value === undefined || value === null) {
-                    value = '-';
-                    cellClass += ' null-cell';
-                } else if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
-                    value = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(value)}</span>`;
-                    cellClass += ' json-cell';
-                } else {
-                    value = Utils.escapeHtml(String(value));
+        const built = this.buildResultsTable(fields, results, {
+            sizingKey: { fractalId: embedFractalId, sig: ColumnSizing.signature(fields) },
+            features: { resize: true, reorder: false, sort: false },
+            rowClass: (row) => (window.Comments && Comments.hasComments(row)) ? 'has-comments' : '',
+            onRowClick: options.disableDetailView ? null : (row) => {
+                if (!window.LogDetail) return;
+                let detailData = row;
+                if (row._all_fields && typeof row._all_fields === 'object') {
+                    detailData = {
+                        ...row._all_fields,
+                        timestamp: row.timestamp,
+                        log_id: row.log_id,
+                        fractal_id: row.fractal_id,
+                        _shard_num: row._shard_num
+                    };
                 }
-
-                html += `<td class="${cellClass}">${value}</td>`;
-            });
-            html += '<td class="filler-col"></td></tr>';
+                LogDetail.show(detailData, options.isAggregated || false);
+            },
         });
 
-        html += '</tbody></table>';
-        targetElement.innerHTML = html;
-
-        // Lazy-highlight JSON cells
-        this.lazyHighlightJSON(targetElement);
-
-        // Event delegation for row clicks (only if not disabled)
-        if (!options.disableDetailView) {
-            const tbody = targetElement.querySelector('tbody');
-            if (tbody) {
-                tbody.addEventListener('click', (e) => {
-                    if (e.target.classList.contains('column-resizer')) return;
-                    const row = e.target.closest('.result-row');
-                    if (!row) return;
-
-                    const index = parseInt(row.dataset.index);
-                    const logData = results[index];
-
-                    if (window.LogDetail) {
-                        let detailData = logData;
-                        if (logData._all_fields && typeof logData._all_fields === 'object') {
-                            detailData = {
-                                ...logData._all_fields,
-                                timestamp: logData.timestamp,
-                                log_id: logData.log_id,
-                                fractal_id: logData.fractal_id,
-                                _shard_num: logData._shard_num
-                            };
-                        }
-                        LogDetail.show(detailData, options.isAggregated || false);
-                    }
-                });
-            }
-        }
-
+        targetElement.innerHTML = built.html;
+        built.mount(targetElement);
         return targetElement;
     },
 
