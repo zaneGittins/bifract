@@ -55,6 +55,7 @@ const AlertFeeds = {
         if (actionsManageView) actionsManageView.style.display = 'none';
 
         if (window.Alerts) {
+            Alerts.closeActionDrawer?.();
             Alerts.closeAlertPanel();
             Alerts.editingFeedAlert = false;
             Alerts.show();
@@ -76,6 +77,7 @@ const AlertFeeds = {
         if (actionsManageView) actionsManageView.style.display = 'none';
 
         if (window.Alerts) {
+            Alerts.closeActionDrawer?.();
             Alerts.closeAlertPanel();
             Alerts.editingFeedAlert = false;
         }
