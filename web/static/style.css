@@ -7167,12 +7167,16 @@ tr.perf-danger td {
 }
 
 .label {
-    background: var(--accent-tertiary);
-    color: white;
-    padding: 0.25rem 0.5rem;
-    border-radius: 12px;
-    font-size: 0.75rem;
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.45rem;
+    border-radius: 3px;
+    font-size: 0.7rem;
     font-weight: 500;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--chip-color, var(--border-color));
+    color: var(--chip-color, var(--text-secondary));
+    white-space: nowrap;
 }
 
 .alert-labels-cell {
@@ -8591,39 +8595,187 @@ tr.perf-danger td {
     flex: 1;
 }
 
-.new-action-dropdown {
-    position: relative;
+/* Action editor drawer (slide-over) */
+.action-drawer-scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.25s ease, visibility 0.25s ease;
+    z-index: 1200;
 }
 
-.new-action-menu {
-    position: absolute;
-    top: calc(100% + 4px);
+.action-drawer-scrim.open {
+    opacity: 1;
+    visibility: visible;
+}
+
+.action-drawer {
+    position: fixed;
+    top: 0;
     right: 0;
+    width: 540px;
+    max-width: 92vw;
+    height: 100vh;
     background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-left: 1px solid var(--border-color);
     box-shadow: var(--shadow-lg);
-    z-index: 100;
-    min-width: 160px;
+    transform: translateX(100%);
+    transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    z-index: 1201;
+    display: flex;
+    flex-direction: column;
+}
+
+.action-drawer.open {
+    transform: translateX(0);
+}
+
+.action-drawer-body {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Inside the drawer, the form panels fill the surface; card chrome is dropped. */
+.action-drawer .actions-create-panel,
+.action-drawer .actions-edit-panel {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin: 0;
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.action-drawer .actions-panel-header {
+    position: sticky;
+    top: 0;
+    margin: 0;
+    padding: 1rem 1.25rem;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
+    z-index: 2;
+}
+
+.action-drawer .actions-form-grid {
+    flex: 1 1 auto;
+    align-content: start;
+    margin: 0;
+    padding: 1.25rem;
+}
+
+.action-drawer .actions-form-actions,
+.action-drawer .actions-form-buttons {
+    position: sticky;
+    bottom: 0;
+    margin: 0;
+    padding: 0.875rem 1.25rem;
+    background: var(--bg-tertiary);
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    gap: 0.75rem;
+    justify-content: flex-end;
+}
+
+.action-drawer .error-message {
+    margin: 0 1.25rem 1rem;
+}
+
+body.drawer-open {
     overflow: hidden;
 }
 
-.new-action-menu button {
-    display: block;
-    width: 100%;
-    padding: 0.5rem 0.75rem;
-    background: none;
-    border: none;
-    color: var(--text-primary);
-    font-size: 0.8rem;
-    font-family: inherit;
+/* New action type picker (drawer step 0) */
+.action-type-picker {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    padding: 1.25rem;
+}
+
+.action-type-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
     text-align: left;
+    padding: 1rem;
     cursor: pointer;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: inherit;
     transition: var(--transition);
 }
 
-.new-action-menu button:hover {
+.action-type-tile:hover {
+    border-color: var(--accent-primary);
     background: var(--bg-hover);
+    transform: translateY(-1px);
+}
+
+.action-type-tile .tile-icon {
+    color: var(--accent-primary);
+    display: inline-flex;
+}
+
+.action-type-tile .tile-name {
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.action-type-tile .tile-desc {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.3;
+}
+
+/* Contextual hint shown inside the drawer (e.g. missing SMTP) */
+.drawer-inline-hint {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 1rem 1.25rem 0;
+    padding: 0.625rem 0.875rem;
+    background: color-mix(in srgb, var(--accent-warning, #d9a441) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-warning, #d9a441) 40%, transparent);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+}
+
+.drawer-inline-hint span {
+    flex: 1;
+}
+
+.drawer-inline-hint-action {
+    background: none;
+    border: 1px solid var(--accent-primary);
+    color: var(--accent-primary);
+    border-radius: 4px;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.75rem;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: var(--transition);
+}
+
+.drawer-inline-hint-action:hover {
+    background: var(--accent-primary);
+    color: var(--bg-primary);
+}
+
+@media (max-width: 600px) {
+    .action-type-picker {
+        grid-template-columns: 1fr;
+    }
 }
 
 .unified-actions-list {
@@ -13606,8 +13758,8 @@ div.vis-tooltip {
     font-size: 0.65rem;
     font-weight: 500;
     background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-color);
+    color: var(--chip-color, var(--text-secondary));
+    border: 1px solid var(--chip-color, var(--border-color));
     cursor: pointer;
     transition: var(--transition);
     max-width: 140px;
@@ -13618,9 +13770,7 @@ div.vis-tooltip {
 }
 
 .label-pill:hover {
-    border-color: var(--accent-primary);
-    color: var(--accent-secondary);
-    background: var(--accent-glow);
+    opacity: 0.75;
 }
 
 .label-pill-more {
@@ -13871,13 +14021,11 @@ div.vis-tooltip {
 
 [data-theme="light"] .label-pill {
     background: var(--bg-tertiary);
-    border-color: var(--border-color);
+    border-color: var(--chip-color, var(--border-color));
 }
 
 [data-theme="light"] .label-pill:hover {
-    border-color: var(--accent-primary);
-    color: var(--accent-primary);
-    background: var(--accent-glow);
+    opacity: 0.75;
 }
 
 @media (max-width: 768px) {

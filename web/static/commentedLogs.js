@@ -440,7 +440,7 @@ const CommentedLogs = {
             if (tags.length > 0) {
                 const shown = tags.slice(0, maxTags);
                 tagsHtml = shown.map(t =>
-                    `<span class="label-pill" onclick="event.stopPropagation(); CommentedLogs.setTagFilter('${Utils.escapeJs(t)}')" title="${Utils.escapeHtml(t)}">${Utils.escapeHtml(t.length > 20 ? t.substring(0, 18) + '..' : t)}</span>`
+                    `<span class="label-pill" style="--chip-color:${Utils.tagColorFor(t)}" onclick="event.stopPropagation(); CommentedLogs.setTagFilter('${Utils.escapeJs(t)}')" title="${Utils.escapeHtml(t)}">${Utils.escapeHtml(t.length > 20 ? t.substring(0, 18) + '..' : t)}</span>`
                 ).join(' ');
                 if (tags.length > maxTags) {
                     tagsHtml += ` <span class="label-pill label-pill-more" title="${Utils.escapeHtml(tags.slice(maxTags).join(', '))}">+${tags.length - maxTags}</span>`;

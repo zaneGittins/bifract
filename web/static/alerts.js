@@ -515,7 +515,7 @@ const Alerts = {
 
                 ${alert.labels && alert.labels.length > 0 ? `
                     <div class="alert-labels">
-                        ${alert.labels.map(label => `<span class="label">${Utils.escapeHtml(label)}</span>`).join('')}
+                        ${alert.labels.map(label => `<span class="label" style="--chip-color:${Utils.tagColorFor(label)}">${Utils.escapeHtml(label)}</span>`).join('')}
                     </div>
                 ` : ''}
 
@@ -735,6 +735,16 @@ const Alerts = {
                     <span class="status-badge status-${statusClass}">${statusText}</span>
                 </div>
 
+                ${(() => {
+                    const sev = (alert.severity || 'medium').toLowerCase();
+                    const cls = sev === 'info' ? 'informational' : sev;
+                    return `
+                <div class="alert-detail-field">
+                    <label>Severity:</label>
+                    <span class="severity-pill severity-${cls}" style="cursor:default">${Utils.escapeHtml(sev)}</span>
+                </div>`;
+                })()}
+
                 <div class="alert-detail-field">
                     <label>Query:</label>
                     <pre class="alert-query-display"><code>${Utils.escapeHtml(alert.query_string)}</code></pre>
@@ -751,7 +761,7 @@ const Alerts = {
                     <div class="alert-detail-field">
                         <label>Labels:</label>
                         <div class="alert-labels">
-                            ${alert.labels.map(label => `<span class="label">${Utils.escapeHtml(label)}</span>`).join('')}
+                            ${alert.labels.map(label => `<span class="label" style="--chip-color:${Utils.tagColorFor(label)}">${Utils.escapeHtml(label)}</span>`).join('')}
                         </div>
                     </div>
                 ` : ''}
@@ -1315,7 +1325,6 @@ const Alerts = {
     },
 
     showInlineWebhookCreate() {
-        document.getElementById('newActionMenu')?.style && (document.getElementById('newActionMenu').style.display = 'none');
         this.closeAllInlineForms();
         this.inlineWebhookForm = 'create';
         this.currentWebhook = null;
@@ -1350,7 +1359,7 @@ const Alerts = {
             <div class="${panelClass}">
                 <div class="actions-panel-header">
                     <h3>${title}</h3>
-                    <button class="btn-icon" onclick="Alerts.closeInlineWebhookForm()" title="Close">
+                    <button class="btn-icon" onclick="Alerts.closeActionDrawer()" title="Close">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="6" x2="6" y2="18"></line>
                             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -1432,7 +1441,7 @@ const Alerts = {
                     </div>
                 </div>
                 <div class="actions-form-actions">
-                    <button class="btn-secondary" onclick="Alerts.closeInlineWebhookForm()">Cancel</button>
+                    <button class="btn-secondary" onclick="Alerts.closeActionDrawer()">Cancel</button>
                     ${isEdit ? '<button id="testWebhookBtn" class="btn-secondary" onclick="Alerts.testWebhook()">Test</button>' : ''}
                     <button id="saveWebhookBtn" class="btn-primary" onclick="Alerts.saveWebhook()">Save Webhook</button>
                 </div>
@@ -1440,6 +1449,7 @@ const Alerts = {
             </div>
         `;
 
+        this.openActionDrawer();
         document.getElementById('webhookName')?.focus();
     },
 
@@ -2032,7 +2042,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
 
             const data = await response.json();
             if (data.success) {
-                this.closeInlineWebhookForm();
+                this.closeActionDrawer();
                 this.loadAllActions();
                 Toast.show(`Webhook ${this.currentWebhook ? 'updated' : 'created'} successfully`, 'success');
             } else {
@@ -3766,7 +3776,6 @@ throttleField: ${alert.throttle_field}` : ''}`;
 
 
     async showInlineFractalActionCreate() {
-        document.getElementById('newActionMenu')?.style && (document.getElementById('newActionMenu').style.display = 'none');
         this.closeAllInlineForms();
         this.inlineFractalActionForm = 'create';
         this.currentFractalAction = null;
@@ -3815,7 +3824,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             <div class="${panelClass}">
                 <div class="actions-panel-header">
                     <h3>${title}</h3>
-                    <button class="btn-icon" onclick="Alerts.closeInlineFractalActionForm()" title="Close">
+                    <button class="btn-icon" onclick="Alerts.closeActionDrawer()" title="Close">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="6" x2="6" y2="18"></line>
                             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -3866,13 +3875,14 @@ throttleField: ${alert.throttle_field}` : ''}`;
                     </div>
                 </div>
                 <div class="actions-form-actions">
-                    <button class="btn-secondary" onclick="Alerts.closeInlineFractalActionForm()">Cancel</button>
+                    <button class="btn-secondary" onclick="Alerts.closeActionDrawer()">Cancel</button>
                     <button id="saveFractalActionBtn" class="btn-primary" onclick="Alerts.saveFractalAction()">Save Fractal Action</button>
                 </div>
                 <div id="fractalActionError" class="error-message" style="display: none;"></div>
             </div>
         `;
 
+        this.openActionDrawer();
         document.getElementById('fractalActionName')?.focus();
     },
 
@@ -3990,7 +4000,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             Toast.show(`Fractal action ${action} successfully`, 'success');
 
             // Close form and refresh data
-            this.closeInlineFractalActionForm();
+            this.closeActionDrawer();
             this.loadAllActions();
 
         } catch (error) {
@@ -4093,7 +4103,6 @@ throttleField: ${alert.throttle_field}` : ''}`;
     },
 
     async showInlineDictActionCreate() {
-        document.getElementById('newActionMenu')?.style && (document.getElementById('newActionMenu').style.display = 'none');
         this.closeAllInlineForms();
         this.inlineDictActionForm = 'create';
         this.currentDictAction = null;
@@ -4131,7 +4140,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             <div class="${panelClass}">
                 <div class="actions-panel-header">
                     <h3>${title}</h3>
-                    <button class="btn-icon" onclick="Alerts.closeInlineDictActionForm()" title="Close">
+                    <button class="btn-icon" onclick="Alerts.closeActionDrawer()" title="Close">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="6" x2="6" y2="18"></line>
                             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -4166,13 +4175,14 @@ throttleField: ${alert.throttle_field}` : ''}`;
                     </div>
                 </div>
                 <div class="actions-form-actions">
-                    <button class="btn-secondary" onclick="Alerts.closeInlineDictActionForm()">Cancel</button>
+                    <button class="btn-secondary" onclick="Alerts.closeActionDrawer()">Cancel</button>
                     <button id="saveDictActionBtn" class="btn-primary" onclick="Alerts.saveDictAction()">Save Dictionary Action</button>
                 </div>
                 <div id="dictActionError" class="error-message" style="display: none;"></div>
             </div>
         `;
 
+        this.openActionDrawer();
         document.getElementById('dictActionName')?.focus();
     },
 
@@ -4239,7 +4249,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const action = this.currentDictAction ? 'updated' : 'created';
             Toast.show(`Dictionary action ${action} successfully`, 'success');
 
-            this.closeInlineDictActionForm();
+            this.closeActionDrawer();
             this.loadAllActions();
         } catch (error) {
             console.error('Failed to save dictionary action:', error);
@@ -4407,7 +4417,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 <div class="empty-state">
                     <div class="empty-text">No actions configured</div>
                     <div class="empty-actions">
-                        <button onclick="Alerts.toggleNewActionMenu()" class="btn-primary">Create Your First Action</button>
+                        <button onclick="Alerts.showNewActionPicker()" class="btn-primary">Create Your First Action</button>
                     </div>
                 </div>`;
             return;
@@ -4469,21 +4479,75 @@ throttleField: ${alert.throttle_field}` : ''}`;
         }
     },
 
-    toggleNewActionMenu() {
-        const menu = document.getElementById('newActionMenu');
-        if (menu) {
-            menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
-            // Close on outside click
-            if (menu.style.display === 'block') {
-                const handler = (e) => {
-                    if (!document.getElementById('newActionDropdown')?.contains(e.target)) {
-                        menu.style.display = 'none';
-                        document.removeEventListener('click', handler);
-                    }
-                };
-                setTimeout(() => document.addEventListener('click', handler), 0);
-            }
+    // ---- Action editor drawer (slide-over) ----
+
+    openActionDrawer() {
+        const drawer = document.getElementById('actionDrawer');
+        const scrim = document.getElementById('actionDrawerScrim');
+        if (!drawer || !scrim) return;
+        drawer.classList.add('open');
+        scrim.classList.add('open');
+        document.body.classList.add('drawer-open');
+        if (!this._drawerKeyHandler) {
+            this._drawerKeyHandler = (e) => {
+                if (e.key === 'Escape') this.closeActionDrawer();
+            };
+            document.addEventListener('keydown', this._drawerKeyHandler);
         }
+        // Reset scroll so each form opens at the top.
+        const body = document.getElementById('actionDrawerBody');
+        if (body) body.scrollTop = 0;
+    },
+
+    closeActionDrawer() {
+        const drawer = document.getElementById('actionDrawer');
+        const scrim = document.getElementById('actionDrawerScrim');
+        if (drawer) drawer.classList.remove('open');
+        if (scrim) scrim.classList.remove('open');
+        document.body.classList.remove('drawer-open');
+        if (this._drawerKeyHandler) {
+            document.removeEventListener('keydown', this._drawerKeyHandler);
+            this._drawerKeyHandler = null;
+        }
+        this.closeAllInlineForms();
+    },
+
+    showNewActionPicker() {
+        this.closeAllInlineForms();
+        const container = document.getElementById('newActionPickerContainer');
+        if (!container) return;
+        const tile = (type, name, desc, iconPath) => `
+            <button class="action-type-tile" onclick="Alerts.pickNewAction('${type}')">
+                <span class="tile-icon">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconPath}</svg>
+                </span>
+                <span class="tile-name">${name}</span>
+                <span class="tile-desc">${desc}</span>
+            </button>`;
+        container.innerHTML = `
+            <div class="actions-create-panel">
+                <div class="actions-panel-header">
+                    <h3>New Action</h3>
+                    <button class="btn-icon" onclick="Alerts.closeActionDrawer()" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+                <div class="action-type-picker">
+                    ${tile('webhook', 'Webhook', 'POST matching alerts to an HTTP endpoint.', '<path d="M4 12h16"/><path d="M14 6l6 6-6 6"/>')}
+                    ${tile('email', 'Email', 'Send an email to recipients when an alert fires.', '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>')}
+                    ${tile('fractal', 'Fractal Action', 'Forward matching logs into another fractal.', '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/>')}
+                    ${tile('dictionary', 'Dictionary Action', 'Write matching logs into a ClickHouse dictionary.', '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>')}
+                </div>
+            </div>
+        `;
+        this.openActionDrawer();
+    },
+
+    pickNewAction(type) {
+        if (type === 'webhook') this.showInlineWebhookCreate();
+        else if (type === 'email') this.showInlineEmailActionCreate();
+        else if (type === 'fractal') this.showInlineFractalActionCreate();
+        else if (type === 'dictionary') this.showInlineDictActionCreate();
     },
 
     closeAllInlineForms() {
@@ -4491,13 +4555,14 @@ throttleField: ${alert.throttle_field}` : ''}`;
         this.closeInlineFractalActionForm();
         this.closeInlineDictActionForm();
         this.closeInlineEmailActionForm();
+        const picker = document.getElementById('newActionPickerContainer');
+        if (picker) picker.innerHTML = '';
         const smtp = document.getElementById('smtpSettingsFormContainer');
         if (smtp) smtp.innerHTML = '';
     },
 
     // Email action inline forms
     showInlineEmailActionCreate() {
-        document.getElementById('newActionMenu').style.display = 'none';
         this.closeAllInlineForms();
         this.currentEmailAction = null;
         this.renderEmailActionInlineForm();
@@ -4526,13 +4591,14 @@ throttleField: ${alert.throttle_field}` : ''}`;
             <div class="${panelClass}">
                 <div class="actions-panel-header">
                     <h3>${isEdit ? 'Edit' : 'Create'} Email Action</h3>
-                    <button class="btn-icon" onclick="Alerts.closeInlineEmailActionForm()" title="Close">
+                    <button class="btn-icon" onclick="Alerts.closeActionDrawer()" title="Close">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="6" x2="6" y2="18"></line>
                             <line x1="6" y1="6" x2="18" y2="18"></line>
                         </svg>
                     </button>
                 </div>
+                <div id="emailSmtpHint" class="drawer-inline-hint" style="display: none;"></div>
                 <div class="actions-form-grid">
                     <div class="actions-form-group">
                         <label for="emailActionName">Name *</label>
@@ -4561,14 +4627,36 @@ throttleField: ${alert.throttle_field}` : ''}`;
                     </div>
                 </div>
                 <div class="actions-form-actions">
-                    <button class="btn-secondary" onclick="Alerts.closeInlineEmailActionForm()">Cancel</button>
+                    <button class="btn-secondary" onclick="Alerts.closeActionDrawer()">Cancel</button>
                     ${isEdit ? '<button class="btn-secondary" onclick="Alerts.testUnifiedAction(\'' + ea.id + '\', \'email\')">Test</button>' : ''}
                     <button class="btn-primary" onclick="Alerts.saveEmailAction()">Save Email Action</button>
                 </div>
                 <div id="emailActionError" class="error-message" style="display: none;"></div>
             </div>
         `;
+        this.openActionDrawer();
         container.querySelector('#emailActionName')?.focus();
+        this.checkSMTPForEmailForm();
+    },
+
+    async checkSMTPForEmailForm() {
+        const hint = document.getElementById('emailSmtpHint');
+        if (!hint) return;
+        try {
+            const resp = await fetch('/api/v1/smtp-settings', { credentials: 'include' });
+            const data = await resp.json();
+            const host = data.data?.smtp_config?.host;
+            if (!host) {
+                hint.innerHTML = `
+                    <span>SMTP isn't configured, so emails won't be delivered.</span>
+                    <button class="drawer-inline-hint-action" onclick="Alerts.showSMTPSettings()">Configure SMTP</button>`;
+                hint.style.display = 'flex';
+            } else {
+                hint.style.display = 'none';
+            }
+        } catch (e) {
+            // Non-fatal: leave the hint hidden if the check fails.
+        }
     },
 
     closeInlineEmailActionForm() {
@@ -4601,7 +4689,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const data = await resp.json();
             if (data.success) {
                 Toast.show(`Email action ${this.currentEmailAction ? 'updated' : 'created'}`, 'success');
-                this.closeInlineEmailActionForm();
+                this.closeActionDrawer();
                 this.loadAllActions();
             } else {
                 Toast.show(data.error || 'Failed to save', 'error');
@@ -4613,14 +4701,9 @@ throttleField: ${alert.throttle_field}` : ''}`;
 
     // SMTP Settings
     async showSMTPSettings() {
+        this.closeAllInlineForms();
         const container = document.getElementById('smtpSettingsFormContainer');
         if (!container) return;
-
-        // Toggle
-        if (container.innerHTML.trim()) {
-            container.innerHTML = '';
-            return;
-        }
 
         try {
             const resp = await fetch('/api/v1/smtp-settings', { credentials: 'include' });
@@ -4631,7 +4714,9 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 <div class="actions-create-panel">
                     <div class="actions-panel-header">
                         <h3>SMTP Configuration</h3>
-                        <button class="close-panel-btn" onclick="document.getElementById('smtpSettingsFormContainer').innerHTML=''">&times;</button>
+                        <button class="btn-icon" onclick="Alerts.closeActionDrawer()" title="Close">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                        </button>
                     </div>
                     <div class="actions-form-grid smtp-grid">
                         <div class="form-group">
@@ -4664,11 +4749,12 @@ throttleField: ${alert.throttle_field}` : ''}`;
                         </div>
                     </div>
                     <div class="actions-form-buttons">
+                        <button class="btn-secondary btn-sm" onclick="Alerts.closeActionDrawer()">Cancel</button>
                         <button class="btn-primary btn-sm" onclick="Alerts.saveSMTPSettings()">Save</button>
-                        <button class="btn-secondary btn-sm" onclick="document.getElementById('smtpSettingsFormContainer').innerHTML=''">Cancel</button>
                     </div>
                 </div>
             `;
+            this.openActionDrawer();
         } catch (e) {
             Toast.show('Failed to load SMTP settings: ' + e.message, 'error');
         }
@@ -4696,7 +4782,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const data = await resp.json();
             if (data.success) {
                 Toast.show('SMTP settings saved', 'success');
-                document.getElementById('smtpSettingsFormContainer').innerHTML = '';
+                this.closeActionDrawer();
             } else {
                 Toast.show(data.error || 'Failed to save', 'error');
             }

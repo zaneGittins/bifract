@@ -88,6 +88,17 @@ const Utils = {
                    .replace(/>/g, '&gt;');
     },
 
+    // Deterministic per-tag color from a fixed palette. The same tag string
+    // always maps to the same color, used for notebook section tags and alert
+    // labels so chips are visually distinguishable and consistent app-wide.
+    tagColorFor(tag) {
+        const palette = ['#9c6ade','#6bcf7f','#5bbce4','#e07a8b','#d4a054','#ca6be0','#5bc4b5','#e07a4f','#7a9de0','#b5c44f'];
+        let h = 0;
+        const s = String(tag || '');
+        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+        return palette[h % palette.length];
+    },
+
     // Escape for embedding in JS string literals inside HTML onclick attributes.
     // HTML-decodes attribute values before JS execution, so we must escape at
     // the JS level. Hex-escape < and > to prevent HTML parser interference.

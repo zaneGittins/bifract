@@ -873,17 +873,10 @@ const Notebooks = {
 
     // ── Tag rendering ────────────────────────────────────────────────────────
 
-    tagColorFor(tag) {
-        const palette = ['#9c6ade','#6bcf7f','#5bbce4','#e07a8b','#d4a054','#ca6be0','#5bc4b5','#e07a4f','#7a9de0','#b5c44f'];
-        let h = 0;
-        for (let i = 0; i < tag.length; i++) h = (h * 31 + tag.charCodeAt(i)) >>> 0;
-        return palette[h % palette.length];
-    },
-
     renderTagsArea(section) {
         const tags = (section.tags || []);
         const chips = tags.map(t => {
-            const color = this.tagColorFor(t);
+            const color = Utils.tagColorFor(t);
             return `<span class="section-tag-chip" data-tag="${Utils.escapeHtml(t)}" style="--chip-color:${color}" onclick="Notebooks.onTagChipClick('${Utils.escapeJs(t)}')">${Utils.escapeHtml(t)}<button class="section-tag-remove" data-section-id="${section.id}" data-tag="${Utils.escapeHtml(t)}" onclick="event.stopPropagation();Notebooks.removeTagFromSection('${section.id}','${Utils.escapeJs(t)}')" title="Remove tag">×</button></span>`;
         }).join('');
         return `<span class="section-tags-area" id="section-tags-${section.id}">${chips}<button class="section-tag-add" data-section-id="${section.id}" onclick="Notebooks.openTagInput('${section.id}',this)" title="Add tag">+</button></span>`;
@@ -1056,7 +1049,7 @@ const Notebooks = {
 
         const active = this.activeTagFilters || [];
         const tagChips = Array.from(allTags).sort().map(t => {
-            const color = this.tagColorFor(t);
+            const color = Utils.tagColorFor(t);
             return `<span class="filter-chip${active.includes(t) ? ' active' : ''}" data-tag="${Utils.escapeHtml(t)}" style="--chip-color:${color}" onclick="Notebooks.toggleTagFilter('${Utils.escapeJs(t)}')">${Utils.escapeHtml(t)}</span>`;
         }).join('');
 

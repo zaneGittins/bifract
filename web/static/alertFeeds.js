@@ -490,7 +490,7 @@ const AlertFeeds = {
             if (displayLabels.length > 0) {
                 const shown = displayLabels.slice(0, maxLabels);
                 labelsHtml = shown.map(l =>
-                    `<span class="label-pill" onclick="event.stopPropagation(); AlertFeeds.setLabelFilter('${Utils.escapeHtml(l).replace(/'/g, "\\'")}')" title="${Utils.escapeHtml(l)}">${Utils.escapeHtml(this.truncateLabel(l))}</span>`
+                    `<span class="label-pill" style="--chip-color:${Utils.tagColorFor(l)}" onclick="event.stopPropagation(); AlertFeeds.setLabelFilter('${Utils.escapeHtml(l).replace(/'/g, "\\'")}')" title="${Utils.escapeHtml(l)}">${Utils.escapeHtml(this.truncateLabel(l))}</span>`
                 ).join('');
                 if (displayLabels.length > maxLabels) {
                     labelsHtml += `<span class="label-pill label-pill-more" title="${Utils.escapeHtml(displayLabels.slice(maxLabels).join(', '))}">+${displayLabels.length - maxLabels}</span>`;
@@ -706,7 +706,7 @@ const AlertFeeds = {
                     <div class="alert-detail-field">
                         <label>Labels:</label>
                         <div class="alert-labels">
-                            ${displayLabels.map(l => `<span class="label-pill label-pill-detail" onclick="AlertFeeds.closeDetailsPanel(); AlertFeeds.setLabelFilter('${Utils.escapeHtml(l).replace(/'/g, "\\'")}')" title="Filter by this label">${Utils.escapeHtml(l)}</span>`).join('')}
+                            ${displayLabels.map(l => `<span class="label-pill label-pill-detail" style="--chip-color:${Utils.tagColorFor(l)}" onclick="AlertFeeds.closeDetailsPanel(); AlertFeeds.setLabelFilter('${Utils.escapeHtml(l).replace(/'/g, "\\'")}')" title="Filter by this label">${Utils.escapeHtml(l)}</span>`).join('')}
                         </div>
                     </div>
                 ` : ''}
