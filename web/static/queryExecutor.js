@@ -1161,8 +1161,8 @@ const QueryExecutor = {
                 if (window.LogDetail) {
                     document.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
                     rowEl.classList.add('selected');
-                    LogDetail.setContext(results, index, this.isAggregated);
-                    LogDetail.show(detailData, this.isAggregated);
+                    LogDetail.setContext(results, index, this.isAggregated, 'search');
+                    LogDetail.show(detailData, this.isAggregated, 'search');
                 }
             },
             afterMount: () => { if (window.TimeBar) TimeBar.addRelativeTimeTooltips(); },
@@ -1640,7 +1640,7 @@ const QueryExecutor = {
             sizingKey: { fractalId: embedFractalId, sig: ColumnSizing.signature(fields) },
             features: { resize: true, reorder: false, sort: false },
             rowClass: (row) => (window.Comments && Comments.hasComments(row)) ? 'has-comments' : '',
-            onRowClick: options.disableDetailView ? null : (row) => {
+            onRowClick: options.disableDetailView ? null : (row, index, rowEl) => {
                 if (!window.LogDetail) return;
                 let detailData = row;
                 if (row._all_fields && typeof row._all_fields === 'object') {
@@ -1652,7 +1652,14 @@ const QueryExecutor = {
                         _shard_num: row._shard_num
                     };
                 }
-                LogDetail.show(detailData, options.isAggregated || false);
+                const hostRef = options.detailHost || 'search';
+                if (rowEl) {
+                    const tbody = rowEl.parentElement;
+                    if (tbody) tbody.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
+                    rowEl.classList.add('selected');
+                }
+                LogDetail.setContext(results, index, options.isAggregated || false, hostRef);
+                LogDetail.show(detailData, options.isAggregated || false, hostRef);
             },
         });
 

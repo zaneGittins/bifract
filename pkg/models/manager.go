@@ -556,13 +556,15 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID, search, 
 	}
 }
 
-func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
-	allowed := map[string]bool{"partition_val": true, "value_val": true, "model_count": true, "percent": true, "confidence": true}
-	if !allowed[sortCol] {
-		sortCol = "confidence"
-	}
-
-	baseQuery := fmt.Sprintf(`
+// buildRarityScoredSQL returns the per-(partition,value) scored projection
+// (model_count, percent, confidence, days). `source` is the FROM expression
+// yielding rows shaped like the rarity model table -- fractal_id, partition_val,
+// value_val, event_count, and the groupUniqArray(Date) state `days`. Live
+// scoring passes "`tbl` FINAL"; the preview passes a windowed, day-bucketed
+// aggregation subquery. The math is identical either way, so a preview matches
+// the post-backfill table exactly. fidEsc must already be CH-escaped.
+func buildRarityScoredSQL(source, fidEsc string) string {
+	return fmt.Sprintf(`
 SELECT partition_val, value_val,
     event_count AS model_count,
     _total AS model_total,
@@ -576,12 +578,21 @@ FROM (
     FROM (
         SELECT partition_val, value_val, sum(event_count) AS event_count,
             arraySort(groupUniqArrayMerge(365)(days)) AS days
-        FROM %s FINAL
+        FROM %s
         WHERE fractal_id = '%s'
         GROUP BY partition_val, value_val
     )
 )
-WHERE event_count >= 1`, "`"+tableName+"`", storage.EscCHStr(fractalID))
+WHERE event_count >= 1`, source, fidEsc)
+}
+
+func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
+	allowed := map[string]bool{"partition_val": true, "value_val": true, "model_count": true, "percent": true, "confidence": true}
+	if !allowed[sortCol] {
+		sortCol = "confidence"
+	}
+
+	baseQuery := buildRarityScoredSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID))
 
 	if search != "" {
 		baseQuery += fmt.Sprintf(" AND (partition_val ILIKE '%%%s%%' OR value_val ILIKE '%%%s%%')",
@@ -603,25 +614,39 @@ WHERE event_count >= 1`, "`"+tableName+"`", storage.EscCHStr(fractalID))
 	return rows, total, nil
 }
 
+// firstSeenAggSQL returns the per-entity aggregation (first_seen, last_seen,
+// event_count, days) for a first_seen model. `source` is the FROM expression
+// (live: "`tbl` FINAL"; preview: a windowed aggregation subquery); extraWhere is
+// an optional predicate ANDed into the scan (e.g. a search filter). first_seen's
+// aggregates (min/max/sum over exact timestamps) are day-chunk invariant, so the
+// preview matches the post-backfill table without day bucketing.
+func firstSeenAggSQL(source, fidEsc, extraWhere string) string {
+	q := fmt.Sprintf(`
+SELECT entity_key,
+    min(first_seen) AS first_seen,
+    max(last_seen) AS last_seen,
+    sum(event_count) AS event_count,
+    arraySort(groupUniqArrayMerge(365)(days)) AS days
+FROM %s
+WHERE fractal_id = '%s'`, source, fidEsc)
+	if extraWhere != "" {
+		q += "\nAND " + extraWhere
+	}
+	q += "\nGROUP BY entity_key"
+	return q
+}
+
 func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
 	allowed := map[string]bool{"entity_key": true, "first_seen": true, "last_seen": true, "event_count": true}
 	if !allowed[sortCol] {
 		sortCol = "first_seen"
 	}
 
-	baseQuery := fmt.Sprintf(`
-SELECT entity_key,
-    min(first_seen) AS first_seen,
-    max(last_seen) AS last_seen,
-    sum(event_count) AS event_count,
-    arraySort(groupUniqArrayMerge(365)(days)) AS days
-FROM %s FINAL
-WHERE fractal_id = '%s'`, "`"+tableName+"`", storage.EscCHStr(fractalID))
-
+	extra := ""
 	if search != "" {
-		baseQuery += fmt.Sprintf("\nAND entity_key ILIKE '%%%s%%'", storage.EscCHStr(search))
+		extra = fmt.Sprintf("entity_key ILIKE '%%%s%%'", storage.EscCHStr(search))
 	}
-	baseQuery += "\nGROUP BY entity_key"
+	baseQuery := firstSeenAggSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), extra)
 
 	countQuery := fmt.Sprintf("SELECT count() FROM (%s)", baseQuery)
 	var total uint64
@@ -654,11 +679,17 @@ func volumeMinBuckets(def ModelDefinition) int {
 // (0.6745 * (count - median) / MAD), matching Bifract's BQL modifiedZScore()
 // convention including the mad=0 -> z=0 guard. quotedTable must already be
 // backtick-quoted; fidEsc must already be CH-escaped.
-func buildVolumeBaselineScoringSQL(quotedTable, fidEsc string, minBuckets int, timeBucket string) string {
+// buildVolumeBaselineScoringSQL returns the per-entity modified z-score query.
+// `source` is the FROM expression yielding rows shaped like the volume model
+// table (fractal_id, entity_val, bucket, event_count): live scoring passes
+// "`tbl` FINAL"; the preview passes a windowed aggregation subquery. lower/upper
+// bound the scored buckets (upper excludes the current incomplete bucket). Volume
+// counts are additive across day chunks, so the preview matches the post-backfill
+// table. fidEsc must already be CH-escaped; lower/upper are raw SQL bound exprs.
+func buildVolumeBaselineScoringSQL(source, fidEsc string, minBuckets int, lower, upper string) string {
 	if minBuckets < 1 {
 		minBuckets = 1
 	}
-	lower, upper := volumeScoreBounds(timeBucket)
 	return fmt.Sprintf(`SELECT entity_val, latest_count, baseline_median, mad, n_buckets, latest_bucket, days,
     if(mad = 0, 0, round(0.6745 * (toFloat64(latest_count) - baseline_median) / mad, 4)) AS z_score
 FROM (
@@ -674,14 +705,14 @@ FROM (
             arraySort(groupUniqArray(365)(toDate(bucket))) AS days
         FROM (
             SELECT entity_val, bucket, sum(event_count) AS daily_count
-            FROM %s FINAL
+            FROM %s
             WHERE fractal_id = '%s' AND bucket >= %s AND bucket < %s
             GROUP BY entity_val, bucket
         )
         GROUP BY entity_val
     )
 )
-WHERE n_buckets >= %d`, quotedTable, fidEsc, lower, upper, minBuckets)
+WHERE n_buckets >= %d`, source, fidEsc, lower, upper, minBuckets)
 }
 
 func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalID string, def ModelDefinition, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
@@ -690,7 +721,8 @@ func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalI
 		sortCol = "z_score"
 	}
 
-	baseQuery := buildVolumeBaselineScoringSQL("`"+tableName+"`", storage.EscCHStr(fractalID), volumeMinBuckets(def), def.TimeBucket)
+	lower, upper := volumeScoreBounds(def.TimeBucket)
+	baseQuery := buildVolumeBaselineScoringSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), volumeMinBuckets(def), lower, upper)
 	if search != "" {
 		baseQuery += fmt.Sprintf("\nAND entity_val ILIKE '%%%s%%'", storage.EscCHStr(search))
 	}
@@ -782,7 +814,8 @@ func (m *Manager) getVolumeBaselineStats(ctx context.Context, tableName string, 
 	if def.Alert != nil && def.Alert.ZThreshold > 0 {
 		threshold = def.Alert.ZThreshold
 	}
-	scoring := buildVolumeBaselineScoringSQL("`"+tableName+"`", fid, volumeMinBuckets(def), def.TimeBucket)
+	lower, upper := volumeScoreBounds(def.TimeBucket)
+	scoring := buildVolumeBaselineScoringSQL("`"+tableName+"` FINAL", fid, volumeMinBuckets(def), lower, upper)
 	q := fmt.Sprintf(`SELECT count() AS total_entities,
        countIf(abs(z_score) > %g) AS anomalous,
        round(max(abs(z_score)), 4) AS max_z
@@ -831,11 +864,23 @@ func (m *Manager) GetHistogram(ctx context.Context, model *Model, fractalID stri
 // evaluate to a 0-based bucket index) and returns counts zero-filled to labels so
 // the distribution always has a stable, complete x-axis.
 func (m *Manager) runHistogram(ctx context.Context, innerSQL, bucketExpr string, labels []string) ([]histBucket, error) {
-	q := fmt.Sprintf("SELECT %s AS bucket, count() AS cnt FROM (%s) GROUP BY bucket", bucketExpr, innerSQL)
-	rows, err := m.ch.Query(ctx, q)
+	rows, err := m.ch.Query(ctx, histogramQuerySQL(innerSQL, bucketExpr))
 	if err != nil {
 		return nil, err
 	}
+	return fillHistogram(rows, labels), nil
+}
+
+// histogramQuerySQL wraps an inner SELECT (which projects the metric column) into
+// the bucket-count query. It is kept separate from execution so the preview can
+// append top-level SETTINGS (which are illegal inside a subquery).
+func histogramQuerySQL(innerSQL, bucketExpr string) string {
+	return fmt.Sprintf("SELECT %s AS bucket, count() AS cnt FROM (%s) GROUP BY bucket", bucketExpr, innerSQL)
+}
+
+// fillHistogram zero-fills bucket-count rows to labels so the distribution always
+// has a stable, complete x-axis.
+func fillHistogram(rows []map[string]interface{}, labels []string) []histBucket {
 	counts := make([]uint64, len(labels))
 	for _, row := range rows {
 		idx := int(numToUint64(row["bucket"]))
@@ -847,7 +892,7 @@ func (m *Manager) runHistogram(ctx context.Context, innerSQL, bucketExpr string,
 	for i, l := range labels {
 		out[i] = histBucket{Label: l, Count: counts[i]}
 	}
-	return out, nil
+	return out
 }
 
 // numToUint64 tolerantly converts a ClickHouse row value to uint64.
@@ -869,23 +914,34 @@ func numToUint64(v interface{}) uint64 {
 	return 0
 }
 
-func (m *Manager) getRarityHistogram(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
-	inner := fmt.Sprintf(`
-SELECT round(((_total - _unique) / _total) * 0.95, 4) AS confidence
-FROM (
-    SELECT event_count,
-        sum(event_count) OVER (PARTITION BY partition_val) AS _total,
-        uniqExact(value_val) OVER (PARTITION BY partition_val) AS _unique
-    FROM (
-        SELECT partition_val, value_val, sum(event_count) AS event_count
-        FROM %s FINAL
-        WHERE fractal_id = '%s'
-        GROUP BY partition_val, value_val
-    )
+// Score-distribution histogram specs. Shared by the built-model histogram
+// (GetHistogram) and the pre-save preview so both render identically. Each pair
+// is (bucketExpr -> 0-based band index, labels). The inner SQL that feeds them is
+// type-specific and built from the shared scoring/aggregation builders.
+var (
+	rarityHistLabels        = []string{"0.0-0.1", "0.1-0.2", "0.2-0.3", "0.3-0.4", "0.4-0.5", "0.5-0.6", "0.6-0.7", "0.7-0.8", "0.8-0.9", "0.9-1.0"}
+	firstSeenHistLabels     = []string{"1-9", "10-99", "100-999", "1K-9.9K", "10K-99K", "100K+"}
+	volumeHistLabels        = []string{"0-1", "1-2", "2-3", "3-4", "4-5", "5+"}
+	rarityHistBucketExpr    = "least(toUInt64(floor(confidence * 10)), 9)"
+	firstSeenHistBucketExpr = "least(toUInt64(floor(log10(event_count))), 5)"
+	volumeHistBucketExpr    = "least(toUInt64(floor(abs(z_score))), 5)"
 )
-WHERE event_count >= 1`, qt, fid)
-	labels := []string{"0.0-0.1", "0.1-0.2", "0.2-0.3", "0.3-0.4", "0.4-0.5", "0.5-0.6", "0.6-0.7", "0.7-0.8", "0.8-0.9", "0.9-1.0"}
-	buckets, err := m.runHistogram(ctx, inner, "least(toUInt64(floor(confidence * 10)), 9)", labels)
+
+// rarityConfidenceInner returns the SQL projecting one `confidence` column per
+// scored rarity row, ready for histogram bucketing. `source` is the scored-rows
+// FROM expression (see buildRarityScoredSQL).
+func rarityConfidenceInner(source, fidEsc string) string {
+	return "SELECT confidence FROM (" + buildRarityScoredSQL(source, fidEsc) + ")"
+}
+
+// firstSeenCountInner returns the SQL projecting one `event_count` column per
+// first_seen entity, ready for histogram bucketing.
+func firstSeenCountInner(source, fidEsc string) string {
+	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAggSQL(source, fidEsc, "") + ") WHERE event_count >= 1"
+}
+
+func (m *Manager) getRarityHistogram(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
+	buckets, err := m.runHistogram(ctx, rarityConfidenceInner(qt+" FINAL", fid), rarityHistBucketExpr, rarityHistLabels)
 	if err != nil {
 		return nil, fmt.Errorf("rarity histogram: %w", err)
 	}
@@ -893,14 +949,7 @@ WHERE event_count >= 1`, qt, fid)
 }
 
 func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
-	inner := fmt.Sprintf(`
-SELECT toUInt64(sum(event_count)) AS event_count
-FROM %s FINAL
-WHERE fractal_id = '%s'
-GROUP BY entity_key
-HAVING event_count >= 1`, qt, fid)
-	labels := []string{"1-9", "10-99", "100-999", "1K-9.9K", "10K-99K", "100K+"}
-	buckets, err := m.runHistogram(ctx, inner, "least(toUInt64(floor(log10(event_count))), 5)", labels)
+	buckets, err := m.runHistogram(ctx, firstSeenCountInner(qt+" FINAL", fid), firstSeenHistBucketExpr, firstSeenHistLabels)
 	if err != nil {
 		return nil, fmt.Errorf("first_seen histogram: %w", err)
 	}
@@ -908,9 +957,9 @@ HAVING event_count >= 1`, qt, fid)
 }
 
 func (m *Manager) getVolumeBaselineHistogram(ctx context.Context, tableName string, def ModelDefinition, fid string) (map[string]interface{}, error) {
-	inner := buildVolumeBaselineScoringSQL("`"+tableName+"`", fid, volumeMinBuckets(def), def.TimeBucket)
-	labels := []string{"0-1", "1-2", "2-3", "3-4", "4-5", "5+"}
-	buckets, err := m.runHistogram(ctx, inner, "least(toUInt64(floor(abs(z_score))), 5)", labels)
+	lower, upper := volumeScoreBounds(def.TimeBucket)
+	inner := buildVolumeBaselineScoringSQL("`"+tableName+"` FINAL", fid, volumeMinBuckets(def), lower, upper)
+	buckets, err := m.runHistogram(ctx, inner, volumeHistBucketExpr, volumeHistLabels)
 	if err != nil {
 		return nil, fmt.Errorf("volume_baseline histogram: %w", err)
 	}
@@ -1041,32 +1090,42 @@ func scanModelRow(row modelScannable) (*Model, error) {
 
 // ---- Validation ----
 
+// validateDefinitionShape checks the model type and the per-type required shape
+// fields. Shared by create/update validation and the pre-save preview so both
+// reject the same invalid definitions with identical messages.
+func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
+	if mt != ModelTypeRarity && mt != ModelTypeFirstSeen && mt != ModelTypeVolumeBaseline {
+		return fmt.Errorf("invalid model type: %s", mt)
+	}
+	switch mt {
+	case ModelTypeRarity:
+		if def.PartitionKey == "" {
+			return fmt.Errorf("partition_key is required for rarity models")
+		}
+		if def.ValueKey == "" {
+			return fmt.Errorf("value_key is required for rarity models")
+		}
+	case ModelTypeFirstSeen:
+		if len(def.KeyFields) == 0 {
+			return fmt.Errorf("key_fields is required for first_seen models")
+		}
+	case ModelTypeVolumeBaseline:
+		if len(def.KeyFields) == 0 {
+			return fmt.Errorf("key_fields is required for volume_baseline models")
+		}
+		if def.TimeBucket != "" && def.TimeBucket != "day" && def.TimeBucket != "hour" {
+			return fmt.Errorf("invalid time_bucket for volume_baseline: %s (use day or hour)", def.TimeBucket)
+		}
+	}
+	return nil
+}
+
 func validateCreateRequest(req CreateRequest) error {
 	if strings.TrimSpace(req.Name) == "" {
 		return fmt.Errorf("name is required")
 	}
-	if req.ModelType != ModelTypeRarity && req.ModelType != ModelTypeFirstSeen && req.ModelType != ModelTypeVolumeBaseline {
-		return fmt.Errorf("invalid model type: %s", req.ModelType)
-	}
-	switch req.ModelType {
-	case ModelTypeRarity:
-		if req.Definition.PartitionKey == "" {
-			return fmt.Errorf("partition_key is required for rarity models")
-		}
-		if req.Definition.ValueKey == "" {
-			return fmt.Errorf("value_key is required for rarity models")
-		}
-	case ModelTypeFirstSeen:
-		if len(req.Definition.KeyFields) == 0 {
-			return fmt.Errorf("key_fields is required for first_seen models")
-		}
-	case ModelTypeVolumeBaseline:
-		if len(req.Definition.KeyFields) == 0 {
-			return fmt.Errorf("key_fields is required for volume_baseline models")
-		}
-		if req.Definition.TimeBucket != "" && req.Definition.TimeBucket != "day" && req.Definition.TimeBucket != "hour" {
-			return fmt.Errorf("invalid time_bucket for volume_baseline: %s (use day or hour)", req.Definition.TimeBucket)
-		}
+	if err := validateDefinitionShape(req.ModelType, req.Definition); err != nil {
+		return err
 	}
 	alertMode := req.AlertMode
 	if alertMode == "" {

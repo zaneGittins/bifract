@@ -900,6 +900,9 @@ const AnalyticsModels = {
             resultFields: [],
             results: [],
             ran: false,
+            resultMode: 'logs',     // 'logs' (matching logs) | 'scores' (score preview)
+            previewWindow: '7d',    // lookback for the score preview
+            preview: null,          // last PreviewResult
         };
         this.currentView = 'editor';
         this._render();
@@ -920,10 +923,17 @@ const AnalyticsModels = {
     <div class="model-editor-body">
         <div class="model-editor-left">
             <div class="model-editor-toolbar">
-                <select id="modelTimeRange" class="model-time-select">
+                <div class="model-result-tabs" id="modelResultTabs">
+                    <button data-mode="logs" class="${e.resultMode === 'scores' ? '' : 'active'}">Matching logs</button>
+                    <button data-mode="scores" class="${e.resultMode === 'scores' ? 'active' : ''}">Score preview</button>
+                </div>
+                <select id="modelTimeRange" class="model-time-select" style="display:${e.resultMode === 'scores' ? 'none' : ''}">
                     ${ranges.map(([v, l]) => `<option value="${v}" ${e.timeRange === v ? 'selected' : ''}>${l}</option>`).join('')}
                 </select>
-                <button class="search-btn" id="modelRunBtn">
+                <select id="modelPreviewWindow" class="model-time-select" style="display:${e.resultMode === 'scores' ? '' : 'none'}" title="Lookback window for the score preview">
+                    ${[['1d', 'Last 1d'], ['7d', 'Last 7d'], ['30d', 'Last 30d']].map(([v, l]) => `<option value="${v}" ${e.previewWindow === v ? 'selected' : ''}>${l}</option>`).join('')}
+                </select>
+                <button class="search-btn" id="modelRunBtn" style="display:${e.resultMode === 'scores' ? 'none' : ''}">
                     <span class="btn-text">Run</span>
                 </button>
                 <span style="flex:1"></span>
@@ -936,7 +946,8 @@ const AnalyticsModels = {
             <pre id="modelSqlOutput" class="model-sql-output" style="display:${this._showSQL() ? 'block' : 'none'}"></pre>
             <div id="modelTranslation" class="model-translation"></div>
             <div id="modelTimelineWrap" class="timeline-inline" style="display:none;"><canvas id="modelTimeline"></canvas></div>
-            <div id="modelQueryResults" class="model-query-results"><div class="models-empty">Run the query to preview matching logs and extracted fields.</div></div>
+            <div id="modelQueryResults" class="model-query-results" style="display:${e.resultMode === 'scores' ? 'none' : ''}"><div class="models-empty">Run the query to preview matching logs and extracted fields.</div></div>
+            <div id="modelScorePreview" class="model-score-preview" style="display:${e.resultMode === 'scores' ? '' : 'none'}"></div>
         </div>
         <div class="model-editor-right">
             <div class="config-section">
@@ -999,6 +1010,10 @@ const AnalyticsModels = {
             });
         }
         document.getElementById('modelTimeRange').addEventListener('change', ev => { e.timeRange = ev.target.value; if (e.ran) this._runQuery(); });
+        document.querySelectorAll('#modelResultTabs button').forEach(b => {
+            b.addEventListener('click', () => this._setResultMode(b.dataset.mode));
+        });
+        document.getElementById('modelPreviewWindow').addEventListener('change', ev => { e.previewWindow = ev.target.value; this._runScorePreview(); });
         if (!e.editId) {
             document.querySelectorAll('#modelTypeCards .model-type-card').forEach(card => {
                 card.addEventListener('click', () => {
@@ -1006,6 +1021,7 @@ const AnalyticsModels = {
                     document.querySelectorAll('#modelTypeCards .model-type-card').forEach(c => c.classList.toggle('selected', c === card));
                     this._renderEditorShape();
                     this._renderEditorAlertConfig();
+                    this._schedulePreview();
                 });
             });
         }
@@ -1017,6 +1033,7 @@ const AnalyticsModels = {
         if (e.editId && (e.query || '').trim()) {
             this._runQuery();
         }
+        if (e.resultMode === 'scores') this._runScorePreview();
     },
 
     // Whether to surface the translated ClickHouse SQL (driven by the user's
@@ -1137,9 +1154,9 @@ const AnalyticsModels = {
         if (e.modelType === 'rarity') {
             const pSel = document.getElementById('shapePartKey');
             const vSel = document.getElementById('shapeValKey');
-            if (pSel) pSel.addEventListener('input', ev => { e.partitionKey = ev.target.value.trim(); });
-            if (vSel) vSel.addEventListener('input', ev => { e.valueKey = ev.target.value.trim(); });
-            document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 5; });
+            if (pSel) pSel.addEventListener('input', ev => { e.partitionKey = ev.target.value.trim(); this._schedulePreview(); });
+            if (vSel) vSel.addEventListener('input', ev => { e.valueKey = ev.target.value.trim(); this._schedulePreview(); });
+            document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 5; this._schedulePreview(); });
         } else {
             this._bindKeyFieldEvents();
             document.getElementById('addKeyField')?.addEventListener('click', () => {
@@ -1147,8 +1164,8 @@ const AnalyticsModels = {
                 this._renderEditorShape();
             });
             if (e.modelType === 'volume_baseline') {
-                document.getElementById('shapeTimeBucket')?.addEventListener('change', ev => { e.timeBucket = ev.target.value; this._renderEditorShape(); });
-                document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 7; });
+                document.getElementById('shapeTimeBucket')?.addEventListener('change', ev => { e.timeBucket = ev.target.value; this._renderEditorShape(); this._schedulePreview(); });
+                document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 7; this._schedulePreview(); });
             }
         }
     },
@@ -1158,7 +1175,7 @@ const AnalyticsModels = {
         document.querySelectorAll('#keyFieldsList .key-field-row').forEach(row => {
             const i = parseInt(row.dataset.idx);
             const sel = row.querySelector('.model-field-input');
-            sel.addEventListener('input', ev => { e.keyFields[i] = ev.target.value.trim(); });
+            sel.addEventListener('input', ev => { e.keyFields[i] = ev.target.value.trim(); this._schedulePreview(); });
             row.querySelector('.btn-remove-row').addEventListener('click', () => {
                 e.keyFields.splice(i, 1);
                 if (!e.keyFields.length) e.keyFields = [''];
@@ -1217,10 +1234,10 @@ const AnalyticsModels = {
 
     _bindAlertConfigEvents() {
         const c = this.editor.alertConfig;
-        document.getElementById('alertConfidence')?.addEventListener('change', ev => { c.confidence_threshold = parseFloat(ev.target.value); });
-        document.getElementById('alertPercent')?.addEventListener('change', ev => { c.percent_threshold = parseFloat(ev.target.value); });
-        document.getElementById('alertZThreshold')?.addEventListener('change', ev => { c.z_threshold = parseFloat(ev.target.value); });
-        document.getElementById('alertOnNew')?.addEventListener('change', ev => { c.alert_on_new = ev.target.checked; });
+        document.getElementById('alertConfidence')?.addEventListener('change', ev => { c.confidence_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
+        document.getElementById('alertPercent')?.addEventListener('change', ev => { c.percent_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
+        document.getElementById('alertZThreshold')?.addEventListener('change', ev => { c.z_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
+        document.getElementById('alertOnNew')?.addEventListener('change', ev => { c.alert_on_new = ev.target.checked; this._schedulePreview(); });
     },
 
     // ---- Translation feedback strip (left panel) ----
@@ -1459,30 +1476,9 @@ const AnalyticsModels = {
             e.parsed.candidate_fields = d.candidate_fields || [];
         }
 
-        if (e.modelType === 'rarity' && (!e.partitionKey || !e.valueKey)) {
-            Toast.warning('Select a partition key and a value key');
-            return;
-        }
-        if ((e.modelType === 'first_seen' || e.modelType === 'volume_baseline') && !e.keyFields.filter(Boolean).length) {
-            Toast.warning(e.modelType === 'volume_baseline' ? 'Add at least one entity field' : 'Add at least one key field');
-            return;
-        }
-
-        const def = { filter, extractions };
-        if (e.modelType === 'rarity') {
-            def.partition_key = e.partitionKey;
-            def.value_key = e.valueKey;
-            def.min_sample = e.minSample;
-        } else if (e.modelType === 'volume_baseline') {
-            def.key_fields = e.keyFields.filter(Boolean);
-            def.time_bucket = e.timeBucket;
-            def.min_sample = e.minSample;
-        } else {
-            def.key_fields = e.keyFields.filter(Boolean);
-        }
-        // Alert thresholds are always configured now; mode is set to paused on
-        // create and preserved on edit (changed ad-hoc from the model's data view).
-        def.alert = { ...e.alertConfig };
+        const shapeErr = this._validateShape();
+        if (shapeErr) { Toast.warning(shapeErr); return; }
+        const def = this._composeDefinition(filter, extractions);
 
         const btn = document.getElementById('modelEditorSave');
         if (btn) btn.disabled = true;
@@ -1506,6 +1502,226 @@ const AnalyticsModels = {
             Toast.error(err.message || 'Failed to save model');
             if (btn) btn.disabled = false;
         }
+    },
+
+    // ---- Shared definition building (save + preview) ----
+    // Returns an error message if the shape is incomplete, else null.
+    _validateShape() {
+        const e = this.editor;
+        if (e.modelType === 'rarity' && (!e.partitionKey || !e.valueKey)) return 'Select a partition key and a value key';
+        if ((e.modelType === 'first_seen' || e.modelType === 'volume_baseline') && !e.keyFields.filter(Boolean).length) {
+            return e.modelType === 'volume_baseline' ? 'Add at least one entity field' : 'Add at least one key field';
+        }
+        return null;
+    },
+
+    // Builds the ModelDefinition payload from the current shape + alert config.
+    _composeDefinition(filter, extractions) {
+        const e = this.editor;
+        const def = { filter: filter || [], extractions: extractions || [] };
+        if (e.modelType === 'rarity') {
+            def.partition_key = e.partitionKey;
+            def.value_key = e.valueKey;
+            def.min_sample = e.minSample;
+        } else if (e.modelType === 'volume_baseline') {
+            def.key_fields = e.keyFields.filter(Boolean);
+            def.time_bucket = e.timeBucket;
+            def.min_sample = e.minSample;
+        } else {
+            def.key_fields = e.keyFields.filter(Boolean);
+        }
+        def.alert = { ...e.alertConfig };
+        return def;
+    },
+
+    // ---- Score preview ----
+    _setResultMode(mode) {
+        const e = this.editor;
+        e.resultMode = mode;
+        const scores = mode === 'scores';
+        document.querySelectorAll('#modelResultTabs button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+        const show = (id, vis) => { const el = document.getElementById(id); if (el) el.style.display = vis ? '' : 'none'; };
+        show('modelQueryResults', !scores);
+        show('modelScorePreview', scores);
+        show('modelTimeRange', !scores);
+        show('modelPreviewWindow', scores);
+        show('modelRunBtn', !scores);
+        if (scores) {
+            const tl = document.getElementById('modelTimelineWrap');
+            if (tl) tl.style.display = 'none';
+            this._runScorePreview();
+        }
+    },
+
+    // Debounced re-run so live threshold/shape tweaks update the preview without
+    // a request per keystroke. No-op unless the preview tab is active.
+    _schedulePreview() {
+        if (this.editor.resultMode !== 'scores') return;
+        clearTimeout(this._previewTimer);
+        this._previewTimer = setTimeout(() => this._runScorePreview(), 450);
+    },
+
+    async _runScorePreview() {
+        const e = this.editor;
+        const panel = document.getElementById('modelScorePreview');
+        if (!panel) return;
+
+        const shapeErr = this._validateShape();
+        if (shapeErr) {
+            panel.innerHTML = `<div class="models-empty">${_esc(shapeErr)} to preview scores.</div>`;
+            return;
+        }
+
+        const seq = (this._previewSeq = (this._previewSeq || 0) + 1);
+        panel.innerHTML = '<div class="loading-spinner"><span class="spinner"></span></div>';
+
+        // Resolve filter/extractions authoritatively from the current query.
+        e.query = (document.getElementById('modelQueryInput')?.value || '').trim();
+        let filter = [], extractions = [];
+        if (e.query) {
+            const pd = await this._api('POST', '/models/parse-query', { query: e.query, model_type: e.modelType }).catch(() => null);
+            if (seq !== this._previewSeq) return;
+            const d = pd?.data;
+            if (d?.errors?.length) {
+                panel.innerHTML = `<div class="query-error"><p>${_esc(d.errors[0])}</p></div>`;
+                return;
+            }
+            filter = d?.definition?.filter || [];
+            extractions = d?.definition?.extractions || [];
+        }
+
+        const def = this._composeDefinition(filter, extractions);
+        try {
+            const data = await this._api('POST', '/models/preview', { model_type: e.modelType, definition: def, window: e.previewWindow });
+            if (seq !== this._previewSeq) return;
+            e.preview = data?.data?.preview || null;
+            this._renderScorePreview();
+        } catch (err) {
+            if (seq !== this._previewSeq) return;
+            panel.innerHTML = `<div class="query-error"><p>${_esc(err.message || 'Preview failed')}</p></div>`;
+        }
+    },
+
+    _renderScorePreview() {
+        const panel = document.getElementById('modelScorePreview');
+        if (!panel) return;
+        const p = this.editor.preview;
+        if (!p) { panel.innerHTML = '<div class="models-empty">No preview available.</div>'; return; }
+
+        const s = p.stats || {};
+        const num = v => this._fmtNum(Number(v || 0));
+        let chips = [];
+        if (p.model_type === 'rarity') {
+            chips = [
+                [num(s.scored_values), 'values'],
+                [num(s.partitions), 'partitions'],
+                [Number(s.max_confidence || 0).toFixed(2), 'max confidence'],
+                [Number(s.avg_confidence || 0).toFixed(2), 'avg confidence'],
+            ];
+        } else if (p.model_type === 'first_seen') {
+            chips = [
+                [num(s.entities), 'entities'],
+                [num(s.new_recent), 'new (last 24h)'],
+            ];
+        } else if (p.model_type === 'volume_baseline') {
+            chips = [
+                [num(s.entities_scored), 'entities scored'],
+                [Number(s.max_z || 0).toFixed(2), 'max |z|'],
+                [num(s.min_buckets), 'min history'],
+            ];
+        }
+
+        const scoredTotal = Number(s.scored_values || s.entities || s.entities_scored || 0);
+        const flags = Number(p.would_flag || 0);
+        const flagBadge = `<div class="score-flag-badge ${flags > 0 ? 'has-flags' : ''}">
+    <span class="score-flag-count">${this._fmtNum(flags)}</span>
+    <span class="score-flag-text">would flag</span>
+    <span class="score-flag-basis">${_esc(p.flag_basis || '')}</span>
+</div>`;
+
+        const chipsHTML = chips.map(([v, l]) => `<div class="score-stat-chip"><span class="score-stat-val">${_esc(String(v))}</span><span class="score-stat-label">${_esc(l)}</span></div>`).join('');
+
+        // Volume baseline needs several complete buckets to score; surface why it
+        // may be empty over a short window rather than showing a blank chart.
+        let hint = '';
+        if (p.model_type === 'volume_baseline' && scoredTotal === 0) {
+            hint = `<div class="score-preview-hint">No entity has enough complete buckets in this window to establish a baseline. Try a longer window or the per-hour bucket.</div>`;
+        } else if (scoredTotal === 0) {
+            hint = `<div class="score-preview-hint">No matching results in the last ${_esc(p.window)}.</div>`;
+        }
+
+        const histHTML = this._buildHistogramHTML(p.histogram || [], p.metric, p.model_type === 'rarity' ? this.editor.alertConfig.confidence_threshold : null);
+        const topHTML = this._previewTopTableHTML(p.top_columns || [], p.top || []);
+
+        panel.innerHTML = `
+<div class="score-preview">
+    <div class="score-preview-head">
+        <div class="score-preview-stats">${chipsHTML}</div>
+        ${flagBadge}
+    </div>
+    ${hint}
+    ${histHTML}
+    ${topHTML}
+</div>`;
+    },
+
+    // Builds the score-distribution chart markup, reusing the model viewer's
+    // histogram styles. thresholdFrac (0..1), when provided, draws a marker line.
+    _buildHistogramHTML(buckets, metricKey, thresholdFrac) {
+        const metric = this.METRIC_LABELS[metricKey] || 'Score';
+        const arr = Array.isArray(buckets) ? buckets : [];
+        const max = arr.reduce((m, b) => Math.max(m, Number(b.count || 0)), 0);
+        if (!arr.length || max <= 0) {
+            return `<div class="histogram-head"><span class="histogram-title">${_esc(metric)} distribution</span></div>
+<div class="histogram-empty">Not enough data to show a distribution.</div>`;
+        }
+        const cols = arr.map(b => {
+            const cnt = Number(b.count || 0);
+            const pct = max > 0 ? Math.round(cnt / max * 100) : 0;
+            return `<div class="histogram-col" title="${_esc(b.label)}: ${cnt.toLocaleString()}">
+    <span class="histogram-bar-val">${this._fmtNum(cnt)}</span>
+    <div class="histogram-bar-track"><div class="histogram-bar" style="height:${cnt > 0 ? Math.max(pct, 2) : 0}%"></div></div>
+    <span class="histogram-bar-label">${_esc(b.label)}</span>
+</div>`;
+        }).join('');
+        let thresholdLine = '';
+        if (thresholdFrac != null && thresholdFrac >= 0 && thresholdFrac <= 1) {
+            thresholdLine = `<div class="histogram-threshold-line" style="left:calc(12px + (100% - 24px) * ${thresholdFrac})" title="Alert threshold: ${Math.round(thresholdFrac * 100)}%"><span class="histogram-threshold-label">${Math.round(thresholdFrac * 100)}%</span></div>`;
+        }
+        return `<div class="histogram-head"><span class="histogram-title">${_esc(metric)} distribution</span></div>
+<div class="histogram-chart">${cols}${thresholdLine}</div>`;
+    },
+
+    _previewTopTableHTML(columns, rows) {
+        if (!columns.length || !rows.length) return '';
+        const head = columns.map(c => `<th>${_esc(this._colLabel(c))}</th>`).join('');
+        const body = rows.map(r => `<tr>${columns.map(c => `<td>${this._fmtScoreVal(c, r[c])}</td>`).join('')}</tr>`).join('');
+        return `<div class="score-top">
+    <div class="score-top-title">Top results</div>
+    <div class="score-top-scroll"><table class="score-top-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>
+</div>`;
+    },
+
+    _colLabel(c) {
+        const map = {
+            partition_val: 'Partition', value_val: 'Value', model_count: 'Days seen', percent: '%', confidence: 'Confidence',
+            entity_key: 'Entity', entity_val: 'Entity', first_seen: 'First seen', last_seen: 'Last seen', event_count: 'Events',
+            latest_count: 'Latest', baseline_median: 'Median', mad: 'MAD', n_buckets: 'Buckets', z_score: 'z-score',
+        };
+        return map[c] || c.replace(/_/g, ' ');
+    },
+
+    _fmtScoreVal(col, v) {
+        if (v === null || v === undefined) return '';
+        if (col === 'confidence') return _esc(Number(v).toFixed(3));
+        if (col === 'percent') return _esc(Number(v).toFixed(2) + '%');
+        if (col === 'z_score' || col === 'baseline_median' || col === 'mad') return _esc(Number(v).toFixed(2));
+        if (col === 'model_count' || col === 'event_count' || col === 'latest_count' || col === 'n_buckets') return _esc(this._fmtNum(Number(v)));
+        if (col === 'first_seen' || col === 'last_seen') {
+            const d = new Date(v);
+            return _esc(isNaN(d.getTime()) ? String(v) : d.toLocaleString());
+        }
+        return `<span class="score-cell-val" title="${_esc(String(v))}">${_esc(String(v))}</span>`;
     },
 };
 

@@ -2893,11 +2893,6 @@ const Notebooks = {
                             <label for="edit-content-${section.id}">Markdown Content</label>
                             <textarea id="edit-content-${section.id}" style="width: 100%; min-height: 200px; padding: 10px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary); font-family: var(--font-mono); font-size: 0.9rem; line-height: 1.5; resize: vertical; box-sizing: border-box;">${Utils.escapeHtml(section.content || '')}</textarea>
                         </div>
-                        <div class="markdown-preview" style="margin-top: 10px; padding: 10px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-tertiary);">
-                            <div class="preview-content" id="preview-content-${section.id}">
-                                ${this.renderMarkdownToHtml(section.content)}
-                            </div>
-                        </div>
                     </div>
                     <div class="editor-controls" style="margin-top: 12px;">
                         <button class="btn-primary" onclick="Notebooks.saveEditSection('${section.id}')">Save</button>
@@ -2938,18 +2933,6 @@ const Notebooks = {
             editButton.textContent = 'Cancel';
             editButton.style.background = 'var(--error)';
             editButton.style.color = 'white';
-        }
-
-        // Setup live preview for markdown
-        if (section.section_type === 'markdown') {
-            const textarea = document.getElementById(`edit-content-${section.id}`);
-            const preview = document.getElementById(`preview-content-${section.id}`);
-
-            if (textarea && preview) {
-                textarea.addEventListener('input', () => {
-                    preview.innerHTML = this.renderMarkdownToHtml(textarea.value);
-                });
-            }
         }
 
         // Focus the content textarea and auto-expand to fit existing content
@@ -4176,54 +4159,6 @@ const Notebooks = {
 
         // Fallback to escaped HTML
         return `<pre style="white-space: pre-wrap;">${Utils.escapeHtml(markdown)}</pre>`;
-    },
-
-    /**
-     * Setup live markdown preview for editing
-     */
-    setupMarkdownEditor(container, initialContent = '') {
-        const editorHtml = `
-            <div class="markdown-section">
-                <div class="section-editor">
-                    <div class="markdown-editor">
-                        <textarea placeholder="Enter markdown content..." style="width: 100%; height: 300px; padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-family: var(--font-mono); font-size: 0.9rem; line-height: 1.5; resize: vertical; outline: none;">${Utils.escapeHtml(initialContent)}</textarea>
-                    </div>
-                    <div class="markdown-preview">
-                        <div class="preview-content" style="padding: 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-primary); min-height: 300px; overflow-y: auto;">
-                            ${this.renderMarkdownToHtml(initialContent)}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        container.innerHTML = editorHtml;
-
-        // Setup live preview
-        const textarea = container.querySelector('textarea');
-        const preview = container.querySelector('.preview-content');
-
-        if (textarea && preview) {
-            textarea.addEventListener('input', () => {
-                preview.innerHTML = this.renderMarkdownToHtml(textarea.value);
-            });
-
-            textarea.addEventListener('keydown', (e) => {
-                // Handle tab key for indentation
-                if (e.key === 'Tab') {
-                    e.preventDefault();
-                    const start = textarea.selectionStart;
-                    const end = textarea.selectionEnd;
-                    textarea.value = textarea.value.substring(0, start) + '    ' + textarea.value.substring(end);
-                    textarea.selectionStart = textarea.selectionEnd = start + 4;
-
-                    // Update preview
-                    preview.innerHTML = this.renderMarkdownToHtml(textarea.value);
-                }
-            });
-        }
-
-        return textarea;
     },
 
     /**

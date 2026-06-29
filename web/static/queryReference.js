@@ -5,54 +5,43 @@ const QueryReference = {
     operators: [],
     activeCategory: null,
     expandedCards: new Set(),
+    _loaded: false,
 
-    async init() {
-        const referenceTab = document.getElementById('referenceTabBtn');
-        const searchTab = document.getElementById('searchTabBtn');
-        const commentedTab = document.getElementById('commentedTabBtn');
-        const settingsTab = document.getElementById('settingsTabBtn');
-
-        if (referenceTab) referenceTab.addEventListener('click', () => this.show());
-        if (searchTab) searchTab.addEventListener('click', () => this.hide());
-        if (commentedTab) commentedTab.addEventListener('click', () => this.hide());
-        if (settingsTab) settingsTab.addEventListener('click', () => this.hide());
+    init() {
+        const overlay = document.getElementById('queryRefOverlay');
+        if (overlay) {
+            const scrim = overlay.querySelector('.qref-overlay-scrim');
+            if (scrim) scrim.addEventListener('click', () => this.closeOverlay());
+        }
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && this.isOpen()) this.closeOverlay();
+        });
     },
 
-    async show() {
-        const searchView = document.getElementById('searchView');
-        const commentedView = document.getElementById('commentedView');
-        const alertsView = document.getElementById('alertsView');
-        const alertEditorView = document.getElementById('alertEditorView');
-        const settingsView = document.getElementById('settingsView');
-        const referenceView = document.getElementById('referenceView');
-        const actionsManageView = document.getElementById('actionsManageView');
-
-        const searchTab = document.getElementById('searchTabBtn');
-        const commentedTab = document.getElementById('commentedTabBtn');
-        const alertsTab = document.getElementById('alertsTabBtn');
-        const settingsTab = document.getElementById('settingsTabBtn');
-        const referenceTab = document.getElementById('referenceTabBtn');
-
-        if (searchView) searchView.style.display = 'none';
-        if (commentedView) commentedView.style.display = 'none';
-        if (alertsView) alertsView.style.display = 'none';
-        if (alertEditorView) alertEditorView.style.display = 'none';
-        if (actionsManageView) actionsManageView.style.display = 'none';
-        if (settingsView) settingsView.style.display = 'none';
-        if (referenceView) referenceView.style.display = 'block';
-
-        if (searchTab) searchTab.classList.remove('active');
-        if (commentedTab) commentedTab.classList.remove('active');
-        if (alertsTab) alertsTab.classList.remove('active');
-        if (settingsTab) settingsTab.classList.remove('active');
-        if (referenceTab) referenceTab.classList.add('active');
-
-        await this.loadReference();
+    isOpen() {
+        const overlay = document.getElementById('queryRefOverlay');
+        return !!overlay && overlay.classList.contains('open');
     },
 
-    hide() {
-        const referenceView = document.getElementById('referenceView');
-        if (referenceView) referenceView.style.display = 'none';
+    // Open the reference as a centered overlay over the query editor.
+    // The catalog rarely changes, so it is fetched once and cached in the DOM.
+    async openOverlay() {
+        const overlay = document.getElementById('queryRefOverlay');
+        if (!overlay) return;
+        overlay.classList.add('open');
+        document.body.classList.add('qref-overlay-active');
+        if (!this._loaded) {
+            await this.loadReference();
+            this._loaded = true;
+        }
+        const search = document.getElementById('refSearchInput');
+        if (search) search.focus();
+    },
+
+    closeOverlay() {
+        const overlay = document.getElementById('queryRefOverlay');
+        if (overlay) overlay.classList.remove('open');
+        document.body.classList.remove('qref-overlay-active');
     },
 
     async loadReference() {
@@ -304,10 +293,11 @@ const QueryReference = {
         const queryInput = document.getElementById('queryInput');
         if (queryInput) {
             queryInput.value = example;
-            const searchTab = document.getElementById('searchTabBtn');
-            if (searchTab) searchTab.click();
+            // Trigger the editor's input handlers (syntax highlight, validation).
+            queryInput.dispatchEvent(new Event('input', { bubbles: true }));
             queryInput.focus();
         }
+        this.closeOverlay();
     },
 
     renderError(message) {

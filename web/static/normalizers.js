@@ -89,7 +89,7 @@ const Normalizers = {
                     <th>Transforms</th>
                     <th>Field Mappings</th>
                     <th>Used By</th>
-                    <th>Actions</th>
+                    <th></th>
                 </tr>
             </thead>
             <tbody>`;
@@ -103,13 +103,17 @@ const Normalizers = {
                 <td class="context-link-fields">${Utils.escapeHtml(transforms)}</td>
                 <td>${mappingCount} mapping${mappingCount !== 1 ? 's' : ''}</td>
                 <td><span class="normalizer-usage-cell" id="normalizer-usage-${n.id}">--</span></td>
-                <td class="context-link-actions">
-                    <button class="btn-sm btn-secondary" onclick="Normalizers.openEditForm('${n.id}')" title="Edit">Edit</button>
-                    <button class="btn-sm btn-secondary" onclick="Normalizers.duplicateNormalizer('${n.id}')" title="Duplicate">Duplicate</button>
-                    <button class="btn-sm btn-secondary" onclick="Normalizers.exportNormalizer('${n.id}', '${Utils.escapeHtml(n.name)}')" title="Export YAML">Export</button>
-
-                    ${!n.is_default ? `<button class="btn-sm btn-secondary" onclick="Normalizers.setDefault('${n.id}')" title="Set as default">Set Default</button>` : ''}
-                    ${!n.is_default ? `<button class="btn-sm btn-danger" onclick="Normalizers.deleteNormalizer('${n.id}')" title="Delete">Delete</button>` : ''}
+                <td class="kebab-cell">
+                    <div class="kebab-wrapper">
+                        <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button>
+                        <div class="kebab-menu">
+                            <button class="kebab-item" onclick="Normalizers.openEditForm('${n.id}')">Edit</button>
+                            <button class="kebab-item" onclick="Normalizers.duplicateNormalizer('${n.id}')">Duplicate</button>
+                            <button class="kebab-item" onclick="Normalizers.exportNormalizer('${n.id}', '${Utils.escapeHtml(n.name)}')">Export</button>
+                            ${!n.is_default ? `<button class="kebab-item" onclick="Normalizers.setDefault('${n.id}')">Set Default</button>` : ''}
+                            ${!n.is_default ? `<button class="kebab-item danger" onclick="Normalizers.deleteNormalizer('${n.id}')">Delete</button>` : ''}
+                        </div>
+                    </div>
                 </td>
             </tr>`;
         });

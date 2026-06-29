@@ -22,17 +22,24 @@ const GroupsView = {
             });
         }
 
-        const closeBtn = document.getElementById('closeGroupDetailBtn');
-        if (closeBtn) closeBtn.addEventListener('click', () => this.closeDetail());
-
-        const editBtn = document.getElementById('editGroupBtn');
-        if (editBtn) editBtn.addEventListener('click', () => this.editGroup());
-
         const deleteBtn = document.getElementById('deleteGroupBtn');
         if (deleteBtn) deleteBtn.addEventListener('click', () => this.deleteGroup());
 
+        // Inline editing of group name/description in the detail header
+        const nameEl = document.getElementById('groupDetailName');
+        if (nameEl) nameEl.addEventListener('click', () => this._startInlineEdit(nameEl, 'name', 'Group name'));
+
+        const descEl = document.getElementById('groupDetailDescription');
+        if (descEl) descEl.addEventListener('click', () => this._startInlineEdit(descEl, 'description', 'Add a description'));
+
         const addMemberBtn = document.getElementById('groupAddMemberBtn');
-        if (addMemberBtn) addMemberBtn.addEventListener('click', () => this.addMember());
+        if (addMemberBtn) addMemberBtn.addEventListener('click', () => this.showAddMembers());
+
+        const submitAddBtn = document.getElementById('submitAddMembersBtn');
+        if (submitAddBtn) submitAddBtn.addEventListener('click', () => this.submitAddMembers());
+
+        const memberSearch = document.getElementById('memberPickerSearch');
+        if (memberSearch) memberSearch.addEventListener('input', () => this.renderMemberPicker());
 
         const grantType = document.getElementById('permGrantType');
         if (grantType) grantType.addEventListener('change', () => this.toggleGrantType());
@@ -76,7 +83,7 @@ const GroupsView = {
         html += '</tr></thead><tbody>';
 
         this.groups.forEach(g => {
-            html += `<tr class="group-row" data-group-id="${Utils.escapeHtml(g.id)}">
+            html += `<tr class="group-row" data-group-id="${Utils.escapeHtml(g.id)}" onclick="GroupsView.openDetail('${Utils.escapeJs(g.id)}')">
                 <td>
                     <div class="group-cell">
                         <div class="group-name">${Utils.escapeHtml(g.name)}</div>
@@ -85,7 +92,14 @@ const GroupsView = {
                 </td>
                 <td><span class="role-badge">${g.member_count || 0}</span></td>
                 <td class="text-muted">${new Date(g.created_at).toLocaleDateString()}</td>
-                <td><button class="btn-secondary btn-sm" onclick="GroupsView.openDetail('${Utils.escapeJs(g.id)}')">Manage</button></td>
+                <td class="kebab-cell" onclick="event.stopPropagation()">
+                    <div class="kebab-wrapper">
+                        <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button>
+                        <div class="kebab-menu">
+                            <button class="kebab-item danger" onclick="GroupsView.deleteGroupById('${Utils.escapeJs(g.id)}')">Delete</button>
+                        </div>
+                    </div>
+                </td>
             </tr>`;
         });
 
@@ -137,88 +151,147 @@ const GroupsView = {
         }
     },
 
-    async openDetail(groupId) {
+    async openDetail(groupId, fromRoute = false) {
         this.selectedGroup = this.groups.find(g => g.id === groupId);
         if (!this.selectedGroup) return;
 
+        // Push a history entry so browser/mouse/keyboard back returns to the list.
+        // Suppressed when restoring from the URL (popstate/deep-link) to avoid dupes.
+        if (!fromRoute) window.App?.pushSubPath('groups/' + groupId);
+
         const panel = document.getElementById('groupDetailPanel');
-        const list = document.getElementById('groupsList');
+        const list = document.getElementById('groupsListView');
         if (panel) panel.style.display = 'block';
         if (list) list.style.display = 'none';
 
-        document.getElementById('groupDetailName').textContent = this.selectedGroup.name;
-        document.getElementById('groupDetailDescription').textContent = this.selectedGroup.description || '';
+        this._renderDetailHeader();
 
         await this.loadMembers();
-        await this.loadUsersForMemberSelect();
     },
+
+    // Group state for the add-members modal
+    _availableUsers: [],
+    _selectedToAdd: null,
 
     closeDetail() {
         const panel = document.getElementById('groupDetailPanel');
-        const list = document.getElementById('groupsList');
+        const list = document.getElementById('groupsListView');
         if (panel) panel.style.display = 'none';
         if (list) list.style.display = '';
         this.selectedGroup = null;
     },
 
-    async editGroup() {
+    // Renders the detail header name/description as plain text (placeholder when empty).
+    _renderDetailHeader() {
         if (!this.selectedGroup) return;
+        const nameEl = document.getElementById('groupDetailName');
+        const descEl = document.getElementById('groupDetailDescription');
+        if (nameEl) nameEl.textContent = this.selectedGroup.name;
+        if (descEl) {
+            const d = this.selectedGroup.description;
+            descEl.textContent = d || 'Add a description';
+            descEl.classList.toggle('is-empty', !d);
+        }
+    },
 
-        const newName = prompt('Group name:', this.selectedGroup.name);
-        if (newName === null) return;
-        const newDesc = prompt('Description:', this.selectedGroup.description || '');
-        if (newDesc === null) return;
+    // Click-to-edit: swaps the header text for an input that saves on Enter/blur.
+    _startInlineEdit(el, field, placeholder) {
+        if (!this.selectedGroup || el.classList.contains('editing')) return;
+        el.classList.add('editing');
 
-        if (!newName.trim()) {
+        const current = field === 'name' ? this.selectedGroup.name : (this.selectedGroup.description || '');
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = field === 'name' ? 'inline-edit-input inline-edit-name' : 'inline-edit-input inline-edit-desc';
+        input.value = current;
+        input.placeholder = placeholder || '';
+        el.textContent = '';
+        el.appendChild(input);
+        input.focus();
+        input.select();
+
+        let done = false;
+        const finish = async (save) => {
+            if (done) return;
+            done = true;
+            el.classList.remove('editing');
+            const val = input.value.trim();
+            if (save && val !== current && (field !== 'name' || val)) {
+                await this._saveGroupField(field, val);
+            }
+            this._renderDetailHeader();
+        };
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+            else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+        });
+        input.addEventListener('blur', () => finish(true));
+    },
+
+    async _saveGroupField(field, val) {
+        const name = field === 'name' ? val : this.selectedGroup.name;
+        const description = field === 'description' ? val : (this.selectedGroup.description || '');
+        if (!name) {
             if (window.Toast) Toast.error('Error', 'Group name is required');
             return;
         }
-
         try {
             const resp = await fetch(`/api/v1/groups/${this.selectedGroup.id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ name: newName.trim(), description: newDesc.trim() })
+                body: JSON.stringify({ name, description })
             });
             const data = await resp.json();
             if (data.success) {
-                this.selectedGroup.name = newName.trim();
-                this.selectedGroup.description = newDesc.trim();
-                document.getElementById('groupDetailName').textContent = this.selectedGroup.name;
-                document.getElementById('groupDetailDescription').textContent = this.selectedGroup.description || '';
+                this.selectedGroup.name = name;
+                this.selectedGroup.description = description;
                 await this.loadGroups();
             } else {
                 if (window.Toast) Toast.error('Error', data.error || 'Failed to update group');
             }
         } catch (err) {
-            console.error('[GroupsView] editGroup error:', err);
+            console.error('[GroupsView] saveGroupField error:', err);
             if (window.Toast) Toast.error('Error', 'Network error');
         }
     },
 
     async deleteGroup() {
         if (!this.selectedGroup) return;
-
-        if (!confirm(`Delete group "${this.selectedGroup.name}"? This will remove all members and fractal permissions associated with this group.`)) {
-            return;
+        const ok = await this._deleteGroup(this.selectedGroup.id, this.selectedGroup.name);
+        if (ok) {
+            this.closeDetail();
+            window.App?.pushSubPath('groups');
         }
+    },
 
+    async deleteGroupById(id) {
+        const g = this.groups.find(x => x.id === id);
+        if (!g) return;
+        await this._deleteGroup(id, g.name);
+    },
+
+    async _deleteGroup(id, name) {
+        if (!confirm(`Delete group "${name}"? This will remove all members and fractal permissions associated with this group.`)) {
+            return false;
+        }
         try {
-            const resp = await fetch(`/api/v1/groups/${this.selectedGroup.id}`, {
+            const resp = await fetch(`/api/v1/groups/${id}`, {
                 method: 'DELETE',
                 credentials: 'include'
             });
             const data = await resp.json();
             if (data.success) {
-                this.closeDetail();
                 await this.loadGroups();
-            } else {
-                if (window.Toast) Toast.error('Error', data.error || 'Failed to delete group');
+                return true;
             }
+            if (window.Toast) Toast.error('Error', data.error || 'Failed to delete group');
+            return false;
         } catch (err) {
             console.error('[GroupsView] deleteGroup error:', err);
             if (window.Toast) Toast.error('Error', 'Network error');
+            return false;
         }
     },
 
@@ -273,65 +346,113 @@ const GroupsView = {
         container.innerHTML = html;
     },
 
-    async loadUsersForMemberSelect() {
-        const select = document.getElementById('groupAddMemberSelect');
-        if (!select) return;
+    showAddMembers() {
+        if (!this.selectedGroup) return;
+        this._selectedToAdd = new Set();
+        const search = document.getElementById('memberPickerSearch');
+        if (search) search.value = '';
+        const modal = document.getElementById('addMembersModal');
+        if (modal) modal.style.display = 'flex';
+        this.loadAvailableUsers();
+        setTimeout(() => search?.focus(), 100);
+    },
+
+    hideAddMembers() {
+        const modal = document.getElementById('addMembersModal');
+        if (modal) modal.style.display = 'none';
+    },
+
+    async loadAvailableUsers() {
+        const listEl = document.getElementById('memberPickerList');
+        if (!listEl || !this.selectedGroup) return;
+        listEl.innerHTML = '<div class="loading">Loading...</div>';
 
         try {
             const resp = await fetch('/api/v1/users', { credentials: 'include' });
             const data = await resp.json();
-            if (!data.success) return;
+            if (!data.success) {
+                listEl.innerHTML = '<div class="text-muted" style="padding:0.75rem;">Failed to load users</div>';
+                return;
+            }
 
-            // Also get current members to exclude them
+            // Exclude users already in the group
             const membersResp = await fetch(`/api/v1/groups/${this.selectedGroup.id}/members`, { credentials: 'include' });
             const membersData = await membersResp.json();
             const currentMembers = (membersData.success && membersData.data) ? membersData.data.map(m => m.username) : [];
 
-            select.innerHTML = '<option value="">Select user...</option>';
-            (data.data || []).forEach(u => {
-                if (!currentMembers.includes(u.username)) {
-                    const opt = document.createElement('option');
-                    opt.value = u.username;
-                    opt.textContent = `${u.display_name} (@${u.username})`;
-                    select.appendChild(opt);
-                }
-            });
+            this._availableUsers = (data.data || []).filter(u => !currentMembers.includes(u.username));
+            this.renderMemberPicker();
         } catch (err) {
-            console.error('[GroupsView] loadUsersForMemberSelect error:', err);
+            console.error('[GroupsView] loadAvailableUsers error:', err);
+            listEl.innerHTML = '<div class="text-muted" style="padding:0.75rem;">Failed to load users</div>';
         }
     },
 
-    async addMember() {
-        if (!this.selectedGroup) return;
-        const select = document.getElementById('groupAddMemberSelect');
-        const username = select?.value;
-        if (!username) {
-            if (window.Toast) Toast.error('Error', 'Select a user to add');
+    renderMemberPicker() {
+        const listEl = document.getElementById('memberPickerList');
+        if (!listEl) return;
+
+        const q = (document.getElementById('memberPickerSearch')?.value || '').toLowerCase().trim();
+        const users = this._availableUsers.filter(u =>
+            !q || (u.display_name || '').toLowerCase().includes(q) || u.username.toLowerCase().includes(q));
+
+        if (users.length === 0) {
+            const msg = this._availableUsers.length === 0 ? 'All users are already members.' : 'No matching users.';
+            listEl.innerHTML = `<div class="no-data" style="padding:0.75rem;text-align:center;color:var(--text-muted);">${msg}</div>`;
             return;
         }
 
-        try {
-            const resp = await fetch(`/api/v1/groups/${this.selectedGroup.id}/members`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({ username })
-            });
-            const data = await resp.json();
-            if (data.success) {
-                await this.loadMembers();
-                await this.loadUsersForMemberSelect();
-                // Update member count in list
-                if (this.selectedGroup) {
-                    this.selectedGroup.member_count = (this.selectedGroup.member_count || 0) + 1;
-                }
-            } else {
-                if (window.Toast) Toast.error('Error', data.error || 'Failed to add member');
-            }
-        } catch (err) {
-            console.error('[GroupsView] addMember error:', err);
-            if (window.Toast) Toast.error('Error', 'Network error');
+        listEl.innerHTML = users.map(u => {
+            const checked = this._selectedToAdd.has(u.username) ? 'checked' : '';
+            const initial = (u.display_name || u.username)[0].toUpperCase();
+            return `<label class="member-picker-item">
+                <div class="gravatar" style="background-color:${u.gravatar_color || '#666'}">${Utils.escapeHtml(initial)}</div>
+                <div class="user-info">
+                    <div class="user-name">${Utils.escapeHtml(u.display_name || u.username)}</div>
+                    <div class="user-username">@${Utils.escapeHtml(u.username)}</div>
+                </div>
+                <input type="checkbox" value="${Utils.escapeHtml(u.username)}" ${checked} onchange="GroupsView.toggleMemberSelection('${Utils.escapeJs(u.username)}', this.checked)">
+            </label>`;
+        }).join('');
+    },
+
+    toggleMemberSelection(username, checked) {
+        if (!this._selectedToAdd) this._selectedToAdd = new Set();
+        if (checked) this._selectedToAdd.add(username);
+        else this._selectedToAdd.delete(username);
+    },
+
+    async submitAddMembers() {
+        if (!this.selectedGroup) return;
+        const usernames = this._selectedToAdd ? Array.from(this._selectedToAdd) : [];
+        if (usernames.length === 0) {
+            if (window.Toast) Toast.error('Error', 'Select at least one user');
+            return;
         }
+
+        let added = 0;
+        for (const username of usernames) {
+            try {
+                const resp = await fetch(`/api/v1/groups/${this.selectedGroup.id}/members`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ username })
+                });
+                const data = await resp.json();
+                if (data.success) added++;
+                else if (window.Toast) Toast.error('Error', `${username}: ${data.error || 'failed to add'}`);
+            } catch (err) {
+                console.error('[GroupsView] addMember error:', err);
+            }
+        }
+
+        if (added > 0) {
+            this.selectedGroup.member_count = (this.selectedGroup.member_count || 0) + added;
+            await this.loadMembers();
+            await this.loadGroups();
+        }
+        this.hideAddMembers();
     },
 
     async removeMember(username) {
@@ -347,7 +468,7 @@ const GroupsView = {
             const data = await resp.json();
             if (data.success) {
                 await this.loadMembers();
-                await this.loadUsersForMemberSelect();
+                await this.loadGroups();
                 if (this.selectedGroup) {
                     this.selectedGroup.member_count = Math.max(0, (this.selectedGroup.member_count || 1) - 1);
                 }

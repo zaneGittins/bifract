@@ -188,7 +188,7 @@ const App = {
     },
 
     // Tab name sets for hash-based open-in-new-tab support.
-    _mainTabs: new Set(['fractalListing', 'reference', 'performance', 'settings', 'context', 'normalizers', 'schema']),
+    _mainTabs: new Set(['fractalListing', 'performance', 'settings', 'context', 'normalizers', 'schema']),
     _fractalTabs: new Set(['search', 'comments', 'notebooks', 'dashboards', 'dictionaries', 'models', 'chat', 'library', 'alerts', 'ingest', 'manage']),
 
     // Build the target URL for a given hash (used for open-in-new-tab).
@@ -370,7 +370,6 @@ const App = {
 
         // Main View Tab Buttons
         this._bindTab(document.getElementById('fractalListingTabBtn'), () => this.showMainViewTab('fractalListing'), 'fractalListing');
-        this._bindTab(document.getElementById('queryReferenceTabBtn'), () => this.showMainViewTab('reference'), 'reference');
         this._bindTab(document.getElementById('mainPerformanceTabBtn'), () => this.showMainViewTab('performance'), 'performance');
         this._bindTab(document.getElementById('mainSettingsTabBtn'), () => this.showMainViewTab('settings'), 'settings');
         this._bindTab(document.getElementById('mainContextTabBtn'), () => this.showMainViewTab('context'), 'context');
@@ -856,14 +855,13 @@ const App = {
 
         // Hide all main view tab contents
         const fractalListingContent = document.getElementById('fractalListingTabContent');
-        const queryReferenceContent = document.getElementById('queryReferenceTabContent');
         const mainPerformanceContent = document.getElementById('mainPerformanceTabContent');
         const mainSettingsContent = document.getElementById('mainSettingsTabContent');
         const mainContextContent = document.getElementById('mainContextTabContent');
         const mainNormalizersContent = document.getElementById('mainNormalizersTabContent');
         const mainSchemaContent = document.getElementById('mainSchemaTabContent');
 
-        [fractalListingContent, queryReferenceContent, mainPerformanceContent, mainSettingsContent, mainContextContent, mainNormalizersContent, mainSchemaContent].forEach(content => {
+        [fractalListingContent, mainPerformanceContent, mainSettingsContent, mainContextContent, mainNormalizersContent, mainSchemaContent].forEach(content => {
             if (content) content.style.display = 'none';
         });
 
@@ -879,14 +877,13 @@ const App = {
 
         // Remove active class from all main view tabs
         const fractalListingTab = document.getElementById('fractalListingTabBtn');
-        const queryReferenceTab = document.getElementById('queryReferenceTabBtn');
         const mainPerformanceTab = document.getElementById('mainPerformanceTabBtn');
         const mainSettingsTab = document.getElementById('mainSettingsTabBtn');
         const mainContextTab = document.getElementById('mainContextTabBtn');
         const mainNormalizersTab = document.getElementById('mainNormalizersTabBtn');
         const mainSchemaTab = document.getElementById('mainSchemaTabBtn');
 
-        [fractalListingTab, queryReferenceTab, mainPerformanceTab, mainSettingsTab, mainContextTab, mainNormalizersTab, mainSchemaTab].forEach(tabBtn => {
+        [fractalListingTab, mainPerformanceTab, mainSettingsTab, mainContextTab, mainNormalizersTab, mainSchemaTab].forEach(tabBtn => {
             if (tabBtn) tabBtn.classList.remove('active');
         });
 
@@ -898,14 +895,6 @@ const App = {
                 // Clear current fractal context when returning to fractal listing
                 if (window.FractalContext) FractalContext.clearCurrentFractal();
                 if (window.FractalListing) FractalListing.show();
-                break;
-            case 'reference':
-                if (queryReferenceContent) queryReferenceContent.style.display = 'block';
-                if (queryReferenceTab) queryReferenceTab.classList.add('active');
-                // Show reference view
-                const referenceView = document.getElementById('referenceView');
-                if (referenceView) referenceView.style.display = 'block';
-                if (window.QueryReference) QueryReference.show();
                 break;
             case 'performance':
                 if (mainPerformanceContent) mainPerformanceContent.style.display = 'block';
@@ -1081,8 +1070,7 @@ const App = {
         const alertsView = document.getElementById('alertsView');
         const feedAlertsView = document.getElementById('feedAlertsView');
         const ingestView = document.getElementById('ingestView');
-        const referenceView = document.getElementById('referenceView');
-        [searchView, commentedView, notebooksView, dashboardsView, dictionariesView, modelsView, chatView, librariesView, alertsView, feedAlertsView, ingestView, referenceView].forEach(view => {
+        [searchView, commentedView, notebooksView, dashboardsView, dictionariesView, modelsView, chatView, librariesView, alertsView, feedAlertsView, ingestView].forEach(view => {
             if (view) view.style.display = 'none';
         });
 

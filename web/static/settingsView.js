@@ -55,8 +55,8 @@ const SettingsView = {
         }
     },
 
-    switchSubTab(tabName) {
-        window.App?.pushSubPath(tabName);
+    switchSubTab(tabName, skipPush = false) {
+        if (!skipPush) window.App?.pushSubPath(tabName);
         const tabBar = document.getElementById('settingsSubTabs');
         if (tabBar) {
             tabBar.querySelectorAll('.alerts-sub-tab').forEach(btn => btn.classList.remove('active'));
@@ -66,6 +66,8 @@ const SettingsView = {
         document.querySelectorAll('.settings-sub-panel').forEach(panel => panel.style.display = 'none');
         const panel = document.getElementById('settingsSubTab' + tabName.charAt(0).toUpperCase() + tabName.slice(1));
         if (panel) panel.style.display = '';
+        // Entering the Groups tab always lands on the list; detail is restored separately.
+        if (tabName === 'groups' && window.GroupsView) GroupsView.closeDetail();
     },
 
     async show(subPath = '') {
@@ -105,11 +107,19 @@ const SettingsView = {
         await this.loadUsers();
 
         // Load groups if available
-        if (window.GroupsView) {
-            GroupsView.loadGroups();
-        }
+        const groupsLoad = window.GroupsView ? GroupsView.loadGroups() : null;
 
-        if (subPath) this.switchSubTab(subPath);
+        // subPath is "<subTab>" or "<subTab>/<groupId>" (groups detail deep-link).
+        if (subPath) {
+            const slash = subPath.indexOf('/');
+            const subTab = slash === -1 ? subPath : subPath.slice(0, slash);
+            const detailId = slash === -1 ? '' : subPath.slice(slash + 1);
+            this.switchSubTab(subTab, true);
+            if (subTab === 'groups' && detailId && window.GroupsView) {
+                if (groupsLoad) await groupsLoad;
+                GroupsView.openDetail(detailId, true);
+            }
+        }
     },
 
     hide() {

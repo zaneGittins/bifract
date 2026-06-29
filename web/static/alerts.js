@@ -2262,6 +2262,9 @@ throttleField: ${alert.throttle_field}` : ''}`;
         // Close the right-hand configuration panel
         this.closeAlertPanel();
 
+        // Close the log detail panel if it was left open
+        if (window.LogDetail) LogDetail.close();
+
         // Clear the editor
         this.clearAlertEditor();
     },
@@ -2499,7 +2502,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                             if (countDiv) countDiv.textContent = `${rows.length} result${rows.length === 1 ? '' : 's'}`;
                             if (window.QueryExecutor) {
                                 QueryExecutor.renderResultsToElement(rows, resultsDiv, fieldOrder, {
-                                    allResults: rows, isAggregated, disableDetailView: true,
+                                    allResults: rows, isAggregated, detailHost: 'alert',
                                 });
                             }
                             break;
@@ -2558,7 +2561,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const pageResults = this.getCurrentAlertPageResults();
             if (window.QueryExecutor) {
                 QueryExecutor.renderResultsToElement(pageResults, resultsDiv, fieldOrder, {
-                    allResults: results, isAggregated, disableDetailView: true,
+                    allResults: results, isAggregated, detailHost: 'alert',
                 });
             }
             if (exportBtn && results.length > 0) exportBtn.style.display = 'inline-block';
@@ -3628,7 +3631,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const pageResults = this.getCurrentAlertPageResults();
             if (window.QueryExecutor) {
                 QueryExecutor.renderResultsToElement(pageResults, targetElement, this.fieldOrder, {
-                    allResults: this.currentResults
+                    allResults: this.currentResults, detailHost: 'alert'
                 });
             }
         }
@@ -3645,7 +3648,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const pageResults = this.getCurrentAlertPageResults();
             if (window.QueryExecutor) {
                 QueryExecutor.renderResultsToElement(pageResults, targetElement, this.fieldOrder, {
-                    allResults: this.currentResults
+                    allResults: this.currentResults, detailHost: 'alert'
                 });
             }
         }
@@ -3662,7 +3665,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
         if (window.QueryExecutor) {
             QueryExecutor.renderResultsToElement(pageResults, targetElement, this.fieldOrder, {
                 allResults: this.currentResults,
-                isAggregated: this.isAggregated
+                isAggregated: this.isAggregated, detailHost: 'alert'
             });
         }
     },

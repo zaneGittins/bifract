@@ -1,59 +1,100 @@
-// Log detail side panel
+// Log detail side panel.
+//
+// The same controller drives more than one physical panel (the search view and
+// the alert editor each have their own). Each panel is registered as a "host":
+// a panel root element plus its associated results-table container. All DOM
+// access goes through the active host's elements rather than fixed IDs, so the
+// two surfaces never collide even though both live in the DOM at once.
 const LogDetail = {
     results: null,
     currentIndex: -1,
     isAggregated: false,
+    hosts: {},
+    activeHost: null,
+
+    // Resolve a host's element references from its panel root (class-based, so
+    // each surface can reuse the same markup without duplicate IDs).
+    _resolveHost(panelEl, opts) {
+        return {
+            name: opts.name,
+            panel: panelEl,
+            content: panelEl.querySelector('.panel-body'),
+            resizeHandle: panelEl.querySelector('.panel-resize-handle'),
+            levelBadge: panelEl.querySelector('.log-level-badge'),
+            timestamp: panelEl.querySelector('.panel-timestamp'),
+            source: panelEl.querySelector('.panel-source'),
+            prevBtn: panelEl.querySelector('.panel-prev-btn'),
+            nextBtn: panelEl.querySelector('.panel-next-btn'),
+            searchBtn: panelEl.querySelector('.panel-search-btn'),
+            chatBtn: panelEl.querySelector('.send-to-chat-btn'),
+            closeBtn: panelEl.querySelector('.close-panel-btn'),
+            tableRootSel: opts.tableRoot || null,
+            storageKey: opts.storageKey || 'logDetailPanelWidth',
+        };
+    },
+
+    registerHost(name, panelSelector, opts = {}) {
+        const panelEl = document.querySelector(panelSelector);
+        if (!panelEl) return null;
+        const host = this._resolveHost(panelEl, { ...opts, name });
+        this.hosts[name] = host;
+        this._wireHost(host);
+        if (!this.activeHost) this.activeHost = host;
+        return host;
+    },
+
+    _wireHost(host) {
+        if (host.closeBtn) host.closeBtn.addEventListener('click', () => this.close());
+        if (host.chatBtn) host.chatBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (this.currentLogData && window.Chat) {
+                this.close();
+                Chat.analyzeLog(this.currentLogData);
+            }
+        });
+        if (host.prevBtn) host.prevBtn.addEventListener('click', () => this.navigateTo(this.currentIndex - 1));
+        if (host.nextBtn) host.nextBtn.addEventListener('click', () => this.navigateTo(this.currentIndex + 1));
+        if (host.searchBtn) host.searchBtn.addEventListener('click', () => {
+            if (window.Comments) window.Comments.searchForCurrentLog();
+        });
+        this.initResizeHandle(host);
+    },
+
+    _host(hostRef) {
+        if (!hostRef) return this.activeHost || this.hosts.search;
+        return (typeof hostRef === 'string') ? this.hosts[hostRef] : hostRef;
+    },
+
+    // The results-table container backing the active host. Re-resolved each call
+    // because the container's contents are replaced on every re-render.
+    _tableRoot() {
+        const h = this.activeHost;
+        if (h && h.tableRootSel) {
+            const el = document.querySelector(h.tableRootSel);
+            if (el) return el;
+        }
+        return document;
+    },
 
     init() {
-        const closeBtn = document.getElementById('closePanelBtn');
-        const panel = document.getElementById('logDetailPanel');
-        const sendToChatBtn = document.getElementById('sendToChatBtn');
-        const prevBtn = document.getElementById('panelPrevBtn');
-        const nextBtn = document.getElementById('panelNextBtn');
-        const searchLogBtn = document.getElementById('searchLogBtn');
+        this.registerHost('search', '#logDetailPanel', { tableRoot: '#resultsTable', storageKey: 'logDetailPanelWidth' });
+        this.registerHost('alert', '#alertLogDetailPanel', { tableRoot: '#queryResults', storageKey: 'alertLogDetailPanelWidth' });
 
-        if (closeBtn) {
-            closeBtn.addEventListener('click', () => this.close());
-        }
-
-        if (sendToChatBtn) {
-            sendToChatBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (this.currentLogData && window.Chat) {
-                    this.close();
-                    Chat.analyzeLog(this.currentLogData);
-                }
-            });
-        }
-
-        if (prevBtn) {
-            prevBtn.addEventListener('click', () => this.navigateTo(this.currentIndex - 1));
-        }
-
-        if (nextBtn) {
-            nextBtn.addEventListener('click', () => this.navigateTo(this.currentIndex + 1));
-        }
-
-        if (searchLogBtn) {
-            searchLogBtn.addEventListener('click', () => {
-                if (window.Comments) window.Comments.searchForCurrentLog();
-            });
-        }
-
-        // Close on Escape key only when focus is outside the panel
+        // Close on Escape key only when focus is outside the active panel
         document.addEventListener('keydown', (e) => {
+            const panel = this.activeHost && this.activeHost.panel;
             if (e.key === 'Escape' && panel && panel.classList.contains('open') && !panel.contains(e.target)) {
                 this.close();
             }
         });
-
-        this.initResizeHandle();
     },
 
-    setContext(results, index, isAggregated) {
+    setContext(results, index, isAggregated, hostRef) {
         this.results = results;
         this.currentIndex = index;
         this.isAggregated = isAggregated;
+        const host = this._host(hostRef);
+        if (host) this.activeHost = host;
     },
 
     navigateTo(index) {
@@ -75,18 +116,19 @@ const LogDetail = {
     },
 
     _updateSelectedRow(index) {
-        document.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
-        const row = document.querySelector(`.result-row[data-index="${index}"]`);
+        const root = this._tableRoot();
+        root.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
+        const row = root.querySelector(`.result-row[data-index="${index}"]`);
         if (row) row.classList.add('selected');
     },
 
-    initResizeHandle() {
-        const panel = document.getElementById('logDetailPanel');
+    initResizeHandle(host) {
+        const panel = host && host.panel;
         if (!panel) return;
-        const handle = panel.querySelector('.panel-resize-handle');
+        const handle = host.resizeHandle;
         if (!handle) return;
 
-        const saved = localStorage.getItem('logDetailPanelWidth');
+        const saved = localStorage.getItem(host.storageKey);
         if (saved) panel.style.setProperty('--detail-panel-width', saved + 'px');
 
         let startX, startWidth;
@@ -108,7 +150,7 @@ const LogDetail = {
             const onUp = () => {
                 handle.classList.remove('dragging');
                 document.body.style.userSelect = '';
-                localStorage.setItem('logDetailPanelWidth', panel.offsetWidth);
+                localStorage.setItem(host.storageKey, panel.offsetWidth);
                 panel.style.width = '';
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup', onUp);
@@ -120,17 +162,21 @@ const LogDetail = {
     },
 
     _updateNavButtons() {
-        const prevBtn = document.getElementById('panelPrevBtn');
-        const nextBtn = document.getElementById('panelNextBtn');
+        const host = this.activeHost;
+        if (!host) return;
+        const prevBtn = host.prevBtn;
+        const nextBtn = host.nextBtn;
         if (prevBtn) prevBtn.disabled = !this.results || this.currentIndex <= 0;
         if (nextBtn) nextBtn.disabled = !this.results || this.currentIndex >= (this.results.length - 1);
     },
 
     _updateHeaderContext(logData) {
-        const levelBadge = document.getElementById('panelLevelBadge');
-        const tsSpan = document.getElementById('panelTimestamp');
-        const srcSpan = document.getElementById('panelSource');
-        const searchLogBtn = document.getElementById('searchLogBtn');
+        const host = this.activeHost;
+        if (!host) return;
+        const levelBadge = host.levelBadge;
+        const tsSpan = host.timestamp;
+        const srcSpan = host.source;
+        const searchLogBtn = host.searchBtn;
 
         if (levelBadge) {
             const level = (logData.level || logData.severity || logData.log_level || '').toLowerCase();
@@ -152,11 +198,12 @@ const LogDetail = {
         }
     },
 
-    async show(logData, isAggregated = false) {
-        const panel = document.getElementById('logDetailPanel');
-        const content = document.getElementById('logDetailContent');
-
-        if (!panel || !content) return;
+    async show(logData, isAggregated = false, hostRef) {
+        const host = this._host(hostRef);
+        if (!host || !host.panel || !host.content) return;
+        this.activeHost = host;
+        const panel = host.panel;
+        const content = host.content;
 
         this.currentLogData = logData;
         this.isAggregated = isAggregated;
@@ -501,19 +548,25 @@ const LogDetail = {
     filterFields(filterTerm) {
         if (!this.currentLogData) return;
 
-        const container = document.querySelector('.log-fields-container');
+        const scope = (this.activeHost && this.activeHost.content) || document;
+        const container = scope.querySelector('.log-fields-container');
         if (!container) return;
 
         this.renderFields(this.currentLogData, container, filterTerm);
     },
 
     close() {
-        const panel = document.getElementById('logDetailPanel');
-        if (panel) {
-            panel.classList.remove('open');
-        }
-
-        document.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
+        // Close every registered panel and clear selection in each backing
+        // table. This is called both from in-view close buttons and from global
+        // resets (fractal switch, navigation), so it must never depend on which
+        // host happens to be active.
+        Object.values(this.hosts).forEach(host => {
+            if (host.panel) host.panel.classList.remove('open');
+            if (host.tableRootSel) {
+                const root = document.querySelector(host.tableRootSel);
+                if (root) root.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
+            }
+        });
 
         this.results = null;
         this.currentIndex = -1;

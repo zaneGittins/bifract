@@ -62,7 +62,7 @@ const ContextLinks = {
                     <th>Match Fields</th>
                     <th>Regex</th>
                     <th>Enabled</th>
-                    <th>Actions</th>
+                    <th></th>
                 </tr>
             </thead>
             <tbody>`;
@@ -81,9 +81,14 @@ const ContextLinks = {
                         <span class="toggle-slider"></span>
                     </label>
                 </td>
-                <td class="context-link-actions">
-                    <button class="btn-sm btn-secondary" onclick="ContextLinks.openEditForm('${link.id}')" title="Edit">Edit</button>
-                    <button class="btn-sm btn-danger" onclick="ContextLinks.deleteLink('${link.id}')" title="Delete">Delete</button>
+                <td class="kebab-cell">
+                    <div class="kebab-wrapper">
+                        <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button>
+                        <div class="kebab-menu">
+                            <button class="kebab-item" onclick="ContextLinks.openEditForm('${link.id}')">Edit</button>
+                            <button class="kebab-item danger" onclick="ContextLinks.deleteLink('${link.id}')">Delete</button>
+                        </div>
+                    </div>
                 </td>
             </tr>`;
         });

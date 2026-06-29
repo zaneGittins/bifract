@@ -318,6 +318,39 @@ func (h *Handler) HandleParseQuery(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandlePreview estimates a model's output over a recent window BEFORE the model
+// is created, so an author can tune the definition and alert thresholds and see
+// whether it surfaces the right results first. It creates no ClickHouse objects.
+func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAnalyst(w, r) {
+		return
+	}
+	fractalID, err := h.getFractalID(r)
+	if err != nil {
+		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		return
+	}
+	var req struct {
+		ModelType  ModelType       `json:"model_type"`
+		Definition ModelDefinition `json:"definition"`
+		Window     string          `json:"window"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Window == "" {
+		req.Window = "7d"
+	}
+	result, err := h.manager.Preview(r.Context(), fractalID, req.ModelType, req.Definition, req.Window)
+	if err != nil {
+		log.Printf("[Models] preview: %v", err)
+		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Preview failed: %v", err))
+		return
+	}
+	h.respondSuccess(w, map[string]interface{}{"preview": result})
+}
+
 // HandleGetStats returns aggregate statistics for a model's data table.
 func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
 	model := h.getModelScoped(w, r)

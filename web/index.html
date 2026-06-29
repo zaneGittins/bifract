@@ -36,7 +36,6 @@
                     <button id="mainNormalizersTabBtn" class="nav-tab admin-only" style="display: none;">Normalizers</button>
                     <button id="mainSchemaTabBtn" class="nav-tab admin-only" style="display: none;">Schema</button>
                     <button id="mainContextTabBtn" class="nav-tab admin-only" style="display: none;">Context</button>
-                    <button id="queryReferenceTabBtn" class="nav-tab">Query Reference</button>
                     <button id="mainPerformanceTabBtn" class="nav-tab admin-only" style="display: none;">System</button>
                     <button id="mainSettingsTabBtn" class="nav-tab admin-only" style="display: none;">Admin</button>
                 </nav>
@@ -405,37 +404,38 @@
                 <!-- Groups Sub-Tab -->
                 <div id="settingsSubTabGroups" class="settings-sub-panel" style="display:none;">
                 <div class="settings-card">
-                    <div class="section-header">
-                        <button id="addGroupBtn" class="btn-primary btn-sm">+ Create Group</button>
-                    </div>
-                    <p class="help-text" style="margin-bottom: 1rem;">Groups let you assign fractal permissions to multiple users at once.</p>
-                    <div id="groupsList" class="groups-list">
-                        <div class="loading">Loading groups...</div>
+                    <!-- Groups List View -->
+                    <div id="groupsListView">
+                        <div class="section-header">
+                            <button id="addGroupBtn" class="btn-primary btn-sm">+ Create Group</button>
+                        </div>
+                        <p class="help-text" style="margin-bottom: 1rem;">Groups let you assign fractal permissions to multiple users at once.</p>
+                        <div id="groupsList" class="groups-list">
+                            <div class="loading">Loading groups...</div>
+                        </div>
                     </div>
 
 
                     <!-- Group Detail Panel (shown when a group is expanded) -->
                     <div id="groupDetailPanel" style="display: none;">
                         <div class="group-detail-header">
-                            <div>
-                                <h4 id="groupDetailName"></h4>
-                                <span id="groupDetailDescription" class="text-muted"></span>
+                            <div class="group-detail-titles">
+                                <h4 id="groupDetailName" class="inline-editable" title="Click to edit"></h4>
+                                <span id="groupDetailDescription" class="text-muted inline-editable" title="Click to edit"></span>
                             </div>
                             <div class="group-detail-actions">
-                                <button id="editGroupBtn" class="btn-secondary btn-sm">Edit</button>
-                                <button id="deleteGroupBtn" class="btn-delete-user btn-sm">Delete</button>
-                                <button id="closeGroupDetailBtn" class="btn-secondary btn-sm">Close</button>
+                                <div class="kebab-wrapper">
+                                    <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button>
+                                    <div class="kebab-menu">
+                                        <button id="deleteGroupBtn" class="kebab-item danger">Delete group</button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         <div class="group-members-section">
                             <div class="section-header">
                                 <h4>Members</h4>
-                                <div class="group-add-member-row">
-                                    <select id="groupAddMemberSelect" class="setting-select" style="min-width: 160px;">
-                                        <option value="">Select user...</option>
-                                    </select>
-                                    <button id="groupAddMemberBtn" class="btn-primary btn-sm">Add</button>
-                                </div>
+                                <button id="groupAddMemberBtn" class="btn-ghost btn-sm">+ Add members</button>
                             </div>
                             <div id="groupMembersList"></div>
                         </div>
@@ -726,17 +726,6 @@
                 </div>
             </div>
 
-            <!-- Query Reference Tab Content -->
-            <div id="queryReferenceTabContent" style="display: none;">
-                <!-- Query Reference View -->
-                <div id="referenceView" class="auth-required">
-                    <section class="reference-view-section">
-                        <div id="referenceContent" class="reference-content">
-                            <div class="loading">Loading reference...</div>
-                        </div>
-                    </section>
-                </div>
-            </div>
 
         </div>
 
@@ -994,9 +983,9 @@
                     <span id="panelSource" class="panel-source"></span>
                 </div>
                 <div class="panel-header-actions">
-                    <button id="panelPrevBtn" class="panel-nav-btn" title="Previous event">&#8249;</button>
-                    <button id="panelNextBtn" class="panel-nav-btn" title="Next event">&#8250;</button>
-                    <button id="searchLogBtn" class="panel-nav-btn" title="Search for this log" style="display:none;">
+                    <button id="panelPrevBtn" class="panel-nav-btn panel-prev-btn" title="Previous event">&#8249;</button>
+                    <button id="panelNextBtn" class="panel-nav-btn panel-next-btn" title="Next event">&#8250;</button>
+                    <button id="searchLogBtn" class="panel-nav-btn panel-search-btn" title="Search for this log" style="display:none;">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
                     </button>
                     <button id="sendToChatBtn" class="send-to-chat-btn" title="Analyze with AI">
@@ -2189,7 +2178,8 @@
                         <canvas id="alertTimeline"></canvas>
                     </section>
 
-                    <!-- Results Section -->
+                    <!-- Results Section (push layout shared with search) -->
+                    <div class="search-results-split">
                     <section class="results-section">
                         <div class="results-header">
                             <h2>Results</h2>
@@ -2225,6 +2215,31 @@
                             </div>
                         </div>
                     </section>
+
+                    <!-- Log Detail Panel (push layout, scoped to the alert editor) -->
+                    <div id="alertLogDetailPanel" class="log-detail-panel">
+                        <div class="panel-resize-handle"></div>
+                        <div class="panel-header">
+                            <div class="panel-header-context">
+                                <span class="log-level-badge"></span>
+                                <span class="panel-timestamp"></span>
+                                <span class="panel-source"></span>
+                            </div>
+                            <div class="panel-header-actions">
+                                <button class="panel-nav-btn panel-prev-btn" title="Previous event">&#8249;</button>
+                                <button class="panel-nav-btn panel-next-btn" title="Next event">&#8250;</button>
+                                <button class="panel-nav-btn panel-search-btn" title="Search for this log" style="display:none;">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                                </button>
+                                <button class="send-to-chat-btn" title="Analyze with AI">
+                                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 0C4.2 1.6 4.8 2.8 5.6 3.6 6.4 4.4 7.6 5 9 5.2 7.6 5.4 6.4 6 5.6 6.8 4.8 7.6 4.2 8.8 4 10.4 3.8 8.8 3.2 7.6 2.4 6.8 1.6 6 .4 5.4 0 5.2 .4 5 1.6 4.4 2.4 3.6 3.2 2.8 3.8 1.6 4 0z"/><path d="M11 6c.12 1 .48 1.72 1 2.24.52.52 1.24.88 2.24 1-1 .12-1.72.48-2.24 1-.52.52-.88 1.24-1 2.24-.12-1-.48-1.72-1-2.24-.52-.52-1.24-.88-2.24-1 1-.12 1.72-.48 2.24-1 .52-.52.88-1.24 1-2.24z"/><path d="M6 11c.08.68.32 1.16.68 1.52.36.36.84.6 1.52.68-.68.08-1.16.32-1.52.68-.36.36-.6.84-.68 1.52-.08-.68-.32-1.16-.68-1.52-.36-.36-.84-.6-1.52-.68.68-.08 1.16-.32 1.52-.68.36-.36.6-.84.68-1.52z"/></svg>
+                                </button>
+                                <button class="close-panel-btn">&times;</button>
+                            </div>
+                        </div>
+                        <div class="panel-body"></div>
+                    </div>
+                    </div><!-- end search-results-split -->
                 </div>
 
                 <!-- Right Side Panel for Alert Configuration -->
@@ -3080,6 +3095,26 @@ throttleTimeSeconds: 3600"></textarea>
         </div>
     </div>
 
+    <!-- Add Group Members Modal -->
+    <div id="addMembersModal" class="modal" onclick="if(event.target===this)GroupsView.hideAddMembers()">
+        <div class="modal-content" style="max-width:480px;">
+            <div class="modal-header">
+                <h2>Add members</h2>
+                <button class="close-btn" onclick="GroupsView.hideAddMembers()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="member-picker-search">
+                    <input type="text" id="memberPickerSearch" placeholder="Search users..." autocomplete="off">
+                </div>
+                <div id="memberPickerList" class="member-picker-list"></div>
+                <div class="form-actions">
+                    <button id="submitAddMembersBtn" class="btn-primary">Add selected</button>
+                    <button class="btn-secondary" onclick="GroupsView.hideAddMembers()">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Add User Modal -->
     <div id="createUserModal" class="modal" onclick="if(event.target===this)SettingsView.hideAddUserForm()">
         <div class="modal-content" style="max-width:480px;">
@@ -3190,6 +3225,22 @@ throttleTimeSeconds: 3600"></textarea>
                     <button type="button" id="cancelIngestTokenModalBtn" class="btn-secondary">Cancel</button>
                     <button type="button" id="submitIngestTokenModalBtn" class="btn-primary">Create Token</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Query Reference Overlay (opened from the BQL editor's ? hint) -->
+    <div id="queryRefOverlay" class="qref-overlay" role="dialog" aria-modal="true" aria-label="Query reference">
+        <div class="qref-overlay-scrim"></div>
+        <div class="qref-overlay-panel">
+            <div class="qref-overlay-header">
+                <span class="qref-overlay-title">Query Reference</span>
+                <button class="qref-overlay-close" onclick="QueryReference.closeOverlay()" title="Close" aria-label="Close">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                </button>
+            </div>
+            <div id="referenceContent" class="reference-content">
+                <div class="loading">Loading reference...</div>
             </div>
         </div>
     </div>

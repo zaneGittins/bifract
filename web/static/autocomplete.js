@@ -161,6 +161,10 @@ const Autocomplete = {
         }
 
         html += '<div class="fn-hint-example">' + this._escapeHtml(hint.example) + '</div>';
+        html += '<div class="fn-hint-footer">';
+        html += '<button type="button" class="fn-hint-browse">Browse all';
+        html += '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+        html += '</button></div>';
         popup.innerHTML = html;
 
         const rect = textarea.getBoundingClientRect();
@@ -176,6 +180,15 @@ const Autocomplete = {
             dismissBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.hideHint();
+            });
+        }
+
+        const browseBtn = popup.querySelector('.fn-hint-browse');
+        if (browseBtn) {
+            browseBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.hideHint();
+                if (window.QueryReference) QueryReference.openOverlay();
             });
         }
     },

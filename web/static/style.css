@@ -3000,6 +3000,36 @@ body.col-reordering * {
     text-overflow: ellipsis;
 }
 
+.fn-hint-footer {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.375rem;
+}
+
+.fn-hint-browse {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: none;
+    border: none;
+    color: var(--accent-secondary);
+    font-family: var(--font-main);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    cursor: pointer;
+    padding: 0.125rem 0;
+    opacity: 0.85;
+    transition: opacity 0.15s;
+}
+
+.fn-hint-browse:hover {
+    opacity: 1;
+}
+
+.fn-hint-browse svg {
+    opacity: 0.7;
+}
+
 /* Pagination */
 .page-size-select {
     background: var(--bg-tertiary);
@@ -4063,10 +4093,88 @@ body {
    Query Reference View
    ============================ */
 
-/* Query Reference - Layout */
-#queryReferenceTabContent,
-#referenceView {
-    height: calc(100vh - 100px);
+/* Query Reference overlay (opened from the BQL editor's ? hint) */
+.qref-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1300;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.qref-overlay.open {
+    opacity: 1;
+    visibility: visible;
+}
+
+.qref-overlay-scrim {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+}
+
+.qref-overlay-panel {
+    position: relative;
+    width: 920px;
+    max-width: 94vw;
+    height: 76vh;
+    max-height: 820px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transform: translateY(8px) scale(0.99);
+    transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.qref-overlay.open .qref-overlay-panel {
+    transform: translateY(0) scale(1);
+}
+
+.qref-overlay-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.qref-overlay-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.qref-overlay-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 5px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.qref-overlay-close:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+
+.qref-overlay-panel .reference-content {
+    flex: 1;
+    min-height: 0;
+    height: auto;
 }
 
 .reference-view-section {
@@ -10766,6 +10874,7 @@ div.vis-tooltip {
 .api-key-row:hover .kebab-btn,
 .dict-list-row:hover .kebab-btn,
 .il-page-row:hover .kebab-btn,
+.context-links-table tbody tr:hover .kebab-btn,
 .kebab-wrapper.open .kebab-btn {
     opacity: 1;
 }
@@ -11345,35 +11454,11 @@ div.vis-tooltip {
 }
 
 /* Markdown Section */
-.markdown-section .section-editor {
-    display: flex;
-    gap: 16px;
-    min-height: 200px;
-}
-
-.markdown-editor,
 .markdown-preview {
     flex: 1;
     border: 1px solid var(--border-color);
     border-radius: 6px;
     background: var(--bg-primary);
-}
-
-.markdown-editor textarea {
-    width: 100%;
-    height: 200px;
-    padding: 12px;
-    border: none;
-    background: transparent;
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-    line-height: 1.5;
-    resize: vertical;
-    outline: none;
-}
-
-.markdown-preview {
     padding: 12px;
 }
 
@@ -11777,16 +11862,6 @@ div.vis-tooltip {
     box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
-.inline-editor .markdown-preview {
-    margin-top: 10px;
-    max-height: 300px;
-    overflow-y: auto;
-}
-
-.inline-editor .preview-content {
-    min-height: 60px;
-}
-
 .editor-controls {
     display: flex;
     gap: 8px;
@@ -12120,10 +12195,6 @@ div.vis-tooltip {
 
     .notebook-controls {
         justify-content: space-between;
-    }
-
-    .markdown-section .section-editor {
-        flex-direction: column;
     }
 
     .notebooks-filters {
@@ -14060,6 +14131,19 @@ div.vis-tooltip {
     color: var(--text-primary);
 }
 
+.group-row {
+    cursor: pointer;
+}
+
+.group-row:hover {
+    background: var(--bg-hover);
+}
+
+.group-row:hover .kebab-btn,
+.group-row .kebab-wrapper.open .kebab-btn {
+    opacity: 1;
+}
+
 .group-detail-header {
     display: flex;
     justify-content: space-between;
@@ -14067,6 +14151,11 @@ div.vis-tooltip {
     margin-bottom: 1rem;
     padding-bottom: 0.75rem;
     border-bottom: 1px solid var(--border-color);
+}
+
+.group-detail-titles {
+    flex: 1;
+    min-width: 0;
 }
 
 .group-detail-header h4 {
@@ -14081,6 +14170,59 @@ div.vis-tooltip {
     flex-shrink: 0;
 }
 
+/* Detail-header kebab is the primary action affordance, so keep it visible */
+.group-detail-actions .kebab-btn {
+    opacity: 0.6;
+}
+
+.group-detail-actions .kebab-btn:hover,
+.group-detail-actions .kebab-wrapper.open .kebab-btn {
+    opacity: 1;
+}
+
+/* Inline click-to-edit for group name/description */
+.inline-editable {
+    display: inline-block;
+    border-radius: 4px;
+    padding: 1px 5px;
+    margin-left: -5px;
+    cursor: text;
+    transition: background 0.12s;
+}
+
+.inline-editable:hover {
+    background: var(--bg-tertiary);
+}
+
+.group-detail-titles .inline-editable {
+    display: block;
+}
+
+#groupDetailDescription.is-empty {
+    font-style: italic;
+    opacity: 0.7;
+}
+
+.inline-edit-input {
+    width: 100%;
+    background: var(--bg-primary);
+    border: 1px solid var(--accent-primary);
+    border-radius: 4px;
+    padding: 1px 4px;
+    color: var(--text-primary);
+    font: inherit;
+    outline: none;
+}
+
+.inline-edit-name {
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+.inline-edit-desc {
+    font-size: 0.8rem;
+}
+
 .group-members-section {
     margin-top: 0.5rem;
 }
@@ -14091,10 +14233,91 @@ div.vis-tooltip {
     color: var(--text-primary);
 }
 
-.group-add-member-row {
+/* Add-members modal picker */
+.member-picker-search input {
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 0.75rem;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0.625rem;
+    border-radius: 4px;
+    font-family: var(--font-main);
+    font-size: 0.875rem;
+}
+
+.member-picker-search input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.member-picker-list {
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+}
+
+.member-picker-item {
     display: flex;
-    gap: 0.5rem;
     align-items: center;
+    gap: 0.625rem;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border-color);
+    transition: background 0.1s;
+}
+
+.member-picker-item:last-child {
+    border-bottom: none;
+}
+
+.member-picker-item:hover {
+    background: var(--bg-hover);
+}
+
+.member-picker-item .user-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.member-picker-item input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    margin-left: auto;
+    border: 1.5px solid var(--border-color);
+    border-radius: 3px;
+    background: var(--bg-primary);
+    cursor: pointer;
+    position: relative;
+    flex-shrink: 0;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.member-picker-item:hover input[type="checkbox"],
+.member-picker-item input[type="checkbox"]:hover {
+    border-color: var(--accent-primary);
+}
+
+.member-picker-item input[type="checkbox"]:checked {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+.member-picker-item input[type="checkbox"]:checked::after {
+    content: '';
+    position: absolute;
+    left: 5px;
+    top: 1px;
+    width: 4px;
+    height: 8px;
+    border: solid #fff;
+    border-width: 0 1.5px 1.5px 0;
+    transform: rotate(45deg);
 }
 
 /* ============================
