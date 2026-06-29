@@ -306,6 +306,9 @@ const AnalyticsModels = {
             resultFields: [],
             results: [],
             ran: false,
+            resultMode: 'logs',
+            previewWindow: '7d',
+            preview: null,
         };
         this.currentView = 'editor';
         this._render();
@@ -436,37 +439,13 @@ const AnalyticsModels = {
         if (!el) return;
         const h = this.viewer.histogram;
         const buckets = (h && Array.isArray(h.buckets)) ? h.buckets : [];
-        const metric = this.METRIC_LABELS[h?.metric] || 'Score';
-        const max = buckets.reduce((m, b) => Math.max(m, Number(b.count || 0)), 0);
-
-        if (!buckets.length || max <= 0) {
-            el.innerHTML = `
-<div class="histogram-head"><span class="histogram-title">${_esc(metric)} distribution</span></div>
-<div class="histogram-empty">Not enough data yet to show a distribution.</div>`;
-            return;
-        }
-
-        const cols = buckets.map(b => {
-            const cnt = Number(b.count || 0);
-            const pct = max > 0 ? Math.round(cnt / max * 100) : 0;
-            return `<div class="histogram-col" title="${_esc(b.label)}: ${cnt.toLocaleString()}">
-    <span class="histogram-bar-val">${this._fmtNum(cnt)}</span>
-    <div class="histogram-bar-track"><div class="histogram-bar" style="height:${cnt > 0 ? Math.max(pct, 2) : 0}%"></div></div>
-    <span class="histogram-bar-label">${_esc(b.label)}</span>
-</div>`;
-        }).join('');
-
-        let thresholdLine = '';
+        // Confidence models get an alert-threshold marker; other metrics don't.
+        let thr = null;
         if (h?.metric === 'confidence') {
             const t = this.viewer.model?.definition?.alert?.confidence_threshold;
-            if (t != null && t >= 0 && t <= 1) {
-                thresholdLine = `<div class="histogram-threshold-line" style="left:calc(12px + (100% - 24px) * ${t})" title="Alert threshold: ${Math.round(t * 100)}%"><span class="histogram-threshold-label">${Math.round(t * 100)}%</span></div>`;
-            }
+            if (t != null && t >= 0 && t <= 1) thr = t;
         }
-
-        el.innerHTML = `
-<div class="histogram-head"><span class="histogram-title">${_esc(metric)} distribution</span></div>
-<div class="histogram-chart">${cols}${thresholdLine}</div>`;
+        el.innerHTML = this._buildHistogramHTML(buckets, h?.metric, thr);
     },
 
     _fmtNum(v) {
@@ -946,8 +925,34 @@ const AnalyticsModels = {
             <pre id="modelSqlOutput" class="model-sql-output" style="display:${this._showSQL() ? 'block' : 'none'}"></pre>
             <div id="modelTranslation" class="model-translation"></div>
             <div id="modelTimelineWrap" class="timeline-inline" style="display:none;"><canvas id="modelTimeline"></canvas></div>
-            <div id="modelQueryResults" class="model-query-results" style="display:${e.resultMode === 'scores' ? 'none' : ''}"><div class="models-empty">Run the query to preview matching logs and extracted fields.</div></div>
-            <div id="modelScorePreview" class="model-score-preview" style="display:${e.resultMode === 'scores' ? '' : 'none'}"></div>
+            <div class="search-results-split model-results-split">
+                <div class="model-results-main">
+                    <div id="modelQueryResults" class="model-query-results" style="display:${e.resultMode === 'scores' ? 'none' : ''}"><div class="models-empty">Run the query to preview matching logs and extracted fields.</div></div>
+                    <div id="modelScorePreview" class="model-score-preview" style="display:${e.resultMode === 'scores' ? '' : 'none'}"></div>
+                </div>
+                <div id="modelLogDetailPanel" class="log-detail-panel">
+                    <div class="panel-resize-handle"></div>
+                    <div class="panel-header">
+                        <div class="panel-header-context">
+                            <span class="log-level-badge"></span>
+                            <span class="panel-timestamp"></span>
+                            <span class="panel-source"></span>
+                        </div>
+                        <div class="panel-header-actions">
+                            <button class="panel-nav-btn panel-prev-btn" title="Previous event">&#8249;</button>
+                            <button class="panel-nav-btn panel-next-btn" title="Next event">&#8250;</button>
+                            <button class="panel-nav-btn panel-search-btn" title="Search for this log" style="display:none;">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                            </button>
+                            <button class="send-to-chat-btn" title="Analyze with AI">
+                                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 0C4.2 1.6 4.8 2.8 5.6 3.6 6.4 4.4 7.6 5 9 5.2 7.6 5.4 6.4 6 5.6 6.8 4.8 7.6 4.2 8.8 4 10.4 3.8 8.8 3.2 7.6 2.4 6.8 1.6 6 .4 5.4 0 5.2 .4 5 1.6 4.4 2.4 3.6 3.2 2.8 3.8 1.6 4 0z"/><path d="M11 6c.12 1 .48 1.72 1 2.24.52.52 1.24.88 2.24 1-1 .12-1.72.48-2.24 1-.52.52-.88 1.24-1 2.24-.12-1-.48-1.72-1-2.24-.52-.52-1.24-.88-2.24-1 1-.12 1.72-.48 2.24-1 .52-.52.88-1.24 1-2.24z"/><path d="M6 11c.08.68.32 1.16.68 1.52.36.36.84.6 1.52.68-.68.08-1.16.32-1.52.68-.36.36-.6.84-.68 1.52-.08-.68-.32-1.16-.68-1.52-.36-.36-.84-.6-1.52-.68.68-.08 1.16-.32 1.52-.68.36-.36.6-.84.68-1.52z"/></svg>
+                            </button>
+                            <button class="close-panel-btn">&times;</button>
+                        </div>
+                    </div>
+                    <div class="panel-body"></div>
+                </div>
+            </div>
         </div>
         <div class="model-editor-right">
             <div class="config-section">
@@ -994,10 +999,13 @@ const AnalyticsModels = {
         document.getElementById('modelEditorSave').addEventListener('click', () => this._saveModel());
         document.getElementById('modelRunBtn').addEventListener('click', () => this._runOrCancelModel());
         const ta = document.getElementById('modelQueryInput');
-        ta.addEventListener('input', ev => { e.query = ev.target.value; this._updateQueryHighlight(); });
+        ta.addEventListener('input', ev => { e.query = ev.target.value; this._updateQueryHighlight(); this._schedulePreview(); });
         ta.addEventListener('scroll', () => this._syncQueryHighlightScroll());
         ta.addEventListener('keydown', ev => {
-            if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') { ev.preventDefault(); this._runOrCancelModel(); }
+            if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
+                ev.preventDefault();
+                if (e.resultMode === 'scores') this._runScorePreview(); else this._runOrCancelModel();
+            }
         });
         this._updateQueryHighlight();
         // Live BQL validation: underline the offending span as the user types.
@@ -1028,6 +1036,12 @@ const AnalyticsModels = {
         this._bindEditorDetails();
         this._bindEditorShape();
         this._renderTranslation();
+
+        // The editor DOM is rebuilt on every render, so (re)register its log
+        // detail panel with the shared controller against the fresh element.
+        if (window.LogDetail) {
+            LogDetail.registerHost('model', '#modelLogDetailPanel', { tableRoot: '#modelQueryResults', storageKey: 'modelLogDetailPanelWidth' });
+        }
 
         // Seed an initial run when editing (source query is pre-filled).
         if (e.editId && (e.query || '').trim()) {
@@ -1419,7 +1433,7 @@ const AnalyticsModels = {
                     if (resultsEl) resultsEl.innerHTML = '<div class="models-empty">No matching logs in the selected time range.</div>';
                 } else if (window.QueryExecutor && resultsEl) {
                     QueryExecutor.renderResultsToElement(results.slice(0, 100), resultsEl, e.fieldOrder, {
-                        allResults: results, isAggregated: queryData.is_aggregated || false, disableDetailView: true
+                        allResults: results, isAggregated: queryData.is_aggregated || false, detailHost: 'model'
                     });
                 }
             }
@@ -1539,6 +1553,8 @@ const AnalyticsModels = {
         const e = this.editor;
         e.resultMode = mode;
         const scores = mode === 'scores';
+        // The detail panel only applies to the matching-logs view.
+        if (window.LogDetail) LogDetail.close();
         document.querySelectorAll('#modelResultTabs button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
         const show = (id, vis) => { const el = document.getElementById(id); if (el) el.style.display = vis ? '' : 'none'; };
         show('modelQueryResults', !scores);
@@ -1566,13 +1582,16 @@ const AnalyticsModels = {
         const panel = document.getElementById('modelScorePreview');
         if (!panel) return;
 
+        // Bump the sequence first so any in-flight response is discarded even when
+        // we early-return below (e.g. an edit that makes the shape invalid).
+        const seq = (this._previewSeq = (this._previewSeq || 0) + 1);
+
         const shapeErr = this._validateShape();
         if (shapeErr) {
             panel.innerHTML = `<div class="models-empty">${_esc(shapeErr)} to preview scores.</div>`;
             return;
         }
 
-        const seq = (this._previewSeq = (this._previewSeq || 0) + 1);
         panel.innerHTML = '<div class="loading-spinner"><span class="spinner"></span></div>';
 
         // Resolve filter/extractions authoritatively from the current query.

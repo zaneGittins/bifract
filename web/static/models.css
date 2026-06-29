@@ -1119,6 +1119,18 @@ textarea.full-input {
     padding: 1px 6px;
 }
 
+/* Results + log detail push layout (shared .search-results-split pattern) */
+.model-results-split {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+.model-results-main {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
 .model-query-results {
     flex: 1 1 auto;
     min-height: 160px;

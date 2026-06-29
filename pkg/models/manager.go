@@ -677,9 +677,8 @@ func volumeMinBuckets(def ModelDefinition) int {
 // median daily count (baseline), the Median Absolute Deviation (MAD), the most
 // recent complete bucket's count, and the modified z-score
 // (0.6745 * (count - median) / MAD), matching Bifract's BQL modifiedZScore()
-// convention including the mad=0 -> z=0 guard. quotedTable must already be
-// backtick-quoted; fidEsc must already be CH-escaped.
-// buildVolumeBaselineScoringSQL returns the per-entity modified z-score query.
+// convention including the mad=0 -> z=0 guard.
+//
 // `source` is the FROM expression yielding rows shaped like the volume model
 // table (fractal_id, entity_val, bucket, event_count): live scoring passes
 // "`tbl` FINAL"; the preview passes a windowed aggregation subquery. lower/upper

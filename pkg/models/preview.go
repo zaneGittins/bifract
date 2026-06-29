@@ -255,17 +255,17 @@ LIMIT 25`, scored, minSample)
 func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition, end time.Time) error {
 	agg := firstSeenAggSQL(source, fidEsc, "")
 
-	// "New" entities are those first observed in the last 24h of the window -- the
-	// ones the is_new alert would fire on. For a 1d window the whole window is
-	// "recent", which is correct: a fresh backfill has no prior history.
+	// The is_new alert (cmd_model_lookup) fires on entities whose first_seen is
+	// within the last hour of each evaluation, so an exact count can't be replayed
+	// from a historical backfill. Instead we report the new-entity RATE: entities
+	// first observed in the last 24h of the window (i.e. new entities/day). The
+	// FlagBasis makes clear this is a rate estimate, not an instantaneous count.
 	recent := end.Add(-24 * time.Hour).Format("2006-01-02 15:04:05")
 	res.Metric = "event_count"
 
 	metricsSQL := fmt.Sprintf(`SELECT
     toUInt64(count()) AS entities,
-    toUInt64(countIf(first_seen >= toDateTime64('%s', 3))) AS new_recent,
-    min(first_seen) AS oldest_seen,
-    max(last_seen) AS newest_seen
+    toUInt64(countIf(first_seen >= toDateTime64('%s', 3))) AS new_recent
 FROM (%s)`, recent, agg)
 
 	topSQL := fmt.Sprintf(`SELECT entity_key, first_seen, last_seen, event_count
@@ -285,16 +285,14 @@ LIMIT 25`, agg)
 	alertOnNew := def.Alert != nil && def.Alert.AlertOnNew
 	if alertOnNew {
 		res.WouldFlag = numToUint64(metrics["new_recent"])
-		res.FlagBasis = "entities first seen in the last 24h"
+		res.FlagBasis = "~ new entities / day (alert on new entities)"
 	} else {
 		res.WouldFlag = numToUint64(metrics["entities"])
 		res.FlagBasis = "every matching entity"
 	}
 	res.Stats = sanitizeStats(map[string]interface{}{
-		"entities":    metrics["entities"],
-		"new_recent":  metrics["new_recent"],
-		"oldest_seen": metrics["oldest_seen"],
-		"newest_seen": metrics["newest_seen"],
+		"entities":   metrics["entities"],
+		"new_recent": metrics["new_recent"],
 	})
 	return nil
 }
