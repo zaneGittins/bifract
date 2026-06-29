@@ -6,6 +6,7 @@
 
 const Dashboards = {
     currentDashboard: null,
+    varManager: null,        // VariableManager for the dashboard's @vars
     currentPage: 0,
     pageSize: 20,
     totalDashboards: 0,
@@ -93,12 +94,6 @@ const Dashboards = {
             nextBtn.addEventListener('click', nextBtn._dashHandler);
         }
 
-        const backBtn = document.getElementById('backToDashboardsBtn');
-        if (backBtn) {
-            backBtn._dashHandler = () => { window.App?.pushSubPath(''); this.showDashboardListing(); };
-            backBtn.addEventListener('click', backBtn._dashHandler);
-        }
-
         const addWidgetBtn = document.getElementById('addWidgetBtn');
         if (addWidgetBtn) {
             addWidgetBtn._dashHandler = () => this.addWidget();
@@ -127,7 +122,7 @@ const Dashboards = {
     unbindEvents() {
         const ids = [
             'createDashboardBtn', 'dashboardSearchInput',
-            'dashboardsPrevBtn', 'dashboardsNextBtn', 'backToDashboardsBtn',
+            'dashboardsPrevBtn', 'dashboardsNextBtn',
             'addWidgetBtn', 'deleteDashboardBtn', 'dashboardTimeRangeBtn',
             'dashboardRefreshSelect'
         ];
@@ -387,6 +382,7 @@ const Dashboards = {
             this.initDragAndDrop();
             this.executeWidget(widget.id);
         }
+        this.syncDashboardVariables(false);
     },
 
     onRemoteWidgetRemoved(data) {
@@ -395,6 +391,7 @@ const Dashboards = {
         this.currentDashboard.widgets = this.currentDashboard.widgets.filter(w => w.id !== widgetId);
         const el = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
         if (el) el.remove();
+        this.syncDashboardVariables(false);
     },
 
     onRemoteWidgetUpdated(data) {
@@ -419,6 +416,9 @@ const Dashboards = {
             const titleSpan = widgetEl.querySelector('.widget-title');
             if (titleSpan) titleSpan.textContent = widget.title || 'Widget';
         }
+        // A remote query change may shift the @variable set; refresh the tray
+        // without re-persisting (the remote editor already saved it).
+        if (data.query_content != null) this.syncDashboardVariables(false);
     },
 
     onRemoteWidgetResultsUpdated(data) {
@@ -1207,6 +1207,7 @@ const Dashboards = {
                     inputId: tid,
                     highlightId: hid,
                     getFractalId: () => window.FractalContext?.currentFractal?.id || undefined,
+                    getVariables: () => this.editorVariables(queryEl ? queryEl.value : ''),
                     rerender: doHighlight,
                 });
             }
@@ -1245,6 +1246,10 @@ const Dashboards = {
 
             widget.title = title;
             widget.query_content = query;
+            // A changed query may introduce or remove @variables. Persist the new
+            // set BEFORE executing, since the execute endpoint substitutes from
+            // the stored variables (a new @var would otherwise hit the parser raw).
+            await this.syncDashboardVariables();
 
             // Update title in widget header
             const widgetEl = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
@@ -1282,6 +1287,8 @@ const Dashboards = {
             if (!data.success) throw new Error(data.error || 'Failed to delete widget');
 
             this.currentDashboard.widgets = this.currentDashboard.widgets.filter(w => w.id !== widgetId);
+            // Removing a widget may orphan @variables it referenced.
+            this.syncDashboardVariables();
 
             const widgetEl = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
             if (widgetEl) widgetEl.remove();
@@ -1698,81 +1705,65 @@ const Dashboards = {
     // Variables
     // =====================
 
+    // Variables are auto-detected from widget queries (no manual add). The manager
+    // owns the displayed values; currentDashboard.variables mirrors it for
+    // persistence and server-side substitution.
+    ensureVarManager() {
+        if (this.varManager) return this.varManager;
+        if (!window.VariableManager) return null;
+        this.varManager = new VariableManager({
+            container: 'dashboardVariables',
+            onChange: async () => {
+                this.currentDashboard.variables = this.varManager.serialize();
+                // Persist before refreshing: server-side execution substitutes
+                // from the stored values, so the save must land first.
+                await this.saveVariables();
+                this.autoExecuteAllWidgets();
+            },
+        });
+        return this.varManager;
+    },
+
+    // editorVariables returns the @var bindings referenced in an editor's text,
+    // valued from the current manager (default "*"), so live validation of a
+    // widget query does not flag a freshly-typed @var as a syntax error.
+    editorVariables(text) {
+        if (!window.VariableManager) return [];
+        const mgr = this.varManager;
+        return VariableManager.detectNames(text).map(name => ({
+            name,
+            value: mgr && mgr.getValue(name) != null ? mgr.getValue(name) : '*'
+        }));
+    },
+
     renderVariablesBar() {
-        const container = document.getElementById('dashboardVariables');
-        if (!container) return;
-
-        const vars = (this.currentDashboard && this.currentDashboard.variables) || [];
-
-        if (vars.length === 0) {
-            container.innerHTML = `<div class="variables-bar-empty">
-                <button class="btn-add-variable" onclick="Dashboards.addVariable()">+ Add Variable</button>
-            </div>`;
-            return;
-        }
-
-        let html = '<div class="variables-bar-items">';
-        for (const v of vars) {
-            const safeName = Utils.escapeHtml(v.name);
-            const safeValue = Utils.escapeHtml(v.value || '*');
-            html += `<div class="variable-pill">
-                <span class="variable-name">@${safeName}</span>
-                <input type="text" class="variable-value-input" value="${safeValue}"
-                    data-var-name="${safeName}"
-                    onchange="Dashboards.updateVariableValue('${safeName}', this.value)"
-                    onkeydown="if(event.key==='Enter'){this.blur();}" />
-                <button class="variable-remove-btn" onclick="Dashboards.removeVariable('${safeName}')" title="Remove variable">&times;</button>
-            </div>`;
-        }
-        html += `<button class="btn-add-variable" onclick="Dashboards.addVariable()">+ Variable</button>`;
-        html += '</div>';
-
-        container.innerHTML = html;
+        const mgr = this.ensureVarManager();
+        if (!mgr) return;
+        // Seed remembered values, then reconcile against the current widget set so
+        // newly-typed @vars appear and orphaned ones drop.
+        mgr.load((this.currentDashboard && this.currentDashboard.variables) || []);
+        this.syncDashboardVariables();
     },
 
-    addVariable() {
-        const name = prompt('Variable name (without @):');
-        if (!name || !name.trim()) return;
-
-        const cleanName = name.trim().replace(/[^a-zA-Z0-9_]/g, '');
-        if (!cleanName) {
-            this.showError('Variable name must contain only letters, numbers, or underscores');
-            return;
+    // syncDashboardVariables reconciles the variable set against every widget
+    // query. When the set changes it mirrors back to currentDashboard.variables
+    // and persists (so the executor substitutes the same set server-side).
+    // persist defaults true for local edits; remote (SSE) edits pass false since
+    // the originating editor already persisted the set. Returns the persistence
+    // promise so callers can await it before executing (the execute endpoint
+    // substitutes from the STORED variable set, so the PUT must land first).
+    syncDashboardVariables(persist = true) {
+        const mgr = this.ensureVarManager();
+        if (!mgr || !this.currentDashboard) return Promise.resolve();
+        // Guard against an unloaded dashboard: a missing widgets array (vs an
+        // explicit []) would otherwise prune every stored variable and PUT [].
+        if (!this.currentDashboard.widgets) return Promise.resolve();
+        const queries = this.currentDashboard.widgets.map(w => w.query_content || '');
+        if (mgr.syncFromText(queries)) {
+            this.currentDashboard.variables = mgr.serialize();
+            if (persist) return this.saveVariables();
         }
-
-        if (!this.currentDashboard.variables) {
-            this.currentDashboard.variables = [];
-        }
-
-        if (this.currentDashboard.variables.some(v => v.name === cleanName)) {
-            this.showError('Variable @' + cleanName + ' already exists');
-            return;
-        }
-
-        this.currentDashboard.variables.push({ name: cleanName, value: '*' });
-        this.saveVariables();
-        this.renderVariablesBar();
-    },
-
-    async updateVariableValue(name, value) {
-        if (!this.currentDashboard || !this.currentDashboard.variables) return;
-
-        const v = this.currentDashboard.variables.find(v => v.name === name);
-        if (v) {
-            v.value = value;
-            // Persist before refreshing: server-side execution substitutes from
-            // the stored variable values, so the save must land first.
-            await this.saveVariables();
-            this.autoExecuteAllWidgets();
-        }
-    },
-
-    removeVariable(name) {
-        if (!this.currentDashboard || !this.currentDashboard.variables) return;
-
-        this.currentDashboard.variables = this.currentDashboard.variables.filter(v => v.name !== name);
-        this.saveVariables();
-        this.renderVariablesBar();
+        return Promise.resolve();
     },
 
     async saveVariables() {

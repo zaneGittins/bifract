@@ -93,10 +93,11 @@ const QueryValidate = {
     // run validates a query and resolves to {valid, error, error_type, error_pos}
     // or null on a network/abort failure (caller should treat null as "unknown",
     // not "invalid", to avoid flagging good queries during transient failures).
-    async run(query, fractalId) {
+    async run(query, fractalId, variables) {
         try {
             const body = { query };
             if (fractalId) body.fractal_id = fractalId;
+            if (variables && variables.length) body.variables = variables;
             const res = await fetch('/api/v1/query/validate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -148,7 +149,9 @@ const QueryValidate = {
     //             Most surfaces leave these unset: live editing should show only
     //             the subtle inline underline, not a loud banner.
     // Returns a detach function.
-    attach({ inputId, highlightId, getFractalId, onError, onClear, onEdit, rerender }) {
+    //   getVariables() optional, returns the [{name,value}] variable bindings to
+    //             substitute before validating, so @var tokens are not flagged.
+    attach({ inputId, highlightId, getFractalId, getVariables, onError, onClear, onEdit, rerender }) {
         const input = document.getElementById(inputId);
         if (!input) return () => {};
 
@@ -160,7 +163,8 @@ const QueryValidate = {
             clearTimeout(this._timers[inputId]);
             const query = input.value;
             this._timers[inputId] = setTimeout(async () => {
-                const res = await this.run(query, getFractalId ? getFractalId() : undefined);
+                const res = await this.run(query, getFractalId ? getFractalId() : undefined,
+                    getVariables ? getVariables() : undefined);
                 // Discard stale responses: the field changed while we awaited.
                 if (input.value !== query) return;
                 if (!res || res.valid) {

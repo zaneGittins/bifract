@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/lib/pq"
 
+	"bifract/pkg/bqlvars"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
@@ -31,20 +32,41 @@ type Handler struct {
 }
 
 type SavedQuery struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	QueryText   string     `json:"query_text"`
-	Description string     `json:"description"`
-	Tags        []string   `json:"tags"`
-	Visibility  string     `json:"visibility"`
-	Favorited   bool       `json:"favorited"`
-	UseCount    int64      `json:"use_count"`
-	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
-	FractalID   string     `json:"fractal_id,omitempty"`
-	PrismID     string     `json:"prism_id,omitempty"`
-	CreatedBy   string     `json:"created_by"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	QueryText   string          `json:"query_text"`
+	Description string          `json:"description"`
+	Tags        []string        `json:"tags"`
+	Variables   json.RawMessage `json:"variables"`
+	Visibility  string          `json:"visibility"`
+	Favorited   bool            `json:"favorited"`
+	UseCount    int64           `json:"use_count"`
+	LastUsedAt  *time.Time      `json:"last_used_at,omitempty"`
+	FractalID   string          `json:"fractal_id,omitempty"`
+	PrismID     string          `json:"prism_id,omitempty"`
+	CreatedBy   string          `json:"created_by"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+}
+
+// normalizeVariables validates and canonicalizes the variable bindings for
+// storage: it drops malformed/empty-named entries and always returns a JSON
+// array string (never null), so an empty set persists as "[]".
+func normalizeVariables(raw json.RawMessage) string {
+	parsed := bqlvars.ParseVariables(raw)
+	clean := make([]bqlvars.Variable, 0, len(parsed))
+	for _, v := range parsed {
+		name := strings.TrimSpace(v.Name)
+		if name == "" {
+			continue
+		}
+		clean = append(clean, bqlvars.Variable{Name: name, Value: v.Value})
+	}
+	b, err := json.Marshal(clean)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 // normalizeVisibility constrains visibility to the supported values, defaulting
@@ -157,6 +179,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 
 	query := fmt.Sprintf(`
 		SELECT sq.id, sq.name, sq.query_text, COALESCE(sq.description, ''), sq.tags,
+			COALESCE(sq.variables, '[]'),
 			COALESCE(sq.visibility, 'shared'), (f.username IS NOT NULL) AS favorited,
 			COALESCE(sq.use_count, 0), sq.last_used_at,
 			COALESCE(sq.fractal_id::text, ''), COALESCE(sq.prism_id::text, ''),
@@ -194,6 +217,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		var sq SavedQuery
 		var lastUsed sql.NullTime
 		if err := rows.Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags),
+			&sq.Variables,
 			&sq.Visibility, &sq.Favorited, &sq.UseCount, &lastUsed,
 			&sq.FractalID, &sq.PrismID, &sq.CreatedBy, &sq.CreatedAt, &sq.UpdatedAt); err != nil {
 			log.Printf("[SavedQueries] Failed to scan row: %v", err)
@@ -224,11 +248,12 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name        string   `json:"name"`
-		QueryText   string   `json:"query_text"`
-		Description string   `json:"description"`
-		Tags        []string `json:"tags"`
-		Visibility  string   `json:"visibility"`
+		Name        string          `json:"name"`
+		QueryText   string          `json:"query_text"`
+		Description string          `json:"description"`
+		Tags        []string        `json:"tags"`
+		Variables   json.RawMessage `json:"variables"`
+		Visibility  string          `json:"visibility"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
@@ -239,6 +264,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	req.QueryText = strings.TrimSpace(req.QueryText)
 	req.Description = strings.TrimSpace(req.Description)
 	visibility := normalizeVisibility(req.Visibility)
+	variables := normalizeVariables(req.Variables)
 
 	if req.Name == "" {
 		h.respondError(w, http.StatusBadRequest, "name is required")
@@ -288,11 +314,11 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 
 	var sq SavedQuery
 	err = h.pg.QueryRow(r.Context(), `
-		INSERT INTO saved_queries (name, query_text, description, tags, visibility, fractal_id, prism_id, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, name, query_text, COALESCE(description, ''), tags, COALESCE(visibility, 'shared'), COALESCE(use_count, 0), COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`,
-		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), visibility, fractalIDPtr, prismIDPtr, username,
-	).Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags), &sq.Visibility, &sq.UseCount,
+		INSERT INTO saved_queries (name, query_text, description, tags, variables, visibility, fractal_id, prism_id, created_by)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+		RETURNING id, name, query_text, COALESCE(description, ''), tags, COALESCE(variables, '[]'), COALESCE(visibility, 'shared'), COALESCE(use_count, 0), COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`,
+		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), variables, visibility, fractalIDPtr, prismIDPtr, username,
+	).Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags), &sq.Variables, &sq.Visibility, &sq.UseCount,
 		&sq.FractalID, &sq.PrismID, &sq.CreatedBy, &sq.CreatedAt, &sq.UpdatedAt)
 
 	if err != nil {
@@ -325,11 +351,12 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name        string   `json:"name"`
-		QueryText   string   `json:"query_text"`
-		Description string   `json:"description"`
-		Tags        []string `json:"tags"`
-		Visibility  string   `json:"visibility"`
+		Name        string          `json:"name"`
+		QueryText   string          `json:"query_text"`
+		Description string          `json:"description"`
+		Tags        []string        `json:"tags"`
+		Variables   json.RawMessage `json:"variables"`
+		Visibility  string          `json:"visibility"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
@@ -340,6 +367,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	req.QueryText = strings.TrimSpace(req.QueryText)
 	req.Description = strings.TrimSpace(req.Description)
 	visibility := normalizeVisibility(req.Visibility)
+	variables := normalizeVariables(req.Variables)
 
 	if req.Name == "" {
 		h.respondError(w, http.StatusBadRequest, "name is required")
@@ -377,14 +405,14 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	var sq SavedQuery
 	var lastUsed sql.NullTime
 	err = h.pg.QueryRow(r.Context(), fmt.Sprintf(`
-		UPDATE saved_queries SET name = $1, query_text = $2, description = $3, tags = $4, visibility = $5
+		UPDATE saved_queries SET name = $1, query_text = $2, description = $3, tags = $4, visibility = $5, variables = $9::jsonb
 		WHERE id = $7 AND %s
-		RETURNING id, name, query_text, COALESCE(description, ''), tags, COALESCE(visibility, 'shared'),
+		RETURNING id, name, query_text, COALESCE(description, ''), tags, COALESCE(variables, '[]'), COALESCE(visibility, 'shared'),
 			COALESCE(use_count, 0), last_used_at,
 			EXISTS (SELECT 1 FROM saved_query_favorites f WHERE f.saved_query_id = saved_queries.id AND f.username = $8),
 			COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`, whereScope),
-		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), visibility, scopeArg, id, username,
-	).Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags), &sq.Visibility,
+		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), visibility, scopeArg, id, username, variables,
+	).Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags), &sq.Variables, &sq.Visibility,
 		&sq.UseCount, &lastUsed, &sq.Favorited,
 		&sq.FractalID, &sq.PrismID, &sq.CreatedBy, &sq.CreatedAt, &sq.UpdatedAt)
 

@@ -5,6 +5,7 @@
 
 const Notebooks = {
     currentNotebook: null,
+    varManager: null,        // VariableManager for the notebook's @vars
     activeUsers: new Set(),
     presenceInterval: null,
     eventSource: null,
@@ -1913,19 +1914,16 @@ const Notebooks = {
         }
 
         const timeRange = this.getNotebookTimeRange();
-        let query = section.content;
-        if (this.currentNotebook.variables && this.currentNotebook.variables.length > 0) {
-            for (const v of this.currentNotebook.variables) {
-                if (v.name) query = query.replaceAll('@' + v.name, v.value || '*');
-            }
-        }
         const requestBody = {
-            query: query,
+            query: section.content,
             query_type: 'bql',
             start: timeRange.start,
             end: timeRange.end,
             max_results: this.currentNotebook.max_results_per_section || 1000
         };
+        // Variables substitute server-side (shared with search/dashboards).
+        const _vars = this.variablesPayload();
+        if (_vars) requestBody.variables = _vars;
 
         if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
             requestBody.fractal_id = window.FractalContext.currentFractal.id;
@@ -1985,19 +1983,16 @@ const Notebooks = {
 
             // Prepare query execution using notebook's time range settings
             const timeRange = this.getNotebookTimeRange();
-            let query = section.content;
-            if (this.currentNotebook.variables && this.currentNotebook.variables.length > 0) {
-                for (const v of this.currentNotebook.variables) {
-                    if (v.name) query = query.replaceAll('@' + v.name, v.value || '*');
-                }
-            }
             const requestBody = {
-                query: query,
+                query: section.content,
                 query_type: 'bql',
                 start: timeRange.start,
                 end: timeRange.end,
                 max_results: this.currentNotebook.max_results_per_section || 1000
             };
+            // Variables substitute server-side (shared with search/dashboards).
+            const _vars = this.variablesPayload();
+            if (_vars) requestBody.variables = _vars;
 
             // Include fractal context (skip for prisms - server uses session)
             if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
@@ -2374,6 +2369,7 @@ const Notebooks = {
         this.applyTagFilter();
         this.renderTOCList();
         if (this._tocObserver) this._tocObserver.observe(newEl);
+        this.syncNotebookVariables(false);
     },
 
     /**
@@ -2394,6 +2390,7 @@ const Notebooks = {
         this.currentNotebook.sections = this.currentNotebook.sections.filter(s => s.id !== sectionId);
         if (el) el.remove();
         this._tocVisibleSections.delete(sectionId);
+        this.syncNotebookVariables(false);
 
         this.updateTagFilterBar();
         this.renderTOCList();
@@ -2429,6 +2426,9 @@ const Notebooks = {
         if (data.title != null) section.title = data.title;
         if (data.content != null) section.content = data.content;
         if (data.chart_config != null) section.chart_config = data.chart_config;
+        // A remote query change may shift the @variable set; refresh the tray
+        // without re-persisting (the remote editor already saved it).
+        if (data.content != null && section.section_type === 'query') this.syncNotebookVariables(false);
         if (data.tags !== undefined) {
             section.tags = data.tags;
             this._refreshTagsAreaDOM(data.id, section);
@@ -3024,6 +3024,8 @@ const Notebooks = {
                 // Mark query sections as modified since last execution
                 if (section.section_type === 'query') {
                     section.modified_since_execution = true;
+                    // A changed query may introduce or remove @variables.
+                    this.syncNotebookVariables();
                 }
             }
 
@@ -3219,6 +3221,8 @@ const Notebooks = {
 
             // Remove the section from current notebook data and re-render
             this.currentNotebook.sections = this.currentNotebook.sections.filter(s => s.id !== sectionId);
+            // Removing a section may orphan @variables it referenced.
+            this.syncNotebookVariables();
             this.renderNotebookSections();
             this.showSuccess('Section deleted successfully!');
 
@@ -4190,6 +4194,7 @@ const Notebooks = {
                 inputId,
                 highlightId,
                 getFractalId: () => window.FractalContext?.currentFractal?.id || undefined,
+                getVariables: () => this.editorVariables(document.getElementById(inputId)?.value || ''),
                 rerender: () => this.updateQuerySyntaxHighlight(inputId, highlightId),
             });
         }
@@ -4316,79 +4321,84 @@ const Notebooks = {
     // Variables
     // =====================
 
+    // Variables are auto-detected from query sections (no manual add). The manager
+    // owns the displayed values; currentNotebook.variables mirrors it for
+    // persistence and server-side substitution.
+    ensureVarManager() {
+        if (this.varManager) return this.varManager;
+        if (!window.VariableManager) return null;
+        this.varManager = new VariableManager({
+            container: 'notebookVariables',
+            onChange: () => {
+                this.currentNotebook.variables = this.varManager.serialize();
+                this.saveVariables();
+                // Notebooks are manual-run: don't re-execute, but flag executed
+                // query sections as stale so the results aren't silently misleading.
+                this.markQuerySectionsStale();
+            },
+        });
+        return this.varManager;
+    },
+
+    // markQuerySectionsStale flags already-executed query sections as modified so
+    // the existing "Modified" cue appears after a variable value changes.
+    markQuerySectionsStale() {
+        if (!this.currentNotebook || !this.currentNotebook.sections) return;
+        for (const s of this.currentNotebook.sections) {
+            if (s.section_type !== 'query' || !s.last_executed_at) continue;
+            s.modified_since_execution = true;
+            const info = document.querySelector(`[data-section-id="${s.id}"] .query-info`);
+            if (info && !info.textContent.includes('Modified')) {
+                const span = document.createElement('span');
+                span.style.cssText = 'color: var(--warning); font-size: 0.8rem; margin-left: 8px;';
+                span.textContent = '• Modified';
+                info.appendChild(span);
+            }
+        }
+    },
+
+    // variablesPayload returns the [{name,value}] bindings for a query request, or
+    // undefined when there are none.
+    variablesPayload() {
+        if (!this.varManager || this.varManager.isEmpty()) return undefined;
+        return this.varManager.serialize();
+    },
+
+    // editorVariables returns the @var bindings referenced in an editor's text,
+    // valued from the manager (default "*"), so live validation of a section query
+    // does not flag a freshly-typed @var.
+    editorVariables(text) {
+        if (!window.VariableManager) return [];
+        const mgr = this.varManager;
+        return VariableManager.detectNames(text).map(name => ({
+            name,
+            value: mgr && mgr.getValue(name) != null ? mgr.getValue(name) : '*'
+        }));
+    },
+
     renderVariablesBar() {
-        const container = document.getElementById('notebookVariables');
-        if (!container) return;
-
-        const vars = (this.currentNotebook && this.currentNotebook.variables) || [];
-
-        if (vars.length === 0) {
-            container.innerHTML = `<div class="variables-bar-empty">
-                <button class="btn-add-variable" onclick="Notebooks.addVariable()">+ Add Variable</button>
-            </div>`;
-            return;
-        }
-
-        const escHtml = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-        let html = '<div class="variables-bar-items">';
-        for (const v of vars) {
-            const safeName = escHtml(v.name);
-            const safeValue = escHtml(v.value || '*');
-            html += `<div class="variable-pill">
-                <span class="variable-name">@${safeName}</span>
-                <input type="text" class="variable-value-input" value="${safeValue}"
-                    data-var-name="${safeName}"
-                    onchange="Notebooks.updateVariableValue('${safeName}', this.value)"
-                    onkeydown="if(event.key==='Enter'){this.blur();}" />
-                <button class="variable-remove-btn" onclick="Notebooks.removeVariable('${safeName}')" title="Remove variable">&times;</button>
-            </div>`;
-        }
-        html += `<button class="btn-add-variable" onclick="Notebooks.addVariable()">+ Variable</button>`;
-        html += '</div>';
-
-        container.innerHTML = html;
+        const mgr = this.ensureVarManager();
+        if (!mgr) return;
+        mgr.load((this.currentNotebook && this.currentNotebook.variables) || []);
+        this.syncNotebookVariables();
     },
 
-    addVariable() {
-        const name = prompt('Variable name (without @):');
-        if (!name || !name.trim()) return;
-
-        const cleanName = name.trim().replace(/[^a-zA-Z0-9_]/g, '');
-        if (!cleanName) {
-            if (window.Toast) Toast.show('Variable name must contain only letters, numbers, or underscores', 'error');
-            return;
+    // syncNotebookVariables reconciles the variable set against every query
+    // section. When the set changes it mirrors back to currentNotebook.variables;
+    // persist defaults true for local edits (remote SSE edits pass false).
+    syncNotebookVariables(persist = true) {
+        const mgr = this.ensureVarManager();
+        if (!mgr || !this.currentNotebook) return;
+        // Guard against an unloaded notebook: a missing sections array (vs an
+        // explicit []) would otherwise prune every stored variable and PUT [].
+        if (!this.currentNotebook.sections) return;
+        const queries = this.currentNotebook.sections
+            .filter(s => s.section_type === 'query')
+            .map(s => s.content || '');
+        if (mgr.syncFromText(queries)) {
+            this.currentNotebook.variables = mgr.serialize();
+            if (persist) this.saveVariables();
         }
-
-        if (!this.currentNotebook.variables) {
-            this.currentNotebook.variables = [];
-        }
-
-        if (this.currentNotebook.variables.some(v => v.name === cleanName)) {
-            if (window.Toast) Toast.show('Variable @' + cleanName + ' already exists', 'error');
-            return;
-        }
-
-        this.currentNotebook.variables.push({ name: cleanName, value: '*' });
-        this.saveVariables();
-        this.renderVariablesBar();
-    },
-
-    updateVariableValue(name, value) {
-        if (!this.currentNotebook || !this.currentNotebook.variables) return;
-
-        const v = this.currentNotebook.variables.find(v => v.name === name);
-        if (v) {
-            v.value = value;
-            this.saveVariables();
-        }
-    },
-
-    removeVariable(name) {
-        if (!this.currentNotebook || !this.currentNotebook.variables) return;
-
-        this.currentNotebook.variables = this.currentNotebook.variables.filter(v => v.name !== name);
-        this.saveVariables();
-        this.renderVariablesBar();
     },
 
     async saveVariables() {

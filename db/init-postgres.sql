@@ -1157,6 +1157,7 @@ CREATE TABLE IF NOT EXISTS saved_queries (
     name VARCHAR(255) NOT NULL,
     query_text TEXT NOT NULL,
     tags TEXT[] DEFAULT '{}',
+    variables JSONB DEFAULT '[]',
     fractal_id UUID NOT NULL REFERENCES fractals(id) ON DELETE CASCADE,
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -1177,6 +1178,9 @@ ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS description  TEXT;
 ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS visibility   VARCHAR(16) NOT NULL DEFAULT 'shared';
 ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP;
 ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS use_count    INTEGER NOT NULL DEFAULT 0;
+-- Remembered @name -> value variable bindings, persisted with the saved query
+-- so reopening it restores the values the author last ran it with.
+ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS variables    JSONB DEFAULT '[]';
 
 -- Per-user favorites. A shared saved query cannot store one user's pin on the
 -- row itself, so favorites live in their own join table.

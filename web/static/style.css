@@ -38,6 +38,7 @@
     --syntax-operator: #ff79c6;
     --syntax-comment: #6272a4;
     --syntax-key: #8be9fd;
+    --syntax-variable: #5ad1c8;
     --json-number: #f0a060;
     --json-boolean: #b08ecc;
 
@@ -126,6 +127,7 @@
     --syntax-operator: #af3685;
     --syntax-comment: #7a7268;
     --syntax-key: #0e6f9e;
+    --syntax-variable: #0f766e;
     --json-number: #c06820;
     --json-boolean: #7a50a0;
 
@@ -3971,6 +3973,12 @@ body.col-reordering * {
     font-weight: 600;
 }
 
+.query-highlight .hl-variable,
+.model-query-highlight .hl-variable {
+    color: var(--syntax-variable);
+    font-weight: 600;
+}
+
 .query-highlight .hl-comment,
 .model-query-highlight .hl-comment {
     color: var(--syntax-comment);
@@ -3992,6 +4000,7 @@ body.col-reordering * {
 .palette-query .hl-bracket   { color: var(--text-secondary); font-weight: 500; }
 .palette-query .hl-boolean   { color: var(--syntax-keyword); font-weight: 500; }
 .palette-query .hl-wildcard  { color: var(--warning); font-weight: 600; }
+.palette-query .hl-variable  { color: var(--syntax-variable); font-weight: 600; }
 .palette-query .hl-comment   { color: var(--syntax-comment); font-style: italic; }
 
 /* Syntax highlighting for display mode (notebooks) */
@@ -4056,6 +4065,11 @@ body.col-reordering * {
 
 .query-display .hl-wildcard {
     color: var(--warning);
+    font-weight: 600;
+}
+
+.query-display .hl-variable {
+    color: var(--syntax-variable);
     font-weight: 600;
 }
 
@@ -11366,9 +11380,12 @@ div.vis-tooltip {
     margin-bottom: 0.75rem;
 }
 
-.variables-bar-empty {
-    display: flex;
-    align-items: center;
+/* Search tray sits under the editor and only takes space when it has variables. */
+.variables-bar-search {
+    margin-bottom: 0;
+}
+.variables-bar-search.has-vars {
+    margin: 0.6rem 0 0.1rem;
 }
 
 .variables-bar-items {
@@ -11390,9 +11407,10 @@ div.vis-tooltip {
 }
 
 .variable-name {
-    color: var(--accent-primary);
+    color: var(--syntax-variable);
     font-family: var(--font-mono);
     font-size: 0.75rem;
+    font-weight: 600;
     white-space: nowrap;
     user-select: none;
 }
@@ -11412,37 +11430,6 @@ div.vis-tooltip {
 
 .variable-value-input:focus {
     border-color: var(--accent-primary);
-}
-
-.variable-remove-btn {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 0.85rem;
-    padding: 0 0.15rem;
-    line-height: 1;
-    transition: color 0.15s ease;
-}
-
-.variable-remove-btn:hover {
-    color: var(--error);
-}
-
-.btn-add-variable {
-    background: none;
-    border: 1px dashed var(--border-color);
-    border-radius: 6px;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 0.75rem;
-    padding: 0.3rem 0.6rem;
-    transition: var(--transition);
-}
-
-.btn-add-variable:hover {
-    border-color: var(--accent-primary);
-    color: var(--accent-primary);
 }
 
 /* Notebook Sections */

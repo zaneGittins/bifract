@@ -24,11 +24,18 @@ const App = {
         // only draw the subtle inline underline (+ hover tooltip); the louder
         // error banner is reserved for an explicit run. Editing also dismisses a
         // stale banner from a previous run so it never lingers over new text.
+        // Set up the auto-detected @variable tray under the search editor before
+        // wiring validation, so the variable set is current when validation runs.
+        if (window.QueryExecutor && QueryExecutor.initVariables) {
+            QueryExecutor.initVariables();
+        }
+
         if (window.QueryValidate && window.QueryExecutor) {
             QueryValidate.attach({
                 inputId: 'queryInput',
                 highlightId: 'queryHighlight',
                 getFractalId: () => window.FractalContext?.currentFractal?.id || undefined,
+                getVariables: () => QueryExecutor.variablesPayload(),
                 onEdit: () => QueryExecutor.clearQueryError(),
             });
             // Alert editor query box (static markup, shares the search-input pattern).

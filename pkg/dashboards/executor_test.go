@@ -1,38 +1,14 @@
 package dashboards
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
 	"bifract/pkg/storage"
 )
 
-func TestSubstituteVariables(t *testing.T) {
-	vars := json.RawMessage(`[{"name":"host","value":"web01"},{"name":"empty","value":""},{"name":"","value":"ignored"}]`)
-	cases := []struct {
-		in, want string
-	}{
-		{"status=500 host=@host", "status=500 host=web01"},
-		{"field=@empty", "field=*"},                       // empty value becomes wildcard
-		{"no vars here", "no vars here"},                  // untouched
-		{"@host and @host again", "web01 and web01 again"}, // all occurrences
-	}
-	for _, c := range cases {
-		if got := substituteVariables(c.in, vars); got != c.want {
-			t.Errorf("substituteVariables(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-
-	// Nil/empty variable set returns the query unchanged.
-	if got := substituteVariables("@host", nil); got != "@host" {
-		t.Errorf("nil vars: got %q, want %q", got, "@host")
-	}
-	// Malformed JSON returns the query unchanged rather than erroring.
-	if got := substituteVariables("@host", json.RawMessage(`{bad`)); got != "@host" {
-		t.Errorf("bad vars: got %q, want %q", got, "@host")
-	}
-}
+// Variable substitution itself is covered by pkg/bqlvars; the executor just
+// delegates to bqlvars.Substitute.
 
 func TestComputeTimeRange(t *testing.T) {
 	approx := func(got, want time.Duration) bool {

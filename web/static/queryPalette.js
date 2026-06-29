@@ -207,34 +207,53 @@ const QueryPalette = {
     activate(item, run) {
         if (!item) return;
         if (this.activeTab === 'history') this.applyTimeRange(item);
+        // Saved queries carry remembered @variable values; history rows do not.
+        const vars = this.activeTab === 'saved' ? item.variables : null;
         if (run) {
-            this.runQuery(item.query_text);
+            this.runQuery(item.query_text, vars);
             if (this.activeTab === 'saved') this.markUsed(item.id);
         } else {
-            this.loadQuery(item.query_text);
+            this.loadQuery(item.query_text, vars);
         }
     },
 
     clickRow(i) { const it = this.filtered[i]; if (it) { this.activeIndex = i; this.activate(it, false); } },
     runIdx(i)   { const it = this.filtered[i]; if (it) { this.activeIndex = i; this.activate(it, true); } },
 
-    runQuery(text) {
-        this.loadIntoInput(text);
+    runQuery(text, variables) {
+        this.loadIntoInput(text, variables);
         this.close();
         const btn = document.getElementById('executeBtn');
         if (btn) setTimeout(() => btn.click(), 0);
     },
 
-    loadQuery(text) { this.loadIntoInput(text); this.close(); },
+    loadQuery(text, variables) { this.loadIntoInput(text, variables); this.close(); },
 
-    loadIntoInput(text) {
+    loadIntoInput(text, variables) {
         const qi = document.getElementById('queryInput');
         if (!qi) return;
         qi.value = text;
+        // Seed remembered variable values before dispatching input, so the tray's
+        // reconcile picks them up instead of defaulting every @var to "*".
+        if (variables && window.QueryExecutor && QueryExecutor.seedVariables) {
+            QueryExecutor.seedVariables(variables);
+        }
         setTimeout(() => {
             qi.dispatchEvent(new Event('input', { bubbles: true }));
             qi.focus();
         }, 0);
+    },
+
+    // _variablesForQuery returns the [{name,value}] bindings to persist with a
+    // query: the @names actually referenced, valued from prevValues (the editor's
+    // current values on create, or the query's saved values on edit), default "*".
+    _variablesForQuery(queryText, prevValues) {
+        if (!window.VariableManager) return [];
+        const prev = VariableManager._asMap(prevValues || []);
+        return VariableManager.detectNames(queryText).map(name => ({
+            name,
+            value: prev.has(name) && prev.get(name) != null ? String(prev.get(name)) : '*'
+        }));
     },
 
     applyTimeRange(it) {
@@ -435,12 +454,18 @@ const QueryPalette = {
         if (!queryText) { if (window.Toast) Toast.show('No query to save', 'warning'); return; }
 
         const tags = tagsStr.split(',').map(t => t.trim()).filter(Boolean);
+        // When promoting a history row, its @vars are unrelated to the live editor,
+        // so default them to "*"; for a normal save, reuse the editor's values.
+        const prevVals = this.promoteText
+            ? []
+            : ((window.QueryExecutor && QueryExecutor.varManager) ? QueryExecutor.varManager.serialize() : []);
+        const variables = this._variablesForQuery(queryText, prevVals);
         try {
             const resp = await fetch('/api/v1/saved-queries', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ name, query_text: queryText, description, tags, visibility })
+                body: JSON.stringify({ name, query_text: queryText, description, tags, visibility, variables })
             });
             const data = await resp.json();
             if (!data.success) { if (window.Toast) Toast.show(data.error || 'Failed to save', 'error'); return; }
@@ -474,12 +499,14 @@ const QueryPalette = {
         if (!queryText) { if (window.Toast) Toast.show('Query text is required', 'warning'); return; }
 
         const tags = tagsStr.split(',').map(t => t.trim()).filter(Boolean);
+        const existing = this.saved.find(s => s.id === id);
+        const variables = this._variablesForQuery(queryText, existing && existing.variables);
         try {
             const resp = await fetch(`/api/v1/saved-queries/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ name, query_text: queryText, description, tags, visibility })
+                body: JSON.stringify({ name, query_text: queryText, description, tags, visibility, variables })
             });
             const data = await resp.json();
             if (!data.success) { if (window.Toast) Toast.show(data.error || 'Failed to update', 'error'); return; }

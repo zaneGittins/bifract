@@ -42,6 +42,109 @@ const QueryExecutor = {
         customTimeInputs: null
     },
 
+    varManager: null,           // VariableManager for the search editor's @vars
+    _pendingUrlVars: null,      // values from a share link, applied as vars appear
+
+    // initVariables wires the auto-detected @variable tray under the search box:
+    // scanning the query on every edit, seeding values from a share link, and
+    // mirroring the current values into the URL so a copied link carries them.
+    initVariables() {
+        if (this.varManager || !window.VariableManager) return;
+        const container = document.getElementById('searchVariables');
+        this.varManager = new VariableManager({
+            container,
+            onChange: () => this._syncVarsToUrl(),
+            onVarsChanged: () => this._syncVarsToUrl(),
+        });
+        this._pendingUrlVars = this._readVarsFromUrl();
+        const qi = document.getElementById('queryInput');
+        if (qi) {
+            qi.addEventListener('input', () => this.syncSearchVariables());
+            this.syncSearchVariables();
+        }
+    },
+
+    // syncSearchVariables reconciles the tray against the current query text and
+    // applies any pending share-link values to newly-surfaced variables.
+    syncSearchVariables() {
+        if (!this.varManager) return;
+        const qi = document.getElementById('queryInput');
+        // Detect against the executed text (comments stripped), so a @var that
+        // only appears in a // comment line never becomes a phantom pill.
+        this.varManager.syncFromText(this.stripComments(qi ? qi.value : ''));
+        this._applyPendingUrlVars();
+    },
+
+    // Applies staged values (share link / saved query) to matching vars, once.
+    // Pending values are single-shot: leftover entries are discarded so a stale
+    // value cannot resurrect when the same @name is retyped later.
+    _applyPendingUrlVars() {
+        if (!this._pendingUrlVars || !this.varManager) return;
+        let applied = false;
+        for (const [name, val] of this._pendingUrlVars.entries()) {
+            if (this.varManager.values.has(name)) {
+                this.varManager.setValue(name, val);
+                applied = true;
+            }
+        }
+        this._pendingUrlVars = null;
+        if (applied) { this.varManager.render(); this._syncVarsToUrl(); }
+    },
+
+    // seedVariables stages remembered values (e.g. from a saved query) so the
+    // next tray reconcile applies them to matching @vars instead of "*".
+    seedVariables(arr) {
+        const map = new Map();
+        if (Array.isArray(arr)) {
+            for (const v of arr) if (v && v.name) map.set(v.name, v.value == null ? '*' : String(v.value));
+        }
+        this._pendingUrlVars = map;
+    },
+
+    // variablesPayload returns the [{name,value}] bindings for a request body, or
+    // undefined when there are no variables (keeps payloads clean).
+    variablesPayload() {
+        if (!this.varManager || this.varManager.isEmpty()) return undefined;
+        return this.varManager.serialize();
+    },
+
+    _readVarsFromUrl() {
+        return this._decodeVars(new URLSearchParams(window.location.search).get('vars'));
+    },
+
+    // _decodeVars turns a base64(encodeURIComponent(JSON)) vars param into a
+    // name->value Map. Malformed input yields an empty Map.
+    _decodeVars(raw) {
+        const map = new Map();
+        try {
+            if (raw) {
+                const arr = JSON.parse(decodeURIComponent(atob(raw)));
+                if (Array.isArray(arr)) {
+                    for (const v of arr) if (v && v.name) map.set(v.name, v.value == null ? '*' : String(v.value));
+                }
+            }
+        } catch (e) { /* malformed vars param: ignore */ }
+        return map;
+    },
+
+    _encodeVars(arr) { return btoa(encodeURIComponent(JSON.stringify(arr))); },
+
+    _syncVarsToUrl() {
+        if (!this.varManager) return;
+        try {
+            const params = new URLSearchParams(window.location.search);
+            const arr = this.varManager.serialize();
+            // Only encode when the user has set a non-default value; an all-"*"
+            // set carries no information and would needlessly pollute the URL.
+            const meaningful = arr.some(v => v.value !== '*' && v.value !== '');
+            if (meaningful) params.set('vars', this._encodeVars(arr));
+            else params.delete('vars');
+            const qs = params.toString();
+            const url = window.location.origin + window.location.pathname + (qs ? '?' + qs : '') + window.location.hash;
+            history.replaceState(history.state, '', url);
+        } catch (e) { /* best-effort URL sync */ }
+    },
+
     // Get DOM elements based on current configuration
     getElements(config = null) {
         const elementConfig = config || this.elementConfig;
@@ -281,6 +384,8 @@ const QueryExecutor = {
                 requestBody.active_days = this.pendingActiveDays;
                 this.pendingActiveDays = null;
             }
+            const _vars = this.variablesPayload();
+            if (_vars) requestBody.variables = _vars;
 
             // Include fractal context if FractalContext is available (skip for prisms - server uses session)
             if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
@@ -843,6 +948,8 @@ const QueryExecutor = {
                 end: this.currentTimeRange.end,
                 cursor: this.currentCursor
             };
+            const _vars = this.variablesPayload();
+            if (_vars) requestBody.variables = _vars;
             if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
                 requestBody.fractal_id = window.FractalContext.currentFractal.id;
             }
@@ -2833,6 +2940,10 @@ const QueryExecutor = {
                 urlParams.set('ru', trState.relativeUnit || 'hours');
             }
 
+            // Carry the @variable values so a shared link reproduces them.
+            const varsArr = this.varManager ? this.varManager.serialize() : [];
+            if (varsArr.length) urlParams.set('vars', this._encodeVars(varsArr));
+
             // Generate full URL
             const shareUrl = `${window.location.origin}${window.location.pathname}?${urlParams.toString()}`;
 
@@ -3023,7 +3134,8 @@ const QueryExecutor = {
                 customStart: urlParams.get('ts'),
                 customEnd: urlParams.get('te'),
                 relativeN: urlParams.get('rn'),
-                relativeUnit: urlParams.get('ru')
+                relativeUnit: urlParams.get('ru'),
+                vars: urlParams.get('vars')
             });
 
         } catch (error) {
@@ -3056,6 +3168,16 @@ const QueryExecutor = {
             // Set query in input
             if (elements.queryInput) {
                 elements.queryInput.value = query;
+            }
+
+            // Restore the shared variable values, then reconcile the tray against
+            // the query text so the @vars surface with their shared values.
+            if (this.varManager) {
+                if (shareData.vars) {
+                    const seeded = this._decodeVars(shareData.vars);
+                    if (seeded.size) this._pendingUrlVars = seeded;
+                }
+                this.syncSearchVariables();
             }
 
             // Set time range

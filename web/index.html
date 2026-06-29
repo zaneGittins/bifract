@@ -874,6 +874,8 @@
                 <div id="autocomplete" class="autocomplete" style="display: none;"></div>
             </div>
             <div class="query-resize-handle" data-target="queryInput"></div>
+            <!-- Auto-detected @variables for the current query (LogScale-style tray) -->
+            <div id="searchVariables" class="variables-bar variables-bar-search"></div>
             <div id="queryError" class="query-error" style="display: none;"></div>
         </section>
 
@@ -1221,9 +1223,6 @@
                         <div id="dashboardEditor" class="dashboard-editor" style="display: none;">
                             <div class="dashboard-header">
                                 <div class="dashboard-title-area">
-                                    <button id="backToDashboardsBtn" class="editor-back-btn" title="Back to Dashboards">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-                                    </button>
                                     <h2 id="dashboardTitle">Untitled Dashboard</h2>
                                 </div>
                                 <div class="dashboard-controls">
@@ -3270,6 +3269,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/fractalListing.js"></script>
     <script src="/static/utils.js"></script>
     <script src="/static/syntaxHighlight.js"></script>
+    <script src="/static/variables.js"></script>
     <script src="/static/queryValidate.js"></script>
     <script src="/static/bqlLang.js"></script>
     <!-- Configuration should load first -->

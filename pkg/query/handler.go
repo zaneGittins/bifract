@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"bifract/pkg/bqlvars"
 	"bifract/pkg/dictionaries"
 	"bifract/pkg/fractals"
 	"bifract/pkg/models"
@@ -67,6 +68,11 @@ type QueryRequest struct {
 	Cursor     string   `json:"cursor,omitempty"`      // opaque token for next-page cursor pagination
 	Selective  bool     `json:"selective,omitempty"`   // run active-days preflight and skip empty 8h windows
 	ActiveDays []string `json:"active_days,omitempty"` // pre-computed active days (YYYY-MM-DD); skips preflight when provided
+	// Variables carries the @name -> value bindings for query variables, as a
+	// JSON array of {"name","value"}. The server substitutes them into Query
+	// before parsing (empty value -> "*"), so the raw @var form is what the
+	// editor and saved artifacts keep.
+	Variables json.RawMessage `json:"variables,omitempty"`
 }
 
 // ProfileShardRow holds per-node metrics fetched from system.query_log.
@@ -239,8 +245,8 @@ type preparedQuery struct {
 	histogramSQL        string
 	histBucketSec       int
 	histBucketCount     int
-	pipeline        *parser.PipelineNode
-	translationOpts parser.QueryOptions
+	pipeline            *parser.PipelineNode
+	translationOpts     parser.QueryOptions
 }
 
 // buildWindowSQL re-translates the query with a narrower time window and a
@@ -356,6 +362,21 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		respondJSON(w, http.StatusBadRequest, QueryResponse{
 			Success: false,
 			Error:   fmt.Sprintf("Query too long (%d chars, max %d)", len(req.Query), maxQueryLength),
+		})
+		return
+	}
+
+	// Substitute @name query variables (quote/boundary-aware, empty -> "*")
+	// before parsing, so search, dashboards and notebooks share identical
+	// semantics and the parser never sees @var.
+	req.Query = bqlvars.Substitute(req.Query, req.Variables)
+
+	// Re-check the size limit on the expanded query: variable values can grow it
+	// well past the raw-input limit, and the parser/translator must stay bounded.
+	if len(req.Query) > maxQueryLength {
+		respondJSON(w, http.StatusBadRequest, QueryResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Query too long after variable expansion (%d chars, max %d)", len(req.Query), maxQueryLength),
 		})
 		return
 	}
@@ -738,6 +759,20 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, ValidateResponse{
 			Valid:     false,
 			Error:     fmt.Sprintf("Query too long (%d chars, max %d)", len(req.Query), maxQueryLength),
+			ErrorType: "parse",
+		})
+		return
+	}
+
+	// Validate the substituted query (what would actually run), so live editors
+	// do not flag @var tokens as syntax errors.
+	req.Query = bqlvars.Substitute(req.Query, req.Variables)
+
+	// Variable values can expand the query past the raw-input limit.
+	if len(req.Query) > maxQueryLength {
+		respondJSON(w, http.StatusOK, ValidateResponse{
+			Valid:     false,
+			Error:     fmt.Sprintf("Query too long after variable expansion (%d chars, max %d)", len(req.Query), maxQueryLength),
 			ErrorType: "parse",
 		})
 		return

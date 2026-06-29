@@ -411,6 +411,18 @@ const SyntaxHighlight = {
                     matched = true;
                 }
             }
+            // Query variables: @name. Only when '@' is not preceded by a word char
+            // (so user@host is left alone), mirroring the backend substitution
+            // boundary rule. Inside strings the '@' is already consumed by the
+            // string token above, so quoted text is never matched.
+            else if (line[i] === '@' && !(i > 0 && /[a-zA-Z0-9_]/.test(line[i - 1]))) {
+                const varMatch = line.substring(i).match(/^@[a-zA-Z_][a-zA-Z0-9_]*/);
+                if (varMatch) {
+                    result.push({ t: varMatch[0], c: 'hl-variable' });
+                    i += varMatch[0].length;
+                    matched = true;
+                }
+            }
             // Identifiers: functions, field names, booleans, keywords, or bare values
             else if (/[a-zA-Z_]/.test(line[i])) {
                 const ident = line.substring(i).match(/^[a-zA-Z_][a-zA-Z0-9_.]*/)[0];

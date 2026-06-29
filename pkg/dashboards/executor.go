@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"bifract/pkg/bqlvars"
 	"bifract/pkg/query"
 	"bifract/pkg/sse"
 	"bifract/pkg/storage"
@@ -88,11 +89,11 @@ func NewExecutor(pg *storage.PostgresClient, runner QueryRunner, hub *sse.Hub, h
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Executor{
-		pg:      pg,
-		runner:  runner,
-		hub:     hub,
-		health:  health,
-		cfg:     cfg,
+		pg:       pg,
+		runner:   runner,
+		hub:      hub,
+		health:   health,
+		cfg:      cfg,
 		sem:      make(chan struct{}, cfg.Workers),
 		lastRun:  make(map[string]time.Time),
 		inFlight: make(map[string]bool),
@@ -239,7 +240,7 @@ func (e *Executor) refreshDashboard(d *storage.Dashboard) {
 // and the resolved chart type so on-demand callers can return them directly.
 func (e *Executor) executeWidget(ctx context.Context, d *storage.Dashboard, w *storage.DashboardWidget, excludeClientID string) ([]byte, string, error) {
 	start, end := computeTimeRange(d)
-	queryStr := substituteVariables(w.QueryContent, d.Variables)
+	queryStr := bqlvars.Substitute(w.QueryContent, d.Variables)
 
 	res, err := e.runner.ExecuteBQL(ctx, queryStr, d.FractalID, d.PrismID, start, end)
 	if err != nil {
@@ -396,28 +397,5 @@ func computeTimeRange(d *storage.Dashboard) (time.Time, time.Time) {
 	}
 }
 
-// substituteVariables replaces @name tokens with their dashboard variable
-// values (empty values become "*"), matching the frontend substitution.
-func substituteVariables(q string, variablesJSON json.RawMessage) string {
-	if len(variablesJSON) == 0 {
-		return q
-	}
-	var vars []struct {
-		Name  string `json:"name"`
-		Value string `json:"value"`
-	}
-	if err := json.Unmarshal(variablesJSON, &vars); err != nil {
-		return q
-	}
-	for _, v := range vars {
-		if v.Name == "" {
-			continue
-		}
-		val := v.Value
-		if val == "" {
-			val = "*"
-		}
-		q = strings.ReplaceAll(q, "@"+v.Name, val)
-	}
-	return q
-}
+// Variable substitution is centralized in pkg/bqlvars (quote- and
+// boundary-aware, prefix-safe) and shared by search, dashboards and notebooks.
