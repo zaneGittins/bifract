@@ -63,9 +63,12 @@
     --graph-node-child: #d4556b;
     --graph-node-parent-hover: #818cf8;
     --graph-node-child-hover: #e06b80;
+    --graph-node-neutral: #5b6478;
+    --graph-node-dim: #353a47;
     --graph-edge: #9c6ade;
     --graph-label: #ffffff;
     --graph-label-stroke: #000000;
+    --graph-label-dim: #6e7491;
     --graph-edge-1: #9c6ade;
     --graph-edge-2: #d4556b;
     --graph-edge-3: #22d3ee;
@@ -148,9 +151,12 @@
     --graph-node-child: #c2650a;
     --graph-node-parent-hover: #3b82f6;
     --graph-node-child-hover: #d97706;
+    --graph-node-neutral: #94a3b8;
+    --graph-node-dim: #d8d2c8;
     --graph-edge: #2563b5;
     --graph-label: #1a1612;
     --graph-label-stroke: #faf8f5;
+    --graph-label-dim: #a89f92;
     --graph-edge-1: #2563b5;
     --graph-edge-2: #c2650a;
     --graph-edge-3: #0891b2;
@@ -9871,16 +9877,24 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 /* Network Graph Styles */
+.graph-stage {
+    display: flex;
+    align-items: stretch;
+    width: 100%;
+    border-radius: 0 0 6px 6px;
+    overflow: hidden;
+    border: 1px solid var(--bg-tertiary);
+    border-top: none;
+}
+
 .chart-container #networkGraph {
     background: var(--bg-primary);
-    border-radius: 6px;
-    border: 1px solid var(--bg-tertiary);
-    overflow: visible;
+    overflow: hidden;
     position: relative;
     touch-action: auto;
-    min-width: 600px;
+    min-width: 0;
     min-height: 400px;
-    width: 100%;
+    flex: 1 1 auto;
 }
 
 .chart-container #networkGraph .vis-network {
@@ -9944,7 +9958,20 @@ input[type="number"]::-webkit-outer-spin-button {
     display: flex;
     align-items: center;
     gap: 12px;
-    flex-shrink: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    padding-bottom: 1px;
+}
+
+.graph-legend::-webkit-scrollbar {
+    height: 4px;
+}
+
+.graph-legend::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 2px;
 }
 
 .graph-legend-item {
@@ -9953,12 +9980,15 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 5px;
     font-size: 0.7rem;
     color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .graph-legend-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
+    flex-shrink: 0;
 }
 
 .graph-legend-parent {
@@ -9967,6 +9997,12 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .graph-legend-child {
     background: var(--graph-node-child);
+}
+
+.graph-legend-root {
+    background: transparent;
+    border: 2px solid var(--accent-primary);
+    box-sizing: border-box;
 }
 
 .graph-search {
@@ -10066,26 +10102,22 @@ div.vis-tooltip {
     font-family: var(--font-main) !important;
 }
 
-/* Graph Detail Panel */
+/* Graph Detail Panel (docked flex sibling, reflows the canvas) */
 .graph-detail-panel {
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 280px;
-    height: 100%;
+    flex: 0 0 0;
+    width: 0;
     background: var(--bg-secondary);
-    border-left: 1px solid var(--border-color);
-    border-radius: 0 8px 8px 0;
-    transform: translateX(100%);
-    transition: transform 0.2s ease;
-    z-index: 10;
+    border-left: 0 solid var(--border-color);
+    transition: flex-basis 0.2s ease, width 0.2s ease;
     display: flex;
     flex-direction: column;
     overflow: hidden;
 }
 
 .graph-detail-panel.open {
-    transform: translateX(0);
+    flex: 0 0 320px;
+    width: 320px;
+    border-left-width: 1px;
 }
 
 .graph-detail-header {
@@ -10215,6 +10247,148 @@ div.vis-tooltip {
     font-size: 0.75rem;
     font-style: italic;
     padding: 12px 0;
+}
+
+/* Detail panel: process chip, depth/root tags */
+.graph-detail-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.graph-detail-proc {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    padding: 2px 8px;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--chip-color, var(--text-secondary));
+    border: 1px solid var(--chip-color, var(--border-color));
+    word-break: break-all;
+}
+
+.graph-detail-tag {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px 8px;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+}
+
+.graph-detail-tag.root {
+    background: transparent;
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+/* Detail panel: ancestry breadcrumb */
+.graph-detail-path {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px;
+    padding: 8px;
+    margin-bottom: 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 0.7rem;
+}
+
+.graph-path-seg {
+    color: var(--accent-primary);
+    cursor: pointer;
+    padding: 1px 3px;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    transition: var(--transition);
+}
+
+.graph-path-seg:hover {
+    background: var(--bg-hover);
+}
+
+.graph-path-seg.current {
+    color: var(--text-primary);
+    font-weight: 600;
+    cursor: default;
+}
+
+.graph-path-seg.unknown {
+    color: var(--text-muted);
+    cursor: default;
+}
+
+.graph-path-sep {
+    color: var(--text-muted);
+}
+
+/* Detail panel: pivot actions */
+.graph-detail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.graph-detail-action {
+    flex: 1 1 auto;
+    padding: 6px 10px;
+    font-size: 0.72rem;
+    font-family: var(--font-main);
+    font-weight: 500;
+    color: #fff;
+    background: var(--accent-primary);
+    border: 1px solid var(--accent-primary);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: var(--transition);
+    white-space: nowrap;
+}
+
+.graph-detail-action:hover {
+    filter: brightness(1.1);
+}
+
+.graph-detail-action.secondary {
+    color: var(--text-secondary);
+    background: transparent;
+    border-color: var(--border-color);
+    flex: 0 0 auto;
+}
+
+.graph-detail-action.secondary:hover {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    filter: none;
+}
+
+/* Graph minimap overlay */
+.graph-minimap {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    width: 240px;
+    height: 160px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-md);
+    cursor: pointer;
+    z-index: 5;
+    opacity: 0.92;
+}
+
+.graph-minimap:hover {
+    opacity: 1;
 }
 
 /* Graph Context Menu */

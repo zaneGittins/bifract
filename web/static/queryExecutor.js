@@ -1932,6 +1932,14 @@ const QueryExecutor = {
         chartCanvas.style.display = 'none';
         networkDiv.style.display = 'none';
 
+        // Hide graph-only chrome (toolbar + docked stage); renderGraph re-shows it.
+        const graphHostHide = networkDiv.closest('.chart-container');
+        if (graphHostHide) {
+            graphHostHide.querySelector('.graph-toolbar')?.style.setProperty('display', 'none');
+            const st = graphHostHide.querySelector('.graph-stage');
+            if (st) st.style.display = 'none';
+        }
+
         // Destroy existing chart if it exists
         if (this.currentChart) {
             this.currentChart.destroy();
@@ -2050,14 +2058,55 @@ const QueryExecutor = {
             }
         });
 
-        // Build a set of parent IDs for fast lookup
-        const parentIds = new Set();
+        // Child -> parent map for ancestry walks, and the set of nodes that have
+        // an incoming edge (everything that is NOT a root of the forest).
+        const parentMap = new Map();
+        const hasIncoming = new Set();
         limitedResults.forEach(r => {
-            const pid = r[parentField];
-            if (pid && pid !== '' && pid !== 'null') parentIds.add(pid);
+            const c = r[childField];
+            const p = r[parentField];
+            if (c && p && p !== '' && p !== 'null') {
+                if (!parentMap.has(c)) parentMap.set(c, p);
+                hasIncoming.add(c);
+            }
         });
+        const rootSet = new Set();
+        nodeDetails.forEach((_, id) => { if (!hasIncoming.has(id)) rootSet.add(id); });
+
+        // Color nodes by process (image basename), capped to the most frequent
+        // few so the palette stays meaningful instead of turning into a rainbow.
+        const colorKeyOf = (id) => {
+            const d = nodeDetails.get(id) || {};
+            if (d.image) {
+                const parts = String(d.image).split(/[/\\]/);
+                const base = (parts.pop() || '').toLowerCase();
+                if (base) return base;
+            }
+            for (const f of labelFields) {
+                if (d[f] !== undefined && d[f] !== null && d[f] !== '') return String(d[f]).toLowerCase();
+            }
+            return null;
+        };
+        const keyFreq = new Map();
+        nodeDetails.forEach((_, id) => {
+            const k = colorKeyOf(id);
+            if (k) keyFreq.set(k, (keyFreq.get(k) || 0) + 1);
+        });
+        const MAX_COLORS = 8;
+        const topKeys = [...keyFreq.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_COLORS).map(e => e[0]);
+        const topSet = new Set(topKeys);
+        const neutralColor = cv('--graph-node-neutral');
+        const colorForKey = (k) => (k && topSet.has(k)) ? Utils.tagColorFor(k) : neutralColor;
+
+        // Resting/dim colors (always solid, never transparent) for highlight states.
+        const dimNode = cv('--graph-node-dim');
+        const labelColor = cv('--graph-label');
+        const labelDim = cv('--graph-label-dim');
+        const edgeBase = cv('--graph-edge');
+        const accentColor = cv('--accent-primary');
 
         // Create nodes with improved labels and HTML tooltips
+        const baseColors = new Map();
         nodeDetails.forEach((details, nodeId) => {
             let shortLabel = nodeId;
             if (specifiedLabels.length > 0) {
@@ -2078,7 +2127,10 @@ const QueryExecutor = {
                 shortLabel = nodeId.length > 12 ? nodeId.substring(0, 12) + '\u2026' : nodeId;
             }
 
-            const isParent = parentIds.has(nodeId);
+            const fill = colorForKey(colorKeyOf(nodeId));
+            const isRoot = rootSet.has(nodeId);
+            const border = isRoot ? accentColor : fill;
+            baseColors.set(nodeId, { background: fill, border });
 
             // Build HTML tooltip
             const tooltipLines = Object.entries(details)
@@ -2091,19 +2143,14 @@ const QueryExecutor = {
                 id: nodeId,
                 label: shortLabel,
                 title: titleEl,
-                size: 16,
+                size: isRoot ? 24 : 16,
+                borderWidth: isRoot ? 3 : 2,
                 mass: 1,
                 color: {
-                    background: isParent ? cv('--graph-node-parent') : cv('--graph-node-child'),
-                    border: isParent ? cv('--graph-node-parent') : cv('--graph-node-child'),
-                    highlight: {
-                        background: isParent ? cv('--graph-node-parent-hover') : cv('--graph-node-child-hover'),
-                        border: cv('--accent-primary')
-                    },
-                    hover: {
-                        background: isParent ? cv('--graph-node-parent-hover') : cv('--graph-node-child-hover'),
-                        border: cv('--accent-primary')
-                    }
+                    background: fill,
+                    border: border,
+                    highlight: { background: fill, border: accentColor },
+                    hover: { background: fill, border: accentColor }
                 }
             });
         });
@@ -2123,8 +2170,22 @@ const QueryExecutor = {
         networkDiv.style.height = dynamicHeight + 'px';
 
         // -- Toolbar --
-        let graphToolbar = networkDiv.parentElement.querySelector('.graph-toolbar');
+        const graphHost = networkDiv.closest('.chart-container') || networkDiv.parentElement;
+        let graphToolbar = graphHost.querySelector('.graph-toolbar');
         if (graphToolbar) graphToolbar.remove();
+
+        // Dynamic legend: one swatch per top process color, plus overflow + root.
+        const truncKey = (k) => k.length > 16 ? k.substring(0, 15) + '…' : k;
+        let legendHtml = topKeys.map(k =>
+            `<span class="graph-legend-item" title="${Utils.escapeHtml(k)}"><span class="graph-legend-dot" style="background:${Utils.tagColorFor(k)}"></span>${Utils.escapeHtml(truncKey(k))}</span>`
+        ).join('');
+        if (keyFreq.size > topKeys.length) {
+            legendHtml += `<span class="graph-legend-item"><span class="graph-legend-dot" style="background:${neutralColor}"></span>other</span>`;
+        }
+        if (rootSet.size > 0) {
+            legendHtml += `<span class="graph-legend-item"><span class="graph-legend-dot graph-legend-root"></span>root</span>`;
+        }
+
         graphToolbar = document.createElement('div');
         graphToolbar.className = 'graph-toolbar';
         graphToolbar.innerHTML = `
@@ -2133,10 +2194,7 @@ const QueryExecutor = {
                 <span class="graph-stat-separator"></span>
                 <span class="graph-stat-item"><span class="graph-stat-count" id="graphEdgeCount">${edges.length}</span> edges</span>
             </div>
-            <div class="graph-legend">
-                <span class="graph-legend-item"><span class="graph-legend-dot graph-legend-parent"></span>Parent</span>
-                <span class="graph-legend-item"><span class="graph-legend-dot graph-legend-child"></span>Child</span>
-            </div>
+            <div class="graph-legend">${legendHtml}</div>
             <div class="graph-search">
                 <input type="text" id="graphNodeSearch" class="graph-search-input" placeholder="Search nodes...">
             </div>
@@ -2156,10 +2214,20 @@ const QueryExecutor = {
                 </button>
             </div>
         `;
-        networkDiv.parentElement.insertBefore(graphToolbar, networkDiv);
+        // Wrap the canvas + detail panel in a flex row so the panel docks and the
+        // graph reflows into the remaining width instead of floating over it.
+        let stage = graphHost.querySelector('.graph-stage');
+        if (!stage) {
+            stage = document.createElement('div');
+            stage.className = 'graph-stage';
+            graphHost.insertBefore(stage, networkDiv);
+            stage.appendChild(networkDiv);
+        }
+        stage.style.display = 'flex';
+        graphHost.insertBefore(graphToolbar, stage);
 
-        // -- Detail Panel --
-        let detailPanel = networkDiv.parentElement.querySelector('.graph-detail-panel');
+        // -- Detail Panel (docked flex sibling) --
+        let detailPanel = stage.querySelector('.graph-detail-panel');
         if (detailPanel) detailPanel.remove();
         detailPanel = document.createElement('div');
         detailPanel.className = 'graph-detail-panel';
@@ -2170,7 +2238,7 @@ const QueryExecutor = {
             </div>
             <div class="graph-detail-body"></div>
         `;
-        networkDiv.parentElement.appendChild(detailPanel);
+        stage.appendChild(detailPanel);
 
         // -- Create Network --
         const data = { nodes, edges };
@@ -2245,6 +2313,15 @@ const QueryExecutor = {
 
         this.currentChart = new vis.Network(networkDiv, data, options);
 
+        // -- Minimap overlay (created after the network so it sits above vis's canvas) --
+        let minimap = networkDiv.querySelector('.graph-minimap');
+        if (minimap) minimap.remove();
+        minimap = document.createElement('canvas');
+        minimap.className = 'graph-minimap';
+        minimap.width = 240;
+        minimap.height = 160;
+        networkDiv.appendChild(minimap);
+
         // Fit view
         setTimeout(() => {
             if (nodes.length < 10) {
@@ -2260,6 +2337,217 @@ const QueryExecutor = {
                 });
             }
         }, 200);
+
+        // ---- Highlight + interaction helpers ----
+        const ancestorsOf = (id) => {
+            const chain = new Set([id]);
+            let cur = id;
+            while (parentMap.has(cur)) {
+                cur = parentMap.get(cur);
+                if (chain.has(cur)) break;        // cycle guard
+                chain.add(cur);
+                if (!nodeDetails.has(cur)) break; // parent not in result set
+            }
+            return chain;
+        };
+
+        const nodeShort = (id) => {
+            const n = nodes.get(id);
+            if (n && n.label) return n.label;
+            return id.length > 10 ? id.substring(0, 8) + '…' : id;
+        };
+
+        const litColor = (id) => {
+            const base = baseColors.get(id);
+            return {
+                background: base.background, border: base.border,
+                highlight: { background: base.background, border: accentColor },
+                hover: { background: base.background, border: accentColor }
+            };
+        };
+        const dimColor = { background: dimNode, border: dimNode, highlight: { background: dimNode, border: dimNode }, hover: { background: dimNode, border: dimNode } };
+
+        const restoreBase = () => {
+            nodes.update([...nodeDetails.keys()].map(id => ({ id, color: litColor(id), font: { color: labelColor } })));
+            edges.update(edges.getIds().map(eid => ({ id: eid, color: { color: edgeBase, opacity: 0.5, highlight: accentColor }, width: 1.5 })));
+            drawMinimap();
+        };
+
+        // Light only nodes in keepSet (solid dim for the rest). When hot, also
+        // brightens the edges that lie entirely within keepSet (the lineage).
+        const dimExcept = (keepSet, hot) => {
+            nodes.update([...nodeDetails.keys()].map(id => {
+                const on = keepSet.has(id);
+                return { id, color: on ? litColor(id) : dimColor, font: { color: on ? labelColor : labelDim } };
+            }));
+            edges.update(edges.get().map(e => {
+                const on = keepSet.has(e.from) && keepSet.has(e.to);
+                return {
+                    id: e.id,
+                    color: { color: (hot && on) ? accentColor : edgeBase, opacity: on ? (hot ? 0.95 : 0.5) : 0.1, highlight: accentColor },
+                    width: (hot && on) ? 2.5 : 1.5
+                };
+            }));
+            drawMinimap();
+        };
+
+        let selectedNodeId = null;
+        let searchActive = false;
+        let searchMatchSet = null;
+
+        const reapplyResting = () => {
+            if (selectedNodeId) dimExcept(ancestorsOf(selectedNodeId), true);
+            else if (searchActive && searchMatchSet) dimExcept(searchMatchSet, false);
+            else restoreBase();
+        };
+
+        // Keep the vis canvas sized to its (reflowing) container after the panel docks.
+        const resizeGraph = () => {
+            if (!this.currentChart) return;
+            this.currentChart.setSize(networkDiv.clientWidth + 'px', networkDiv.clientHeight + 'px');
+            this.currentChart.redraw();
+        };
+
+        // ---- Minimap ----
+        const mmCtx = minimap.getContext('2d');
+        const drawMinimap = () => {
+            if (!this.currentChart || !minimap.isConnected) return;
+            const positions = this.currentChart.getPositions();
+            const ids = Object.keys(positions);
+            const w = minimap.width, h = minimap.height;
+            mmCtx.clearRect(0, 0, w, h);
+            mmCtx.fillStyle = cv('--bg-secondary');
+            mmCtx.fillRect(0, 0, w, h);
+            if (ids.length === 0) return;
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            ids.forEach(id => { const p = positions[id]; if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; });
+            const pad = 14;
+            const spanX = Math.max(1, maxX - minX), spanY = Math.max(1, maxY - minY);
+            const scale = Math.min((w - 2 * pad) / spanX, (h - 2 * pad) / spanY);
+            const offX = (w - spanX * scale) / 2, offY = (h - spanY * scale) / 2;
+            const toMM = (x, y) => ({ x: offX + (x - minX) * scale, y: offY + (y - minY) * scale });
+            ids.forEach(id => {
+                const p = positions[id];
+                const m = toMM(p.x, p.y);
+                const base = baseColors.get(id);
+                mmCtx.fillStyle = (base && base.background) || neutralColor;
+                mmCtx.beginPath();
+                mmCtx.arc(m.x, m.y, rootSet.has(id) ? 2.6 : 1.7, 0, Math.PI * 2);
+                mmCtx.fill();
+            });
+            const tl = this.currentChart.DOMtoCanvas({ x: 0, y: 0 });
+            const br = this.currentChart.DOMtoCanvas({ x: networkDiv.clientWidth, y: networkDiv.clientHeight });
+            const a = toMM(tl.x, tl.y), b = toMM(br.x, br.y);
+            mmCtx.strokeStyle = accentColor;
+            mmCtx.lineWidth = 1.5;
+            mmCtx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+            minimap._map = { minX, minY, scale, offX, offY };
+        };
+        this.currentChart.on('afterDrawing', () => drawMinimap());
+
+        // Click/drag the minimap to pan the main view.
+        const mmNavigate = (ev) => {
+            const map = minimap._map; if (!map) return;
+            const rect = minimap.getBoundingClientRect();
+            const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+            const cx = map.minX + (mx - map.offX) / map.scale;
+            const cy = map.minY + (my - map.offY) / map.scale;
+            this.currentChart.moveTo({ position: { x: cx, y: cy }, animation: { duration: 150 } });
+        };
+        let mmDragging = false;
+        minimap.addEventListener('mousedown', (e) => { mmDragging = true; mmNavigate(e); e.preventDefault(); });
+        if (this._mmMove) window.removeEventListener('mousemove', this._mmMove);
+        if (this._mmUp) window.removeEventListener('mouseup', this._mmUp);
+        this._mmMove = (e) => { if (mmDragging) mmNavigate(e); };
+        this._mmUp = () => { mmDragging = false; };
+        window.addEventListener('mousemove', this._mmMove);
+        window.addEventListener('mouseup', this._mmUp);
+
+        // ---- Detail panel content ----
+        const buildPanel = (nodeId) => {
+            const details = nodeDetails.get(nodeId) || {};
+            const procKey = colorKeyOf(nodeId);
+            const procColor = procKey ? Utils.tagColorFor(procKey) : neutralColor;
+            const isRoot = rootSet.has(nodeId);
+            const depth = details._depth !== undefined ? details._depth : null;
+            const body = detailPanel.querySelector('.graph-detail-body');
+
+            let chips = '';
+            if (procKey) chips += `<span class="graph-detail-proc" style="--chip-color:${procColor}">${Utils.escapeHtml(procKey)}</span>`;
+            if (isRoot) chips += `<span class="graph-detail-tag root">root</span>`;
+            if (depth !== null) chips += `<span class="graph-detail-tag">depth ${Utils.escapeHtml(String(depth))}</span>`;
+
+            let breadcrumb = '';
+            if (details._path) {
+                const segs = String(details._path).split(' > ');
+                breadcrumb = '<div class="graph-detail-path">' + segs.map((s, i) => {
+                    const id = s.trim();
+                    const known = nodeDetails.has(id);
+                    const lbl = known ? nodeShort(id) : (id.length > 10 ? id.substring(0, 8) + '…' : id);
+                    const sep = i < segs.length - 1 ? '<span class="graph-path-sep">›</span>' : '';
+                    return `<span class="graph-path-seg${known ? '' : ' unknown'}${id === nodeId ? ' current' : ''}" data-node="${Utils.escapeHtml(id)}" title="${Utils.escapeHtml(id)}">${Utils.escapeHtml(lbl)}</span>${sep}`;
+                }).join('') + '</div>';
+            }
+
+            const fieldEntries = Object.entries(details).filter(([k]) => k !== '_path');
+            let fieldsHtml;
+            if (fieldEntries.length > 0) {
+                fieldsHtml = '<div class="graph-detail-fields">' + fieldEntries.map(([k, v]) =>
+                    `<div class="graph-detail-field"><div class="graph-detail-field-name">${Utils.escapeHtml(k)}</div><div class="graph-detail-field-value">${Utils.escapeHtml(String(v))}</div></div>`
+                ).join('') + '</div>';
+            } else {
+                fieldsHtml = '<div class="graph-detail-empty">No additional fields available</div>';
+            }
+
+            const parentId = parentMap.get(nodeId);
+            const canWalkUp = parentId && /\b(?:dfs|bfs)\s*\(/i.test(this.currentQuery || '');
+            const actionsHtml = `
+                <div class="graph-detail-actions">
+                    ${canWalkUp ? '<button class="graph-detail-action" data-act="walkup" title="Re-root the traversal at this node\'s parent">Walk Up</button>' : ''}
+                    <button class="graph-detail-action" data-act="subtree">Focus subtree</button>
+                    <button class="graph-detail-action secondary" data-act="copy">Copy ID</button>
+                </div>`;
+
+            body.innerHTML = `
+                <div class="graph-detail-id">
+                    <span class="graph-detail-id-label">ID</span>
+                    <span class="graph-detail-id-value">${Utils.escapeHtml(nodeId)}</span>
+                </div>
+                <div class="graph-detail-chips">${chips}</div>
+                ${breadcrumb}
+                ${actionsHtml}
+                ${fieldsHtml}
+            `;
+
+            body.querySelector('[data-act="copy"]')?.addEventListener('click', () => {
+                navigator.clipboard.writeText(nodeId).then(() => Toast.show('Copied', 'success'));
+            });
+            body.querySelector('[data-act="subtree"]')?.addEventListener('click', () => {
+                const connected = this.currentChart.getConnectedNodes(nodeId);
+                this.currentChart.fit({ nodes: [nodeId, ...connected], animation: { duration: 400 }, padding: 80 });
+            });
+            body.querySelector('[data-act="walkup"]')?.addEventListener('click', () => this.pivotTraversal(parentId));
+            body.querySelectorAll('.graph-path-seg').forEach(el => {
+                el.addEventListener('click', () => {
+                    const id = el.getAttribute('data-node');
+                    if (!nodeDetails.has(id)) return;
+                    this.currentChart.selectNodes([id]);
+                    selectNodeAction(id);
+                });
+            });
+        };
+
+        const selectNodeAction = (nodeId) => {
+            selectedNodeId = nodeId;
+            buildPanel(nodeId);
+            detailPanel.classList.add('open');
+            dimExcept(ancestorsOf(nodeId), true);
+            setTimeout(() => {
+                resizeGraph();
+                this.currentChart.focus(nodeId, { scale: Math.max(this.currentChart.getScale(), 0.6), animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+                drawMinimap();
+            }, 210);
+        };
 
         // -- Toolbar handlers --
         document.getElementById('graphFitBtn')?.addEventListener('click', () => {
@@ -2281,82 +2569,59 @@ const QueryExecutor = {
             Toast.show('Graph exported as PNG', 'success');
         });
 
-        // -- Node search --
+        // -- Node search (solid dim, never transparent) --
         const searchInput = document.getElementById('graphNodeSearch');
         if (searchInput) {
             searchInput.addEventListener('input', Utils.debounce((e) => {
                 const term = e.target.value.toLowerCase().trim();
                 if (!term) {
-                    const updates = [];
-                    nodeDetails.forEach((_, nodeId) => {
-                        updates.push({ id: nodeId, opacity: 1.0, font: { color: cv('--graph-label') } });
-                    });
-                    nodes.update(updates);
+                    searchActive = false;
+                    searchMatchSet = null;
+                    reapplyResting();
                     return;
                 }
-                const updates = [];
+                const match = new Set();
                 nodeDetails.forEach((details, nodeId) => {
-                    const matches = nodeId.toLowerCase().includes(term) ||
-                        Object.values(details).some(v => String(v).toLowerCase().includes(term));
-                    updates.push({
-                        id: nodeId,
-                        opacity: matches ? 1.0 : 0.15,
-                        font: { color: matches ? cv('--graph-label') : 'transparent' }
-                    });
+                    if (nodeId.toLowerCase().includes(term) || Object.values(details).some(v => String(v).toLowerCase().includes(term))) {
+                        match.add(nodeId);
+                    }
                 });
-                nodes.update(updates);
+                searchActive = true;
+                searchMatchSet = match;
+                if (!selectedNodeId) dimExcept(match, false);
             }, 200));
         }
 
-        // -- Node click: detail panel --
+        // -- Node click: detail panel + ancestry highlight --
         const closePanel = () => {
             detailPanel.classList.remove('open');
+            selectedNodeId = null;
             this.currentChart.unselectAll();
+            setTimeout(() => { resizeGraph(); reapplyResting(); }, 210);
         };
         detailPanel.querySelector('.graph-detail-close').addEventListener('click', closePanel);
 
         this.currentChart.on('selectNode', (params) => {
             const nodeId = params.nodes[0];
             if (!nodeId) return;
-            const details = nodeDetails.get(nodeId);
-            const isParent = parentIds.has(nodeId);
-            const roleLabel = isParent ? 'Parent' : 'Child';
-            const body = detailPanel.querySelector('.graph-detail-body');
-
-            let html = `
-                <div class="graph-detail-id">
-                    <span class="graph-detail-id-label">ID</span>
-                    <span class="graph-detail-id-value">${Utils.escapeHtml(nodeId)}</span>
-                    <button class="graph-detail-copy" title="Copy node ID">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                    </button>
-                </div>
-                <div class="graph-detail-role ${isParent ? 'parent' : 'child'}">${roleLabel}</div>
-            `;
-
-            if (details && Object.keys(details).length > 0) {
-                html += '<div class="graph-detail-fields">';
-                for (const [key, val] of Object.entries(details)) {
-                    html += `<div class="graph-detail-field">
-                        <div class="graph-detail-field-name">${Utils.escapeHtml(key)}</div>
-                        <div class="graph-detail-field-value">${Utils.escapeHtml(String(val))}</div>
-                    </div>`;
-                }
-                html += '</div>';
-            } else {
-                html += '<div class="graph-detail-empty">No additional fields available</div>';
-            }
-
-            body.innerHTML = html;
-            detailPanel.classList.add('open');
-
-            body.querySelector('.graph-detail-copy')?.addEventListener('click', () => {
-                navigator.clipboard.writeText(nodeId).then(() => Toast.show('Copied', 'success'));
-            });
+            selectNodeAction(nodeId);
         });
 
-        this.currentChart.on('deselectNode', () => {
+        this.currentChart.on('deselectNode', (params) => {
+            if (params.nodes && params.nodes.length) return; // selection moved to another node
             detailPanel.classList.remove('open');
+            selectedNodeId = null;
+            setTimeout(() => { resizeGraph(); reapplyResting(); }, 210);
+        });
+
+        // -- Hover lights up the lineage to root --
+        this.currentChart.on('hoverNode', (params) => {
+            if (selectedNodeId) return;
+            dimExcept(ancestorsOf(params.node), true);
+        });
+        this.currentChart.on('blurNode', () => {
+            if (selectedNodeId) return;
+            reapplyResting();
         });
 
         // -- Double-click to focus neighborhood --
@@ -2387,7 +2652,10 @@ const QueryExecutor = {
             menu.className = 'graph-context-menu';
             menu.style.left = params.event.pageX + 'px';
             menu.style.top = params.event.pageY + 'px';
+            const ctxParentId = parentMap.get(nodeId);
+            const canWalkUp = ctxParentId && /\b(?:dfs|bfs)\s*\(/i.test(this.currentQuery || '');
             menu.innerHTML = `
+                ${canWalkUp ? '<button class="graph-ctx-item" data-action="walkup">Walk Up</button>' : ''}
                 <button class="graph-ctx-item" data-action="focus">Focus neighborhood</button>
                 <button class="graph-ctx-item" data-action="copy">Copy node ID</button>
             `;
@@ -2395,7 +2663,9 @@ const QueryExecutor = {
 
             menu.addEventListener('click', (e) => {
                 const action = e.target.dataset.action;
-                if (action === 'focus') {
+                if (action === 'walkup') {
+                    this.pivotTraversal(ctxParentId);
+                } else if (action === 'focus') {
                     const connected = this.currentChart.getConnectedNodes(nodeId);
                     this.currentChart.fit({ nodes: [nodeId, ...connected], animation: { duration: 400 }, padding: 80 });
                 } else if (action === 'copy') {
@@ -2408,6 +2678,26 @@ const QueryExecutor = {
             setTimeout(() => document.addEventListener('click', closeMenu), 0);
         });
 
+    },
+
+    // Re-root the active dfs()/bfs() traversal at startId by swapping the start=
+    // argument inside the existing call, preserving every other pipeline stage.
+    // "Walk Up" passes the selected node's parent guid here, climbing the tree.
+    pivotTraversal(startId) {
+        if (!startId) return;
+        const qi = document.getElementById('queryInput');
+        if (!qi) return;
+        const cur = this.currentQuery || qi.value || '';
+        const re = /(\b(?:dfs|bfs)\s*\([^)]*?\bstart\s*=\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,)\s]+)/i;
+        if (!re.test(cur)) {
+            Toast.show('No dfs()/bfs() in query to re-root', 'error');
+            return;
+        }
+        qi.value = cur.replace(re, `$1"${startId}"`);
+        qi.dispatchEvent(new Event('input', { bubbles: true }));
+        const btn = document.getElementById('executeBtn');
+        if (btn) setTimeout(() => btn.click(), 0);
+        Toast.show('Walking up to parent', 'info');
     },
 
     renderSingleVal(results) {
