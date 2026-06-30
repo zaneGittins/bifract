@@ -293,6 +293,56 @@ func (e *Executor) ExecuteWidgetByID(ctx context.Context, dashboardID, widgetID,
 	return e.executeWidget(ctx, d, w, excludeClientID)
 }
 
+// executeWidgetPreview runs a widget with transient overrides and returns the
+// result payload WITHOUT persisting it as the canonical cache or broadcasting it
+// over SSE. It backs per-user pivot drilldowns: a drilldown is a private view, so
+// it must not overwrite what collaborators see. overrideVars (when non-nil)
+// replaces the dashboard's stored variable set for substitution.
+func (e *Executor) executeWidgetPreview(ctx context.Context, d *storage.Dashboard, w *storage.DashboardWidget, overrideVars json.RawMessage, start, end time.Time) ([]byte, string, error) {
+	vars := d.Variables
+	if overrideVars != nil {
+		vars = overrideVars
+	}
+	queryStr := bqlvars.Substitute(w.QueryContent, vars)
+
+	res, err := e.runner.ExecuteBQL(ctx, queryStr, d.FractalID, d.PrismID, start, end)
+	if err != nil {
+		return nil, "", err
+	}
+	resultJSON, err := json.Marshal(res)
+	if err != nil {
+		return nil, "", err
+	}
+	chartType := res.ChartType
+	if chartType == "" {
+		chartType = "table"
+	}
+	return resultJSON, chartType, nil
+}
+
+// ExecuteWidgetPreviewByID loads the dashboard+widget and runs a transient
+// preview (see executeWidgetPreview). When start and end are both non-zero they
+// override the computed dashboard window; otherwise the dashboard's own range is
+// used.
+func (e *Executor) ExecuteWidgetPreviewByID(ctx context.Context, dashboardID, widgetID string, overrideVars json.RawMessage, start, end time.Time) ([]byte, string, error) {
+	d, err := e.pg.GetDashboard(ctx, dashboardID)
+	if err != nil {
+		return nil, "", err
+	}
+	w, err := e.pg.GetDashboardWidget(ctx, widgetID)
+	if err != nil {
+		return nil, "", err
+	}
+	if w.DashboardID != dashboardID {
+		return nil, "", errWidgetMismatch
+	}
+	ds, de := computeTimeRange(d)
+	if !start.IsZero() && !end.IsZero() {
+		ds, de = start, end
+	}
+	return e.executeWidgetPreview(ctx, d, w, overrideVars, ds, de)
+}
+
 // ExecuteDashboardNow runs all widgets of a dashboard on demand, returning when
 // every widget has finished (or errored). Used by the "refresh all" endpoint.
 func (e *Executor) ExecuteDashboardNow(ctx context.Context, dashboardID, excludeClientID string) error {

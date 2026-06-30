@@ -15561,3 +15561,135 @@ div.vis-tooltip {
     min-width: 140px;
 }
 
+
+/* ============================================================
+   Pivots (dashboard widget drilldowns)
+   ============================================================ */
+
+/* Clickable affordance on pivot-enabled table rows */
+.result-row.pivotable { cursor: pointer; }
+.result-row.pivotable:hover { background: var(--bg-hover, rgba(156, 106, 222, 0.08)); }
+
+/* Pivot chooser menu (shown when a widget has multiple pivots) */
+.pivot-menu {
+    position: fixed;
+    z-index: 4000;
+    min-width: 180px;
+    max-width: 280px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
+    overflow: hidden;
+    padding: 4px;
+}
+.pivot-menu-header {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    padding: 6px 10px 4px;
+}
+.pivot-menu-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+}
+.pivot-menu-item:hover { background: var(--accent-glow); color: var(--accent-secondary); }
+
+/* Drilldown banner */
+.drilldown-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 10px;
+    padding: 8px 14px;
+    background: var(--accent-glow);
+    border: 1px solid var(--accent-primary);
+    border-radius: 8px;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+}
+.drilldown-banner .drilldown-icon { color: var(--accent-secondary); }
+.drilldown-banner .drilldown-text { flex: 1; }
+.drilldown-banner .drilldown-exit {
+    background: none;
+    border: 1px solid var(--accent-primary);
+    color: var(--accent-secondary);
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+.drilldown-banner .drilldown-exit:hover { background: var(--accent-primary); color: #fff; }
+
+/* Pivot config panel */
+.pivot-panel .pivot-intro {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 14px;
+    line-height: 1.45;
+}
+.pivot-card {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+    background: var(--bg-secondary);
+}
+.pivot-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.pivot-row { margin-bottom: 10px; }
+.pivot-row:last-child { margin-bottom: 0; }
+.pivot-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg-tertiary, var(--bg-primary));
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    padding: 7px 9px;
+    font-size: 0.85rem;
+    font-family: inherit;
+}
+.pivot-input:focus { outline: none; border-color: var(--accent-primary); }
+.pivot-label { font-weight: 500; }
+.pivot-query { resize: vertical; min-height: 38px; }
+.pivot-remove {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 4px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+.pivot-remove:hover { color: var(--accent-tertiary); background: var(--bg-hover, rgba(255, 255, 255, 0.05)); }
+.pivot-maps-head { display: flex; align-items: center; justify-content: space-between; }
+.pivot-maps { margin: 6px 0; }
+.pivot-maps-empty { font-size: 0.78rem; color: var(--text-muted); padding: 2px 0 6px; }
+.pivot-map-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.pivot-map-row .pivot-map-field { flex: 1 1 45%; min-width: 0; }
+.pivot-map-row .pivot-map-var { flex: 1 1 45%; min-width: 0; }
+.pivot-map-arrow { color: var(--text-muted); font-size: 0.85rem; flex-shrink: 0; }
+.pivot-toggles { display: flex; gap: 18px; flex-wrap: wrap; }
+.pivot-check { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--text-secondary); cursor: pointer; }
+.pivot-link-btn {
+    background: none;
+    border: none;
+    color: var(--accent-secondary);
+    cursor: pointer;
+    font-size: 0.78rem;
+    padding: 2px 0;
+}
+.pivot-link-btn:hover { text-decoration: underline; }
+.pivot-add { width: 100%; margin-top: 4px; }

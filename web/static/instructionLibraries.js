@@ -279,7 +279,6 @@ const InstructionLibraries = {
         const pin = page.always_include ? `<span class="il-pin-dot" title="Always included in AI context"></span>` : '';
         return `
             <div class="il-tree-page ${active}" data-page-id="${page.id}" data-folder="${page.folder_id || ''}" onclick="InstructionLibraries.openPage('${page.id}')">
-                ${this._pageIcon()}
                 <span class="il-tree-page-name">${this.esc(page.name)}</span>
                 ${pin}
                 <span class="kebab-wrapper" onclick="event.stopPropagation()">
@@ -988,7 +987,6 @@ const InstructionLibraries = {
     _folderIcon() { return '<svg class="il-folder-glyph" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M1.5 4.5a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-7.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>'; },
     _folderPlusIcon() { return '<svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M1.5 4.5a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-7.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8 8v3M6.5 9.5h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'; },
     _gearIcon() { return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>'; },
-    _pageIcon() { return '<svg class="il-page-glyph" width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M4 2h5l3 3v9H4V2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M9 2v3h3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>'; },
     _linkIcon() { return '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M6.5 9.5l3-3M7 4l1-1a2.5 2.5 0 013.5 3.5l-1 1M9 12l-1 1A2.5 2.5 0 014.5 9.5l1-1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'; },
 
     esc(str) {

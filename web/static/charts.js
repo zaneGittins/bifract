@@ -238,6 +238,73 @@ window.BifractCharts = {
 
     // ---- Pie Chart ----
 
+    // ---- Pivot click handlers ----
+
+    // Returns Chart.js onClick/onHover that resolve a clicked category (bar or
+    // pie segment) back to its source row and invoke opts.onDataClick. Empty
+    // object when no pivot handler is wired, so charts stay inert by default.
+    _categoryClick(opts, labels, values, data, labelField, valueField) {
+        if (typeof opts.onDataClick !== 'function') return {};
+        return {
+            onClick: (evt, els) => {
+                if (!els || !els.length) return;
+                const idx = els[0].index;
+                const label = labels[idx];
+                const row = data.find(r => String(r[labelField]) === String(label)) ||
+                    { [labelField]: label, [valueField]: values[idx] };
+                opts.onDataClick({ row, field: labelField, value: label, series: null }, evt && evt.native);
+            },
+            onHover: (evt, els) => {
+                const c = evt && evt.native && evt.native.target;
+                if (c) c.style.cursor = (els && els.length) ? 'pointer' : 'default';
+            }
+        };
+    },
+
+    // Returns Chart.js onClick/onHover for a timechart point. Resolves the bucket
+    // row (and series, when grouped) and derives the bucket's [timeStart,timeEnd]
+    // window so a pivot can forward a precise slice of time.
+    _timeClick(opts, labels, data, timeField, groupFields, datasets, groups) {
+        if (typeof opts.onDataClick !== 'function') return {};
+        const parse = s => new Date(String(s).replace(' ', 'T'));
+        return {
+            onClick: (evt, els) => {
+                if (!els || !els.length) return;
+                const el = els[0];
+                const idx = el.index;
+                const label = labels[idx];
+                let row = null, series = null;
+                if (groupFields.length > 0 && groups) {
+                    const ds = datasets[el.datasetIndex];
+                    series = ds ? ds.label : null;
+                    const grp = series != null ? groups[series] : null;
+                    row = grp ? grp[idx] : null;
+                } else {
+                    row = data[idx];
+                }
+                if (!row) row = { [timeField]: label };
+                const ctx = { row, field: timeField, value: label, series };
+                const t0 = parse(label);
+                if (!isNaN(t0.getTime())) {
+                    ctx.timeStart = t0.toISOString();
+                    const next = labels[idx + 1] != null ? parse(labels[idx + 1]) : null;
+                    let t1 = (next && !isNaN(next.getTime())) ? next : null;
+                    if (!t1 && idx > 0) {
+                        const prev = parse(labels[idx - 1]);
+                        if (!isNaN(prev.getTime())) t1 = new Date(t0.getTime() + (t0.getTime() - prev.getTime()));
+                    }
+                    if (!t1) t1 = new Date(t0.getTime() + 60000);
+                    ctx.timeEnd = t1.toISOString();
+                }
+                opts.onDataClick(ctx, evt && evt.native);
+            },
+            onHover: (evt, els) => {
+                const c = evt && evt.native && evt.native.target;
+                if (c) c.style.cursor = (els && els.length) ? 'pointer' : 'default';
+            }
+        };
+    },
+
     renderPieChart(container, opts) {
         const data = opts.data;
         if (!data || data.length === 0) return null;
@@ -289,6 +356,7 @@ window.BifractCharts = {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                ...this._categoryClick(opts, labels, values, data, labelField, valueField),
                 plugins: {
                     legend: Object.assign(
                         this._themedLegend('bottom', { labels: { color: cv('--chart-text'), font: { family: 'Inter', size: 12 }, padding: 20 } }),
@@ -345,6 +413,7 @@ window.BifractCharts = {
             options: {
                 responsive: true,
                 maintainAspectRatio: opts.maintainAspectRatio !== false,
+                ...this._categoryClick(opts, labels, values, data, labelField, valueField),
                 plugins: {
                     legend: Object.assign(this._themedLegend('top'), this._legendDisplay(cfg)),
                     tooltip: Object.assign(this._themedTooltip(), unit ? {
@@ -363,6 +432,91 @@ window.BifractCharts = {
     },
 
     // ---- Time Chart ----
+
+    // Build a sparse, clock-aligned set of x-axis labels for a time series.
+    // Infers the bucket granularity, snaps to a "nice" interval that yields at
+    // most ~8 labels, and formats them concisely (time within a day; date is
+    // injected only when the day rolls over). Returns { display } where
+    // display[i] is the tick text for bucket i, or '' to hide it. Returns null
+    // if the labels are not parseable timestamps (caller falls back).
+    _timeAxisLabels(rawLabels) {
+        const n = rawLabels.length;
+        if (n === 0) return null;
+
+        const SEC = 1000, MIN = 60 * SEC, HOUR = 60 * MIN, DAY = 24 * HOUR;
+        const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const NICE = [SEC, 5 * SEC, 10 * SEC, 15 * SEC, 30 * SEC, MIN, 5 * MIN, 10 * MIN,
+            15 * MIN, 30 * MIN, HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY,
+            2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY, 90 * DAY, 180 * DAY, 365 * DAY];
+        const TARGET_TICKS = 8;
+
+        const dates = rawLabels.map(s => {
+            const d = new Date(String(s).replace(' ', 'T'));
+            return isNaN(d.getTime()) ? null : d;
+        });
+        if (dates.some(d => d === null)) return null;
+
+        const times = dates.map(d => d.getTime());
+        // Median gap between buckets gives a robust granularity estimate.
+        const diffs = [];
+        for (let i = 1; i < n; i++) diffs.push(times[i] - times[i - 1]);
+        diffs.sort((a, b) => a - b);
+        const bucketMs = diffs.length ? Math.max(diffs[Math.floor(diffs.length / 2)], SEC) : DAY;
+        const spanMs = times[n - 1] - times[0];
+
+        // Smallest nice interval >= bucket size that keeps us under the tick budget.
+        let tickInterval = bucketMs;
+        for (const ni of NICE) {
+            if (ni < bucketMs) continue;
+            tickInterval = ni;
+            if (spanMs / ni <= TARGET_TICKS) break;
+        }
+
+        const pad2 = v => String(v).padStart(2, '0');
+        const showSeconds = bucketMs < MIN;
+        const multiYear = dates[0].getFullYear() !== dates[n - 1].getFullYear();
+        const crossesDays = spanMs >= DAY ||
+            dates[0].toDateString() !== dates[n - 1].toDateString();
+        const fmtTime = d => showSeconds
+            ? `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+            : `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+        const fmtDate = d => multiYear
+            ? `${MONTHS[d.getMonth()]} ${d.getDate()}, ${String(d.getFullYear()).slice(2)}`
+            : `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+
+        // Pick the first bucket landing in each clock-aligned window. Local-time
+        // offset is applied so windows snap to local midnight/hour boundaries.
+        const display = new Array(n).fill('');
+        let prevWindow = null, prevDay = null, prevText = null;
+        for (let i = 0; i < n; i++) {
+            const d = dates[i];
+            const localMs = times[i] - d.getTimezoneOffset() * MIN;
+            const w = Math.floor(localMs / tickInterval);
+            if (w === prevWindow) continue;
+            prevWindow = w;
+
+            const day = d.toDateString();
+            let label;
+            if (tickInterval >= 28 * DAY) {
+                label = `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+            } else if (tickInterval >= DAY) {
+                label = fmtDate(d);
+            } else if (crossesDays && day !== prevDay) {
+                label = [fmtDate(d), fmtTime(d)]; // date + time stacked on day change
+            } else {
+                label = fmtTime(d);
+            }
+            prevDay = day;
+
+            // Drop a tick whose text matches the one before it (e.g. coarse
+            // month/quarter windows that round to the same label).
+            const text = Array.isArray(label) ? label.join(' ') : label;
+            if (text === prevText) continue;
+            prevText = text;
+            display[i] = label;
+        }
+        return { display };
+    },
 
     renderTimeChart(canvas, opts) {
         const data = opts.data;
@@ -392,10 +546,11 @@ window.BifractCharts = {
         const pal = this._palette(cfg, this.SERIES_COLORS);
 
         let datasets, labels;
+        let groups = null; // populated when grouped; reused by the pivot click handler
 
         if (groupFields.length > 0) {
             const groupField = groupFields[0];
-            const groups = {};
+            groups = {};
             data.forEach(row => {
                 const key = String(row[groupField] || 'Unknown');
                 if (!groups[key]) groups[key] = [];
@@ -442,12 +597,30 @@ window.BifractCharts = {
             });
         }
 
+        // Thin and format the x-axis labels so dense series stay readable. Raw
+        // labels are kept for tooltips; only the displayed ticks are sparse.
+        const axis = this._timeAxisLabels(labels);
+        const xTicks = {
+            color: cv('--chart-text-secondary'),
+            font: { family: 'Inter', size: 10 },
+            maxRotation: 45, minRotation: 0
+        };
+        if (axis) {
+            xTicks.autoSkip = false;
+            xTicks.callback = (_v, index) => axis.display[index] ?? '';
+        } else {
+            xTicks.maxTicksLimit = 20;
+        }
+
+        const brushable = typeof opts.onBrush === 'function';
         const chart = new Chart(canvas, {
             type: 'line',
             data: { labels, datasets },
+            plugins: brushable ? [this._brushPlugin] : undefined,
             options: {
                 responsive: true,
                 maintainAspectRatio: opts.maintainAspectRatio !== false,
+                ...this._timeClick(opts, labels, data, timeField, groupFields, datasets, groups),
                 interaction: { mode: 'index', intersect: false },
                 plugins: {
                     legend: Object.assign(this._themedLegend('top'), {
@@ -468,19 +641,98 @@ window.BifractCharts = {
                         title: cfg.yLabel ? { display: true, text: cfg.yLabel, color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 12, weight: '600' } } : undefined,
                         ticks: unit ? { color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 11 }, callback: (v) => this.formatValue(v, unit) } : undefined
                     } : undefined,
-                    x: {
-                        ticks: {
-                            color: cv('--chart-text-secondary'),
-                            font: { family: 'Inter', size: 10 },
-                            maxRotation: 45, minRotation: 0, maxTicksLimit: 20
-                        }
-                    }
+                    x: { ticks: xTicks }
                 }),
                 layout: { padding: 10 }
             }
         });
 
+        if (brushable) this._attachTimeBrush(chart, canvas, labels, opts.onBrush);
+
         return { chart };
+    },
+
+    // Chart.js inline plugin: paints the drag-selection band over the plot area.
+    // State lives on chart.$brush ({ x0, x1 } in CSS pixels) so the interaction
+    // handlers and this draw hook stay decoupled.
+    _brushPlugin: {
+        id: 'bifractTimeBrush',
+        afterDraw(chart) {
+            const st = chart.$brush;
+            if (!st || st.x0 == null || st.x1 == null) return;
+            const area = chart.chartArea;
+            const a = Math.max(Math.min(st.x0, st.x1), area.left);
+            const b = Math.min(Math.max(st.x0, st.x1), area.right);
+            if (b <= a) return;
+            const cv = BifractCharts._cv();
+            const ctx = chart.ctx;
+            ctx.save();
+            ctx.fillStyle = cv('--timeline-selection') || 'rgba(124, 108, 222, 0.18)';
+            ctx.fillRect(a, area.top, b - a, area.bottom - area.top);
+            ctx.strokeStyle = cv('--timeline-selection-border') || 'rgba(124, 108, 222, 0.6)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(a + 0.5, area.top + 0.5, b - a - 1, area.bottom - area.top - 1);
+            ctx.restore();
+        }
+    },
+
+    // Wire drag-to-select time brushing onto a timechart. On release, maps the
+    // pixel range to bucket indices, resolves their timestamps, and invokes
+    // onBrush(startISO, endISO) with an end that spans the full last bucket.
+    _attachTimeBrush(chart, canvas, rawLabels, onBrush) {
+        const times = rawLabels.map(s => {
+            const d = new Date(String(s).replace(' ', 'T'));
+            return isNaN(d.getTime()) ? null : d.getTime();
+        });
+        if (times.length < 2 || times.some(t => t === null)) return;
+
+        // Median gap gives the bucket width, used to make the end inclusive.
+        const diffs = [];
+        for (let i = 1; i < times.length; i++) diffs.push(times[i] - times[i - 1]);
+        diffs.sort((a, b) => a - b);
+        const bucketMs = diffs[Math.floor(diffs.length / 2)] || 0;
+
+        canvas.style.cursor = 'crosshair';
+        const pxOf = e => e.clientX - canvas.getBoundingClientRect().left;
+        let dragging = false;
+
+        const onMove = e => {
+            if (!dragging) return;
+            const area = chart.chartArea;
+            chart.$brush.x1 = Math.max(area.left, Math.min(area.right, pxOf(e)));
+            chart.draw();
+        };
+        const onUp = () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            if (!dragging) return;
+            dragging = false;
+            const st = chart.$brush;
+            chart.$brush = null;
+            chart.draw();
+            if (!st || Math.abs(st.x1 - st.x0) < 5) return; // ignore clicks/tiny drags
+
+            const xScale = chart.scales.x;
+            const clamp = i => Math.max(0, Math.min(times.length - 1, Math.round(i)));
+            let i0 = clamp(xScale.getValueForPixel(Math.min(st.x0, st.x1)));
+            let i1 = clamp(xScale.getValueForPixel(Math.max(st.x0, st.x1)));
+            if (i1 < i0) { const t = i0; i0 = i1; i1 = t; }
+
+            const startMs = times[i0];
+            const span = bucketMs || (i1 < times.length - 1 ? times[i1 + 1] - times[i1] : 0);
+            const endMs = times[i1] + span;
+            onBrush(new Date(startMs).toISOString(), new Date(endMs).toISOString());
+        };
+        canvas.addEventListener('mousedown', e => {
+            if (e.button !== 0) return;
+            const x = pxOf(e), area = chart.chartArea;
+            if (x < area.left || x > area.right) return; // only start inside the plot
+            dragging = true;
+            chart.$brush = { x0: x, x1: x };
+            e.preventDefault();
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+        });
     },
 
     // ---- Histogram ----

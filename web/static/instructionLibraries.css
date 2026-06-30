@@ -808,9 +808,6 @@
     background: color-mix(in srgb, var(--accent-primary) 16%, transparent);
     color: var(--text-primary);
 }
-.il-tree-page.is-active .il-page-glyph { color: var(--accent-primary); }
-.il-page-glyph { color: var(--text-muted); flex-shrink: 0; }
-
 .il-tree-page-name {
     flex: 1;
     font-size: 0.82rem;

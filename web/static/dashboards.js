@@ -262,6 +262,7 @@ const Dashboards = {
 
             this.renderVariablesBar();
             this.renderDashboardGrid();
+            this._resolveDrilldown();
             this.autoExecuteAllWidgets();
             this.startPresenceTracking();
         } catch (err) {
@@ -423,6 +424,10 @@ const Dashboards = {
 
     onRemoteWidgetResultsUpdated(data) {
         if (!this.currentDashboard) return;
+        // During a private drilldown, ignore broadcast shared results so they
+        // don't clobber this viewer's filtered view. Exiting re-runs the shared
+        // queries, so the cache refreshes then.
+        if (this._drilldown) return;
         const widget = this.currentDashboard.widgets.find(w => w.id === data.id);
         if (!widget) return;
 
@@ -550,6 +555,7 @@ const Dashboards = {
                         <div class="widget-kebab-menu" id="widget-kebab-menu-${widget.id}">
                             <button onclick="Dashboards.showInlineWidgetEdit('${widget.id}')">Edit</button>
                             <button onclick="Dashboards.openFormatPanel('${widget.id}')">Formatting</button>
+                            <button onclick="Dashboards.openPivotConfig('${widget.id}')">Pivots</button>
                             <div class="kebab-divider"></div>
                             <button class="kebab-danger" onclick="Dashboards.deleteWidget('${widget.id}')">Delete</button>
                         </div>
@@ -603,10 +609,21 @@ const Dashboards = {
             // time range and variables. The backend persists the results as the
             // authoritative cache and pushes them to other viewers over SSE; the
             // direct response lets this client render immediately.
+            // In a pivot drilldown the run is a private, transient view: send the
+            // override variables/time so the server executes (but does not persist
+            // or broadcast) a filtered result for this viewer only.
+            const dd = this._drilldown;
+            const body = dd ? JSON.stringify({
+                preview: true,
+                variables: dd.vars || [],
+                time_range_start: dd.start,
+                time_range_end: dd.end
+            }) : undefined;
             const response = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets/${widgetId}/execute`, {
                 method: 'POST',
                 headers: this.sseHeaders(),
-                credentials: 'include'
+                credentials: 'include',
+                body
             });
             const data = await response.json();
 
@@ -647,10 +664,10 @@ const Dashboards = {
         const widgetConfig = widget ? this.parseChartConfig(widget.chart_config) : {};
 
         if (chartType !== 'table' && results.length > 0) {
-            const chartHtml = this.renderQueryChart(resultData, widgetConfig);
-            contentEl.innerHTML = chartHtml || this.renderResultsTable(results, resultData, widgetConfig);
+            const chartHtml = this.renderQueryChart(resultData, widgetConfig, widgetId);
+            contentEl.innerHTML = chartHtml || this.renderResultsTable(results, resultData, widgetConfig, widgetId);
         } else {
-            contentEl.innerHTML = this.renderResultsTable(results, resultData, widgetConfig);
+            contentEl.innerHTML = this.renderResultsTable(results, resultData, widgetConfig, widgetId);
         }
     },
 
@@ -662,7 +679,7 @@ const Dashboards = {
         return config;
     },
 
-    renderQueryChart(results, widgetConfig) {
+    renderQueryChart(results, widgetConfig, widgetId) {
         const chartType = results.chart_type || 'table';
         const chartId = `dchart-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 
@@ -737,7 +754,7 @@ const Dashboards = {
         `;
 
         setTimeout(() => {
-            this.renderChartOnCanvas(chartId, results, widgetConfig);
+            this.renderChartOnCanvas(chartId, results, widgetConfig, widgetId);
         }, 300);
 
         return chartHtml;
@@ -750,20 +767,55 @@ const Dashboards = {
         return Object.assign({}, results.chart_config || {}, widgetConfig || {});
     },
 
-    renderChartOnCanvas(chartId, results, widgetConfig) {
+    renderChartOnCanvas(chartId, results, widgetConfig, widgetId) {
         const canvas = document.getElementById(chartId);
         if (!canvas) return;
 
+        const opts = {
+            data: results.results,
+            fields: results.field_order,
+            config: this.mergeChartConfig(results, widgetConfig),
+            maintainAspectRatio: false,
+            height: '100%'
+        };
+        // Time brushing: drag-select a span on a timechart to zoom the whole
+        // dashboard to that custom range.
+        if (results.chart_type === 'timechart') {
+            opts.onBrush = (startISO, endISO) => this.applyBrushTimeRange(startISO, endISO);
+        }
+        // Pivot drilldown: click a segment/point to pass its row to another
+        // dashboard or the search page.
+        if (this.widgetHasPivots(widgetId)) {
+            opts.onDataClick = (ctx, ev) => this.onWidgetDataClick(widgetId, ctx, ev);
+        }
+
         try {
-            BifractCharts.renderOnCanvas(canvas, results.chart_type, {
-                data: results.results,
-                fields: results.field_order,
-                config: this.mergeChartConfig(results, widgetConfig),
-                maintainAspectRatio: false,
-                height: '100%'
-            });
+            BifractCharts.renderOnCanvas(canvas, results.chart_type, opts);
         } catch (err) {
             console.error('[Dashboards] Chart render error:', err);
+        }
+    },
+
+    // Apply a brushed time span as the dashboard's custom range and refresh all
+    // widgets. Mirrors saveTimeRange but for an explicit start/end.
+    async applyBrushTimeRange(startISO, endISO) {
+        if (!this.currentDashboard) return;
+        try {
+            const resp = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ time_range_type: 'custom', time_range_start: startISO, time_range_end: endISO })
+            });
+            if (!resp.ok) throw new Error('Failed to save time range');
+            this.currentDashboard.time_range_type = 'custom';
+            this.currentDashboard.time_range_start = startISO;
+            this.currentDashboard.time_range_end = endISO;
+            this.autoExecuteAllWidgets();
+            this.showSuccess(`Zoomed to ${this.formatDate(startISO)} - ${this.formatDate(endISO)}`);
+        } catch (err) {
+            console.error('[Dashboards] Failed to apply brushed time range:', err);
+            this.showError('Failed to apply time selection');
         }
     },
 
@@ -781,7 +833,7 @@ const Dashboards = {
         return BifractCharts.formatSingleValue(num);
     },
 
-    renderResultsTable(results, resultMetadata, widgetConfig) {
+    renderResultsTable(results, resultMetadata, widgetConfig, widgetId) {
         if (!results || results.length === 0) {
             return '<div style="padding:20px;text-align:center;color:var(--text-muted);">No results</div>';
         }
@@ -793,6 +845,7 @@ const Dashboards = {
             : Object.keys(results[0]).filter(h => !systemFields.includes(h));
 
         const rules = (widgetConfig && widgetConfig.row_coloring_rules) || [];
+        const pivotable = this.widgetHasPivots(widgetId);
 
         // Shared core renderer: smart sizing + resize/autofit (global delegation),
         // with dashboard row/cell coloring via hooks. 'dash:' persistence
@@ -802,10 +855,27 @@ const Dashboards = {
             sizingKey: { fractalId: 'dash:' + fractalId, sig: ColumnSizing.signature(headers) },
             features: { resize: true, reorder: false, sort: false },
             maxRows: 100,
+            rowClass: pivotable ? () => 'pivotable' : undefined,
             rowStyle: (row) => this.getRowHighlightStyle(row, rules),
             cellStyle: (field, row) => this.getCellHighlightStyle(row, field, rules),
+            onRowClick: pivotable ? (row, index, rowEl, e) => {
+                const td = e.target.closest('td');
+                if (!td) return;
+                const cellIndex = Array.prototype.indexOf.call(rowEl.children, td);
+                const field = headers[cellIndex];
+                if (!field) return;
+                this.onWidgetDataClick(widgetId, { row, field, value: row[field], series: null }, e);
+            } : undefined,
             truncatedNote: '<div style="padding:8px;text-align:center;color:var(--text-muted);font-size:0.75rem;">Showing first 100 rows</div>',
         });
+        // onRowClick is wired in built.mount(); dashboards otherwise render from the
+        // html string alone, so mount only when a pivot needs the listener.
+        if (pivotable) {
+            requestAnimationFrame(() => {
+                const el = document.getElementById(`wc-${widgetId}`);
+                if (el) built.mount(el);
+            });
+        }
         // No extra scroll wrapper: .widget-content already scrolls (and is the
         // height-constrained sticky-header ancestor); wrapping here would force
         // overflow-y:auto and break the sticky thead.
@@ -1472,6 +1542,7 @@ const Dashboards = {
                     <div class="form-group">
                         <label>Time Range</label>
                         <select id="dtrSelect" class="form-input">
+                            ${this.currentDashboard.time_range_type === 'custom' ? '<option value="custom" selected disabled>Custom (brushed range)</option>' : ''}
                             <option value="last1h" ${this.currentDashboard.time_range_type === 'last1h' ? 'selected' : ''}>Last 1 Hour</option>
                             <option value="last24h" ${this.currentDashboard.time_range_type === 'last24h' ? 'selected' : ''}>Last 24 Hours</option>
                             <option value="last7d" ${this.currentDashboard.time_range_type === 'last7d' ? 'selected' : ''}>Last 7 Days</option>
@@ -1519,7 +1590,7 @@ const Dashboards = {
     async saveTimeRange() {
         if (!this.currentDashboard) return;
         const val = document.getElementById('dtrSelect')?.value;
-        if (!val) return;
+        if (!val || val === 'custom') return;
 
         try {
             await fetch(`/api/v1/dashboards/${this.currentDashboard.id}`, {
@@ -1595,6 +1666,111 @@ const Dashboards = {
             console.error('[Dashboards] Failed to save formatting:', err);
             this.showError('Failed to save formatting');
         }
+    },
+
+    // =====================
+    // Pivots / Drilldown
+    // =====================
+
+    getWidget(widgetId) {
+        return (this.currentDashboard && this.currentDashboard.widgets)
+            ? this.currentDashboard.widgets.find(w => w.id === widgetId) : null;
+    },
+
+    widgetHasPivots(widgetId) {
+        if (!window.Pivots) return false;
+        const w = this.getWidget(widgetId);
+        return !!(w && Pivots.getPivots(w).length);
+    },
+
+    openPivotConfig(widgetId) {
+        document.querySelectorAll('.widget-kebab-menu.open').forEach(m => m.classList.remove('open'));
+        if (window.Pivots) Pivots.openConfig(widgetId);
+    },
+
+    // A data point was clicked on a pivot-enabled widget: route to the pivot
+    // runtime (a single pivot fires immediately; multiple show a chooser menu).
+    onWidgetDataClick(widgetId, ctx, event) {
+        const widget = this.getWidget(widgetId);
+        if (!widget || !window.Pivots) return;
+        const pivots = Pivots.getPivots(widget);
+        if (!pivots.length) return;
+        Pivots.handleDataClick(widget, pivots, ctx, event);
+    },
+
+    // Enter a transient drilldown on a (possibly different) dashboard. Same-board
+    // drilldowns re-run in place; cross-board ones stash the context and open the
+    // target, where _resolveDrilldown picks it up after load.
+    enterDrilldown(targetId, dd) {
+        if (targetId && this.currentDashboard && targetId !== this.currentDashboard.id) {
+            this._pendingDrilldown = dd;
+            this.openDashboard(targetId);
+            return;
+        }
+        this._drilldown = dd;
+        this.renderDrilldownBanner();
+        this.autoExecuteAllWidgets();
+    },
+
+    exitDrilldown() {
+        if (!this._drilldown) return;
+        this._drilldown = null;
+        this.renderDrilldownBanner();
+        this.autoExecuteAllWidgets();
+    },
+
+    // Resolve a drilldown context on dashboard open: an in-app pending context
+    // wins; otherwise a ?pv= URL param (new-tab / shared drilldown link).
+    _resolveDrilldown() {
+        let dd = this._pendingDrilldown || null;
+        this._pendingDrilldown = null;
+        if (!dd) dd = this._readDrilldownFromUrl();
+        this._drilldown = dd;
+        this.renderDrilldownBanner();
+    },
+
+    _readDrilldownFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const raw = params.get('pv');
+        if (!raw) return null;
+        // Consume the param so a refresh or re-share doesn't silently re-filter.
+        params.delete('pv');
+        const qs = params.toString();
+        window.history.replaceState({}, document.title,
+            window.location.pathname + (qs ? '?' + qs : '') + window.location.hash);
+        try {
+            const dd = JSON.parse(decodeURIComponent(atob(raw)));
+            return (dd && Array.isArray(dd.vars)) ? dd : null;
+        } catch (e) {
+            console.warn('[Dashboards] Invalid drilldown param:', e);
+            return null;
+        }
+    },
+
+    renderDrilldownBanner() {
+        const editor = document.getElementById('dashboardEditor');
+        let banner = document.getElementById('dashboardDrilldownBanner');
+        if (!this._drilldown) {
+            if (banner) banner.remove();
+            return;
+        }
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'dashboardDrilldownBanner';
+            banner.className = 'drilldown-banner';
+            const grid = document.getElementById('dashboardGrid');
+            if (grid && grid.parentNode) grid.parentNode.insertBefore(banner, grid);
+            else if (editor) editor.appendChild(banner);
+        }
+        const vars = this._drilldown.vars || [];
+        const summary = vars.length
+            ? vars.map(v => `${Utils.escapeHtml(v.name)} = ${Utils.escapeHtml(String(v.value))}`).join(', ')
+            : 'filtered view';
+        banner.innerHTML = `
+            <span class="drilldown-icon">&#x2737;</span>
+            <span class="drilldown-text">Drilldown: ${summary}</span>
+            <button class="drilldown-exit" onclick="Dashboards.exitDrilldown()">Exit drilldown</button>
+        `;
     },
 
     // =====================

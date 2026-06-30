@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
@@ -693,7 +694,30 @@ func (h *DashboardHandler) HandleExecuteWidget(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	resultJSON, chartType, err := h.executor.ExecuteWidgetByID(r.Context(), dashboardID, widgetID, r.Header.Get("X-SSE-Client-ID"))
+	// An optional body carries transient pivot-drilldown overrides. An
+	// absent/empty body keeps the default shared execution (persist + broadcast).
+	var req ExecuteWidgetRequest
+	if r.Body != nil {
+		if derr := json.NewDecoder(r.Body).Decode(&req); derr != nil && derr != io.EOF {
+			jsonError(w, "Invalid request body")
+			return
+		}
+	}
+
+	var resultJSON []byte
+	var chartType string
+	if req.Preview {
+		var start, end time.Time
+		if req.TimeRangeStart != nil {
+			start = *req.TimeRangeStart
+		}
+		if req.TimeRangeEnd != nil {
+			end = *req.TimeRangeEnd
+		}
+		resultJSON, chartType, err = h.executor.ExecuteWidgetPreviewByID(r.Context(), dashboardID, widgetID, req.Variables, start, end)
+	} else {
+		resultJSON, chartType, err = h.executor.ExecuteWidgetByID(r.Context(), dashboardID, widgetID, r.Header.Get("X-SSE-Client-ID"))
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
 		json.NewEncoder(w).Encode(ExecuteResponse{Success: false, Error: err.Error()})

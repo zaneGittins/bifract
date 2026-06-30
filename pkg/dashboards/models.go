@@ -108,6 +108,19 @@ type UpdateRefreshIntervalRequest struct {
 	RefreshInterval int `json:"refresh_interval"`
 }
 
+// ExecuteWidgetRequest carries optional transient overrides for a single widget
+// execution. When Preview is true the result is returned to the caller only: it
+// is NOT persisted as the shared cache and NOT broadcast over SSE. This backs
+// per-user pivot drilldowns, which must not mutate collaborative dashboard
+// state. Variables (when non-nil) override the dashboard's stored @variable
+// values for this run; TimeRangeStart/End (when both set) override the window.
+type ExecuteWidgetRequest struct {
+	Preview        bool            `json:"preview,omitempty"`
+	Variables      json.RawMessage `json:"variables,omitempty"`
+	TimeRangeStart *time.Time      `json:"time_range_start,omitempty"`
+	TimeRangeEnd   *time.Time      `json:"time_range_end,omitempty"`
+}
+
 // ExecuteResponse returns server-executed widget results to the requester.
 type ExecuteResponse struct {
 	Success   bool            `json:"success"`
