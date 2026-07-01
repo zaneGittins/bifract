@@ -1553,8 +1553,18 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 // The TTL defined on logs_hot is a safety net; this cleaner is the primary
 // cleanup mechanism, giving deterministic bounded retention.
 //
-// On ReplicatedMergeTree (cluster mode), DROP PARTITION replicates
-// automatically via ZooKeeper. InjectOnCluster is used for DDL consistency.
+// On a cluster, each shard is cleaned by opening a direct connection to that
+// shard and running DROP PARTITION locally. ON CLUSTER is deliberately avoided:
+// it routes DDL through Keeper's global distributed task queue, which is
+// sequential. If any slow DDL (e.g. MODIFY COLUMN from ReconcileSchemaFields
+// on startup) clogs that queue, every subsequent ON CLUSTER DROP PARTITION
+// blocks behind it, times out, and gets re-queued — compounding into a large
+// backlog that saturates ClickHouse CPU.
+//
+// Note: DROP PARTITION on ReplicatedMergeTree replicates only within a shard
+// (to replicas of the same shard), not across shards. The per-shard loop
+// ensures all shards are cleaned regardless of replication topology.
+//
 // Multiple pods running the cleaner simultaneously are safe — dropping an
 // already-dropped partition is a no-op in ClickHouse.
 //
@@ -1574,16 +1584,36 @@ func (c *ClickHouseClient) StartHotTableCleaner(ctx context.Context) {
 	}()
 }
 
-// dropExpiredHotPartitions queries system.parts for logs_hot partitions whose
-// max_time is older than 2 hours and drops them. Safe to call concurrently.
+// dropExpiredHotPartitions cleans expired logs_hot partitions on every shard.
+// In cluster mode it opens a short-lived direct connection to each shard address
+// and runs DROP PARTITION locally, bypassing the distributed DDL task queue.
 func (c *ClickHouseClient) dropExpiredHotPartitions(ctx context.Context) {
-	rows, err := c.conn.Query(ctx,
+	if c.Cluster == "" {
+		dropHotPartitionsOnConn(ctx, c.conn, "local")
+		return
+	}
+	pool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+	for _, addr := range c.addrs {
+		conn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, pool)
+		if err != nil {
+			log.Printf("[HotTableCleaner] connect to %s: %v", addr, err)
+			continue
+		}
+		dropHotPartitionsOnConn(ctx, conn, addr)
+		conn.Close()
+	}
+}
+
+// dropHotPartitionsOnConn queries system.parts on conn and drops any logs_hot
+// partitions older than 2 hours. label is used only for log messages.
+func dropHotPartitionsOnConn(ctx context.Context, conn driver.Conn, label string) {
+	rows, err := conn.Query(ctx,
 		"SELECT DISTINCT partition FROM system.parts"+
 			" WHERE database = currentDatabase() AND table = 'logs_hot'"+
 			" AND active = 1 AND max_time < now() - INTERVAL 2 HOUR",
 	)
 	if err != nil {
-		log.Printf("[HotTableCleaner] query partitions: %v", err)
+		log.Printf("[HotTableCleaner] query partitions on %s: %v", label, err)
 		return
 	}
 	defer rows.Close()
@@ -1591,21 +1621,18 @@ func (c *ClickHouseClient) dropExpiredHotPartitions(ctx context.Context) {
 	for rows.Next() {
 		var p string
 		if err := rows.Scan(&p); err != nil {
-			log.Printf("[HotTableCleaner] scan partition: %v", err)
+			log.Printf("[HotTableCleaner] scan partition on %s: %v", label, err)
 			return
 		}
 		partitions = append(partitions, p)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("[HotTableCleaner] rows error: %v", err)
+		log.Printf("[HotTableCleaner] rows error on %s: %v", label, err)
 		return
 	}
 	for _, partition := range partitions {
-		dropSQL := c.InjectOnCluster(
-			fmt.Sprintf("ALTER TABLE logs_hot DROP PARTITION '%s'", partition),
-		)
-		if err := c.conn.Exec(ctx, dropSQL); err != nil {
-			log.Printf("[HotTableCleaner] drop partition %s: %v", partition, err)
+		if err := conn.Exec(ctx, fmt.Sprintf("ALTER TABLE logs_hot DROP PARTITION '%s'", partition)); err != nil {
+			log.Printf("[HotTableCleaner] drop partition %s on %s: %v", partition, label, err)
 		}
 	}
 }
