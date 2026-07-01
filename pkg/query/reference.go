@@ -917,6 +917,27 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 			{
+				Name:        "mesh",
+				Category:    "Visualization",
+				Description: "Renders results as a force-directed network mesh (Arkime-style connections) for src/dst relationships. Undirected and weighted by default. Expects a pre-aggregated edge list, typically from groupby(src, dst), whose auto count column is _count; weight= and size= default to _count.",
+				Syntax:      "| mesh(src=field, dst=field, weight=field, size=field, color=field, labels=field1,field2, directed=bool, limit=N)",
+				Parameters: []Param{
+					{Name: "src", Type: "string", Required: true, Description: "Field for source nodes"},
+					{Name: "dst", Type: "string", Required: true, Description: "Field for destination nodes"},
+					{Name: "weight", Type: "string", Required: false, Description: "Field controlling edge thickness (default: _count)"},
+					{Name: "size", Type: "string", Required: false, Description: "Field summed per node to control node size (default: _count; falls back to node degree)"},
+					{Name: "color", Type: "string", Required: false, Description: "Coloring mode. Default 'auto': color by IP subnet when nodes look like IPs, else by degree. Options: 'subnet' (or 'subnet/16' for a wider block), 'degree' (connection-count intensity), 'role' (src/dst two-tone), or a field name (top-8 palette)"},
+					{Name: "labels", Type: "string", Required: false, Description: "Comma-separated fields to display as node labels"},
+					{Name: "directed", Type: "boolean", Required: false, Description: "Show src to dst arrows (default: false, undirected)"},
+					{Name: "limit", Type: "number", Required: false, Description: "Maximum edges to render (default: 100, max: 500)"},
+				},
+				Examples: []string{
+					"| groupby(src_ip, dst_ip) | mesh(src=src_ip, dst=dst_ip)",
+					"| groupby(src_ip, dst_ip) | mesh(src=src_ip, dst=dst_ip, directed=true)",
+					"| groupby(src_ip, dst_ip) sum(bytes) | mesh(src=src_ip, dst=dst_ip, weight=_sum, color=role)",
+				},
+			},
+			{
 				Name:        "bfs",
 				Category:    "Traversal",
 				Description: "Breadth-first search traversal of parent-child relationships in log data. Starts from a specific node and discovers all connected nodes level by level. Always returns child and parent fields. Use include= to add extra fields. Pairs well with graph() for visualization.",

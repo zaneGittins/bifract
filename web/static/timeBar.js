@@ -21,32 +21,6 @@ const TimeBar = {
         }
     },
 
-    addRelativeTimeTooltips() {
-        const timestampCells = document.querySelectorAll('.timestamp-cell');
-        timestampCells.forEach(cell => {
-            const timestamp = cell.textContent.trim();
-            if (timestamp && timestamp !== '-') {
-                const relativeTime = Utils.getRelativeTime(timestamp);
-                cell.title = relativeTime;
-
-                // Add hover tooltip
-                cell.addEventListener('mouseenter', function(e) {
-                    const tooltip = document.createElement('div');
-                    tooltip.className = 'timestamp-tooltip';
-                    tooltip.textContent = relativeTime;
-                    this.appendChild(tooltip);
-                });
-
-                cell.addEventListener('mouseleave', function() {
-                    const tooltip = this.querySelector('.timestamp-tooltip');
-                    if (tooltip) {
-                        tooltip.remove();
-                    }
-                });
-            }
-        });
-    },
-
     destroy() {
         if (this.intervalId) {
             clearInterval(this.intervalId);

@@ -29,20 +29,53 @@ window.Pivots = {
     // Runtime: click -> chooser -> navigate
     // ====================================================
 
+    // Chart segment/point click: fire a single pivot, or choose among several.
     handleDataClick(widget, pivots, ctx, event) {
         if (pivots.length === 1) { this.executePivot(pivots[0], ctx); return; }
-        this._showMenu(pivots, ctx, event);
+        this._showMenu(this._pivotItems(pivots, ctx), event, 'Pivot to');
     },
 
-    _showMenu(pivots, ctx, event) {
+    // Table right-click: a context menu with copy actions plus any pivots. Cursor
+    // anchored and viewport-clamped, so it is never off-screen regardless of how
+    // wide the table is (unlike a trailing action column).
+    showContextMenu(widget, ctx, event) {
+        const pivots = this.getPivots(widget);
+        const items = [];
+        if (ctx.value != null && String(ctx.value) !== '') {
+            items.push({ label: 'Copy value', action: () => this._copy(String(ctx.value)) });
+        }
+        if (ctx.row) {
+            items.push({ label: 'Copy row (JSON)', action: () => this._copy(JSON.stringify(ctx.row)) });
+        }
+        const pivotItems = this._pivotItems(pivots, ctx);
+        if (pivotItems.length) {
+            if (items.length) items.push({ separator: true });
+            pivotItems.forEach(it => items.push(it));
+        }
+        if (!items.length) return;
+        this._showMenu(items, event, 'Actions');
+    },
+
+    _pivotItems(pivots, ctx) {
+        return pivots.map(p => ({
+            label: p.label || this._defaultLabel(p),
+            action: () => this.executePivot(p, ctx),
+        }));
+    },
+
+    // Generic cursor-anchored menu. items: [{label, action} | {separator:true}].
+    _showMenu(items, event, header) {
         this._closeMenu();
         const menu = document.createElement('div');
         menu.className = 'pivot-menu';
         menu.id = 'pivotMenu';
-        menu.innerHTML = `<div class="pivot-menu-header">Pivot to</div>` +
-            pivots.map((p, i) =>
-                `<button class="pivot-menu-item" data-i="${i}">${Utils.escapeHtml(p.label || this._defaultLabel(p))}</button>`
-            ).join('');
+        let html = header ? `<div class="pivot-menu-header">${Utils.escapeHtml(header)}</div>` : '';
+        items.forEach((it, i) => {
+            html += it.separator
+                ? '<div class="pivot-menu-sep"></div>'
+                : `<button class="pivot-menu-item" data-i="${i}">${Utils.escapeHtml(it.label)}</button>`;
+        });
+        menu.innerHTML = html;
         document.body.appendChild(menu);
 
         // Position near the cursor, clamped to the viewport.
@@ -54,9 +87,9 @@ window.Pivots = {
 
         menu.querySelectorAll('.pivot-menu-item').forEach(btn => {
             btn.addEventListener('click', () => {
-                const p = pivots[parseInt(btn.dataset.i, 10)];
+                const it = items[parseInt(btn.dataset.i, 10)];
                 this._closeMenu();
-                if (p) this.executePivot(p, ctx);
+                if (it && it.action) it.action();
             });
         });
 
@@ -67,6 +100,30 @@ window.Pivots = {
             document.addEventListener('mousedown', this._menuCloser, true);
             document.addEventListener('keydown', this._menuKey, true);
         }, 0);
+    },
+
+    // Copy to clipboard with a fallback for non-secure contexts.
+    _copy(text) {
+        const done = () => { if (window.Dashboards && Dashboards.showSuccess) Dashboards.showSuccess('Copied'); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => this._copyFallback(text, done));
+        } else {
+            this._copyFallback(text, done);
+        }
+    },
+
+    _copyFallback(text, done) {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            done();
+        } catch (e) { /* clipboard unavailable */ }
     },
 
     _closeMenu() {

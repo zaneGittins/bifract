@@ -45,6 +45,7 @@ const Dashboards = {
 
     onFractalChange() {
         this.currentDashboard = null;
+        this._drilldown = null;
         this.stopDragResize();
         this.currentPage = 0;
         this.searchQuery = '';
@@ -143,6 +144,7 @@ const Dashboards = {
 
     showDashboardListing() {
         this.stopPresenceTracking();
+        this._drilldown = null;
         const listing = document.getElementById('dashboardListing');
         const editor = document.getElementById('dashboardEditor');
         if (listing) listing.style.display = 'block';
@@ -709,6 +711,25 @@ const Dashboards = {
             return graphHtml;
         }
 
+        if (chartType === 'mesh') {
+            const meshId = `dmesh-${chartId}`;
+            const meshHtml = `
+                <div class="chart-container" style="margin:0;padding:6px;background:var(--bg-secondary);border-radius:4px;height:calc(100% - 12px);box-sizing:border-box;position:relative;">
+                    <div id="${meshId}" style="width:100%;height:100%;"></div>
+                </div>
+            `;
+            setTimeout(() => {
+                const el = document.getElementById(meshId);
+                if (el) BifractCharts.renderMeshSimple(el, {
+                    data: results.results || [],
+                    fields: results.field_order,
+                    config: results.chart_config || {},
+                    onDataClick: (ctx, ev) => this.onWidgetDataClick(widgetId, ctx, ev)
+                });
+            }, 300);
+            return meshHtml;
+        }
+
         if (chartType === 'heatmap') {
             const heatmapId = `dheatmap-${chartId}`;
             const heatmapHtml = `
@@ -858,13 +879,12 @@ const Dashboards = {
             rowClass: pivotable ? () => 'pivotable' : undefined,
             rowStyle: (row) => this.getRowHighlightStyle(row, rules),
             cellStyle: (field, row) => this.getCellHighlightStyle(row, field, rules),
-            onRowClick: pivotable ? (row, index, rowEl, e) => {
-                const td = e.target.closest('td');
-                if (!td) return;
-                const cellIndex = Array.prototype.indexOf.call(rowEl.children, td);
-                const field = headers[cellIndex];
-                if (!field) return;
-                this.onWidgetDataClick(widgetId, { row, field, value: row[field], series: null }, e);
+            // Right-click a cell opens a context menu (copy value/row + pivots),
+            // cursor-anchored so it is never off-screen for wide/fit-to-data tables.
+            // Left-click stays native, so selecting and copying cell text still works.
+            onCellContextMenu: pivotable ? (row, field, value, e) => {
+                const widget = this.getWidget(widgetId);
+                if (widget && window.Pivots) Pivots.showContextMenu(widget, { row, field, value, series: null }, e);
             } : undefined,
             truncatedNote: '<div style="padding:8px;text-align:center;color:var(--text-muted);font-size:0.75rem;">Showing first 100 rows</div>',
         });
@@ -1707,6 +1727,7 @@ const Dashboards = {
             this.openDashboard(targetId);
             return;
         }
+        dd.dashboardId = this.currentDashboard && this.currentDashboard.id;
         this._drilldown = dd;
         this.renderDrilldownBanner();
         this.autoExecuteAllWidgets();
@@ -1721,11 +1742,25 @@ const Dashboards = {
 
     // Resolve a drilldown context on dashboard open: an in-app pending context
     // wins; otherwise a ?pv= URL param (new-tab / shared drilldown link).
+    //
+    // The overlay is a per-view state, not a one-shot: the ?pv= param is consumed
+    // on first read, but opening the same dashboard is re-entrant (routing,
+    // presence/SSE, variable-bar reconcile all re-execute widgets). So the overlay
+    // is bound to its target dashboard id and preserved across re-entrant opens;
+    // it is only dropped when a fresh drilldown arrives, the user exits, or a
+    // DIFFERENT dashboard is opened. Without this, a re-entrant open would null the
+    // overlay and the follow-up executes would revert widgets to the stored defaults.
     _resolveDrilldown() {
         let dd = this._pendingDrilldown || null;
         this._pendingDrilldown = null;
         if (!dd) dd = this._readDrilldownFromUrl();
-        this._drilldown = dd;
+        const currentId = this.currentDashboard && this.currentDashboard.id;
+        if (dd) {
+            dd.dashboardId = currentId;
+            this._drilldown = dd;
+        } else if (!(this._drilldown && this._drilldown.dashboardId === currentId)) {
+            this._drilldown = null;
+        }
         this.renderDrilldownBanner();
     },
 
@@ -1747,30 +1782,20 @@ const Dashboards = {
         }
     },
 
+    // Reflect the active drilldown directly on the variable pills (the pill shows
+    // the drilldown value, styled distinctly, with an (x) to exit). No banner: the
+    // overlay is display-only and never rewrites the dashboard's stored defaults.
     renderDrilldownBanner() {
-        const editor = document.getElementById('dashboardEditor');
-        let banner = document.getElementById('dashboardDrilldownBanner');
-        if (!this._drilldown) {
-            if (banner) banner.remove();
-            return;
-        }
-        if (!banner) {
-            banner = document.createElement('div');
-            banner.id = 'dashboardDrilldownBanner';
-            banner.className = 'drilldown-banner';
-            const grid = document.getElementById('dashboardGrid');
-            if (grid && grid.parentNode) grid.parentNode.insertBefore(banner, grid);
-            else if (editor) editor.appendChild(banner);
-        }
-        const vars = this._drilldown.vars || [];
-        const summary = vars.length
-            ? vars.map(v => `${Utils.escapeHtml(v.name)} = ${Utils.escapeHtml(String(v.value))}`).join(', ')
-            : 'filtered view';
-        banner.innerHTML = `
-            <span class="drilldown-icon">&#x2737;</span>
-            <span class="drilldown-text">Drilldown: ${summary}</span>
-            <button class="drilldown-exit" onclick="Dashboards.exitDrilldown()">Exit drilldown</button>
-        `;
+        const mgr = this.ensureVarManager();
+        if (!mgr) return;
+        // Legacy: remove any banner left over from an older render.
+        const stale = document.getElementById('dashboardDrilldownBanner');
+        if (stale) stale.remove();
+        const vars = (this._drilldown && this._drilldown.vars) || [];
+        if (!vars.length) { mgr.clearDisplayOverlay(); return; }
+        const overlay = new Map();
+        vars.forEach(v => { if (v && v.name) overlay.set(v.name, v.value == null ? '' : String(v.value)); });
+        mgr.setDisplayOverlay(overlay);
     },
 
     // =====================
@@ -1896,6 +1921,8 @@ const Dashboards = {
                 await this.saveVariables();
                 this.autoExecuteAllWidgets();
             },
+            // Clicking the (x) on a drilldown pill exits the drilldown.
+            onOverlayClear: () => this.exitDrilldown(),
         });
         return this.varManager;
     },

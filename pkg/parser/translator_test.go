@@ -1590,6 +1590,81 @@ func TestBFSFunction(t *testing.T) {
 	})
 }
 
+func TestMeshFunction(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:   1000,
+		FractalID: "test-fractal",
+	}
+
+	t.Run("minimal mesh defaults weight and size to _count", func(t *testing.T) {
+		pipeline, err := ParseQuery(`* | groupby(src_ip, dst_ip) | mesh(src=src_ip, dst=dst_ip)`)
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if result.ChartType != "mesh" {
+			t.Errorf("Expected ChartType=mesh, got: %s", result.ChartType)
+		}
+		if result.ChartConfig["srcField"] != "src_ip" {
+			t.Errorf("Expected srcField=src_ip, got: %v", result.ChartConfig["srcField"])
+		}
+		if result.ChartConfig["dstField"] != "dst_ip" {
+			t.Errorf("Expected dstField=dst_ip, got: %v", result.ChartConfig["dstField"])
+		}
+		if result.ChartConfig["weightField"] != "_count" {
+			t.Errorf("Expected weightField default _count, got: %v", result.ChartConfig["weightField"])
+		}
+		if result.ChartConfig["sizeField"] != "_count" {
+			t.Errorf("Expected sizeField default _count, got: %v", result.ChartConfig["sizeField"])
+		}
+		if result.ChartConfig["directed"] != false {
+			t.Errorf("Expected directed default false, got: %v", result.ChartConfig["directed"])
+		}
+	})
+
+	t.Run("full args: directed, weight, labels, limit cap", func(t *testing.T) {
+		pipeline, err := ParseQuery(`* | groupby(src_ip, dst_ip) | mesh(src=src_ip, dst=dst_ip, weight=_count, size=_count, color=role, directed=true, labels=[hostname,asn], limit=9000)`)
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if result.ChartType != "mesh" {
+			t.Errorf("Expected ChartType=mesh, got: %s", result.ChartType)
+		}
+		if result.ChartConfig["directed"] != true {
+			t.Errorf("Expected directed=true, got: %v", result.ChartConfig["directed"])
+		}
+		if result.ChartConfig["color"] != "role" {
+			t.Errorf("Expected color=role, got: %v", result.ChartConfig["color"])
+		}
+		if result.ChartConfig["limit"] != 500 {
+			t.Errorf("Expected limit capped at 500, got: %v", result.ChartConfig["limit"])
+		}
+		labels, ok := result.ChartConfig["labels"].([]string)
+		if !ok || len(labels) != 2 || labels[0] != "hostname" || labels[1] != "asn" {
+			t.Errorf("Expected labels=[hostname asn], got: %v", result.ChartConfig["labels"])
+		}
+	})
+
+	t.Run("missing src/dst errors", func(t *testing.T) {
+		pipeline, err := ParseQuery(`* | groupby(src_ip, dst_ip) | mesh(src=src_ip)`)
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		if _, err := TranslateToSQLWithOrder(pipeline, opts); err == nil {
+			t.Error("Expected error when dst= is missing")
+		}
+	})
+}
+
 func TestDFSFunction(t *testing.T) {
 	opts := QueryOptions{
 		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),

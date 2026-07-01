@@ -688,7 +688,7 @@ const QueryExecutor = {
         this.sortDirection = null;
 
         const outputTypeLabels = {
-            piechart: 'Pie Chart', barchart: 'Bar Chart', graph: 'Network Graph',
+            piechart: 'Pie Chart', barchart: 'Bar Chart', graph: 'Graph', mesh: 'Mesh Network',
             singleval: 'Single Value', timechart: 'Time Chart', histogram: 'Histogram',
             heatmap: 'Heat Map', worldmap: 'World Map',
         };
@@ -1272,7 +1272,6 @@ const QueryExecutor = {
                     LogDetail.show(detailData, this.isAggregated, 'search');
                 }
             },
-            afterMount: () => { if (window.TimeBar) TimeBar.addRelativeTimeTooltips(); },
         });
 
         resultsTable.innerHTML = built.html;
@@ -1410,6 +1409,23 @@ const QueryExecutor = {
                     if (!rowEl) return;
                     const index = parseInt(rowEl.dataset.index);
                     opts.onRowClick(rows[index], index, rowEl, e);
+                });
+            }
+
+            // Right-click a cell -> caller opens a context menu (copy / interactions).
+            // Left-click stays native so text selection + copy keep working.
+            if (opts.onCellContextMenu) {
+                const tbody = table.querySelector('tbody');
+                if (tbody) tbody.addEventListener('contextmenu', (e) => {
+                    const rowEl = e.target.closest('.result-row');
+                    const td = e.target.closest('td');
+                    if (!rowEl || !td) return;
+                    const cellIndex = Array.prototype.indexOf.call(rowEl.children, td);
+                    const field = fields[cellIndex];
+                    const index = parseInt(rowEl.dataset.index);
+                    const row = rows[index];
+                    e.preventDefault();
+                    opts.onCellContextMenu(row, field, field != null ? (row ? row[field] : undefined) : undefined, e);
                 });
             }
 
@@ -2070,6 +2086,8 @@ const QueryExecutor = {
             this.renderBarChart(results);
         } else if (this.chartType === 'graph') {
             this.renderGraph(results);
+        } else if (this.chartType === 'mesh') {
+            this.renderMesh(results);
         } else if (this.chartType === 'singleval') {
             this.renderSingleVal(results);
         } else if (this.chartType === 'timechart') {
@@ -2785,6 +2803,590 @@ const QueryExecutor = {
             setTimeout(() => document.addEventListener('click', closeMenu), 0);
         });
 
+    },
+
+    // mesh() renders an undirected, weighted, bidirectional network (Arkime-style
+    // connections) with a force-directed layout. It shares the graph toolbar/detail
+    // chrome and #networkGraph container but swaps in physics and network semantics.
+    renderMesh(results) {
+        const chartCanvas = document.getElementById('resultsChart');
+        const networkDiv = document.getElementById('networkGraph');
+        if (!networkDiv) return;
+
+        if (chartCanvas) chartCanvas.style.display = 'none';
+        networkDiv.style.display = 'block';
+
+        if (this.currentChart) {
+            this.currentChart.destroy();
+            this.currentChart = null;
+        }
+
+        const cfg = this.chartConfig || {};
+        const srcField = cfg.srcField;
+        const dstField = cfg.dstField;
+        if (!srcField || !dstField) return;
+
+        const weightField = cfg.weightField || '_count';
+        const sizeField = cfg.sizeField || '_count';
+        let colorMode = cfg.color || 'auto';
+        const directed = cfg.directed === true;
+        const limit = cfg.limit || 100;
+        const cv = ThemeManager.getCSSVar;
+
+        const fields = this.fieldOrder || Object.keys(results[0] || {});
+        const specifiedLabels = cfg.labels || [];
+        const reserved = new Set([srcField, dstField, weightField, sizeField]);
+        const labelFields = specifiedLabels.length > 0
+            ? specifiedLabels
+            : fields.filter(f => !reserved.has(f));
+        const limitedResults = results.slice(0, limit);
+        const truncated = results.length > limitedResults.length;
+
+        const toNum = (v) => {
+            const n = Number(v);
+            return isFinite(n) ? n : 0;
+        };
+
+        // Build the node/edge model. Nodes are shared across src and dst (an IP
+        // that is both a source and a destination is a single node).
+        const nodeMap = new Map();   // id -> { degree, sizeSum, isSrc, isDst, details, neighbors:Map }
+        const ensureNode = (id) => {
+            let n = nodeMap.get(id);
+            if (!n) {
+                n = { degree: 0, sizeSum: 0, isSrc: false, isDst: false, details: {}, neighbors: new Map() };
+                nodeMap.set(id, n);
+            }
+            return n;
+        };
+        const edgeList = []; // { from, to, weight }
+
+        limitedResults.forEach((row) => {
+            const s = row[srcField];
+            const d = row[dstField];
+            if (s == null || s === '' || d == null || d === '') return;
+            const sId = String(s), dId = String(d);
+            const w = Math.max(toNum(row[weightField]) || 1, 0.0001);
+            const sizeVal = toNum(row[sizeField]) || 1;
+
+            const sn = ensureNode(sId); sn.isSrc = true;
+            const dn = ensureNode(dId); dn.isDst = true;
+            sn.degree++; dn.degree++;
+            sn.sizeSum += sizeVal; dn.sizeSum += sizeVal;
+            sn.neighbors.set(dId, (sn.neighbors.get(dId) || 0) + w);
+            dn.neighbors.set(sId, (dn.neighbors.get(sId) || 0) + w);
+
+            labelFields.forEach(f => {
+                if (row[f] != null && row[f] !== '') {
+                    if (sn.details[f] === undefined) sn.details[f] = row[f];
+                }
+            });
+            edgeList.push({ from: sId, to: dId, weight: w });
+        });
+
+        if (nodeMap.size === 0) return;
+
+        let maxDegree = 0;
+        nodeMap.forEach(n => { if (n.degree > maxDegree) maxDegree = n.degree; });
+
+        // Coloring. 'auto' (default) colours by subnet when node IDs look like IPs,
+        // else falls back to the degree ramp, so mesh() looks good for network AND
+        // non-network data. 'subnet' (optional /bits, e.g. subnet/16) buckets by IP
+        // CIDR block using the same tag palette + top-8 + legend + neutral overflow as
+        // graph(); 'degree' is a clean grey->amber->red intensity ramp (no rainbow);
+        // 'role' two-tones src vs dst; a field name buckets by that field's top-8.
+        // Connection count is always encoded as node size, so color stays for meaning.
+        const neutralColor = cv('--graph-node-neutral');
+        const accentColor = cv('--accent-primary');
+        const srcColor = '#3b82f6';
+        const dstColor = '#f59e0b';
+        const heatColor = MeshColor.heat;
+
+        if (colorMode === 'auto') colorMode = MeshColor.autoMode([...nodeMap.keys()]);
+        // subnet or subnet/<bits> (defaults to /24 for IPv4, /64 for IPv6).
+        const subnetMatch = /^subnet(?:[/_-]?(\d{1,3}))?$/.exec(colorMode);
+        const subnetBits = subnetMatch ? (subnetMatch[1] ? +subnetMatch[1] : 24) : null;
+        const isSubnet = subnetMatch !== null;
+        if (isSubnet) colorMode = 'subnet';
+
+        // Categorical coloring (subnet or a field): bucket every node, keep the
+        // top-8 buckets by frequency, palette them, and send the rest to neutral.
+        const isCategorical = colorMode !== 'degree' && colorMode !== 'role';
+        const catKeyOf = (id, n) => {
+            if (isSubnet) return MeshColor.subnetKey(id, subnetBits);
+            const v = n.details[colorMode];
+            return (v != null && v !== '') ? String(v).toLowerCase() : null;
+        };
+        let catColorOf = null;
+        this._meshTopKeys = [];
+        this._meshHasOverflow = false;
+        if (isCategorical) {
+            const freq = new Map();
+            nodeMap.forEach((n, id) => {
+                const k = catKeyOf(id, n);
+                if (k) freq.set(k, (freq.get(k) || 0) + 1);
+            });
+            const topKeys = [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(e => e[0]);
+            const topSet = new Set(topKeys);
+            catColorOf = (id, n) => {
+                const k = catKeyOf(id, n);
+                return (k && topSet.has(k)) ? Utils.tagColorFor(k) : neutralColor;
+            };
+            this._meshTopKeys = topKeys;
+            this._meshHasOverflow = freq.size > topKeys.length;
+        }
+
+        const nodeColor = (id, n) => {
+            if (colorMode === 'role') return n.isSrc ? srcColor : dstColor;
+            if (colorMode === 'degree') return heatColor(maxDegree > 1 ? (n.degree - 1) / (maxDegree - 1) : 0);
+            return catColorOf(id, n);
+        };
+
+        const nodes = new vis.DataSet();
+        const edges = new vis.DataSet();
+        const baseColors = new Map();
+
+        const labelFor = (id, n) => {
+            if (specifiedLabels.length > 0) {
+                const parts = specifiedLabels.map(f => n.details[f]).filter(v => v != null && v !== '');
+                if (parts.length > 0) {
+                    const joined = parts.join(' | ');
+                    return joined.length > 30 ? joined.substring(0, 30) + '…' : joined;
+                }
+            }
+            return id.length > 24 ? id.substring(0, 22) + '…' : id;
+        };
+
+        nodeMap.forEach((n, id) => {
+            const fill = nodeColor(id, n);
+            baseColors.set(id, fill);
+            const tooltipLines = Object.entries(n.details)
+                .map(([k, v]) => `<div class="graph-tooltip-row"><span class="graph-tooltip-key">${Utils.escapeHtml(k)}</span><span class="graph-tooltip-val">${Utils.escapeHtml(String(v))}</span></div>`)
+                .join('');
+            const titleEl = document.createElement('div');
+            titleEl.innerHTML = `<div class="graph-tooltip"><div class="graph-tooltip-header">${Utils.escapeHtml(id)}</div><div class="graph-tooltip-row"><span class="graph-tooltip-key">connections</span><span class="graph-tooltip-val">${n.degree}</span></div>${tooltipLines}</div>`;
+            nodes.add({
+                id,
+                label: labelFor(id, n),
+                title: titleEl,
+                value: Math.max(n.sizeSum, 1),
+                color: {
+                    background: fill,
+                    border: fill,
+                    highlight: { background: fill, border: accentColor },
+                    hover: { background: fill, border: accentColor }
+                }
+            });
+        });
+
+        edgeList.forEach((e, i) => {
+            edges.add({ id: i, from: e.from, to: e.to, value: e.weight });
+        });
+
+        const dynamicHeight = Math.min(Math.max(400, nodeMap.size * 24), 800);
+        networkDiv.style.height = dynamicHeight + 'px';
+
+        // -- Toolbar (shares .graph-toolbar styling) --
+        const graphHost = networkDiv.closest('.chart-container') || networkDiv.parentElement;
+        let graphToolbar = graphHost.querySelector('.graph-toolbar');
+        if (graphToolbar) graphToolbar.remove();
+
+        let legendHtml = '';
+        if (colorMode === 'role') {
+            legendHtml = `
+                <span class="graph-legend-item"><span class="graph-legend-dot" style="background:${srcColor}"></span>source</span>
+                <span class="graph-legend-item"><span class="graph-legend-dot" style="background:${dstColor}"></span>destination</span>`;
+        } else if (colorMode === 'degree') {
+            legendHtml = `
+                <span class="graph-legend-item"><span class="graph-legend-dot" style="background:${heatColor(0)}"></span>fewer</span>
+                <span class="graph-legend-item"><span class="graph-legend-dot" style="background:${heatColor(0.5)}"></span></span>
+                <span class="graph-legend-item"><span class="graph-legend-dot" style="background:${heatColor(1)}"></span>more connections</span>`;
+        } else {
+            const truncKey = (k) => k.length > 18 ? k.substring(0, 17) + '…' : k;
+            legendHtml = (this._meshTopKeys || []).map(k =>
+                `<span class="graph-legend-item" title="${Utils.escapeHtml(k)}"><span class="graph-legend-dot" style="background:${Utils.tagColorFor(k)}"></span>${Utils.escapeHtml(truncKey(k))}</span>`
+            ).join('');
+            if (this._meshHasOverflow) {
+                legendHtml += `<span class="graph-legend-item"><span class="graph-legend-dot" style="background:${neutralColor}"></span>other</span>`;
+            }
+        }
+
+        graphToolbar = document.createElement('div');
+        graphToolbar.className = 'graph-toolbar';
+        graphToolbar.innerHTML = `
+            <div class="graph-stats">
+                <span class="graph-stat-item"><span class="graph-stat-count" id="meshNodeCount">${nodes.length}</span> nodes</span>
+                <span class="graph-stat-separator"></span>
+                <span class="graph-stat-item"><span class="graph-stat-count" id="meshEdgeCount">${edges.length}</span> edges</span>
+                ${truncated ? '<span class="graph-stat-separator"></span><span class="graph-stat-item" title="Increase limit= to show more">truncated to ' + limit + '</span>' : ''}
+            </div>
+            <div class="graph-legend">${legendHtml}</div>
+            <div class="graph-search">
+                <input type="number" min="0" step="1" id="meshMinWeight" class="graph-search-input" style="width:110px" placeholder="min weight">
+                <input type="text" id="meshNodeSearch" class="graph-search-input" placeholder="Search nodes...">
+            </div>
+            <div class="graph-controls">
+                <button class="toolbar-icon-btn" id="meshFitBtn" title="Fit to view">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                </button>
+                <button class="toolbar-icon-btn" id="meshZoomInBtn" title="Zoom in">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
+                </button>
+                <button class="toolbar-icon-btn" id="meshZoomOutBtn" title="Zoom out">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M8 11h6"/></svg>
+                </button>
+                <span class="graph-toolbar-sep"></span>
+                <button class="toolbar-icon-btn" id="meshExportBtn" title="Export as PNG">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </button>
+            </div>
+        `;
+        let stage = graphHost.querySelector('.graph-stage');
+        if (!stage) {
+            stage = document.createElement('div');
+            stage.className = 'graph-stage';
+            graphHost.insertBefore(stage, networkDiv);
+            stage.appendChild(networkDiv);
+        }
+        stage.style.display = 'flex';
+        graphHost.insertBefore(graphToolbar, stage);
+
+        // -- Detail panel (docked flex sibling) --
+        let detailPanel = stage.querySelector('.graph-detail-panel');
+        if (detailPanel) detailPanel.remove();
+        detailPanel = document.createElement('div');
+        detailPanel.className = 'graph-detail-panel';
+        detailPanel.innerHTML = `
+            <div class="graph-detail-header">
+                <span class="graph-detail-title">Node Details</span>
+                <button class="graph-detail-close">&times;</button>
+            </div>
+            <div class="graph-detail-body"></div>
+        `;
+        stage.appendChild(detailPanel);
+
+        // -- Create the force-directed network --
+        const options = {
+            layout: { hierarchical: { enabled: false } },
+            physics: {
+                enabled: true,
+                solver: 'barnesHut',
+                // High damping + soft springs + capped velocity => smooth glide,
+                // not bouncy oscillation. minVelocity settles micro-jitter quickly.
+                barnesHut: { gravitationalConstant: -18000, centralGravity: 0.35, springLength: 200, springConstant: 0.02, damping: 0.5, avoidOverlap: 0.2 },
+                maxVelocity: 24,
+                minVelocity: 0.9,
+                timestep: 0.4,
+                stabilization: { enabled: true, iterations: 300, updateInterval: 25, fit: true }
+            },
+            interaction: {
+                dragNodes: true, dragView: true, zoomView: true, zoomSpeed: 1.0,
+                hover: true, selectConnectedEdges: true, multiselect: false,
+                keyboard: { enabled: false }, navigationButtons: false, tooltipDelay: 200,
+                hideEdgesOnDrag: false, zoomExtentOnStabilize: false
+            },
+            nodes: {
+                shape: 'dot',
+                scaling: { min: 8, max: 42, label: { enabled: false } },
+                borderWidth: 2,
+                chosen: true,
+                font: { size: 11, color: cv('--graph-label'), face: 'Inter', vadjust: -4, strokeWidth: 3, strokeColor: cv('--graph-label-stroke') }
+            },
+            edges: {
+                color: { color: cv('--graph-edge'), opacity: 0.45, highlight: accentColor, hover: cv('--graph-edge') },
+                arrows: { to: { enabled: directed, scaleFactor: 0.55, type: 'arrow' } },
+                scaling: { min: 0.8, max: 9, label: { enabled: false } },
+                smooth: { enabled: true, type: 'continuous', roundness: 0.4 },
+                chosen: true
+            },
+            configure: { enabled: false }
+        };
+
+        networkDiv.style.pointerEvents = 'auto';
+        networkDiv.style.touchAction = 'auto';
+        this.currentChart = new vis.Network(networkDiv, { nodes, edges }, options);
+
+        // Freeze physics once settled so the layout stays still and CPU idles.
+        this.currentChart.once('stabilizationIterationsDone', () => {
+            this.currentChart.setOptions({ physics: false });
+        });
+
+        // Best of both worlds: run physics only while a node is actively dragged
+        // (so the neighborhood springs interactively), then let it settle briefly
+        // and freeze again so the graph never churns CPU at rest.
+        let meshSettleTimer = null;
+        this.currentChart.on('dragStart', (params) => {
+            if (!params.nodes || params.nodes.length === 0) return;
+            if (meshSettleTimer) { clearTimeout(meshSettleTimer); meshSettleTimer = null; }
+            // Resume live from current positions (no re-stabilization jump).
+            this.currentChart.setOptions({ physics: { enabled: true, stabilization: false } });
+        });
+        this.currentChart.on('dragEnd', (params) => {
+            if (!params.nodes || params.nodes.length === 0) return;
+            if (meshSettleTimer) clearTimeout(meshSettleTimer);
+            meshSettleTimer = setTimeout(() => {
+                if (this.currentChart) this.currentChart.setOptions({ physics: false });
+                meshSettleTimer = null;
+            }, 1200);
+        });
+        setTimeout(() => {
+            if (this.currentChart) this.currentChart.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 60 });
+        }, 400);
+
+        // -- Minimap overlay (mirrors graph()): whole-graph thumbnail + viewport
+        // rectangle; click/drag it to pan the main view. Dot size scales by degree. --
+        let minimap = networkDiv.querySelector('.graph-minimap');
+        if (minimap) minimap.remove();
+        minimap = document.createElement('canvas');
+        minimap.className = 'graph-minimap';
+        minimap.width = 240;
+        minimap.height = 160;
+        networkDiv.appendChild(minimap);
+        const mmCtx = minimap.getContext('2d');
+        const drawMinimap = () => {
+            if (!this.currentChart || !minimap.isConnected) return;
+            const positions = this.currentChart.getPositions();
+            const ids = Object.keys(positions);
+            const w = minimap.width, h = minimap.height;
+            mmCtx.clearRect(0, 0, w, h);
+            mmCtx.fillStyle = cv('--bg-secondary');
+            mmCtx.fillRect(0, 0, w, h);
+            if (ids.length === 0) return;
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            ids.forEach(id => { const p = positions[id]; if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; });
+            const pad = 14;
+            const spanX = Math.max(1, maxX - minX), spanY = Math.max(1, maxY - minY);
+            const scale = Math.min((w - 2 * pad) / spanX, (h - 2 * pad) / spanY);
+            const offX = (w - spanX * scale) / 2, offY = (h - spanY * scale) / 2;
+            const toMM = (x, y) => ({ x: offX + (x - minX) * scale, y: offY + (y - minY) * scale });
+            ids.forEach(id => {
+                const p = positions[id];
+                const m = toMM(p.x, p.y);
+                mmCtx.fillStyle = baseColors.get(id) || neutralColor;
+                const deg = (nodeMap.get(id) || {}).degree || 0;
+                const r = maxDegree > 1 ? 1.5 + 1.7 * ((deg - 1) / (maxDegree - 1)) : 1.8;
+                mmCtx.beginPath();
+                mmCtx.arc(m.x, m.y, r, 0, Math.PI * 2);
+                mmCtx.fill();
+            });
+            const tl = this.currentChart.DOMtoCanvas({ x: 0, y: 0 });
+            const br = this.currentChart.DOMtoCanvas({ x: networkDiv.clientWidth, y: networkDiv.clientHeight });
+            const a = toMM(tl.x, tl.y), b = toMM(br.x, br.y);
+            mmCtx.strokeStyle = accentColor;
+            mmCtx.lineWidth = 1.5;
+            mmCtx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+            minimap._map = { minX, minY, scale, offX, offY };
+        };
+        this.currentChart.on('afterDrawing', () => drawMinimap());
+
+        const mmNavigate = (ev) => {
+            const map = minimap._map; if (!map) return;
+            const rect = minimap.getBoundingClientRect();
+            const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+            const cx = map.minX + (mx - map.offX) / map.scale;
+            const cy = map.minY + (my - map.offY) / map.scale;
+            this.currentChart.moveTo({ position: { x: cx, y: cy }, animation: { duration: 150 } });
+        };
+        let mmDragging = false;
+        minimap.addEventListener('mousedown', (e) => { mmDragging = true; mmNavigate(e); e.preventDefault(); });
+        if (this._mmMove) window.removeEventListener('mousemove', this._mmMove);
+        if (this._mmUp) window.removeEventListener('mouseup', this._mmUp);
+        this._mmMove = (e) => { if (mmDragging) mmNavigate(e); };
+        this._mmUp = () => { mmDragging = false; };
+        window.addEventListener('mousemove', this._mmMove);
+        window.addEventListener('mouseup', this._mmUp);
+
+        // ---- Highlight helpers (neighbor-based, not ancestry) ----
+        const labelColor = cv('--graph-label');
+        const labelDim = cv('--graph-label-dim');
+        const dimNode = cv('--graph-node-dim');
+        const edgeBase = cv('--graph-edge');
+        const litColor = (id) => {
+            const fill = baseColors.get(id);
+            return { background: fill, border: fill, highlight: { background: fill, border: accentColor }, hover: { background: fill, border: accentColor } };
+        };
+        const dimColor = { background: dimNode, border: dimNode, highlight: { background: dimNode, border: dimNode }, hover: { background: dimNode, border: dimNode } };
+
+        const restoreBase = () => {
+            nodes.update([...nodeMap.keys()].map(id => ({ id, color: litColor(id), font: { color: labelColor } })));
+            edges.update(edges.getIds().map(eid => ({ id: eid, color: { color: edgeBase, opacity: 0.45, highlight: accentColor } })));
+        };
+        const highlightNeighborhood = (id, hot) => {
+            const keep = new Set([id, ...(nodeMap.get(id)?.neighbors.keys() || [])]);
+            nodes.update([...nodeMap.keys()].map(nid => {
+                const on = keep.has(nid);
+                return { id: nid, color: on ? litColor(nid) : dimColor, font: { color: on ? labelColor : labelDim } };
+            }));
+            edges.update(edges.get().map(e => {
+                const on = (e.from === id || e.to === id);
+                return { id: e.id, color: { color: (hot && on) ? accentColor : edgeBase, opacity: on ? (hot ? 0.95 : 0.45) : 0.08, highlight: accentColor } };
+            }));
+        };
+
+        let selectedNodeId = null;
+        const resizeGraph = () => {
+            if (!this.currentChart) return;
+            this.currentChart.setSize(networkDiv.clientWidth + 'px', networkDiv.clientHeight + 'px');
+            this.currentChart.redraw();
+        };
+
+        // ---- Detail panel content ----
+        const buildPanel = (nodeId) => {
+            const n = nodeMap.get(nodeId) || { neighbors: new Map(), details: {}, degree: 0, sizeSum: 0 };
+            const body = detailPanel.querySelector('.graph-detail-body');
+            const fill = baseColors.get(nodeId) || neutralColor;
+
+            let chips = `<span class="graph-detail-proc" style="--chip-color:${fill}">${n.degree} conn</span>`;
+            if (n.isSrc) chips += `<span class="graph-detail-tag">src</span>`;
+            if (n.isDst) chips += `<span class="graph-detail-tag">dst</span>`;
+
+            const topNeighbors = [...n.neighbors.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+            const neighborsHtml = topNeighbors.length > 0
+                ? '<div class="graph-detail-fields">' + topNeighbors.map(([id, w]) =>
+                    `<div class="graph-detail-field graph-mesh-neighbor" data-node="${Utils.escapeHtml(id)}"><div class="graph-detail-field-name">${Utils.escapeHtml(id)}</div><div class="graph-detail-field-value">${w}</div></div>`
+                  ).join('') + '</div>'
+                : '<div class="graph-detail-empty">No connections</div>';
+
+            const fieldEntries = Object.entries(n.details);
+            const fieldsHtml = fieldEntries.length > 0
+                ? '<div class="graph-detail-fields">' + fieldEntries.map(([k, v]) =>
+                    `<div class="graph-detail-field"><div class="graph-detail-field-name">${Utils.escapeHtml(k)}</div><div class="graph-detail-field-value">${Utils.escapeHtml(String(v))}</div></div>`
+                  ).join('') + '</div>'
+                : '';
+
+            body.innerHTML = `
+                <div class="graph-detail-id">
+                    <span class="graph-detail-id-label">ID</span>
+                    <span class="graph-detail-id-value">${Utils.escapeHtml(nodeId)}</span>
+                </div>
+                <div class="graph-detail-chips">${chips}</div>
+                <div class="graph-detail-actions">
+                    <button class="graph-detail-action" data-act="focus">Focus neighborhood</button>
+                    <button class="graph-detail-action secondary" data-act="copy">Copy ID</button>
+                </div>
+                <div class="graph-detail-subhead">Connections (${n.neighbors.size})</div>
+                ${neighborsHtml}
+                ${fieldsHtml}
+            `;
+            body.querySelector('[data-act="copy"]')?.addEventListener('click', () => {
+                navigator.clipboard.writeText(nodeId).then(() => Toast.show('Copied', 'success'));
+            });
+            body.querySelector('[data-act="focus"]')?.addEventListener('click', () => {
+                const connected = this.currentChart.getConnectedNodes(nodeId);
+                this.currentChart.fit({ nodes: [nodeId, ...connected], animation: { duration: 400 }, padding: 80 });
+            });
+            body.querySelectorAll('.graph-mesh-neighbor').forEach(el => {
+                el.addEventListener('click', () => {
+                    const id = el.getAttribute('data-node');
+                    if (!nodeMap.has(id)) return;
+                    this.currentChart.selectNodes([id]);
+                    selectNodeAction(id);
+                });
+            });
+        };
+
+        const selectNodeAction = (nodeId) => {
+            selectedNodeId = nodeId;
+            buildPanel(nodeId);
+            detailPanel.classList.add('open');
+            highlightNeighborhood(nodeId, true);
+            setTimeout(() => {
+                resizeGraph();
+                this.currentChart.focus(nodeId, { scale: Math.max(this.currentChart.getScale(), 0.6), animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+            }, 210);
+        };
+
+        // -- Toolbar handlers --
+        document.getElementById('meshFitBtn')?.addEventListener('click', () => {
+            this.currentChart.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 60 });
+        });
+        document.getElementById('meshZoomInBtn')?.addEventListener('click', () => {
+            this.currentChart.moveTo({ scale: this.currentChart.getScale() * 1.3, animation: { duration: 200 } });
+        });
+        document.getElementById('meshZoomOutBtn')?.addEventListener('click', () => {
+            this.currentChart.moveTo({ scale: this.currentChart.getScale() / 1.3, animation: { duration: 200 } });
+        });
+        document.getElementById('meshExportBtn')?.addEventListener('click', () => {
+            const canvas = networkDiv.querySelector('canvas');
+            if (!canvas) return;
+            const link = document.createElement('a');
+            link.download = 'bifract-mesh.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+            Toast.show('Mesh exported as PNG', 'success');
+        });
+
+        // -- Min-weight filter: hide edges below threshold and orphaned nodes. --
+        const minWeightInput = document.getElementById('meshMinWeight');
+        if (minWeightInput) {
+            minWeightInput.addEventListener('input', Utils.debounce((e) => {
+                const thr = Number(e.target.value) || 0;
+                const visibleNodes = new Set();
+                const edgeUpdates = edges.get().map((edge, i) => {
+                    const w = edgeList[edge.id]?.weight ?? 0;
+                    const hidden = w < thr;
+                    if (!hidden) { visibleNodes.add(edge.from); visibleNodes.add(edge.to); }
+                    return { id: edge.id, hidden };
+                });
+                edges.update(edgeUpdates);
+                nodes.update([...nodeMap.keys()].map(id => ({ id, hidden: thr > 0 && !visibleNodes.has(id) })));
+                const vn = thr > 0 ? visibleNodes.size : nodeMap.size;
+                const ve = edgeUpdates.filter(u => !u.hidden).length;
+                const nc = document.getElementById('meshNodeCount'); if (nc) nc.textContent = vn;
+                const ec = document.getElementById('meshEdgeCount'); if (ec) ec.textContent = ve;
+            }, 200));
+        }
+
+        // -- Node search: dim non-matching --
+        const searchInput = document.getElementById('meshNodeSearch');
+        if (searchInput) {
+            searchInput.addEventListener('input', Utils.debounce((e) => {
+                const term = e.target.value.toLowerCase().trim();
+                if (!term) { if (!selectedNodeId) restoreBase(); return; }
+                const match = new Set();
+                nodeMap.forEach((n, id) => {
+                    if (id.toLowerCase().includes(term) || Object.values(n.details).some(v => String(v).toLowerCase().includes(term))) match.add(id);
+                });
+                nodes.update([...nodeMap.keys()].map(id => {
+                    const on = match.has(id);
+                    return { id, color: on ? litColor(id) : dimColor, font: { color: on ? labelColor : labelDim } };
+                }));
+            }, 200));
+        }
+
+        // -- Selection / hover --
+        const closePanel = () => {
+            detailPanel.classList.remove('open');
+            selectedNodeId = null;
+            this.currentChart.unselectAll();
+            setTimeout(() => { resizeGraph(); restoreBase(); }, 210);
+        };
+        detailPanel.querySelector('.graph-detail-close').addEventListener('click', closePanel);
+
+        this.currentChart.on('selectNode', (params) => {
+            const nodeId = params.nodes[0];
+            if (nodeId) selectNodeAction(nodeId);
+        });
+        this.currentChart.on('deselectNode', (params) => {
+            if (params.nodes && params.nodes.length) return;
+            detailPanel.classList.remove('open');
+            selectedNodeId = null;
+            setTimeout(() => { resizeGraph(); restoreBase(); }, 210);
+        });
+        this.currentChart.on('hoverNode', (params) => {
+            if (selectedNodeId) return;
+            highlightNeighborhood(params.node, true);
+        });
+        this.currentChart.on('blurNode', () => {
+            if (selectedNodeId) return;
+            restoreBase();
+        });
+        this.currentChart.on('doubleClick', (params) => {
+            if (params.nodes.length > 0) {
+                const nodeId = params.nodes[0];
+                const connected = this.currentChart.getConnectedNodes(nodeId);
+                this.currentChart.fit({ nodes: [nodeId, ...connected], animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 80 });
+            }
+        });
     },
 
     // Re-root the active dfs()/bfs() traversal at startId by swapping the start=

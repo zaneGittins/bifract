@@ -296,14 +296,22 @@ func (e *Executor) ExecuteWidgetByID(ctx context.Context, dashboardID, widgetID,
 // executeWidgetPreview runs a widget with transient overrides and returns the
 // result payload WITHOUT persisting it as the canonical cache or broadcasting it
 // over SSE. It backs per-user pivot drilldowns: a drilldown is a private view, so
-// it must not overwrite what collaborators see. overrideVars (when non-nil)
-// replaces the dashboard's stored variable set for substitution.
+// it must not overwrite what collaborators see. overrideVars (when non-empty) is
+// overlaid ON TOP of the dashboard's stored variables: a mapped pivot value wins,
+// while any target default the pivot does not map is retained (not dropped to a
+// literal @name). The overlay is transient and is never persisted back to the
+// dashboard's stored variable set.
 func (e *Executor) executeWidgetPreview(ctx context.Context, d *storage.Dashboard, w *storage.DashboardWidget, overrideVars json.RawMessage, start, end time.Time) ([]byte, string, error) {
-	vars := d.Variables
-	if overrideVars != nil {
-		vars = overrideVars
+	values := bqlvars.ToValueMap(bqlvars.ParseVariables(d.Variables))
+	if override := bqlvars.ToValueMap(bqlvars.ParseVariables(overrideVars)); len(override) > 0 {
+		if values == nil {
+			values = make(map[string]string, len(override))
+		}
+		for name, val := range override {
+			values[name] = val
+		}
 	}
-	queryStr := bqlvars.Substitute(w.QueryContent, vars)
+	queryStr := bqlvars.SubstituteMap(w.QueryContent, values)
 
 	res, err := e.runner.ExecuteBQL(ctx, queryStr, d.FractalID, d.PrismID, start, end)
 	if err != nil {

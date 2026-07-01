@@ -1,3 +1,52 @@
+// Shared mesh() coloring helpers, used by the full renderMesh (queryExecutor.js)
+// and renderMeshSimple below. Subnet grouping is a fixed prefix (IPv4 /24, IPv6
+// /64 by default) because real netmasks are not in the log data; 'auto' mode only
+// uses subnet when node IDs actually look like IPs, otherwise falls back to the
+// degree ramp so mesh() also works for non-network data.
+window.MeshColor = {
+    ipv4Re: /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/,
+    isIP(s) {
+        s = String(s);
+        const m = this.ipv4Re.exec(s);
+        if (m) return m.slice(1).every(o => +o <= 255);
+        return s.includes(':') && /^[0-9a-fA-F:]+$/.test(s);
+    },
+    // Fraction of ids that look like IPs decides the 'auto' default palette.
+    autoMode(ids) {
+        if (!ids.length) return 'degree';
+        let ip = 0;
+        for (const id of ids) if (this.isIP(id)) ip++;
+        return (ip / ids.length) >= 0.6 ? 'subnet' : 'degree';
+    },
+    subnetKey(id, v4bits, v6bits) {
+        const s = String(id);
+        v4bits = (v4bits == null) ? 24 : Math.max(0, Math.min(32, v4bits));
+        v6bits = (v6bits == null) ? 64 : Math.max(0, Math.min(128, v6bits));
+        const m = this.ipv4Re.exec(s);
+        if (m) {
+            const oct = [+m[1], +m[2], +m[3], +m[4]];
+            if (oct.every(o => o <= 255)) {
+                const ip = ((oct[0] << 24) >>> 0) + (oct[1] << 16) + (oct[2] << 8) + oct[3];
+                const mask = v4bits === 0 ? 0 : ((0xFFFFFFFF << (32 - v4bits)) >>> 0);
+                const net = (ip & mask) >>> 0;
+                return `${net >>> 24}.${(net >>> 16) & 255}.${(net >>> 8) & 255}.${net & 255}/${v4bits}`;
+            }
+        }
+        if (s.includes(':')) {
+            const groups = s.split(':').filter(g => g !== '');
+            if (groups.length) return groups.slice(0, Math.max(1, Math.round(v6bits / 16))).join(':') + `::/${v6bits}`;
+        }
+        return s;
+    },
+    // Perceptual grey -> amber -> red intensity ramp (no rainbow/green).
+    heat(t) {
+        const c = Math.max(0, Math.min(1, t));
+        if (c < 0.5) { const u = c / 0.5; return `hsl(45, ${Math.round(8 + u * 62)}%, ${Math.round(50 - u * 3)}%)`; }
+        const u = (c - 0.5) / 0.5;
+        return `hsl(${Math.round(45 - u * 40)}, ${Math.round(70 + u * 15)}%, ${Math.round(47 - u * 2)}%)`;
+    }
+};
+
 // BifractCharts - Shared chart rendering module
 // All chart types are defined once here and called from search, notebooks, dashboards, and chat.
 window.BifractCharts = {
@@ -1329,6 +1378,158 @@ window.BifractCharts = {
             physics: { enabled: false },
             interaction: { hover: true, zoomView: true, dragView: true, dragNodes: true, zoomSpeed: 1.0 }
         });
+    },
+
+    // ---- Mesh (simple - for notebooks/dashboards) ----
+    // Undirected weighted network (Arkime-style). Node click fires opts.onDataClick
+    // so dashboard/notebook meshes participate in the pivot/drilldown system.
+    renderMeshSimple(container, opts) {
+        if (!container || !window.vis) return null;
+
+        const config = opts.config || {};
+        const srcField = config.srcField;
+        const dstField = config.dstField;
+        if (!srcField || !dstField) return null;
+
+        const weightField = config.weightField || '_count';
+        const sizeField = config.sizeField || '_count';
+        let colorMode = config.color || 'auto';
+        const directed = config.directed === true;
+        const limit = config.limit || 100;
+        const data = (opts.data || []).slice(0, limit);
+        const fields = opts.fields || Object.keys(data[0] || {});
+        const specifiedLabels = config.labels || [];
+        const reserved = new Set([srcField, dstField, weightField, sizeField]);
+        const labelFields = specifiedLabels.length > 0
+            ? specifiedLabels
+            : fields.filter(f => !reserved.has(f));
+
+        const cv = this._cv();
+        const toNum = (v) => { const n = Number(v); return isFinite(n) ? n : 0; };
+
+        const nodeMap = new Map();
+        const ensureNode = (id) => {
+            let n = nodeMap.get(id);
+            if (!n) { n = { degree: 0, sizeSum: 0, isSrc: false, isDst: false, details: {}, row: null }; nodeMap.set(id, n); }
+            return n;
+        };
+        const edgeList = [];
+
+        data.forEach((row) => {
+            const s = row[srcField], d = row[dstField];
+            if (s == null || s === '' || d == null || d === '') return;
+            const sId = String(s), dId = String(d);
+            const w = Math.max(toNum(row[weightField]) || 1, 0.0001);
+            const sizeVal = toNum(row[sizeField]) || 1;
+            const sn = ensureNode(sId); sn.isSrc = true; sn.degree++; sn.sizeSum += sizeVal;
+            const dn = ensureNode(dId); dn.isDst = true; dn.degree++; dn.sizeSum += sizeVal;
+            if (!sn.row) sn.row = row;
+            if (!dn.row) dn.row = row;
+            labelFields.forEach(f => { if (row[f] != null && row[f] !== '' && sn.details[f] === undefined) sn.details[f] = row[f]; });
+            edgeList.push({ from: sId, to: dId, weight: w });
+        });
+        if (nodeMap.size === 0) return null;
+
+        let maxDegree = 0;
+        nodeMap.forEach(n => { if (n.degree > maxDegree) maxDegree = n.degree; });
+
+        const neutralColor = cv('--graph-node-neutral') || '#555';
+        const srcColor = '#3b82f6', dstColor = '#f59e0b';
+        const palette = (typeof Utils !== 'undefined' && Utils.tagColorFor) ? Utils.tagColorFor : null;
+
+        if (colorMode === 'auto') colorMode = MeshColor.autoMode([...nodeMap.keys()]);
+        const subnetMatch = /^subnet(?:[/_-]?(\d{1,3}))?$/.exec(colorMode);
+        const subnetBits = subnetMatch ? (subnetMatch[1] ? +subnetMatch[1] : 24) : null;
+        const isSubnet = subnetMatch !== null;
+        if (isSubnet) colorMode = 'subnet';
+
+        // Categorical coloring (subnet default, or a field): top-8 buckets + neutral.
+        const isCategorical = colorMode !== 'degree' && colorMode !== 'role';
+        const catKeyOf = (id, n) => {
+            if (isSubnet) return MeshColor.subnetKey(id, subnetBits);
+            const v = n.details[colorMode];
+            return (v != null && v !== '') ? String(v).toLowerCase() : null;
+        };
+        let catColorOf = null;
+        if (isCategorical && palette) {
+            const freq = new Map();
+            nodeMap.forEach((n, id) => { const k = catKeyOf(id, n); if (k) freq.set(k, (freq.get(k) || 0) + 1); });
+            const topSet = new Set([...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(e => e[0]));
+            catColorOf = (id, n) => { const k = catKeyOf(id, n); return (k && topSet.has(k)) ? palette(k) : neutralColor; };
+        }
+        const nodeColor = (id, n) => {
+            if (colorMode === 'role') return n.isSrc ? srcColor : dstColor;
+            if (colorMode === 'degree') return MeshColor.heat(maxDegree > 1 ? (n.degree - 1) / (maxDegree - 1) : 0);
+            return catColorOf ? catColorOf(id, n) : neutralColor;
+        };
+
+        const nodes = new vis.DataSet();
+        const edges = new vis.DataSet();
+        nodeMap.forEach((n, id) => {
+            const fill = nodeColor(id, n);
+            let label = id;
+            if (specifiedLabels.length > 0) {
+                const parts = specifiedLabels.map(f => n.details[f]).filter(v => v != null && v !== '');
+                if (parts.length > 0) label = parts.join(' | ');
+            }
+            if (label.length > 24) label = label.substring(0, 22) + '…';
+            nodes.add({
+                id, label,
+                value: Math.max(n.sizeSum, 1),
+                color: { background: fill, border: fill },
+                font: { color: cv('--graph-label') || '#eee', size: 11, face: 'Inter', vadjust: -4, strokeWidth: 3, strokeColor: cv('--graph-label-stroke') || 'rgba(0,0,0,0.5)' },
+                shape: 'dot',
+            });
+        });
+        edgeList.forEach((e, i) => {
+            edges.add({
+                id: i, from: e.from, to: e.to, value: e.weight,
+                arrows: directed ? { to: { enabled: true, scaleFactor: 0.55, type: 'arrow' } } : undefined,
+                color: { color: cv('--graph-edge') || '#555', opacity: 0.45 },
+                smooth: { enabled: true, type: 'continuous', roundness: 0.4 },
+            });
+        });
+
+        const network = new vis.Network(container, { nodes, edges }, {
+            layout: { hierarchical: { enabled: false } },
+            physics: {
+                enabled: true, solver: 'barnesHut',
+                barnesHut: { gravitationalConstant: -18000, centralGravity: 0.35, springLength: 200, springConstant: 0.02, damping: 0.5, avoidOverlap: 0.2 },
+                maxVelocity: 24, minVelocity: 0.9, timestep: 0.4,
+                stabilization: { enabled: true, iterations: 250, fit: true }
+            },
+            nodes: { scaling: { min: 8, max: 40, label: { enabled: false } }, borderWidth: 2 },
+            edges: { scaling: { min: 0.8, max: 8, label: { enabled: false } } },
+            interaction: { hover: true, zoomView: true, dragView: true, dragNodes: true, zoomSpeed: 1.0 }
+        });
+        network.once('stabilizationIterationsDone', () => network.setOptions({ physics: false }));
+
+        // Physics only while dragging a node, then settle briefly and freeze again.
+        let settleTimer = null;
+        network.on('dragStart', (params) => {
+            if (!params.nodes || params.nodes.length === 0) return;
+            if (settleTimer) { clearTimeout(settleTimer); settleTimer = null; }
+            network.setOptions({ physics: { enabled: true, stabilization: false } });
+        });
+        network.on('dragEnd', (params) => {
+            if (!params.nodes || params.nodes.length === 0) return;
+            if (settleTimer) clearTimeout(settleTimer);
+            settleTimer = setTimeout(() => { network.setOptions({ physics: false }); settleTimer = null; }, 1200);
+        });
+
+        // Node click -> pivot/drilldown (dashboards/notebooks wire opts.onDataClick).
+        if (typeof opts.onDataClick === 'function') {
+            network.on('click', (params) => {
+                if (!params.nodes || params.nodes.length === 0) return;
+                const nodeId = params.nodes[0];
+                const n = nodeMap.get(nodeId);
+                const row = (n && n.row) ? Object.assign({}, n.row) : {};
+                // Ensure the clicked node's own value is what pivots read for src/dst.
+                row[srcField] = row[srcField] != null ? row[srcField] : nodeId;
+                opts.onDataClick({ row, field: nodeId, value: nodeId }, params.event && params.event.srcEvent);
+            });
+        }
+        return network;
     },
 
     // ---- Chat pre-processed format ----

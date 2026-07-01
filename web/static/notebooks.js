@@ -1630,6 +1630,19 @@ const Notebooks = {
             return graphHtml;
         }
 
+        if (chartType === 'mesh') {
+            const meshId = `mesh-${chartId}`;
+            const meshHtml = `
+                <div class="chart-container" style="margin: 0; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; background: var(--bg-secondary);">
+                    <div id="${meshId}" style="width: 100%; height: 400px;"></div>
+                </div>
+            `;
+            setTimeout(() => {
+                this.renderMeshInNotebook(meshId, results);
+            }, 500);
+            return meshHtml;
+        }
+
         if (chartType === 'heatmap') {
             const heatmapId = `heatmap-${chartId}`;
             const heatmapHtml = `
@@ -1686,6 +1699,16 @@ const Notebooks = {
         const container = document.getElementById(containerId);
         if (!container) return;
         BifractCharts.renderGraphSimple(container, {
+            data: results.results || [],
+            fields: results.field_order,
+            config: results.chart_config || {}
+        });
+    },
+
+    renderMeshInNotebook(containerId, results) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        BifractCharts.renderMeshSimple(container, {
             data: results.results || [],
             fields: results.field_order,
             config: results.chart_config || {}

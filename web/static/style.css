@@ -2300,6 +2300,7 @@ body.col-reordering * {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    vertical-align: top;
 }
 
 .results-table td:last-child {
@@ -3871,34 +3872,6 @@ body.col-reordering * {
 }
 
 /* Timestamp hover tooltip */
-.timestamp-cell {
-    position: relative;
-    cursor: help;
-}
-
-.timestamp-tooltip {
-    position: absolute;
-    bottom: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    background: var(--bg-primary);
-    border: 1px solid var(--accent-primary);
-    padding: 0.375rem 0.5rem;
-    border-radius: 4px;
-    font-size: 0.7rem;
-    color: var(--text-secondary);
-    white-space: nowrap;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.2s ease;
-    z-index: 1000;
-    margin-bottom: 0.25rem;
-}
-
-.timestamp-cell:hover .timestamp-tooltip {
-    opacity: 1;
-}
-
 /* Query syntax highlighting */
 .query-highlight .hl-function,
 .model-query-highlight .hl-function {
@@ -10256,6 +10229,25 @@ div.vis-tooltip {
     word-break: break-all;
 }
 
+/* mesh() detail panel: section subhead + clickable neighbor rows */
+.graph-detail-subhead {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin: 10px 0 4px;
+}
+
+.graph-mesh-neighbor {
+    cursor: pointer;
+    transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.graph-mesh-neighbor:hover {
+    border-color: var(--accent-primary);
+    background: var(--bg-secondary);
+}
+
 .graph-detail-empty {
     color: var(--text-muted);
     font-size: 0.75rem;
@@ -11431,6 +11423,41 @@ div.vis-tooltip {
 .variable-value-input:focus {
     border-color: var(--accent-primary);
 }
+
+/* A pill overridden by an active pivot drilldown: accented, read-only, with an
+   (x) to exit. Communicates "this value is a transient drilldown, not the saved
+   default" without a separate banner. */
+.variable-pill.drilldown-override {
+    background: var(--accent-glow);
+    border-color: var(--accent-secondary);
+    box-shadow: 0 0 0 1px var(--accent-secondary) inset;
+}
+.variable-pill.drilldown-override .variable-name { color: var(--accent-secondary); }
+.variable-pill.drilldown-override .variable-value-input {
+    color: var(--accent-secondary);
+    border-color: transparent;
+    background: transparent;
+    cursor: default;
+    font-weight: 600;
+}
+.variable-drilldown-clear {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--accent-secondary);
+    font-size: 0.7rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.12s ease, background 0.12s ease;
+}
+.variable-drilldown-clear:hover { opacity: 1; background: rgba(156, 106, 222, 0.25); }
 
 /* Notebook Sections */
 .notebook-sections {
@@ -15566,8 +15593,10 @@ div.vis-tooltip {
    Pivots (dashboard widget drilldowns)
    ============================================================ */
 
-/* Clickable affordance on pivot-enabled table rows */
-.result-row.pivotable { cursor: pointer; }
+/* Pivot-enabled table rows: right-click opens the interactions menu (copy +
+   pivots). The context-menu cursor hints the affordance; left-click stays native
+   so cell text can still be selected and copied. */
+.result-row.pivotable { cursor: context-menu; }
 .result-row.pivotable:hover { background: var(--bg-hover, rgba(156, 106, 222, 0.08)); }
 
 /* Pivot chooser menu (shown when a widget has multiple pivots) */
@@ -15604,33 +15633,7 @@ div.vis-tooltip {
     transition: background 0.12s ease;
 }
 .pivot-menu-item:hover { background: var(--accent-glow); color: var(--accent-secondary); }
-
-/* Drilldown banner */
-.drilldown-banner {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 0 0 10px;
-    padding: 8px 14px;
-    background: var(--accent-glow);
-    border: 1px solid var(--accent-primary);
-    border-radius: 8px;
-    font-size: 0.85rem;
-    color: var(--text-primary);
-}
-.drilldown-banner .drilldown-icon { color: var(--accent-secondary); }
-.drilldown-banner .drilldown-text { flex: 1; }
-.drilldown-banner .drilldown-exit {
-    background: none;
-    border: 1px solid var(--accent-primary);
-    color: var(--accent-secondary);
-    border-radius: 6px;
-    padding: 4px 12px;
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
-}
-.drilldown-banner .drilldown-exit:hover { background: var(--accent-primary); color: #fff; }
+.pivot-menu-sep { height: 1px; background: var(--border-color); margin: 4px 6px; }
 
 /* Pivot config panel */
 .pivot-panel .pivot-intro {

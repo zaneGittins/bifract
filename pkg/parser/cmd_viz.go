@@ -111,6 +111,84 @@ func (h *graphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+// meshHandler handles mesh(src=field, dst=field, weight=field, size=field,
+// color=field, label=field1,field2, directed=bool, limit=N). Unlike graph()
+// (a directed parent-child tree), mesh() renders an undirected, weighted,
+// bidirectional network (Arkime-style connections). It expects a pre-aggregated
+// edge list, typically from groupby(src, dst), whose auto count column is _count.
+type meshHandler struct{}
+
+func (h *meshHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
+	return nil
+}
+
+func (h *meshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	ctx.Plan.ChartType = "mesh"
+	ctx.Plan.ChartConfig["limit"] = 100
+	ctx.Plan.ChartConfig["directed"] = false
+	var srcField, dstField, weightField, sizeField, colorField string
+	var labelFields []string
+
+	for _, arg := range cmd.Arguments {
+		switch {
+		case strings.HasPrefix(arg, "src="):
+			srcField = strings.TrimPrefix(arg, "src=")
+		case strings.HasPrefix(arg, "dst="):
+			dstField = strings.TrimPrefix(arg, "dst=")
+		case strings.HasPrefix(arg, "weight="):
+			weightField = strings.TrimPrefix(arg, "weight=")
+		case strings.HasPrefix(arg, "size="):
+			sizeField = strings.TrimPrefix(arg, "size=")
+		case strings.HasPrefix(arg, "color="):
+			colorField = strings.TrimPrefix(arg, "color=")
+		case strings.HasPrefix(arg, "directed="):
+			v := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(arg, "directed=")))
+			ctx.Plan.ChartConfig["directed"] = v == "true" || v == "1" || v == "yes"
+		case strings.HasPrefix(arg, "labels="), strings.HasPrefix(arg, "label="):
+			labelsArg := arg[strings.IndexByte(arg, '=')+1:]
+			labelsArg = strings.Trim(labelsArg, "[]")
+			for _, f := range strings.Split(labelsArg, ",") {
+				f = strings.TrimSpace(f)
+				if f != "" {
+					labelFields = append(labelFields, f)
+				}
+			}
+		case strings.HasPrefix(arg, "limit="):
+			if limit, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && limit > 0 {
+				if limit > 500 {
+					limit = 500
+				}
+				ctx.Plan.ChartConfig["limit"] = limit
+			}
+		}
+	}
+
+	if srcField == "" || dstField == "" {
+		return fmt.Errorf("mesh() requires both src= and dst= parameters, e.g. mesh(src=src_ip, dst=dst_ip)")
+	}
+
+	// Default edge weight and node size to the groupby auto-count column so the
+	// minimal form (mesh(src=..., dst=...)) works after groupby(src, dst).
+	if weightField == "" {
+		weightField = "_count"
+	}
+	if sizeField == "" {
+		sizeField = "_count"
+	}
+
+	ctx.Plan.ChartConfig["srcField"] = srcField
+	ctx.Plan.ChartConfig["dstField"] = dstField
+	ctx.Plan.ChartConfig["weightField"] = weightField
+	ctx.Plan.ChartConfig["sizeField"] = sizeField
+	if colorField != "" {
+		ctx.Plan.ChartConfig["color"] = colorField
+	}
+	if len(labelFields) > 0 {
+		ctx.Plan.ChartConfig["labels"] = labelFields
+	}
+	return nil
+}
+
 // singlevalHandler handles singleval(label="Label")
 type singlevalHandler struct{}
 
@@ -348,6 +426,7 @@ func init() {
 	registerAggregatingCommand(&piechartHandler{}, "piechart")
 	registerAggregatingCommand(&barchartHandler{}, "barchart")
 	registerCommand(&graphHandler{}, "graph")
+	registerCommand(&meshHandler{}, "mesh")
 	registerAggregatingCommand(&singlevalHandler{}, "singleval")
 	registerAggregatingCommand(&timechartHandler{}, "timechart")
 	registerCommand(&graphWorldHandler{}, "graphWorld", "graphworld", "worldmap")
