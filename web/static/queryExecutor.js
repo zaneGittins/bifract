@@ -2131,6 +2131,19 @@ const QueryExecutor = {
         if (result && result.chart) this.currentChart = result.chart;
     },
 
+    // Size a graph/mesh container so it fits the visible viewport without forcing
+    // the user to scroll. The height still grows with node count (denser graphs
+    // want more room) but is capped at the space actually available below the
+    // graph, measured live so it adapts to window size. Call this AFTER the
+    // toolbar/stage are in the DOM so the measured offset is accurate.
+    fitGraphHeight(networkDiv, nodeCount, perNode) {
+        const top = networkDiv.getBoundingClientRect().top;
+        // Leave a small breathing margin at the bottom of the viewport.
+        const viewportCap = Math.max(400, window.innerHeight - top - 24);
+        const desired = Math.max(400, nodeCount * perNode);
+        return Math.round(Math.min(desired, viewportCap));
+    },
+
     renderGraph(results) {
         const chartCanvas = document.getElementById('resultsChart');
         const networkDiv = document.getElementById('networkGraph');
@@ -2289,10 +2302,7 @@ const QueryExecutor = {
             }
         });
 
-        // Dynamic container height based on node count
         const nodeCount = nodeDetails.size;
-        const dynamicHeight = Math.min(Math.max(400, nodeCount * 30), 800);
-        networkDiv.style.height = dynamicHeight + 'px';
 
         // -- Toolbar --
         const graphHost = networkDiv.closest('.chart-container') || networkDiv.parentElement;
@@ -2364,6 +2374,9 @@ const QueryExecutor = {
             <div class="graph-detail-body"></div>
         `;
         stage.appendChild(detailPanel);
+
+        // Size to fit the viewport now that the toolbar/stage are in place.
+        networkDiv.style.height = this.fitGraphHeight(networkDiv, nodeCount, 30) + 'px';
 
         // -- Create Network --
         const data = { nodes, edges };
@@ -2458,7 +2471,7 @@ const QueryExecutor = {
             } else {
                 this.currentChart.fit({
                     animation: { duration: 400, easingFunction: 'easeInOutQuad' },
-                    padding: 80
+                    padding: 40
                 });
             }
         }, 200);
@@ -2676,7 +2689,7 @@ const QueryExecutor = {
 
         // -- Toolbar handlers --
         document.getElementById('graphFitBtn')?.addEventListener('click', () => {
-            this.currentChart.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 60 });
+            this.currentChart.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 40 });
         });
         document.getElementById('graphZoomInBtn')?.addEventListener('click', () => {
             this.currentChart.moveTo({ scale: this.currentChart.getScale() * 1.3, animation: { duration: 200 } });
@@ -2982,9 +2995,6 @@ const QueryExecutor = {
             edges.add({ id: i, from: e.from, to: e.to, value: e.weight });
         });
 
-        const dynamicHeight = Math.min(Math.max(400, nodeMap.size * 24), 800);
-        networkDiv.style.height = dynamicHeight + 'px';
-
         // -- Toolbar (shares .graph-toolbar styling) --
         const graphHost = networkDiv.closest('.chart-container') || networkDiv.parentElement;
         let graphToolbar = graphHost.querySelector('.graph-toolbar');
@@ -3064,6 +3074,9 @@ const QueryExecutor = {
         `;
         stage.appendChild(detailPanel);
 
+        // Size to fit the viewport now that the toolbar/stage are in place.
+        networkDiv.style.height = this.fitGraphHeight(networkDiv, nodeMap.size, 24) + 'px';
+
         // -- Create the force-directed network --
         const options = {
             layout: { hierarchical: { enabled: false } },
@@ -3129,7 +3142,7 @@ const QueryExecutor = {
             }, 1200);
         });
         setTimeout(() => {
-            if (this.currentChart) this.currentChart.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 60 });
+            if (this.currentChart) this.currentChart.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 40 });
         }, 400);
 
         // -- Minimap overlay (mirrors graph()): whole-graph thumbnail + viewport
@@ -3297,7 +3310,7 @@ const QueryExecutor = {
 
         // -- Toolbar handlers --
         document.getElementById('meshFitBtn')?.addEventListener('click', () => {
-            this.currentChart.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 60 });
+            this.currentChart.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 40 });
         });
         document.getElementById('meshZoomInBtn')?.addEventListener('click', () => {
             this.currentChart.moveTo({ scale: this.currentChart.getScale() * 1.3, animation: { duration: 200 } });
