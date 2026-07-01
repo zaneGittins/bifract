@@ -21,6 +21,15 @@ var ProjectDefaultFields = []SchemaField{
 	{FieldName: "artifact",           IndexType: IndexTypeSet,         IsDefault: true},
 	{FieldName: "query",              IndexType: IndexTypeBloomFilter, IsDefault: true},
 	{FieldName: "original_file_name", IndexType: IndexTypeBloomFilter, IsDefault: true},
+	// Network analysis fields (conn logs: Zeek, netflow, firewall). proto/conn_state
+	// are low-cardinality categoricals -> set index (like event_id/operation). The
+	// numeric-as-string fields (duration/bytes) get a type hint only, no skip index:
+	// they are aggregated over a recent window, never equality-filtered.
+	{FieldName: "proto",              IndexType: IndexTypeSet,         IsDefault: true},
+	{FieldName: "conn_state",         IndexType: IndexTypeSet,         IsDefault: true},
+	{FieldName: "duration",           IndexType: IndexTypeNone,        IsDefault: true},
+	{FieldName: "orig_bytes",         IndexType: IndexTypeNone,        IsDefault: true},
+	{FieldName: "resp_bytes",         IndexType: IndexTypeNone,        IsDefault: true},
 }
 
 // ProjectDefaultFieldMap returns a set of project default field names for O(1) lookup.

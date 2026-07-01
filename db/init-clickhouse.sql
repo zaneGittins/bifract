@@ -26,7 +26,12 @@ CREATE TABLE IF NOT EXISTS logs (
         `operation`          String,
         `artifact`           String,
         `query`              String,
-        `original_file_name` String
+        `original_file_name` String,
+        `proto`              String,
+        `conn_state`         String,
+        `duration`           String,
+        `orig_bytes`         String,
+        `resp_bytes`         String
     ),
     fractal_id LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3),
@@ -56,7 +61,9 @@ CREATE TABLE IF NOT EXISTS logs (
     INDEX idx_operation          fields.operation          TYPE set(256)            GRANULARITY 1,
     INDEX idx_artifact           fields.artifact           TYPE set(64)            GRANULARITY 1,
     INDEX idx_src_port           fields.src_port           TYPE set(4096)          GRANULARITY 1,
-    INDEX idx_dst_port           fields.dst_port           TYPE set(4096)          GRANULARITY 1
+    INDEX idx_dst_port           fields.dst_port           TYPE set(4096)          GRANULARITY 1,
+    INDEX idx_proto              fields.proto              TYPE set(16)            GRANULARITY 1,
+    INDEX idx_conn_state         fields.conn_state         TYPE set(64)            GRANULARITY 1
 ) ENGINE = MergeTree()
 PARTITION BY (fractal_id, toDate(timestamp))
 ORDER BY (timestamp, log_id)
@@ -79,6 +86,8 @@ ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_operation          fields.operation
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_artifact           fields.artifact       TYPE set(64)            GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port       TYPE set(4096)          GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port       TYPE set(4096)          GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_proto              fields.proto          TYPE set(16)            GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_conn_state         fields.conn_state     TYPE set(64)            GRANULARITY 1;
 
 -- Replace the legacy word-tokenized raw_log index (splitByNonAlpha) with a
 -- character n-gram index on lower(raw_log). The old index could only match whole
@@ -140,7 +149,12 @@ CREATE TABLE IF NOT EXISTS logs_hot (
         `operation`          String,
         `artifact`           String,
         `query`              String,
-        `original_file_name` String
+        `original_file_name` String,
+        `proto`              String,
+        `conn_state`         String,
+        `duration`           String,
+        `orig_bytes`         String,
+        `resp_bytes`         String
     ),
     fractal_id       LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3)

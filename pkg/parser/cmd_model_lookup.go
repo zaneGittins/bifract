@@ -35,6 +35,17 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		ctx.Registry.Register("latest_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("mad", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("n_buckets", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("beacon_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("longconn_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("regularity_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("ts_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("ds_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("dur_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("hist_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("prevalence", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("prevalence_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("conn_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("total_duration", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		return nil
 	}
 
@@ -53,6 +64,23 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		ctx.Registry.Register("latest_count", FieldKindPerRow, "_mlookup.latest_count", ctx.CmdIndex)
 		ctx.Registry.Register("mad", FieldKindPerRow, "_mlookup.mad", ctx.CmdIndex)
 		ctx.Registry.Register("n_buckets", FieldKindPerRow, "_mlookup.n_buckets", ctx.CmdIndex)
+	case "beacon":
+		// beacon_score is the final verdict; the rest is the breakdown ("why").
+		ctx.Registry.Register("beacon_score", FieldKindPerRow, "_mlookup.beacon_score", ctx.CmdIndex)
+		ctx.Registry.Register("regularity_score", FieldKindPerRow, "_mlookup.regularity_score", ctx.CmdIndex)
+		ctx.Registry.Register("ts_score", FieldKindPerRow, "_mlookup.ts_score", ctx.CmdIndex)
+		ctx.Registry.Register("ds_score", FieldKindPerRow, "_mlookup.ds_score", ctx.CmdIndex)
+		ctx.Registry.Register("dur_score", FieldKindPerRow, "_mlookup.dur_score", ctx.CmdIndex)
+		ctx.Registry.Register("hist_score", FieldKindPerRow, "_mlookup.hist_score", ctx.CmdIndex)
+		ctx.Registry.Register("prevalence", FieldKindPerRow, "_mlookup.prevalence", ctx.CmdIndex)
+		ctx.Registry.Register("prevalence_score", FieldKindPerRow, "_mlookup.prevalence_score", ctx.CmdIndex)
+		ctx.Registry.Register("conn_count", FieldKindPerRow, "_mlookup.conn_count", ctx.CmdIndex)
+	case "long_connection":
+		ctx.Registry.Register("longconn_score", FieldKindPerRow, "_mlookup.longconn_score", ctx.CmdIndex)
+		ctx.Registry.Register("total_duration", FieldKindPerRow, "_mlookup.total_duration", ctx.CmdIndex)
+		ctx.Registry.Register("conn_count", FieldKindPerRow, "_mlookup.conn_count", ctx.CmdIndex)
+		ctx.Registry.Register("prevalence", FieldKindPerRow, "_mlookup.prevalence", ctx.CmdIndex)
+		ctx.Registry.Register("prevalence_score", FieldKindPerRow, "_mlookup.prevalence_score", ctx.CmdIndex)
 	}
 	return nil
 }
@@ -129,11 +157,61 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		ctx.Plan.ModelLookupOn = onClause
 		ctx.Plan.ModelLookupFields = []string{"entity_val", "latest_count", "baseline_median", "mad", "n_buckets", "z_score"}
 
+	case "beacon", "long_connection":
+		if len(keyFields) != 3 {
+			return fmt.Errorf("model_lookup() for %s models requires exactly 3 key fields: [src_ip, dst_ip, dst_port]", info.ModelType)
+		}
+		var subSQL string
+		if info.ModelType == "beacon" {
+			subSQL = buildBeaconScoringSQL(info.TableName, fractalID)
+			ctx.Plan.ModelLookupFields = []string{"src_ip", "dst_ip", "dst_port", "beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "conn_count"}
+		} else {
+			subSQL = buildLongConnScoringSQL(info.TableName, fractalID)
+			ctx.Plan.ModelLookupFields = []string{"src_ip", "dst_ip", "dst_port", "longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score"}
+		}
+		// Positional key mapping: key[0]->src_ip, key[1]->dst_ip, key[2]->dst_port.
+		outerRefs := make([]string, len(keyFields))
+		for i, kf := range keyFields {
+			outerRefs[i] = modelLookupFieldRef(kf)
+		}
+		onClause := fmt.Sprintf("concat(%s) = concat(_mlookup.src_ip, char(30), _mlookup.dst_ip, char(30), _mlookup.dst_port)",
+			strings.Join(outerRefs, ", char(30), "))
+		ctx.Plan.ModelLookupSQL = subSQL
+		ctx.Plan.ModelLookupOn = onClause
+
 	default:
 		return fmt.Errorf("unknown model type %q for model %q", info.ModelType, modelName)
 	}
 
 	return nil
+}
+
+// buildBeaconScoringSQL returns the latest scored row per pair from a beacon model's
+// results table. FINAL collapses the ReplacingMergeTree to the newest scored_at.
+// beacon_score is the final (modifier-adjusted) verdict; the subscores explain it.
+func buildBeaconScoringSQL(tableName, fractalID string) string {
+	return fmt.Sprintf(`SELECT src_ip, dst_ip, dst_port,
+    final_score AS beacon_score,
+    regularity_score, ts_score, ds_score, dur_score, hist_score,
+    prevalence, prevalence_score, conn_count
+FROM %s FINAL
+WHERE fractal_id = '%s'`,
+		"`"+tableName+"`",
+		escapeString(fractalID),
+	)
+}
+
+// buildLongConnScoringSQL returns the latest scored row per pair from a
+// long_connection model's results table.
+func buildLongConnScoringSQL(tableName, fractalID string) string {
+	return fmt.Sprintf(`SELECT src_ip, dst_ip, dst_port,
+    final_score AS longconn_score,
+    total_duration, conn_count, prevalence, prevalence_score
+FROM %s FINAL
+WHERE fractal_id = '%s'`,
+		"`"+tableName+"`",
+		escapeString(fractalID),
+	)
 }
 
 // buildRarityScoringSQL returns the triple-nested scoring subquery for a rarity model.

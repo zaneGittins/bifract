@@ -787,6 +787,11 @@ var jsonDefaultTypeHintedFields = map[string]bool{
 	"artifact":           true,
 	"query":              true,
 	"original_file_name": true,
+	"proto":              true,
+	"conn_state":         true,
+	"duration":           true,
+	"orig_bytes":         true,
+	"resp_bytes":         true,
 }
 
 // jsonCustomTypeHintedFields holds user-defined custom fields loaded from Postgres.

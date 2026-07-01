@@ -744,7 +744,9 @@ func TestComparisonOperators(t *testing.T) {
 			query:   "duration<100",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`duration`::String) < 100")
+				// duration is a promoted, type-hinted field, so it is referenced as a
+				// bare String sub-column (no ::String cast).
+				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`duration`) < 100")
 			},
 		},
 		{

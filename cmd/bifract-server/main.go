@@ -387,6 +387,13 @@ func main() {
 	alertEngine.Start(time.Duration(config.AlertEvalInterval) * time.Second)
 	log.Printf("Alert system initialized (evaluation interval: %ds)", config.AlertEvalInterval)
 
+	// Scheduled model scorer (network analysis: beacon / long_connection). Idle
+	// no-op on deployments with no network models: one cheap Postgres SELECT per
+	// heartbeat and nothing else. Single-replica via a Postgres advisory lock.
+	scorerEngine := models.NewScorerEngine(pg, db, modelManager)
+	scorerEngine.Start(time.Duration(config.ModelScoreInterval) * time.Second)
+	log.Printf("Model scorer initialized (heartbeat interval: %ds)", config.ModelScoreInterval)
+
 	// Initialize ingest token system
 	log.Println("Initializing ingest token system...")
 	ingestTokenStorage := ingesttokens.NewStorage(pg)
@@ -452,6 +459,12 @@ func main() {
 	})
 	alertEngine.SetLastIngestedFunc(func(fractalID string) time.Time {
 		return ingestQueue.LastIngested(fractalID)
+	})
+
+	// The scorer yields to ingest pressure the same way the alert engine does, so a
+	// scoring pass never competes with heavy ingestion for ClickHouse resources.
+	scorerEngine.SetIngestPressureFunc(func() bool {
+		return ingestQueue.Depth() > alertDeferThreshold
 	})
 
 	// Distribution queue monitor (cluster mode only) — polls system.distribution_queue
@@ -1183,6 +1196,7 @@ func main() {
 
 	// Stop the alert engine
 	alertEngine.Stop()
+	scorerEngine.Stop()
 
 	// Stop metrics server
 	if metricsServer != nil {
@@ -1218,6 +1232,9 @@ type Config struct {
 
 	// Alert evaluation
 	AlertEvalInterval int // seconds
+	// Model scorer heartbeat (scheduled network models). Per-model rescore cadence
+	// is derived from each model's window; this is just the tick granularity.
+	ModelScoreInterval int // seconds
 	// Percentage of ingest queue depth at which alert evaluation is deferred
 	// to protect ingestion. Deferred alerts catch up via cursor tracking.
 	AlertIngestDeferPct int
@@ -1273,6 +1290,7 @@ func loadConfig() Config {
 
 		// Alert evaluation default
 		AlertEvalInterval:   getEnvInt("BIFRACT_ALERT_EVAL_INTERVAL", 60),
+		ModelScoreInterval:  getEnvInt("BIFRACT_MODEL_SCORE_INTERVAL", 600),
 		AlertIngestDeferPct: getEnvInt("BIFRACT_ALERT_INGEST_DEFER_PCT", 25),
 
 		// ClickHouse pool sizing (0 = use package defaults)
@@ -1311,6 +1329,7 @@ func loadConfig() Config {
 	log.Printf("  Max Body Size: %d bytes", config.MaxBodySize)
 	log.Printf("  Rate Limit: %d req/s (burst: %d)", config.IngestRateLimit, config.IngestRateBurst)
 	log.Printf("  Alert Eval Interval: %ds", config.AlertEvalInterval)
+	log.Printf("  Model Score Interval: %ds", config.ModelScoreInterval)
 	log.Printf("  Alert Ingest Defer: %d%% of queue depth", config.AlertIngestDeferPct)
 	if config.ClickHouseCluster != "" {
 		log.Printf("  ClickHouse Cluster: %s (replicated mode)", config.ClickHouseCluster)

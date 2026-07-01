@@ -3,6 +3,7 @@ package models
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -364,6 +365,13 @@ func chFieldRef(field string) string {
 	}
 }
 
+// chNumericFieldRef references a field coerced to Float64 for aggregation. Network
+// numeric fields (duration, bytes) are stored as String sub-columns, so an explicit
+// toFloat64OrZero is required; non-numeric or absent values collapse to 0.
+func chNumericFieldRef(field string) string {
+	return fmt.Sprintf("toFloat64OrZero(%s)", chFieldRef(field))
+}
+
 // isExtractionOutput returns true if fieldName is produced by a prior extraction step.
 func isExtractionOutput(fieldName string, steps []ExtractionStep) bool {
 	for _, s := range steps {
@@ -417,4 +425,243 @@ func chStringLiteral(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)
 	return "'" + s + "'"
+}
+
+// ---------------------------------------------------------------------------
+// Network analysis models (beacon / long_connection)
+//
+// A scheduled model owns three ClickHouse objects:
+//   - state table   (AggregatingMergeTree, per (fractal,src,dst,port,day), TTL window)
+//   - materialized view (logs -> state, maintained at ingest)
+//   - results table (ReplacingMergeTree, written by the background scorer)
+// The scorer reads only the compact state, never raw logs.
+// ---------------------------------------------------------------------------
+
+// netStateArrayCap bounds the per-day-per-pair timestamp/size arrays. Over a 14-day
+// window this merges to ~28k points max, far more than enough to measure regularity
+// while hard-bounding both ClickHouse and Go memory.
+const netStateArrayCap = 2000
+
+// BuildNetStateTableDDL returns the AggregatingMergeTree state table DDL. windowDays
+// drives the TTL (retain enough for the largest window plus a small buffer) so a
+// short-window model does not retain more state than it reads.
+func BuildNetStateTableDDL(stateTable string, windowDays int) string {
+	ttlDays := windowDays + 2
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+    fractal_id LowCardinality(String),
+    src        String,
+    dst        String,
+    port       String,
+    day        Date,
+    conn_count SimpleAggregateFunction(sum, UInt64),
+    ts_state   AggregateFunction(groupArray(%d), UInt32),
+    size_state AggregateFunction(groupArray(%d), Float64),
+    dur_sum    SimpleAggregateFunction(sum, Float64),
+    first_ts   SimpleAggregateFunction(min, DateTime64(3)),
+    last_ts    SimpleAggregateFunction(max, DateTime64(3))
+) ENGINE = AggregatingMergeTree()
+ORDER BY (fractal_id, src, dst, port, day)
+TTL day + INTERVAL %d DAY
+SETTINGS index_granularity = 8192`, stateTable, netStateArrayCap, netStateArrayCap, ttlDays)
+}
+
+// BuildNetResultsTableDDL returns the ReplacingMergeTree results table DDL. The
+// scorer inserts fresh rows each pass; reads take the latest via FINAL/argMax. The
+// modifier columns (prevalence/first_seen/threat_intel) carry the full breakdown so
+// the reviewer can see why a pair scored high; first_seen/threat_intel are reserved
+// (0 until wired) and cost nothing to keep the schema stable.
+func BuildNetResultsTableDDL(resultsTable string) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+    fractal_id         LowCardinality(String),
+    src_ip             String,
+    dst_ip             String,
+    dst_port           String,
+    regularity_score   Float64,
+    ts_score           Float64,
+    ds_score           Float64,
+    dur_score          Float64,
+    hist_score         Float64,
+    prevalence         Float64,
+    prevalence_total   UInt64,
+    prevalence_score   Float64,
+    first_seen_score   Float64,
+    threat_intel_score Float64,
+    final_score        Float64,
+    conn_count         UInt64,
+    total_duration     Float64,
+    first_seen         DateTime64(3),
+    last_seen          DateTime64(3),
+    scored_at          DateTime64(3)
+) ENGINE = ReplacingMergeTree(scored_at)
+ORDER BY (fractal_id, src_ip, dst_ip, dst_port)
+SETTINGS index_granularity = 8192`, resultsTable)
+}
+
+// netFieldMap resolves the model's network field map with defaults applied.
+func netFieldMap(def ModelDefinition) NetworkFieldMap {
+	return def.Network.WithDefaults()
+}
+
+// BuildNetStateMV returns the materialized view that maintains per-pair-per-day
+// aggregation state at ingest. The model's filter is applied here so the state
+// reflects the model's own scope.
+func BuildNetStateMV(def ModelDefinition, mt ModelType, stateTable, mvName string) (string, error) {
+	nf := netFieldMap(def)
+	src := chFieldRef(nf.SrcField)
+	dst := chFieldRef(nf.DstField)
+	port := chFieldRef(nf.PortField)
+	bytes := chNumericFieldRef(nf.BytesField)
+	dur := chNumericFieldRef(nf.DurationField)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s TO %s AS\n", mvName, stateTable))
+	b.WriteString("SELECT fractal_id,\n")
+	b.WriteString(fmt.Sprintf("    %s AS src,\n", src))
+	b.WriteString(fmt.Sprintf("    %s AS dst,\n", dst))
+	b.WriteString(fmt.Sprintf("    %s AS port,\n", port))
+	b.WriteString("    toDate(timestamp) AS day,\n")
+	b.WriteString("    toUInt64(count()) AS conn_count,\n")
+	b.WriteString(fmt.Sprintf("    groupArrayState(%d)(toUnixTimestamp(timestamp)) AS ts_state,\n", netStateArrayCap))
+	b.WriteString(fmt.Sprintf("    groupArrayState(%d)(%s) AS size_state,\n", netStateArrayCap, bytes))
+	b.WriteString(fmt.Sprintf("    sum(%s) AS dur_sum,\n", dur))
+	b.WriteString("    min(timestamp) AS first_ts,\n")
+	b.WriteString("    max(timestamp) AS last_ts\n")
+	b.WriteString("FROM logs\n")
+	b.WriteString(fmt.Sprintf("WHERE fractal_id != '' AND %s != '' AND %s != ''", src, dst))
+	for _, fc := range def.Filter {
+		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
+	}
+	b.WriteString("\nGROUP BY fractal_id, src, dst, port, day")
+	return b.String(), nil
+}
+
+// fractalScopeClause returns the WHERE predicate scoping a state read to a fractal.
+func fractalScopeClause(fractalID string) string {
+	return fmt.Sprintf("fractal_id = %s", chStringLiteral(fractalID))
+}
+
+// BuildNetScoreReadQuery returns the query the scorer runs each pass over the state
+// table (never raw logs). It reads only the recent day-buckets and pre-filters to
+// qualifying pairs so the heavy scoring in Go runs over a bounded set.
+func BuildNetScoreReadQuery(def ModelDefinition, mt ModelType, stateTable, fractalID string, windowDays int) string {
+	var having string
+	if mt == ModelTypeLongConnection {
+		lc := def.LongConn.WithDefaults()
+		having = fmt.Sprintf("HAVING total_duration >= %s", chFloatLiteral(lc.BaseSeconds))
+	} else {
+		windowSecs := int64(windowDays) * 86400
+		bp := def.Beacon.WithDefaults(windowSecs)
+		having = fmt.Sprintf("HAVING cnt >= %d AND cnt < %d", bp.MinConnections, bp.StrobeLimit)
+	}
+	// The Merge combinator must carry the same parameter as the stored parametric
+	// groupArray(N) state, or ClickHouse rejects it (code 43). first_ts/last_ts are
+	// intentionally omitted: the scorer derives the observed range from the merged,
+	// window-trimmed timestamps, and scanning the SimpleAggregateFunction(min/max,
+	// DateTime64) result columns is not supported by the row scanner.
+	return fmt.Sprintf(`SELECT src, dst, port,
+    sum(conn_count) AS cnt,
+    groupArrayMerge(%d)(ts_state) AS ts_list,
+    groupArrayMerge(%d)(size_state) AS size_list,
+    sum(dur_sum) AS total_duration
+FROM %s
+WHERE %s AND day >= today() - %d
+GROUP BY src, dst, port
+%s`, netStateArrayCap, netStateArrayCap, stateTable, fractalScopeClause(fractalID), windowDays, having)
+}
+
+// BuildNetPrevalenceQuery returns the per-destination distinct-source counts over the
+// window, used to rerank scores by prevalence (a ubiquitous destination is likely a
+// shared service; a single-host destination is more interesting).
+func BuildNetPrevalenceQuery(stateTable, fractalID string, windowDays int) string {
+	return fmt.Sprintf(`SELECT dst, uniqExact(src) AS prev_total
+FROM %s
+WHERE %s AND day >= today() - %d
+GROUP BY dst`, stateTable, fractalScopeClause(fractalID), windowDays)
+}
+
+// BuildNetNetworkSizeQuery returns the distinct-source count over the window, the
+// denominator for the prevalence ratio.
+func BuildNetNetworkSizeQuery(stateTable, fractalID string, windowDays int) string {
+	return fmt.Sprintf(`SELECT uniqExact(src) AS network_size
+FROM %s
+WHERE %s AND day >= today() - %d`, stateTable, fractalScopeClause(fractalID), windowDays)
+}
+
+// BuildNetPreviewAgg returns a one-off aggregation over raw logs for the model
+// builder preview, before any state table exists. It uses the same projection as the
+// state read (per-pair cnt/ts_list/size_list/duration) but groups directly over the
+// source table within the preview window, so the previewed scores match the warmed
+// model. sourceTable is the (distributed or local) logs table.
+func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalID string, windowDays int) (string, error) {
+	nf := netFieldMap(def)
+	src := chFieldRef(nf.SrcField)
+	dst := chFieldRef(nf.DstField)
+	port := chFieldRef(nf.PortField)
+	bytes := chNumericFieldRef(nf.BytesField)
+	dur := chNumericFieldRef(nf.DurationField)
+
+	var having string
+	if mt == ModelTypeLongConnection {
+		lc := def.LongConn.WithDefaults()
+		having = fmt.Sprintf("HAVING total_duration >= %s", chFloatLiteral(lc.BaseSeconds))
+	} else {
+		windowSecs := int64(windowDays) * 86400
+		bp := def.Beacon.WithDefaults(windowSecs)
+		having = fmt.Sprintf("HAVING cnt >= %d AND cnt < %d", bp.MinConnections, bp.StrobeLimit)
+	}
+
+	var b strings.Builder
+	b.WriteString("SELECT\n")
+	b.WriteString(fmt.Sprintf("    %s AS src, %s AS dst, %s AS port,\n", src, dst, port))
+	b.WriteString("    toUInt64(count()) AS cnt,\n")
+	b.WriteString(fmt.Sprintf("    groupArray(%d)(toUnixTimestamp(timestamp)) AS ts_list,\n", netStateArrayCap))
+	b.WriteString(fmt.Sprintf("    groupArray(%d)(%s) AS size_list,\n", netStateArrayCap, bytes))
+	b.WriteString(fmt.Sprintf("    sum(%s) AS total_duration\n", dur))
+	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
+	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND timestamp >= now() - INTERVAL %d DAY", fractalScopeClause(fractalID), src, dst, windowDays))
+	for _, fc := range def.Filter {
+		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
+	}
+	b.WriteString("\nGROUP BY src, dst, port\n")
+	b.WriteString(having)
+	return b.String(), nil
+}
+
+// BuildNetPreviewPrevalence returns the per-destination distinct-source counts over
+// raw logs for the preview window (no state table exists yet). It omits the pair
+// HAVING so prevalence counts ALL sources, not only qualifying pairs.
+func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID string, windowDays int) string {
+	nf := netFieldMap(def)
+	src := chFieldRef(nf.SrcField)
+	dst := chFieldRef(nf.DstField)
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("SELECT %s AS dst, uniqExact(%s) AS prev_total\n", dst, src))
+	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
+	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND timestamp >= now() - INTERVAL %d DAY", fractalScopeClause(fractalID), src, dst, windowDays))
+	for _, fc := range def.Filter {
+		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
+	}
+	b.WriteString("\nGROUP BY dst")
+	return b.String()
+}
+
+// BuildNetPreviewNetworkSize returns the total distinct-source count over the preview
+// window, the denominator for the prevalence ratio.
+func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID string, windowDays int) string {
+	nf := netFieldMap(def)
+	src := chFieldRef(nf.SrcField)
+	dst := chFieldRef(nf.DstField)
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("SELECT uniqExact(%s) AS network_size\n", src))
+	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
+	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND timestamp >= now() - INTERVAL %d DAY", fractalScopeClause(fractalID), src, dst, windowDays))
+	for _, fc := range def.Filter {
+		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
+	}
+	return b.String()
+}
+
+// chFloatLiteral renders a float as a ClickHouse numeric literal without exponent noise.
+func chFloatLiteral(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }

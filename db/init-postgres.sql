@@ -1731,6 +1731,8 @@ ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_done       INT   
 ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_anchor     TIMESTAMP;
 ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_started_at TIMESTAMP;
 ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_error      TEXT        NOT NULL DEFAULT '';
+-- Scheduled (network) models: the background scorer's per-model rescore cursor.
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS last_scored_at      TIMESTAMPTZ;
 
 -- ============================
 -- Health Notifications

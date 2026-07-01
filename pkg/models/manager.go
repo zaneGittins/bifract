@@ -78,6 +78,28 @@ func chModelDistName(id string) string {
 	return "model_dist_" + strings.ReplaceAll(id, "-", "_")
 }
 
+// chModelStateName returns the CH rolling-state table name for a scheduled
+// (network) model. The MV writes here at ingest; the scorer reads from here.
+func chModelStateName(id string) string {
+	return "model_state_" + strings.ReplaceAll(id, "-", "_")
+}
+
+// chModelStateDistName returns the distributed table over the state table, used by
+// the scorer in cluster mode so a single-replica scoring pass aggregates state from
+// every shard (state is maintained per-shard by the local MV).
+func chModelStateDistName(id string) string {
+	return "model_diststate_" + strings.ReplaceAll(id, "-", "_")
+}
+
+// networkStateReadTable returns the table the scorer reads for a network model:
+// the distributed state table in cluster mode, the local state table otherwise.
+func (m *Manager) networkStateReadTable(id string) string {
+	if m.ch.IsCluster() {
+		return chModelStateDistName(id)
+	}
+	return chModelStateName(id)
+}
+
 // ---- Queries ----
 
 // List returns all models for a fractal (V1: fractal-scoped only).
@@ -275,7 +297,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 		ddlCtx, ddlCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer ddlCancel()
 		_, _ = m.pg.Exec(ctx, `UPDATE analytics_models SET status='rebuilding' WHERE id=$1`, id)
-		if err := m.dropCHObjects(ddlCtx, existing.CHTableName, existing.CHMVName); err != nil {
+		if err := m.dropCHObjects(ddlCtx, id, existing.CHTableName, existing.CHMVName, existing.ModelType); err != nil {
 			log.Printf("model %s: drop CH objects during update: %v", id, err)
 		}
 		if err := m.createCHObjects(ddlCtx, id, req.Definition, existing.ModelType, existing.CHTableName, existing.CHMVName); err != nil {
@@ -316,7 +338,13 @@ func detectionChanged(a, b ModelDefinition) bool {
 		a.PartitionKey != b.PartitionKey ||
 		a.ValueKey != b.ValueKey ||
 		!reflect.DeepEqual(a.KeyFields, b.KeyFields) ||
-		a.TimeBucket != b.TimeBucket
+		a.TimeBucket != b.TimeBucket ||
+		// Network models: the field map determines what the MV extracts and the
+		// window drives the state TTL, so either change requires a state rebuild.
+		// Beacon/LongConn/Modifiers params are applied fresh by the scorer at read
+		// time (like alert thresholds), so they intentionally do NOT rebuild.
+		!reflect.DeepEqual(a.Network, b.Network) ||
+		a.Window != b.Window
 }
 
 // syncLinkedAlert updates the model's backing alert query, creating it if absent.
@@ -400,7 +428,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	go func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		if err := m.dropCHObjects(bgCtx, model.CHTableName, model.CHMVName); err != nil {
+		if err := m.dropCHObjects(bgCtx, id, model.CHTableName, model.CHMVName, model.ModelType); err != nil {
 			log.Printf("model %s: async drop CH objects: %v", id, err)
 		}
 	}()
@@ -453,6 +481,9 @@ func isCHDDLTimeout(err error) bool {
 }
 
 func (m *Manager) createCHObjects(ctx context.Context, id string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
+	if mt.IsScheduled() {
+		return m.createNetworkCHObjects(ctx, id, def, mt, tableName, mvName)
+	}
 	tableSQL, mvSQL, err := GenerateDDL(def, mt, "`"+tableName+"`", "`"+mvName+"`")
 	if err != nil {
 		return err
@@ -487,15 +518,90 @@ func (m *Manager) createCHObjects(ctx context.Context, id string, def ModelDefin
 	return nil
 }
 
-func (m *Manager) dropCHObjects(ctx context.Context, tableName, mvName string) error {
-	// Order: drop MV first, then table.
+// createNetworkCHObjects creates the three ClickHouse objects a scheduled (network)
+// model owns: the rolling-state table (MV target), the results table (scorer output,
+// read by model_lookup / the data viewer), and the MV that maintains state at ingest.
+// Backfill is N/A: the MV + TTL self-seed the rolling window.
+func (m *Manager) createNetworkCHObjects(ctx context.Context, id string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
+	stateName := chModelStateName(id)
+	windowDays := def.WindowDays()
+
+	stateSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetStateTableDDL("`"+stateName+"`", windowDays)))
+	if err := m.ch.Exec(ctx, stateSQL); err != nil && !isCHDDLTimeout(err) {
+		return fmt.Errorf("create state table: %w", err)
+	}
+
+	resultsSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetResultsTableDDL("`"+tableName+"`")))
+	if err := m.ch.Exec(ctx, resultsSQL); err != nil && !isCHDDLTimeout(err) {
+		_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", stateName)))
+		return fmt.Errorf("create results table: %w", err)
+	}
+
+	mvSQL, err := BuildNetStateMV(def, mt, "`"+stateName+"`", "`"+mvName+"`")
+	if err != nil {
+		return err
+	}
+	if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(mvSQL)); err != nil && !isCHDDLTimeout(err) {
+		// Roll back state + results so a failed create leaves nothing behind.
+		_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", stateName)))
+		_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)))
+		return fmt.Errorf("create state mv: %w", err)
+	}
+
+	// Distributed tables (cluster mode): one over the results table for fan-out
+	// reads, one over the state table so the scorer aggregates state across shards.
+	if m.ch.IsCluster() {
+		cl := storage.EscCHStr(m.ch.Cluster)
+		distResults := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
+			chModelDistName(id), tableName, cl, tableName,
+		)
+		if err := m.ch.Exec(ctx, distResults); err != nil {
+			log.Printf("model %s: create distributed results table: %v", id, err)
+		}
+		distState := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
+			chModelStateDistName(id), stateName, cl, stateName,
+		)
+		if err := m.ch.Exec(ctx, distState); err != nil {
+			log.Printf("model %s: create distributed state table: %v", id, err)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName string, mt ModelType) error {
+	// Order: drop the MV first so it can never write to a half-dropped target, then
+	// the target tables. Every drop is IF EXISTS + best-effort (log and continue) so
+	// a partial prior failure still fully cleans up. InjectOnCluster fans each drop
+	// out to every shard/replica.
 	mvDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", mvName))
 	if err := m.ch.Exec(ctx, mvDrop); err != nil {
 		log.Printf("drop MV %s: %v", mvName, err)
 	}
+	// A scheduled model also owns a rolling-state table (the MV's target); drop it.
+	if mt.IsScheduled() {
+		stateDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelStateName(id)))
+		if err := m.ch.Exec(ctx, stateDrop); err != nil {
+			log.Printf("drop state table %s: %v", chModelStateName(id), err)
+		}
+	}
 	tableDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName))
 	if err := m.ch.Exec(ctx, tableDrop); err != nil {
 		log.Printf("drop table %s: %v", tableName, err)
+	}
+	// Drop the distributed table(s) (cluster mode) so no dangling fan-out object remains.
+	if m.ch.IsCluster() {
+		distDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelDistName(id)))
+		if err := m.ch.Exec(ctx, distDrop); err != nil {
+			log.Printf("drop distributed table %s: %v", chModelDistName(id), err)
+		}
+		if mt.IsScheduled() {
+			distStateDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelStateDistName(id)))
+			if err := m.ch.Exec(ctx, distStateDrop); err != nil {
+				log.Printf("drop distributed state table %s: %v", chModelStateDistName(id), err)
+			}
+		}
 	}
 	return nil
 }
@@ -551,6 +657,8 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID, search, 
 		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
 	case ModelTypeVolumeBaseline:
 		return m.getVolumeBaselineData(ctx, tableName, fractalID, model.Definition, search, sortCol, sortDir, limit, offset)
+	case ModelTypeBeacon, ModelTypeLongConnection:
+		return m.getNetworkData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
 	default:
 		return nil, 0, fmt.Errorf("unknown model type: %s", model.ModelType)
 	}
@@ -747,6 +855,81 @@ func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalI
 }
 
 // GetStats returns aggregate statistics for a model's data table.
+// networkResultCols is the projection returned to the data viewer for a scored
+// pair: the final verdict plus the full breakdown (subscores + prevalence modifier)
+// so the reviewer can see why a pair scored high.
+const networkResultCols = "src_ip, dst_ip, dst_port, " +
+	"round(final_score,3) AS final_score, round(regularity_score,3) AS regularity_score, " +
+	"round(ts_score,3) AS ts_score, round(ds_score,3) AS ds_score, round(dur_score,3) AS dur_score, round(hist_score,3) AS hist_score, " +
+	"round(prevalence,4) AS prevalence, prevalence_total, round(prevalence_score,3) AS prevalence_score, " +
+	"conn_count, round(total_duration,1) AS total_duration, first_seen, last_seen, scored_at"
+
+// networkScoreThreshold returns the model's final-score flag threshold.
+func networkScoreThreshold(def ModelDefinition, mt ModelType) float64 {
+	if mt == ModelTypeLongConnection {
+		return def.LongConn.WithDefaults().ScoreThreshold
+	}
+	return def.Beacon.WithDefaults(int64(def.WindowDays())*86400).ScoreThreshold
+}
+
+// getNetworkData returns scored pairs from a network model's results table, ranked
+// by final_score (severity order) by default. Both beacon and long_connection share
+// this table.
+func (m *Manager) getNetworkData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
+	allowed := map[string]bool{"final_score": true, "regularity_score": true, "conn_count": true, "total_duration": true, "prevalence": true, "last_seen": true}
+	if !allowed[sortCol] {
+		sortCol = "final_score"
+	}
+	fid := storage.EscCHStr(fractalID)
+	where := fmt.Sprintf("fractal_id = '%s'", fid)
+	if search != "" {
+		s := storage.EscCHStr(search)
+		where += fmt.Sprintf(" AND (src_ip ILIKE '%%%s%%' OR dst_ip ILIKE '%%%s%%')", s, s)
+	}
+	base := fmt.Sprintf("SELECT %s FROM `%s` FINAL WHERE %s", networkResultCols, tableName, where)
+
+	var total uint64
+	if err := m.ch.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM (%s)", base)).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count network data: %w", err)
+	}
+	dataQuery := fmt.Sprintf("%s ORDER BY %s %s LIMIT %d OFFSET %d", base, sortCol, strings.ToUpper(sortDir), limit, offset)
+	rows, err := m.ch.Query(ctx, dataQuery)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query network data: %w", err)
+	}
+	return rows, total, nil
+}
+
+func (m *Manager) getNetworkStats(ctx context.Context, qt, fid string, def ModelDefinition, mt ModelType) (map[string]interface{}, error) {
+	threshold := networkScoreThreshold(def, mt)
+	q := fmt.Sprintf(`SELECT count() AS total_pairs,
+       countIf(final_score >= %g) AS flagged,
+       countIf(final_score > 0.8) AS critical,
+       round(max(final_score), 3) AS max_score
+FROM %s FINAL WHERE fractal_id = '%s'`, threshold, qt, fid)
+	rows, err := m.ch.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("network stats: %w", err)
+	}
+	result := map[string]interface{}{}
+	if len(rows) > 0 {
+		result["total_pairs"] = rows[0]["total_pairs"]
+		result["flagged"] = rows[0]["flagged"]
+		result["critical"] = rows[0]["critical"]
+		result["max_score"] = rows[0]["max_score"]
+	}
+	return result, nil
+}
+
+func (m *Manager) getNetworkHistogram(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
+	inner := fmt.Sprintf("SELECT final_score FROM %s FINAL WHERE fractal_id = '%s'", qt, fid)
+	buckets, err := m.runHistogram(ctx, inner, "least(toUInt64(floor(final_score * 10)), 9)", rarityHistLabels)
+	if err != nil {
+		return nil, fmt.Errorf("network histogram: %w", err)
+	}
+	return map[string]interface{}{"metric": "final_score", "buckets": buckets}, nil
+}
+
 func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) (map[string]interface{}, error) {
 	tableName := m.readTableName(model)
 	qt := "`" + tableName + "`"
@@ -759,6 +942,8 @@ func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) 
 		return m.getFirstSeenStats(ctx, qt, fid)
 	case ModelTypeVolumeBaseline:
 		return m.getVolumeBaselineStats(ctx, tableName, model.Definition, fid)
+	case ModelTypeBeacon, ModelTypeLongConnection:
+		return m.getNetworkStats(ctx, qt, fid, model.Definition, model.ModelType)
 	default:
 		return nil, fmt.Errorf("unknown model type: %s", model.ModelType)
 	}
@@ -854,6 +1039,8 @@ func (m *Manager) GetHistogram(ctx context.Context, model *Model, fractalID stri
 		return m.getFirstSeenHistogram(ctx, qt, fid)
 	case ModelTypeVolumeBaseline:
 		return m.getVolumeBaselineHistogram(ctx, tableName, model.Definition, fid)
+	case ModelTypeBeacon, ModelTypeLongConnection:
+		return m.getNetworkHistogram(ctx, qt, fid)
 	default:
 		return nil, fmt.Errorf("unknown model type: %s", model.ModelType)
 	}
@@ -1093,9 +1280,6 @@ func scanModelRow(row modelScannable) (*Model, error) {
 // fields. Shared by create/update validation and the pre-save preview so both
 // reject the same invalid definitions with identical messages.
 func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
-	if mt != ModelTypeRarity && mt != ModelTypeFirstSeen && mt != ModelTypeVolumeBaseline {
-		return fmt.Errorf("invalid model type: %s", mt)
-	}
 	switch mt {
 	case ModelTypeRarity:
 		if def.PartitionKey == "" {
@@ -1115,6 +1299,20 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 		if def.TimeBucket != "" && def.TimeBucket != "day" && def.TimeBucket != "hour" {
 			return fmt.Errorf("invalid time_bucket for volume_baseline: %s (use day or hour)", def.TimeBucket)
 		}
+	case ModelTypeBeacon, ModelTypeLongConnection:
+		// Field map defaults make src/dst near-always resolvable; only reject an
+		// explicitly blanked src/dst. The window must be one of the supported values.
+		nf := def.Network.WithDefaults()
+		if nf.SrcField == "" || nf.DstField == "" {
+			return fmt.Errorf("network models require a source and destination field")
+		}
+		switch def.Window {
+		case "", "1d", "24h", "7d", "14d":
+		default:
+			return fmt.Errorf("invalid window for network model: %s (use 1d, 7d, or 14d)", def.Window)
+		}
+	default:
+		return fmt.Errorf("invalid model type: %s", mt)
 	}
 	return nil
 }

@@ -211,7 +211,7 @@ const AnalyticsModels = {
         return `
 <tr>
     <td><button class="model-name-link" data-id="${m.id}" title="Open ${_esc(m.name)}">${_esc(m.name)}</button><div class="model-desc">${_esc(m.description)}</div></td>
-    <td>${_esc(m.model_type)}</td>
+    <td>${_esc(this._typeLabel(m.model_type))}</td>
     <td><span class="model-badge ${statusClass}"${errorTitle}>${_esc(m.status)}</span>${backfillBadge}</td>
     <td>${alertBadge}</td>
     <td>${updated}</td>
@@ -285,8 +285,10 @@ const AnalyticsModels = {
         if (!m) return;
         window.App?.pushSubPath(`${id}/edit`);
         const def = m.definition || {};
-        const alertCfg = { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5 };
+        const alertCfg = { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 };
         if (def.alert) Object.assign(alertCfg, def.alert);
+        if (def.beacon && def.beacon.score_threshold != null) alertCfg.beacon_threshold = def.beacon.score_threshold;
+        if (def.long_conn && def.long_conn.score_threshold != null) alertCfg.longconn_threshold = def.long_conn.score_threshold;
         this.editor = {
             editId: m.id,
             modelType: m.model_type || 'rarity',
@@ -297,6 +299,8 @@ const AnalyticsModels = {
             keyFields: (def.key_fields && def.key_fields.length) ? [...def.key_fields] : [''],
             minSample: def.min_sample || 5,
             timeBucket: def.time_bucket || 'day',
+            network: this._networkFromDef(def),
+            window: def.window || '1d',
             alertMode: m.alert_mode || 'none',
             alertConfig: alertCfg,
             name: m.name,
@@ -419,7 +423,7 @@ const AnalyticsModels = {
     },
 
     // ---- Score distribution histogram ----
-    METRIC_LABELS: { confidence: 'Confidence', z_score: 'Anomaly score (|z|)', event_count: 'Event count' },
+    METRIC_LABELS: { confidence: 'Confidence', z_score: 'Anomaly score (|z|)', event_count: 'Event count', beacon_score: 'Beacon score', longconn_score: 'Long-connection score', final_score: 'Score' },
 
     async _loadHistogram() {
         const v = this.viewer;
@@ -656,7 +660,11 @@ const AnalyticsModels = {
             ? ['partition_val', 'value_val', 'model_count', 'percent', 'confidence']
             : m.model_type === 'volume_baseline'
                 ? ['entity_val', 'latest_count', 'baseline_median', 'mad', 'z_score', 'n_buckets', 'latest_bucket']
-                : ['entity_key', 'first_seen', 'last_seen', 'event_count'];
+                : m.model_type === 'beacon'
+                    ? ['src_ip', 'dst_ip', 'dst_port', 'final_score', 'ts_score', 'ds_score', 'dur_score', 'hist_score', 'prevalence', 'conn_count', 'last_seen']
+                    : m.model_type === 'long_connection'
+                        ? ['src_ip', 'dst_ip', 'dst_port', 'final_score', 'total_duration', 'conn_count', 'prevalence', 'last_seen']
+                        : ['entity_key', 'first_seen', 'last_seen', 'event_count'];
 
         const headers = cols.map(c => {
             const active = v.sortCol === c ? (v.sortDir === 'asc' ? 'sort-asc' : 'sort-desc') : '';
@@ -870,8 +878,10 @@ const AnalyticsModels = {
             keyFields: [''],
             minSample: 5,
             timeBucket: 'day',
+            network: this._networkFromDef({}),
+            window: '1d',
             alertMode: 'paused',
-            alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5 },
+            alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 },
             name: '',
             description: '',
             timeRange: '24h',
@@ -969,6 +979,14 @@ const AnalyticsModels = {
                     <div class="model-type-card ${e.modelType === 'volume_baseline' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="volume_baseline">
                         <div class="card-title">Volume Baseline</div>
                         <div class="card-desc">Flag entities whose volume deviates from their own history (modified z-score).</div>
+                    </div>
+                    <div class="model-type-card ${e.modelType === 'beacon' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="beacon">
+                        <div class="card-title">Beacon</div>
+                        <div class="card-desc">Detect regular, automated check-ins (C2 beaconing) in network connection logs.</div>
+                    </div>
+                    <div class="model-type-card ${e.modelType === 'long_connection' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="long_connection">
+                        <div class="card-title">Long Connection</div>
+                        <div class="card-desc">Surface unusually long-lived sessions (tunnels, exfil, persistent C2) by total duration.</div>
                     </div>
                 </div>
             </div>
@@ -1100,9 +1118,63 @@ const AnalyticsModels = {
 <datalist id="${listId}">${opts}</datalist>`;
     },
 
+    // Normalizes a definition's network field map to the editor shape with defaults.
+    _networkFromDef(def) {
+        const n = (def && def.network) || {};
+        return {
+            src_field: n.src_field || 'src_ip',
+            dst_field: n.dst_field || 'dst_ip',
+            port_field: n.port_field || 'dst_port',
+            duration_field: n.duration_field || 'duration',
+            bytes_field: n.bytes_field || 'orig_bytes',
+        };
+    },
+
+    _isNetworkType(mt) { return mt === 'beacon' || mt === 'long_connection'; },
+
+    _typeLabel(mt) {
+        return { rarity: 'Rarity', first_seen: 'First / Last Seen', volume_baseline: 'Volume Baseline', beacon: 'Beacon', long_connection: 'Long Connection' }[mt] || mt;
+    },
+
     // ---- Shape (right panel) ----
     _editorShapeHTML() {
         const e = this.editor;
+        if (this._isNetworkType(e.modelType)) {
+            const n = e.network;
+            const isBeacon = e.modelType === 'beacon';
+            const windows = [['1d', '1 day'], ['7d', '7 days'], ['14d', '14 days']];
+            return `
+<div class="field-group">
+    <label>Source field</label>
+    ${this._fieldInput('netSrc', n.src_field, 'src_ip')}
+</div>
+<div class="field-group" style="margin-top:10px">
+    <label>Destination field</label>
+    ${this._fieldInput('netDst', n.dst_field, 'dst_ip')}
+</div>
+<div class="field-group" style="margin-top:10px">
+    <label>Port field</label>
+    ${this._fieldInput('netPort', n.port_field, 'dst_port')}
+</div>
+${isBeacon ? `
+<div class="field-group" style="margin-top:10px">
+    <label>Bytes field (connection size)</label>
+    ${this._fieldInput('netBytes', n.bytes_field, 'orig_bytes')}
+</div>` : `
+<div class="field-group" style="margin-top:10px">
+    <label>Duration field (seconds)</label>
+    ${this._fieldInput('netDuration', n.duration_field, 'duration')}
+</div>`}
+<div class="field-group" style="margin-top:10px">
+    <label>Rolling window</label>
+    <select id="netWindow" class="full-input">
+        ${windows.map(([v, l]) => `<option value="${v}" ${e.window === v ? 'selected' : ''}>${l}</option>`).join('')}
+    </select>
+</div>
+<p class="config-hint">${isBeacon
+    ? 'Scores the regularity of connection timing and size per (source, destination, port). A longer window catches slower beacons (e.g. daily check-ins).'
+    : 'Scores the total connection duration per (source, destination, port). A longer window aggregates recurring long sessions.'}</p>`;
+        }
         if (e.modelType === 'rarity') {
             return `
 <div class="field-group">
@@ -1165,6 +1237,16 @@ const AnalyticsModels = {
 
     _bindEditorShape() {
         const e = this.editor;
+        if (this._isNetworkType(e.modelType)) {
+            const bindField = (id, key) => document.getElementById(id)?.addEventListener('input', ev => { e.network[key] = ev.target.value.trim(); this._schedulePreview(); });
+            bindField('netSrc', 'src_field');
+            bindField('netDst', 'dst_field');
+            bindField('netPort', 'port_field');
+            bindField('netBytes', 'bytes_field');
+            bindField('netDuration', 'duration_field');
+            document.getElementById('netWindow')?.addEventListener('change', ev => { e.window = ev.target.value; this._schedulePreview(); });
+            return;
+        }
         if (e.modelType === 'rarity') {
             const pSel = document.getElementById('shapePartKey');
             const vSel = document.getElementById('shapeValKey');
@@ -1203,7 +1285,21 @@ const AnalyticsModels = {
         const c = this.editor.alertConfig;
         const mt = this.editor.modelType;
         let typeFields;
-        if (mt === 'rarity') {
+        if (mt === 'beacon') {
+            typeFields = `
+    <div class="field-group" style="margin-top:10px">
+        <label>Beacon score threshold</label>
+        <input type="number" id="alertBeaconThreshold" class="model-num-input" value="${c.beacon_threshold}" min="0" max="1" step="0.05">
+        <p class="config-hint">Alert when a pair's final beacon score (regularity, reranked by prevalence) is at or above this. 0.8 is a strong-signal cutoff.</p>
+    </div>`;
+        } else if (mt === 'long_connection') {
+            typeFields = `
+    <div class="field-group" style="margin-top:10px">
+        <label>Long-connection score threshold</label>
+        <input type="number" id="alertLongConnThreshold" class="model-num-input" value="${c.longconn_threshold}" min="0" max="1" step="0.05">
+        <p class="config-hint">Alert when a pair's duration score is at or above this. 0.5 corresponds to the ~8h tier.</p>
+    </div>`;
+        } else if (mt === 'rarity') {
             typeFields = `
     <div class="form-row" style="margin-top:10px">
         <div class="field-group">
@@ -1252,6 +1348,8 @@ const AnalyticsModels = {
         document.getElementById('alertPercent')?.addEventListener('change', ev => { c.percent_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
         document.getElementById('alertZThreshold')?.addEventListener('change', ev => { c.z_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
         document.getElementById('alertOnNew')?.addEventListener('change', ev => { c.alert_on_new = ev.target.checked; this._schedulePreview(); });
+        document.getElementById('alertBeaconThreshold')?.addEventListener('change', ev => { c.beacon_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
+        document.getElementById('alertLongConnThreshold')?.addEventListener('change', ev => { c.longconn_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
     },
 
     // ---- Translation feedback strip (left panel) ----
@@ -1526,6 +1624,9 @@ const AnalyticsModels = {
         if ((e.modelType === 'first_seen' || e.modelType === 'volume_baseline') && !e.keyFields.filter(Boolean).length) {
             return e.modelType === 'volume_baseline' ? 'Add at least one entity field' : 'Add at least one key field';
         }
+        if (this._isNetworkType(e.modelType) && (!e.network.src_field || !e.network.dst_field)) {
+            return 'Set a source and destination field';
+        }
         return null;
     },
 
@@ -1541,6 +1642,14 @@ const AnalyticsModels = {
             def.key_fields = e.keyFields.filter(Boolean);
             def.time_bucket = e.timeBucket;
             def.min_sample = e.minSample;
+        } else if (this._isNetworkType(e.modelType)) {
+            def.network = { ...e.network };
+            def.window = e.window;
+            if (e.modelType === 'beacon') {
+                def.beacon = { score_threshold: e.alertConfig.beacon_threshold };
+            } else {
+                def.long_conn = { score_threshold: e.alertConfig.longconn_threshold };
+            }
         } else {
             def.key_fields = e.keyFields.filter(Boolean);
         }
@@ -1648,9 +1757,15 @@ const AnalyticsModels = {
                 [Number(s.max_z || 0).toFixed(2), 'max |z|'],
                 [num(s.min_buckets), 'min history'],
             ];
+        } else if (this._isNetworkType(p.model_type)) {
+            chips = [
+                [num(s.pairs_scored), 'pairs scored'],
+                [Number(s.max_score || 0).toFixed(2), 'max score'],
+                [num(s.network_size), 'hosts'],
+            ];
         }
 
-        const scoredTotal = Number(s.scored_values || s.entities || s.entities_scored || 0);
+        const scoredTotal = Number(s.scored_values || s.entities || s.entities_scored || s.pairs_scored || 0);
         const flags = Number(p.would_flag || 0);
         const flagBadge = `<div class="score-flag-badge ${flags > 0 ? 'has-flags' : ''}">
     <span class="score-flag-count">${this._fmtNum(flags)}</span>
@@ -1726,6 +1841,9 @@ const AnalyticsModels = {
             partition_val: 'Partition', value_val: 'Value', model_count: 'Days seen', percent: '%', confidence: 'Confidence',
             entity_key: 'Entity', entity_val: 'Entity', first_seen: 'First seen', last_seen: 'Last seen', event_count: 'Events',
             latest_count: 'Latest', baseline_median: 'Median', mad: 'MAD', n_buckets: 'Buckets', z_score: 'z-score',
+            src_ip: 'Source', dst_ip: 'Destination', dst_port: 'Port', final_score: 'Score', score: 'Score',
+            regularity: 'Regularity', ts_score: 'Timing', ds_score: 'Size', dur_score: 'Duration', hist_score: 'Histogram',
+            prevalence: 'Prevalence', conn_count: 'Conns', total_duration: 'Total dur (s)',
         };
         return map[c] || c.replace(/_/g, ' ');
     },
@@ -1735,6 +1853,8 @@ const AnalyticsModels = {
         if (col === 'confidence') return _esc(Number(v).toFixed(3));
         if (col === 'percent') return _esc(Number(v).toFixed(2) + '%');
         if (col === 'z_score' || col === 'baseline_median' || col === 'mad') return _esc(Number(v).toFixed(2));
+        if (col === 'score' || col === 'final_score' || col === 'regularity' || col === 'ts_score' || col === 'ds_score' || col === 'dur_score' || col === 'hist_score' || col === 'prevalence') return _esc(Number(v).toFixed(3));
+        if (col === 'conn_count' || col === 'total_duration') return _esc(this._fmtNum(Number(v)));
         if (col === 'model_count' || col === 'event_count' || col === 'latest_count' || col === 'n_buckets') return _esc(this._fmtNum(Number(v)));
         if (col === 'first_seen' || col === 'last_seen') {
             const d = new Date(v);

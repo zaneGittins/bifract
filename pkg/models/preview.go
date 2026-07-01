@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -102,6 +103,12 @@ func (m *Manager) Preview(ctx context.Context, fractalID string, mt ModelType, d
 	days, ok := PreviewWindowDays(window)
 	if !ok {
 		return nil, fmt.Errorf("invalid preview window: %s", window)
+	}
+
+	// Network models score in Go over a one-off raw-log aggregation (no state table
+	// exists yet), reusing the same scoring core as the scorer so preview == warmed.
+	if mt.IsScheduled() {
+		return m.previewNetwork(ctx, fractalID, mt, def, window, days)
 	}
 
 	end := time.Now().UTC()
@@ -343,6 +350,147 @@ LIMIT 25`, scored)
 		"min_buckets":     volumeMinBuckets(def),
 	})
 	return nil
+}
+
+// previewNetworkPairCap bounds pairs scored in a preview so an interactive request
+// stays cheap. Truncation is reflected in the stats (scanned vs scored).
+const previewNetworkPairCap = 20000
+
+// previewNetwork estimates a beacon/long_connection model's output over a recent
+// window by aggregating raw logs once and scoring in Go with the SAME functions the
+// scorer uses (including the prevalence modifier), so the preview matches the model
+// once it warms up.
+func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt ModelType, def ModelDefinition, window string, days int) (*PreviewResult, error) {
+	windowSecs := int64(days) * 86400
+	source := m.ch.ReadTable()
+	cfg := loadPreviewConfig()
+
+	bp := def.Beacon.WithDefaults(windowSecs)
+	lc := def.LongConn.WithDefaults()
+	mp := def.Modifiers.WithDefaults()
+	threshold := networkScoreThreshold(def, mt)
+
+	// Prevalence context over the same window (all sources, not just qualifying).
+	var networkSize uint64
+	if err := m.ch.QueryRow(ctx, BuildNetPreviewNetworkSize(def, source, fractalID, days)+cfg.settings()).Scan(&networkSize); err != nil {
+		return nil, fmt.Errorf("preview network size: %w", err)
+	}
+	prevalence := make(map[string]uint64)
+	if networkSize > 0 {
+		if err := m.ch.StreamQuery(ctx, "", BuildNetPreviewPrevalence(def, source, fractalID, days)+cfg.settings(),
+			func(row map[string]interface{}) error {
+				prevalence[getString(row, "dst")] = getUint64(row, "prev_total")
+				return nil
+			}, nil); err != nil {
+			return nil, fmt.Errorf("preview prevalence: %w", err)
+		}
+	}
+	if networkSize == 0 {
+		networkSize = 1 // avoid div-by-zero; no data yields an empty preview below
+	}
+
+	aggSQL, err := BuildNetPreviewAgg(def, mt, source, fractalID, days)
+	if err != nil {
+		return nil, err
+	}
+
+	cutoff := time.Now().Unix() - windowSecs
+	var scored, scanned int
+	var maxScore float64
+	var flagged uint64
+	var counts [10]uint64
+	type scoredPair struct {
+		row   map[string]interface{}
+		final float64
+		rs    RegularityScore
+		prev  float64
+	}
+	var top []scoredPair
+
+	streamErr := m.ch.StreamQuery(ctx, "", aggSQL+cfg.settings(), func(row map[string]interface{}) error {
+		scanned++
+		if scored >= previewNetworkPairCap {
+			return nil // keep counting scanned; stop scoring past the cap
+		}
+		scored++
+		p := pairFromRow(row, cutoff)
+		var rs RegularityScore
+		if mt == ModelTypeLongConnection {
+			rs = RegularityScore{Score: ScoreLongConn(p.TotalDuration, lc)}
+		} else {
+			rs = ScoreBeacon(p, bp, windowSecs)
+		}
+		prevRatio := float64(prevalence[p.Dst]) / float64(networkSize)
+		final, _ := ApplyModifiers(rs.Score, prevRatio, mp)
+
+		band := int(final * 10)
+		if band > 9 {
+			band = 9
+		}
+		if band < 0 {
+			band = 0
+		}
+		counts[band]++
+		if final >= threshold {
+			flagged++
+		}
+		if final > maxScore {
+			maxScore = final
+		}
+		top = append(top, scoredPair{row: row, final: final, rs: rs, prev: round3(prevRatio)})
+		return nil
+	}, nil)
+	if streamErr != nil {
+		return nil, fmt.Errorf("preview aggregation: %w", streamErr)
+	}
+
+	// Top 25 by final score.
+	sort.Slice(top, func(i, j int) bool { return top[i].final > top[j].final })
+	if len(top) > 25 {
+		top = top[:25]
+	}
+	topRows := make([]map[string]interface{}, 0, len(top))
+	for _, sp := range top {
+		topRows = append(topRows, map[string]interface{}{
+			"src_ip":     getString(sp.row, "src"),
+			"dst_ip":     getString(sp.row, "dst"),
+			"dst_port":   getString(sp.row, "port"),
+			"score":      sp.final,
+			"regularity": sp.rs.Score,
+			"ts_score":   sp.rs.TsScore,
+			"ds_score":   sp.rs.DsScore,
+			"dur_score":  sp.rs.DurScore,
+			"hist_score": sp.rs.HistScore,
+			"prevalence": sp.prev,
+			"conn_count": getUint64(sp.row, "cnt"),
+		})
+	}
+
+	buckets := make([]histBucket, len(rarityHistLabels))
+	for i, l := range rarityHistLabels {
+		buckets[i] = histBucket{Label: l, Count: counts[i]}
+	}
+
+	metricLabel := "beacon_score"
+	if mt == ModelTypeLongConnection {
+		metricLabel = "longconn_score"
+	}
+	return &PreviewResult{
+		ModelType:  mt,
+		Window:     window,
+		Metric:     metricLabel,
+		Histogram:  buckets,
+		WouldFlag:  flagged,
+		FlagBasis:  fmt.Sprintf("final score >= %g", threshold),
+		Top:        topRows,
+		TopColumns: []string{"src_ip", "dst_ip", "dst_port", "score", "regularity", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "conn_count"},
+		Stats: sanitizeStats(map[string]interface{}{
+			"pairs_scanned": uint64(scanned),
+			"pairs_scored":  uint64(scored),
+			"max_score":     round3(maxScore),
+			"network_size":  networkSize,
+		}),
+	}, nil
 }
 
 func plural(n int) string {

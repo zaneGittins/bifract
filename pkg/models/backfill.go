@@ -135,6 +135,11 @@ func backfillChunks(end time.Time, days int) []timeChunk {
 // The status transition is an atomic conditional UPDATE, so concurrent callers
 // cannot both launch a run.
 func (m *Manager) StartBackfill(ctx context.Context, model *Model, window string) error {
+	if model.ModelType.IsScheduled() {
+		// Scheduled (network) models self-seed: the MV + TTL maintain the rolling
+		// window from ingest, so there is nothing to backfill.
+		return fmt.Errorf("backfill is not applicable to %s models (the rolling window self-seeds)", model.ModelType)
+	}
 	if model.Status != "active" {
 		return fmt.Errorf("model is not active (status=%s)", model.Status)
 	}

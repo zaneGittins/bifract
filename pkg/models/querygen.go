@@ -54,6 +54,18 @@ func GenerateQuery(name string, def ModelDefinition, mt ModelType) string {
 			z = def.Alert.ZThreshold
 		}
 		lines = append(lines, fmt.Sprintf("| z_score > %.2f", z))
+	case ModelTypeBeacon:
+		nf := def.Network.WithDefaults()
+		lines = append(lines, fmt.Sprintf("| model_lookup(model=%s, key=[%s, %s, %s])",
+			escapeBQLString(name), nf.SrcField, nf.DstField, nf.PortField))
+		thr := def.Beacon.WithDefaults(int64(def.WindowDays()) * 86400).ScoreThreshold
+		lines = append(lines, fmt.Sprintf("| beacon_score > %.2f", thr))
+	case ModelTypeLongConnection:
+		nf := def.Network.WithDefaults()
+		lines = append(lines, fmt.Sprintf("| model_lookup(model=%s, key=[%s, %s, %s])",
+			escapeBQLString(name), nf.SrcField, nf.DstField, nf.PortField))
+		thr := def.LongConn.WithDefaults().ScoreThreshold
+		lines = append(lines, fmt.Sprintf("| longconn_score > %.2f", thr))
 	}
 
 	return strings.Join(lines, "\n")
