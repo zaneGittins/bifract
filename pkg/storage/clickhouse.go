@@ -1448,7 +1448,7 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 		return c.GetLogFieldsByID(ctx, logID, ts, fractalID)
 	}
 
-	query := "SELECT log_id, fractal_id, toString(fields) AS fields FROM logs WHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')"
+	query := "SELECT log_id, fractal_id, toString(fields) AS fields FROM logs PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')"
 	args := []interface{}{logID, ts.UTC().Format("2006-01-02 15:04:05.000")}
 	if fractalID != "" {
 		query += " AND fractal_id = ?"
