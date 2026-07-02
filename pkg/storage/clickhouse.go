@@ -383,7 +383,12 @@ func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt fu
 				continue
 			}
 			upper := strings.ToUpper(stmt)
-			if !strings.HasPrefix(upper, "CREATE ") && !strings.HasPrefix(upper, "ALTER ") {
+			if !strings.HasPrefix(upper, "CREATE ") &&
+				!strings.HasPrefix(upper, "ALTER ") &&
+				!strings.HasPrefix(upper, "DROP ") &&
+				!strings.HasPrefix(upper, "TRUNCATE ") &&
+				!strings.HasPrefix(upper, "INSERT ") &&
+				!strings.HasPrefix(upper, "RENAME ") {
 				continue
 			}
 			if transformStmt != nil {
@@ -678,35 +683,14 @@ func QueryConn(ctx context.Context, conn driver.Conn, query string) ([]map[strin
 	var results []map[string]interface{}
 	columnTypes := rows.ColumnTypes()
 	for rows.Next() {
-		values := make([]interface{}, len(columnTypes))
-		for i, col := range columnTypes {
-			typeName := col.DatabaseTypeName()
-			switch {
-			case typeName == "Float64" || typeName == "Nullable(Float64)":
-				values[i] = new(float64)
-			case typeName == "String" || typeName == "Nullable(String)":
-				values[i] = new(string)
-			case typeName == "UInt64" || typeName == "Nullable(UInt64)":
-				values[i] = new(uint64)
-			default:
-				values[i] = new(string)
-			}
-		}
-		if err := rows.Scan(values...); err != nil {
-			continue
-		}
-		row := make(map[string]interface{})
-		for i, col := range columnTypes {
-			switch v := values[i].(type) {
-			case *float64:
-				row[col.Name()] = *v
-			case *string:
-				row[col.Name()] = *v
-			case *uint64:
-				row[col.Name()] = *v
-			}
+		row, err := scanRowMap(columnTypes, rows)
+		if err != nil {
+			return nil, err
 		}
 		results = append(results, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
 	return results, nil
 }
@@ -1765,6 +1749,10 @@ func (c *ClickHouseClient) SyncJSONTypeHints(ctx context.Context, extraFields []
 	if rows.Next() {
 		_ = rows.Scan(&currentType)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read fields column type: %w", err)
+	}
 	rows.Close()
 
 	// Parse existing type-hinted field names. The type string looks like:
@@ -1858,6 +1846,10 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 	var currentType string
 	if rows.Next() {
 		_ = rows.Scan(&currentType)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read fields column type: %w", err)
 	}
 	rows.Close()
 
@@ -1957,10 +1949,14 @@ func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []Sch
 	return c.ReconcileSchemaFields(ctx, fields)
 }
 
+// schemaFieldIndexSanitizeRe replaces any character that is not alphanumeric or
+// underscore with an underscore, producing a valid bare ClickHouse identifier.
+var schemaFieldIndexSanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9_]+`)
+
 // schemaFieldIndexName returns the skip-index name for a custom field. Add and drop
 // paths must use this single source of truth so the names can never drift apart.
 func schemaFieldIndexName(field string) string {
-	return "idx_" + strings.ReplaceAll(field, " ", "_")
+	return "idx_" + schemaFieldIndexSanitizeRe.ReplaceAllString(field, "_")
 }
 
 // DropSchemaFieldIndex removes the skip index for a single custom field, used when a

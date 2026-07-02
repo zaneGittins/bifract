@@ -23,29 +23,39 @@ import (
 // In multi-node setups each ClickHouse node is queried individually so per-node
 // CPU% is accurate.
 type MetricsCollector struct {
-	db            *storage.ClickHouseClient
-	pg            *storage.PostgresClient
-	retentionDays int
-	lastPruneAt   time.Time
-	stop          chan struct{}
+	db             *storage.ClickHouseClient
+	pg             *storage.PostgresClient
+	retentionDays  int
+	lastPruneAt    time.Time
+	lastBaselineAt time.Time
+	onSpike        func(dedup, severity, title, body string)
+	stop           chan struct{}
 }
 
 const (
-	collectInterval   = 30 * time.Second
-	metricsPruneEvery = time.Hour
+	collectInterval    = 30 * time.Second
+	metricsPruneEvery  = time.Hour
+	baselineCheckEvery = 5 * time.Minute
+	spikeMultiplier    = 1.5
+	spikeAbsMinPct     = 25.0
+	baselineMinDays    = 3
 )
 
 // NewMetricsCollector creates and starts a background collector. retentionDays
 // bounds how long persisted samples are kept (default 30 when <= 0).
-func NewMetricsCollector(db *storage.ClickHouseClient, pg *storage.PostgresClient, retentionDays int) *MetricsCollector {
+// onSpike is called when CPU or memory spikes above the 7-day same-hour
+// baseline; may be nil to disable spike detection.
+func NewMetricsCollector(db *storage.ClickHouseClient, pg *storage.PostgresClient, retentionDays int, onSpike func(string, string, string, string)) *MetricsCollector {
 	if retentionDays <= 0 {
 		retentionDays = 30
 	}
 	mc := &MetricsCollector{
-		db:            db,
-		pg:            pg,
-		retentionDays: retentionDays,
-		stop:          make(chan struct{}),
+		db:             db,
+		pg:             pg,
+		retentionDays:  retentionDays,
+		lastBaselineAt: time.Now(), // delay first check by one interval
+		onSpike:        onSpike,
+		stop:           make(chan struct{}),
 	}
 	go mc.run()
 	return mc
@@ -77,6 +87,9 @@ const cpuMetricsSQL = `SELECT metric, value FROM system.asynchronous_metrics
 		'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
 	)`
 
+const memoryMetricsSQL = `SELECT metric, value FROM system.asynchronous_metrics
+	WHERE metric IN ('MemoryResident', 'OSMemoryTotal')`
+
 // collect samples CPU% per ClickHouse node plus the average alert evaluation
 // latency, then persists everything to Postgres in a single batched insert.
 func (mc *MetricsCollector) collect() {
@@ -89,12 +102,18 @@ func (mc *MetricsCollector) collect() {
 		if pct, ok := mc.sampleCPU("_single", nil); ok {
 			samples = append(samples, storage.SystemMetricSample{Metric: "cpu", Value: pct})
 		}
+		if pct, ok := mc.sampleMemory("_single", nil); ok {
+			samples = append(samples, storage.SystemMetricSample{Metric: "memory_pct", Value: pct})
+		}
 	} else {
-		// Multi-node: query each node individually so CPU% stays per-host.
+		// Multi-node: query each node individually so CPU% and memory% stay per-host.
 		for _, addr := range addrs {
 			a := addr
 			if pct, ok := mc.sampleCPU(addr, &a); ok {
 				samples = append(samples, storage.SystemMetricSample{Metric: "cpu", Node: addr, Value: pct})
+			}
+			if pct, ok := mc.sampleMemory(addr, &a); ok {
+				samples = append(samples, storage.SystemMetricSample{Metric: "memory_pct", Node: addr, Value: pct})
 			}
 		}
 	}
@@ -105,13 +124,14 @@ func (mc *MetricsCollector) collect() {
 
 	if len(samples) > 0 && mc.pg != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		if err := mc.pg.InsertSystemMetrics(ctx, time.Now(), samples); err != nil {
 			log.Printf("[MetricsCollector] failed to persist metrics: %v", err)
 		}
-		cancel()
 	}
 
 	mc.maybePrune()
+	mc.maybeCheckBaseline()
 }
 
 // sampleCPU queries instantaneous OS CPU ratios from a single ClickHouse node
@@ -200,6 +220,113 @@ func (mc *MetricsCollector) sampleAlertLatency() (float64, bool) {
 	return avg.Float64, true
 }
 
+// sampleMemory queries MemoryResident and OSMemoryTotal from a single
+// ClickHouse node and returns memory usage as a percentage (0-100).
+// addr is nil for the shared single-node connection.
+func (mc *MetricsCollector) sampleMemory(key string, addr *string) (float64, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var rows []map[string]interface{}
+	var err error
+	if addr != nil {
+		conn, openErr := storage.OpenClickHouseAddr(*addr, mc.db.User, mc.db.Password)
+		if openErr != nil {
+			log.Printf("[MetricsCollector] failed to connect to %s for memory: %v", *addr, openErr)
+			return 0, false
+		}
+		defer conn.Close()
+		rows, err = storage.QueryConn(ctx, conn, memoryMetricsSQL)
+	} else {
+		rows, err = mc.db.Query(ctx, memoryMetricsSQL)
+	}
+	if err != nil {
+		log.Printf("[MetricsCollector] failed to query memory metrics (node %s): %v", key, err)
+		return 0, false
+	}
+
+	var resident, total float64
+	for _, row := range rows {
+		metric, _ := row["metric"].(string)
+		value := toFloat64(row["value"])
+		switch metric {
+		case "MemoryResident":
+			resident = value
+		case "OSMemoryTotal":
+			total = value
+		}
+	}
+
+	if total <= 0 {
+		return 0, false
+	}
+	pct := math.Round(resident/total*1000) / 10
+	if pct < 0 {
+		pct = 0
+	} else if pct > 100 {
+		pct = 100
+	}
+	return pct, true
+}
+
+// maybeCheckBaseline runs a spike check against the 7-day same-hour baseline
+// every baselineCheckEvery interval. No-op when Postgres or onSpike is absent.
+func (mc *MetricsCollector) maybeCheckBaseline() {
+	if mc.pg == nil || mc.onSpike == nil {
+		return
+	}
+	if time.Since(mc.lastBaselineAt) < baselineCheckEvery {
+		return
+	}
+	mc.lastBaselineAt = time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mc.checkMetricBaseline(ctx, "cpu", "CPU")
+	mc.checkMetricBaseline(ctx, "memory_pct", "Memory")
+}
+
+// checkMetricBaseline compares the 30-min rolling average of metric against
+// the 7-day same-hour average. Fires onSpike when the rolling avg exceeds
+// spikeMultiplier × baseline and is above spikeAbsMinPct.
+func (mc *MetricsCollector) checkMetricBaseline(ctx context.Context, metric, label string) {
+	// Require at least baselineMinDays distinct days of history before alerting
+	// so fresh deployments don't fire on startup noise.
+	var dayCount int
+	if err := mc.pg.QueryRow(ctx,
+		`SELECT count(DISTINCT date_trunc('day', bucket)) FROM system_metrics
+		 WHERE metric = $1 AND bucket > now() - interval '7 days'`, metric).Scan(&dayCount); err != nil || dayCount < baselineMinDays {
+		return
+	}
+
+	var rolling sql.NullFloat64
+	if err := mc.pg.QueryRow(ctx,
+		`SELECT avg(value) FROM system_metrics
+		 WHERE metric = $1 AND bucket > now() - interval '30 minutes'`, metric).Scan(&rolling); err != nil || !rolling.Valid || rolling.Float64 <= 0 {
+		return
+	}
+
+	// Same-hour baseline excludes the current 30-min window to avoid
+	// self-correlation during an active spike.
+	var baseline sql.NullFloat64
+	if err := mc.pg.QueryRow(ctx,
+		`SELECT avg(value) FROM system_metrics
+		 WHERE metric = $1
+		   AND EXTRACT(hour FROM bucket) = EXTRACT(hour FROM now())
+		   AND bucket BETWEEN now() - interval '7 days' AND now() - interval '30 minutes'`, metric).Scan(&baseline); err != nil || !baseline.Valid || baseline.Float64 <= 0 {
+		return
+	}
+
+	r, b := rolling.Float64, baseline.Float64
+	if r >= b*spikeMultiplier && r >= spikeAbsMinPct {
+		mc.onSpike(
+			"health."+metric+".spike",
+			"warning",
+			fmt.Sprintf("Unusual %s spike detected", label),
+			fmt.Sprintf("Current 30-min avg: %.1f%% (7-day same-hour baseline: %.1f%%)", r, b),
+		)
+	}
+}
+
 // maybePrune deletes samples older than the retention window once per hour.
 func (mc *MetricsCollector) maybePrune() {
 	if mc.pg == nil || time.Since(mc.lastPruneAt) < metricsPruneEvery {
@@ -221,8 +348,8 @@ type PerformanceHandler struct {
 	collector *MetricsCollector
 }
 
-func NewPerformanceHandler(db *storage.ClickHouseClient, pg *storage.PostgresClient, metricsRetentionDays int) *PerformanceHandler {
-	mc := NewMetricsCollector(db, pg, metricsRetentionDays)
+func NewPerformanceHandler(db *storage.ClickHouseClient, pg *storage.PostgresClient, metricsRetentionDays int, onSpike func(string, string, string, string)) *PerformanceHandler {
+	mc := NewMetricsCollector(db, pg, metricsRetentionDays, onSpike)
 	log.Printf("[Performance] Started metrics collector for %d node(s), %dd retention", len(db.Addrs()), mc.retentionDays)
 	return &PerformanceHandler{db: db, pg: pg, collector: mc}
 }
@@ -440,25 +567,30 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 		result["disk"] = diskRows[0]
 	}
 
-	// CPU history from persisted samples (Postgres) so it survives process
-	// restarts and remains readable when ClickHouse itself is degraded. The read
-	// mirrors how the collector tags samples: per-node series in multi-node
-	// deployments, a single aggregate series otherwise.
+	// CPU and memory history from persisted Postgres samples. Survives restarts
+	// and remains readable when ClickHouse itself is degraded. Per-node series
+	// in multi-node deployments, single aggregate series otherwise.
 	if h.pg != nil {
-		if len(h.db.Addrs()) > 1 {
-			if nodes, err := h.pg.QueryMetricSeriesByNode(r.Context(), "cpu", since, bucketSec); err != nil {
-				log.Printf("[Performance] cpu node history query failed: %v", err)
-			} else if nodes != nil {
-				nodeMap := make(map[string][]map[string]interface{}, len(nodes))
-				for node, pts := range nodes {
-					nodeMap[node] = cpuPoints(pts)
+		multiNode := len(h.db.Addrs()) > 1
+		for _, m := range []struct{ metric, singleKey, nodeKey string }{
+			{"cpu", "cpu_history", "cpu_history_nodes"},
+			{"memory_pct", "memory_history", "memory_history_nodes"},
+		} {
+			if multiNode {
+				if nodes, err := h.pg.QueryMetricSeriesByNode(r.Context(), m.metric, since, bucketSec); err != nil {
+					log.Printf("[Performance] %s node history query failed: %v", m.metric, err)
+				} else if nodes != nil {
+					nodeMap := make(map[string][]map[string]interface{}, len(nodes))
+					for node, pts := range nodes {
+						nodeMap[node] = cpuPoints(pts)
+					}
+					result[m.nodeKey] = nodeMap
 				}
-				result["cpu_history_nodes"] = nodeMap
+			} else if points, err := h.pg.QueryMetricSeries(r.Context(), m.metric, since, bucketSec); err != nil {
+				log.Printf("[Performance] %s history query failed: %v", m.metric, err)
+			} else if len(points) > 0 {
+				result[m.singleKey] = cpuPoints(points)
 			}
-		} else if points, err := h.pg.QueryMetricSeries(r.Context(), "cpu", since, bucketSec); err != nil {
-			log.Printf("[Performance] cpu history query failed: %v", err)
-		} else if len(points) > 0 {
-			result["cpu_history"] = cpuPoints(points)
 		}
 	}
 

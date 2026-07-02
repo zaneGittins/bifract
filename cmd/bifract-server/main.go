@@ -484,6 +484,22 @@ func main() {
 	})
 	distMonitor.Start()
 
+	// DDL queue monitor (cluster mode only) — polls system.distributed_ddl_queue
+	// every 60s and fires ch.ddl_queue.* events on threshold crossings.
+	ddlMonitor := storage.NewDDLMonitor(dbIngest, pg, func(event string, fields map[string]string) {
+		switch event {
+		case "ch.ddl_queue.critical":
+			go notifWriter.Write("ch.ddl_queue.critical", "critical",
+				"ClickHouse DDL Queue Critical",
+				fmt.Sprintf("%s pending tasks", fields["pending"]))
+		case "ch.ddl_queue.warning":
+			go notifWriter.Write("ch.ddl_queue.warning", "warning",
+				"ClickHouse DDL Queue Building Up",
+				fmt.Sprintf("%s pending tasks", fields["pending"]))
+		}
+	})
+	ddlMonitor.Start()
+
 	// Rate limiter for ingestion endpoints
 	rateLimiter := ingest.NewRateLimiter(float64(config.IngestRateLimit), config.IngestRateBurst)
 	log.Printf("Ingestion ready (workers: %d, queue: %d, rate limit: %d req/s, body limit: %d bytes)",
@@ -510,7 +526,9 @@ func main() {
 	}
 	statusHandler := query.NewStatusHandler(db, pg)
 	statusHandler.SetQuotaClearer(quotaManager)
-	performanceHandler := query.NewPerformanceHandler(db, pg, getEnvInt("BIFRACT_METRICS_RETENTION_DAYS", 30))
+	performanceHandler := query.NewPerformanceHandler(db, pg, getEnvInt("BIFRACT_METRICS_RETENTION_DAYS", 30), func(dedup, severity, title, body string) {
+		go notifWriter.Write(dedup, severity, title, body)
+	})
 	settingsHandler := settings.NewHandler(pg)
 
 	// Create API key handler and storage
@@ -754,8 +772,9 @@ func main() {
 						"broken_data_files": s.BrokenDataFiles,
 						"error_count":       s.ErrorCount,
 					}
-					distSince, distBucket := query.MetricRange(r.URL.Query().Get("range"))
-					resp["distribution_queue_history"] = distMonitor.History(r.Context(), distSince, distBucket)
+					since, bucket := query.MetricRange(r.URL.Query().Get("range"))
+					resp["distribution_queue_history"] = distMonitor.History(r.Context(), since, bucket)
+					resp["ddl_queue_history"] = ddlMonitor.History(r.Context(), since, bucket)
 				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(resp)
@@ -1174,8 +1193,9 @@ func main() {
 	// Stop the background dashboard executor (waits for in-flight refreshes)
 	dashboardExecutor.Stop()
 
-	// Stop the distribution queue monitor
+	// Stop the distribution queue and DDL monitors
 	distMonitor.Stop()
+	ddlMonitor.Stop()
 
 	// Drain the ingestion queue (finish pending inserts)
 	ingestQueue.Shutdown()

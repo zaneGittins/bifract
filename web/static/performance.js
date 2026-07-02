@@ -11,6 +11,7 @@ const Performance = {
     ingestChart: null,
     alertChart: null,
     distQueueChart: null,
+    ddlQueueChart: null,
     alertTrendChart: null,
     prevCpuTimes: null,
     subTab: 'overview',
@@ -171,7 +172,12 @@ const Performance = {
             if (metData.success) {
                 this.renderMetrics(metData.metrics || {}, metData.async_metrics || {}, metData.log_storage || {}, metData.disk || {});
                 if (tab === 'overview') {
-                    this.renderCpuChart(metData.cpu_history || [], metData.cpu_history_nodes || null);
+                    this.renderCpuChart(
+                        metData.cpu_history || [],
+                        metData.cpu_history_nodes || null,
+                        metData.memory_history || [],
+                        metData.memory_history_nodes || null
+                    );
                 }
                 if (tab === 'activity') {
                     this.renderRecentQueries(metData.recent_queries || []);
@@ -183,6 +189,7 @@ const Performance = {
             this.renderClusterHealth(pressureData.distribution_queue || null);
             if (tab === 'overview') {
                 this.renderDistQueueChart(pressureData.distribution_queue_history || []);
+                this.renderDDLQueueChart(pressureData.ddl_queue_history || []);
             }
 
             if (procPromise) {
@@ -422,30 +429,7 @@ const Performance = {
     renderClusterHealth(dq) {
         const section = document.getElementById('clusterSection');
         if (!section) return;
-        if (!dq) { section.style.display = 'none'; return; }
-        section.style.display = '';
-
-        const el = document.getElementById('metricDistQueue');
-        const sub = document.getElementById('metricDistQueueSub');
-        if (!el) return;
-
-        if (dq.broken_data_files > 0) {
-            el.textContent = 'Critical';
-            el.className = 'perf-metric-value perf-metric-danger';
-            sub.textContent = dq.broken_data_files.toLocaleString() + ' broken files';
-        } else if (!dq.healthy) {
-            el.textContent = 'Degraded';
-            el.className = 'perf-metric-value perf-metric-warning';
-            sub.textContent = dq.data_files.toLocaleString() + ' files pending';
-        } else if (dq.data_files > 0) {
-            el.textContent = 'Draining';
-            el.className = 'perf-metric-value';
-            sub.textContent = dq.data_files.toLocaleString() + ' files';
-        } else {
-            el.textContent = 'Healthy';
-            el.className = 'perf-metric-value';
-            sub.textContent = '';
-        }
+        section.style.display = dq ? '' : 'none';
     },
 
     renderMetrics(metrics, asyncMetrics, logStorage, disk) {
@@ -495,13 +479,16 @@ const Performance = {
         '#6bcb77', '#4d96ff', '#ff8fab', '#c9b1ff'
     ],
 
-    renderCpuChart(cpuHistory, cpuHistoryNodes) {
+    renderCpuChart(cpuHistory, cpuHistoryNodes, memHistory, memHistoryNodes) {
         const canvas = document.getElementById('perfCpuChart');
         if (!canvas) return;
 
         const placeholder = document.getElementById('perfCpuPlaceholder');
         const isMultiNode = cpuHistoryNodes && Object.keys(cpuHistoryNodes).length > 0;
         const hasSingle = cpuHistory && cpuHistory.length > 0;
+        const isMultiMem = memHistoryNodes && Object.keys(memHistoryNodes).length > 0;
+        const hasSingleMem = memHistory && memHistory.length > 0;
+        const hasMem = isMultiMem || hasSingleMem;
 
         if (!isMultiNode && !hasSingle) {
             if (placeholder) placeholder.style.display = '';
@@ -515,13 +502,12 @@ const Performance = {
         const chartBg = cv('--chart-bg') || '#1a1a2e';
         const chartBorder = cv('--chart-border') || '#24243e';
         const accentColor = cv('--accent-primary') || '#9c6ade';
+        const memColor = '#4ecdc4';
 
         const longRange = this.timeRange === '7d' || this.timeRange === '30d';
         const showDate = longRange || this.timeRange === '8h' || this.timeRange === '24h';
         const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-        // time is a Unix epoch (seconds); render labels in the viewer's local
-        // timezone so the CPU axis matches the dist-queue/alert charts.
         const extractLabel = (rawTime) => {
             const d = new Date(Number(rawTime) * 1000);
             if (isNaN(d.getTime())) return String(rawTime || '');
@@ -530,66 +516,117 @@ const Performance = {
             return `${months[d.getMonth()]} ${d.getDate()} ${hhmm}`;
         };
 
-        const extractTime = (p) => extractLabel(p.time);
-
         let labels, datasets;
 
         if (isMultiNode) {
-            // Build unified time labels from all nodes.
+            // Unified time axis across all CPU and memory node series.
             const timeSet = new Set();
             for (const points of Object.values(cpuHistoryNodes)) {
                 for (const p of points) timeSet.add(String(p.time || ''));
+            }
+            if (isMultiMem) {
+                for (const points of Object.values(memHistoryNodes)) {
+                    for (const p of points) timeSet.add(String(p.time || ''));
+                }
             }
             const sortedTimes = Array.from(timeSet).sort((a, b) => Number(a) - Number(b));
             labels = sortedTimes.map(t => extractLabel(t));
 
             const nodes = Object.keys(cpuHistoryNodes).sort();
-            datasets = nodes.map((node, i) => {
+            datasets = [];
+            nodes.forEach((node, i) => {
                 const color = this.nodeColors[i % this.nodeColors.length];
                 const timeMap = {};
-                for (const p of cpuHistoryNodes[node]) {
-                    timeMap[String(p.time || '')] = p.value;
-                }
-                const data = sortedTimes.map(t => timeMap[t] !== undefined ? timeMap[t] : null);
-                return {
-                    label: node,
-                    data: data,
+                for (const p of cpuHistoryNodes[node]) timeMap[String(p.time || '')] = p.value;
+                datasets.push({
+                    label: hasMem ? node + ' cpu' : node,
+                    data: sortedTimes.map(t => timeMap[t] !== undefined ? timeMap[t] : null),
                     borderColor: color,
                     backgroundColor: color + '1a',
                     borderWidth: 2,
                     fill: false,
                     tension: 0.3,
-                    pointRadius: data.length > 60 ? 0 : 2,
+                    pointRadius: sortedTimes.length > 60 ? 0 : 2,
                     pointHoverRadius: 4,
                     pointBackgroundColor: color,
-                    pointHoverBackgroundColor: color,
-                    pointHoverBorderColor: color,
                     spanGaps: true
-                };
+                });
             });
+            // Memory overlay per node — same color as CPU but dashed.
+            if (isMultiMem) {
+                const memNodes = Object.keys(memHistoryNodes).sort();
+                memNodes.forEach((node) => {
+                    const i = nodes.indexOf(node);
+                    const color = this.nodeColors[(i >= 0 ? i : 0) % this.nodeColors.length];
+                    const timeMap = {};
+                    for (const p of memHistoryNodes[node]) timeMap[String(p.time || '')] = p.value;
+                    datasets.push({
+                        label: node + ' mem',
+                        data: sortedTimes.map(t => timeMap[t] !== undefined ? timeMap[t] : null),
+                        borderColor: color,
+                        backgroundColor: 'transparent',
+                        borderWidth: 1.5,
+                        borderDash: [4, 4],
+                        fill: false,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        pointHoverRadius: 3,
+                        pointBackgroundColor: color,
+                        spanGaps: true
+                    });
+                });
+            }
         } else {
-            labels = cpuHistory.map(extractTime);
-            const data = cpuHistory.map(p => p.value);
+            labels = cpuHistory.map(p => extractLabel(p.time));
             datasets = [{
                 label: 'CPU %',
-                data: data,
+                data: cpuHistory.map(p => p.value),
                 borderColor: accentColor,
                 backgroundColor: accentColor + '1a',
                 borderWidth: 2,
                 fill: true,
                 tension: 0.3,
-                pointRadius: data.length > 60 ? 0 : 2,
+                pointRadius: cpuHistory.length > 60 ? 0 : 2,
                 pointHoverRadius: 4,
                 pointBackgroundColor: accentColor,
-                pointHoverBackgroundColor: accentColor,
-                pointHoverBorderColor: accentColor
+                spanGaps: true
             }];
+            // Memory overlay for single-node — teal solid line, no fill.
+            if (hasSingleMem) {
+                // Merge time labels from both series.
+                const timeSet = new Set(cpuHistory.map(p => String(p.time || '')));
+                for (const p of memHistory) timeSet.add(String(p.time || ''));
+                const sortedTimes = Array.from(timeSet).sort((a, b) => Number(a) - Number(b));
+                labels = sortedTimes.map(t => extractLabel(t));
+
+                const cpuMap = {};
+                for (const p of cpuHistory) cpuMap[String(p.time || '')] = p.value;
+                const memMap = {};
+                for (const p of memHistory) memMap[String(p.time || '')] = p.value;
+
+                datasets[0].data = sortedTimes.map(t => cpuMap[t] !== undefined ? cpuMap[t] : null);
+                datasets.push({
+                    label: 'Memory %',
+                    data: sortedTimes.map(t => memMap[t] !== undefined ? memMap[t] : null),
+                    borderColor: memColor,
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: sortedTimes.length > 60 ? 0 : 2,
+                    pointHoverRadius: 4,
+                    pointBackgroundColor: memColor,
+                    spanGaps: true
+                });
+            }
         }
+
+        const showLegend = isMultiNode || hasMem;
 
         if (this.cpuChart) {
             this.cpuChart.data.labels = labels;
             this.cpuChart.data.datasets = datasets;
-            this.cpuChart.options.plugins.legend.display = isMultiNode;
+            this.cpuChart.options.plugins.legend.display = showLegend;
             this.cpuChart.update('none');
             return;
         }
@@ -597,18 +634,15 @@ const Performance = {
         const ctx = canvas.getContext('2d');
         this.cpuChart = new Chart(ctx, {
             type: 'line',
-            data: { labels: labels, datasets: datasets },
+            data: { labels, datasets },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
-                interaction: {
-                    intersect: false,
-                    mode: 'index'
-                },
+                interaction: { intersect: false, mode: 'index' },
                 plugins: {
                     legend: {
-                        display: isMultiNode,
+                        display: showLegend,
                         labels: {
                             color: chartText,
                             font: { family: 'Inter', size: 11 },
@@ -623,10 +657,7 @@ const Performance = {
                         borderColor: chartBorder,
                         borderWidth: 1,
                         callbacks: {
-                            label: (ctx) => {
-                                const name = ctx.dataset.label || 'CPU';
-                                return name + ': ' + ctx.parsed.y.toFixed(1) + '%';
-                            }
+                            label: (ctx) => ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(1) + '%'
                         }
                     }
                 },
@@ -1222,6 +1253,89 @@ const Performance = {
         });
     },
 
+    renderDDLQueueChart(history) {
+        const canvas = document.getElementById('perfDDLQueueChart');
+        const placeholder = document.getElementById('perfDDLQueuePlaceholder');
+        if (!canvas) return;
+
+        if (!history || history.length < 2) {
+            if (this.ddlQueueChart) { this.ddlQueueChart.destroy(); this.ddlQueueChart = null; }
+            if (placeholder) placeholder.style.display = '';
+            canvas.style.display = 'none';
+            return;
+        }
+        if (placeholder) placeholder.style.display = 'none';
+        canvas.style.display = '';
+
+        const cv = window.ThemeManager ? ThemeManager.getCSSVar : (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+        const chartText   = cv('--chart-text')   || '#e8eaed';
+        const chartGrid   = cv('--chart-grid')   || '#24243e';
+        const chartBg     = cv('--chart-bg')     || '#1a1a2e';
+        const chartBorder = cv('--chart-border') || '#24243e';
+        const color = '#ffd93d';
+
+        const labels = history.map(s => this.epochLabel(s.time));
+        const values = history.map(s => s.pending);
+
+        if (this.ddlQueueChart) {
+            this.ddlQueueChart.data.labels = labels;
+            this.ddlQueueChart.data.datasets[0].data = values;
+            this.ddlQueueChart.update('none');
+            return;
+        }
+
+        const ctx = canvas.getContext('2d');
+        this.ddlQueueChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'Tasks',
+                    data: values,
+                    borderColor: color,
+                    backgroundColor: color + '22',
+                    borderWidth: 2,
+                    pointRadius: 2,
+                    pointHoverRadius: 4,
+                    fill: true,
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: chartBg,
+                        titleColor: chartText,
+                        bodyColor: chartText,
+                        borderColor: chartBorder,
+                        borderWidth: 1,
+                        callbacks: { label: (ctx) => ctx.parsed.y.toLocaleString() + ' tasks' }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { color: chartGrid, drawBorder: false },
+                        ticks: { color: chartText, font: { family: 'Inter', size: 10 }, maxTicksLimit: 8 }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: chartGrid, drawBorder: false },
+                        ticks: {
+                            color: chartText,
+                            font: { family: 'Inter', size: 10 },
+                            precision: 0,
+                            callback: (v) => v.toLocaleString()
+                        }
+                    }
+                }
+            }
+        });
+    },
+
     renderAlertTrendChart(history) {
         const canvas = document.getElementById('perfAlertTrendChart');
         const placeholder = document.getElementById('perfAlertTrendPlaceholder');
@@ -1328,6 +1442,10 @@ const Performance = {
         if (this.distQueueChart) {
             this.distQueueChart.destroy();
             this.distQueueChart = null;
+        }
+        if (this.ddlQueueChart) {
+            this.ddlQueueChart.destroy();
+            this.ddlQueueChart = null;
         }
         if (this.alertTrendChart) {
             this.alertTrendChart.destroy();

@@ -163,28 +163,26 @@
                                 </div>
                             </div>
 
-                            <!-- Cluster Health Cards (cluster mode only, shown by JS) -->
+                            <!-- Cluster Health (cluster mode only, shown by JS) -->
                             <div id="clusterSection" style="display:none">
                                 <div class="perf-metrics-group-label">Cluster</div>
-                                <div class="perf-metrics-grid">
-                                    <div class="perf-metric-card">
-                                        <div class="perf-metric-label">Distribution Queue</div>
-                                        <div class="perf-metric-value" id="metricDistQueue">--</div>
-                                        <div class="perf-metric-sub" id="metricDistQueueSub"></div>
-                                    </div>
-                                </div>
                                 <div class="perf-charts-row">
-                                    <div class="perf-chart-card perf-chart-card-wide">
+                                    <div class="perf-chart-card">
                                         <h3>Distribution Queue</h3>
                                         <div id="perfDistQueuePlaceholder" class="perf-chart-placeholder">Waiting for samples...</div>
                                         <canvas id="perfDistQueueChart" style="display:none"></canvas>
+                                    </div>
+                                    <div class="perf-chart-card">
+                                        <h3>DDL Queue</h3>
+                                        <div id="perfDDLQueuePlaceholder" class="perf-chart-placeholder">Waiting for samples...</div>
+                                        <canvas id="perfDDLQueueChart" style="display:none"></canvas>
                                     </div>
                                 </div>
                             </div>
 
                             <div class="perf-charts-row">
                                 <div class="perf-chart-card perf-chart-card-wide">
-                                    <h3>CPU Usage</h3>
+                                    <h3>CPU &amp; Memory</h3>
                                     <div id="perfCpuPlaceholder" class="perf-chart-placeholder">Loading...</div>
                                     <canvas id="perfCpuChart"></canvas>
                                 </div>
