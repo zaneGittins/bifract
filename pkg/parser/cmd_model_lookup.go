@@ -49,38 +49,26 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		return nil
 	}
 
+	// Register each output field as a model-lookup column: it exists only after the
+	// JOIN wrap, so it resolves to its bare output name and conditions on it defer
+	// to a post-join WHERE (see FieldKindModelLookup handling in conditions.go).
+	reg := func(names ...string) {
+		for _, n := range names {
+			ctx.Registry.Register(n, FieldKindModelLookup, n, ctx.CmdIndex)
+		}
+	}
 	switch info.ModelType {
 	case "rarity":
-		ctx.Registry.Register("percent", FieldKindPerRow, "_mlookup.percent", ctx.CmdIndex)
-		ctx.Registry.Register("confidence", FieldKindPerRow, "_mlookup.confidence", ctx.CmdIndex)
-		ctx.Registry.Register("model_count", FieldKindPerRow, "_mlookup.model_count", ctx.CmdIndex)
+		reg("percent", "confidence", "model_count")
 	case "first_seen":
-		ctx.Registry.Register("first_seen", FieldKindPerRow, "_mlookup.first_seen", ctx.CmdIndex)
-		ctx.Registry.Register("last_seen", FieldKindPerRow, "_mlookup.last_seen", ctx.CmdIndex)
-		ctx.Registry.Register("is_new", FieldKindPerRow, "_mlookup.is_new", ctx.CmdIndex)
+		reg("first_seen", "last_seen", "is_new")
 	case "volume_baseline":
-		ctx.Registry.Register("z_score", FieldKindPerRow, "_mlookup.z_score", ctx.CmdIndex)
-		ctx.Registry.Register("baseline_median", FieldKindPerRow, "_mlookup.baseline_median", ctx.CmdIndex)
-		ctx.Registry.Register("latest_count", FieldKindPerRow, "_mlookup.latest_count", ctx.CmdIndex)
-		ctx.Registry.Register("mad", FieldKindPerRow, "_mlookup.mad", ctx.CmdIndex)
-		ctx.Registry.Register("n_buckets", FieldKindPerRow, "_mlookup.n_buckets", ctx.CmdIndex)
+		reg("z_score", "baseline_median", "latest_count", "mad", "n_buckets")
 	case "beacon":
 		// beacon_score is the final verdict; the rest is the breakdown ("why").
-		ctx.Registry.Register("beacon_score", FieldKindPerRow, "_mlookup.beacon_score", ctx.CmdIndex)
-		ctx.Registry.Register("regularity_score", FieldKindPerRow, "_mlookup.regularity_score", ctx.CmdIndex)
-		ctx.Registry.Register("ts_score", FieldKindPerRow, "_mlookup.ts_score", ctx.CmdIndex)
-		ctx.Registry.Register("ds_score", FieldKindPerRow, "_mlookup.ds_score", ctx.CmdIndex)
-		ctx.Registry.Register("dur_score", FieldKindPerRow, "_mlookup.dur_score", ctx.CmdIndex)
-		ctx.Registry.Register("hist_score", FieldKindPerRow, "_mlookup.hist_score", ctx.CmdIndex)
-		ctx.Registry.Register("prevalence", FieldKindPerRow, "_mlookup.prevalence", ctx.CmdIndex)
-		ctx.Registry.Register("prevalence_score", FieldKindPerRow, "_mlookup.prevalence_score", ctx.CmdIndex)
-		ctx.Registry.Register("conn_count", FieldKindPerRow, "_mlookup.conn_count", ctx.CmdIndex)
+		reg("beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "conn_count")
 	case "long_connection":
-		ctx.Registry.Register("longconn_score", FieldKindPerRow, "_mlookup.longconn_score", ctx.CmdIndex)
-		ctx.Registry.Register("total_duration", FieldKindPerRow, "_mlookup.total_duration", ctx.CmdIndex)
-		ctx.Registry.Register("conn_count", FieldKindPerRow, "_mlookup.conn_count", ctx.CmdIndex)
-		ctx.Registry.Register("prevalence", FieldKindPerRow, "_mlookup.prevalence", ctx.CmdIndex)
-		ctx.Registry.Register("prevalence_score", FieldKindPerRow, "_mlookup.prevalence_score", ctx.CmdIndex)
+		reg("longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score")
 	}
 	return nil
 }
@@ -116,74 +104,68 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		if len(keyFields) != 2 {
 			return fmt.Errorf("model_lookup() for rarity models requires exactly 2 key fields: [partition_key, value_key]")
 		}
-		subSQL := buildRarityScoringSQL(info.TableName, fractalID, info.MinSample)
-		outerPartRef := modelLookupFieldRef(keyFields[0])
-		outerValRef := modelLookupFieldRef(keyFields[1])
-		onClause := fmt.Sprintf("concat(%s, char(30), %s) = concat(_mlookup.partition_val, char(30), _mlookup.value_val)",
-			outerPartRef, outerValRef)
-		ctx.Plan.ModelLookupSQL = subSQL
-		ctx.Plan.ModelLookupOn = onClause
-		ctx.Plan.ModelLookupFields = []string{"partition_val", "value_val", "model_count", "model_total", "percent", "confidence"}
+		ctx.Plan.ModelLookupSQL = buildRarityScoringSQL(info.TableName, fractalID, info.MinSample)
+		setModelLookupJoin(ctx, keyFields, []string{"partition_val", "value_val"})
+		ctx.Plan.ModelLookupFields = []string{"model_count", "model_total", "percent", "confidence"}
 
 	case "first_seen":
-		subSQL := buildFirstSeenScoringSQL(info.TableName, fractalID)
-		var outerRefs []string
-		for _, kf := range keyFields {
-			outerRefs = append(outerRefs, modelLookupFieldRef(kf))
-		}
-		var onClause string
-		if len(outerRefs) == 1 {
-			onClause = fmt.Sprintf("%s = _mlookup.entity_key", outerRefs[0])
-		} else {
-			onClause = fmt.Sprintf("concat(%s) = _mlookup.entity_key", strings.Join(outerRefs, ", char(30), "))
-		}
-		ctx.Plan.ModelLookupSQL = subSQL
-		ctx.Plan.ModelLookupOn = onClause
-		ctx.Plan.ModelLookupFields = []string{"entity_key", "first_seen", "last_seen", "event_count", "is_new"}
+		ctx.Plan.ModelLookupSQL = buildFirstSeenScoringSQL(info.TableName, fractalID)
+		setModelLookupJoin(ctx, keyFields, []string{"entity_key"})
+		ctx.Plan.ModelLookupFields = []string{"first_seen", "last_seen", "event_count", "is_new"}
 
 	case "volume_baseline":
-		subSQL := buildVolumeBaselineScoringSQL(info.TableName, fractalID, info.MinSample, info.TimeBucket)
-		var outerRefs []string
-		for _, kf := range keyFields {
-			outerRefs = append(outerRefs, modelLookupFieldRef(kf))
-		}
-		var onClause string
-		if len(outerRefs) == 1 {
-			onClause = fmt.Sprintf("%s = _mlookup.entity_val", outerRefs[0])
-		} else {
-			onClause = fmt.Sprintf("concat(%s) = _mlookup.entity_val", strings.Join(outerRefs, ", char(30), "))
-		}
-		ctx.Plan.ModelLookupSQL = subSQL
-		ctx.Plan.ModelLookupOn = onClause
-		ctx.Plan.ModelLookupFields = []string{"entity_val", "latest_count", "baseline_median", "mad", "n_buckets", "z_score"}
+		ctx.Plan.ModelLookupSQL = buildVolumeBaselineScoringSQL(info.TableName, fractalID, info.MinSample, info.TimeBucket)
+		setModelLookupJoin(ctx, keyFields, []string{"entity_val"})
+		ctx.Plan.ModelLookupFields = []string{"latest_count", "baseline_median", "mad", "n_buckets", "z_score"}
 
 	case "beacon", "long_connection":
 		if len(keyFields) != 3 {
 			return fmt.Errorf("model_lookup() for %s models requires exactly 3 key fields: [src_ip, dst_ip, dst_port]", info.ModelType)
 		}
-		var subSQL string
 		if info.ModelType == "beacon" {
-			subSQL = buildBeaconScoringSQL(info.TableName, fractalID)
-			ctx.Plan.ModelLookupFields = []string{"src_ip", "dst_ip", "dst_port", "beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "conn_count"}
+			ctx.Plan.ModelLookupSQL = buildBeaconScoringSQL(info.TableName, fractalID)
+			ctx.Plan.ModelLookupFields = []string{"beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "conn_count"}
 		} else {
-			subSQL = buildLongConnScoringSQL(info.TableName, fractalID)
-			ctx.Plan.ModelLookupFields = []string{"src_ip", "dst_ip", "dst_port", "longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score"}
+			ctx.Plan.ModelLookupSQL = buildLongConnScoringSQL(info.TableName, fractalID)
+			ctx.Plan.ModelLookupFields = []string{"longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score"}
 		}
 		// Positional key mapping: key[0]->src_ip, key[1]->dst_ip, key[2]->dst_port.
-		outerRefs := make([]string, len(keyFields))
-		for i, kf := range keyFields {
-			outerRefs[i] = modelLookupFieldRef(kf)
-		}
-		onClause := fmt.Sprintf("concat(%s) = concat(_mlookup.src_ip, char(30), _mlookup.dst_ip, char(30), _mlookup.dst_port)",
-			strings.Join(outerRefs, ", char(30), "))
-		ctx.Plan.ModelLookupSQL = subSQL
-		ctx.Plan.ModelLookupOn = onClause
+		setModelLookupJoin(ctx, keyFields, []string{"src_ip", "dst_ip", "dst_port"})
 
 	default:
 		return fmt.Errorf("unknown model type %q for model %q", info.ModelType, modelName)
 	}
 
 	return nil
+}
+
+// setModelLookupJoin projects the outer join keys as hidden `_mlk_k<i>` columns and
+// builds the JOIN ON that matches them against the model-side key columns. The keys
+// are projected in the source scan (where `fields.X` is available) by renderStandard
+// and stripped from the result via EXCEPT in wrapWithModelLookup, so the enrichment
+// works for any pipeline shape (bare, filtered, or with a trailing threshold).
+func setModelLookupJoin(ctx *CommandContext, keyFields, rightCols []string) {
+	keyExprs := make([]string, len(keyFields))
+	leftParts := make([]string, len(keyFields))
+	for i, kf := range keyFields {
+		keyExprs[i] = modelLookupFieldRef(kf)
+		leftParts[i] = fmt.Sprintf("_outer._mlk_k%d", i)
+	}
+	rightParts := make([]string, len(rightCols))
+	for i, c := range rightCols {
+		rightParts[i] = "_mlookup." + c
+	}
+	ctx.Plan.ModelLookupKeyExprs = keyExprs
+	ctx.Plan.ModelLookupOn = concatModelKeys(leftParts) + " = " + concatModelKeys(rightParts)
+}
+
+// concatModelKeys joins key parts with the char(30) separator used throughout the
+// model composite-key encoding. A single part needs no concat.
+func concatModelKeys(parts []string) string {
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return "concat(" + strings.Join(parts, ", char(30), ") + ")"
 }
 
 // buildBeaconScoringSQL returns the latest scored row per pair from a beacon model's
@@ -243,15 +225,30 @@ WHERE event_count >= %d`,
 }
 
 // buildFirstSeenScoringSQL returns the scoring subquery for a first_seen model.
+// The aggregation and the derived is_new flag are split across two SELECT levels:
+// computing is_new as if(min(first_seen) >= ...) in the SAME level as
+// min(first_seen) AS first_seen makes the analyzer resolve the inner first_seen to
+// the alias, yielding min(min(first_seen)) (nested aggregate, ClickHouse code 184).
 func buildFirstSeenScoringSQL(tableName, fractalID string) string {
+	// Two levels with NON-shadowing inner aliases (fs/ls/ec): shadowing the input
+	// column names would make min(first_seen) AS first_seen + if(min(first_seen)...)
+	// nest aggregates (code 184). The outer level derives is_new from the raw
+	// DateTime column and stringifies the dates so the row scanner can read them
+	// (DateTime64 -> *string is unsupported in the display scan path).
 	return fmt.Sprintf(`SELECT entity_key,
-    min(first_seen) AS first_seen,
-    max(last_seen) AS last_seen,
-    sum(event_count) AS event_count,
-    if(min(first_seen) >= now() - INTERVAL 1 HOUR, '1', '0') AS is_new
-FROM %s FINAL
-WHERE fractal_id = '%s'
-GROUP BY entity_key`,
+    toString(fs) AS first_seen,
+    toString(ls) AS last_seen,
+    ec AS event_count,
+    if(fs >= now() - INTERVAL 1 HOUR, '1', '0') AS is_new
+FROM (
+    SELECT entity_key,
+        min(first_seen) AS fs,
+        max(last_seen) AS ls,
+        sum(event_count) AS ec
+    FROM %s FINAL
+    WHERE fractal_id = '%s'
+    GROUP BY entity_key
+)`,
 		"`"+tableName+"`",
 		escapeString(fractalID),
 	)

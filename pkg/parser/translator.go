@@ -498,7 +498,10 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		// Keeping ORDER BY LIMIT in the source causes each shard to limit its own
 		// output first; the coordinator merge-sorts across shards and re-applies the
 		// outer LIMIT — correct and dramatically cheaper over the network.
-		if defaultTimeOrder && len(plan.Formatters) > 0 && !plan.IsJoin {
+		// model_lookup (like join) nulls its formatters below so the join output
+		// columns survive; skip the ORDER BY/LIMIT lift here so the source keeps its
+		// own sort (the formatter wrapper that would have re-applied it is removed).
+		if defaultTimeOrder && len(plan.Formatters) > 0 && !plan.IsJoin && plan.ModelLookupSQL == "" {
 			plan.FormatterOrderBy = activeStage.Layer.OrderBy
 			plan.FormatterLimit = activeStage.Layer.Limit
 			if !ctx.Opts.IncludeShardNum {
@@ -525,6 +528,27 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		// The join wrapper adds columns from the subquery. An explicit formatter
 		// SELECT would drop them. Use SELECT * with timestamp formatting instead.
 		plan.Formatters = nil
+	}
+
+	// --- model_lookup: same reasoning — the join wrapper adds the model output
+	// columns (beacon_score, confidence, ...). An explicit formatter SELECT would
+	// drop them, breaking both the enrichment display and any trailing threshold
+	// filter (which is deferred to a post-join WHERE that references those columns).
+	if plan.ModelLookupSQL != "" {
+		plan.Formatters = nil
+		// Surface the model output columns in the result column order (mirrors how
+		// z-score/histogram append their computed fields). Skip any already present
+		// (e.g. a key column the source projected).
+		seen := make(map[string]bool, len(fieldOrder))
+		for _, f := range fieldOrder {
+			seen[f] = true
+		}
+		for _, f := range plan.ModelLookupFields {
+			if !seen[f] {
+				fieldOrder = append(fieldOrder, f)
+				seen[f] = true
+			}
+		}
 	}
 
 	// --- Build z-score window layers ---

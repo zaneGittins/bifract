@@ -54,6 +54,10 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 				} else {
 					target = &plan.pendingDeferredConditions
 				}
+			case FieldKindModelLookup:
+				// Model-lookup outputs exist only after the JOIN wrap; defer to a
+				// post-join outer WHERE (same mechanism as window fields).
+				target = &plan.pendingDeferredConditions
 			case FieldKindAggregate:
 				if willHaveAggregation {
 					target = &plan.pendingHavingConditions
@@ -108,6 +112,8 @@ func classifyCompoundTarget(cond HavingCondition, registry *FieldRegistry, plan 
 				} else {
 					priority = 1
 				}
+			case FieldKindModelLookup:
+				priority = 1 // deferred (post-join), like window fields
 			case FieldKindAggregate:
 				if willHaveAggregation {
 					priority = 2
@@ -231,6 +237,8 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 			fieldRef = entry.Name
 		case FieldKindWindow:
 			fieldRef = entry.Name
+		case FieldKindModelLookup:
+			fieldRef = entry.Name
 		default:
 			fieldRef = entry.Name
 		}
@@ -303,7 +311,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 		// Bare aggregate names (count/sum/avg with no registry entry) resolve to the
 		// numeric _count/_sum/_avg aliases and must not be coerced via toFloat64OrZero.
 		isAggFallback := entry == nil && (cond.Field == "count" || cond.Field == "sum" || cond.Field == "avg")
-		isComputed := isAggFallback || (entry != nil && (entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow))
+		isComputed := isAggFallback || (entry != nil && (entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow || entry.Kind == FieldKindModelLookup))
 		if isPerRow {
 			return fmt.Sprintf("toFloat64OrZero(%s) %s %s", fieldRef, cond.Operator, cond.Value)
 		}

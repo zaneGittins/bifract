@@ -150,6 +150,11 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				SelectExpr{Expr: fmt.Sprintf("quantile(0.75)(%s) - quantile(0.25)(%s) AS _iqr", cast, cast)},
 			)
 			ctx.Plan.IsAggregated = true
+		} else if entry := ctx.Registry.Get(field); entry != nil && entry.Kind == FieldKindModelLookup {
+			// Produced by the model_lookup() JOIN wrapper, not the source scan.
+			// Skip it here (projecting fields.`x` would be wrong and would shadow the
+			// real join column); the wrapper adds it and it is carried in FieldOrder.
+			continue
 		} else if entry := ctx.Registry.Get(field); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
 			safeAlias, err := sanitizeIdentifier(field)
 			if err != nil {

@@ -124,9 +124,10 @@ type QueryPlan struct {
 	JoinMaxRows int      // max rows for subquery safety limit
 
 	// ModelLookup-specific fields (set by model_lookup() BQL command)
-	ModelLookupSQL    string   // pre-built scoring subquery SQL
-	ModelLookupOn     string   // JOIN ON condition (composite key via concat)
-	ModelLookupFields []string // output field names added to outer SELECT
+	ModelLookupSQL      string   // pre-built scoring subquery SQL
+	ModelLookupOn       string   // JOIN ON condition (references _outer._mlk_k<i>)
+	ModelLookupFields   []string // output field names added to outer SELECT
+	ModelLookupKeyExprs []string // outer join-key expressions, projected as hidden _mlk_k<i> columns
 
 	// Table command tracking
 	HasTableCmd             bool
@@ -214,6 +215,14 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		selectClause = strings.Join(parts, ", ")
 	} else {
 		selectClause = "toString(timestamp) as timestamp, raw_log, log_id"
+	}
+
+	// model_lookup() join keys derive from `fields.X`, which only exist in this
+	// direct `FROM logs` scan. Project them here as hidden `_mlk_k<i>` columns so
+	// the JOIN ON (in wrapWithModelLookup) can reference `_outer._mlk_k<i>`; the
+	// wrap strips them from the final output via EXCEPT.
+	for i, keyExpr := range p.ModelLookupKeyExprs {
+		selectClause += fmt.Sprintf(", %s AS _mlk_k%d", keyExpr, i)
 	}
 
 	var sql strings.Builder
@@ -464,10 +473,21 @@ func (p *QueryPlan) wrapWithJoin(outerSQL string) string {
 	return sql.String()
 }
 
-// wrapWithModelLookup wraps the outer query with a LEFT JOIN against the model scoring subquery.
+// wrapWithModelLookup wraps the outer query with a LEFT JOIN against the model
+// scoring subquery. The outer query projects the join keys as hidden `_mlk_k<i>`
+// columns (see renderStandard); the JOIN ON matches them against the model side and
+// they are dropped from the result via `EXCEPT`, so only the original columns plus
+// the model output fields are returned.
 func (p *QueryPlan) wrapWithModelLookup(outerSQL string) string {
 	var b strings.Builder
 	b.WriteString("SELECT _outer.*")
+	if n := len(p.ModelLookupKeyExprs); n > 0 {
+		excepts := make([]string, n)
+		for i := range p.ModelLookupKeyExprs {
+			excepts[i] = fmt.Sprintf("_mlk_k%d", i)
+		}
+		b.WriteString(fmt.Sprintf(" EXCEPT (%s)", strings.Join(excepts, ", ")))
+	}
 	for _, f := range p.ModelLookupFields {
 		b.WriteString(fmt.Sprintf(", _mlookup.%s", f))
 	}

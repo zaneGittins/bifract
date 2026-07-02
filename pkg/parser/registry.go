@@ -15,6 +15,11 @@ const (
 	// Always routes to WHERE — it is computed before aggregation, never after.
 	// Differs from FieldKindPerRow only in that no toFloat64OrZero() coercion is needed.
 	FieldKindAssignment
+	// FieldKindModelLookup: a column produced by the model_lookup() LEFT JOIN
+	// (e.g. beacon_score, confidence, z_score). It only exists AFTER the join wrap,
+	// so conditions on it must defer (post-join) and references resolve to the bare
+	// output column name (never a JSON sub-column).
+	FieldKindModelLookup
 )
 
 // FieldEntry tracks a single field's metadata.
@@ -87,8 +92,9 @@ func (r *FieldRegistry) Resolve(name string) string {
 			// No Execute-phase expression set. If the Declare-phase Expr is just
 			// a placeholder (same as the field name) and the field is not a base
 			// column, fall through to jsonFieldRef so we get the proper
-			// fields.`name`.:String reference.
-			if entry.Expr == name && entry.Kind != FieldKindBase {
+			// fields.`name`.:String reference. Model-lookup outputs are excluded:
+			// they resolve to their bare join-output column name, not a JSON field.
+			if entry.Expr == name && entry.Kind != FieldKindBase && entry.Kind != FieldKindModelLookup {
 				return jsonFieldRef(name)
 			}
 			expr = entry.Expr
