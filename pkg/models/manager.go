@@ -1160,7 +1160,7 @@ func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter [
 	}
 
 	var b strings.Builder
-	b.WriteString("WITH\nbase AS (\n    SELECT timestamp, raw_log, log_id")
+	b.WriteString("WITH\nbase AS (\n    SELECT timestamp, norm_log, log_id")
 	seen := map[string]bool{}
 	for _, ext := range extractions {
 		if !isExtractionOutput(ext.FromField, extractions) && !seen[ext.FromField] {

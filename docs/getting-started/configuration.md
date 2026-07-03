@@ -27,4 +27,4 @@ A complete reference of all variables with comments is available in [`.env.examp
 | `BIFRACT_ALLOWED_IPS` | _(empty)_ | Comma-separated IPs or CIDR ranges allowed when IP access is restricted |
 | `BIFRACT_METRICS_ENABLED` | `false` | Set `true` to enable the Prometheus metrics endpoint |
 | `BIFRACT_METRICS_ADDR` | `:9090` | Listen address for the metrics server (separate from the main app) |
-| `BIFRACT_COLD_STORAGE_BACKEND` | `none` | Cold storage tier backend: `none`, `s3`, or `azure`. See [Backup, Restore & Cold Storage](../administration/backup-restore.md#cold-storage-tiering) |
+| `BIFRACT_ARCHIVE_ENABLED` | `false` | Enable the Iceberg archive (durable copy of all logs to object storage). Also toggleable from the admin UI. See [Iceberg Archive](../administration/backup-restore.md#iceberg-archive) for the full `BIFRACT_ARCHIVE_*` reference |

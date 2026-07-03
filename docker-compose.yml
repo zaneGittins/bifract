@@ -128,7 +128,10 @@ services:
     image: bifract-dev
     container_name: bifract-archiver
     restart: unless-stopped
-    command: ["/bifract-archiver", "run"]
+    # Override the image ENTRYPOINT (/bifract-server); in compose `command` is
+    # appended to the entrypoint, so the entrypoint itself must be replaced.
+    entrypoint: ["/bifract-archiver"]
+    command: ["run"]
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432

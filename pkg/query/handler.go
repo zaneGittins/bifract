@@ -1928,10 +1928,16 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 	if fields == nil {
 		fields = map[string]interface{}{}
 	}
+	// raw_log is the original pre-normalization text for the detail "Raw" tab. It is
+	// TTL'd, so it is empty ("") once the row ages past the retention window; the UI
+	// renders that as "unavailable". It is lazy-loaded here rather than shipped with
+	// every search result row.
+	rawLog, _ := logEntry["raw_log"].(string)
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"fields":  fields,
+		"raw_log": rawLog,
 	})
 }
 
@@ -2074,7 +2080,7 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 		whereClause += " AND " + fractalCondition
 	}
 
-	selectCols := "timestamp, raw_log, log_id, fractal_id"
+	selectCols := "timestamp, norm_log, log_id, fractal_id"
 	if h.db.IsCluster() {
 		selectCols += ", toString(_shard_num) AS _shard_num"
 	}
@@ -2111,7 +2117,7 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 	results := make([]map[string]interface{}, 0, len(rows))
 	for _, rawResult := range rows {
 		result := make(map[string]interface{})
-		for _, col := range []string{"timestamp", "raw_log", "log_id", "fractal_id", "_shard_num"} {
+		for _, col := range []string{"timestamp", "norm_log", "log_id", "fractal_id", "_shard_num"} {
 			if v, ok := rawResult[col]; ok {
 				result[col] = v
 			}
@@ -2138,7 +2144,7 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 		Count:       len(results),
 		Query:       "Recent logs (last 24h)",
 		ExecutionMs: executionTime,
-		FieldOrder:  []string{"timestamp", "raw_log", "log_id"},
+		FieldOrder:  []string{"timestamp", "norm_log", "log_id"},
 		TimeStart:   oneDayAgo.Format(time.RFC3339),
 		TimeEnd:     now.Format(time.RFC3339),
 	})

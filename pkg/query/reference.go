@@ -224,7 +224,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 					"| case { image=~powershell,pwsh | tool:=\"shell\"; * | tool:=\"other\"; } | groupby(tool)",
 					"| case { status>=500 | sev:=\"crit\"; status>=400 | sev:=\"warn\"; * | sev:=\"ok\"; }",
 					"| case { cidr(src_ip, \"10.0.0.0/8\") | zone:=\"internal\"; * | zone:=\"external\"; }",
-					"| case { level=error | regex(field=raw_log, pattern=\"code=(?<code>[0-9]+)\"); * | code:=\"none\"; }",
+					"| case { level=error | regex(field=norm_log, pattern=\"code=(?<code>[0-9]+)\"); * | code:=\"none\"; }",
 					"| case { image=~powershell | count() | sum(bytes); image=~explorer | count(); * | count(); }",
 				},
 			},
@@ -552,14 +552,14 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				Name:        "regex",
 				Category:    "Extraction",
 				Description: "Extracts values from a field using a regex pattern with capture groups. Named captures (?<name>...) are extracted to individual fields.",
-				Syntax:      `| regex("pattern", field=raw_log) or | regex(field=name, regex="pattern")`,
+				Syntax:      `| regex("pattern", field=norm_log) or | regex(field=name, regex="pattern")`,
 				Parameters: []Param{
 					{Name: "pattern", Type: "regex", Required: true, Description: "Regex pattern with capture groups. Use (?<name>...) for named captures."},
-					{Name: "field", Type: "string", Required: false, Description: "Field to extract from (default: raw_log)"},
+					{Name: "field", Type: "string", Required: false, Description: "Field to extract from (default: norm_log)"},
 					{Name: "regex", Type: "string", Required: false, Description: "Alternative way to specify the regex pattern"},
 				},
 				Examples: []string{
-					`| regex("(\\d+\\.\\d+\\.\\d+\\.\\d+)", field=raw_log)`,
+					`| regex("(\\d+\\.\\d+\\.\\d+\\.\\d+)", field=norm_log)`,
 					`| regex("user=(\\w+)", field=message)`,
 					`| regex(field=image, regex="(.+)\\\\(?<executable_name>.*\\.exe)")`,
 				},
@@ -572,11 +572,11 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				Parameters: []Param{
 					{Name: "pattern", Type: "regex", Required: true, Description: "Regex pattern to match"},
 					{Name: "replacement", Type: "string", Required: true, Description: "Replacement string"},
-					{Name: "field", Type: "string", Required: false, Description: "Field to replace in (default: raw_log)"},
+					{Name: "field", Type: "string", Required: false, Description: "Field to replace in (default: norm_log)"},
 					{Name: "as", Type: "string", Required: false, Description: "Output field name"},
 				},
 				Examples: []string{
-					`| replace("password=\\S+", "password=***", raw_log)`,
+					`| replace("password=\\S+", "password=***", norm_log)`,
 					`| replace("\\d{4}-\\d{4}", "XXXX-XXXX", message, as=redacted)`,
 				},
 			},
@@ -637,10 +637,10 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			{
 				Name:        "logSize",
 				Category:    "Transformation",
-				Description: "Returns the byte size of a log as _size (defaults to the original event, raw_log). Sum or aggregate it to diagnose log growth.",
+				Description: "Returns the byte size of a log as _size (defaults to the normalized event, norm_log). Sum or aggregate it to diagnose log growth.",
 				Syntax:      "| logSize()",
 				Parameters: []Param{
-					{Name: "field", Type: "string", Required: false, Description: "Field to measure; defaults to raw_log (the whole event)"},
+					{Name: "field", Type: "string", Required: false, Description: "Field to measure; defaults to norm_log (the whole event)"},
 					{Name: "as", Type: "string", Required: false, Description: "Output field name; defaults to _size"},
 				},
 				Examples: []string{

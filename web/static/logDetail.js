@@ -271,7 +271,13 @@ const LogDetail = {
 
         const rawDiv = document.createElement('div');
         rawDiv.className = 'raw-log-content';
-        this.renderRawLog(logData, rawDiv);
+        // raw_log is lazy-loaded now (not shipped with every search row). Render eagerly
+        // only if it's already on the row; otherwise fetch when the Raw tab is opened.
+        if (logData.raw_log !== undefined) {
+            this.renderRawLog(logData, rawDiv);
+        } else {
+            rawDiv.textContent = 'Loading…';
+        }
         rawPane.appendChild(rawDiv);
         content.appendChild(rawPane);
 
@@ -298,6 +304,11 @@ const LogDetail = {
             if (target === 'comments' && pane && !pane.dataset.loaded) {
                 pane.dataset.loaded = '1';
                 if (window.Comments) window.Comments.renderInTab(pane, logData);
+            }
+            // Lazy-load the original raw_log on first Raw-tab activation.
+            if (target === 'raw' && pane && !pane.dataset.loaded) {
+                pane.dataset.loaded = '1';
+                this._renderRawPane(logData, rawDiv);
             }
         });
 
@@ -339,6 +350,9 @@ const LogDetail = {
             const data = await resp.json();
             if (data.success && data.fields) {
                 logData.fields = data.fields;
+                // The fields endpoint also returns the original raw_log; stash it so the
+                // Raw tab renders without a second round-trip.
+                if (data.raw_log !== undefined) logData.raw_log = data.raw_log;
                 this.currentLogData = logData;
                 this.renderFields(logData, fieldsContainer);
             } else {
@@ -349,10 +363,39 @@ const LogDetail = {
         }
     },
 
+    // _renderRawPane renders the Raw tab, lazy-fetching raw_log if it isn't already on
+    // the row (the same /logs/fields endpoint returns it). raw_log is TTL'd, so an empty
+    // value means the original has aged out of its retention window.
+    async _renderRawPane(logData, container) {
+        if (logData.raw_log !== undefined || !logData.log_id) {
+            container.innerHTML = '';
+            this.renderRawLog(logData, container);
+            return;
+        }
+        container.textContent = 'Loading…';
+        try {
+            const params = new URLSearchParams({
+                log_id: logData.log_id,
+                fractal_id: logData.fractal_id,
+                timestamp: logData.timestamp,
+                shard_num: logData._shard_num,
+            });
+            const resp = await fetch(`/api/v1/logs/fields?${params}`);
+            const data = resp.ok ? await resp.json() : {};
+            logData.raw_log = (data && data.raw_log !== undefined) ? data.raw_log : '';
+        } catch (e) {
+            logData.raw_log = '';
+        }
+        container.innerHTML = '';
+        this.renderRawLog(logData, container);
+    },
+
     renderRawLog(logData, container) {
         const rawValue = logData.raw_log || '';
         if (!rawValue) {
-            container.textContent = 'No raw log available';
+            // Empty means the original aged out of its retention window (TTL'd) or was
+            // never captured. norm_log (normalized fields) is retained indefinitely.
+            container.textContent = 'Original log unavailable (outside retention window).';
             return;
         }
 
@@ -415,7 +458,7 @@ const LogDetail = {
         }
 
         for (const key of Object.keys(logData)) {
-            if (key !== 'fields' && key !== '_all_fields' && key !== 'timestamp' && key !== 'raw_log') {
+            if (key !== 'fields' && key !== '_all_fields' && key !== 'timestamp' && key !== 'raw_log' && key !== 'norm_log') {
                 flattenedData[key] = logData[key];
             }
         }

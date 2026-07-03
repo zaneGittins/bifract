@@ -257,6 +257,8 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 			fieldRef = "timestamp"
 		case "log_id":
 			fieldRef = "log_id"
+		case "normalizer", "_normalizer":
+			fieldRef = "normalizer"
 		default:
 			fieldRef = jsonFieldRef(cond.Field)
 			isJSONField = true

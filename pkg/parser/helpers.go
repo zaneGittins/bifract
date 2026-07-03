@@ -151,7 +151,7 @@ func buildTraversalSQL(
 	}
 
 	// Base case: find starting node(s)
-	sql.WriteString("SELECT timestamp, raw_log, log_id, ")
+	sql.WriteString("SELECT timestamp, norm_log, log_id, ")
 	sql.WriteString("toUInt32(0) AS _depth, ")
 	sql.WriteString(fmt.Sprintf("%s AS _node_id, ", childRef))
 	sql.WriteString(fmt.Sprintf("%s AS _path", childRef))
@@ -162,7 +162,7 @@ func buildTraversalSQL(
 	sql.WriteString("UNION ALL ")
 
 	// Recursive case: find children via parent->child relationship
-	sql.WriteString("SELECT l.timestamp, l.raw_log, l.log_id, ")
+	sql.WriteString("SELECT l.timestamp, l.norm_log, l.log_id, ")
 	sql.WriteString("t._depth + 1 AS _depth, ")
 	sql.WriteString(fmt.Sprintf("l.%s AS _node_id, ", childRef))
 	sql.WriteString(fmt.Sprintf("concat(t._path, ' > ', l.%s) AS _path", childRef))
@@ -209,7 +209,7 @@ func buildTraversalSQL(
 		sql.WriteString(strings.Join(formattedFields, ", "))
 	} else {
 		sql.WriteString("formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as timestamp, ")
-		sql.WriteString("raw_log, log_id, toString(_depth) AS _depth, _path")
+		sql.WriteString("norm_log, log_id, toString(_depth) AS _depth, _path")
 		sql.WriteString(finalIncludeCols)
 	}
 
@@ -251,7 +251,7 @@ func buildTraversalSQL(
 	if hasTableCmd && len(selectFields) > 0 {
 		for _, field := range selectFields {
 			alias := extractFieldAlias(field)
-			if alias != "_all_fields" && alias != "raw_log" && alias != "log_id" {
+			if alias != "_all_fields" && alias != "norm_log" && alias != "log_id" {
 				fieldOrder = append(fieldOrder, strings.Trim(alias, "`"))
 			}
 		}
@@ -327,7 +327,7 @@ func qualifyColumnRefs(sql, alias string) string {
 		}
 
 		if !replaced {
-			for _, col := range []string{"fractal_id", "timestamp", "raw_log", "log_id"} {
+			for _, col := range []string{"fractal_id", "timestamp", "norm_log", "log_id"} {
 				if strings.HasPrefix(rest, col) {
 					prevOk := i == 0 || !isWordByte(sql[i-1])
 					nextOk := i+len(col) >= len(sql) || !isWordByte(sql[i+len(col)])
@@ -513,6 +513,10 @@ func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string,
 		fieldRef = "timestamp"
 	case "log_id":
 		fieldRef = "log_id"
+	case "normalizer", "_normalizer":
+		// The per-row normalizer stamp ("name@version"). Addressable under either name;
+		// _normalizer is how it surfaces in the detail grid.
+		fieldRef = "normalizer"
 	default:
 		if registry != nil {
 			if e := registry.Get(cond.Field); e != nil && e.Kind != FieldKindBase && e.Kind != FieldKindJSON {

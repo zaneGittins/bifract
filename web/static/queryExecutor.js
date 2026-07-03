@@ -1210,18 +1210,18 @@ const QueryExecutor = {
             });
             fields = orderedFields;
         } else if (!this.isAggregated) {
-            // Default source-event column order: timestamp, log_id, raw_log, then rest
-            const priority = ['timestamp', 'log_id', 'raw_log'];
+            // Default source-event column order: timestamp, log_id, norm_log, then rest
+            const priority = ['timestamp', 'log_id', 'norm_log'];
             const prioritized = priority.filter(f => fields.includes(f));
             const rest = fields.filter(f => !priority.includes(f));
             fields = [...prioritized, ...rest];
         }
 
-        const hasRawLog = fields.includes('raw_log');
+        const hasNormLog = fields.includes('norm_log');
 
-        // Hide log_id from the display when raw_log is present (default source-event view).
+        // Hide log_id from the display when norm_log is present (default source-event view).
         // log_id stays in the row data so the detail pane can still fetch by it.
-        if (hasRawLog) fields = fields.filter(f => f !== 'log_id');
+        if (hasNormLog) fields = fields.filter(f => f !== 'log_id');
 
         this._sizingFractalId = fractalId;
         this._sizingSig = sizingSig;
@@ -1279,8 +1279,17 @@ const QueryExecutor = {
     },
 
     _defaultCellHTML(field, value, numericFields) {
+        // norm_log is the serialized normalized fields; drop empty values so the scan
+        // column stays readable (the detail grid does the precise type-hint filtering).
+        if (field === 'norm_log' && typeof value === 'string' && value.charCodeAt(0) === 123) {
+            try {
+                const o = JSON.parse(value);
+                for (const k of Object.keys(o)) { if (o[k] === '' || o[k] === null) delete o[k]; }
+                value = JSON.stringify(o);
+            } catch (e) { /* leave as-is on parse failure */ }
+        }
         let cellClass = field === 'timestamp' ? 'timestamp-cell'
-            : field === 'raw_log' ? 'raw-log-col'
+            : field === 'norm_log' ? 'raw-log-col'
             : (numericFields.has(field) ? 'numeric-col' : '');
         let html;
         if (typeof value === 'object' && value !== null) {

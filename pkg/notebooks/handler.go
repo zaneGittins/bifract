@@ -1962,7 +1962,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		go func(sections []sectionLogID) {
 			for _, s := range sections {
 				sql := fmt.Sprintf(
-					"SELECT timestamp, raw_log, log_id, norm_log AS fields FROM %s WHERE fractal_id = '%s' AND log_id = '%s' LIMIT 1",
+					"SELECT timestamp, log_id, norm_log AS fields FROM %s WHERE fractal_id = '%s' AND log_id = '%s' LIMIT 1",
 					h.ch.ReadTable(),
 					strings.ReplaceAll(s.FractalID, "'", "\\'"),
 					strings.ReplaceAll(s.LogID, "'", "\\'"),

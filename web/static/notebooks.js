@@ -1781,7 +1781,7 @@ const Notebooks = {
             headers = tableColumns;
         } else {
             // Fall back to all columns, but filter out system fields
-            const systemFields = ['_all_fields', 'raw_log', 'log_id'];
+            const systemFields = ['_all_fields', 'raw_log', 'norm_log', 'log_id'];
             headers = Object.keys(results[0]).filter(header => !systemFields.includes(header));
         }
 

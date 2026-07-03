@@ -13,7 +13,7 @@ const ColumnSizing = {
 
     // Fields that should flex to fill remaining horizontal space (the log
     // message). Only one such column flexes; the first match wins.
-    FLEX_FIELDS: ['raw_log', 'message', 'msg', 'body', '_raw', 'log'],
+    FLEX_FIELDS: ['norm_log', 'raw_log', 'message', 'msg', 'body', '_raw', 'log'],
 
     _canvas: null,
 

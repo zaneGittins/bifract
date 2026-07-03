@@ -51,6 +51,13 @@ COPY --from=builder --chown=65534:65534 /tmp /tmp
 # Writable archives directory (overlaid by Docker volume at runtime)
 COPY --from=builder --chown=65534:65534 /tmp /archives
 
+# Writable Iceberg archive spool + data dirs (overlaid by shared volumes at
+# runtime). Pre-created owned by 65534 so a mounted named volume inherits that
+# ownership and the non-root process can write. The server tees to the spool;
+# the archiver sidecar drains it and writes Parquet to the archive dir.
+COPY --from=builder --chown=65534:65534 /tmp /var/lib/bifract/spool
+COPY --from=builder --chown=65534:65534 /tmp /var/lib/bifract/archive
+
 # Nobody user — scratch has no useradd, so reference by UID directly
 # This prevents the process running as root (uid 0)
 USER 65534:65534

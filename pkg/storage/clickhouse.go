@@ -43,9 +43,6 @@ type ClickHouseClient struct {
 	typeHintFields map[string]bool
 }
 
-// typeHintFieldRe extracts the backtick-quoted typed sub-path names from a
-// fields JSON(...) column type, e.g. JSON(max_dynamic_paths=1024, `user` String, ...).
-var typeHintFieldRe = regexp.MustCompile("`([^`]+)`")
 
 // Addrs returns the host:port addresses this client connects to.
 func (c *ClickHouseClient) Addrs() []string { return c.addrs }
@@ -1150,8 +1147,11 @@ func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time
 		return nil, fmt.Errorf("log_id is required")
 	}
 
+	// norm_log (retained) is the display source so comment/permalink views keep working
+	// after raw_log ages out of its TTL window. The original raw_log is only fetched by
+	// the manual detail-panel Raw tab (GetLogFieldsByID/Direct).
 	query := fmt.Sprintf(
-		"SELECT timestamp, raw_log, log_id, norm_log AS fields, fractal_id, ingest_timestamp FROM %s WHERE log_id = ?",
+		"SELECT timestamp, log_id, norm_log AS fields, fractal_id, ingest_timestamp FROM %s WHERE log_id = ?",
 		c.ReadTable())
 	args := []interface{}{logID}
 
@@ -1280,11 +1280,37 @@ func (c *ClickHouseClient) typeHintFieldSet(ctx context.Context) map[string]bool
 	}
 	set := make(map[string]bool)
 	var typ string
+	// c.Database (not currentDatabase()) is the logs DB; the pool's session database
+	// may be "default".
+	db := c.Database
+	if db == "" {
+		db = "logs"
+	}
 	if err := c.conn.QueryRow(ctx,
-		"SELECT type FROM system.columns WHERE database = currentDatabase() AND table = 'logs' AND name = 'fields'",
+		"SELECT type FROM system.columns WHERE database = ? AND table = 'logs' AND name = 'fields'",
+		db,
 	).Scan(&typ); err == nil {
-		for _, m := range typeHintFieldRe.FindAllStringSubmatch(typ, -1) {
-			set[m[1]] = true
+		// type looks like JSON(artifact String, user String, max_dynamic_paths=1024, ...).
+		// Each declared sub-path is "name Type"; parse the leading identifier of each
+		// comma-separated entry, skipping settings like max_dynamic_paths=N.
+		if i := strings.IndexByte(typ, '('); i >= 0 {
+			inner := typ[i+1:]
+			if j := strings.LastIndexByte(inner, ')'); j >= 0 {
+				inner = inner[:j]
+			}
+			for _, part := range strings.Split(inner, ",") {
+				part = strings.TrimSpace(part)
+				if part == "" || strings.ContainsRune(part, '=') {
+					continue
+				}
+				name := part
+				if sp := strings.IndexAny(part, " \t"); sp >= 0 {
+					name = part[:sp]
+				}
+				if name = strings.Trim(name, "`"); name != "" {
+					set[name] = true
+				}
+			}
 		}
 	}
 	c.typeHintFields = set
@@ -1328,7 +1354,7 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 	// PREWHERE on (log_id, timestamp): timestamp is the leading primary-key column, so
 	// this prunes granules before reading norm_log. Matches GetLogFieldsByIDDirect.
 	query := fmt.Sprintf(
-		"SELECT log_id, fractal_id, norm_log AS fields FROM %s PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')",
+		"SELECT log_id, fractal_id, norm_log AS fields, raw_log, normalizer FROM %s PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')",
 		c.ReadTable())
 	args := []interface{}{logID, ts.UTC().Format("2006-01-02 15:04:05.000")}
 	if fractalID != "" {
@@ -1350,12 +1376,17 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 		return nil, nil
 	}
 
-	var resLogID, logFractalID, fieldsStr string
-	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr); err != nil {
+	var resLogID, logFractalID, fieldsStr, rawLog, normalizer string
+	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr, &rawLog, &normalizer); err != nil {
 		return nil, fmt.Errorf("failed to scan log fields row: %w", err)
 	}
-	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID}
-	entry["fields"] = c.parseLogFields(ctx, fieldsStr)
+	flds := c.parseLogFields(ctx, fieldsStr)
+	// Surface the per-row normalizer stamp ("name@version") as a synthetic field so it
+	// shows in the detail grid. Empty for system/audit logs (no normalizer applied).
+	if normalizer != "" {
+		flds["_normalizer"] = normalizer
+	}
+	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID, "raw_log": rawLog, "fields": flds}
 	return entry, nil
 }
 
@@ -1464,7 +1495,7 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 		return c.GetLogFieldsByID(ctx, logID, ts, fractalID)
 	}
 
-	query := "SELECT log_id, fractal_id, norm_log AS fields FROM logs PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')"
+	query := "SELECT log_id, fractal_id, norm_log AS fields, raw_log, normalizer FROM logs PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')"
 	args := []interface{}{logID, ts.UTC().Format("2006-01-02 15:04:05.000")}
 	if fractalID != "" {
 		query += " AND fractal_id = ?"
@@ -1486,12 +1517,17 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 		return nil, nil
 	}
 
-	var resLogID, logFractalID, fieldsStr string
-	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr); err != nil {
+	var resLogID, logFractalID, fieldsStr, rawLog, normalizer string
+	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr, &rawLog, &normalizer); err != nil {
 		return nil, fmt.Errorf("failed to scan log fields row: %w", err)
 	}
-	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID}
-	entry["fields"] = c.parseLogFields(ctx, fieldsStr)
+	flds := c.parseLogFields(ctx, fieldsStr)
+	// Surface the per-row normalizer stamp ("name@version") as a synthetic field so it
+	// shows in the detail grid. Empty for system/audit logs (no normalizer applied).
+	if normalizer != "" {
+		flds["_normalizer"] = normalizer
+	}
+	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID, "raw_log": rawLog, "fields": flds}
 	return entry, nil
 }
 

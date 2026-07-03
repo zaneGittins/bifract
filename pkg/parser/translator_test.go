@@ -23,7 +23,7 @@ func TestBasicQueries(t *testing.T) {
 			name:  "Simple wildcard",
 			query: "*",
 			wantContain: []string{
-				"SELECT timestamp, raw_log, log_id, fractal_id FROM logs",
+				"SELECT timestamp, norm_log, log_id, fractal_id FROM logs",
 				"ORDER BY timestamp DESC",
 			},
 		},
@@ -4683,18 +4683,18 @@ func TestAlertAutoProjection(t *testing.T) {
 			query: "image=/powershell/i",
 			opts:  baseOpts,
 			wantContain: []string{
-				"raw_log", "log_id",
+				"norm_log", "log_id",
 			},
 		},
 		{
-			name:  "Explicit table columns omit raw_log from SELECT",
+			name:  "Explicit table columns omit norm_log from SELECT",
 			query: "image=/powershell/i | table(timestamp, image)",
 			opts:  baseOpts,
 			wantContain: []string{
 				"log_id", "fields.`image`",
 			},
 			wantNotContain: []string{
-				"raw_log",
+				"norm_log",
 			},
 		},
 		{
@@ -4702,7 +4702,7 @@ func TestAlertAutoProjection(t *testing.T) {
 			query: "*",
 			opts:  alertOpts,
 			wantContain: []string{
-				"raw_log", "log_id",
+				"norm_log", "log_id",
 			},
 		},
 	}
