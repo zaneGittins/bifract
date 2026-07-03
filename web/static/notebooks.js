@@ -121,9 +121,6 @@ const Notebooks = {
             sendToChatBtn.addEventListener('click', () => this.sendNotebookToChat());
         }
 
-        const tocBtn = document.getElementById('notebookTOCBtn');
-        if (tocBtn) tocBtn.addEventListener('click', () => this.toggleTOC());
-
         const tocClose = document.getElementById('notebookTOCClose');
         if (tocClose) tocClose.addEventListener('click', () => this.toggleTOC());
 

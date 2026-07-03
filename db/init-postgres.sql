@@ -277,9 +277,6 @@ ALTER TABLE fractals ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT
 -- Retention period in days (NULL = unlimited)
 ALTER TABLE fractals ADD COLUMN IF NOT EXISTS retention_days INTEGER DEFAULT NULL;
 
--- Cold-storage age threshold in days (NULL = never tier to cold object storage)
-ALTER TABLE fractals ADD COLUMN IF NOT EXISTS cold_days INTEGER DEFAULT NULL;
-
 -- Disk quota (NULL = no limit)
 ALTER TABLE fractals ADD COLUMN IF NOT EXISTS disk_quota_bytes BIGINT DEFAULT NULL;
 ALTER TABLE fractals ADD COLUMN IF NOT EXISTS disk_quota_action VARCHAR(10) DEFAULT 'reject';
@@ -1068,10 +1065,14 @@ CREATE TABLE IF NOT EXISTS normalizers (
     is_default BOOLEAN NOT NULL DEFAULT false,
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    -- Bumped on every content edit (Manager.Update). Ingested logs are stamped with
+    -- "name@version" so normalization output is traceable back to the exact config.
+    version INT NOT NULL DEFAULT 1
 );
 
 ALTER TABLE normalizers ADD COLUMN IF NOT EXISTS timestamp_fields JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE normalizers ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 1;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_normalizers_default_unique
     ON normalizers(is_default) WHERE is_default = true;
@@ -1758,3 +1759,38 @@ CREATE TABLE IF NOT EXISTS notification_reads (
     username     VARCHAR(50) PRIMARY KEY REFERENCES users(username) ON DELETE CASCADE,
     last_read_at TIMESTAMP   NOT NULL DEFAULT NOW()
 );
+
+-- Iceberg SQL catalog tables (apache/iceberg-go), backing the archive sidecar.
+-- Pre-created so the archiver runs with init_catalog_tables=false. Column layout
+-- matches iceberg-go v0.6.0's SQL catalog exactly. Empty until archiving is
+-- enabled; presence does not imply the feature is active.
+CREATE TABLE IF NOT EXISTS iceberg_tables (
+    catalog_name               VARCHAR NOT NULL,
+    table_namespace            VARCHAR NOT NULL,
+    table_name                 VARCHAR NOT NULL,
+    iceberg_type               VARCHAR,
+    metadata_location          VARCHAR,
+    previous_metadata_location VARCHAR,
+    PRIMARY KEY (catalog_name, table_namespace, table_name)
+);
+
+CREATE TABLE IF NOT EXISTS iceberg_namespace_properties (
+    catalog_name   VARCHAR NOT NULL,
+    namespace      VARCHAR NOT NULL,
+    property_key   VARCHAR NOT NULL,
+    property_value VARCHAR,
+    PRIMARY KEY (catalog_name, namespace, property_key)
+);
+
+-- Archive heartbeat/status (single row): the bifract-archiver updates this so the
+-- admin UI can show last-commit time, sidecar liveness, archived fractal count,
+-- and total object-storage footprint. Server reads; archiver is the sole writer.
+CREATE TABLE IF NOT EXISTS archive_status (
+    id             SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_commit_at TIMESTAMPTZ,
+    fractal_count  INTEGER  NOT NULL DEFAULT 0,
+    total_bytes    BIGINT   NOT NULL DEFAULT 0,
+    total_records  BIGINT   NOT NULL DEFAULT 0
+);
+INSERT INTO archive_status (id) VALUES (1) ON CONFLICT (id) DO NOTHING;

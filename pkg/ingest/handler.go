@@ -296,6 +296,7 @@ func (h *IngestHandler) parseLogObjectWithConfig(obj map[string]interface{}, nor
 	if norm != nil {
 		entry.Fields = norm.ApplyTransformsWithNested(entry.Fields, built.NestedKeys)
 	}
+	entry.Normalizer = norm.Stamp()
 
 	ingestTime := time.Now()
 	entry.Timestamp = h.extractTimestamp(entry.Fields, tsFields, norm)
@@ -334,6 +335,7 @@ func (h *IngestHandler) parseKVLogs(data []byte, token *ingesttokens.ValidatedTo
 		if token.Normalizer != nil {
 			entry.Fields = token.Normalizer.ApplyTransforms(entry.Fields)
 		}
+		entry.Normalizer = token.Normalizer.Stamp()
 
 		ingestTime := time.Now()
 		entry.Timestamp = h.extractTimestamp(entry.Fields, token.TimestampFields, token.Normalizer)

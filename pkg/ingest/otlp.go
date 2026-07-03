@@ -244,6 +244,7 @@ func (h *OTLPHandler) convertLogRecord(
 	if norm != nil {
 		entry.Fields = norm.ApplyTransforms(entry.Fields)
 	}
+	entry.Normalizer = norm.Stamp()
 
 	// If timestamp was not set from OTLP native fields, try the extraction pipeline
 	if lr.GetTimeUnixNano() == 0 && lr.GetObservedTimeUnixNano() == 0 {

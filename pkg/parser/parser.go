@@ -217,7 +217,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 					operator = "!="
 				}
 				having := &HavingCondition{
-					Field:    "raw_log",
+					Field:    normLogColumn,
 					Operator: operator,
 					Value:    caseInsensitiveSearch(p.current().Value),
 					IsRegex:  true,
@@ -230,7 +230,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 					operator = "!="
 				}
 				having := &HavingCondition{
-					Field:    "raw_log",
+					Field:    normLogColumn,
 					Operator: operator,
 					Value:    p.current().Value,
 					IsRegex:  true,
@@ -449,7 +449,7 @@ func (p *Parser) parseConditionsWithPrecedence(minPrecedence int) ([]ConditionNo
 		} else if p.current().Type == TokenRegex {
 			// Bare regex always searches raw_log
 			cond := &ConditionNode{
-				Field:    "raw_log",
+				Field:    normLogColumn,
 				Operator: "=",
 				Value:    p.current().Value,
 				IsRegex:  true,
@@ -461,7 +461,7 @@ func (p *Parser) parseConditionsWithPrecedence(minPrecedence int) ([]ConditionNo
 		} else if p.current().Type == TokenString {
 			// Bare string always searches raw_log
 			cond := &ConditionNode{
-				Field:    "raw_log",
+				Field:    normLogColumn,
 				Operator: "~",
 				Value:    caseInsensitiveSearch(p.current().Value),
 				IsRegex:  true,
@@ -987,7 +987,7 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 				operator = "!="
 			}
 			cond := HavingCondition{
-				Field:    "raw_log",
+				Field:    normLogColumn,
 				Operator: operator,
 				Value:    p.current().Value,
 				IsRegex:  true,
@@ -1001,7 +1001,7 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 				operator = "!="
 			}
 			cond := HavingCondition{
-				Field:    "raw_log",
+				Field:    normLogColumn,
 				Operator: operator,
 				Value:    caseInsensitiveSearch(p.current().Value),
 				IsRegex:  true,

@@ -45,24 +45,11 @@ services:
     container_name: bifract-clickhouse
     volumes:
       - clickhouse-data:/var/lib/clickhouse
-      # Cold storage tier config (inert by default; see clickhouse/config.d/storage.xml).
-      # Mounted as a single file so the image's own config.d files are preserved.
-      - ./clickhouse/config.d/storage.xml:/etc/clickhouse-server/config.d/storage.xml:ro
     environment:
       CLICKHOUSE_DB: logs
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-bifract}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-      # Cold storage credentials (consumed by storage.xml via from_env when enabled)
-      BIFRACT_COLD_STORAGE_ENDPOINT: ${BIFRACT_COLD_STORAGE_ENDPOINT:-}
-      BIFRACT_COLD_STORAGE_CACHE_SIZE: ${BIFRACT_COLD_STORAGE_CACHE_SIZE:-53687091200}
-      BIFRACT_S3_ACCESS_KEY: ${BIFRACT_S3_ACCESS_KEY:-}
-      BIFRACT_S3_SECRET_KEY: ${BIFRACT_S3_SECRET_KEY:-}
-      BIFRACT_S3_REGION: ${BIFRACT_S3_REGION:-}
-      BIFRACT_AZURE_STORAGE_URL: ${BIFRACT_AZURE_STORAGE_URL:-}
-      BIFRACT_AZURE_CONTAINER: ${BIFRACT_AZURE_CONTAINER:-}
-      BIFRACT_AZURE_STORAGE_ACCOUNT: ${BIFRACT_AZURE_STORAGE_ACCOUNT:-}
-      BIFRACT_AZURE_STORAGE_KEY: ${BIFRACT_AZURE_STORAGE_KEY:-}
     healthcheck:
       test: ["CMD", "clickhouse-client", "--user", "default", "--password", "${CLICKHOUSE_PASSWORD:-bifract}", "--query", "SELECT 1"]
       interval: 10s
@@ -113,16 +100,62 @@ services:
       BIFRACT_S3_ACCESS_KEY: ${BIFRACT_S3_ACCESS_KEY:-}
       BIFRACT_S3_SECRET_KEY: ${BIFRACT_S3_SECRET_KEY:-}
       BIFRACT_S3_REGION: ${BIFRACT_S3_REGION:-}
-      BIFRACT_COLD_STORAGE_BACKEND: ${BIFRACT_COLD_STORAGE_BACKEND:-none}
+      # Archive tee (dormant-but-present): the spool volume is always mounted so
+      # archiving can be enabled at runtime (admin UI or BIFRACT_ARCHIVE_ENABLED)
+      # with no redeploy. The tee only spools when enabled; off = zero overhead.
+      BIFRACT_ARCHIVE_ENABLED: ${BIFRACT_ARCHIVE_ENABLED:-false}
+      BIFRACT_ARCHIVE_SPOOL_PATH: /var/lib/bifract/spool
+      BIFRACT_ARCHIVE_SPOOL_MAX_BYTES: ${BIFRACT_ARCHIVE_SPOOL_MAX_BYTES:-10737418240}
+      BIFRACT_ARCHIVE_ROLL_BYTES: ${BIFRACT_ARCHIVE_ROLL_BYTES:-134217728}
       MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
       MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
       MAXMIND_EDITION_IDS: ${MAXMIND_EDITION_IDS:-GeoLite2-City-CSV,GeoLite2-ASN-CSV}
     volumes:
       - bifract-maxmind:/data/maxmind
+      - bifract-spool:/var/lib/bifract/spool
     depends_on:
       postgres:
         condition: service_healthy
       clickhouse:
+        condition: service_healthy
+    networks:
+      - bifract-network
+
+  # Iceberg archive sidecar (dormant-but-present). Same image as bifract, run
+  # with the archiver command. Drains the shared spool into per-fractal Iceberg
+  # tables on object storage. Idles until archiving is enabled at runtime.
+  bifract-archiver:
+    image: bifract-dev
+    container_name: bifract-archiver
+    restart: unless-stopped
+    command: ["/bifract-archiver", "run"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: bifract
+      POSTGRES_USER: bifract
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bifract}
+      BIFRACT_ARCHIVE_ENABLED: ${BIFRACT_ARCHIVE_ENABLED:-false}
+      BIFRACT_ARCHIVE_BACKEND: ${BIFRACT_ARCHIVE_BACKEND:-disk}
+      BIFRACT_ARCHIVE_DISK_PATH: /var/lib/bifract/archive
+      BIFRACT_ARCHIVE_PREFIX: ${BIFRACT_ARCHIVE_PREFIX:-}
+      BIFRACT_ARCHIVE_S3_ENDPOINT: ${BIFRACT_ARCHIVE_S3_ENDPOINT:-}
+      BIFRACT_ARCHIVE_S3_BUCKET: ${BIFRACT_ARCHIVE_S3_BUCKET:-}
+      BIFRACT_ARCHIVE_S3_REGION: ${BIFRACT_ARCHIVE_S3_REGION:-us-east-1}
+      BIFRACT_ARCHIVE_S3_ACCESS_KEY: ${BIFRACT_ARCHIVE_S3_ACCESS_KEY:-}
+      BIFRACT_ARCHIVE_S3_SECRET_KEY: ${BIFRACT_ARCHIVE_S3_SECRET_KEY:-}
+      BIFRACT_ARCHIVE_AZURE_ACCOUNT: ${BIFRACT_ARCHIVE_AZURE_ACCOUNT:-}
+      BIFRACT_ARCHIVE_AZURE_KEY: ${BIFRACT_ARCHIVE_AZURE_KEY:-}
+      BIFRACT_ARCHIVE_AZURE_CONTAINER: ${BIFRACT_ARCHIVE_AZURE_CONTAINER:-}
+      BIFRACT_ARCHIVE_AZURE_ENDPOINT: ${BIFRACT_ARCHIVE_AZURE_ENDPOINT:-}
+      BIFRACT_ARCHIVE_SPOOL_PATH: /var/lib/bifract/spool
+      BIFRACT_ARCHIVE_ROLL_BYTES: ${BIFRACT_ARCHIVE_ROLL_BYTES:-134217728}
+      BIFRACT_ARCHIVE_ROLL_INTERVAL: ${BIFRACT_ARCHIVE_ROLL_INTERVAL:-1h}
+    volumes:
+      - bifract-spool:/var/lib/bifract/spool
+      - bifract-archive:/var/lib/bifract/archive
+    depends_on:
+      postgres:
         condition: service_healthy
     networks:
       - bifract-network
@@ -133,6 +166,8 @@ volumes:
   caddy-data:
   caddy-config:
   bifract-maxmind:
+  bifract-spool:
+  bifract-archive:
 
 networks:
   bifract-network:

@@ -23,7 +23,7 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		fieldRef = field
 	} else {
 		switch field {
-		case "timestamp", "raw_log", "log_id":
+		case "timestamp", normLogColumn, "log_id":
 			fieldRef = field
 		default:
 			fieldRef = jsonFieldRef(field)

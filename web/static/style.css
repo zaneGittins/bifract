@@ -1729,18 +1729,6 @@ body.search-active {
     display: none;
 }
 
-.cold-query-badge {
-    font-size: 0.6875rem;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-    color: var(--text-secondary);
-    background: var(--bg-tertiary, rgba(120, 160, 200, 0.12));
-    border: 1px solid var(--border-color, rgba(120, 160, 200, 0.25));
-    border-radius: 4px;
-    padding: 1px 6px;
-    cursor: default;
-}
-
 .export-btn {
     display: flex;
     align-items: center;
@@ -6433,6 +6421,51 @@ body.theme-transitioning * {
 
 .perf-metric-warning {
     color: var(--warning) !important;
+}
+
+/* Archive status header (System > Archive) */
+.archive-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 14px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+}
+
+.archive-status-state {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.archive-status-label {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.archive-status-meta {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+}
+
+.archive-status-meta strong {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-weight: 600;
+}
+
+/* Inline "not provisioned" hint next to the archive toggle description */
+.setting-inline-hint {
+    color: var(--warning);
+    font-weight: 500;
 }
 
 .perf-metrics-group-label {

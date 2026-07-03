@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -43,6 +44,7 @@ import (
 	"bifract/pkg/savedqueries"
 	"bifract/pkg/schemafields"
 	"bifract/pkg/settings"
+	"bifract/pkg/spool"
 	"bifract/pkg/sse"
 	"bifract/pkg/storage"
 
@@ -215,15 +217,13 @@ func main() {
 	}
 	log.Println("ClickHouse schema ready")
 
-	// When cold storage is enabled, switch the logs table onto the tiered storage
-	// policy (defined in server config). Idempotent; no-op when already applied.
-	coldStorageEnabled := config.ColdStorageBackend != "" && config.ColdStorageBackend != "none"
-	if coldStorageEnabled {
-		if err := db.EnsureColdStoragePolicy(context.Background()); err != nil {
-			log.Printf("Warning: failed to apply cold storage policy: %v", err)
-		} else {
-			log.Printf("Cold storage enabled (backend: %s)", config.ColdStorageBackend)
-		}
+	// Native cold tiering has been replaced by the Iceberg archive. Migrate any
+	// logs table still on the legacy 'tiered' storage policy back to the default
+	// policy. No-op when tiering was never enabled. Must run while the tiered
+	// policy/cold disk are still defined in config; safe to remove that config
+	// only after this succeeds.
+	if err := db.RevertTieredStoragePolicy(context.Background()); err != nil {
+		log.Printf("Warning: failed to revert tiered storage policy (will retry next start): %v", err)
 	}
 
 	// Start hot table cleaner: drops expired logs_hot partitions every 5 minutes.
@@ -235,7 +235,7 @@ func main() {
 	// Backfill the lower(raw_log) n-gram index on parts that predate it. Runs
 	// asynchronously (alter_sync=0, advisory-locked to one replica) so the heavy
 	// MATERIALIZE INDEX never blocks startup or trips the readiness probe.
-	db.StartRawLogIndexBackfill(context.Background(), pg)
+	db.StartNormLogIndexBackfill(context.Background(), pg)
 
 	// Load custom schema fields from Postgres and reconcile ClickHouse schema.
 	// SetCustomTypeHintedFields runs synchronously so the parser is ready before
@@ -319,13 +319,9 @@ func main() {
 
 		for range ticker.C {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-			// Tier old partitions to cold storage before deleting past retention,
-			// so data is moved to cheap storage rather than lost.
-			if coldStorageEnabled {
-				if err := fractalManager.EnforceColdStorage(ctx); err != nil {
-					log.Printf("Warning: Cold storage tiering failed: %v", err)
-				}
-			}
+			// Delete logs past each fractal's retention window. This is the sole
+			// retention mechanism for the main logs table and bounds the local hot
+			// store; the Iceberg archive (when enabled) retains full history.
 			if err := fractalManager.EnforceRetention(ctx); err != nil {
 				log.Printf("Warning: Retention enforcement failed: %v", err)
 			}
@@ -423,6 +419,15 @@ func main() {
 	ingestQueue := ingest.NewIngestQueue(dbIngest, config.IngestQueueSize, config.IngestWorkers)
 	ingestQueue.SetQuotaManager(quotaManager)
 	ingestQueue.SetNotificationWriter(notifWriter)
+
+	// Archive spool tee (dormant-but-present). The spool is provisioned whenever
+	// BIFRACT_ARCHIVE_SPOOL_PATH is set (compose/k8s mounts the shared volume);
+	// fresh installs leave it unset, so ingest is pure-hot with zero overhead.
+	// The tee only spools when the runtime archive_enabled flag is on; toggling
+	// it (admin UI, or the BIFRACT_ARCHIVE_ENABLED env seed) takes effect within
+	// the poll interval, no restart. Uses only pkg/spool so the server binary
+	// never links the archiver's Arrow/Iceberg dependencies.
+	startArchiveSpool(ingestQueue, pg)
 
 	// Queue depth at which alert evaluation is deferred to protect ingestion.
 	// Clamp the configured percentage to a sane (1, 100] range so a bad value
@@ -790,6 +795,74 @@ func main() {
 			r.Get("/settings", settingsHandler.HandleGet)
 			r.Post("/settings", settingsHandler.HandleUpdate)
 
+			// Iceberg archive status + enable toggle (admin only).
+			r.Get("/system/archive", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				enabled := false
+				if v, _ := pg.GetSetting(r.Context(), "archive_enabled"); v == "true" {
+					enabled = true
+				}
+				var updatedAt, lastCommit sql.NullTime
+				var fractalCount int
+				var totalBytes, totalRecords int64
+				_ = pg.QueryRow(r.Context(),
+					"SELECT updated_at, last_commit_at, fractal_count, total_bytes, total_records FROM archive_status WHERE id = 1").
+					Scan(&updatedAt, &lastCommit, &fractalCount, &totalBytes, &totalRecords)
+				resp := map[string]interface{}{
+					"enabled":     enabled,
+					"provisioned": ingestQueue.SpoolProvisioned(),
+					"backend":     getEnv("BIFRACT_ARCHIVE_BACKEND", "disk"),
+					"spool": map[string]interface{}{
+						"used_bytes": ingestQueue.SpoolUsageBytes(),
+						"max_bytes":  ingestQueue.SpoolMaxBytes(),
+						"pressure":   ingestQueue.SpoolPressure(),
+					},
+					"fractal_count":  fractalCount,
+					"total_bytes":    totalBytes,
+					"total_records":  totalRecords,
+					"archiver_alive": updatedAt.Valid && time.Since(updatedAt.Time) < 90*time.Second,
+				}
+				if lastCommit.Valid {
+					resp["last_commit_at"] = lastCommit.Time.UTC()
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+			})
+			r.Put("/system/archive/enabled", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				// Guardrail: archiving can only be enabled when the spool machinery
+				// is provisioned (dormant-but-present after --upgrade).
+				if !ingestQueue.SpoolProvisioned() {
+					http.Error(w, "Archive not provisioned. Run bifract --upgrade to add the archiver, then retry.", http.StatusBadRequest)
+					return
+				}
+				var body struct {
+					Enabled bool `json:"enabled"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "Invalid JSON", http.StatusBadRequest)
+					return
+				}
+				val := "false"
+				if body.Enabled {
+					val = "true"
+				}
+				if err := pg.SetSetting(r.Context(), "archive_enabled", val); err != nil {
+					http.Error(w, "Failed to save", http.StatusInternalServerError)
+					return
+				}
+				// Reflect immediately in the running tee (the poller also refreshes).
+				ingestQueue.SetArchiveEnabled(body.Enabled)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "enabled": body.Enabled})
+			})
+
 			// Auth
 			r.Post("/auth/logout", authHandler.HandleLogout)
 			r.Get("/auth/user", authHandler.HandleCurrentUser)
@@ -922,7 +995,6 @@ func main() {
 			r.Post("/fractals/{id}/select", fractalHandler.HandleSelectFractal)
 			r.Get("/fractals/{id}/stats", fractalHandler.HandleGetStats)
 			r.Put("/fractals/{id}/retention", fractalHandler.HandleSetRetention)
-			r.Put("/fractals/{id}/cold-storage", fractalHandler.HandleSetColdStorage)
 			r.Put("/fractals/{id}/disk-quota", fractalHandler.HandleSetDiskQuota)
 			r.Post("/fractals/stats/refresh", fractalHandler.HandleRefreshStats)
 
@@ -1269,9 +1341,6 @@ type Config struct {
 	// Optional single LB endpoint for ingest writes; keeps CLICKHOUSE_HOSTS for schema sync
 	ClickHouseWriteHost string
 
-	// Cold storage tier (object storage). Empty/"none" = disabled.
-	ColdStorageBackend string // "none" | "s3" | "azure"
-
 	// Base URL for external links (e.g. webhook alert_link)
 	BaseURL string
 
@@ -1321,9 +1390,6 @@ func loadConfig() Config {
 		ClickHouseHosts:     getEnv("CLICKHOUSE_HOSTS", ""),
 		ClickHouseCluster:   getEnv("CLICKHOUSE_CLUSTER", ""),
 		ClickHouseWriteHost: getEnv("CLICKHOUSE_WRITE_HOST", ""),
-
-		// Cold storage tier (object storage)
-		ColdStorageBackend: getEnv("BIFRACT_COLD_STORAGE_BACKEND", "none"),
 
 		// Base URL
 		BaseURL: getEnv("BIFRACT_BASE_URL", ""),
@@ -1382,6 +1448,65 @@ func getEnvInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+func getEnvInt64(key string, defaultValue int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if v, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return v
+		}
+	}
+	return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
+		}
+	}
+	return defaultValue
+}
+
+// archiveEnabledSetting is the Postgres settings key that toggles archiving at
+// runtime. Shared by the server tee and the archiver sidecar so they agree.
+const archiveEnabledSetting = "archive_enabled"
+
+// startArchiveSpool provisions the ingest archive spool tee when a spool path is
+// configured, and starts a poller that keeps the runtime enable flag in sync
+// with the archive_enabled setting (seeded by BIFRACT_ARCHIVE_ENABLED). No-op
+// when unprovisioned, so archiving stays off by default.
+func startArchiveSpool(q *ingest.IngestQueue, pg *storage.PostgresClient) {
+	spoolPath := getEnv("BIFRACT_ARCHIVE_SPOOL_PATH", "")
+	if spoolPath == "" {
+		return
+	}
+	segBytes := getEnvInt64("BIFRACT_ARCHIVE_ROLL_BYTES", 128<<20)
+	maxBytes := getEnvInt64("BIFRACT_ARCHIVE_SPOOL_MAX_BYTES", 10<<30)
+	w, err := spool.NewWriter(spool.WriterOptions{Dir: spoolPath, MaxSegmentBytes: segBytes})
+	if err != nil {
+		log.Printf("Warning: archive spool disabled, cannot open %s: %v", spoolPath, err)
+		return
+	}
+	q.SetSpool(w, maxBytes)
+
+	envSeed := getEnvBool("BIFRACT_ARCHIVE_ENABLED", false)
+	refresh := func() {
+		enabled := envSeed
+		if v, err := pg.GetSetting(context.Background(), archiveEnabledSetting); err == nil && v != "" {
+			enabled = v == "true"
+		}
+		q.SetArchiveEnabled(enabled)
+	}
+	refresh()
+	log.Printf("Archive spool provisioned at %s (max %d bytes, enabled=%v)", spoolPath, maxBytes, q.ArchiveEnabled())
+	go func() {
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			refresh()
+		}
+	}()
 }
 
 // APIKeyValidatorAdapter adapts apikeys.Storage to auth.APIKeyValidator interface

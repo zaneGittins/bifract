@@ -53,6 +53,55 @@ const SettingsView = {
         if (queryTimeoutSelect) {
             queryTimeoutSelect.addEventListener('change', () => this.saveSettings());
         }
+        const archiveToggle = document.getElementById('archiveEnabledToggle');
+        if (archiveToggle) {
+            archiveToggle.addEventListener('change', () => this.saveArchiveEnabled());
+        }
+    },
+
+    // Loads the Iceberg archive enable state. The toggle is disabled (with a
+    // hint) until the archiver machinery is provisioned.
+    async loadArchiveToggle() {
+        const toggle = document.getElementById('archiveEnabledToggle');
+        const hint = document.getElementById('archiveToggleHint');
+        if (!toggle) return;
+        try {
+            const res = await fetch('/api/v1/system/archive', { credentials: 'include' });
+            if (!res.ok) return;
+            const d = await res.json();
+            toggle.checked = !!d.enabled;
+            toggle.disabled = !d.provisioned;
+            if (hint) {
+                hint.textContent = d.provisioned ? '' : 'Not provisioned — run bifract --upgrade to add the archiver.';
+            }
+        } catch (err) {
+            console.error('[Settings] archive status load error:', err);
+        }
+    },
+
+    async saveArchiveEnabled() {
+        const toggle = document.getElementById('archiveEnabledToggle');
+        if (!toggle) return;
+        const enabled = toggle.checked;
+        try {
+            const res = await fetch('/api/v1/system/archive/enabled', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ enabled })
+            });
+            if (!res.ok) {
+                const msg = await res.text();
+                throw new Error(msg || 'Failed to update archive setting');
+            }
+            if (window.Toast) {
+                Toast.success('Archive ' + (enabled ? 'Enabled' : 'Disabled'),
+                    enabled ? 'Logs are now being copied to the Iceberg archive.' : 'Archiving paused. Existing archived data is retained.');
+            }
+        } catch (err) {
+            toggle.checked = !enabled; // revert on failure
+            if (window.Toast) Toast.error('Archive Update Failed', err.message);
+        }
     },
 
     switchSubTab(tabName, skipPush = false) {
@@ -103,6 +152,7 @@ const SettingsView = {
 
         // Load data
         await this.loadSettings();
+        await this.loadArchiveToggle();
         await this.loadMTLSStatus();
         await this.loadUsers();
 

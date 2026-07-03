@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"bifract/pkg/spool"
 	"bifract/pkg/storage"
 )
 
@@ -52,6 +53,12 @@ const (
 	// At 90% ClickHouse starts struggling; at 95%+ data corruption risk.
 	diskPressureTrigger = 90.0
 	diskPressureRelease = 80.0
+
+	// spoolPressureTrigger/Release are fractions of the archive spool's max
+	// bytes at which spool backpressure activates/deactivates. The gap prevents
+	// oscillation. Only evaluated when the archive spool is configured.
+	spoolPressureTrigger = 0.90
+	spoolPressureRelease = 0.70
 )
 
 // QueueMetrics tracks ingestion queue statistics
@@ -99,6 +106,15 @@ type IngestQueue struct {
 	diskPressure atomic.Int64
 	stop         chan struct{} // signals CPU/disk monitor to exit
 
+	// spool is the durable archive spool (nil unless the archive feature is
+	// provisioned). archiveEnabled gates the tee at runtime so a provisioned-
+	// but-disabled archive adds zero ingest overhead. spoolPressure is 1 when
+	// spool disk usage is near spoolMaxBytes (backpressure, like diskPressure).
+	spool          *spool.Writer
+	archiveEnabled atomic.Bool
+	spoolPressure  atomic.Int64
+	spoolMaxBytes  int64
+
 	// lastIngested tracks the most recent successful insert time per fractal.
 	// Used by the alert engine to skip evaluation when no new data has arrived.
 	lastIngestedMu sync.RWMutex
@@ -111,6 +127,7 @@ type IngestQueue struct {
 	pendingDropsCPU   atomic.Int64
 	pendingDropsDisk  atomic.Int64
 	pendingDropsQueue atomic.Int64
+	pendingDropsSpool atomic.Int64
 	lastDropFlushUnix atomic.Int64
 
 	notifWriter notifWriterIface
@@ -190,6 +207,16 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 		return false
 	}
 
+	// Spool backpressure: when archiving is enabled and the durable spool is
+	// near capacity, reject early. Combined with the fail-closed tee below this
+	// guarantees we never ack a log we could not durably archive.
+	if q.spoolPressure.Load() == 1 {
+		n := int64(len(logs))
+		q.Metrics.QueueDrops.Add(n)
+		q.pendingDropsSpool.Add(n)
+		return false
+	}
+
 	// Calculate how many queue slots this batch needs after splitting.
 	slotsNeeded := (len(logs) + maxEnqueueBatch - 1) / maxEnqueueBatch
 
@@ -201,6 +228,22 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 		q.Metrics.QueueDrops.Add(n)
 		q.pendingDropsQueue.Add(n)
 		return false
+	}
+
+	// Archive tee (fail-closed, spool-before-ack): when archiving is enabled,
+	// durably append the batch to the spool BEFORE it is queued for ClickHouse.
+	// A spool write failure rejects the batch (429) rather than acking data we
+	// could not archive. spool.Append fsyncs before returning, so a successful
+	// Enqueue means "durably spooled AND queued". A rare duplicate (retry after
+	// a post-spool failure) is deduped on restore via log_id.
+	if q.archiveEnabled.Load() && q.spool != nil {
+		if err := q.spool.Append(logs); err != nil {
+			log.Printf("[Ingest Queue] spool append failed, rejecting batch: %v", err)
+			n := int64(len(logs))
+			q.Metrics.QueueDrops.Add(n)
+			q.pendingDropsSpool.Add(n)
+			return false
+		}
 	}
 
 	// Split large batches so each queue slot holds at most maxEnqueueBatch
@@ -237,6 +280,9 @@ func (q *IngestQueue) Healthy() bool {
 		return false
 	}
 	if q.diskPressure.Load() == 1 {
+		return false
+	}
+	if q.spoolPressure.Load() == 1 {
 		return false
 	}
 	if q.consecutiveFailures.Load() < unhealthyThreshold {
@@ -311,8 +357,45 @@ func (q *IngestQueue) monitorCPU() {
 				}
 			}
 
+			q.monitorSpool()
+
 			q.flushDropEvents()
 		}
+	}
+}
+
+// monitorSpool sets/clears spoolPressure from the archive spool's disk usage
+// against spoolMaxBytes, with trigger/release hysteresis. No-op when the archive
+// spool is not configured.
+func (q *IngestQueue) monitorSpool() {
+	if q.spool == nil || q.spoolMaxBytes <= 0 {
+		return
+	}
+	used, err := q.spool.DiskUsage()
+	if err != nil {
+		return
+	}
+	frac := float64(used) / float64(q.spoolMaxBytes)
+	if frac >= spoolPressureTrigger && q.spoolPressure.Load() == 0 {
+		q.spoolPressure.Store(1)
+		log.Printf("[Ingest Queue] Spool backpressure ON (%.1f%% of %d bytes)", frac*100, q.spoolMaxBytes)
+		q.writeSystemEvent("ingest.backpressure.on", map[string]string{
+			"reason":    "spool_pressure",
+			"value":     fmt.Sprintf("%.1f", frac*100),
+			"threshold": fmt.Sprintf("%.1f", spoolPressureTrigger*100),
+		})
+		if q.notifWriter != nil {
+			go q.notifWriter.Write("ingest.spool_pressure", "warning",
+				"Ingest Archive Spool Backpressure Active",
+				fmt.Sprintf("Spool at %.1f%% of capacity", frac*100))
+		}
+	} else if frac < spoolPressureRelease && q.spoolPressure.Load() == 1 {
+		q.spoolPressure.Store(0)
+		log.Printf("[Ingest Queue] Spool backpressure OFF (%.1f%%)", frac*100)
+		q.writeSystemEvent("ingest.backpressure.off", map[string]string{
+			"reason": "spool_pressure",
+			"value":  fmt.Sprintf("%.1f", frac*100),
+		})
 	}
 }
 
@@ -538,6 +621,7 @@ func (q *IngestQueue) flushDropEvents() {
 		{"cpu_pressure", &q.pendingDropsCPU},
 		{"disk_pressure", &q.pendingDropsDisk},
 		{"queue_full", &q.pendingDropsQueue},
+		{"spool_pressure", &q.pendingDropsSpool},
 	} {
 		if n := rc.count.Swap(0); n > 0 {
 			q.writeSystemEvent("ingest.drops", map[string]string{
@@ -582,6 +666,7 @@ func (q *IngestQueue) QueueDropsTotal() int64       { return q.Metrics.QueueDrop
 func (q *IngestQueue) RetriesTotal() int64          { return q.Metrics.Retries.Load() }
 func (q *IngestQueue) CPUPressure() bool            { return q.cpuPressure.Load() == 1 }
 func (q *IngestQueue) DiskPressure() bool           { return q.diskPressure.Load() == 1 }
+func (q *IngestQueue) SpoolPressure() bool          { return q.spoolPressure.Load() == 1 }
 func (q *IngestQueue) ConsecutiveFailures() int64   { return q.consecutiveFailures.Load() }
 
 // worker drains the channel and coalesces multiple small batches into larger

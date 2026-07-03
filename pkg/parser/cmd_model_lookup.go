@@ -329,7 +329,7 @@ func parseModelLookupArgs(args []string) (modelName string, keyFields []string, 
 // Standard log fields are referenced via the JSON sub-column.
 func modelLookupFieldRef(field string) string {
 	switch field {
-	case "timestamp", "raw_log", "log_id", "fractal_id", "ingest_timestamp":
+	case "timestamp", normLogColumn, "log_id", "fractal_id", "ingest_timestamp":
 		return field
 	default:
 		return jsonFieldRef(field)

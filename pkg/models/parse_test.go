@@ -19,10 +19,10 @@ func TestParseSourceQuerySubsetRejections(t *testing.T) {
 		{"eval", `level = "a" | eval(x = 1)`, "eval() is not supported"},
 		{"model_lookup", `level = "a" | model_lookup(model="m", key=[a,b])`, "model_lookup() is not supported"},
 		{"assignment", `x := 1`, "assignments"},
-		{"regex-no-output", `level = "a" | regex(field=raw_log, regex="([a-z]+)")`, "needs an output name"},
+		{"regex-no-output", `level = "a" | regex(field=norm_log, regex="([a-z]+)")`, "needs an output name"},
 		{"lowercase-no-extraction", `level = "a" | lowercase(level)`, "must target a field produced by a preceding regex"},
 		{"len-no-extraction", `level = "a" | len(level) | _len >= 3`, "must target a field produced by a preceding regex"},
-		{"uppercase", `level = "a" | regex(field=raw_log, regex="([a-z]+)", as=t) | uppercase(t)`, "uppercase is not supported"},
+		{"uppercase", `level = "a" | regex(field=norm_log, regex="([a-z]+)", as=t) | uppercase(t)`, "uppercase is not supported"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,7 +54,7 @@ func TestEndToEndBQLToDDL(t *testing.T) {
 			{Field: "src_ip", Op: "cidr", Value: "10.0.0.0/8"},
 		},
 		Extractions: []ExtractionStep{
-			{FromField: "raw_log", Pattern: `query:\s+(\S+?)\.([a-z]+)$`, OutputField: "tld", Lowercase: true, MinLength: 2},
+			{FromField: "norm_log", Pattern: `query:\s+(\S+?)\.([a-z]+)$`, OutputField: "tld", Lowercase: true, MinLength: 2},
 		},
 		PartitionKey: "level",
 		ValueKey:     "tld",
@@ -102,7 +102,7 @@ func TestEndToEndBQLToDDL(t *testing.T) {
 }
 
 func TestParseSourceQueryRefinements(t *testing.T) {
-	res := ParseSourceQuery(`level = "dns" | regex(field=raw_log, regex="([a-z]+)", as=tld) | len(tld) | _len >= 4 | lowercase(tld)`, ModelTypeRarity)
+	res := ParseSourceQuery(`level = "dns" | regex(field=norm_log, regex="([a-z]+)", as=tld) | len(tld) | _len >= 4 | lowercase(tld)`, ModelTypeRarity)
 	if len(res.Errors) != 0 {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
@@ -115,7 +115,7 @@ func TestParseSourceQueryRefinements(t *testing.T) {
 	}
 
 	// `>` maps to n+1.
-	res2 := ParseSourceQuery(`level = "a" | regex(field=raw_log, regex="([a-z]+)", as=t) | len(t) | _len > 4`, ModelTypeRarity)
+	res2 := ParseSourceQuery(`level = "a" | regex(field=norm_log, regex="([a-z]+)", as=t) | len(t) | _len > 4`, ModelTypeRarity)
 	if len(res2.Errors) != 0 {
 		t.Fatalf("unexpected errors: %v", res2.Errors)
 	}
@@ -125,7 +125,7 @@ func TestParseSourceQueryRefinements(t *testing.T) {
 
 	// Multiple length filters with named len outputs stay independent (no collision,
 	// no warning) and map to the correct extraction.
-	res3 := ParseSourceQuery(`level = "a" | regex(field=raw_log, regex="(\\S+)", as=a) | len(a, as=a_len) | a_len >= 2 | regex(field=raw_log, regex="(\\d+)", as=b) | len(b, as=b_len) | b_len >= 3`, ModelTypeRarity)
+	res3 := ParseSourceQuery(`level = "a" | regex(field=norm_log, regex="(\\S+)", as=a) | len(a, as=a_len) | a_len >= 2 | regex(field=norm_log, regex="(\\d+)", as=b) | len(b, as=b_len) | b_len >= 3`, ModelTypeRarity)
 	if len(res3.Errors) != 0 {
 		t.Fatalf("unexpected errors: %v", res3.Errors)
 	}
@@ -140,7 +140,7 @@ func TestParseSourceQueryRefinements(t *testing.T) {
 // A named capture group must win over as=, matching the regex() runtime, so the
 // parsed OutputField equals the column the live preview produces.
 func TestParseSourceQueryNamedGroupWinsOverAs(t *testing.T) {
-	res := ParseSourceQuery(`level = "a" | regex(field=raw_log, regex="(?<tld>[a-z]+)", as=foo)`, ModelTypeRarity)
+	res := ParseSourceQuery(`level = "a" | regex(field=norm_log, regex="(?<tld>[a-z]+)", as=foo)`, ModelTypeRarity)
 	if len(res.Errors) != 0 {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
@@ -149,7 +149,7 @@ func TestParseSourceQueryNamedGroupWinsOverAs(t *testing.T) {
 	}
 
 	// More than one named group has no single output column and is rejected.
-	res2 := ParseSourceQuery(`level = "a" | regex(field=raw_log, regex="(?<a>x)(?<b>y)")`, ModelTypeRarity)
+	res2 := ParseSourceQuery(`level = "a" | regex(field=norm_log, regex="(?<a>x)(?<b>y)")`, ModelTypeRarity)
 	if len(res2.Errors) == 0 {
 		t.Fatal("expected an error for a multi-named-group pattern")
 	}
@@ -158,7 +158,7 @@ func TestParseSourceQueryNamedGroupWinsOverAs(t *testing.T) {
 // A filter regex value containing slashes must still produce a parseable query.
 func TestSlashInRegexFilterIsParseable(t *testing.T) {
 	for _, val := range []string{`a/b/c`, `a\/b`, `x\d+/y`} {
-		def := ModelDefinition{Filter: []FilterCondition{{Field: "raw_log", Op: "~", Value: val}}}
+		def := ModelDefinition{Filter: []FilterCondition{{Field: "norm_log", Op: "~", Value: val}}}
 		got := ParseSourceQuery(GenerateSourceQuery(def), ModelTypeRarity)
 		if len(got.Errors) != 0 {
 			t.Fatalf("value %q produced an unparseable source query: %v", val, got.Errors)
@@ -167,11 +167,11 @@ func TestSlashInRegexFilterIsParseable(t *testing.T) {
 }
 
 func TestParseSourceQueryCandidateFields(t *testing.T) {
-	res := ParseSourceQuery(`level = "dns" | regex(field=raw_log, regex="([a-z]+)", as=tld)`, ModelTypeRarity)
+	res := ParseSourceQuery(`level = "dns" | regex(field=norm_log, regex="([a-z]+)", as=tld)`, ModelTypeRarity)
 	if len(res.Errors) != 0 {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
-	want := map[string]bool{"raw_log": true, "level": true, "tld": true}
+	want := map[string]bool{"norm_log": true, "level": true, "tld": true}
 	for w := range want {
 		found := false
 		for _, c := range res.CandidateFields {

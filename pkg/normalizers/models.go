@@ -1,6 +1,9 @@
 package normalizers
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type Transform string
 
@@ -48,6 +51,7 @@ type Normalizer struct {
 	CreatedBy       string           `json:"created_by"`
 	CreatedAt       time.Time        `json:"created_at"`
 	UpdatedAt       time.Time        `json:"updated_at"`
+	Version         int              `json:"version"`
 }
 
 // FlattenMode indicates which flatten strategy the normalizer uses.
@@ -61,15 +65,28 @@ const (
 
 // CompiledNormalizer is the hot-path version with pre-built lookup maps.
 type CompiledNormalizer struct {
+	Name            string // for per-log stamping ("name@version")
+	Version         int
 	Transforms      []Transform
 	FieldMappingMap map[string]string // source -> target for O(1) lookup
 	Flatten         FlattenMode
 	TimestampFields []TimestampField
 }
 
+// Stamp returns the "name@version" identifier written to each ingested log's
+// normalizer column. Empty when the normalizer has no name.
+func (c *CompiledNormalizer) Stamp() string {
+	if c == nil || c.Name == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s@%d", c.Name, c.Version)
+}
+
 // Compile produces a hot-path CompiledNormalizer from a Normalizer.
 func (n *Normalizer) Compile() *CompiledNormalizer {
 	c := &CompiledNormalizer{
+		Name:            n.Name,
+		Version:         n.Version,
 		Transforms:      n.Transforms,
 		FieldMappingMap: make(map[string]string, len(n.FieldMappings)*4),
 		TimestampFields: n.TimestampFields,

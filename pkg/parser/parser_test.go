@@ -1140,7 +1140,7 @@ func TestStringFunctions(t *testing.T) {
 			query:   `* | regex("user=(\\w+)")`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "extractAllGroups(raw_log,") &&
+				return containsSubstr([]string{sql}, "extractAllGroups(norm_log,") &&
 					containsSubstr([]string{sql}, "AS regex_match")
 			},
 		},
@@ -1159,7 +1159,7 @@ func TestStringFunctions(t *testing.T) {
 			query:   `* | replace("error", "ERROR")`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "replaceRegexpAll(raw_log,") &&
+				return containsSubstr([]string{sql}, "replaceRegexpAll(norm_log,") &&
 					containsSubstr([]string{sql}, "'error'") &&
 					containsSubstr([]string{sql}, "'ERROR'")
 			},
@@ -1184,10 +1184,10 @@ func TestStringFunctions(t *testing.T) {
 		},
 		{
 			name:    "replace with output alias",
-			query:   `* | replace("\\d+", "NUM", raw_log, clean_message) | table(timestamp, clean_message)`,
+			query:   `* | replace("\\d+", "NUM", norm_log, clean_message) | table(timestamp, clean_message)`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "replaceRegexpAll(raw_log,") &&
+				return containsSubstr([]string{sql}, "replaceRegexpAll(norm_log,") &&
 					containsSubstr([]string{sql}, "AS clean_message")
 			},
 		},

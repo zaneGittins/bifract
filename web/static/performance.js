@@ -110,7 +110,8 @@ const Performance = {
             overview: 'perfPaneOverview',
             storage: 'perfPaneStorage',
             activity: 'perfPaneActivity',
-            alerts: 'perfPaneAlerts'
+            alerts: 'perfPaneAlerts',
+            archive: 'perfPaneArchive'
         };
         Object.entries(panes).forEach(([k, id]) => {
             const el = document.getElementById(id);
@@ -201,6 +202,10 @@ const Performance = {
                 this.loadIngest();
             }
 
+            if (tab === 'archive') {
+                this.loadArchive();
+            }
+
             if (alertStatsPromise) {
                 const alertData = await (await alertStatsPromise).json();
                 if (alertData.success) {
@@ -249,6 +254,93 @@ const Performance = {
         } catch (err) {
             console.error('[Performance] ingest load error:', err);
         }
+    },
+
+    async loadArchive() {
+        try {
+            const res = await fetch('/api/v1/system/archive', { credentials: 'include' });
+            if (!res.ok) return;
+            this.renderArchive(await res.json());
+        } catch (err) {
+            console.error('[Performance] archive load error:', err);
+        }
+    },
+
+    renderArchive(d) {
+        const dot = document.getElementById('archiveStatusDot');
+        const label = document.getElementById('archiveStatusLabel');
+        const hint = document.getElementById('archiveHint');
+        if (!dot || !label) return;
+
+        // Enabled state: dot + label. Disabled but provisioned = neutral; not
+        // provisioned = amber (needs --upgrade).
+        if (d.enabled) {
+            dot.className = 'status-dot status-enabled';
+            label.textContent = 'Archiving enabled';
+        } else if (d.provisioned) {
+            dot.className = 'status-dot status-disabled';
+            label.textContent = 'Archiving disabled';
+        } else {
+            dot.className = 'status-dot status-auto-disabled';
+            label.textContent = 'Not provisioned';
+        }
+
+        this.setText('archiveBackend', d.backend || '--');
+
+        const aliveEl = document.getElementById('archiveAlive');
+        if (aliveEl) {
+            if (!d.provisioned) {
+                aliveEl.textContent = 'absent';
+            } else if (d.archiver_alive) {
+                aliveEl.textContent = 'running';
+            } else if (d.enabled) {
+                aliveEl.textContent = 'not responding';
+            } else {
+                aliveEl.textContent = 'idle';
+            }
+        }
+
+        // Spool usage + pressure.
+        const spool = d.spool || {};
+        const used = spool.used_bytes || 0;
+        const max = spool.max_bytes || 0;
+        const pct = max > 0 ? Math.round((used / max) * 100) : 0;
+        this.setText('archiveSpoolValue', this.formatBytes(used));
+        this.setText('archiveSpoolSub', max > 0 ? `${pct}% of ${this.formatBytes(max)}` : '');
+        const spoolValEl = document.getElementById('archiveSpoolValue');
+        if (spoolValEl) {
+            spoolValEl.className = 'perf-metric-value' +
+                (spool.pressure ? ' perf-metric-danger' : pct > 70 ? ' perf-metric-warning' : '');
+        }
+        const banner = document.getElementById('archiveSpoolBanner');
+        if (banner) banner.style.display = spool.pressure ? '' : 'none';
+
+        this.setText('archiveFractals', String(d.fractal_count || 0));
+        this.setText('archiveSize', this.formatBytes(d.total_bytes || 0));
+        this.setText('archiveRecords', d.total_records ? `${Number(d.total_records).toLocaleString()} records` : '');
+        this.setText('archiveLastCommit', d.last_commit_at ? this.timeAgo(d.last_commit_at) : 'never');
+
+        // Contextual hint.
+        if (hint) {
+            let msg = '';
+            if (!d.provisioned) {
+                msg = 'The archiver sidecar is not provisioned. Run bifract --upgrade to add it, then enable archiving in Admin → Limits.';
+            } else if (!d.enabled) {
+                msg = 'Enable archiving in Admin → Limits to start writing a durable Iceberg copy of all logs.';
+            }
+            hint.textContent = msg;
+            hint.style.display = msg ? '' : 'none';
+        }
+    },
+
+    timeAgo(iso) {
+        const t = new Date(iso).getTime();
+        if (isNaN(t)) return '--';
+        const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+        if (s < 60) return `${s}s ago`;
+        if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+        if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+        return `${Math.floor(s / 86400)}d ago`;
     },
 
     fractalLabel(id) {

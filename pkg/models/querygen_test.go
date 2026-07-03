@@ -21,38 +21,38 @@ func TestSourceQueryRoundTrip(t *testing.T) {
 			{Field: "level", Op: "=", Value: "error"},
 			{Field: "env", Op: "=", Value: "prod"},
 		}}},
-		{"regex-match", ModelDefinition{Filter: []FilterCondition{{Field: "raw_log", Op: "~", Value: `failed login`}}}},
-		{"regex-neg", ModelDefinition{Filter: []FilterCondition{{Field: "raw_log", Op: "!~", Value: `health`}}}},
-		{"regex-backslash", ModelDefinition{Filter: []FilterCondition{{Field: "raw_log", Op: "~", Value: `\d+\.\d+`}}}},
-		{"regex-slash", ModelDefinition{Filter: []FilterCondition{{Field: "raw_log", Op: "~", Value: `a/b/c`}}}},
+		{"regex-match", ModelDefinition{Filter: []FilterCondition{{Field: "norm_log", Op: "~", Value: `failed login`}}}},
+		{"regex-neg", ModelDefinition{Filter: []FilterCondition{{Field: "norm_log", Op: "!~", Value: `health`}}}},
+		{"regex-backslash", ModelDefinition{Filter: []FilterCondition{{Field: "norm_log", Op: "~", Value: `\d+\.\d+`}}}},
+		{"regex-slash", ModelDefinition{Filter: []FilterCondition{{Field: "norm_log", Op: "~", Value: `a/b/c`}}}},
 		{"value-with-quote", ModelDefinition{Filter: []FilterCondition{{Field: "msg", Op: "=", Value: `say "hi"`}}}},
 		{"cidr", ModelDefinition{Filter: []FilterCondition{{Field: "src_ip", Op: "cidr", Value: "10.0.0.0/8"}}}},
 		{"notcidr", ModelDefinition{Filter: []FilterCondition{{Field: "src_ip", Op: "!cidr", Value: "192.168.0.0/16"}}}},
 		{"extract-as", ModelDefinition{Extractions: []ExtractionStep{
-			{FromField: "raw_log", Pattern: `([a-z]+)$`, OutputField: "tld"},
+			{FromField: "norm_log", Pattern: `([a-z]+)$`, OutputField: "tld"},
 		}}},
 		{"extract-named", ModelDefinition{Extractions: []ExtractionStep{
-			{FromField: "raw_log", Pattern: `(?<tld>[a-z]+)$`, OutputField: "tld"},
+			{FromField: "norm_log", Pattern: `(?<tld>[a-z]+)$`, OutputField: "tld"},
 		}}},
 		{"extract-backslash", ModelDefinition{Extractions: []ExtractionStep{
-			{FromField: "raw_log", Pattern: `(\d+\.\d+\.\d+\.\d+)`, OutputField: "ip"},
+			{FromField: "norm_log", Pattern: `(\d+\.\d+\.\d+\.\d+)`, OutputField: "ip"},
 		}}},
 		{"multi-extract", ModelDefinition{Extractions: []ExtractionStep{
-			{FromField: "raw_log", Pattern: `host=(\S+)`, OutputField: "host"},
-			{FromField: "raw_log", Pattern: `user=(\S+)`, OutputField: "usr"},
+			{FromField: "norm_log", Pattern: `host=(\S+)`, OutputField: "host"},
+			{FromField: "norm_log", Pattern: `user=(\S+)`, OutputField: "usr"},
 		}}},
 		{"extract-lowercase", ModelDefinition{Extractions: []ExtractionStep{
-			{FromField: "raw_log", Pattern: `([A-Za-z]+)$`, OutputField: "tld", Lowercase: true},
+			{FromField: "norm_log", Pattern: `([A-Za-z]+)$`, OutputField: "tld", Lowercase: true},
 		}}},
 		{"extract-minlength", ModelDefinition{Extractions: []ExtractionStep{
-			{FromField: "raw_log", Pattern: `(\S+)`, OutputField: "tok", MinLength: 4},
+			{FromField: "norm_log", Pattern: `(\S+)`, OutputField: "tok", MinLength: 4},
 		}}},
 		{"extract-lower-and-minlength", ModelDefinition{Extractions: []ExtractionStep{
-			{FromField: "raw_log", Pattern: `([A-Za-z]+)$`, OutputField: "tld", Lowercase: true, MinLength: 2},
+			{FromField: "norm_log", Pattern: `([A-Za-z]+)$`, OutputField: "tld", Lowercase: true, MinLength: 2},
 		}}},
 		{"multi-extract-minlength", ModelDefinition{Extractions: []ExtractionStep{
-			{FromField: "raw_log", Pattern: `host=(\S+)`, OutputField: "host", MinLength: 3},
-			{FromField: "raw_log", Pattern: `user=(\S+)`, OutputField: "usr", MinLength: 5},
+			{FromField: "norm_log", Pattern: `host=(\S+)`, OutputField: "host", MinLength: 3},
+			{FromField: "norm_log", Pattern: `user=(\S+)`, OutputField: "usr", MinLength: 5},
 		}}},
 		{"filter-and-extract-and-cidr", ModelDefinition{
 			Filter: []FilterCondition{
@@ -60,7 +60,7 @@ func TestSourceQueryRoundTrip(t *testing.T) {
 				{Field: "src_ip", Op: "cidr", Value: "10.0.0.0/8"},
 			},
 			Extractions: []ExtractionStep{
-				{FromField: "raw_log", Pattern: `query: (\S+)`, OutputField: "domain"},
+				{FromField: "norm_log", Pattern: `query: (\S+)`, OutputField: "domain"},
 			},
 		}},
 	}

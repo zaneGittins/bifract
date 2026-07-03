@@ -28,7 +28,6 @@ type K8sReconfigureOpts struct {
 	AllowedIPs  string
 	SizeProfile string
 	Shards      int
-	Replicas    int
 }
 
 // RunReconfigureK8s re-renders K8s manifests from existing secrets and settings.
@@ -124,15 +123,10 @@ func RunReconfigureK8s(dir string, opts K8sReconfigureOpts) error {
 		changes = append(changes, fmt.Sprintf("Size Profile: %s -> %s", cfg.SizeProfile.Name, profile.Name))
 		cfg.SizeProfile = profile
 		cfg.CHShards = profile.CHShards
-		cfg.CHReplicas = profile.CHReplicas
 	}
 	if opts.Shards > 0 && opts.Shards != cfg.CHShards {
 		changes = append(changes, fmt.Sprintf("CH Shards: %d -> %d", cfg.CHShards, opts.Shards))
 		cfg.CHShards = opts.Shards
-	}
-	if opts.Replicas > 0 && opts.Replicas != cfg.CHReplicas {
-		changes = append(changes, fmt.Sprintf("CH Replicas: %d -> %d", cfg.CHReplicas, opts.Replicas))
-		cfg.CHReplicas = opts.Replicas
 	}
 	if opts.Domain != "" && opts.Domain != cfg.Domain {
 		changes = append(changes, fmt.Sprintf("Domain: %s -> %s", cfg.Domain, opts.Domain))
@@ -268,7 +262,6 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 			IngestWorkers:   fallbackInt(settings.ingestWorkers, fb.IngestWorkers),
 		},
 		CHShards:            settings.chShards,
-		CHReplicas:          settings.chReplicas,
 		CHStorageGB:         settings.chStorageGB,
 		OutputDir:           dir,
 		MTLSEnabled:         settings.mtlsEnabled,
@@ -314,13 +307,21 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 		"S3_ACCESS_KEY":           secrets["S3_ACCESS_KEY"],
 		"S3_SECRET_KEY":           secrets["S3_SECRET_KEY"],
 		"S3_REGION":               secrets["S3_REGION"],
-		"COLD_STORAGE_BACKEND":    secrets["COLD_STORAGE_BACKEND"],
-		"COLD_STORAGE_ENDPOINT":   secrets["COLD_STORAGE_ENDPOINT"],
-		"COLD_STORAGE_CACHE_SIZE": secrets["COLD_STORAGE_CACHE_SIZE"],
-		"AZURE_STORAGE_URL":       secrets["AZURE_STORAGE_URL"],
-		"AZURE_CONTAINER":         secrets["AZURE_CONTAINER"],
-		"AZURE_STORAGE_ACCOUNT":   secrets["AZURE_STORAGE_ACCOUNT"],
-		"AZURE_STORAGE_KEY":       secrets["AZURE_STORAGE_KEY"],
+		"ARCHIVE_ENABLED":         secrets["ARCHIVE_ENABLED"],
+		"ARCHIVE_BACKEND":         secrets["ARCHIVE_BACKEND"],
+		"ARCHIVE_PREFIX":          secrets["ARCHIVE_PREFIX"],
+		"ARCHIVE_SPOOL_MAX_BYTES": secrets["ARCHIVE_SPOOL_MAX_BYTES"],
+		"ARCHIVE_ROLL_BYTES":      secrets["ARCHIVE_ROLL_BYTES"],
+		"ARCHIVE_ROLL_INTERVAL":   secrets["ARCHIVE_ROLL_INTERVAL"],
+		"ARCHIVE_S3_ENDPOINT":     secrets["ARCHIVE_S3_ENDPOINT"],
+		"ARCHIVE_S3_BUCKET":       secrets["ARCHIVE_S3_BUCKET"],
+		"ARCHIVE_S3_REGION":       secrets["ARCHIVE_S3_REGION"],
+		"ARCHIVE_S3_ACCESS_KEY":   secrets["ARCHIVE_S3_ACCESS_KEY"],
+		"ARCHIVE_S3_SECRET_KEY":   secrets["ARCHIVE_S3_SECRET_KEY"],
+		"ARCHIVE_AZURE_ACCOUNT":   secrets["ARCHIVE_AZURE_ACCOUNT"],
+		"ARCHIVE_AZURE_KEY":       secrets["ARCHIVE_AZURE_KEY"],
+		"ARCHIVE_AZURE_CONTAINER": secrets["ARCHIVE_AZURE_CONTAINER"],
+		"ARCHIVE_AZURE_ENDPOINT":  secrets["ARCHIVE_AZURE_ENDPOINT"],
 		"MAXMIND_LICENSE_KEY":     secrets["MAXMIND_LICENSE_KEY"],
 		"MAXMIND_ACCOUNT_ID":      secrets["MAXMIND_ACCOUNT_ID"],
 		"OIDC_ISSUER_URL":         secrets["OIDC_ISSUER_URL"],

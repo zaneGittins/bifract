@@ -45,7 +45,7 @@ func NewFieldRegistry() *FieldRegistry {
 		fields: make(map[string]*FieldEntry),
 	}
 	// Register base columns
-	for _, name := range []string{"timestamp", "raw_log", "log_id", "fractal_id", "ingest_timestamp"} {
+	for _, name := range []string{"timestamp", normLogColumn, "log_id", "fractal_id", "ingest_timestamp"} {
 		r.fields[name] = &FieldEntry{
 			Name:       name,
 			Kind:       FieldKindBase,

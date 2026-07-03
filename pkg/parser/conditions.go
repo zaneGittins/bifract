@@ -251,8 +251,8 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 			fieldRef = "_sum"
 		case "avg":
 			fieldRef = "_avg"
-		case "raw_log":
-			fieldRef = "raw_log"
+		case normLogColumn:
+			fieldRef = normLogColumn
 		case "timestamp":
 			fieldRef = "timestamp"
 		case "log_id":

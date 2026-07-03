@@ -15,7 +15,6 @@ type Fractal struct {
 	CreatedAt       time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
 	RetentionDays   *int      `json:"retention_days" db:"retention_days"`
-	ColdDays        *int      `json:"cold_days" db:"cold_days"`
 	DiskQuotaBytes  *int64    `json:"disk_quota_bytes" db:"disk_quota_bytes"`
 	DiskQuotaAction string    `json:"disk_quota_action" db:"disk_quota_action"`
 
@@ -75,12 +74,6 @@ type FractalSelectRequest struct {
 // UpdateRetentionRequest sets the retention period for a fractal
 type UpdateRetentionRequest struct {
 	RetentionDays *int `json:"retention_days"` // nil = unlimited
-}
-
-// UpdateColdStorageRequest sets the cold-storage age threshold for a fractal.
-// Logs older than ColdDays are moved to the cold object-storage tier.
-type UpdateColdStorageRequest struct {
-	ColdDays *int `json:"cold_days"` // nil = never tier to cold
 }
 
 // UpdateDiskQuotaRequest sets the disk quota for a fractal

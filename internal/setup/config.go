@@ -46,9 +46,6 @@ type SetupConfig struct {
 	S3SecretKey string
 	S3Region    string
 
-	// ColdStorageBackend selects the ClickHouse cold tier: "" / "none" / "s3" / "azure".
-	ColdStorageBackend string
-
 	ImageTag string
 
 	SecureCookies bool

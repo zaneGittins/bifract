@@ -64,7 +64,7 @@ func TestBuildBackfillInsert_FirstSeenDirect(t *testing.T) {
 func TestBuildBackfillInsert_RarityWithExtraction(t *testing.T) {
 	def := ModelDefinition{
 		Filter:       []FilterCondition{{Field: "level", Op: "=", Value: "dns"}},
-		Extractions:  []ExtractionStep{{FromField: "raw_log", Pattern: "([a-z]+)$", OutputField: "tld"}},
+		Extractions:  []ExtractionStep{{FromField: "norm_log", Pattern: "([a-z]+)$", OutputField: "tld"}},
 		PartitionKey: "computer_name",
 		ValueKey:     "tld",
 	}

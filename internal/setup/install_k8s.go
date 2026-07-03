@@ -23,11 +23,12 @@ type ResourceProfile struct {
 }
 
 // SizeProfile defines resource allocations for all components at a given scale.
+// ClickHouse runs a single replica per shard; durability and disaster recovery
+// are handled by the Apache Iceberg archive, not ClickHouse replication.
 type SizeProfile struct {
 	Name            string
 	Description     string
 	CHShards        int
-	CHReplicas      int
 	ClickHouse      ResourceProfile
 	CHKeeper        ResourceProfile
 	Bifract         ResourceProfile
@@ -39,12 +40,14 @@ type SizeProfile struct {
 	IngestWorkers   int
 }
 
+// sizeProfiles are anchored on ~500 GB/day = 3 shards at 32 vCPU / 64GB per node.
+// Each shard is a single ClickHouse replica; the node size shown is the ClickHouse
+// shard node, sized so the ClickHouse container gets the bulk of it.
 var sizeProfiles = []SizeProfile{
 	{
 		Name:            "Dev",
-		Description:     "Development/testing, ~1-10 GB/day (3 nodes, 4 vCPU / 8GB each)",
+		Description:     "Development/testing, ~1-10 GB/day (1 shard, 4 vCPU / 8GB per node)",
 		CHShards:        1,
-		CHReplicas:      2,
 		ClickHouse:      ResourceProfile{"2", "3", "4Gi", "5Gi"},
 		CHKeeper:        ResourceProfile{"250m", "500m", "256Mi", "512Mi"},
 		Bifract:         ResourceProfile{"500m", "1", "512Mi", "1Gi"},
@@ -57,9 +60,8 @@ var sizeProfiles = []SizeProfile{
 	},
 	{
 		Name:            "X-Small",
-		Description:     "Staging/light production, ~10-50 GB/day (3 nodes, 8 vCPU / 16GB each)",
+		Description:     "Staging/light production, ~10-50 GB/day (1 shard, 8 vCPU / 16GB per node)",
 		CHShards:        1,
-		CHReplicas:      2,
 		ClickHouse:      ResourceProfile{"6", "8", "8Gi", "12Gi"},
 		CHKeeper:        ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		Bifract:         ResourceProfile{"500m", "2", "512Mi", "2Gi"},
@@ -72,9 +74,8 @@ var sizeProfiles = []SizeProfile{
 	},
 	{
 		Name:            "Small",
-		Description:     "Light production, ~50-200 GB/day (3 nodes, 16 vCPU / 32GB each)",
+		Description:     "Light production, ~50-200 GB/day (1 shard, 16 vCPU / 32GB per node)",
 		CHShards:        1,
-		CHReplicas:      2,
 		ClickHouse:      ResourceProfile{"10", "12", "12Gi", "24Gi"},
 		CHKeeper:        ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		Bifract:         ResourceProfile{"1", "2", "1Gi", "2Gi"},
@@ -87,10 +88,9 @@ var sizeProfiles = []SizeProfile{
 	},
 	{
 		Name:            "Medium",
-		Description:     "Production workloads, ~200-500 GB/day (3 nodes, 24 vCPU / 48GB each)",
+		Description:     "Production workloads, ~200-500 GB/day (2 shards, 24 vCPU / 48GB per node)",
 		CHShards:        2,
-		CHReplicas:      2,
-		ClickHouse:      ResourceProfile{"8", "12", "12Gi", "24Gi"},
+		ClickHouse:      ResourceProfile{"12", "20", "20Gi", "40Gi"},
 		CHKeeper:        ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		Bifract:         ResourceProfile{"1", "4", "1Gi", "4Gi"},
 		Postgres:        ResourceProfile{"500m", "2", "1Gi", "4Gi"},
@@ -102,10 +102,9 @@ var sizeProfiles = []SizeProfile{
 	},
 	{
 		Name:            "Large",
-		Description:     "High-volume production, ~500 GB-2 TB/day (3 nodes, 32 vCPU / 96GB each)",
+		Description:     "High-volume production, ~500 GB-2 TB/day (3 shards, 32 vCPU / 64GB per node)",
 		CHShards:        3,
-		CHReplicas:      2,
-		ClickHouse:      ResourceProfile{"8", "16", "16Gi", "32Gi"},
+		ClickHouse:      ResourceProfile{"16", "28", "28Gi", "56Gi"},
 		CHKeeper:        ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		Bifract:         ResourceProfile{"2", "4", "2Gi", "8Gi"},
 		Postgres:        ResourceProfile{"1", "4", "2Gi", "8Gi"},
@@ -117,10 +116,9 @@ var sizeProfiles = []SizeProfile{
 	},
 	{
 		Name:            "X-Large",
-		Description:     "Very high-volume production, ~2-10 TB/day (6 nodes, 32 vCPU / 96GB each)",
+		Description:     "Very high-volume production, ~2-10 TB/day (6 shards, 32 vCPU / 64GB per node)",
 		CHShards:        6,
-		CHReplicas:      2,
-		ClickHouse:      ResourceProfile{"8", "16", "16Gi", "32Gi"},
+		ClickHouse:      ResourceProfile{"16", "28", "28Gi", "56Gi"},
 		CHKeeper:        ResourceProfile{"1", "2", "2Gi", "4Gi"},
 		Bifract:         ResourceProfile{"4", "8", "4Gi", "16Gi"},
 		Postgres:        ResourceProfile{"2", "4", "4Gi", "16Gi"},
@@ -137,7 +135,6 @@ type K8sConfig struct {
 	SetupConfig
 	SizeProfile  SizeProfile
 	CHShards     int
-	CHReplicas   int
 	CHStorageGB  int
 	StorageClass string
 	OutputDir    string
@@ -183,7 +180,6 @@ const (
 	k8sStepAllowedIPs
 	k8sStepSizeProfile
 	k8sStepCHShards
-	k8sStepCHReplicas
 	k8sStepCHStorage
 	k8sStepOutputDir
 	k8sStepConfirm
@@ -213,7 +209,6 @@ type k8sWizardModel struct {
 	domainInput     textinput.Model
 	allowedIPsInput textinput.Model
 	shardsInput     textinput.Model
-	replicasInput   textinput.Model
 	storageInput    textinput.Model
 	outputDirInput  textinput.Model
 
@@ -249,13 +244,6 @@ func newK8sWizardModel() k8sWizardModel {
 	shards.PromptStyle = PromptStyle
 	shards.TextStyle = lipgloss.NewStyle().Foreground(White)
 
-	replicas := textinput.New()
-	replicas.Placeholder = "2"
-	replicas.SetValue("2")
-	replicas.Width = 10
-	replicas.PromptStyle = PromptStyle
-	replicas.TextStyle = lipgloss.NewStyle().Foreground(White)
-
 	storage := textinput.New()
 	storage.Placeholder = "100"
 	storage.SetValue("100")
@@ -276,14 +264,12 @@ func newK8sWizardModel() k8sWizardModel {
 			SetupConfig: SetupConfig{ImageTag: Version},
 			SizeProfile: sizeProfiles[0],
 			CHShards:    1,
-			CHReplicas:  2,
 			CHStorageGB: 100,
 			OutputDir:   "./bifract-k8s",
 		},
 		domainInput:     domain,
 		allowedIPsInput: allowedIPs,
 		shardsInput:     shards,
-		replicasInput:   replicas,
 		storageInput:    storage,
 		outputDirInput:  outputDir,
 		sslChoices:      []string{"Let's Encrypt (automatic)", "Custom certificate"},
@@ -324,8 +310,6 @@ func (m k8sWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.allowedIPsInput, cmd = m.allowedIPsInput.Update(msg)
 	case k8sStepCHShards:
 		m.shardsInput, cmd = m.shardsInput.Update(msg)
-	case k8sStepCHReplicas:
-		m.replicasInput, cmd = m.replicasInput.Update(msg)
 	case k8sStepCHStorage:
 		m.storageInput, cmd = m.storageInput.Update(msg)
 	case k8sStepOutputDir:
@@ -432,9 +416,7 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 		profile := sizeProfiles[m.sizeCursor]
 		m.config.SizeProfile = profile
 		m.config.CHShards = profile.CHShards
-		m.config.CHReplicas = profile.CHReplicas
 		m.shardsInput.SetValue(fmt.Sprintf("%d", profile.CHShards))
-		m.replicasInput.SetValue(fmt.Sprintf("%d", profile.CHReplicas))
 		m.step = k8sStepCHShards
 		m.shardsInput.Focus()
 		return m, textinput.Blink
@@ -450,21 +432,6 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 			n = 1
 		}
 		m.config.CHShards = n
-		m.step = k8sStepCHReplicas
-		m.replicasInput.Focus()
-		return m, textinput.Blink
-
-	case k8sStepCHReplicas:
-		val := strings.TrimSpace(m.replicasInput.Value())
-		if val == "" {
-			val = "2"
-		}
-		n := 2
-		fmt.Sscanf(val, "%d", &n)
-		if n < 1 {
-			n = 1
-		}
-		m.config.CHReplicas = n
 		m.step = k8sStepCHStorage
 		m.storageInput.Focus()
 		return m, textinput.Blink
@@ -510,7 +477,7 @@ func (m k8sWizardModel) renderProgress() string {
 		current := m.step
 		if current == k8sStepAllowedIPs {
 			current = k8sStepIPAccess
-		} else if current == k8sStepCHReplicas || current == k8sStepCHStorage {
+		} else if current == k8sStepCHStorage {
 			current = k8sStepCHShards
 		}
 		if current == sl.step {
@@ -616,7 +583,7 @@ func (m k8sWizardModel) View() string {
 		}
 		b.WriteString(RenderOptionList(profileNames, profileDescs, m.sizeCursor))
 		b.WriteString("\n\n")
-		b.WriteString(DimStyle.Render("Shard and replica counts can be adjusted in the next steps."))
+		b.WriteString(DimStyle.Render("Shard count can be adjusted in the next step."))
 		content = b.String()
 		hint = "Up/Down to select  |  Enter to confirm  |  Esc to go back"
 
@@ -628,19 +595,7 @@ func (m k8sWizardModel) View() string {
 		b.WriteString("\n")
 		b.WriteString("  " + m.shardsInput.View())
 		b.WriteString("\n\n")
-		b.WriteString(DimStyle.Render("Shards distribute data horizontally. 1 is fine for most workloads."))
-		content = b.String()
-		hint = "Enter to confirm  |  Esc to go back"
-
-	case k8sStepCHReplicas:
-		var b strings.Builder
-		b.WriteString(TitleStyle.Render("ClickHouse Replicas"))
-		b.WriteString("\n\n")
-		b.WriteString(LabelStyle.Render("  Replicas per shard"))
-		b.WriteString("\n")
-		b.WriteString("  " + m.replicasInput.View())
-		b.WriteString("\n\n")
-		b.WriteString(DimStyle.Render("Minimum 2 for HA."))
+		b.WriteString(DimStyle.Render("Shards distribute data horizontally. Each shard is a single replica; Iceberg handles durability. 1 is fine for most workloads."))
 		content = b.String()
 		hint = "Enter to confirm  |  Esc to go back"
 
@@ -648,7 +603,7 @@ func (m k8sWizardModel) View() string {
 		var b strings.Builder
 		b.WriteString(TitleStyle.Render("ClickHouse Storage"))
 		b.WriteString("\n\n")
-		b.WriteString(LabelStyle.Render("  Storage per replica (GB)"))
+		b.WriteString(LabelStyle.Render("  Storage per shard (GB)"))
 		b.WriteString("\n")
 		b.WriteString("  " + m.storageInput.View())
 		content = b.String()
@@ -676,8 +631,7 @@ func (m k8sWizardModel) View() string {
 		b.WriteString(row("IP Access:        ", string(m.config.IPAccess)))
 		b.WriteString(row("Resource Profile: ", m.config.SizeProfile.Name))
 		b.WriteString(row("CH Shards:        ", fmt.Sprintf("%d", m.config.CHShards)))
-		b.WriteString(row("CH Replicas/Shard:", fmt.Sprintf("%d", m.config.CHReplicas)))
-		b.WriteString(row("CH Storage:       ", fmt.Sprintf("%dGi per replica", m.config.CHStorageGB)))
+		b.WriteString(row("CH Storage:       ", fmt.Sprintf("%dGi per shard", m.config.CHStorageGB)))
 		b.WriteString(row("Output:           ", m.config.OutputDir))
 		content = b.String()
 		hint = "Enter to generate  |  Esc to go back  |  q to quit"
@@ -827,7 +781,6 @@ type k8sTemplateData struct {
 	ImageTag            string
 	Domain              string
 	CHShards            int
-	CHReplicas          int
 	CHStorageGB         int
 	CHStorageStr        string
 	CHPasswordHash      string
@@ -849,6 +802,7 @@ type k8sTemplateData struct {
 	CH           ResourceProfile
 	CHKeeper     ResourceProfile
 	BifractRes   ResourceProfile
+	ArchiverRes  ResourceProfile
 	PostgresRes  ResourceProfile
 	CaddyRes     ResourceProfile
 	CaddyShipper ResourceProfile
@@ -856,12 +810,6 @@ type k8sTemplateData struct {
 
 	// User-configured secrets (preserved during upgrades, empty on fresh install)
 	UserSecrets map[string]string
-
-	// ColdStorageRender ("" / "s3" / "azure") gates the ClickHouse storage-config
-	// injection. Derived from which cold credentials are present (not the app's
-	// COLD_STORAGE_BACKEND on/off flag), so pausing tiering keeps the 'tiered'
-	// policy defined and ClickHouse boots. See coldStorageRenderMode.
-	ColdStorageRender string
 
 	// ImagePullSecrets preserves manually-added pull secret names across upgrades.
 	ImagePullSecrets []string
@@ -895,28 +843,13 @@ var k8sManifests = []k8sManifestFile{
 	{"templates/k8s/bifract-deployment.yaml.tmpl", "bifract/deployment.yaml"},
 	{"templates/k8s/bifract-configmap.yaml.tmpl", "bifract/configmap.yaml"},
 	{"templates/k8s/bifract-secrets.yaml.tmpl", "bifract/secrets.yaml"},
+	{"templates/k8s/bifract-archive-maintain-cronjob.yaml.tmpl", "bifract/archive-maintain-cronjob.yaml"},
 	{"templates/k8s/caddy-deployment.yaml.tmpl", "caddy/deployment.yaml"},
 	{"templates/k8s/caddy-configmap.yaml.tmpl", "caddy/configmap.yaml"},
 	{"templates/k8s/caddy-log-shipper.yaml.tmpl", "caddy/log-shipper.yaml"},
 	{"templates/k8s/litellm-deployment.yaml.tmpl", "litellm/deployment.yaml"},
 	{"templates/k8s/litellm-configmap.yaml.tmpl", "litellm/configmap.yaml"},
 	{"templates/k8s/network-policies.yaml.tmpl", "network-policies.yaml"},
-}
-
-// coldStorageRenderMode returns "s3"/"azure"/"" for the ClickHouse storage-config
-// injection, based on which cold credentials are present. It is intentionally
-// independent of the app's COLD_STORAGE_BACKEND on/off flag: once a table is on
-// the 'tiered' policy, the policy must stay defined or ClickHouse won't boot, so
-// pausing tiering (backend=none) must NOT tear the storage config down. Full
-// removal happens by clearing the cold credentials (after rebuilding the table).
-func coldStorageRenderMode(secrets map[string]string) string {
-	switch {
-	case secrets["COLD_STORAGE_ENDPOINT"] != "":
-		return "s3"
-	case secrets["AZURE_STORAGE_URL"] != "":
-		return "azure"
-	}
-	return ""
 }
 
 func writeK8sManifests(cfg *K8sConfig) error {
@@ -928,11 +861,10 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		ImagePullSecrets:       cfg.ImagePullSecrets,
 		Domain:                 cfg.Domain,
 		CHShards:               cfg.CHShards,
-		CHReplicas:             cfg.CHReplicas,
 		CHStorageGB:            cfg.CHStorageGB,
 		CHStorageStr:           formatStorageSize(cfg.CHStorageGB),
 		CHPasswordHash:         fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
-		CHHostsList:            buildCHHostsList(cfg.CHShards, cfg.CHReplicas),
+		CHHostsList:            buildCHHostsList(cfg.CHShards),
 		PostgresPassword:       cfg.PostgresPassword,
 		ClickHousePassword:     cfg.ClickHousePassword,
 		PasswordPepper:         cfg.PasswordPepper,
@@ -941,7 +873,6 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		BackupEncryptionKey:    cfg.BackupEncryptionKey,
 		LiteLLMMasterKey:       cfg.LiteLLMMasterKey,
 		UserSecrets:            cfg.UserSecrets,
-		ColdStorageRender:      coldStorageRenderMode(cfg.UserSecrets),
 		IPBlock:                buildIPBlock(cfg),
 		IPBlockIngest:          buildIPBlockIngest(cfg),
 		MTLSEnabled:            cfg.MTLSEnabled,
@@ -957,10 +888,13 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		CH:                     cfg.SizeProfile.ClickHouse,
 		CHKeeper:               cfg.SizeProfile.CHKeeper,
 		BifractRes:             cfg.SizeProfile.Bifract,
-		PostgresRes:            cfg.SizeProfile.Postgres,
-		CaddyRes:               cfg.SizeProfile.Caddy,
-		CaddyShipper:           cfg.SizeProfile.CaddyShipper,
-		LiteLLMRes:             cfg.SizeProfile.LiteLLM,
+		// The archive sidecar/maintenance mirrors the server's per-tier profile
+		// (comparable memory for Arrow/Iceberg roll buffers; adjust per deployment).
+		ArchiverRes:  cfg.SizeProfile.Bifract,
+		PostgresRes:  cfg.SizeProfile.Postgres,
+		CaddyRes:     cfg.SizeProfile.Caddy,
+		CaddyShipper: cfg.SizeProfile.CaddyShipper,
+		LiteLLMRes:   cfg.SizeProfile.LiteLLM,
 	}
 
 	for _, m := range k8sManifests {
@@ -1034,7 +968,7 @@ func renderK8sTemplate(name string, data k8sTemplateData) (string, error) {
 // buildCHHostsList generates the comma-separated ClickHouse host list for the
 // Bifract deployment env var based on the official operator's naming convention.
 // Pods are named: bifract-ch-clickhouse-{shard}-{replica}-0
-// The list includes all replicas across all shards.
+// Each shard runs a single replica (replica index 0), so the list is one host per shard.
 func formatStorageSize(gb int) string {
 	if gb >= 1024 && gb%1024 == 0 {
 		return fmt.Sprintf("%dTi", gb/1024)
@@ -1042,12 +976,10 @@ func formatStorageSize(gb int) string {
 	return fmt.Sprintf("%dGi", gb)
 }
 
-func buildCHHostsList(shards, replicas int) string {
-	hosts := make([]string, 0, shards*replicas)
+func buildCHHostsList(shards int) string {
+	hosts := make([]string, 0, shards)
 	for s := 0; s < shards; s++ {
-		for r := 0; r < replicas; r++ {
-			hosts = append(hosts, fmt.Sprintf("bifract-ch-clickhouse-%d-%d-0.bifract-ch-clickhouse-headless", s, r))
-		}
+		hosts = append(hosts, fmt.Sprintf("bifract-ch-clickhouse-%d-0-0.bifract-ch-clickhouse-headless", s))
 	}
 	return strings.Join(hosts, ",")
 }

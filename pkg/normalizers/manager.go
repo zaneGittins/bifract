@@ -22,7 +22,7 @@ func NewManager(pg *storage.PostgresClient) *Manager {
 func (m *Manager) List(ctx context.Context) ([]Normalizer, error) {
 	rows, err := m.pg.Query(ctx,
 		`SELECT id, name, description, transforms, field_mappings, timestamp_fields,
-		        is_default, COALESCE(created_by, ''), created_at, updated_at
+		        is_default, COALESCE(created_by, ''), created_at, updated_at, version
 		 FROM normalizers ORDER BY is_default DESC, name`)
 	if err != nil {
 		return nil, fmt.Errorf("query normalizers: %w", err)
@@ -43,7 +43,7 @@ func (m *Manager) List(ctx context.Context) ([]Normalizer, error) {
 func (m *Manager) Get(ctx context.Context, id string) (*Normalizer, error) {
 	row := m.pg.QueryRow(ctx,
 		`SELECT id, name, description, transforms, field_mappings, timestamp_fields,
-		        is_default, COALESCE(created_by, ''), created_at, updated_at
+		        is_default, COALESCE(created_by, ''), created_at, updated_at, version
 		 FROM normalizers WHERE id = $1`, id)
 	n, err := scanNormalizerRow(row)
 	if err != nil {
@@ -58,7 +58,7 @@ func (m *Manager) Get(ctx context.Context, id string) (*Normalizer, error) {
 func (m *Manager) GetDefault(ctx context.Context) (*Normalizer, error) {
 	row := m.pg.QueryRow(ctx,
 		`SELECT id, name, description, transforms, field_mappings, timestamp_fields,
-		        is_default, COALESCE(created_by, ''), created_at, updated_at
+		        is_default, COALESCE(created_by, ''), created_at, updated_at, version
 		 FROM normalizers WHERE is_default = true LIMIT 1`)
 	n, err := scanNormalizerRow(row)
 	if err != nil {
@@ -97,7 +97,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest, createdBy strin
 		`INSERT INTO normalizers (name, description, transforms, field_mappings, timestamp_fields, created_by)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id, name, description, transforms, field_mappings, timestamp_fields,
-		           is_default, COALESCE(created_by, ''), created_at, updated_at`,
+		           is_default, COALESCE(created_by, ''), created_at, updated_at, version`,
 		req.Name, req.Description, string(transformsJSON), string(mappingsJSON), string(tsFieldsJSON), createdBy)
 
 	n, err := scanNormalizerRow(row)
@@ -121,10 +121,11 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*No
 
 	row := m.pg.QueryRow(ctx,
 		`UPDATE normalizers
-		 SET name = $1, description = $2, transforms = $3, field_mappings = $4, timestamp_fields = $5, updated_at = NOW()
+		 SET name = $1, description = $2, transforms = $3, field_mappings = $4, timestamp_fields = $5,
+		     updated_at = NOW(), version = version + 1
 		 WHERE id = $6
 		 RETURNING id, name, description, transforms, field_mappings, timestamp_fields,
-		           is_default, COALESCE(created_by, ''), created_at, updated_at`,
+		           is_default, COALESCE(created_by, ''), created_at, updated_at, version`,
 		req.Name, req.Description, string(transformsJSON), string(mappingsJSON), string(tsFieldsJSON), id)
 
 	n, err := scanNormalizerRow(row)
@@ -217,7 +218,7 @@ func scanNormalizer(rows *sql.Rows) (Normalizer, error) {
 	var transformsRaw, mappingsRaw, tsFieldsRaw []byte
 	if err := rows.Scan(&n.ID, &n.Name, &n.Description,
 		&transformsRaw, &mappingsRaw, &tsFieldsRaw,
-		&n.IsDefault, &n.CreatedBy, &n.CreatedAt, &n.UpdatedAt); err != nil {
+		&n.IsDefault, &n.CreatedBy, &n.CreatedAt, &n.UpdatedAt, &n.Version); err != nil {
 		return n, fmt.Errorf("scan normalizer: %w", err)
 	}
 	json.Unmarshal(transformsRaw, &n.Transforms)
@@ -236,7 +237,7 @@ func scanNormalizerRow(row scannable) (Normalizer, error) {
 	var transformsRaw, mappingsRaw, tsFieldsRaw []byte
 	err := row.Scan(&n.ID, &n.Name, &n.Description,
 		&transformsRaw, &mappingsRaw, &tsFieldsRaw,
-		&n.IsDefault, &n.CreatedBy, &n.CreatedAt, &n.UpdatedAt)
+		&n.IsDefault, &n.CreatedBy, &n.CreatedAt, &n.UpdatedAt, &n.Version)
 	if err != nil {
 		return n, err
 	}
@@ -260,12 +261,15 @@ func (m *Manager) CompileByID(ctx context.Context, id string) *CompiledNormalize
 }
 
 // CompileFromRaw builds a CompiledNormalizer from raw JSONB columns.
-// Used in the hot path to avoid an extra DB round-trip.
-func CompileFromRaw(transformsRaw, mappingsRaw, tsFieldsRaw []byte) *CompiledNormalizer {
+// Used in the hot path to avoid an extra DB round-trip. name/version are carried
+// through so each ingested log can be stamped with the normalizer identity.
+func CompileFromRaw(name string, version int, transformsRaw, mappingsRaw, tsFieldsRaw []byte) *CompiledNormalizer {
 	if transformsRaw == nil && mappingsRaw == nil {
 		return nil
 	}
 	var n Normalizer
+	n.Name = name
+	n.Version = version
 	json.Unmarshal(transformsRaw, &n.Transforms)
 	json.Unmarshal(mappingsRaw, &n.FieldMappings)
 	json.Unmarshal(tsFieldsRaw, &n.TimestampFields)

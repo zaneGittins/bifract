@@ -203,9 +203,14 @@ func RunUpgrade(dir string) error {
 		"BIFRACT_OIDC_ISSUER_URL", "BIFRACT_OIDC_CLIENT_ID", "BIFRACT_OIDC_CLIENT_SECRET",
 		"BIFRACT_OIDC_REDIRECT_URL", "BIFRACT_OIDC_SCOPES", "BIFRACT_OIDC_DEFAULT_ROLE",
 		"BIFRACT_OIDC_ALLOWED_DOMAINS", "BIFRACT_OIDC_BUTTON_TEXT",
-		// Cold storage tier (set => preserved; unset => not added)
-		"BIFRACT_COLD_STORAGE_BACKEND", "BIFRACT_COLD_STORAGE_ENDPOINT", "BIFRACT_COLD_STORAGE_CACHE_SIZE",
-		"BIFRACT_AZURE_STORAGE_URL", "BIFRACT_AZURE_CONTAINER", "BIFRACT_AZURE_STORAGE_ACCOUNT", "BIFRACT_AZURE_STORAGE_KEY",
+		// Archive (set => preserved; unset => not added / app defaults apply)
+		"BIFRACT_ARCHIVE_ENABLED", "BIFRACT_ARCHIVE_BACKEND", "BIFRACT_ARCHIVE_PREFIX",
+		"BIFRACT_ARCHIVE_DISK_PATH", "BIFRACT_ARCHIVE_SPOOL_MAX_BYTES", "BIFRACT_ARCHIVE_ROLL_BYTES",
+		"BIFRACT_ARCHIVE_ROLL_INTERVAL",
+		"BIFRACT_ARCHIVE_S3_ENDPOINT", "BIFRACT_ARCHIVE_S3_BUCKET", "BIFRACT_ARCHIVE_S3_REGION",
+		"BIFRACT_ARCHIVE_S3_ACCESS_KEY", "BIFRACT_ARCHIVE_S3_SECRET_KEY",
+		"BIFRACT_ARCHIVE_AZURE_ACCOUNT", "BIFRACT_ARCHIVE_AZURE_KEY", "BIFRACT_ARCHIVE_AZURE_CONTAINER",
+		"BIFRACT_ARCHIVE_AZURE_ENDPOINT",
 		// Dashboard executor tuning (set => preserved; unset => app defaults apply)
 		"BIFRACT_DASHBOARD_WORKERS", "BIFRACT_DASHBOARD_MIN_REFRESH", "BIFRACT_DASHBOARD_TICK",
 	}
@@ -258,11 +263,6 @@ func RunUpgrade(dir string) error {
 	}
 	if err := CopyEmbeddedFile("templates/litellm-config.yaml", filepath.Join(dir, "litellm-config.yaml")); err != nil {
 		printWarn(fmt.Sprintf("litellm-config.yaml: %v", err))
-	}
-	// Render the cold-storage config from the configured backend (inert when
-	// unset) so the new compose mount resolves to a file.
-	if err := WriteColdStorageConfig(dir, existingEnv["BIFRACT_COLD_STORAGE_BACKEND"]); err != nil {
-		printWarn(fmt.Sprintf("storage.xml: %v", err))
 	}
 	printDone("Configuration updated")
 

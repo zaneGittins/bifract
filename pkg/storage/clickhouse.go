@@ -34,7 +34,18 @@ type ClickHouseClient struct {
 
 	shardConnsMu sync.Mutex
 	shardConns   map[uint64]driver.Conn
+
+	// typeHintFields caches the declared typed sub-paths of the fields JSON column
+	// (schema type hints). Those materialize as "" even when a log did not contain
+	// them, so they are stripped from log-detail output while genuinely-empty dynamic
+	// fields are kept. Invalidated when ReconcileSchemaFields changes the hints.
+	typeHintMu     sync.RWMutex
+	typeHintFields map[string]bool
 }
+
+// typeHintFieldRe extracts the backtick-quoted typed sub-path names from a
+// fields JSON(...) column type, e.g. JSON(max_dynamic_paths=1024, `user` String, ...).
+var typeHintFieldRe = regexp.MustCompile("`([^`]+)`")
 
 // Addrs returns the host:port addresses this client connects to.
 func (c *ClickHouseClient) Addrs() []string { return c.addrs }
@@ -189,6 +200,7 @@ type LogEntry struct {
 	LogID           string
 	Fields          map[string]string
 	FractalID       string // Fractal UUID for multi-tenant isolation
+	Normalizer      string // "name@version" of the normalizer applied, empty if none
 }
 
 // Initialize ensures the ClickHouse schema is current.
@@ -751,7 +763,9 @@ func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) erro
 		return nil
 	}
 
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.WriteTable()+" (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp)")
+	// norm_log is intentionally omitted: it is a ClickHouse DEFAULT toString(fields)
+	// column, auto-populated at insert. normalizer carries the "name@version" stamp.
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.WriteTable()+" (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp, normalizer)")
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
@@ -768,6 +782,7 @@ func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) erro
 			log.Fields,
 			log.FractalID,
 			ingestTS,
+			log.Normalizer,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append log to batch: %w", err)
@@ -843,122 +858,70 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 	return nil
 }
 
-// EnsureColdStoragePolicy switches the logs table onto the 'tiered' storage
-// policy when cold storage is enabled. The policy and its disks (hot 'default'
-// volume + cold object-storage volume) must be defined in server config
-// (config.d/storage.xml); this only points the table at it. Idempotent: a no-op
-// when logs is already on the tiered policy.
-func (c *ClickHouseClient) EnsureColdStoragePolicy(ctx context.Context) error {
+// RevertTieredStoragePolicy migrates the logs table off the legacy 'tiered'
+// storage policy (native S3/Azure cold tiering, now replaced by the Iceberg
+// archive) back onto the default policy. It runs at startup and is a no-op when
+// the table is already on the default policy (the common case: cold tiering was
+// never enabled).
+//
+// When the table IS tiered, it first moves any active parts sitting on a
+// non-default disk (the cold volume) back to the 'default' volume, THEN switches
+// the policy - the policy switch would otherwise be rejected while parts live on
+// a disk the default policy does not include. This must run while the 'tiered'
+// policy + 'cold' disk are still defined in ClickHouse config; only after it
+// succeeds is it safe to remove that config. Failures are non-fatal so a partial
+// move retries on the next startup rather than blocking boot; requires enough hot
+// disk to hold the returning parts.
+func (c *ClickHouseClient) RevertTieredStoragePolicy(ctx context.Context) error {
 	var policy string
 	if err := c.conn.QueryRow(ctx,
 		"SELECT storage_policy FROM system.tables WHERE database = currentDatabase() AND name = 'logs'",
 	).Scan(&policy); err != nil {
 		return fmt.Errorf("failed to read logs storage policy: %w", err)
 	}
-	if policy == "tiered" {
+	if policy != "tiered" {
 		return nil
 	}
-	stmt := c.InjectOnCluster("ALTER TABLE logs MODIFY SETTING storage_policy = 'tiered'")
-	if err := c.conn.Exec(ctx, stmt); err != nil {
-		return fmt.Errorf("failed to apply tiered storage policy: %w", err)
-	}
-	log.Printf("Applied 'tiered' storage policy to logs table (was '%s')", policy)
-	return nil
-}
 
-// parsePartitionDate extracts the date element from a ClickHouse partition tuple
-// string of the form ('fractal-id','2024-01-15'). The date is always the final
-// single-quoted token, so we read between the last two quotes.
-func parsePartitionDate(p string) (time.Time, bool) {
-	last := strings.LastIndex(p, "'")
-	if last < 0 {
-		return time.Time{}, false
-	}
-	prev := strings.LastIndex(p[:last], "'")
-	if prev < 0 {
-		return time.Time{}, false
-	}
-	t, err := time.Parse("2006-01-02", p[prev+1:last])
-	if err != nil {
-		return time.Time{}, false
-	}
-	return t, true
-}
-
-// MoveOldPartitionsToCold relocates active log partitions older than coldDays for
-// the given fractal from the hot volume to the cold object-storage volume. The
-// data stays in the same logs table and remains queryable in place; this is a
-// per-partition metadata-light move, mirroring the partition-enumeration approach
-// of DeleteLogsByFractalID. Idempotent: parts already on the cold volume report a
-// non-default disk and are skipped, and concurrent-move races are tolerated.
-//
-// PARTITION BY (fractal_id, toDate(timestamp)) makes each partition a single
-// fractal+day, so per-fractal age-based tiering is exact. In cluster mode the
-// move is issued ON CLUSTER (MOVE PARTITION is not auto-replicated) and the
-// partition list is gathered across all replicas.
-func (c *ClickHouseClient) MoveOldPartitionsToCold(ctx context.Context, fractalID string, coldDays int, isDefault bool) (int, error) {
 	source := "system.parts"
 	if c.Cluster != "" {
 		source = fmt.Sprintf("clusterAllReplicas('%s', system.parts)", EscCHStr(c.Cluster))
 	}
-
-	// Only consider parts still on the hot tier. The hot volume is built on the
-	// 'default' disk; parts already moved to cold report their cache disk name.
 	rows, err := c.conn.Query(ctx,
-		"SELECT DISTINCT partition FROM "+source+" WHERE database = currentDatabase() AND table = 'logs' AND active = 1 AND disk_name = 'default'",
+		"SELECT DISTINCT partition FROM "+source+" WHERE database = currentDatabase() AND table = 'logs' AND active = 1 AND disk_name != 'default'",
 	)
 	if err != nil {
-		return 0, fmt.Errorf("failed to list hot partitions for fractal %s: %w", fractalID, err)
+		return fmt.Errorf("failed to list cold partitions: %w", err)
 	}
-
-	prefixes := []string{fmt.Sprintf("('%s','", strings.ReplaceAll(fractalID, "'", "''"))}
-	if isDefault {
-		// Default fractal also owns rows with an empty fractal_id.
-		prefixes = append(prefixes, "('','")
-	}
-	cutoff := time.Now().UTC().AddDate(0, 0, -coldDays)
-
 	var toMove []string
 	for rows.Next() {
 		var p string
 		if err := rows.Scan(&p); err != nil {
 			rows.Close()
-			return 0, fmt.Errorf("failed to scan partition: %w", err)
+			return fmt.Errorf("failed to scan partition: %w", err)
 		}
-		matched := false
-		for _, prefix := range prefixes {
-			if strings.HasPrefix(p, prefix) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			continue
-		}
-		if d, ok := parsePartitionDate(p); ok && d.Before(cutoff) {
-			toMove = append(toMove, p)
-		}
+		toMove = append(toMove, p)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("partition query error for fractal %s: %w", fractalID, err)
+		return fmt.Errorf("cold partition query error: %w", err)
 	}
 
-	moved := 0
 	for _, partition := range toMove {
-		stmt := c.InjectOnCluster("ALTER TABLE logs MOVE PARTITION " + partition + " TO VOLUME 'cold'")
+		stmt := c.InjectOnCluster("ALTER TABLE logs MOVE PARTITION " + partition + " TO VOLUME 'default'")
 		if err := c.conn.Exec(ctx, stmt); err != nil {
-			// Tolerate races: a concurrent merge or background move may already be
-			// relocating the partition. Log and continue rather than failing the run.
-			log.Printf("cold move skipped for partition %s (fractal %s): %v", partition, fractalID, err)
-			continue
+			// Non-fatal: retry on next startup. Do NOT switch the policy while
+			// parts remain on cold, or the switch will be rejected.
+			return fmt.Errorf("move partition %s off cold volume: %w", partition, err)
 		}
-		moved++
 	}
-	if moved > 0 {
-		log.Printf("Moved %d partitions to cold storage for fractal %s", moved, fractalID)
+
+	stmt := c.InjectOnCluster("ALTER TABLE logs MODIFY SETTING storage_policy = 'default'")
+	if err := c.conn.Exec(ctx, stmt); err != nil {
+		return fmt.Errorf("failed to revert to default storage policy: %w", err)
 	}
-	return moved, nil
+	log.Printf("Reverted logs table off 'tiered' storage policy (moved %d cold partitions back to hot)", len(toMove))
+	return nil
 }
 
 // QueryWithID executes a query with a fixed query_id so the run can be
@@ -1188,7 +1151,7 @@ func (c *ClickHouseClient) GetLogByTimestamp(ctx context.Context, timestamp time
 	}
 
 	query := fmt.Sprintf(
-		"SELECT timestamp, raw_log, log_id, toString(fields) AS fields, fractal_id, ingest_timestamp FROM %s WHERE log_id = ?",
+		"SELECT timestamp, raw_log, log_id, norm_log AS fields, fractal_id, ingest_timestamp FROM %s WHERE log_id = ?",
 		c.ReadTable())
 	args := []interface{}{logID}
 
@@ -1298,6 +1261,62 @@ func (c *ClickHouseClient) scanLogRow(ctx context.Context, query string, args []
 // session-validated value as a partition-pruning filter or leaves it empty and
 // verifies the row's own fractal_id against the accessible set afterwards.
 // Returns nil (no error) when no matching row exists.
+// typeHintFieldSet returns (lazily loading and caching) the set of declared typed
+// sub-paths in the fields JSON column. On query failure it returns an empty set, which
+// means no empties are stripped (safe: shows a little noise rather than hiding data).
+func (c *ClickHouseClient) typeHintFieldSet(ctx context.Context) map[string]bool {
+	c.typeHintMu.RLock()
+	if c.typeHintFields != nil {
+		s := c.typeHintFields
+		c.typeHintMu.RUnlock()
+		return s
+	}
+	c.typeHintMu.RUnlock()
+
+	c.typeHintMu.Lock()
+	defer c.typeHintMu.Unlock()
+	if c.typeHintFields != nil {
+		return c.typeHintFields
+	}
+	set := make(map[string]bool)
+	var typ string
+	if err := c.conn.QueryRow(ctx,
+		"SELECT type FROM system.columns WHERE database = currentDatabase() AND table = 'logs' AND name = 'fields'",
+	).Scan(&typ); err == nil {
+		for _, m := range typeHintFieldRe.FindAllStringSubmatch(typ, -1) {
+			set[m[1]] = true
+		}
+	}
+	c.typeHintFields = set
+	return set
+}
+
+// invalidateTypeHintCache forces typeHintFieldSet to reload on next use, after the
+// set of type hints changes.
+func (c *ClickHouseClient) invalidateTypeHintCache() {
+	c.typeHintMu.Lock()
+	c.typeHintFields = nil
+	c.typeHintMu.Unlock()
+}
+
+// parseLogFields unmarshals the serialized normalized fields and drops empty-string
+// values that are type-hint sub-columns. The JSON column materializes every declared
+// typed sub-path as "" even when the log did not contain it, so those are noise in the
+// detail view; a genuinely-empty *dynamic* field (actually present in the log) is kept.
+func (c *ClickHouseClient) parseLogFields(ctx context.Context, fieldsStr string) map[string]interface{} {
+	var m map[string]interface{}
+	if json.Unmarshal([]byte(fieldsStr), &m) != nil {
+		return map[string]interface{}{}
+	}
+	hints := c.typeHintFieldSet(ctx)
+	for k, v := range m {
+		if s, ok := v.(string); ok && s == "" && hints[k] {
+			delete(m, k)
+		}
+	}
+	return m
+}
+
 func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, ts time.Time, fractalID string) (map[string]interface{}, error) {
 	if logID == "" {
 		return nil, fmt.Errorf("log_id is required")
@@ -1306,8 +1325,10 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 		return nil, fmt.Errorf("timestamp is required")
 	}
 
+	// PREWHERE on (log_id, timestamp): timestamp is the leading primary-key column, so
+	// this prunes granules before reading norm_log. Matches GetLogFieldsByIDDirect.
 	query := fmt.Sprintf(
-		"SELECT log_id, fractal_id, toString(fields) AS fields FROM %s WHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')",
+		"SELECT log_id, fractal_id, norm_log AS fields FROM %s PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')",
 		c.ReadTable())
 	args := []interface{}{logID, ts.UTC().Format("2006-01-02 15:04:05.000")}
 	if fractalID != "" {
@@ -1334,12 +1355,7 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 		return nil, fmt.Errorf("failed to scan log fields row: %w", err)
 	}
 	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID}
-	var m map[string]interface{}
-	if json.Unmarshal([]byte(fieldsStr), &m) == nil {
-		entry["fields"] = m
-	} else {
-		entry["fields"] = map[string]interface{}{}
-	}
+	entry["fields"] = c.parseLogFields(ctx, fieldsStr)
 	return entry, nil
 }
 
@@ -1448,7 +1464,7 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 		return c.GetLogFieldsByID(ctx, logID, ts, fractalID)
 	}
 
-	query := "SELECT log_id, fractal_id, toString(fields) AS fields FROM logs PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')"
+	query := "SELECT log_id, fractal_id, norm_log AS fields FROM logs PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')"
 	args := []interface{}{logID, ts.UTC().Format("2006-01-02 15:04:05.000")}
 	if fractalID != "" {
 		query += " AND fractal_id = ?"
@@ -1475,12 +1491,7 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 		return nil, fmt.Errorf("failed to scan log fields row: %w", err)
 	}
 	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID}
-	var m map[string]interface{}
-	if json.Unmarshal([]byte(fieldsStr), &m) == nil {
-		entry["fields"] = m
-	} else {
-		entry["fields"] = map[string]interface{}{}
-	}
+	entry["fields"] = c.parseLogFields(ctx, fieldsStr)
 	return entry, nil
 }
 
@@ -1497,11 +1508,11 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 	var err error
 	if fractalID != "" {
 		rows, err = c.conn.Query(ctx,
-			fmt.Sprintf("SELECT log_id, fractal_id, toString(fields) AS fields FROM %s WHERE log_id IN (?) AND fractal_id = ?", c.ReadTable()),
+			fmt.Sprintf("SELECT log_id, fractal_id, norm_log AS fields FROM %s WHERE log_id IN (?) AND fractal_id = ?", c.ReadTable()),
 			logIDs, fractalID)
 	} else {
 		rows, err = c.conn.Query(ctx,
-			fmt.Sprintf("SELECT log_id, fractal_id, toString(fields) AS fields FROM %s WHERE log_id IN (?)", c.ReadTable()),
+			fmt.Sprintf("SELECT log_id, fractal_id, norm_log AS fields FROM %s WHERE log_id IN (?)", c.ReadTable()),
 			logIDs)
 	}
 	if err != nil {
@@ -1516,12 +1527,7 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 			return nil, fmt.Errorf("failed to scan log fields row: %w", err)
 		}
 		entry := map[string]interface{}{"log_id": logID, "fractal_id": logFractalID}
-		var m map[string]interface{}
-		if json.Unmarshal([]byte(fieldsStr), &m) == nil {
-			entry["fields"] = m
-		} else {
-			entry["fields"] = map[string]interface{}{}
-		}
+		entry["fields"] = c.parseLogFields(ctx, fieldsStr)
 		results = append(results, entry)
 	}
 	if err := rows.Err(); err != nil {
@@ -1621,16 +1627,16 @@ func dropHotPartitionsOnConn(ctx context.Context, conn driver.Conn, label string
 	}
 }
 
-// RawLogIndexName is the lower(raw_log) n-gram text index (migration 005) used to
-// accelerate case-insensitive substring/regex search on raw_log.
-const RawLogIndexName = "raw_log_ngram_lc"
+// NormLogIndexName is the lower(norm_log) n-gram text index (migration 006) used to
+// accelerate case-insensitive substring/regex search on the canonical text field.
+const NormLogIndexName = "norm_log_ngram_lc"
 
 // rawLogIndexBackfillLockID is a Postgres advisory-lock id that ensures only one
 // replica submits the one-time MATERIALIZE INDEX backfill. Distinct from the
 // schema-init lock ("bifract\0").
 const rawLogIndexBackfillLockID int64 = 0x6269667261637401 // "bifract\x01"
 
-// StartRawLogIndexBackfill materializes the lower(raw_log) n-gram index on parts
+// StartNormLogIndexBackfill materializes the lower(norm_log) n-gram index on parts
 // written before the index existed, so historical data benefits from granule
 // pruning. It never blocks startup:
 //
@@ -1645,7 +1651,7 @@ const rawLogIndexBackfillLockID int64 = 0x6269667261637401 // "bifract\x01"
 //
 // pg may be nil, in which case the system.mutations existence check is the only
 // guard (sufficient for single-replica deployments).
-func (c *ClickHouseClient) StartRawLogIndexBackfill(ctx context.Context, pg *PostgresClient) {
+func (c *ClickHouseClient) StartNormLogIndexBackfill(ctx context.Context, pg *PostgresClient) {
 	go func() {
 		if pg != nil {
 			unlock, ok := pg.TryAdvisoryLock(ctx, rawLogIndexBackfillLockID)
@@ -1655,7 +1661,7 @@ func (c *ClickHouseClient) StartRawLogIndexBackfill(ctx context.Context, pg *Pos
 			defer unlock()
 		}
 
-		exists, err := c.indexMutationExists(ctx, RawLogIndexName)
+		exists, err := c.indexMutationExists(ctx, NormLogIndexName)
 		if err != nil {
 			log.Printf("[IndexBackfill] check existing mutation: %v", err)
 			return
@@ -1663,12 +1669,12 @@ func (c *ClickHouseClient) StartRawLogIndexBackfill(ctx context.Context, pg *Pos
 		if exists {
 			return // already submitted (running or finished)
 		}
-		if err := c.submitMaterializeIndex(ctx, RawLogIndexName); err != nil {
-			log.Printf("[IndexBackfill] submit MATERIALIZE INDEX %s: %v", RawLogIndexName, err)
+		if err := c.submitMaterializeIndex(ctx, NormLogIndexName); err != nil {
+			log.Printf("[IndexBackfill] submit MATERIALIZE INDEX %s: %v", NormLogIndexName, err)
 			return
 		}
-		log.Printf("[IndexBackfill] submitted MATERIALIZE INDEX %s; backfilling existing parts in the background", RawLogIndexName)
-		c.awaitIndexMutation(ctx, RawLogIndexName)
+		log.Printf("[IndexBackfill] submitted MATERIALIZE INDEX %s; backfilling existing parts in the background", NormLogIndexName)
+		c.awaitIndexMutation(ctx, NormLogIndexName)
 	}()
 }
 
@@ -1922,6 +1928,9 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 			log.Printf("Warning: add index %s: %v", idxName, err)
 		}
 	}
+	// Type hints may have changed (MODIFY COLUMN above); drop the cached set so the
+	// log-detail empty-field filter picks up new/removed hints.
+	c.invalidateTypeHintCache()
 	return nil
 }
 

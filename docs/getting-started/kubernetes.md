@@ -25,29 +25,27 @@ graph TB
         pg[("PostgreSQL<br/><small>StatefulSet</small>")]
 
         subgraph ch ["ClickHouse Cluster (Operator-managed)"]
-            subgraph shard0 ["Shard 0"]
-                ch0r0[("Replica 0")]
-                ch0r1[("Replica 1")]
-            end
-            subgraph shard1 ["Shard 1"]
-                ch1r0[("Replica 0")]
-                ch1r1[("Replica 1")]
-            end
+            shard0[("Shard 0<br/><small>single replica</small>")]
+            shard1[("Shard 1<br/><small>single replica</small>")]
+            shard2[("Shard 2<br/><small>single replica</small>")]
         end
 
-        keeper[("ClickHouse Keeper<br/><small>Coordinates replication</small>")]
+        keeper[("ClickHouse Keeper<br/><small>Coordinates DDL + cross-shard queries</small>")]
     end
+
+    iceberg[("Apache Iceberg archive<br/><small>Object storage - durability / DR</small>")]
 
     users -->|"HTTPS :443"| caddy
     sources -->|"HTTPS :8443"| caddy
     caddy -->|":8080"| bifract
     bifract --> pg
     bifract -->|"Distributed table"| ch
+    bifract -->|"tee every log"| iceberg
     bifract --> litellm
-    ch0r0 <-->|"replication"| ch0r1
-    ch1r0 <-->|"replication"| ch1r1
-    ch0r0 & ch0r1 & ch1r0 & ch1r1 --> keeper
+    shard0 & shard1 & shard2 --> keeper
 ```
+
+ClickHouse is sharded for throughput but **not replicated** — each shard is a single replica. Durability and disaster recovery come from the Apache Iceberg archive, which receives a copy of every ingested log. Keeper remains because it coordinates distributed (`ON CLUSTER`) DDL and cross-shard query routing even without replication.
 
 ## Step 1: Install ClickHouse Operator
 
@@ -95,11 +93,10 @@ The wizard will prompt for:
 | IP access | Traffic restriction mode (includes mTLS option) | Allow all |
 | Resource profile | Cluster sizing preset (Dev through X-Large) | Small |
 | CH shards | ClickHouse shards for horizontal scaling | `1` |
-| CH replicas | ClickHouse replicas per shard (2+ for HA) | `2` |
-| CH storage | Storage per replica in GB | `100` |
+| CH storage | Storage per shard in GB | `100` |
 | Output dir | Where to write manifests | `./bifract-k8s` |
 
-The resource profile sets CPU and memory requests/limits for all components based on your expected workload. Shard and replica counts are pre-filled by the profile but can be adjusted. See [Sizing Guide](sizing.md) for details on each profile.
+The resource profile sets CPU and memory requests/limits for all components based on your expected workload. The shard count is pre-filled by the profile but can be adjusted. Each shard is a single replica; durability is handled by the Iceberg archive, not ClickHouse replication. See [Sizing Guide](sizing.md) for details on each profile and the disk performance requirements.
 
 This generates a complete set of Kustomize manifests with secure credentials in the output directory. Save the admin password displayed at the end.
 
@@ -119,7 +116,7 @@ You should see:
 
 - 1 PostgreSQL pod
 - 1 ClickHouse Keeper pod (managed by the operator via `KeeperCluster`)
-- 2 ClickHouse replica pods (managed by the operator via `ClickHouseCluster`)
+- 1 ClickHouse pod per shard (managed by the operator via `ClickHouseCluster`; single replica each)
 - 2 Bifract pods
 - 1 Caddy pod (with a log shipper sidecar)
 - 1 LiteLLM pod
@@ -157,11 +154,11 @@ kubectl -n bifract get networkpolicies
 
 ## Scaling ClickHouse
 
-Shard and replica counts are set during `--install-k8s` and can be changed at any time with `--reconfigure-k8s`. Replicas provide high availability within a shard. Shards distribute data across multiple nodes for increased storage capacity and query throughput.
+The shard count is set during `--install-k8s` and can be changed at any time with `--reconfigure-k8s`. Shards distribute data across multiple nodes for increased storage capacity and query throughput. Bifract does not use ClickHouse replicas; each shard is a single replica and durability comes from the Iceberg archive, so scaling is purely a matter of adding shards.
 
 ```bash
-# Scale to 2 shards with 3 replicas each (6 total ClickHouse pods)
-bifract --reconfigure-k8s --dir ./bifract-k8s --shards 2 --replicas 3
+# Scale to 3 shards (3 total ClickHouse pods, one per shard)
+bifract --reconfigure-k8s --dir ./bifract-k8s --shards 3
 kubectl apply -k ./bifract-k8s
 ```
 
@@ -226,7 +223,6 @@ Available override flags:
 | `--allowed-ips` | Allowed CIDRs (comma-separated) | `10.0.0.0/8,192.168.1.0/24` |
 | `--domain` | Domain name | `bifract.example.com` |
 | `--shards` | ClickHouse shard count | `1`, `2`, ... |
-| `--replicas` | ClickHouse replicas per shard | `1`, `2`, ... |
 
 Like `--upgrade-k8s`, a backup is created before writing. All secrets and resource profiles are preserved. After reconfiguring, apply the changes:
 

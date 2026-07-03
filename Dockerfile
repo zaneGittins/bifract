@@ -21,6 +21,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 -ldflags="-w -s -X main.Version=${BIFRACT_VERSION}" \
 -o bifract-server ./cmd/bifract-server
 
+# Build the archive sidecar binary from the same module (version lockstep with
+# the server: they share the pkg/spool on-disk format). Shipped in the same
+# scratch image and run as a sidecar via `command: ["/bifract-archiver"]`.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+-a \
+-installsuffix cgo \
+-ldflags="-w -s -X main.Version=${BIFRACT_VERSION}" \
+-o bifract-archiver ./cmd/bifract-archiver
+
 # Pull CA certs to copy into scratch (no apk in scratch to fetch these)
 FROM alpine:latest AS certs
 RUN apk --no-cache add ca-certificates
@@ -31,8 +40,9 @@ FROM scratch
 # CA certs needed for any outbound HTTPS calls your app makes
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-# Copy binary and assets
+# Copy binaries and assets
 COPY --from=builder /app/bifract-server /bifract-server
+COPY --from=builder /app/bifract-archiver /bifract-archiver
 COPY --from=builder /app/web /web
 
 # Writable temp directory for feed repo cloning (go-git)

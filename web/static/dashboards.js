@@ -44,6 +44,7 @@ const Dashboards = {
     },
 
     onFractalChange() {
+        this._clearStoredDrilldown(this.currentDashboard && this.currentDashboard.id);
         this.currentDashboard = null;
         this._drilldown = null;
         this.stopDragResize();
@@ -144,6 +145,7 @@ const Dashboards = {
 
     showDashboardListing() {
         this.stopPresenceTracking();
+        this._clearStoredDrilldown(this.currentDashboard && this.currentDashboard.id);
         this._drilldown = null;
         const listing = document.getElementById('dashboardListing');
         const editor = document.getElementById('dashboardEditor');
@@ -244,6 +246,13 @@ const Dashboards = {
 
     async openDashboard(id) {
         try {
+            // Leaving a different dashboard: forget its transient drilldown so it
+            // never resurfaces on a later normal open. A reload of the SAME
+            // dashboard keeps it (currentDashboard is null on a fresh page load),
+            // so a refresh still restores the drilldown view.
+            if (this.currentDashboard && this.currentDashboard.id !== id) {
+                this._clearStoredDrilldown(this.currentDashboard.id);
+            }
             window.App?.pushSubPath(id);
             const response = await fetch(`/api/v1/dashboards/${id}`, { credentials: 'include' });
             const data = await response.json();
@@ -276,7 +285,17 @@ const Dashboards = {
     // ---- SSE & Presence ----
 
     connectSSE() {
-        if (!this.currentDashboard || this.eventSource) return;
+        if (!this.currentDashboard) return;
+        // Already connected to THIS dashboard: nothing to do. Connected to a
+        // different one (a board-to-board drilldown never returns to the listing,
+        // so the old stream would otherwise linger): tear it down and resubscribe,
+        // so presence and the room we receive broadcasts on track the dashboard
+        // actually on screen.
+        if (this.eventSource) {
+            if (this._sseDashboardId === this.currentDashboard.id) return;
+            this.disconnectSSE();
+        }
+        this._sseDashboardId = this.currentDashboard.id;
 
         // Immediate presence update and fetch
         fetch(`/api/v1/dashboards/${this.currentDashboard.id}/presence`, {
@@ -319,6 +338,7 @@ const Dashboards = {
             this.eventSource.close();
             this.eventSource = null;
             this.sseClientId = null;
+            this._sseDashboardId = null;
         }
         if (this.presenceInterval) {
             clearInterval(this.presenceInterval);
@@ -428,8 +448,10 @@ const Dashboards = {
         if (!this.currentDashboard) return;
         // During a private drilldown, ignore broadcast shared results so they
         // don't clobber this viewer's filtered view. Exiting re-runs the shared
-        // queries, so the cache refreshes then.
-        if (this._drilldown) return;
+        // queries, so the cache refreshes then. Read through activeDrilldown() so a
+        // transiently-nulled in-memory flag cannot let a default-variable broadcast
+        // (one per pod in a multi-replica deploy) slip past and revert the view.
+        if (this.activeDrilldown()) return;
         const widget = this.currentDashboard.widgets.find(w => w.id === data.id);
         if (!widget) return;
 
@@ -614,7 +636,7 @@ const Dashboards = {
             // In a pivot drilldown the run is a private, transient view: send the
             // override variables/time so the server executes (but does not persist
             // or broadcast) a filtered result for this viewer only.
-            const dd = this._drilldown;
+            const dd = this.activeDrilldown();
             const body = dd ? JSON.stringify({
                 preview: true,
                 variables: dd.vars || [],
@@ -1718,6 +1740,54 @@ const Dashboards = {
         Pivots.handleDataClick(widget, pivots, ctx, event);
     },
 
+    // A drilldown is a transient, per-viewer override that must survive the whole
+    // time the user is looking at the target dashboard. It is NOT persisted
+    // server-side (the server only ever knows the dashboard's default variables),
+    // so its entire lifetime lives client-side. The in-memory flag alone is
+    // fragile: a spurious scope notify, a re-entrant route, or an SSE reconnect can
+    // null it, and the moment it is null a default-variable result (pushed by the
+    // background executor, one per pod in a multi-replica deploy) overwrites the
+    // filtered view. To make it authoritative we mirror it into sessionStorage
+    // keyed by dashboard id (per-tab, so a new-tab drilldown never collides with or
+    // clobbers another tab), and read through activeDrilldown() everywhere the
+    // override gates behavior. The stored context is cleared only on an explicit
+    // exit, a real scope change, or returning to the listing.
+    _drilldownStoreKey(id) { return 'bifract_drilldown_' + id; },
+
+    _storeDrilldown(dd) {
+        if (!dd || !dd.dashboardId) return;
+        try { sessionStorage.setItem(this._drilldownStoreKey(dd.dashboardId), JSON.stringify(dd)); }
+        catch (e) { /* sessionStorage unavailable: fall back to in-memory only */ }
+    },
+
+    _loadStoredDrilldown(id) {
+        if (!id) return null;
+        try {
+            const raw = sessionStorage.getItem(this._drilldownStoreKey(id));
+            if (!raw) return null;
+            const dd = JSON.parse(raw);
+            return (dd && Array.isArray(dd.vars) && dd.dashboardId === id) ? dd : null;
+        } catch (e) { return null; }
+    },
+
+    _clearStoredDrilldown(id) {
+        if (!id) return;
+        try { sessionStorage.removeItem(this._drilldownStoreKey(id)); } catch (e) { /* ignore */ }
+    },
+
+    // The authoritative drilldown for the dashboard currently on screen. Prefers the
+    // in-memory context but transparently rehydrates from sessionStorage when a
+    // transient reset has nulled it, so default-variable results can never win a
+    // race against the override view.
+    activeDrilldown() {
+        const id = this.currentDashboard && this.currentDashboard.id;
+        if (!id) return null;
+        if (this._drilldown && this._drilldown.dashboardId === id) return this._drilldown;
+        const stored = this._loadStoredDrilldown(id);
+        if (stored) { this._drilldown = stored; return stored; }
+        return null;
+    },
+
     // Enter a transient drilldown on a (possibly different) dashboard. Same-board
     // drilldowns re-run in place; cross-board ones stash the context and open the
     // target, where _resolveDrilldown picks it up after load.
@@ -1729,35 +1799,41 @@ const Dashboards = {
         }
         dd.dashboardId = this.currentDashboard && this.currentDashboard.id;
         this._drilldown = dd;
+        this._storeDrilldown(dd);
         this.renderDrilldownBanner();
         this.autoExecuteAllWidgets();
     },
 
     exitDrilldown() {
-        if (!this._drilldown) return;
+        const active = this.activeDrilldown();
+        if (!active) return;
+        this._clearStoredDrilldown(this.currentDashboard && this.currentDashboard.id);
         this._drilldown = null;
         this.renderDrilldownBanner();
         this.autoExecuteAllWidgets();
     },
 
     // Resolve a drilldown context on dashboard open: an in-app pending context
-    // wins; otherwise a ?pv= URL param (new-tab / shared drilldown link).
+    // wins; then a ?pv= URL param (new-tab / shared drilldown link); then a
+    // sessionStorage context left by an earlier open of this same dashboard.
     //
     // The overlay is a per-view state, not a one-shot: the ?pv= param is consumed
     // on first read, but opening the same dashboard is re-entrant (routing,
     // presence/SSE, variable-bar reconcile all re-execute widgets). So the overlay
-    // is bound to its target dashboard id and preserved across re-entrant opens;
-    // it is only dropped when a fresh drilldown arrives, the user exits, or a
-    // DIFFERENT dashboard is opened. Without this, a re-entrant open would null the
+    // is bound to its target dashboard id and preserved across re-entrant opens and
+    // reloads; it is only dropped when a fresh drilldown arrives, the user exits, or
+    // a DIFFERENT dashboard is opened. Without this, a re-entrant open would null the
     // overlay and the follow-up executes would revert widgets to the stored defaults.
     _resolveDrilldown() {
+        const currentId = this.currentDashboard && this.currentDashboard.id;
         let dd = this._pendingDrilldown || null;
         this._pendingDrilldown = null;
         if (!dd) dd = this._readDrilldownFromUrl();
-        const currentId = this.currentDashboard && this.currentDashboard.id;
+        if (!dd) dd = this._loadStoredDrilldown(currentId);
         if (dd) {
             dd.dashboardId = currentId;
             this._drilldown = dd;
+            this._storeDrilldown(dd);
         } else if (!(this._drilldown && this._drilldown.dashboardId === currentId)) {
             this._drilldown = null;
         }
@@ -1791,7 +1867,8 @@ const Dashboards = {
         // Legacy: remove any banner left over from an older render.
         const stale = document.getElementById('dashboardDrilldownBanner');
         if (stale) stale.remove();
-        const vars = (this._drilldown && this._drilldown.vars) || [];
+        const active = this.activeDrilldown();
+        const vars = (active && active.vars) || [];
         if (!vars.length) { mgr.clearDisplayOverlay(); return; }
         const overlay = new Map();
         vars.forEach(v => { if (v && v.name) overlay.set(v.name, v.value == null ? '' : String(v.value)); });

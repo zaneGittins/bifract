@@ -147,7 +147,6 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 		printStep(fmt.Sprintf("Applying size profile: %s", profile.Name))
 		cfg.SizeProfile = profile
 		cfg.CHShards = profile.CHShards
-		cfg.CHReplicas = profile.CHReplicas
 	}
 
 	// Regenerate manifests with new version into a staging directory so that
@@ -215,7 +214,6 @@ type k8sSettings struct {
 	imageTag    string
 	domain      string
 	chShards    int
-	chReplicas  int
 	chStorageGB int
 	ipAccess    IPAccessMode
 	allowedIPs  []string
@@ -345,7 +343,6 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 	s := &k8sSettings{
 		// Sensible defaults in case files are missing or unparseable
 		chShards:    1,
-		chReplicas:  2,
 		chStorageGB: 100,
 	}
 
@@ -390,10 +387,11 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 		}
 	}
 
-	// Parse CH shards, replicas, storage from clickhouse installation.
+	// Parse CH shards and storage from clickhouse installation.
 	// The file contains two YAML documents: KeeperCluster and ClickHouseCluster.
 	// Split by document separator so storage regex only matches the CH cluster doc,
-	// not the Keeper's hardcoded storage value.
+	// not the Keeper's hardcoded storage value. Replicas are always 1 (Iceberg
+	// handles durability), so they are not parsed or preserved.
 	if data, err := os.ReadFile(filepath.Join(dir, "clickhouse", "clickhouse-installation.yaml")); err == nil {
 		content := string(data)
 		chDoc := content
@@ -405,9 +403,6 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 		}
 		if v := extractValue(chDoc, `(?m)^\s*shards:\s*(\d+)`); v != "" {
 			s.chShards, _ = strconv.Atoi(v)
-		}
-		if v := extractValue(chDoc, `(?m)^\s*replicas:\s*(\d+)`); v != "" {
-			s.chReplicas, _ = strconv.Atoi(v)
 		}
 		if v := extractValue(chDoc, `storage:\s*(\d+)Ti`); v != "" {
 			ti, _ := strconv.Atoi(v)

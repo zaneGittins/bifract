@@ -17,15 +17,6 @@ const FractalManageTab = {
             });
         }
 
-        // Cold storage select
-        const coldSelect = document.getElementById('manageFractalColdSelect');
-        if (coldSelect) {
-            coldSelect.addEventListener('change', () => {
-                this.saveColdSetting();
-                this.updateLifecycleSummary();
-            });
-        }
-
         // Quota action select - show/hide rollover warning
         const quotaActionSelect = document.getElementById('manageFractalQuotaAction');
         if (quotaActionSelect) {
@@ -319,12 +310,6 @@ const FractalManageTab = {
             retentionSelect.value = fractal.retention_days != null ? String(fractal.retention_days) : '';
         }
 
-        // Populate cold storage select
-        const coldSelect = document.getElementById('manageFractalColdSelect');
-        if (coldSelect) {
-            coldSelect.value = fractal.cold_days != null ? String(fractal.cold_days) : '';
-        }
-
         // Populate disk quota fields
         const quotaInput = document.getElementById('manageFractalQuotaInput');
         if (quotaInput) {
@@ -443,37 +428,6 @@ const FractalManageTab = {
             console.error('Failed to save retention:', error);
             if (window.Toast) {
                 Toast.error('Retention Save Failed', error.message);
-            }
-        }
-    },
-
-    async saveColdSetting() {
-        if (!this.currentFractal) return;
-
-        const select = document.getElementById('manageFractalColdSelect');
-        if (!select) return;
-
-        const value = select.value;
-        const body = { cold_days: value === '' ? null : parseInt(value, 10) };
-
-        try {
-            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/cold-storage`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify(body)
-            });
-
-            const data = await response.json();
-            if (!data.success) throw new Error(data.error || 'Failed to save cold storage');
-
-            this.currentFractal.cold_days = body.cold_days;
-            if (window.FractalContext) FractalContext.currentFractal = this.currentFractal;
-
-        } catch (error) {
-            console.error('Failed to save cold storage:', error);
-            if (window.Toast) {
-                Toast.error('Cold Storage Save Failed', error.message);
             }
         }
     },
@@ -599,16 +553,9 @@ const FractalManageTab = {
         if (!el) return;
 
         const retentionSelect = document.getElementById('manageFractalRetentionSelect');
-        const coldSelect = document.getElementById('manageFractalColdSelect');
-
         const retentionDays = retentionSelect ? retentionSelect.value : '';
-        const coldDays = coldSelect ? coldSelect.value : '';
 
         const parts = [];
-
-        if (coldDays !== '') {
-            parts.push(`Logs older than ${coldDays} days move to cold storage (still searchable, slower).`);
-        }
 
         if (retentionDays === '') {
             parts.push('Logs are kept indefinitely.');

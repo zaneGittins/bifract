@@ -435,6 +435,11 @@ const LogDetail = {
             }
 
             const value = flattenedData[key];
+            // Skip empty fields: JSON schema type-hint sub-columns materialize as "" even
+            // when the log did not contain them, so they are noise in the detail grid.
+            if ((value === '' || value === null || value === undefined) && key !== 'timestamp') {
+                return;
+            }
             const fieldDiv = document.createElement('div');
             fieldDiv.className = 'log-field';
             fieldDiv.dataset.fieldName = key;

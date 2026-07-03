@@ -6,7 +6,9 @@
 #      helm install clickhouse-operator -n clickhouse-operator-system --create-namespace \
 #        oci://ghcr.io/clickhouse/clickhouse-operator-helm
 #
-# Customize replicas and storage to fit your workload.
+# Customize shards and storage to fit your workload. Each shard is a single
+# replica; durability and disaster recovery are handled by the Apache Iceberg
+# archive, not ClickHouse replication. Keeper stays for ON CLUSTER DDL.
 apiVersion: clickhouse.com/v1alpha1
 kind: KeeperCluster
 metadata:
@@ -38,7 +40,7 @@ metadata:
   name: bifract-ch
   namespace: bifract
 spec:
-  replicas: 2
+  replicas: 1
   keeperClusterRef:
     name: bifract-keeper
   podTemplate:
@@ -74,21 +76,3 @@ spec:
       secret:
         name: bifract-secrets
         key: CLICKHOUSE_PASSWORD_HASH
-  # ---------------------------------------------------------------------------
-  # Cold storage tier (optional). Disabled by default.
-  #
-  # To enable, inject a server config file defining an s3/azure_blob_storage disk
-  # (wrapped in a cache disk) and a 'tiered' storage policy whose hot volume is
-  # NAMED 'default' (with the 'default' disk), then set
-  # BIFRACT_COLD_STORAGE_BACKEND=s3 (or azure) on the bifract app (secret key
-  # COLD_STORAGE_BACKEND). The app applies the policy to the logs table at startup.
-  # The hot volume must be named 'default' or ALTER ... MODIFY SETTING
-  # storage_policy is rejected (new policy must contain the current policy's volume).
-  #
-  # Use the same storage_configuration XML as
-  # clickhouse/config.d/storage.s3.xml.example / storage.azure.xml.example, with
-  # credentials sourced from the bifract-secrets Secret (S3_ACCESS_KEY,
-  # S3_SECRET_KEY, S3_REGION, COLD_STORAGE_ENDPOINT, or the AZURE_* keys).
-  # Mount it into the ClickHouse pods via this operator's config-file mechanism
-  # (consult your installed operator version's CRD for the exact field, e.g. a
-  # files/config section).

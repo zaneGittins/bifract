@@ -15,7 +15,7 @@ func TestRegexAsAliasesOutputColumn(t *testing.T) {
 		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		MaxRows:   1000,
 	}
-	pipeline, err := ParseQuery(`level="a" | regex(field=raw_log, regex="(\\d+)", as=num)`)
+	pipeline, err := ParseQuery(`level="a" | regex(field=norm_log, regex="(\\d+)", as=num)`)
 	if err != nil {
 		t.Fatalf("ParseQuery failed: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestLenAsAvoidsCollision(t *testing.T) {
 		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		MaxRows:   1000,
 	}
-	pipeline, err := ParseQuery(`level="a" | regex(field=raw_log, regex="(\\S+)", as=a) | len(a, as=alen) | alen >= 2 | regex(field=raw_log, regex="(\\d+)", as=b) | len(b, as=blen) | blen >= 3`)
+	pipeline, err := ParseQuery(`level="a" | regex(field=norm_log, regex="(\\S+)", as=a) | len(a, as=alen) | alen >= 2 | regex(field=norm_log, regex="(\\d+)", as=b) | len(b, as=blen) | blen >= 3`)
 	if err != nil {
 		t.Fatalf("ParseQuery failed: %v", err)
 	}
@@ -48,10 +48,10 @@ func TestLenAsAvoidsCollision(t *testing.T) {
 		t.Fatalf("translate failed: %v", err)
 	}
 	// Each length filter must reference its own extraction, not a shared field.
-	if !strings.Contains(result.SQL, `length(extract(raw_log, '(\\S+)')) >= 2`) {
+	if !strings.Contains(result.SQL, `length(extract(norm_log, '(\\S+)')) >= 2`) {
 		t.Fatalf("alen filter missing or wrong:\n%s", result.SQL)
 	}
-	if !strings.Contains(result.SQL, `length(extract(raw_log, '(\\d+)')) >= 3`) {
+	if !strings.Contains(result.SQL, `length(extract(norm_log, '(\\d+)')) >= 3`) {
 		t.Fatalf("blen filter missing or wrong:\n%s", result.SQL)
 	}
 }
@@ -63,7 +63,7 @@ func TestRegexNamedGroupStillWorks(t *testing.T) {
 		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		MaxRows:   1000,
 	}
-	pipeline, err := ParseQuery(`level="a" | regex(field=raw_log, regex="(?<word>[a-z]+)")`)
+	pipeline, err := ParseQuery(`level="a" | regex(field=norm_log, regex="(?<word>[a-z]+)")`)
 	if err != nil {
 		t.Fatalf("ParseQuery failed: %v", err)
 	}

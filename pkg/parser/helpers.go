@@ -68,7 +68,7 @@ func buildAnalyzeFieldsSQL(
 	sql.WriteString("max(toFloat64OrNull(kv.2)) AS _max, ")
 	sql.WriteString("round(stddevPop(toFloat64OrNull(kv.2)), 2) AS _stdev ")
 	sql.WriteString("FROM (")
-	sql.WriteString(fmt.Sprintf("SELECT arrayJoin(JSONExtractKeysAndValues(toString(fields), 'String')) AS kv FROM %s%s LIMIT %d",
+	sql.WriteString(fmt.Sprintf("SELECT arrayJoin(JSONExtractKeysAndValues(norm_log, 'String')) AS kv FROM %s%s LIMIT %d",
 		opts.EffectiveTableName(), whereClause, scanLimit))
 	sql.WriteString(")")
 	sql.WriteString(pathFilter)
@@ -507,8 +507,8 @@ func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string,
 	// referenced directly rather than as a raw JSON sub-column.
 	resolvedComputed := false
 	switch cond.Field {
-	case "raw_log":
-		fieldRef = "raw_log"
+	case normLogColumn:
+		fieldRef = normLogColumn
 	case "timestamp":
 		fieldRef = "timestamp"
 	case "log_id":
@@ -965,10 +965,11 @@ func extractLiteralTokens(pattern string) []string {
 	return result
 }
 
-// rawLogColumn is the bare ClickHouse column holding the full log line. It carries
-// the lower(raw_log) n-gram text index, so case-insensitive searches against it are
-// rewritten to match(lower(raw_log), ...) to enable granule pruning.
-const rawLogColumn = "raw_log"
+// normLogColumn is the canonical ClickHouse text column (the flat serialized normalized
+// fields). It carries the lower(norm_log) n-gram text index, so case-insensitive searches
+// against it are rewritten to match(lower(norm_log), ...) to enable granule pruning.
+// (raw_log is a demoted, non-BQL-addressable troubleshooting column.)
+const normLogColumn = "norm_log"
 
 // caseInsensitiveFlag is RE2's inline case-insensitivity flag, prepended to a
 // pattern by the lexer for /regex/i and by the parser for bare-term searches.
@@ -1030,10 +1031,10 @@ func buildEndsWithAnySQL(fieldRef string, values []string, negate bool) string {
 
 // buildRegexMatchSQL returns a match() expression for use in WHERE clauses.
 //
-// For case-insensitive searches on raw_log we emit match(lower(raw_log), <lowered
-// pattern>) rather than match(raw_log, '(?i)...'). ClickHouse cannot use a text
+// For case-insensitive searches on norm_log we emit match(lower(norm_log), <lowered
+// pattern>) rather than match(norm_log, '(?i)...'). ClickHouse cannot use a text
 // index when the (?i) inline flag is present, so the (?i) form always scans; the
-// lower(raw_log) form aligns with the lower(raw_log) n-gram index and prunes
+// lower(norm_log) form aligns with the lower(norm_log) n-gram index and prunes
 // granules while returning identical results (the indexed column is lowercased,
 // the pattern's literals are lowercased to match). When the pattern contains a
 // construct that byte-wise lowering cannot safely transform, we fall back to the
@@ -1041,7 +1042,7 @@ func buildEndsWithAnySQL(fieldRef string, values []string, negate bool) string {
 //
 // We do NOT add explicit hasToken pre-filters: hasToken requires an exact complete
 // token, but regex/substring search is not token-aligned (/http/ matches
-// "https://..." but hasToken(raw_log,'http') = FALSE), which would cause false
+// "https://..." but hasToken(norm_log,'http') = FALSE), which would cause false
 // negatives. The text index prunes match() automatically and correctly.
 func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, _ bool) string {
 	matchExpr := buildMatchExpr(fieldRef, pattern)
@@ -1051,12 +1052,12 @@ func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, _ bool) st
 	return matchExpr
 }
 
-// buildMatchExpr builds the match() call, routing case-insensitive raw_log
-// searches through lower(raw_log) so the n-gram text index can be used.
+// buildMatchExpr builds the match() call, routing case-insensitive norm_log
+// searches through lower(norm_log) so the n-gram text index can be used.
 func buildMatchExpr(fieldRef, pattern string) string {
-	if fieldRef == rawLogColumn && strings.HasPrefix(pattern, caseInsensitiveFlag) {
+	if fieldRef == normLogColumn && strings.HasPrefix(pattern, caseInsensitiveFlag) {
 		if lowered, ok := lowerRegexForLowercasedColumn(pattern[len(caseInsensitiveFlag):]); ok {
-			return fmt.Sprintf("match(lower(%s), %s)", rawLogColumn, escapeRegexForClickHouse(lowered))
+			return fmt.Sprintf("match(lower(%s), %s)", normLogColumn, escapeRegexForClickHouse(lowered))
 		}
 	}
 	return fmt.Sprintf("match(%s, %s)", fieldRef, escapeRegexForClickHouse(pattern))

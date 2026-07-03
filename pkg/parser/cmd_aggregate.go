@@ -803,7 +803,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				fieldRef = arg
 			} else {
 				switch arg {
-				case "timestamp", "raw_log", "log_id":
+				case "timestamp", normLogColumn, "log_id":
 					fieldRef = arg
 				default:
 					if isMultiStage {

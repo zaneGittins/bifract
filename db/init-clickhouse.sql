@@ -7,7 +7,10 @@ USE logs;
 -- Create the main logs table with fractal isolation support
 CREATE TABLE IF NOT EXISTS logs (
     timestamp DateTime64(3),
-    raw_log String CODEC(ZSTD(3)),
+    -- raw_log is the true PRE-normalization original, kept only as a short troubleshooting
+    -- window (parser debugging). It is NOT addressable in BQL; norm_log is the canonical
+    -- text field. Column TTL reclaims it after 7 days.
+    raw_log String CODEC(ZSTD(3)) TTL toDateTime(timestamp) + INTERVAL 7 DAY,
     log_id String,
     fields JSON(
         max_dynamic_paths=1024,
@@ -35,13 +38,20 @@ CREATE TABLE IF NOT EXISTS logs (
     ),
     fractal_id LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3),
-    -- Character n-gram full-text index on lower(raw_log). Indexes the lowercased
+    -- Flat, indefinitely-retained serialization of the normalized fields. A point-read of
+    -- one ZSTD String file is subsecond, versus reconstructing the JSON column from ~1000+
+    -- per-path subcolumn files. Populated by ClickHouse from the fields column at insert
+    -- (DEFAULT toString(fields)), preserving the exact typed JSON the detail panel renders.
+    -- This is the canonical text field for BQL and the log-detail lookup.
+    norm_log String DEFAULT toString(fields) CODEC(ZSTD(3)),
+    -- "name@version" of the normalizer applied to this row, for traceability.
+    normalizer LowCardinality(String) DEFAULT '',
+    -- Character n-gram full-text index on lower(norm_log). Indexes the lowercased
     -- expression (not the column) so the translator can route case-insensitive
-    -- substring/regex search to match(lower(raw_log), ...) and prune granules.
+    -- substring/regex search to match(lower(norm_log), ...) and prune granules.
     -- The n-gram tokenizer (unlike whole-word splitByNonAlpha) accelerates
-    -- arbitrary substring and regex matches. Single raw_log copy: only the index
-    -- stores the lowercased form, not a duplicate column.
-    INDEX raw_log_ngram_lc lower(raw_log) TYPE text(tokenizer = ngrams(3)) GRANULARITY 1,
+    -- arbitrary substring and regex matches. Only the index stores the lowercased form.
+    INDEX norm_log_ngram_lc lower(norm_log) TYPE text(tokenizer = ngrams(3)) GRANULARITY 1,
     INDEX log_id_bloom log_id TYPE bloom_filter(0.001) GRANULARITY 1,
     INDEX ingest_ts_minmax ingest_timestamp TYPE minmax GRANULARITY 1,
     -- Skip indexes on normalized fields. Defined inline so all new parts are indexed
@@ -89,16 +99,21 @@ ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port 
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_proto              fields.proto          TYPE set(16)            GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_conn_state         fields.conn_state     TYPE set(64)            GRANULARITY 1;
 
--- Replace the legacy word-tokenized raw_log index (splitByNonAlpha) with a
--- character n-gram index on lower(raw_log). The old index could only match whole
--- tokens, so substring/regex search ("test" matching "testing") fell back to a
--- full scan; the n-gram index prunes granules for those. DROP/ADD INDEX are
--- metadata-only and instant, so this is safe to run at startup. Existing parts are
--- NOT indexed until MATERIALIZE INDEX runs; the bifract app submits that backfill
--- asynchronously at startup (alter_sync=0) so it never blocks boot. To backfill
--- manually: ALTER TABLE logs MATERIALIZE INDEX raw_log_ngram_lc;
+-- Defensive columns for installs that predate norm_log. ADD COLUMN IF NOT EXISTS is a
+-- no-op on fresh installs (already defined inline). norm_log defaults from the fields
+-- column, so on existing data it is computed-on-read until MATERIALIZE COLUMN runs.
+ALTER TABLE logs ADD COLUMN IF NOT EXISTS norm_log String DEFAULT toString(fields) CODEC(ZSTD(3));
+ALTER TABLE logs ADD COLUMN IF NOT EXISTS normalizer LowCardinality(String) DEFAULT '';
+ALTER TABLE logs MODIFY COLUMN raw_log String CODEC(ZSTD(3)) TTL toDateTime(timestamp) + INTERVAL 7 DAY;
+
+-- Full-text n-gram index now lives on lower(norm_log) (the canonical text field), not
+-- raw_log. DROP/ADD INDEX are metadata-only and instant, so this is safe at startup.
+-- Existing parts are NOT indexed until MATERIALIZE INDEX runs; the bifract app submits
+-- that backfill asynchronously at startup (alter_sync=0) so it never blocks boot. To
+-- backfill manually: ALTER TABLE logs MATERIALIZE INDEX norm_log_ngram_lc;
 ALTER TABLE logs DROP INDEX IF EXISTS raw_log_inverted;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS raw_log_ngram_lc lower(raw_log) TYPE text(tokenizer = ngrams(3)) GRANULARITY 1;
+ALTER TABLE logs DROP INDEX IF EXISTS raw_log_ngram_lc;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS norm_log_ngram_lc lower(norm_log) TYPE text(tokenizer = ngrams(3)) GRANULARITY 1;
 
 -- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
 -- Querying this instead of raw logs reduces the recent-logs histogram from a

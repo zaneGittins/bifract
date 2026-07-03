@@ -6,6 +6,36 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 3
+    # Batch routine minor/patch bumps into a few PRs instead of dozens. The
+    # archive sidecar pulls a large transitive graph (arrow/iceberg/gocloud +
+    # aws/azure/gcp SDKs); grouping keeps the PR volume sane. Security updates
+    # and majors still open individually. govulncheck (reachability-based) in
+    # CI is the real vulnerability gate, so this only affects update noise.
+    groups:
+      archive-stack:
+        patterns:
+          - "github.com/apache/iceberg-go*"
+          - "github.com/apache/arrow-go*"
+          - "gocloud.dev*"
+          - "github.com/uptrace/bun*"
+        update-types:
+          - "minor"
+          - "patch"
+      cloud-sdks:
+        patterns:
+          - "github.com/aws/aws-sdk-go-v2*"
+          - "github.com/Azure/*"
+          - "cloud.google.com/go*"
+          - "google.golang.org/*"
+        update-types:
+          - "minor"
+          - "patch"
+      go-x:
+        patterns:
+          - "golang.org/x/*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "github-actions"
     directory: "/"

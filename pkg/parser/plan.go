@@ -214,7 +214,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		}
 		selectClause = strings.Join(parts, ", ")
 	} else {
-		selectClause = "toString(timestamp) as timestamp, raw_log, log_id"
+		selectClause = "toString(timestamp) as timestamp, norm_log, log_id"
 	}
 
 	// model_lookup() join keys derive from `fields.X`, which only exist in this

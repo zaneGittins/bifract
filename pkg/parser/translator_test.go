@@ -1907,7 +1907,7 @@ func TestLogSizeQueries(t *testing.T) {
 		MaxRows:   1000,
 	}
 
-	t.Run("default measures raw_log as _size", func(t *testing.T) {
+	t.Run("default measures norm_log as _size", func(t *testing.T) {
 		pipeline, err := ParseQuery("* | logSize()")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
@@ -1916,8 +1916,8 @@ func TestLogSizeQueries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "byteSize(raw_log) AS _size") {
-			t.Errorf("Expected byteSize(raw_log) AS _size, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "byteSize(norm_log) AS _size") {
+			t.Errorf("Expected byteSize(norm_log) AS _size, got: %s", result.SQL)
 		}
 	})
 
@@ -1930,8 +1930,8 @@ func TestLogSizeQueries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "sum(toFloat64(byteSize(raw_log)))") {
-			t.Errorf("Expected sum() over byteSize(raw_log), got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "sum(toFloat64(byteSize(norm_log)))") {
+			t.Errorf("Expected sum() over byteSize(norm_log), got: %s", result.SQL)
 		}
 		if strings.Contains(result.SQL, "fields.`_size`") {
 			t.Errorf("_size should be a computed field, not a JSON field: %s", result.SQL)
@@ -4282,86 +4282,86 @@ func TestBuildRegexMatchSQL(t *testing.T) {
 		wantNoParts []string
 	}{
 		{
-			name:     "raw_log case-sensitive regex returns plain match",
-			fieldRef: "raw_log",
+			name:     "norm_log case-sensitive regex returns plain match",
+			fieldRef: "norm_log",
 			pattern:  "Convert-GuidToCompressedGuid",
 			negate:   false,
 			wantParts: []string{
-				"match(raw_log, 'Convert-GuidToCompressedGuid')",
+				"match(norm_log, 'Convert-GuidToCompressedGuid')",
 			},
 			wantNoParts: []string{
 				"hasToken",
 			},
 		},
 		{
-			name:     "raw_log case-insensitive regex routes through lower() with lowercased literal",
-			fieldRef: "raw_log",
+			name:     "norm_log case-insensitive regex routes through lower() with lowercased literal",
+			fieldRef: "norm_log",
 			pattern:  "(?i)Convert-GuidToCompressedGuid",
 			negate:   false,
 			wantParts: []string{
-				"match(lower(raw_log), 'convert-guidtocompressedguid')",
+				"match(lower(norm_log), 'convert-guidtocompressedguid')",
 			},
 			wantNoParts: []string{
 				"hasToken", "(?i)",
 			},
 		},
 		{
-			name:     "raw_log ci character-class range lowers cleanly",
-			fieldRef: "raw_log",
+			name:     "norm_log ci character-class range lowers cleanly",
+			fieldRef: "norm_log",
 			pattern:  "(?i)[A-Z]error",
 			negate:   false,
 			wantParts: []string{
-				"match(lower(raw_log), '[a-z]error')",
+				"match(lower(norm_log), '[a-z]error')",
 			},
 			wantNoParts: []string{"(?i)"},
 		},
 		{
-			name:     "raw_log ci preserves class/anchor escapes when lowering",
-			fieldRef: "raw_log",
+			name:     "norm_log ci preserves class/anchor escapes when lowering",
+			fieldRef: "norm_log",
 			pattern:  `(?i)\d+\D`,
 			negate:   false,
 			wantParts: []string{
-				`match(lower(raw_log), '\\d+\\D')`,
+				`match(lower(norm_log), '\\d+\\D')`,
 			},
 			wantNoParts: []string{"(?i)"},
 		},
 		{
-			name:     "raw_log ci falls back to plain (?i) match on unsafe group",
-			fieldRef: "raw_log",
+			name:     "norm_log ci falls back to plain (?i) match on unsafe group",
+			fieldRef: "norm_log",
 			pattern:  "(?i)foo(?:bar)",
 			negate:   false,
 			wantParts: []string{
-				"match(raw_log, '(?i)foo(?:bar)')",
+				"match(norm_log, '(?i)foo(?:bar)')",
 			},
-			wantNoParts: []string{"lower(raw_log)"},
+			wantNoParts: []string{"lower(norm_log)"},
 		},
 		{
-			name:     "raw_log ci falls back to plain (?i) match on hex escape",
-			fieldRef: "raw_log",
+			name:     "norm_log ci falls back to plain (?i) match on hex escape",
+			fieldRef: "norm_log",
 			pattern:  `(?i)\x41`,
 			negate:   false,
 			wantParts: []string{
-				`match(raw_log, '(?i)\\x41')`,
+				`match(norm_log, '(?i)\\x41')`,
 			},
-			wantNoParts: []string{"lower(raw_log)"},
+			wantNoParts: []string{"lower(norm_log)"},
 		},
 		{
-			name:     "raw_log ci negated routes through lower()",
-			fieldRef: "raw_log",
+			name:     "norm_log ci negated routes through lower()",
+			fieldRef: "norm_log",
 			pattern:  "(?i)Error",
 			negate:   true,
 			wantParts: []string{
-				"NOT match(lower(raw_log), 'error')",
+				"NOT match(lower(norm_log), 'error')",
 			},
 			wantNoParts: []string{"(?i)"},
 		},
 		{
 			name:     "negated regex returns NOT match",
-			fieldRef: "raw_log",
+			fieldRef: "norm_log",
 			pattern:  "Convert-GuidToCompressedGuid",
 			negate:   true,
 			wantParts: []string{
-				"NOT match(raw_log, 'Convert-GuidToCompressedGuid')",
+				"NOT match(norm_log, 'Convert-GuidToCompressedGuid')",
 			},
 			wantNoParts: []string{
 				"hasToken",
@@ -4381,11 +4381,11 @@ func TestBuildRegexMatchSQL(t *testing.T) {
 		},
 		{
 			name:     "no extractable tokens returns plain match",
-			fieldRef: "raw_log",
+			fieldRef: "norm_log",
 			pattern:  `\d+\.\d+`,
 			negate:   false,
 			wantParts: []string{
-				`match(raw_log, '\\d+\\.\\d+')`,
+				`match(norm_log, '\\d+\\.\\d+')`,
 			},
 			wantNoParts: []string{
 				"hasToken",
@@ -4424,41 +4424,41 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 		wantNotContain []string
 	}{
 		{
-			name:  "bare case-insensitive regex on raw_log routes through lower()",
+			name:  "bare case-insensitive regex on norm_log routes through lower()",
 			query: "/Convert-GuidToCompressedGuid/i",
 			wantContain: []string{
-				"match(lower(raw_log), 'convert-guidtocompressedguid')",
+				"match(lower(norm_log), 'convert-guidtocompressedguid')",
 			},
 			wantNotContain: []string{
 				"hasToken",
 			},
 		},
 		{
-			name:  "bare case-sensitive regex on raw_log uses plain match",
+			name:  "bare case-sensitive regex on norm_log uses plain match",
 			query: "/Convert-GuidToCompressedGuid/",
 			wantContain: []string{
-				"match(raw_log, 'Convert-GuidToCompressedGuid')",
+				"match(norm_log, 'Convert-GuidToCompressedGuid')",
 			},
 			wantNotContain: []string{
 				"hasToken",
 			},
 		},
 		{
-			name:  "bare string search on raw_log routes through lower()",
+			name:  "bare string search on norm_log routes through lower()",
 			query: `"powershell.exe"`,
 			wantContain: []string{
-				"match(lower(raw_log),",
+				"match(lower(norm_log),",
 			},
 			wantNotContain: []string{
-				"hasToken(raw_log",
+				"hasToken(norm_log",
 			},
 		},
 		{
 			name:  "bare strings with OR get correct OR logic",
 			query: `"prod-billing-9" OR "prod-billing-10"`,
 			wantContain: []string{
-				"match(lower(raw_log), 'prod-billing-9')",
-				"match(lower(raw_log), 'prod-billing-10')",
+				"match(lower(norm_log), 'prod-billing-9')",
+				"match(lower(norm_log), 'prod-billing-10')",
 				" OR ",
 			},
 		},
@@ -4466,17 +4466,17 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			name:  "bare strings with AND get correct AND logic",
 			query: `"prod-billing-9" AND "prod-billing-10"`,
 			wantContain: []string{
-				"match(lower(raw_log), 'prod-billing-9')",
-				"match(lower(raw_log), 'prod-billing-10')",
+				"match(lower(norm_log), 'prod-billing-9')",
+				"match(lower(norm_log), 'prod-billing-10')",
 			},
 		},
 		{
 			name:  "three bare strings with OR",
 			query: `"foo" OR "bar" OR "baz"`,
 			wantContain: []string{
-				"match(lower(raw_log), 'foo')",
-				"match(lower(raw_log), 'bar')",
-				"match(lower(raw_log), 'baz')",
+				"match(lower(norm_log), 'foo')",
+				"match(lower(norm_log), 'bar')",
+				"match(lower(norm_log), 'baz')",
 				" OR ",
 			},
 		},
@@ -4484,7 +4484,7 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			name:  "bare strings with OR in pipeline are grouped",
 			query: `* | service="test" | "A" OR "B" | user=/admin/i`,
 			wantContain: []string{
-				"match(lower(raw_log), 'a') OR match(lower(raw_log), 'b')",
+				"match(lower(norm_log), 'a') OR match(lower(norm_log), 'b')",
 				"service",
 				"match(fields.`user`, '(?i)admin')",
 			},
@@ -4493,7 +4493,7 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			name:  "bare strings with AND in pipeline are grouped",
 			query: `* | service="test" | "A" AND "B" | user=/admin/i`,
 			wantContain: []string{
-				"match(lower(raw_log), 'a') AND match(lower(raw_log), 'b')",
+				"match(lower(norm_log), 'a') AND match(lower(norm_log), 'b')",
 				"service",
 				"match(fields.`user`, '(?i)admin')",
 			},
@@ -4505,11 +4505,11 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 				"match(fields.`image`, '(?i)powershell')",
 			},
 			wantNotContain: []string{
-				"hasToken(raw_log",
+				"hasToken(norm_log",
 			},
 		},
 		{
-			name:  "negated raw_log regex does NOT get hasToken pre-filters",
+			name:  "negated norm_log regex does NOT get hasToken pre-filters",
 			query: "/powershell/i | command_line!=/cmd/i",
 			wantContain: []string{
 				"NOT match(fields.`command_line`::String, '(?i)cmd')",
@@ -4666,7 +4666,7 @@ func TestAlertAutoProjection(t *testing.T) {
 				"log_id", "timestamp",
 			},
 			wantNotContain: []string{
-				"toString(fields) AS fields",
+				"norm_log AS fields",
 			},
 		},
 		{
@@ -5059,8 +5059,8 @@ func TestCaseGeneralCommands(t *testing.T) {
 		}
 	})
 	t.Run("regex transform in branch", func(t *testing.T) {
-		sql := mustTranslate(t, `* | case { level=error | regex(field=raw_log, pattern="code=(?<code>[0-9]+)"); * | x:="ok"; } | table(code)`, opts)
-		if !strings.Contains(sql, "THEN extractAllGroups(raw_log, 'code=(?<code>[0-9]+)')[1][1]") {
+		sql := mustTranslate(t, `* | case { level=error | regex(field=norm_log, pattern="code=(?<code>[0-9]+)"); * | x:="ok"; } | table(code)`, opts)
+		if !strings.Contains(sql, "THEN extractAllGroups(norm_log, 'code=(?<code>[0-9]+)')[1][1]") {
 			t.Errorf("regex transform not conditionalized: %s", sql)
 		}
 	})

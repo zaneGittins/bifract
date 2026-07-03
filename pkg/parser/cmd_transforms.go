@@ -212,7 +212,7 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
-// regexHandler handles regex(pattern, field=raw_log)
+// regexHandler handles regex(pattern, field=norm_log)
 type regexHandler struct{}
 
 func (h *regexHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
@@ -249,7 +249,7 @@ func (h *regexHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if len(cmd.Arguments) > 0 {
 		var pattern, field, asName string
-		field = "raw_log"
+		field = normLogColumn
 		for _, arg := range cmd.Arguments {
 			arg = strings.TrimSpace(arg)
 			if strings.HasPrefix(arg, "field=") {
@@ -264,7 +264,7 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				asName = strings.Trim(strings.TrimPrefix(arg, "as="), `"'`)
 			} else if pattern == "" {
 				pattern = arg
-			} else if field == "raw_log" {
+			} else if field == normLogColumn {
 				field = arg
 			}
 		}
@@ -272,8 +272,8 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return fmt.Errorf("regex() requires a pattern")
 		}
 
-		fieldRef := "raw_log"
-		if field != "raw_log" && field != "timestamp" {
+		fieldRef := normLogColumn
+		if field != normLogColumn && field != "timestamp" {
 			fieldRef = resolveFieldRef(field, ctx.Registry)
 		} else if field == "timestamp" {
 			fieldRef = "toString(timestamp)"
@@ -338,7 +338,7 @@ func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if len(cmd.Arguments) >= 2 {
 		pattern := cmd.Arguments[0]
 		replacement := cmd.Arguments[1]
-		field := "raw_log"
+		field := normLogColumn
 		outputField := field
 		if len(cmd.Arguments) > 2 {
 			field = cmd.Arguments[2]
@@ -347,8 +347,8 @@ func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			outputField = cmd.Arguments[3]
 		}
 
-		fieldRef := "raw_log"
-		if field != "raw_log" && field != "timestamp" {
+		fieldRef := normLogColumn
+		if field != normLogColumn && field != "timestamp" {
 			fieldRef = resolveFieldRef(field, ctx.Registry)
 		} else if field == "timestamp" {
 			fieldRef = "toString(timestamp)"
@@ -614,16 +614,16 @@ func (h *lenHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 }
 
 // logSizeHandler handles logSize() and logSize(field, as=name).
-// With no field it measures the original event via byteSize(raw_log); pass a
+// With no field it measures the event via byteSize(norm_log); pass a
 // field to size a specific column instead. The result is the shared field _size
 // (or the as= name), so it can be summed/aggregated downstream to diagnose log
 // growth, e.g. | logSize() | groupby(channel, function=sum(_size)).
 type logSizeHandler struct{}
 
 // logSizeArgs returns the source field and output name for a logSize() command.
-// The field defaults to raw_log (the original ingested event).
+// The field defaults to norm_log (the normalized event text).
 func logSizeArgs(cmd CommandNode) (field, outName string) {
-	field = "raw_log"
+	field = normLogColumn
 	outName = "_size"
 	for _, arg := range cmd.Arguments {
 		arg = strings.TrimSpace(arg)

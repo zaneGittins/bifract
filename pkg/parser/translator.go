@@ -509,13 +509,12 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 				activeStage.Layer.Limit = ""
 			}
 		}
-		// raw_log is added as a hidden base field for the row detail panel even when
-		// | table(explicit cols) is used. Strip it from the display order so it doesn't
-		// appear as a column when the user has explicitly chosen their columns.
+		// norm_log is the default content column (normalized fields). Strip it from the
+		// display order when the user has explicitly chosen columns via | table(...).
 		if plan.TableHasExplicitColumns {
 			filtered := fieldOrder[:0]
 			for _, f := range fieldOrder {
-				if f != "raw_log" && f != "log_id" {
+				if f != "norm_log" && f != "log_id" {
 					filtered = append(filtered, f)
 				}
 			}
@@ -794,7 +793,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 				}
 			}
 			if !fields["*"] {
-				for _, base := range []string{"raw_log", "timestamp", "log_id", "fractal_id", "ingest_timestamp"} {
+				for _, base := range []string{"raw_log", normLogColumn, "timestamp", "log_id", "fractal_id", "ingest_timestamp"} {
 					delete(fields, base)
 				}
 				source.Layer.Selects = []SelectExpr{
@@ -810,7 +809,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 			}
 		}
 		source.Layer.Selects = []SelectExpr{
-			{Expr: "timestamp"}, {Expr: "raw_log"}, {Expr: "log_id"}, {Expr: "fractal_id"},
+			{Expr: "timestamp"}, {Expr: "norm_log"}, {Expr: "log_id"}, {Expr: "fractal_id"},
 		}
 		if ctx.Opts.IncludeShardNum {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(_shard_num) AS _shard_num"})
@@ -820,7 +819,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 
 	// No commands but has assignments
 	if len(ctx.Pipeline.Commands) == 0 && len(ctx.Pipeline.Assignments) > 0 {
-		source.Layer.Selects = []SelectExpr{{Expr: "timestamp"}, {Expr: "raw_log"}, {Expr: "log_id"}, {Expr: "fractal_id"}}
+		source.Layer.Selects = []SelectExpr{{Expr: "timestamp"}, {Expr: "norm_log"}, {Expr: "log_id"}, {Expr: "fractal_id"}}
 		for _, af := range assignmentFields {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: af})
 		}
@@ -858,7 +857,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 			}
 		}
 		if !hasFieldsMap {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(fields) AS _all_fields"})
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "norm_log AS _all_fields"})
 		}
 	}
 
@@ -883,12 +882,11 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		ensureSelectExpr("timestamp")
 		ensureSelectExpr("log_id")
 		ensureSelectExpr("fractal_id")
-		// raw_log is large (ZSTD-compressed blob). Skip it when the user has
-		// explicitly chosen table columns — it's dead weight in the distributed
-		// result transfer and the row detail panel fetches it on-demand via the
-		// shard-direct path (log_id + _shard_num, both always present above).
+		// norm_log (flat normalized fields) is the default content column. Skip it when
+		// the user picks explicit columns. raw_log (original) is no longer projected;
+		// the Raw tab lazy-loads it on demand within its retention window.
 		if !plan.TableHasExplicitColumns {
-			ensureSelectExpr("raw_log")
+			ensureSelectExpr("norm_log")
 		}
 
 		hasFields := false
@@ -900,7 +898,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 			}
 		}
 		if !hasFields && plan.HasTableCmd && !plan.TableHasExplicitColumns {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(fields) AS fields"})
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "norm_log AS fields"})
 		}
 		if ctx.Opts.IncludeShardNum {
 			hasShardNum := false
@@ -1048,8 +1046,8 @@ func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAss
 	if len(selectFields) == 0 {
 		return []SelectExpr{
 			{Expr: "toString(timestamp) as timestamp"},
-			{Expr: "raw_log"},
-			{Expr: "toString(fields) AS fields"},
+			{Expr: "log_id"},
+			{Expr: "norm_log AS fields"},
 		}
 	}
 
