@@ -289,6 +289,20 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 					hostConn.Exec(stmtCtx, stmt)
 					stmtCancel()
 				}
+				// Distributed tables are created "AS <local>" and do not inherit
+				// later ALTER ADD COLUMN, so reconcile any columns a migration
+				// added to the local table onto the Distributed variants.
+				for _, pair := range [][2]string{
+					{"logs_distributed", "logs"},
+					{"logs_histogram_distributed", "logs_histogram"},
+					{"logs_hot_distributed", "logs_hot"},
+				} {
+					syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
+					if err := syncDistributedColumns(syncCtx, hostConn, c.Database, pair[0], pair[1]); err != nil {
+						log.Printf("Warning: column sync %s on %s: %v", pair[0], addr, err)
+					}
+					syncCancel()
+				}
 				hostConn.Close()
 			}
 			log.Printf("Cluster schema sync complete")
@@ -303,6 +317,49 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 	}
 	if n > 0 {
 		log.Printf("Applied %d ClickHouse migration(s)", n)
+	}
+	return nil
+}
+
+// syncDistributedColumns brings a Distributed table's column list in line with
+// its underlying local table. Distributed tables are created with "AS <local>",
+// which snapshots the structure at creation time; a later ALTER TABLE <local>
+// ADD COLUMN does not propagate, so inserts or reads that reference the new
+// column fail with "No such column ... in table <dist>" (code 16). Because a
+// Distributed table stores no data, adding the missing columns is free, safe,
+// and generic: any future schema change to the local table auto-propagates here
+// without each migration having to remember the Distributed variants. The
+// column is added by type only (no DEFAULT/CODEC) since the Distributed engine
+// never materializes values -- it forwards inserts to the local table, which
+// applies its own DEFAULT.
+func syncDistributedColumns(ctx context.Context, conn driver.Conn, database, distTable, localTable string) error {
+	rows, err := conn.Query(ctx, `
+		SELECT name, type FROM system.columns
+		WHERE database = ? AND table = ?
+		  AND name NOT IN (
+		    SELECT name FROM system.columns WHERE database = ? AND table = ?
+		  )`, database, localTable, database, distTable)
+	if err != nil {
+		return err
+	}
+	var missing [][2]string
+	for rows.Next() {
+		var name, typ string
+		if err := rows.Scan(&name, &typ); err != nil {
+			rows.Close()
+			return err
+		}
+		missing = append(missing, [2]string{name, typ})
+	}
+	rows.Close()
+	for _, m := range missing {
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS `%s` %s", distTable, m[0], m[1])
+		if err := conn.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("sync column %s to %s: %w", m[0], distTable, err)
+		}
+	}
+	if len(missing) > 0 {
+		log.Printf("Synced %d column(s) to %s", len(missing), distTable)
 	}
 	return nil
 }
