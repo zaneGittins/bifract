@@ -321,45 +321,104 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 	return nil
 }
 
-// syncDistributedColumns brings a Distributed table's column list in line with
-// its underlying local table. Distributed tables are created with "AS <local>",
-// which snapshots the structure at creation time; a later ALTER TABLE <local>
-// ADD COLUMN does not propagate, so inserts or reads that reference the new
-// column fail with "No such column ... in table <dist>" (code 16). Because a
-// Distributed table stores no data, adding the missing columns is free, safe,
-// and generic: any future schema change to the local table auto-propagates here
-// without each migration having to remember the Distributed variants. The
-// column is added by type only (no DEFAULT/CODEC) since the Distributed engine
-// never materializes values -- it forwards inserts to the local table, which
-// applies its own DEFAULT.
+// syncDistributedColumns brings a Distributed table's column definitions in line
+// with its underlying local table. Distributed tables are created with
+// "AS <local>", which snapshots the structure at creation time; a later
+// ALTER TABLE <local> ADD COLUMN does not propagate. Two failures follow:
+//
+//  1. Missing column: inserts/reads that reference the new column fail with
+//     "No such column ... in table <dist>" (code 16).
+//  2. Missing DEFAULT: when an INSERT omits a column, the Distributed engine
+//     materializes it from *its own* column default before forwarding to the
+//     local shard, then sends that value explicitly -- so a Distributed column
+//     added type-only writes an empty string that overrides the local table's
+//     DEFAULT (e.g. norm_log's DEFAULT toString(fields) never fires, leaving
+//     norm_log empty on every new row).
+//
+// Because a Distributed table stores no data, adding/altering columns is free
+// and metadata-only. This reconciles both cases generically from the local
+// table's system.columns, so any current or future schema change (column and
+// its DEFAULT/MATERIALIZED/ALIAS expression) auto-propagates here without each
+// migration having to remember the Distributed variants.
 func syncDistributedColumns(ctx context.Context, conn driver.Conn, database, distTable, localTable string) error {
-	rows, err := conn.Query(ctx, `
-		SELECT name, type FROM system.columns
-		WHERE database = ? AND table = ?
-		  AND name NOT IN (
-		    SELECT name FROM system.columns WHERE database = ? AND table = ?
-		  )`, database, localTable, database, distTable)
+	type colDef struct {
+		typ, kind, expr string
+	}
+	load := func(table string) (map[string]colDef, []string, error) {
+		rows, qerr := conn.Query(ctx, `
+			SELECT name, type, default_kind, default_expression
+			FROM system.columns
+			WHERE database = ? AND table = ?
+			ORDER BY position`, database, table)
+		if qerr != nil {
+			return nil, nil, qerr
+		}
+		defer rows.Close()
+		cols := make(map[string]colDef)
+		var order []string
+		for rows.Next() {
+			var name, typ, kind, expr string
+			if serr := rows.Scan(&name, &typ, &kind, &expr); serr != nil {
+				return nil, nil, serr
+			}
+			cols[name] = colDef{typ: typ, kind: kind, expr: expr}
+			order = append(order, name)
+		}
+		return cols, order, rows.Err()
+	}
+
+	local, localOrder, err := load(localTable)
 	if err != nil {
 		return err
 	}
-	var missing [][2]string
-	for rows.Next() {
-		var name, typ string
-		if err := rows.Scan(&name, &typ); err != nil {
-			rows.Close()
-			return err
-		}
-		missing = append(missing, [2]string{name, typ})
+	dist, _, err := load(distTable)
+	if err != nil {
+		return err
 	}
-	rows.Close()
-	for _, m := range missing {
-		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS `%s` %s", distTable, m[0], m[1])
-		if err := conn.Exec(ctx, stmt); err != nil {
-			return fmt.Errorf("sync column %s to %s: %w", m[0], distTable, err)
+
+	// defaultClause renders the "DEFAULT <expr>" (or MATERIALIZED/ALIAS) suffix,
+	// or "" when the column has no default. CODEC/TTL are deliberately omitted:
+	// a Distributed table stores no data, so they are meaningless there.
+	defaultClause := func(c colDef) string {
+		if c.kind == "" || c.expr == "" {
+			return ""
+		}
+		return " " + c.kind + " " + c.expr
+	}
+
+	var changed int
+	for _, name := range localOrder {
+		// Never ALTER the fields JSON column on the Distributed table: a MODIFY
+		// would risk stripping type hints and breaking dependent skip indexes
+		// (see CLAUDE.md). It is always present from creation, so it needs no
+		// reconciliation here.
+		if name == "fields" {
+			continue
+		}
+		lc := local[name]
+		dc, exists := dist[name]
+		if !exists {
+			stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS `%s` %s%s",
+				distTable, name, lc.typ, defaultClause(lc))
+			if err := conn.Exec(ctx, stmt); err != nil {
+				return fmt.Errorf("add column %s to %s: %w", name, distTable, err)
+			}
+			changed++
+			continue
+		}
+		// Column present: repair a drifted or absent default so the Distributed
+		// layer materializes omitted columns identically to the local table.
+		if dc.kind != lc.kind || dc.expr != lc.expr {
+			stmt := fmt.Sprintf("ALTER TABLE %s MODIFY COLUMN `%s` %s%s",
+				distTable, name, lc.typ, defaultClause(lc))
+			if err := conn.Exec(ctx, stmt); err != nil {
+				return fmt.Errorf("modify column %s on %s: %w", name, distTable, err)
+			}
+			changed++
 		}
 	}
-	if len(missing) > 0 {
-		log.Printf("Synced %d column(s) to %s", len(missing), distTable)
+	if changed > 0 {
+		log.Printf("Reconciled %d column(s) on %s", changed, distTable)
 	}
 	return nil
 }
