@@ -405,7 +405,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if len(chainFields) > 1 {
 		var arrayElems []string
 		for _, f := range chainFields {
-			if f == "timestamp" || f == normLogColumn || f == "log_id" {
+			if f == "timestamp" || f == normLogColumn || f == "log_id" || f == "normalizer" {
 				arrayElems = append(arrayElems, f)
 			} else {
 				arrayElems = append(arrayElems, jsonFieldRef(f))
@@ -427,7 +427,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return fmt.Errorf("chain(): invalid field name: %w", err)
 		}
 		var fieldRef string
-		if chainField == "timestamp" || chainField == normLogColumn || chainField == "log_id" {
+		if chainField == "timestamp" || chainField == normLogColumn || chainField == "log_id" || chainField == "normalizer" {
 			fieldRef = chainField
 		} else {
 			fieldRef = jsonFieldRef(chainField)
