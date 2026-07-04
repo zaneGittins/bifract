@@ -87,7 +87,7 @@ const Performance = {
         }
 
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') this.closeDrawer();
+            if (e.key === 'Escape') { this.closeDrawer(); this.closeArchiveDrawers(); }
         });
     },
 
@@ -264,6 +264,18 @@ const Performance = {
         } catch (err) {
             console.error('[Performance] archive load error:', err);
         }
+        // Restore UI: the jobs table refreshes with the tab's poll cadence; the
+        // fractal picker loads lazily when the New-restore drawer opens.
+        if (!this._restoreInit) {
+            this._restoreInit = true;
+            this.restoreMode = 'restore';
+            this._restoreSelected = new Set();
+            this.restorePage = 1;
+            this.restorePageSize = 20;
+            this.restoreStatusFilter = '';
+            this.setRestoreMode('restore');
+        }
+        this.loadRestoreJobs();
     },
 
     renderArchive(d) {
@@ -331,6 +343,351 @@ const Performance = {
             hint.textContent = msg;
             hint.style.display = msg ? '' : 'none';
         }
+    },
+
+    // ---- Archive restore -------------------------------------------------
+
+    async loadRestoreFractals() {
+        const box = document.getElementById('restoreFractalList');
+        if (!box) return;
+        try {
+            const res = await fetch('/api/v1/fractals', { credentials: 'include' });
+            const data = await res.json();
+            const fractals = (data.data && data.data.fractals) || data.fractals || [];
+            this._restoreFractals = {};
+            const withId = fractals.filter(f => f.id);
+            if (!withId.length) {
+                box.innerHTML = '<div class="restore-empty">No fractals available.</div>';
+                return;
+            }
+            box.innerHTML = withId.map(f => {
+                const id = f.id;
+                const name = f.name || id;
+                this._restoreFractals[id] = name;
+                const sel = this._restoreSelected && this._restoreSelected.has(id) ? ' selected' : '';
+                return `<button type="button" class="restore-fractal-pill${sel}" data-fid="${this.escapeHtml(id)}" onclick="Performance.toggleRestoreFractal(this)">${this.escapeHtml(name)}</button>`;
+            }).join('');
+        } catch (err) {
+            console.error('[Performance] restore fractals error:', err);
+            box.innerHTML = '<div class="restore-empty">Failed to load fractals.</div>';
+        }
+    },
+
+    toggleRestoreFractal(btn) {
+        const fid = btn.getAttribute('data-fid');
+        if (!this._restoreSelected) this._restoreSelected = new Set();
+        if (this._restoreSelected.has(fid)) {
+            this._restoreSelected.delete(fid);
+            btn.classList.remove('selected');
+        } else {
+            this._restoreSelected.add(fid);
+            btn.classList.add('selected');
+        }
+        this.disarmRestore();
+    },
+
+    setRestoreMode(mode) {
+        this.restoreMode = mode;
+        document.querySelectorAll('#restoreModeToggle .restore-mode').forEach(b =>
+            b.classList.toggle('active', b.getAttribute('data-mode') === mode));
+        const hint = document.getElementById('restoreModeHint');
+        const dedupRow = document.getElementById('restoreDedupRow');
+        if (mode === 'reconcile') {
+            if (hint) hint.textContent = 'Compares hot-store and archive counts, then restores only the rows missing from the hot store (heals a gap).';
+            if (dedupRow) dedupRow.style.display = 'none';
+        } else {
+            if (hint) hint.textContent = 'Inserts archived rows for the window, skipping any log IDs already present.';
+            if (dedupRow) dedupRow.style.display = '';
+        }
+        this.disarmRestore();
+    },
+
+    restorePreset(days) {
+        const to = new Date();
+        const from = new Date(to.getTime() - days * 86400000);
+        const fromEl = document.getElementById('restoreFrom');
+        const toEl = document.getElementById('restoreTo');
+        if (fromEl) fromEl.value = this.toInputValue(from);
+        if (toEl) toEl.value = this.toInputValue(to);
+        this.disarmRestore();
+    },
+
+    // The datetime-local fields are treated as UTC wall-clock (the label says
+    // UTC), so we format from and parse to UTC rather than the browser locale.
+    toInputValue(d) {
+        const p = n => String(n).padStart(2, '0');
+        return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+    },
+
+    // Parse a datetime-local value as UTC into an ISO-8601 string, or null.
+    inputToUTCISO(v) {
+        const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+        if (!m) return null;
+        return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] || '00'}.000Z`;
+    },
+
+    setRestoreMsg(text, kind) {
+        const el = document.getElementById('restoreFormMsg');
+        if (!el) return;
+        el.textContent = text || '';
+        el.className = 'restore-form-msg' + (kind ? ' ' + kind : '');
+    },
+
+    disarmRestore() {
+        this._restoreArmed = false;
+        clearTimeout(this._restoreArmTimer);
+        const btn = document.getElementById('restoreSubmitBtn');
+        if (btn) {
+            btn.textContent = 'Start restore';
+            btn.classList.remove('armed');
+        }
+    },
+
+    async submitRestore() {
+        const fractals = Array.from(this._restoreSelected || []);
+        if (!fractals.length) { this.setRestoreMsg('Select at least one fractal.', 'error'); return; }
+        const fromISO = this.inputToUTCISO((document.getElementById('restoreFrom') || {}).value);
+        const toISO = this.inputToUTCISO((document.getElementById('restoreTo') || {}).value);
+        if (!fromISO || !toISO) { this.setRestoreMsg('Pick a start and end time.', 'error'); return; }
+        if (!(new Date(toISO) > new Date(fromISO))) { this.setRestoreMsg('End must be after start.', 'error'); return; }
+
+        const mode = this.restoreMode || 'restore';
+        const noDedupEl = document.getElementById('restoreNoDedup');
+        const dedup = mode === 'reconcile' ? true : !(noDedupEl && noDedupEl.checked);
+
+        // Two-step arm to guard a heavy, hard-to-undo operation without a modal.
+        if (!this._restoreArmed) {
+            const n = fractals.length;
+            this.setRestoreMsg(`Click again to confirm ${mode} of ${n} fractal${n > 1 ? 's' : ''} into the hot store.`, 'warn');
+            const btn = document.getElementById('restoreSubmitBtn');
+            if (btn) { btn.textContent = 'Confirm restore'; btn.classList.add('armed'); }
+            this._restoreArmed = true;
+            clearTimeout(this._restoreArmTimer);
+            this._restoreArmTimer = setTimeout(() => this.disarmRestore(), 6000);
+            return;
+        }
+        this.disarmRestore();
+
+        const btn = document.getElementById('restoreSubmitBtn');
+        if (btn) btn.disabled = true;
+        this.setRestoreMsg('Enqueuing…', '');
+        try {
+            const res = await fetch('/api/v1/system/archive/restore', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fractal_ids: fractals, from: fromISO, to: toISO, mode, dedup })
+            });
+            if (!res.ok) {
+                const t = (await res.text()).trim();
+                this.setRestoreMsg(t || 'Failed to start restore.', 'error');
+                return;
+            }
+            const data = await res.json();
+            const n = (data.job_ids || []).length;
+            this.setRestoreMsg(`Queued ${n} job${n > 1 ? 's' : ''}.`, 'ok');
+            this._restoreSelected = new Set();
+            // Reset the view so the new pending jobs are visible, then close.
+            this.restoreStatusFilter = '';
+            const filterEl = document.getElementById('restoreStatusFilter');
+            if (filterEl) filterEl.value = '';
+            this.restorePage = 1;
+            setTimeout(() => this.closeRestoreForm(), 700);
+            this.loadRestoreJobs();
+        } catch (err) {
+            this.setRestoreMsg('Network error.', 'error');
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    },
+
+    // ---- Drawers ---------------------------------------------------------
+
+    showArchiveDrawer(id) {
+        ['restoreFormDrawer', 'restoreDetailDrawer'].forEach(d => {
+            const el = document.getElementById(d);
+            if (el) el.classList.toggle('open', d === id);
+        });
+        const scrim = document.getElementById('archiveDrawerScrim');
+        if (scrim) scrim.classList.add('show');
+    },
+
+    closeArchiveDrawers() {
+        ['restoreFormDrawer', 'restoreDetailDrawer'].forEach(d => {
+            const el = document.getElementById(d);
+            if (el) el.classList.remove('open');
+        });
+        const scrim = document.getElementById('archiveDrawerScrim');
+        if (scrim) scrim.classList.remove('show');
+        this._openDetailId = null;
+        this.disarmRestore();
+    },
+
+    openRestoreForm() {
+        this.setRestoreMsg('');
+        this.disarmRestore();
+        this.loadRestoreFractals();
+        this.showArchiveDrawer('restoreFormDrawer');
+    },
+
+    closeRestoreForm() { this.closeArchiveDrawers(); },
+    closeRestoreDetail() { this.closeArchiveDrawers(); },
+
+    openRestoreDetail(id) {
+        const job = this._restoreJobsCache && this._restoreJobsCache[id];
+        if (!job) return;
+        this._openDetailId = id;
+        this.renderRestoreDetail(job);
+        this.showArchiveDrawer('restoreDetailDrawer');
+    },
+
+    renderRestoreDetail(j) {
+        const el = document.getElementById('restoreDetailBody');
+        if (!el) return;
+        const name = (this._restoreFractals && this._restoreFractals[j.fractal_id]) || j.fractal_id;
+        const target = Number(j.target_rows || 0), done = Number(j.rows_restored || 0);
+        const pct = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : (j.status === 'succeeded' ? 100 : 0);
+        const row = (k, v) => `<div class="restore-detail-row"><span class="restore-detail-k">${k}</span><span class="restore-detail-v">${v}</span></div>`;
+
+        let html = `<div class="restore-detail-top">${this.statusChip(j.status)}<span class="restore-detail-fractal">${this.escapeHtml(name)}</span></div>`;
+        if (j.status === 'running' || j.status === 'succeeded') {
+            html += `<div class="restore-progress"><div class="restore-progress-bar${j.status === 'succeeded' ? ' full' : ''}" style="width:${pct}%"></div></div>
+                <div class="restore-detail-stat">${done.toLocaleString()}${target > 0 ? ' / ' + target.toLocaleString() : ''} rows${target > 0 && j.status === 'running' ? ' · ' + pct + '%' : ''}</div>`;
+        }
+        if (j.error) html += `<div class="restore-job-error">${this.escapeHtml(j.error)}</div>`;
+        html += '<div class="restore-detail-grid">';
+        html += row('Mode', this.escapeHtml(j.mode));
+        html += row('Window', `${this.fmtWindow(j.from)} &rarr; ${this.fmtWindow(j.to)} UTC`);
+        html += row('Duplicate check', j.dedup ? 'on' : 'off');
+        html += row('Rows restored', done.toLocaleString() + (target > 0 ? ' of ~' + target.toLocaleString() : ''));
+        html += row('Requested by', this.escapeHtml(j.requested_by || '—'));
+        html += row('Created', this.fmtStamp(j.created_at));
+        if (j.started_at) html += row('Started', this.fmtStamp(j.started_at));
+        if (j.finished_at) html += row('Finished', this.fmtStamp(j.finished_at));
+        html += row('Job ID', j.id);
+        html += row('Batch', `<span class="restore-mono">${this.escapeHtml(j.batch_id || '')}</span>`);
+        html += '</div>';
+        if (j.status === 'pending') {
+            html += `<div class="restore-detail-actions"><button class="restore-cancel" onclick="Performance.cancelRestoreJob(${j.id})">Cancel job</button></div>`;
+        }
+        el.innerHTML = html;
+    },
+
+    // ---- Jobs table ------------------------------------------------------
+
+    async loadRestoreJobs() {
+        const body = document.getElementById('restoreJobsBody');
+        if (!body) return;
+        if (!this.restorePage) this.restorePage = 1;
+        if (!this.restorePageSize) this.restorePageSize = 20;
+        try {
+            const params = new URLSearchParams({ page: this.restorePage, page_size: this.restorePageSize });
+            if (this.restoreStatusFilter) params.set('status', this.restoreStatusFilter);
+            const res = await fetch('/api/v1/system/archive/restore?' + params.toString(), { credentials: 'include' });
+            if (!res.ok) return;
+            const data = await res.json();
+            this.renderRestoreTable(data.jobs || [], data.total || 0);
+            // Keep an open detail drawer live while its job is on the current page.
+            if (this._openDetailId != null && this._restoreJobsCache[this._openDetailId]) {
+                this.renderRestoreDetail(this._restoreJobsCache[this._openDetailId]);
+            }
+        } catch (err) {
+            console.error('[Performance] restore jobs error:', err);
+        }
+    },
+
+    renderRestoreTable(jobs, total) {
+        const body = document.getElementById('restoreJobsBody');
+        if (!body) return;
+        this._restoreJobsCache = {};
+        if (!jobs.length) {
+            const msg = this.restoreStatusFilter ? 'No jobs with this status.' : 'No restore jobs yet.';
+            body.innerHTML = `<tr><td colspan="7" class="restore-empty-cell">${msg}</td></tr>`;
+        } else {
+            body.innerHTML = jobs.map(j => { this._restoreJobsCache[j.id] = j; return this.restoreRow(j); }).join('');
+        }
+        this.restoreTotal = total || 0;
+        this.updatePager();
+    },
+
+    restoreRow(j) {
+        const name = (this._restoreFractals && this._restoreFractals[j.fractal_id]) || j.fractal_id;
+        const target = Number(j.target_rows || 0), done = Number(j.rows_restored || 0);
+        const pct = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : (j.status === 'succeeded' ? 100 : 0);
+        let prog;
+        if (j.status === 'running' || j.status === 'succeeded') {
+            prog = `<div class="restore-row-progress"><div class="restore-row-bar${j.status === 'succeeded' ? ' full' : ''}" style="width:${pct}%"></div></div>` +
+                `<span class="restore-row-progress-txt">${done.toLocaleString()}${target > 0 ? ' / ' + target.toLocaleString() : ''}</span>`;
+        } else if (j.status === 'pending') {
+            prog = '<span class="restore-muted">queued</span>';
+        } else {
+            prog = '<span class="restore-muted">&mdash;</span>';
+        }
+        const cancel = j.status === 'pending'
+            ? `<button class="restore-row-cancel" onclick="event.stopPropagation();Performance.cancelRestoreJob(${j.id})">Cancel</button>` : '';
+        return `<tr class="restore-row" onclick="Performance.openRestoreDetail(${j.id})">
+            <td class="restore-td-fractal">${this.escapeHtml(name)}</td>
+            <td class="restore-td-mode">${this.escapeHtml(j.mode)}</td>
+            <td class="restore-td-window">${this.fmtWindow(j.from)} &rarr; ${this.fmtWindow(j.to)}</td>
+            <td>${this.statusChip(j.status)}</td>
+            <td class="restore-col-progress">${prog}</td>
+            <td class="restore-td-by">${this.escapeHtml(j.requested_by || '')}<span class="restore-row-ago">${this.timeAgo(j.created_at)}</span></td>
+            <td class="restore-td-action">${cancel}</td>
+        </tr>`;
+    },
+
+    statusChip(status) {
+        const label = { pending: 'Queued', running: 'Running', succeeded: 'Done', failed: 'Failed', canceled: 'Canceled' }[status] || status;
+        return `<span class="restore-chip restore-chip-${status}">${label}</span>`;
+    },
+
+    onRestoreFilterChange() {
+        this.restoreStatusFilter = document.getElementById('restoreStatusFilter')?.value || '';
+        this.restorePage = 1;
+        this.loadRestoreJobs();
+    },
+
+    restorePage(delta) {
+        const maxPage = Math.max(1, Math.ceil((this.restoreTotal || 0) / this.restorePageSize));
+        const next = Math.min(maxPage, Math.max(1, (this.restorePage || 1) + delta));
+        if (next === this.restorePage) return;
+        this.restorePage = next;
+        this.loadRestoreJobs();
+    },
+
+    updatePager() {
+        const info = document.getElementById('restorePagerInfo');
+        const prev = document.getElementById('restorePagerPrev');
+        const next = document.getElementById('restorePagerNext');
+        const total = this.restoreTotal || 0;
+        const size = this.restorePageSize;
+        const page = this.restorePage || 1;
+        const start = total === 0 ? 0 : (page - 1) * size + 1;
+        const end = Math.min(total, page * size);
+        if (info) info.textContent = total === 0 ? '0 jobs' : `${start}–${end} of ${total}`;
+        if (prev) prev.disabled = page <= 1;
+        if (next) next.disabled = end >= total;
+    },
+
+    fmtWindow(iso) {
+        const d = new Date(iso);
+        if (isNaN(d)) return '--';
+        const p = n => String(n).padStart(2, '0');
+        return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+    },
+
+    fmtStamp(iso) {
+        const d = new Date(iso);
+        if (isNaN(d)) return '—';
+        return this.fmtWindow(iso) + ' UTC';
+    },
+
+    async cancelRestoreJob(id) {
+        try {
+            await fetch(`/api/v1/system/archive/restore/${id}/cancel`, { method: 'POST', credentials: 'include' });
+        } catch (err) {
+            console.error('[Performance] cancel restore error:', err);
+        }
+        this.loadRestoreJobs();
     },
 
     timeAgo(iso) {

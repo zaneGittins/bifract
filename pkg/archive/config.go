@@ -25,6 +25,11 @@ type Config struct {
 	CHDatabase string
 	CHUser     string
 	CHPassword string
+	// Cluster mode: when CHCluster and CHHosts are both set, restore/reconcile
+	// build a cluster-aware client so writes and reads target logs_distributed
+	// (rows shard across nodes; dedup/counts span the whole cluster).
+	CHHosts   string
+	CHCluster string
 
 	SpoolPath string
 
@@ -53,6 +58,8 @@ func ConfigFromEnv() (Config, error) {
 		CHDatabase:   getStr("CLICKHOUSE_DB", "logs"),
 		CHUser:       getStr("CLICKHOUSE_USER", "default"),
 		CHPassword:   getStr("CLICKHOUSE_PASSWORD", "bifract"),
+		CHHosts:      getStr("CLICKHOUSE_HOSTS", ""),
+		CHCluster:    getStr("CLICKHOUSE_CLUSTER", ""),
 		SpoolPath:    getStr("BIFRACT_ARCHIVE_SPOOL_PATH", "/var/lib/bifract/spool"),
 		RollBytes:    getInt64("BIFRACT_ARCHIVE_ROLL_BYTES", 256<<20),
 		RollInterval: getDuration("BIFRACT_ARCHIVE_ROLL_INTERVAL", time.Hour),

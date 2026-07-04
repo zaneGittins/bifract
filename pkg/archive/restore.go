@@ -10,6 +10,21 @@ import (
 	"bifract/pkg/storage"
 )
 
+// NewCHClient builds the ClickHouse client used by restore/reconcile. In cluster
+// mode (CLICKHOUSE_CLUSTER + CLICKHOUSE_HOSTS both set) it is cluster-aware, so
+// ch.WriteTable()/ch.ReadTable() resolve to logs_distributed and restored rows
+// shard across nodes with cluster-wide dedup/counts. Otherwise it is a plain
+// single-node client targeting the local logs table.
+func NewCHClient(cfg Config) (*storage.ClickHouseClient, error) {
+	if cfg.CHCluster != "" && cfg.CHHosts != "" {
+		hosts := strings.Split(cfg.CHHosts, ",")
+		return storage.NewClickHouseClusterClient(
+			hosts, cfg.CHPort, cfg.CHDatabase, cfg.CHUser, cfg.CHPassword,
+			cfg.CHCluster, storage.DefaultQueryPoolConfig())
+	}
+	return storage.NewClickHouseClient(cfg.CHHost, cfg.CHPort, cfg.CHDatabase, cfg.CHUser, cfg.CHPassword)
+}
+
 // chIcebergTableFunc builds the ClickHouse iceberg*() table-function expression
 // that reads a fractal's Iceberg table directly from object storage. ClickHouse
 // reads the metadata from the storage location (it does NOT use our Postgres
@@ -67,22 +82,27 @@ func (c *Catalog) Restore(ctx context.Context, ch *storage.ClickHouseClient, obj
 		return 0, err
 	}
 
+	// In cluster mode ReadTable/WriteTable resolve to logs_distributed so dedup
+	// and placement span the whole cluster; single-node they are the local logs.
+	readTable := ch.ReadTable()
+	writeTable := ch.WriteTable()
+
 	where := fmt.Sprintf("fractal_id = %s AND timestamp >= %s AND timestamp < %s",
 		chQuote(fractalID), chQuote(chTime(from)), chQuote(chTime(to)))
 	if dedup {
 		// Windowed anti-join only (bounded by the restore range) so this stays
 		// tractable; never a full-table NOT IN.
 		where += fmt.Sprintf(
-			" AND log_id NOT IN (SELECT log_id FROM logs WHERE fractal_id = %s AND timestamp >= %s AND timestamp < %s)",
-			chQuote(fractalID), chQuote(chTime(from)), chQuote(chTime(to)))
+			" AND log_id NOT IN (SELECT log_id FROM %s WHERE fractal_id = %s AND timestamp >= %s AND timestamp < %s)",
+			readTable, chQuote(fractalID), chQuote(chTime(from)), chQuote(chTime(to)))
 	}
 
 	// fields is a MAP in Iceberg; convert to the logs JSON column. norm_log is
 	// left to its DEFAULT toString(fields).
 	insert := fmt.Sprintf(
-		"INSERT INTO logs (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp, normalizer) "+
+		"INSERT INTO %s (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp, normalizer) "+
 			"SELECT timestamp, raw_log, log_id, toJSONString(fields)::JSON, fractal_id, ingest_timestamp, normalizer "+
-			"FROM %s WHERE %s", tf, where)
+			"FROM %s WHERE %s", writeTable, tf, where)
 
 	before, err := countLogs(ctx, ch, fractalID, from, to)
 	if err != nil {
@@ -131,8 +151,8 @@ func (c *Catalog) countIceberg(ctx context.Context, ch *storage.ClickHouseClient
 }
 
 func countLogs(ctx context.Context, ch *storage.ClickHouseClient, fractalID string, from, to time.Time) (int64, error) {
-	q := fmt.Sprintf("SELECT count() AS c FROM logs WHERE fractal_id = %s AND timestamp >= %s AND timestamp < %s",
-		chQuote(fractalID), chQuote(chTime(from)), chQuote(chTime(to)))
+	q := fmt.Sprintf("SELECT count() AS c FROM %s WHERE fractal_id = %s AND timestamp >= %s AND timestamp < %s",
+		ch.ReadTable(), chQuote(fractalID), chQuote(chTime(from)), chQuote(chTime(to)))
 	return scalarCount(ctx, ch, q)
 }
 

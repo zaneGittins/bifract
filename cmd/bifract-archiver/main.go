@@ -79,6 +79,12 @@ func runCmd() {
 	defer db.Close()
 	enabled := func() bool { return archiveEnabled(ctx, db, cfg.Enabled) }
 
+	// Restore worker: services admin-requested restore/reconcile jobs. It runs
+	// independently of the drain enable gate (a DR restore may be needed while
+	// ongoing archiving is paused) and builds the object-store catalog lazily on
+	// the first job, so it does not break the dormant-but-present guarantee.
+	go archive.NewRestoreWorker(cfg, db).Run(ctx)
+
 	// Dormant-but-present: idle until archiving is enabled, so a provisioned but
 	// disabled archive never needs the object store to be reachable.
 	for !enabled() {
@@ -239,7 +245,7 @@ func restoreDeps() (archive.Config, *archive.Catalog, *storage.ClickHouseClient)
 	if err != nil {
 		log.Fatalf("open catalog: %v", err)
 	}
-	ch, err := storage.NewClickHouseClient(cfg.CHHost, cfg.CHPort, cfg.CHDatabase, cfg.CHUser, cfg.CHPassword)
+	ch, err := archive.NewCHClient(cfg)
 	if err != nil {
 		log.Fatalf("connect clickhouse: %v", err)
 	}

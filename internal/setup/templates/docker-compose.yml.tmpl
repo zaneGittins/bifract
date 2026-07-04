@@ -170,6 +170,14 @@ services:
       POSTGRES_DB: bifract
       POSTGRES_USER: bifract
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bifract}
+      # ClickHouse connection: the restore/reconcile worker writes archived rows
+      # back into the logs table, so the archiver needs the same CH access as the
+      # server.
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_DB: logs
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       BIFRACT_ARCHIVE_ENABLED: ${BIFRACT_ARCHIVE_ENABLED:-false}
       BIFRACT_ARCHIVE_BACKEND: ${BIFRACT_ARCHIVE_BACKEND:-disk}
       BIFRACT_ARCHIVE_DISK_PATH: /var/lib/bifract/archive

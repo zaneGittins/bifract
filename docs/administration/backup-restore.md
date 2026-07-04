@@ -120,7 +120,23 @@ Set on the `bifract-archiver` service (compose) or the `bifract-secrets` Secret 
 
 ### Restore & Reconcile
 
-Restore is a deliberate operation run from the archiver binary (a one-off container or k8s Job):
+Two modes replay archived data back into ClickHouse for an event-time window:
+
+- **Restore** inserts archived rows for the window, skipping any `log_id` already present (idempotent).
+- **Reconcile** compares the hot-store and archive counts first and restores only the rows ClickHouse is missing (heals a gap).
+
+Restored rows land in the normal `logs` table with the same typed JSON fields, so BQL queries and skip indexes work exactly as on freshly-ingested data. Restore requires an object-storage backend so ClickHouse can read the Iceberg tables directly (the `disk` backend is pod-local and unreadable).
+
+#### From the admin UI (recommended)
+
+*System → Archive → Restore from Archive*: pick one or more fractals, a time range, and the mode, then start it. Each fractal becomes an **async job** that a `bifract-archiver` process claims and runs, with a live progress bar and row count. Jobs survive restarts and are claimed by exactly one archiver even when several are running. Pending jobs can be cancelled; a job that has already started runs to completion.
+
+!!! warning "Restore is heavy"
+    Replaying a large window re-inserts potentially billions of rows, which drives ClickHouse CPU up and can trigger ingest backpressure. Restore the narrowest window you need.
+
+#### From the CLI
+
+Equivalent one-off operations (a container or k8s Job) for scripting or when the archiver is not running:
 
 ```bash
 # Replay an event-time window from Iceberg back into ClickHouse (idempotent; dedups on log_id)
@@ -129,8 +145,6 @@ bifract-archiver restore --fractal <fractal-id> --from 2026-01-01 --to 2026-02-0
 # Heal a gap: restore only what ClickHouse is missing for the window
 bifract-archiver reconcile --fractal <fractal-id> --from 2026-01-01 --to 2026-02-01
 ```
-
-Restored rows land in the normal `logs` table with the same typed JSON fields, so BQL queries and skip indexes work exactly as on freshly-ingested data. (Restore requires an object-storage backend so ClickHouse can read the Iceberg tables directly.)
 
 ### Maintenance
 

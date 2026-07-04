@@ -401,6 +401,110 @@
 
                                 <p class="perf-section-hint" id="archiveHint" style="margin-top: 14px; display:none;"></p>
                             </div>
+
+                            <div class="perf-section archive-restore-section">
+                                <div class="perf-section-header restore-header">
+                                    <div class="restore-header-text">
+                                        <h3>Restore from Archive</h3>
+                                        <span class="perf-section-hint">Replay archived logs from Iceberg back into the hot store</span>
+                                    </div>
+                                    <button type="button" class="btn-primary btn-sm" onclick="Performance.openRestoreForm()">+ New restore</button>
+                                </div>
+
+                                <div class="restore-table-controls">
+                                    <select id="restoreStatusFilter" class="restore-filter-select" onchange="Performance.onRestoreFilterChange()">
+                                        <option value="">All statuses</option>
+                                        <option value="running">Running</option>
+                                        <option value="pending">Queued</option>
+                                        <option value="succeeded">Done</option>
+                                        <option value="failed">Failed</option>
+                                        <option value="canceled">Canceled</option>
+                                    </select>
+                                    <div class="restore-pager">
+                                        <span class="restore-pager-info" id="restorePagerInfo">&mdash;</span>
+                                        <button type="button" class="restore-pager-btn" id="restorePagerPrev" onclick="Performance.restorePage(-1)" aria-label="Previous page">&lsaquo;</button>
+                                        <button type="button" class="restore-pager-btn" id="restorePagerNext" onclick="Performance.restorePage(1)" aria-label="Next page">&rsaquo;</button>
+                                    </div>
+                                </div>
+
+                                <div class="restore-table-wrap">
+                                    <table class="restore-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Fractal</th>
+                                                <th>Mode</th>
+                                                <th>Window (UTC)</th>
+                                                <th>Status</th>
+                                                <th class="restore-col-progress">Progress</th>
+                                                <th>Requested</th>
+                                                <th></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="restoreJobsBody">
+                                            <tr><td colspan="7" class="restore-empty-cell">No restore jobs yet.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- Restore drawers (right slide-over) + shared scrim -->
+                            <div id="archiveDrawerScrim" class="archive-drawer-scrim" onclick="Performance.closeArchiveDrawers()"></div>
+
+                            <div id="restoreFormDrawer" class="archive-drawer">
+                                <div class="archive-drawer-header">
+                                    <h4>New restore</h4>
+                                    <button type="button" class="archive-drawer-close" onclick="Performance.closeRestoreForm()" aria-label="Close">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                    </button>
+                                </div>
+                                <div class="archive-drawer-body">
+                                    <div class="restore-field">
+                                        <label class="restore-label">Fractals</label>
+                                        <div class="restore-fractal-list" id="restoreFractalList">
+                                            <div class="restore-empty">Loading fractals&hellip;</div>
+                                        </div>
+                                    </div>
+                                    <div class="restore-field">
+                                        <label class="restore-label">Time range <span class="restore-sublabel">event time, UTC</span></label>
+                                        <div class="restore-range-row">
+                                            <input type="datetime-local" id="restoreFrom" class="restore-input" step="1">
+                                            <span class="restore-range-sep">to</span>
+                                            <input type="datetime-local" id="restoreTo" class="restore-input" step="1">
+                                        </div>
+                                        <div class="restore-presets">
+                                            <button type="button" class="restore-preset" onclick="Performance.restorePreset(1)">Last 24h</button>
+                                            <button type="button" class="restore-preset" onclick="Performance.restorePreset(7)">Last 7d</button>
+                                            <button type="button" class="restore-preset" onclick="Performance.restorePreset(30)">Last 30d</button>
+                                        </div>
+                                    </div>
+                                    <div class="restore-field">
+                                        <label class="restore-label">Mode</label>
+                                        <div class="restore-mode-toggle" id="restoreModeToggle">
+                                            <button type="button" class="restore-mode active" data-mode="restore" onclick="Performance.setRestoreMode('restore')">Restore</button>
+                                            <button type="button" class="restore-mode" data-mode="reconcile" onclick="Performance.setRestoreMode('reconcile')">Reconcile</button>
+                                        </div>
+                                        <span class="restore-mode-hint" id="restoreModeHint">Inserts archived rows for the window, skipping any log IDs already present.</span>
+                                        <label class="restore-checkbox" id="restoreDedupRow">
+                                            <input type="checkbox" id="restoreNoDedup">
+                                            <span>Skip duplicate check <span class="restore-sublabel">faster, only if the window is empty in the hot store</span></span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="archive-drawer-footer">
+                                    <span class="restore-form-msg" id="restoreFormMsg"></span>
+                                    <button type="button" class="btn-primary btn-sm" id="restoreSubmitBtn" onclick="Performance.submitRestore()">Start restore</button>
+                                </div>
+                            </div>
+
+                            <div id="restoreDetailDrawer" class="archive-drawer">
+                                <div class="archive-drawer-header">
+                                    <h4>Restore job</h4>
+                                    <button type="button" class="archive-drawer-close" onclick="Performance.closeRestoreDetail()" aria-label="Close">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                    </button>
+                                </div>
+                                <div class="archive-drawer-body" id="restoreDetailBody"></div>
+                            </div>
                         </div>
                     </section>
 

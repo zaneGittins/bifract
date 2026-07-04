@@ -51,6 +51,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/google/uuid"
 )
 
 // Version is set at build time via -ldflags
@@ -863,6 +864,187 @@ func main() {
 				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "enabled": body.Enabled})
 			})
 
+			// Enqueue restore/reconcile jobs (async). The bifract-archiver run
+			// process claims and executes them; this handler only writes the queue.
+			r.Post("/system/archive/restore", func(w http.ResponseWriter, r *http.Request) {
+				u, ok := r.Context().Value("user").(*storage.User)
+				if !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				var body struct {
+					FractalIDs []string `json:"fractal_ids"`
+					From       string   `json:"from"`
+					To         string   `json:"to"`
+					Mode       string   `json:"mode"`
+					Dedup      *bool    `json:"dedup"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "Invalid JSON", http.StatusBadRequest)
+					return
+				}
+				if len(body.FractalIDs) == 0 {
+					http.Error(w, "Select at least one fractal", http.StatusBadRequest)
+					return
+				}
+				if len(body.FractalIDs) > 200 {
+					http.Error(w, "Too many fractals in one request", http.StatusBadRequest)
+					return
+				}
+				from, err := parseArchiveTime(body.From)
+				if err != nil {
+					http.Error(w, "Invalid 'from' time", http.StatusBadRequest)
+					return
+				}
+				to, err := parseArchiveTime(body.To)
+				if err != nil {
+					http.Error(w, "Invalid 'to' time", http.StatusBadRequest)
+					return
+				}
+				if !to.After(from) {
+					http.Error(w, "'to' must be after 'from'", http.StatusBadRequest)
+					return
+				}
+				mode := body.Mode
+				if mode == "" {
+					mode = "restore"
+				}
+				if mode != "restore" && mode != "reconcile" {
+					http.Error(w, "mode must be 'restore' or 'reconcile'", http.StatusBadRequest)
+					return
+				}
+				dedup := true
+				if body.Dedup != nil {
+					dedup = *body.Dedup
+				}
+				batchID := uuid.NewString()
+				ids := make([]int64, 0, len(body.FractalIDs))
+				for _, fid := range body.FractalIDs {
+					if fid == "" {
+						continue
+					}
+					var id int64
+					err := pg.QueryRow(r.Context(),
+						`INSERT INTO archive_restore_jobs (batch_id, fractal_id, mode, from_ts, to_ts, dedup, requested_by)
+						 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+						batchID, fid, mode, from, to, dedup, u.Username).Scan(&id)
+					if err != nil {
+						http.Error(w, "Failed to enqueue restore job", http.StatusInternalServerError)
+						return
+					}
+					ids = append(ids, id)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"success": true, "batch_id": batchID, "job_ids": ids,
+				})
+			})
+
+			// List recent restore jobs for the admin UI (newest first).
+			r.Get("/system/archive/restore", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				// Pagination + optional status filter.
+				q := r.URL.Query()
+				page, _ := strconv.Atoi(q.Get("page"))
+				if page < 1 {
+					page = 1
+				}
+				pageSize, _ := strconv.Atoi(q.Get("page_size"))
+				if pageSize < 1 {
+					pageSize = 20
+				}
+				if pageSize > 100 {
+					pageSize = 100
+				}
+				status := q.Get("status")
+				validStatus := map[string]bool{"pending": true, "running": true, "succeeded": true, "failed": true, "canceled": true}
+				where := ""
+				var args []interface{}
+				if validStatus[status] {
+					where = "WHERE status = $1"
+					args = append(args, status)
+				}
+				var total int
+				if err := pg.QueryRow(r.Context(), "SELECT count(*) FROM archive_restore_jobs "+where, args...).Scan(&total); err != nil {
+					http.Error(w, "Failed to load jobs", http.StatusInternalServerError)
+					return
+				}
+				offset := (page - 1) * pageSize
+				rows, err := pg.Query(r.Context(),
+					`SELECT id, batch_id, fractal_id, mode, from_ts, to_ts, dedup, status,
+					        target_rows, rows_restored, COALESCE(error, ''), COALESCE(requested_by, ''),
+					        created_at, started_at, finished_at
+					 FROM archive_restore_jobs `+where+
+						fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d OFFSET %d", pageSize, offset), args...)
+				if err != nil {
+					http.Error(w, "Failed to load jobs", http.StatusInternalServerError)
+					return
+				}
+				defer rows.Close()
+				jobs := make([]map[string]interface{}, 0, 32)
+				for rows.Next() {
+					var (
+						id                         int64
+						batchID, fid, mode, status string
+						errMsg, reqBy              string
+						from, to, created          time.Time
+						started, finished          sql.NullTime
+						target, restored           int64
+						dedup                      bool
+					)
+					if err := rows.Scan(&id, &batchID, &fid, &mode, &from, &to, &dedup, &status,
+						&target, &restored, &errMsg, &reqBy, &created, &started, &finished); err != nil {
+						continue
+					}
+					j := map[string]interface{}{
+						"id": id, "batch_id": batchID, "fractal_id": fid, "mode": mode,
+						"from": from.UTC(), "to": to.UTC(), "dedup": dedup, "status": status,
+						"target_rows": target, "rows_restored": restored,
+						"requested_by": reqBy, "created_at": created.UTC(),
+					}
+					if errMsg != "" {
+						j["error"] = errMsg
+					}
+					if started.Valid {
+						j["started_at"] = started.Time.UTC()
+					}
+					if finished.Valid {
+						j["finished_at"] = finished.Time.UTC()
+					}
+					jobs = append(jobs, j)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"success": true, "jobs": jobs, "total": total, "page": page, "page_size": pageSize,
+				})
+			})
+
+			// Cancel a still-pending restore job. Running jobs cannot be cancelled
+			// (the insert is already in flight); they run to completion.
+			r.Post("/system/archive/restore/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				id := chi.URLParam(r, "id")
+				res, err := pg.Exec(r.Context(),
+					`UPDATE archive_restore_jobs SET status = 'canceled', finished_at = NOW(), updated_at = NOW()
+					 WHERE id = $1 AND status = 'pending'`, id)
+				if err != nil {
+					http.Error(w, "Failed to cancel", http.StatusInternalServerError)
+					return
+				}
+				if n, _ := res.RowsAffected(); n == 0 {
+					http.Error(w, "Job is no longer pending", http.StatusConflict)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+			})
+
 			// Auth
 			r.Post("/auth/logout", authHandler.HandleLogout)
 			r.Get("/auth/user", authHandler.HandleCurrentUser)
@@ -1471,6 +1653,28 @@ func getEnvBool(key string, defaultValue bool) bool {
 // archiveEnabledSetting is the Postgres settings key that toggles archiving at
 // runtime. Shared by the server tee and the archiver sidecar so they agree.
 const archiveEnabledSetting = "archive_enabled"
+
+// parseArchiveTime accepts the restore window bounds from the admin UI. It
+// prefers RFC3339 (what the client sends after converting to UTC) but tolerates
+// a few tz-less layouts, interpreted as UTC.
+func parseArchiveTime(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty time")
+	}
+	for _, layout := range []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognized time %q", s)
+}
 
 // startArchiveSpool provisions the ingest archive spool tee when a spool path is
 // configured, and starts a poller that keeps the runtime enable flag in sync

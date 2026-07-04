@@ -396,6 +396,18 @@ func applyLowerIfNeeded(fieldName string, steps []ExtractionStep) string {
 // filterConditionToSQL converts a FilterCondition to a ClickHouse WHERE expression.
 func filterConditionToSQL(fc FilterCondition) string {
 	ref := chFieldRef(fc.Field)
+	// Wildcard equality mirrors BQL translator semantics: `field = "*"` means the
+	// field has any non-empty value, and `field != "*"` means it is empty/missing.
+	// Without this, `src_ip = "*"` would compile to a literal `= '*'` match (which
+	// no log satisfies), silently emptying the model's state.
+	if fc.Value == "*" {
+		switch fc.Op {
+		case "=":
+			return fmt.Sprintf("%s != ''", ref)
+		case "!=":
+			return fmt.Sprintf("%s = ''", ref)
+		}
+	}
 	switch fc.Op {
 	case "=":
 		return fmt.Sprintf("%s = %s", ref, chStringLiteral(fc.Value))
