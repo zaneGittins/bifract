@@ -3198,6 +3198,182 @@ body.col-reordering * {
     margin-left: 0.625rem;
 }
 
+/* ============================ Recall tab ============================ */
+/* Lock viewport height when Recall is active so results scroll internally. */
+body.recall-active {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+}
+
+#fractalRecallTabContent,
+#recallView {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+/* Small hint footer inside the ingest-time picker panel. */
+.recall-tp-hint {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    line-height: 1.35;
+}
+
+/* Body: results split takes the full reclaimed height. */
+.recall-body {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    margin-top: 10px;
+}
+
+/* The Recall trigger sits at the toolbar's left, so open the palette rightward. */
+
+/* Recall command palette rows: center the chip / query / time on one line. */
+#recallPaletteList .palette-row { align-items: center; }
+
+/* Pinned admin Restore action at the top of the palette. */
+.recall-palette-action .palette-query { color: var(--accent-primary); }
+.recall-palette-action-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent-primary);
+    flex-shrink: 0;
+}
+
+/* Subtle marker for the recall currently attached in the results pane. */
+.palette-row.recall-palette-current { box-shadow: inset 2px 0 0 var(--accent-secondary); }
+.palette-row.recall-palette-current.is-active { box-shadow: inset 2px 0 0 var(--accent-primary); }
+
+.recall-recent-time {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.recall-results-split {
+    flex: 1;
+    min-height: 0;
+}
+
+#recallView .results-section {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+
+#recallView .results-container {
+    flex: 1;
+    min-height: 0;
+}
+
+/* Status bar above the results table. */
+.recall-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    padding: 6px 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.recall-status-bar.error {
+    color: var(--error);
+}
+
+.recall-status-elapsed {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+}
+
+.recall-status-count {
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
+.recall-limit-note {
+    font-size: 0.68rem;
+    color: var(--warning);
+    border: 1px solid var(--warning);
+    border-radius: 3px;
+    padding: 1px 5px;
+}
+
+.recall-spinner {
+    width: 13px;
+    height: 13px;
+    border: 2px solid var(--overlay-border, var(--border-color));
+    border-top-color: var(--accent-primary);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    display: inline-block;
+}
+
+.recall-cancel-btn,
+.recall-rerun-btn {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.recall-cancel-btn:hover {
+    color: var(--error);
+    border-color: var(--error);
+}
+
+.recall-rerun-btn:hover {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+/* Status chips (shared by the strip and status bar). */
+.recall-chip {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 2px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+}
+
+.recall-chip-running,
+.recall-chip-pending {
+    background: color-mix(in srgb, var(--accent-primary) 18%, transparent);
+    color: var(--accent-primary);
+}
+
+.recall-chip-succeeded {
+    background: color-mix(in srgb, var(--success) 18%, transparent);
+    color: var(--success);
+}
+
+.recall-chip-failed {
+    background: color-mix(in srgb, var(--error) 18%, transparent);
+    color: var(--error);
+}
+
+.recall-chip-canceled {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+}
+
 /* Comments tab layout: filter bar full-width, split below */
 #commentedView {
     display: flex;

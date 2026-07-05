@@ -9,6 +9,7 @@ import (
 	"github.com/apache/iceberg-go"
 	icetable "github.com/apache/iceberg-go/table"
 
+	"bifract/pkg/parser"
 	"bifract/pkg/storage"
 )
 
@@ -24,10 +25,13 @@ const (
 	partitionFieldID   = 1000
 )
 
-// arrowSchema returns the fixed Arrow schema handed to iceberg-go's Append.
+// arrowSchema returns the fixed Arrow schema handed to iceberg-go's Append. The
+// leading columns are stable; `_ice_` promoted columns are appended in the
+// deterministic order of parser.IcePromotedFields() so the schema and buildRecord
+// stay index-aligned and the translator's promoted-column predicate matches.
 func arrowSchema() *arrow.Schema {
 	mapType := arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String)
-	return arrow.NewSchema([]arrow.Field{
+	flds := []arrow.Field{
 		{Name: "timestamp", Type: arrow.FixedWidthTypes.Timestamp_ms, Nullable: false},
 		{Name: "ingest_timestamp", Type: arrow.FixedWidthTypes.Timestamp_ms, Nullable: false},
 		{Name: "ingest_date", Type: arrow.FixedWidthTypes.Date32, Nullable: false},
@@ -36,7 +40,16 @@ func arrowSchema() *arrow.Schema {
 		{Name: "raw_log", Type: arrow.BinaryTypes.String, Nullable: false},
 		{Name: "normalizer", Type: arrow.BinaryTypes.String, Nullable: false},
 		{Name: "fields", Type: mapType, Nullable: true},
-	}, nil)
+	}
+	// Promoted top-level columns give ClickHouse icebergS3() min/max + bloom
+	// pruning on hot fields. Nullable so tables created before promotion evolve
+	// via add-column (old data files read NULL); new files write '' for absent
+	// keys, so IS NULL cleanly means "pre-promotion file" in the query predicate.
+	for _, f := range parser.IcePromotedFields() {
+		col, _ := parser.IcePromotedColumn(f)
+		flds = append(flds, arrow.Field{Name: col, Type: arrow.BinaryTypes.String, Nullable: true})
+	}
+	return arrow.NewSchema(flds, nil)
 }
 
 // icebergSchema converts the Arrow schema to an Iceberg schema with fresh field
@@ -82,6 +95,13 @@ func buildRecord(mem memory.Allocator, logs []storage.LogEntry) arrow.RecordBatc
 	keyB := mapB.KeyBuilder().(*array.StringBuilder)
 	valB := mapB.ItemBuilder().(*array.StringBuilder)
 
+	// Promoted `_ice_` column builders, index-aligned with arrowSchema (start at 8).
+	promoted := parser.IcePromotedFields()
+	promotedB := make([]*array.StringBuilder, len(promoted))
+	for i := range promoted {
+		promotedB[i] = b.Field(8 + i).(*array.StringBuilder)
+	}
+
 	for i := range logs {
 		e := &logs[i]
 		tsB.Append(arrow.Timestamp(e.Timestamp.UnixMilli()))
@@ -95,6 +115,11 @@ func buildRecord(mem memory.Allocator, logs []storage.LogEntry) arrow.RecordBatc
 		for k, v := range e.Fields {
 			keyB.Append(k)
 			valB.Append(v)
+		}
+		// Duplicate promoted field values into their typed columns for pruning;
+		// '' when the key is absent (map zero value) keeps new files non-null.
+		for pi, pf := range promoted {
+			promotedB[pi].Append(e.Fields[pf])
 		}
 	}
 	return b.NewRecordBatch()

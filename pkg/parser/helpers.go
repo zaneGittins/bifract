@@ -509,6 +509,9 @@ func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string,
 	switch cond.Field {
 	case normLogColumn:
 		fieldRef = normLogColumn
+		if registry != nil {
+			fieldRef = contentColMode(registry.sourceMode)
+		}
 	case "timestamp":
 		fieldRef = "timestamp"
 	case "log_id":
@@ -525,7 +528,11 @@ func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string,
 			}
 		}
 		if !resolvedComputed {
-			fieldRef = jsonFieldRef(cond.Field)
+			if registry != nil {
+				fieldRef = registry.fieldRef(cond.Field)
+			} else {
+				fieldRef = jsonFieldRef(cond.Field)
+			}
 			isJSONField = true
 		}
 	}
@@ -587,7 +594,10 @@ func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string,
 			// time+fractal partition. No raw_log token pre-filter is added: the value is not
 			// guaranteed to appear verbatim in raw_log (e.g. normalized/derived fields), so
 			// such a pre-filter can drop real matches. raw_log is for unqualified search only.
-			if resolvedComputed && validateNumeric(cond.Value) == nil {
+			if registry != nil && registry.sourceMode == SourceIceberg && isJSONField {
+				// MAP correctness + promoted `_ice_` column pruning (icebergEqualityPredicate).
+				sql = icebergEqualityPredicate(cond.Field, cond.Value)
+			} else if resolvedComputed && validateNumeric(cond.Value) == nil {
 				sql = fmt.Sprintf("%s = %s", numericRef(), cond.Value)
 			} else {
 				sql = fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
@@ -1134,6 +1144,11 @@ func patternHasAlternation(pattern string) bool {
 }
 
 func extractFieldName(fieldRef string) string {
+	// Iceberg MAP access: fields['a.b'] -> a.b (single quotes may be escaped).
+	if strings.HasPrefix(fieldRef, "fields['") && strings.HasSuffix(fieldRef, "']") {
+		inner := fieldRef[len("fields['") : len(fieldRef)-len("']")]
+		return strings.ReplaceAll(inner, "\\'", "'")
+	}
 	// Extract field name from JSON subcolumn ref: fields.`a`.`b`::String -> a.b
 	ref := fieldRef
 	ref = strings.TrimSuffix(ref, ".:String")
@@ -1296,6 +1311,8 @@ func convertMathExprToSQL(expr string, registry *FieldRegistry, selfField ...str
 					// the column is already numeric or a string.
 					result.WriteString(fmt.Sprintf("toFloat64OrNull(toString(%s))", ident))
 				}
+			} else if registry != nil {
+				result.WriteString(fmt.Sprintf("toFloat64OrNull(%s)", registry.fieldRef(ident)))
 			} else {
 				result.WriteString(fmt.Sprintf("toFloat64OrNull(%s)", jsonFieldRef(ident)))
 			}

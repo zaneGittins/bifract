@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
 
   clickhouse:
-    image: clickhouse/clickhouse-server:26.2-alpine
+    image: clickhouse/clickhouse-server:26.6.1.1193-alpine
     container_name: bifract-clickhouse
     volumes:
       - clickhouse-data:/var/lib/clickhouse

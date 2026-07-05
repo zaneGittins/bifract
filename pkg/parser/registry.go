@@ -35,25 +35,38 @@ type FieldEntry struct {
 // FieldRegistry is a single source of truth for all field metadata in a query pipeline.
 // It replaces the old computedFields, computedFieldExprs, aggregationOutputs, and perRowExprs maps.
 type FieldRegistry struct {
-	fields map[string]*FieldEntry
-	order  []string
+	fields     map[string]*FieldEntry
+	order      []string
+	sourceMode SourceMode // Hot vs Iceberg; controls field-ref/content-column codegen
 }
 
-// NewFieldRegistry creates a registry pre-populated with base fields.
-func NewFieldRegistry() *FieldRegistry {
+// NewFieldRegistry creates a registry pre-populated with base fields for the
+// given source mode. In iceberg mode the norm_log base column resolves to
+// toString(fields) (the archive has no materialized norm_log).
+func NewFieldRegistry(mode SourceMode) *FieldRegistry {
 	r := &FieldRegistry{
-		fields: make(map[string]*FieldEntry),
+		fields:     make(map[string]*FieldEntry),
+		sourceMode: mode,
 	}
 	// Register base columns
 	for _, name := range []string{"timestamp", normLogColumn, "log_id", "fractal_id", "ingest_timestamp", "normalizer"} {
+		expr := name
+		if name == normLogColumn && mode == SourceIceberg {
+			expr = contentColMode(mode)
+		}
 		r.fields[name] = &FieldEntry{
 			Name:       name,
 			Kind:       FieldKindBase,
-			Expr:       name,
+			Expr:       expr,
 			ProducedBy: -1,
 		}
 	}
 	return r
+}
+
+// fieldRef returns the source-mode-appropriate reference for a JSON/MAP field.
+func (r *FieldRegistry) fieldRef(field string) string {
+	return fieldRefMode(field, r.sourceMode)
 }
 
 // Register adds or updates a field entry in the registry.
@@ -95,7 +108,7 @@ func (r *FieldRegistry) Resolve(name string) string {
 			// fields.`name`.:String reference. Model-lookup outputs are excluded:
 			// they resolve to their bare join-output column name, not a JSON field.
 			if entry.Expr == name && entry.Kind != FieldKindBase && entry.Kind != FieldKindModelLookup {
-				return jsonFieldRef(name)
+				return r.fieldRef(name)
 			}
 			expr = entry.Expr
 		}
@@ -104,7 +117,7 @@ func (r *FieldRegistry) Resolve(name string) string {
 		}
 		return expr
 	}
-	return jsonFieldRef(name)
+	return r.fieldRef(name)
 }
 
 // SetResolveExpr updates the resolve expression for a field during the Execute phase.

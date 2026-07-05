@@ -33,6 +33,7 @@ type QueryOptions struct {
 	GeoIPEnabled          bool                          // True when MaxMind GeoLite2 dictionaries are loaded
 	TableName             string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
 	IncludeShardNum       bool                          // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
+	SourceMode            SourceMode                    // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
 }
 
 // EffectiveTableName returns the table name to query, defaulting to "logs".
@@ -64,7 +65,12 @@ func TranslateToSQL(pipeline *PipelineNode, opts QueryOptions) (string, error) {
 }
 
 func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*TranslationResult, error) {
-	registry := NewFieldRegistry()
+	if opts.SourceMode == SourceIceberg {
+		if err := icebergSupportedFeatures(pipeline); err != nil {
+			return nil, err
+		}
+	}
+	registry := NewFieldRegistry(opts.SourceMode)
 	plan := NewQueryPlan()
 	ctx := &CommandContext{
 		Registry: registry,
@@ -82,7 +88,11 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	// 2. Process filter conditions from the parser
 	// ---------------------------------------------------------------
 	if pipeline.Filter != nil {
-		whereSQL, err := buildWhereClauseCtx(pipeline.Filter.Conditions, nil)
+		// Pass the (base-fields-only) registry so filter conditions pick up the
+		// source mode. In hot mode this is behavior-identical to the old nil arg
+		// (no computed fields are declared yet); in iceberg mode it routes field
+		// refs to MAP access + the promoted-column predicate.
+		whereSQL, err := buildWhereClauseCtx(pipeline.Filter.Conditions, registry)
 		if err != nil {
 			return nil, err
 		}
@@ -304,7 +314,7 @@ func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds 
 //
 // Returns "" on any error so the histogram degrades gracefully.
 func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) string {
-	registry := NewFieldRegistry()
+	registry := NewFieldRegistry(opts.SourceMode)
 	helperPlan := NewQueryPlan()
 	ctx := &CommandContext{
 		Registry: registry,
@@ -780,10 +790,20 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentF
 func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentFields []string) {
 	plan := ctx.Plan
 
+	// In iceberg mode there is no materialized norm_log column; the normalized
+	// content is reconstructed from the MAP so the result shape matches hot Query.
+	normLogSel := "norm_log"
+	if ctx.Opts.SourceMode == SourceIceberg {
+		normLogSel = "toString(fields) AS norm_log"
+	}
+
 	// No commands and no assignments: use default field set
 	if len(ctx.Pipeline.Commands) == 0 && len(ctx.Pipeline.Assignments) == 0 {
-		// Alert queries: project only referenced fields + log_id + timestamp
-		if ctx.Opts.UseIngestTimestamp && ctx.Pipeline.Filter != nil {
+		// Alert queries: project only referenced fields + log_id + timestamp.
+		// This minimal projection keys on UseIngestTimestamp, which Recall also
+		// sets for ingest-time pruning; exclude iceberg so Recall gets the normal
+		// full projection.
+		if ctx.Opts.UseIngestTimestamp && ctx.Opts.SourceMode != SourceIceberg && ctx.Pipeline.Filter != nil {
 			fields := collectConditionFields(ctx.Pipeline.Filter.Conditions)
 			collectHavingConditionFields(ctx.Pipeline.HavingConditions, fields)
 			// Include alert-configured extra fields (throttle field, template fields)
@@ -809,7 +829,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 			}
 		}
 		source.Layer.Selects = []SelectExpr{
-			{Expr: "timestamp"}, {Expr: "norm_log"}, {Expr: "log_id"}, {Expr: "fractal_id"},
+			{Expr: "timestamp"}, {Expr: normLogSel}, {Expr: "log_id"}, {Expr: "fractal_id"},
 		}
 		if ctx.Opts.IncludeShardNum {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(_shard_num) AS _shard_num"})
@@ -819,7 +839,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 
 	// No commands but has assignments
 	if len(ctx.Pipeline.Commands) == 0 && len(ctx.Pipeline.Assignments) > 0 {
-		source.Layer.Selects = []SelectExpr{{Expr: "timestamp"}, {Expr: "norm_log"}, {Expr: "log_id"}, {Expr: "fractal_id"}}
+		source.Layer.Selects = []SelectExpr{{Expr: "timestamp"}, {Expr: normLogSel}, {Expr: "log_id"}, {Expr: "fractal_id"}}
 		for _, af := range assignmentFields {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: af})
 		}
@@ -877,7 +897,11 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 					return
 				}
 			}
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: name})
+			expr := name
+			if name == normLogColumn {
+				expr = normLogSel // toString(fields) AS norm_log in iceberg mode
+			}
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: expr})
 		}
 		ensureSelectExpr("timestamp")
 		ensureSelectExpr("log_id")

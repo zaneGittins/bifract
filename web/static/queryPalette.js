@@ -58,6 +58,8 @@ const QueryPalette = {
         // an extension grabs the shortcut.
         document.addEventListener('keydown', (e) => {
             if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+                // When the Recall tab is active, its own palette owns Cmd/Ctrl-K.
+                if (document.body.classList.contains('recall-active')) return;
                 e.preventDefault();
                 this.toggle();
                 return;

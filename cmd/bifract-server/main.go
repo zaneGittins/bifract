@@ -326,6 +326,14 @@ func main() {
 			if err := fractalManager.EnforceRetention(ctx); err != nil {
 				log.Printf("Warning: Retention enforcement failed: %v", err)
 			}
+			// Age out Recall search jobs so Postgres never accumulates result
+			// blobs: drop the heavy payload after 24h, delete the row after 14d.
+			if _, err := pg.Exec(ctx, `UPDATE archive_search_jobs SET results = NULL, field_order = NULL WHERE finished_at < NOW() - INTERVAL '24 hours' AND results IS NOT NULL`); err != nil {
+				log.Printf("Warning: Recall results cleanup failed: %v", err)
+			}
+			if _, err := pg.Exec(ctx, `DELETE FROM archive_search_jobs WHERE created_at < NOW() - INTERVAL '14 days'`); err != nil {
+				log.Printf("Warning: Recall job cleanup failed: %v", err)
+			}
 			cancel()
 		}
 	}()
@@ -1045,6 +1053,237 @@ func main() {
 				json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 			})
 
+			// Recall: per-fractal async BQL search over the Iceberg archive.
+			// Analyst+ (unlike the admin-only Restore under /system/archive):
+			// searching cold storage is a normal-user read, scoped by fractal RBAC.
+			recallAnalystOK := func(w http.ResponseWriter, r *http.Request, fractalID string) (*storage.User, bool) {
+				u, ok := r.Context().Value("user").(*storage.User)
+				if !ok || u == nil {
+					http.Error(w, "Authentication required", http.StatusUnauthorized)
+					return nil, false
+				}
+				role, err := authHandler.RBACResolver().ResolveFractalRole(r.Context(), u.Username, fractalID)
+				if err != nil || !rbac.HasAccess(u, role, rbac.RoleAnalyst) {
+					http.Error(w, "Analyst access required", http.StatusForbidden)
+					return nil, false
+				}
+				return u, true
+			}
+
+			// Whether Recall is available (archive enabled + spool provisioned).
+			// Any authenticated user may check this so the tab can be gated for
+			// analysts, who cannot read the admin-only /system/archive status.
+			r.Get("/recall/available", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil {
+					http.Error(w, "Authentication required", http.StatusUnauthorized)
+					return
+				}
+				enabled := false
+				if v, _ := pg.GetSetting(r.Context(), "archive_enabled"); v == "true" {
+					enabled = true
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"available": enabled && ingestQueue.SpoolProvisioned(),
+				})
+			})
+
+			// Submit a Recall search (returns the job id to poll).
+			r.Post("/recall/{fractalID}", func(w http.ResponseWriter, r *http.Request) {
+				fractalID := chi.URLParam(r, "fractalID")
+				u, ok := recallAnalystOK(w, r, fractalID)
+				if !ok {
+					return
+				}
+				var body struct {
+					Query   string `json:"query"`
+					From    string `json:"from"`
+					To      string `json:"to"`
+					MaxRows int    `json:"max_rows"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "Invalid JSON", http.StatusBadRequest)
+					return
+				}
+				if strings.TrimSpace(body.Query) == "" {
+					http.Error(w, "Query is required", http.StatusBadRequest)
+					return
+				}
+				from, err := parseArchiveTime(body.From)
+				if err != nil {
+					http.Error(w, "Invalid 'from' time", http.StatusBadRequest)
+					return
+				}
+				to, err := parseArchiveTime(body.To)
+				if err != nil {
+					http.Error(w, "Invalid 'to' time", http.StatusBadRequest)
+					return
+				}
+				if !to.After(from) {
+					http.Error(w, "'to' must be after 'from'", http.StatusBadRequest)
+					return
+				}
+				if err := validateRecallQuery(body.Query); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				maxRows := body.MaxRows
+				if maxRows <= 0 {
+					maxRows = 1000
+				}
+				if maxRows > 10000 {
+					maxRows = 10000
+				}
+				var inflight int
+				if err := pg.QueryRow(r.Context(),
+					`SELECT count(*) FROM archive_search_jobs WHERE requested_by = $1 AND status IN ('pending','running')`,
+					u.Username).Scan(&inflight); err == nil && inflight >= 3 {
+					http.Error(w, "Too many searches in progress; wait for one to finish", http.StatusTooManyRequests)
+					return
+				}
+				var id int64
+				if err := pg.QueryRow(r.Context(),
+					`INSERT INTO archive_search_jobs (fractal_id, query, from_ts, to_ts, max_rows, requested_by)
+					 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+					fractalID, body.Query, from, to, maxRows, u.Username).Scan(&id); err != nil {
+					http.Error(w, "Failed to enqueue search", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "id": id})
+			})
+
+			// List recent Recall jobs for a fractal (newest first, no results payload).
+			r.Get("/recall/{fractalID}", func(w http.ResponseWriter, r *http.Request) {
+				fractalID := chi.URLParam(r, "fractalID")
+				if _, ok := recallAnalystOK(w, r, fractalID); !ok {
+					return
+				}
+				limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+				if limit < 1 || limit > 50 {
+					limit = 20
+				}
+				rows, err := pg.Query(r.Context(),
+					`SELECT id, query, from_ts, to_ts, status, row_count, is_aggregated, limit_hit,
+					        COALESCE(error, ''), created_at, started_at, finished_at
+					 FROM archive_search_jobs WHERE fractal_id = $1 ORDER BY created_at DESC LIMIT $2`,
+					fractalID, limit)
+				if err != nil {
+					http.Error(w, "Failed to list searches", http.StatusInternalServerError)
+					return
+				}
+				defer rows.Close()
+				jobs := make([]map[string]interface{}, 0, 32)
+				for rows.Next() {
+					var (
+						id                    int64
+						query, status, errMsg string
+						from, to, created     time.Time
+						started, finished     sql.NullTime
+						rowCount              int64
+						isAgg, limitHit       bool
+					)
+					if err := rows.Scan(&id, &query, &from, &to, &status, &rowCount, &isAgg, &limitHit,
+						&errMsg, &created, &started, &finished); err != nil {
+						continue
+					}
+					j := map[string]interface{}{
+						"id": id, "query": query, "from": from.UTC(), "to": to.UTC(),
+						"status": status, "row_count": rowCount, "is_aggregated": isAgg,
+						"limit_hit": limitHit, "created_at": created.UTC(),
+					}
+					if errMsg != "" {
+						j["error"] = errMsg
+					}
+					if started.Valid {
+						j["started_at"] = started.Time.UTC()
+					}
+					if finished.Valid {
+						j["finished_at"] = finished.Time.UTC()
+					}
+					jobs = append(jobs, j)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "jobs": jobs})
+			})
+
+			// Fetch one Recall job with its results (inline render / reattach).
+			r.Get("/recall/{fractalID}/{id}", func(w http.ResponseWriter, r *http.Request) {
+				fractalID := chi.URLParam(r, "fractalID")
+				if _, ok := recallAnalystOK(w, r, fractalID); !ok {
+					return
+				}
+				id := chi.URLParam(r, "id")
+				var (
+					status, query, errMsg string
+					rowCount              int64
+					isAgg, limitHit       bool
+					fieldOrder, results   sql.NullString
+					from, to, created     time.Time
+					started, finished     sql.NullTime
+				)
+				err := pg.QueryRow(r.Context(),
+					`SELECT query, from_ts, to_ts, status, row_count, is_aggregated, limit_hit,
+					        field_order, results, COALESCE(error, ''), created_at, started_at, finished_at
+					 FROM archive_search_jobs WHERE id = $1 AND fractal_id = $2`,
+					id, fractalID).Scan(&query, &from, &to, &status, &rowCount, &isAgg, &limitHit,
+					&fieldOrder, &results, &errMsg, &created, &started, &finished)
+				if err == sql.ErrNoRows {
+					http.Error(w, "Search not found", http.StatusNotFound)
+					return
+				}
+				if err != nil {
+					http.Error(w, "Failed to load search", http.StatusInternalServerError)
+					return
+				}
+				resp := map[string]interface{}{
+					"success": true, "id": id, "query": query, "from": from.UTC(), "to": to.UTC(),
+					"status": status, "row_count": rowCount, "is_aggregated": isAgg, "limit_hit": limitHit,
+					"created_at": created.UTC(),
+				}
+				if errMsg != "" {
+					resp["error"] = errMsg
+				}
+				if started.Valid {
+					resp["started_at"] = started.Time.UTC()
+				}
+				if finished.Valid {
+					resp["finished_at"] = finished.Time.UTC()
+				}
+				if fieldOrder.Valid {
+					resp["field_order"] = json.RawMessage(fieldOrder.String)
+				}
+				if results.Valid {
+					resp["results"] = json.RawMessage(results.String)
+				} else if status == "succeeded" {
+					resp["results_expired"] = true
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+			})
+
+			// Cancel a still-pending Recall job.
+			r.Post("/recall/{fractalID}/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
+				fractalID := chi.URLParam(r, "fractalID")
+				if _, ok := recallAnalystOK(w, r, fractalID); !ok {
+					return
+				}
+				id := chi.URLParam(r, "id")
+				res, err := pg.Exec(r.Context(),
+					`UPDATE archive_search_jobs SET status = 'canceled', finished_at = NOW(), updated_at = NOW()
+					 WHERE id = $1 AND fractal_id = $2 AND status = 'pending'`, id, fractalID)
+				if err != nil {
+					http.Error(w, "Failed to cancel", http.StatusInternalServerError)
+					return
+				}
+				if n, _ := res.RowsAffected(); n == 0 {
+					http.Error(w, "Job is no longer pending", http.StatusConflict)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+			})
+
 			// Auth
 			r.Post("/auth/logout", authHandler.HandleLogout)
 			r.Get("/auth/user", authHandler.HandleCurrentUser)
@@ -1674,6 +1913,28 @@ func parseArchiveTime(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unrecognized time %q", s)
+}
+
+// validateRecallQuery parses a BQL query and translates it in iceberg source
+// mode against a placeholder table so parse errors and commands unsupported in
+// archive search are rejected at submit time rather than surfacing as a failed
+// job. Only translation validity is checked; no query runs.
+func validateRecallQuery(query string) error {
+	pipeline, err := parser.ParseQuery(query)
+	if err != nil {
+		return fmt.Errorf("invalid query: %w", err)
+	}
+	if _, err := parser.TranslateToSQLWithOrder(pipeline, parser.QueryOptions{
+		StartTime:          time.Now().Add(-time.Hour),
+		EndTime:            time.Now(),
+		MaxRows:            1,
+		SourceMode:         parser.SourceIceberg,
+		UseIngestTimestamp: true,
+		TableName:          "icebergValidate",
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // startArchiveSpool provisions the ingest archive spool tee when a spool path is

@@ -810,7 +810,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 						// In multi-stage, fields reference previous stage output by alias
 						fieldRef = arg
 					} else {
-						fieldRef = jsonFieldRef(arg)
+						fieldRef = ctx.Registry.fieldRef(arg)
 					}
 				}
 			}

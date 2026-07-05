@@ -57,6 +57,7 @@
                         <span id="alertsCountBadge" class="badge" style="display: none;"></span>
                     </button>
                     <button id="fractalIngestTabBtn" class="nav-tab">Ingest</button>
+                    <button id="fractalRecallTabBtn" class="nav-tab rbac-hidden" title="Async BQL search over the archive">Recall</button>
                     <button id="fractalManageTabBtn" class="nav-tab fractal-admin-only rbac-hidden">Manage</button>
                 </nav>
                 <div class="header-right">
@@ -1794,6 +1795,150 @@
                 </div>
             </div>
 
+            <!-- Recall Tab Content (async BQL search over the Iceberg archive) -->
+            <div id="fractalRecallTabContent" style="display: none;">
+                <div id="recallView" style="display: none;">
+                    <section class="search-section recall-section">
+                        <div class="search-toolbar recall-toolbar">
+                            <!-- Ingest-time picker (independent of the main Query event-time window) -->
+                            <div id="recallTimePickerWrap" class="toolbar-menu-wrap">
+                                <button id="recallTimePickerBtn" class="toolbar-menu-btn" type="button" title="The archive is organized by ingest time.">
+                                    <svg class="tp-clock-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
+                                        <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
+                                        <path d="M8 5v3.5l2 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                                    </svg>
+                                    <span id="recallTimePickerLabel">Ingest: last 30d</span>
+                                    <svg class="toolbar-menu-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none">
+                                        <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </button>
+                                <div id="recallTimePickerBackdrop" class="tp-backdrop" style="display:none"></div>
+                                <div id="recallTimePickerPanel" class="time-picker-panel" style="display:none">
+                                    <div class="tp-section-label">Ingest-time presets</div>
+                                    <div class="tp-presets" id="recallTpPresets">
+                                        <button class="tp-preset" data-value="24h" type="button">24h</button>
+                                        <button class="tp-preset" data-value="7d" type="button">7d</button>
+                                        <button class="tp-preset active" data-value="30d" type="button">30d</button>
+                                        <button class="tp-preset" data-value="90d" type="button">90d</button>
+                                        <button class="tp-preset" data-value="1y" type="button">1y</button>
+                                        <button class="tp-preset" data-value="all" type="button">All</button>
+                                    </div>
+                                    <div class="tp-divider"></div>
+                                    <div class="tp-section-label">Relative</div>
+                                    <div class="tp-relative-row">
+                                        <span class="tp-rel-prefix">Last</span>
+                                        <input type="number" id="recallTpRelativeN" class="tp-num-input" value="30" min="1" max="9999">
+                                        <select id="recallTpRelativeUnit" class="tp-unit-select">
+                                            <option value="minutes">minutes</option>
+                                            <option value="hours">hours</option>
+                                            <option value="days" selected>days</option>
+                                            <option value="weeks">weeks</option>
+                                        </select>
+                                        <button id="recallTpRelativeApply" class="tp-apply-btn" type="button">Apply</button>
+                                    </div>
+                                    <div class="tp-divider"></div>
+                                    <div class="tp-section-label">Absolute range (UTC)</div>
+                                    <div class="tp-absolute-col">
+                                        <div class="tp-abs-row">
+                                            <span class="tp-abs-label">From</span>
+                                            <input type="text" id="recallTpAbsStart" class="tp-abs-input" placeholder="YYYY-MM-DD HH:MM" spellcheck="false">
+                                        </div>
+                                        <div class="tp-abs-row">
+                                            <span class="tp-abs-label">To</span>
+                                            <input type="text" id="recallTpAbsEnd" class="tp-abs-input" placeholder="YYYY-MM-DD HH:MM" spellcheck="false">
+                                        </div>
+                                        <button id="recallTpAbsApply" class="tp-apply-btn tp-abs-apply" type="button">Apply</button>
+                                    </div>
+                                    <div class="tp-divider"></div>
+                                    <div class="recall-tp-hint">Archive is organized by ingest time.</div>
+                                </div>
+                            </div>
+
+                            <div class="toolbar-spacer"></div>
+
+                            <!-- Recent recalls command palette (sits just left of Recall, like Queries⌘K left of Run) -->
+                            <div class="toolbar-menu-wrap" id="recallPaletteWrap">
+                                <button id="recallPaletteBtn" class="toolbar-menu-btn" type="button" title="Recent recalls and restore (Ctrl/Cmd+K)">
+                                    Recent
+                                    <span class="toolbar-menu-kbd">⌘K</span>
+                                </button>
+                                <div id="recallPaletteBackdrop" class="palette-backdrop" style="display:none"></div>
+                                <div id="recallPalette" class="query-palette" style="display:none">
+                                    <div class="palette-search-row">
+                                        <svg class="palette-search-icon" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M7 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM11 11l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                                        <input type="text" id="recallPaletteSearch" class="palette-search" placeholder="Search recent recalls..." autocomplete="off" spellcheck="false" />
+                                    </div>
+                                    <div id="recallPaletteList" class="palette-list"></div>
+                                    <div class="palette-footer">
+                                        <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+                                        <span><kbd>↵</kbd> open</span>
+                                        <span><kbd>esc</kbd> close</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button id="recallRunBtn" class="search-btn">
+                                <span class="btn-text">Recall</span>
+                                <span class="btn-loader" style="display: none;"><span class="spinner"></span></span>
+                            </button>
+                        </div>
+
+                        <div class="query-input-row">
+                            <div class="query-input-wrapper">
+                                <div id="recallQueryHighlight" class="query-highlight"></div>
+                                <textarea
+                                    id="recallQueryInput"
+                                    class="search-input"
+                                    placeholder="Search the archive (e.g., level=error)"
+                                    autocomplete="off"
+                                    rows="1"
+                                    spellcheck="false"
+                                ></textarea>
+                            </div>
+                        </div>
+                        <div id="recallError" class="query-error" style="display: none;"></div>
+                    </section>
+
+                    <div class="recall-body">
+                        <div class="search-results-split recall-results-split">
+                            <section class="results-section recall-results-section">
+                                <div id="recallStatusBar" class="recall-status-bar" style="display:none"></div>
+                                <div id="recallResults" class="results-container">
+                                    <div class="empty-state">
+                                        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M32 8L8 20V44L32 56L56 44V20L32 8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" opacity="0.3"/>
+                                            <path d="M32 56V32M32 32L8 20M32 32L56 20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
+                                        </svg>
+                                        <p>Search the archive for older, cold-tiered logs</p>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- Log Detail Panel (push layout, scoped to Recall) -->
+                            <div id="recallLogDetailPanel" class="log-detail-panel">
+                                <div class="panel-resize-handle"></div>
+                                <div class="panel-header">
+                                    <div class="panel-header-context">
+                                        <span class="log-level-badge"></span>
+                                        <span class="panel-timestamp"></span>
+                                        <span class="panel-source"></span>
+                                    </div>
+                                    <div class="panel-header-actions">
+                                        <button class="panel-nav-btn panel-prev-btn" title="Previous event">&#8249;</button>
+                                        <button class="panel-nav-btn panel-next-btn" title="Next event">&#8250;</button>
+                                        <button class="send-to-chat-btn" title="Analyze with AI">
+                                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 0C4.2 1.6 4.8 2.8 5.6 3.6 6.4 4.4 7.6 5 9 5.2 7.6 5.4 6.4 6 5.6 6.8 4.8 7.6 4.2 8.8 4 10.4 3.8 8.8 3.2 7.6 2.4 6.8 1.6 6 .4 5.4 0 5.2 .4 5 1.6 4.4 2.4 3.6 3.2 2.8 3.8 1.6 4 0z"/><path d="M11 6c.12 1 .48 1.72 1 2.24.52.52 1.24.88 2.24 1-1 .12-1.72.48-2.24 1-.52.52-.88 1.24-1 2.24-.12-1-.48-1.72-1-2.24-.52-.52-1.24-.88-2.24-1 1-.12 1.72-.48 2.24-1 .52-.52.88-1.24 1-2.24z"/><path d="M6 11c.08.68.32 1.16.68 1.52.36.36.84.6 1.52.68-.68.08-1.16.32-1.52.68-.36.36-.6.84-.68 1.52-.08-.68-.32-1.16-.68-1.52-.36-.36-.84-.6-1.52-.68.68-.08 1.16-.32 1.52-.68.36-.36.6-.84.68-1.52z"/></svg>
+                                        </button>
+                                        <button class="close-panel-btn">&times;</button>
+                                    </div>
+                                </div>
+                                <div class="panel-body"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Manage Tab Content -->
             <div id="fractalManageTabContent" class="fractal-admin-only" style="display: none;">
                 <!-- Prism management section (shown when a prism is selected) -->
@@ -3461,6 +3606,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/ingestTokens.js"></script>
     <script src="/static/instructionLibraries.js"></script>
     <script src="/static/notifications.js"></script>
+    <script src="/static/recall.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

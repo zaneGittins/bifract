@@ -252,7 +252,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 		case "avg":
 			fieldRef = "_avg"
 		case normLogColumn:
-			fieldRef = normLogColumn
+			fieldRef = contentColMode(registry.sourceMode)
 		case "timestamp":
 			fieldRef = "timestamp"
 		case "log_id":
@@ -260,7 +260,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 		case "normalizer", "_normalizer":
 			fieldRef = "normalizer"
 		default:
-			fieldRef = jsonFieldRef(cond.Field)
+			fieldRef = registry.fieldRef(cond.Field)
 			isJSONField = true
 		}
 	}
@@ -299,6 +299,10 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 	case "=":
 		// Equality is answered by the field's column/sub-column alone; no raw_log token
 		// pre-filter (the value may be normalized and absent from raw_log -> false negatives).
+		if registry.sourceMode == SourceIceberg && isJSONField {
+			// MAP correctness + promoted `_ice_` column pruning (icebergEqualityPredicate).
+			return icebergEqualityPredicate(cond.Field, cond.Value)
+		}
 		return fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
 	case "!=":
 		if isJSONField {

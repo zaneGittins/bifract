@@ -14,7 +14,7 @@ spec:
   containerTemplate:
     image:
       repository: clickhouse/clickhouse-keeper
-      tag: "26.2-alpine"
+      tag: "26.6.1.1193-alpine"
     resources:
       requests:
         cpu: {{.CHKeeper.CPURequest}}
@@ -61,7 +61,7 @@ spec:
   containerTemplate:
     image:
       repository: clickhouse/clickhouse-server
-      tag: "26.2-alpine"
+      tag: "26.6.1.1193-alpine"
     resources:
       requests:
         cpu: "{{.CH.CPURequest}}"

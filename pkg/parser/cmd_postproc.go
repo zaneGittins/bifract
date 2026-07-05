@@ -40,8 +40,11 @@ func (h *sortHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		switch field {
 		case "timestamp", normLogColumn, "log_id", "normalizer":
 			fieldRef = field
+			if field == normLogColumn {
+				fieldRef = contentColMode(ctx.Opts.SourceMode)
+			}
 		default:
-			fieldRef = jsonFieldRef(field)
+			fieldRef = ctx.Registry.fieldRef(field)
 		}
 	}
 
@@ -159,7 +162,7 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if ctx.Registry.IsComputed(field) {
 				dedupFields = append(dedupFields, field)
 			} else {
-				dedupFields = append(dedupFields, jsonFieldRef(field))
+				dedupFields = append(dedupFields, ctx.Registry.fieldRef(field))
 			}
 		}
 		ctx.Plan.CurrentStage().Layer.LimitBy = fmt.Sprintf("LIMIT 1 BY %s", strings.Join(dedupFields, ", "))

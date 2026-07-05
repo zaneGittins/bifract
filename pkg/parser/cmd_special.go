@@ -168,7 +168,7 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if err != nil {
 				return fmt.Errorf("table(): %w", err)
 			}
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", jsonFieldRef(field), safeAlias)})
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", ctx.Registry.fieldRef(field), safeAlias)})
 			nonAggregateFields = append(nonAggregateFields, field)
 		}
 	}

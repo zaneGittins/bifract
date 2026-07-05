@@ -15,6 +15,7 @@ import (
 	_ "github.com/apache/iceberg-go/io/gocloud"
 
 	"bifract/pkg/objstore"
+	"bifract/pkg/parser"
 )
 
 // Namespace is the single Iceberg namespace under which every fractal's table
@@ -78,7 +79,12 @@ func (c *Catalog) EnsureTable(ctx context.Context, fractalID string) (*icetable.
 	if ok, err := c.cat.CheckTableExists(ctx, ident); err != nil {
 		return nil, fmt.Errorf("archive: check table: %w", err)
 	} else if ok {
-		return c.cat.LoadTable(ctx, ident)
+		tbl, err := c.cat.LoadTable(ctx, ident)
+		if err != nil {
+			return nil, err
+		}
+		// Evolve pre-promotion tables (add `_ice_` columns + pruning properties).
+		return c.ensureIceColumns(ctx, ident, tbl)
 	}
 
 	sc, err := icebergSchema()
@@ -89,7 +95,8 @@ func (c *Catalog) EnsureTable(ctx context.Context, fractalID string) (*icetable.
 	if !ok {
 		return nil, fmt.Errorf("archive: partition field %q missing from schema", partitionFieldName)
 	}
-	tbl, err := c.cat.CreateTable(ctx, ident, sc, catalog.WithPartitionSpec(&spec))
+	tbl, err := c.cat.CreateTable(ctx, ident, sc,
+		catalog.WithPartitionSpec(&spec), catalog.WithProperties(iceTableProperties()))
 	if err != nil {
 		// Racing archivers (multiple ingest pods) may create concurrently; on a
 		// lost race just load the winner's table.
@@ -99,6 +106,68 @@ func (c *Catalog) EnsureTable(ctx context.Context, fractalID string) (*icetable.
 		return nil, fmt.Errorf("archive: create table %s: %w", tableName(fractalID), err)
 	}
 	return tbl, nil
+}
+
+// iceTableProperties returns the Parquet write properties for a fractal table:
+// zstd compression plus a bloom filter on each promoted column for fast equality
+// pruning. (Parquet min/max stats, written by default, additionally prune range
+// and time predicates.)
+//
+// Requires ClickHouse >= 26.6 to read the arrow-go bloom filters correctly: CH
+// 26.2 mis-read them and false-negative pruned (dropped real matches). The
+// bundled ClickHouse image is pinned to 26.6, and --upgrade/--upgrade-k8s carry
+// that to existing installs, so bloom read is safe.
+func iceTableProperties() iceberg.Properties {
+	props := iceberg.Properties{"write.parquet.compression-codec": "zstd"}
+	for _, f := range parser.IcePromotedFields() {
+		col, _ := parser.IcePromotedColumn(f)
+		props["write.parquet.bloom-filter-enabled.column."+col] = "true"
+	}
+	return props
+}
+
+// ensureIceColumns evolves a pre-promotion table by adding any missing `_ice_`
+// promoted columns (nullable) and setting the pruning write properties, so new
+// data files carry the typed columns + bloom filters. It is a no-op once the
+// table has been evolved. Restore is unaffected: it never references `_ice_*`.
+func (c *Catalog) ensureIceColumns(ctx context.Context, ident icetable.Identifier, tbl *icetable.Table) (*icetable.Table, error) {
+	sc := tbl.Schema()
+	var missing []string
+	for _, f := range parser.IcePromotedFields() {
+		col, _ := parser.IcePromotedColumn(f)
+		if _, ok := sc.FindFieldByName(col); !ok {
+			missing = append(missing, col)
+		}
+	}
+	if len(missing) == 0 {
+		return tbl, nil
+	}
+
+	txn := tbl.NewTransaction()
+	us := txn.UpdateSchema(false, false)
+	for _, col := range missing {
+		us = us.AddColumn([]string{col}, iceberg.PrimitiveTypes.String,
+			"bifract promoted column for query pruning", false, nil)
+	}
+	if err := us.Commit(); err != nil {
+		return nil, fmt.Errorf("archive: add promoted columns: %w", err)
+	}
+	if err := txn.SetProperties(iceTableProperties()); err != nil {
+		return nil, fmt.Errorf("archive: set pruning properties: %w", err)
+	}
+	updated, err := txn.Commit(ctx)
+	if err != nil {
+		// Lost the optimistic-concurrency race with another archiver evolving the
+		// same table. The set of columns is deterministic, so reload the winner's
+		// table and use it if it already carries the promoted columns.
+		if reloaded, e2 := c.cat.LoadTable(ctx, ident); e2 == nil {
+			if _, ok := reloaded.Schema().FindFieldByName(missing[0]); ok {
+				return reloaded, nil
+			}
+		}
+		return nil, fmt.Errorf("archive: evolve table schema: %w", err)
+	}
+	return updated, nil
 }
 
 // TableLocation returns the storage base location of a fractal's table (used to

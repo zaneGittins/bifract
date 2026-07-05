@@ -134,6 +134,11 @@ const App = {
             InstructionLibraries.init();
         }
 
+        // Initialize Recall (archive search) module
+        if (window.Recall) {
+            Recall.init();
+        }
+
         // Initialize performance module
         if (window.Performance) {
             Performance.init();
@@ -196,7 +201,7 @@ const App = {
 
     // Tab name sets for hash-based open-in-new-tab support.
     _mainTabs: new Set(['fractalListing', 'performance', 'settings', 'context', 'normalizers', 'schema']),
-    _fractalTabs: new Set(['search', 'comments', 'notebooks', 'dashboards', 'dictionaries', 'models', 'chat', 'library', 'alerts', 'ingest', 'manage']),
+    _fractalTabs: new Set(['search', 'comments', 'notebooks', 'dashboards', 'dictionaries', 'models', 'chat', 'library', 'alerts', 'ingest', 'recall', 'manage']),
 
     // Build the target URL for a given hash (used for open-in-new-tab).
     _tabUrl(hash) {
@@ -395,6 +400,7 @@ const App = {
         this._bindTab(document.getElementById('fractalLibraryTabBtn'), () => this.showFractalViewTab('library'), () => this._buildHash('library'));
         this._bindTab(document.getElementById('fractalAlertsTabBtn'), () => this.showFractalViewTab('alerts'), () => this._buildHash('alerts'));
         this._bindTab(document.getElementById('fractalIngestTabBtn'), () => this.showFractalViewTab('ingest'), () => this._buildHash('ingest'));
+        this._bindTab(document.getElementById('fractalRecallTabBtn'), () => this.showFractalViewTab('recall'), () => this._buildHash('recall'));
         this._bindTab(document.getElementById('fractalManageTabBtn'), () => this.showFractalViewTab('manage'), () => this._buildHash('manage'));
 
         // Query input
@@ -944,6 +950,18 @@ const App = {
         if (ingestTabBtn) ingestTabBtn.style.display = isPrism ? 'none' : '';
         const modelsTabBtn = document.getElementById('fractalModelsTabBtn');
         if (modelsTabBtn) modelsTabBtn.style.display = isPrism ? 'none' : '';
+        // Recall is fractal-only in v1. For prisms, hard-hide the button; for
+        // fractals, clear the inline display and let Recall's archive-availability
+        // gate (rbac-hidden class) decide whether it shows.
+        const recallTabBtn = document.getElementById('fractalRecallTabBtn');
+        if (recallTabBtn) {
+            recallTabBtn.style.display = isPrism ? 'none' : '';
+            if (isPrism) {
+                recallTabBtn.classList.add('rbac-hidden');
+            } else if (window.Recall && typeof Recall.refreshTabVisibility === 'function') {
+                Recall.refreshTabVisibility();
+            }
+        }
     },
 
     // Show the fractal view (search / comments / alerts / reference)
@@ -1010,6 +1028,12 @@ const App = {
             AnalyticsModels.teardown();
         }
 
+        // Stop Recall job polling when leaving the recall tab (server-side jobs
+        // are unaffected; we only stop the client-side poller).
+        if (tab !== 'recall' && window.Recall && typeof Recall.hide === 'function') {
+            Recall.hide();
+        }
+
         // Disconnect SSE when switching away from notebooks/dashboards
         if (tab !== 'notebooks' && window.Notebooks) {
             Notebooks.disconnectSSE();
@@ -1056,14 +1080,16 @@ const App = {
         const libraryContent = document.getElementById('fractalLibraryTabContent');
         const alertsContent = document.getElementById('fractalAlertsTabContent');
         const ingestContent = document.getElementById('fractalIngestTabContent');
+        const recallContent = document.getElementById('fractalRecallTabContent');
         const manageContent = document.getElementById('fractalManageTabContent');
 
-        [searchContent, commentsContent, notebooksContent, dashboardsContent, dictionariesContent, modelsContent, chatContent, libraryContent, alertsContent, ingestContent, manageContent].forEach(content => {
+        [searchContent, commentsContent, notebooksContent, dashboardsContent, dictionariesContent, modelsContent, chatContent, libraryContent, alertsContent, ingestContent, recallContent, manageContent].forEach(content => {
             if (content) content.style.display = 'none';
         });
 
         // Remove search-active lock so other tabs can scroll normally
         document.body.classList.remove('search-active');
+        document.body.classList.remove('recall-active');
 
         // Also hide the inner view divs
         const searchView = document.getElementById('searchView');
@@ -1077,7 +1103,8 @@ const App = {
         const alertsView = document.getElementById('alertsView');
         const feedAlertsView = document.getElementById('feedAlertsView');
         const ingestView = document.getElementById('ingestView');
-        [searchView, commentedView, notebooksView, dashboardsView, dictionariesView, modelsView, chatView, librariesView, alertsView, feedAlertsView, ingestView].forEach(view => {
+        const recallView = document.getElementById('recallView');
+        [searchView, commentedView, notebooksView, dashboardsView, dictionariesView, modelsView, chatView, librariesView, alertsView, feedAlertsView, ingestView, recallView].forEach(view => {
             if (view) view.style.display = 'none';
         });
 
@@ -1092,9 +1119,10 @@ const App = {
         const libraryTab = document.getElementById('fractalLibraryTabBtn');
         const alertsTab = document.getElementById('fractalAlertsTabBtn');
         const ingestTab = document.getElementById('fractalIngestTabBtn');
+        const recallTab = document.getElementById('fractalRecallTabBtn');
         const manageTab = document.getElementById('fractalManageTabBtn');
 
-        [searchTab, commentsTab, notebooksTab, dashboardsTab, dictionariesTab, modelsTab, chatTab, libraryTab, alertsTab, ingestTab, manageTab].forEach(tabBtn => {
+        [searchTab, commentsTab, notebooksTab, dashboardsTab, dictionariesTab, modelsTab, chatTab, libraryTab, alertsTab, ingestTab, recallTab, manageTab].forEach(tabBtn => {
             if (tabBtn) tabBtn.classList.remove('active');
         });
 
@@ -1221,6 +1249,13 @@ const App = {
                 if (ingestView) ingestView.style.display = 'block';
                 if (ingestTab) ingestTab.classList.add('active');
                 if (window.IngestTokens) IngestTokens.show();
+                break;
+            case 'recall':
+                if (recallContent) recallContent.style.display = 'flex';
+                if (recallView) recallView.style.display = 'flex';
+                if (recallTab) recallTab.classList.add('active');
+                document.body.classList.add('recall-active');
+                if (window.Recall) Recall.show(subPath);
                 break;
             case 'manage':
                 if (manageContent) manageContent.style.display = 'block';

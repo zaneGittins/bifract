@@ -1821,3 +1821,31 @@ CREATE INDEX IF NOT EXISTS idx_archive_restore_jobs_pending
     ON archive_restore_jobs (created_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_archive_restore_jobs_created
     ON archive_restore_jobs (created_at DESC);
+
+-- Async Recall search jobs (per-fractal BQL search over the Iceberg archive).
+-- The archiver claims and executes; results are bounded JSONB, aged out by the
+-- server's hourly cleanup. See migration 037_archive_search_jobs.sql.
+CREATE TABLE IF NOT EXISTS archive_search_jobs (
+    id            BIGSERIAL PRIMARY KEY,
+    fractal_id    TEXT NOT NULL,
+    query         TEXT NOT NULL,
+    from_ts       TIMESTAMPTZ NOT NULL,
+    to_ts         TIMESTAMPTZ NOT NULL,
+    max_rows      INTEGER NOT NULL DEFAULT 1000,
+    status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'canceled')),
+    row_count     BIGINT NOT NULL DEFAULT 0,
+    is_aggregated BOOLEAN NOT NULL DEFAULT FALSE,
+    limit_hit     BOOLEAN NOT NULL DEFAULT FALSE,
+    field_order   JSONB,
+    results       JSONB,
+    error         TEXT,
+    requested_by  TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at    TIMESTAMPTZ,
+    finished_at   TIMESTAMPTZ,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_archive_search_jobs_pending
+    ON archive_search_jobs (created_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_archive_search_jobs_fractal
+    ON archive_search_jobs (fractal_id, created_at DESC);

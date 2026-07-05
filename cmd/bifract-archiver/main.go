@@ -85,6 +85,10 @@ func runCmd() {
 	// the first job, so it does not break the dormant-but-present guarantee.
 	go archive.NewRestoreWorker(cfg, db).Run(ctx)
 
+	// Recall search worker: services per-fractal BQL searches over the Iceberg
+	// archive. Same lazy-dep / independent-of-enable-gate design as restore.
+	go archive.NewSearchWorker(cfg, db).Run(ctx)
+
 	// Dormant-but-present: idle until archiving is enabled, so a provisioned but
 	// disabled archive never needs the object store to be reachable.
 	for !enabled() {
