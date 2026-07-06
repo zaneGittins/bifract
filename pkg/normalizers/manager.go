@@ -21,7 +21,7 @@ func NewManager(pg *storage.PostgresClient) *Manager {
 
 func (m *Manager) List(ctx context.Context) ([]Normalizer, error) {
 	rows, err := m.pg.Query(ctx,
-		`SELECT id, name, description, transforms, field_mappings, timestamp_fields,
+		`SELECT id, name, description, transforms, field_mappings, value_mappings, timestamp_fields,
 		        is_default, COALESCE(created_by, ''), created_at, updated_at, version
 		 FROM normalizers ORDER BY is_default DESC, name`)
 	if err != nil {
@@ -42,7 +42,7 @@ func (m *Manager) List(ctx context.Context) ([]Normalizer, error) {
 
 func (m *Manager) Get(ctx context.Context, id string) (*Normalizer, error) {
 	row := m.pg.QueryRow(ctx,
-		`SELECT id, name, description, transforms, field_mappings, timestamp_fields,
+		`SELECT id, name, description, transforms, field_mappings, value_mappings, timestamp_fields,
 		        is_default, COALESCE(created_by, ''), created_at, updated_at, version
 		 FROM normalizers WHERE id = $1`, id)
 	n, err := scanNormalizerRow(row)
@@ -57,7 +57,7 @@ func (m *Manager) Get(ctx context.Context, id string) (*Normalizer, error) {
 
 func (m *Manager) GetDefault(ctx context.Context) (*Normalizer, error) {
 	row := m.pg.QueryRow(ctx,
-		`SELECT id, name, description, transforms, field_mappings, timestamp_fields,
+		`SELECT id, name, description, transforms, field_mappings, value_mappings, timestamp_fields,
 		        is_default, COALESCE(created_by, ''), created_at, updated_at, version
 		 FROM normalizers WHERE is_default = true LIMIT 1`)
 	n, err := scanNormalizerRow(row)
@@ -82,23 +82,27 @@ func (m *Manager) GetDefaultID(ctx context.Context) string {
 }
 
 func (m *Manager) Create(ctx context.Context, req CreateRequest, createdBy string) (*Normalizer, error) {
-	if err := validateRequest(req.Name, req.Transforms, req.FieldMappings); err != nil {
+	if err := validateRequest(req.Name, req.Transforms, req.FieldMappings, req.ValueMappings); err != nil {
 		return nil, err
 	}
 
 	transformsJSON, _ := json.Marshal(req.Transforms)
 	mappingsJSON, _ := json.Marshal(req.FieldMappings)
+	valueMappingsJSON, _ := json.Marshal(req.ValueMappings)
+	if req.ValueMappings == nil {
+		valueMappingsJSON = []byte("[]")
+	}
 	tsFieldsJSON, _ := json.Marshal(req.TimestampFields)
 	if req.TimestampFields == nil {
 		tsFieldsJSON = []byte("[]")
 	}
 
 	row := m.pg.QueryRow(ctx,
-		`INSERT INTO normalizers (name, description, transforms, field_mappings, timestamp_fields, created_by)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING id, name, description, transforms, field_mappings, timestamp_fields,
+		`INSERT INTO normalizers (name, description, transforms, field_mappings, value_mappings, timestamp_fields, created_by)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING id, name, description, transforms, field_mappings, value_mappings, timestamp_fields,
 		           is_default, COALESCE(created_by, ''), created_at, updated_at, version`,
-		req.Name, req.Description, string(transformsJSON), string(mappingsJSON), string(tsFieldsJSON), createdBy)
+		req.Name, req.Description, string(transformsJSON), string(mappingsJSON), string(valueMappingsJSON), string(tsFieldsJSON), createdBy)
 
 	n, err := scanNormalizerRow(row)
 	if err != nil {
@@ -108,12 +112,16 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest, createdBy strin
 }
 
 func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Normalizer, error) {
-	if err := validateRequest(req.Name, req.Transforms, req.FieldMappings); err != nil {
+	if err := validateRequest(req.Name, req.Transforms, req.FieldMappings, req.ValueMappings); err != nil {
 		return nil, err
 	}
 
 	transformsJSON, _ := json.Marshal(req.Transforms)
 	mappingsJSON, _ := json.Marshal(req.FieldMappings)
+	valueMappingsJSON, _ := json.Marshal(req.ValueMappings)
+	if req.ValueMappings == nil {
+		valueMappingsJSON = []byte("[]")
+	}
 	tsFieldsJSON, _ := json.Marshal(req.TimestampFields)
 	if req.TimestampFields == nil {
 		tsFieldsJSON = []byte("[]")
@@ -121,12 +129,12 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*No
 
 	row := m.pg.QueryRow(ctx,
 		`UPDATE normalizers
-		 SET name = $1, description = $2, transforms = $3, field_mappings = $4, timestamp_fields = $5,
+		 SET name = $1, description = $2, transforms = $3, field_mappings = $4, value_mappings = $5, timestamp_fields = $6,
 		     updated_at = NOW(), version = version + 1
-		 WHERE id = $6
-		 RETURNING id, name, description, transforms, field_mappings, timestamp_fields,
+		 WHERE id = $7
+		 RETURNING id, name, description, transforms, field_mappings, value_mappings, timestamp_fields,
 		           is_default, COALESCE(created_by, ''), created_at, updated_at, version`,
-		req.Name, req.Description, string(transformsJSON), string(mappingsJSON), string(tsFieldsJSON), id)
+		req.Name, req.Description, string(transformsJSON), string(mappingsJSON), string(valueMappingsJSON), string(tsFieldsJSON), id)
 
 	n, err := scanNormalizerRow(row)
 	if err != nil {
@@ -191,7 +199,7 @@ func (m *Manager) SetDefault(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
-func validateRequest(name string, transforms []Transform, mappings []FieldMapping) error {
+func validateRequest(name string, transforms []Transform, mappings []FieldMapping, valueMappings []ValueMapping) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Errorf("name is required")
@@ -209,20 +217,35 @@ func validateRequest(name string, transforms []Transform, mappings []FieldMappin
 			return fmt.Errorf("field mapping target is required")
 		}
 	}
+	for _, vm := range valueMappings {
+		if strings.TrimSpace(vm.FromField) == "" {
+			return fmt.Errorf("derived field requires a source field")
+		}
+		if strings.TrimSpace(vm.ToField) == "" {
+			return fmt.Errorf("derived field requires a target field")
+		}
+		if strings.TrimSpace(vm.FromField) == strings.TrimSpace(vm.ToField) {
+			return fmt.Errorf("derived field source and target must differ")
+		}
+		if len(vm.Map) == 0 && vm.Default == "" {
+			return fmt.Errorf("derived field %q requires at least one value mapping or a default", vm.ToField)
+		}
+	}
 	return nil
 }
 
 // scanNormalizer scans a normalizer from a rows iterator.
 func scanNormalizer(rows *sql.Rows) (Normalizer, error) {
 	var n Normalizer
-	var transformsRaw, mappingsRaw, tsFieldsRaw []byte
+	var transformsRaw, mappingsRaw, valueMappingsRaw, tsFieldsRaw []byte
 	if err := rows.Scan(&n.ID, &n.Name, &n.Description,
-		&transformsRaw, &mappingsRaw, &tsFieldsRaw,
+		&transformsRaw, &mappingsRaw, &valueMappingsRaw, &tsFieldsRaw,
 		&n.IsDefault, &n.CreatedBy, &n.CreatedAt, &n.UpdatedAt, &n.Version); err != nil {
 		return n, fmt.Errorf("scan normalizer: %w", err)
 	}
 	json.Unmarshal(transformsRaw, &n.Transforms)
 	json.Unmarshal(mappingsRaw, &n.FieldMappings)
+	json.Unmarshal(valueMappingsRaw, &n.ValueMappings)
 	json.Unmarshal(tsFieldsRaw, &n.TimestampFields)
 	return n, nil
 }
@@ -234,15 +257,16 @@ type scannable interface {
 // scanNormalizerRow scans a normalizer from a single row.
 func scanNormalizerRow(row scannable) (Normalizer, error) {
 	var n Normalizer
-	var transformsRaw, mappingsRaw, tsFieldsRaw []byte
+	var transformsRaw, mappingsRaw, valueMappingsRaw, tsFieldsRaw []byte
 	err := row.Scan(&n.ID, &n.Name, &n.Description,
-		&transformsRaw, &mappingsRaw, &tsFieldsRaw,
+		&transformsRaw, &mappingsRaw, &valueMappingsRaw, &tsFieldsRaw,
 		&n.IsDefault, &n.CreatedBy, &n.CreatedAt, &n.UpdatedAt, &n.Version)
 	if err != nil {
 		return n, err
 	}
 	json.Unmarshal(transformsRaw, &n.Transforms)
 	json.Unmarshal(mappingsRaw, &n.FieldMappings)
+	json.Unmarshal(valueMappingsRaw, &n.ValueMappings)
 	json.Unmarshal(tsFieldsRaw, &n.TimestampFields)
 	return n, nil
 }
@@ -263,7 +287,7 @@ func (m *Manager) CompileByID(ctx context.Context, id string) *CompiledNormalize
 // CompileFromRaw builds a CompiledNormalizer from raw JSONB columns.
 // Used in the hot path to avoid an extra DB round-trip. name/version are carried
 // through so each ingested log can be stamped with the normalizer identity.
-func CompileFromRaw(name string, version int, transformsRaw, mappingsRaw, tsFieldsRaw []byte) *CompiledNormalizer {
+func CompileFromRaw(name string, version int, transformsRaw, mappingsRaw, valueMappingsRaw, tsFieldsRaw []byte) *CompiledNormalizer {
 	if transformsRaw == nil && mappingsRaw == nil {
 		return nil
 	}
@@ -272,6 +296,7 @@ func CompileFromRaw(name string, version int, transformsRaw, mappingsRaw, tsFiel
 	n.Version = version
 	json.Unmarshal(transformsRaw, &n.Transforms)
 	json.Unmarshal(mappingsRaw, &n.FieldMappings)
+	json.Unmarshal(valueMappingsRaw, &n.ValueMappings)
 	json.Unmarshal(tsFieldsRaw, &n.TimestampFields)
 	return n.Compile()
 }
@@ -342,6 +367,7 @@ func (m *Manager) Duplicate(ctx context.Context, id string, createdBy string) (*
 		Description:     original.Description,
 		Transforms:      original.Transforms,
 		FieldMappings:   original.FieldMappings,
+		ValueMappings:   original.ValueMappings,
 		TimestampFields: original.TimestampFields,
 	}
 	return m.Create(ctx, req, createdBy)

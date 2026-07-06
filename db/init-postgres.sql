@@ -1061,6 +1061,7 @@ CREATE TABLE IF NOT EXISTS normalizers (
     description TEXT DEFAULT '',
     transforms JSONB NOT NULL DEFAULT '[]',
     field_mappings JSONB NOT NULL DEFAULT '[]',
+    value_mappings JSONB NOT NULL DEFAULT '[]',
     timestamp_fields JSONB NOT NULL DEFAULT '[]',
     is_default BOOLEAN NOT NULL DEFAULT false,
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
@@ -1073,6 +1074,7 @@ CREATE TABLE IF NOT EXISTS normalizers (
 
 ALTER TABLE normalizers ADD COLUMN IF NOT EXISTS timestamp_fields JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE normalizers ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 1;
+ALTER TABLE normalizers ADD COLUMN IF NOT EXISTS value_mappings JSONB NOT NULL DEFAULT '[]';
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_normalizers_default_unique
     ON normalizers(is_default) WHERE is_default = true;

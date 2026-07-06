@@ -30,6 +30,19 @@ var ProjectDefaultFields = []SchemaField{
 	{FieldName: "duration",           IndexType: IndexTypeNone,        IsDefault: true},
 	{FieldName: "orig_bytes",         IndexType: IndexTypeNone,        IsDefault: true},
 	{FieldName: "resp_bytes",         IndexType: IndexTypeNone,        IsDefault: true},
+	// Canonical taxonomy field produced by normalizer derived-field (value-map)
+	// transforms, e.g. Sysmon event_id -> process_creation. Namespaced with a
+	// bifract_ prefix because "category" is a very common source field (ECS
+	// event.category, Windows/firewall/proxy logs) that would otherwise collide;
+	// bifract_category is a Bifract-controlled signal ptg/pgr can trust. Low-
+	// cardinality (~15 values), so a skip index would never prune: type hint only.
+	{FieldName: "bifract_category",   IndexType: IndexTypeNone,        IsDefault: true},
+	// Process provenance fields (Sysmon EID 1 etc). process_guid gets a bloom for
+	// the process-tree leaf-fetch (pgr) that filters logs by it; parent_process_guid
+	// is type-hint only (nothing filters logs by it -- proc_lineage carries its own
+	// parent_guid bloom), so a bloom here would only tax the ingest path.
+	{FieldName: "process_guid",        IndexType: IndexTypeBloomFilter, IsDefault: true},
+	{FieldName: "parent_process_guid", IndexType: IndexTypeNone,        IsDefault: true},
 }
 
 // ProjectDefaultFieldMap returns a set of project default field names for O(1) lookup.

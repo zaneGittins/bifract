@@ -49,7 +49,7 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 		if entry != nil {
 			switch entry.Kind {
 			case FieldKindWindow:
-				if plan.IsTraversal {
+				if plan.IsTraversal || plan.IsProcessTree {
 					target = &plan.pendingHavingConditions
 				} else {
 					target = &plan.pendingDeferredConditions
@@ -107,7 +107,7 @@ func classifyCompoundTarget(cond HavingCondition, registry *FieldRegistry, plan 
 		if entry != nil {
 			switch entry.Kind {
 			case FieldKindWindow:
-				if plan.IsTraversal {
+				if plan.IsTraversal || plan.IsProcessTree {
 					priority = 2
 				} else {
 					priority = 1

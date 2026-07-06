@@ -111,6 +111,33 @@ func (c *ClickHouseClient) HotReadTable() string {
 	return "logs_hot"
 }
 
+// ProcLineageReadTable returns the table name for ptg() process-tree traversal.
+// In cluster mode this fans out to all shards via proc_lineage_distributed so a
+// recursive hop gathers a process's children/parents from every shard (rows are
+// rand-placed, following their source log row).
+func (c *ClickHouseClient) ProcLineageReadTable() string {
+	if c.Cluster != "" {
+		return "proc_lineage_distributed"
+	}
+	return "proc_lineage"
+}
+
+// ReconcileProcLineageTTL applies a configured retention (in days) to proc_lineage via a
+// metadata-only ALTER ... MODIFY TTL. proc_lineage is decoupled from logs retention and
+// kept long for DFIR (year-old process trees are common), so operators tune it with
+// BIFRACT_PROC_LINEAGE_TTL_DAYS without editing DDL. Re-applying the same expression is a
+// cheap no-op. days <= 0 leaves the DDL default (365 days) in place.
+func (c *ClickHouseClient) ReconcileProcLineageTTL(ctx context.Context, days int) error {
+	if days <= 0 {
+		return nil
+	}
+	stmt := fmt.Sprintf(
+		"ALTER TABLE proc_lineage%s MODIFY TTL toDateTime(timestamp) + INTERVAL %d DAY",
+		c.OnClusterSQL(), days,
+	)
+	return c.conn.Exec(ctx, stmt)
+}
+
 // rewriteEngineRe matches ENGINE = MergeTree(), ReplacingMergeTree(), SummingMergeTree(), or AggregatingMergeTree(args).
 var rewriteEngineRe = regexp.MustCompile(`(?i)ENGINE\s*=\s*(MergeTree|ReplacingMergeTree|SummingMergeTree|AggregatingMergeTree)\s*\(([^)]*)\)`)
 
@@ -249,6 +276,13 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 			if err := c.conn.Exec(ctx, hotDistSQL); err != nil {
 				return fmt.Errorf("failed to create hot distributed table: %w\nstatement: %s", err, hotDistSQL)
 			}
+			procDistSQL := fmt.Sprintf(
+				"CREATE TABLE IF NOT EXISTS proc_lineage_distributed%s AS proc_lineage ENGINE = Distributed('%s', currentDatabase(), 'proc_lineage', rand())",
+				c.OnClusterSQL(), EscCHStr(c.Cluster),
+			)
+			if err := c.conn.Exec(ctx, procDistSQL); err != nil {
+				return fmt.Errorf("failed to create proc_lineage distributed table: %w\nstatement: %s", err, procDistSQL)
+			}
 		}
 		setClickHouseMigrationsBaseline(ctx, c.conn, c.RewriteEngine, migrations, migrationsDir)
 		return nil
@@ -270,6 +304,10 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 			"CREATE TABLE IF NOT EXISTS logs_hot_distributed AS logs_hot ENGINE = Distributed('%s', currentDatabase(), 'logs_hot', rand())",
 			EscCHStr(c.Cluster),
 		)
+		procDistSQL := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS proc_lineage_distributed AS proc_lineage ENGINE = Distributed('%s', currentDatabase(), 'proc_lineage', rand())",
+			EscCHStr(c.Cluster),
+		)
 		go func() {
 			initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
 			for _, addr := range c.addrs {
@@ -284,7 +322,7 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 				} else if n > 0 {
 					log.Printf("Applied %d ClickHouse migration(s) to shard %s", n, addr)
 				}
-				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL} {
+				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL, procDistSQL} {
 					stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
 					hostConn.Exec(stmtCtx, stmt)
 					stmtCancel()
@@ -296,6 +334,7 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 					{"logs_distributed", "logs"},
 					{"logs_histogram_distributed", "logs_histogram"},
 					{"logs_hot_distributed", "logs_hot"},
+					{"proc_lineage_distributed", "proc_lineage"},
 				} {
 					syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
 					if err := syncDistributedColumns(syncCtx, hostConn, c.Database, pair[0], pair[1]); err != nil {

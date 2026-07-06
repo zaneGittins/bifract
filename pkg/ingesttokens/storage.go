@@ -201,15 +201,15 @@ func (s *Storage) ValidateToken(ctx context.Context, rawToken string) (*Validate
 	var normalizerID sql.NullString
 	var normName sql.NullString
 	var normVersion sql.NullInt64
-	var transformsRaw, mappingsRaw, normTsFieldsRaw []byte
+	var transformsRaw, mappingsRaw, valueMappingsRaw, normTsFieldsRaw []byte
 	err := s.pg.DB().QueryRowContext(ctx, `
 		SELECT t.id, t.fractal_id, t.parser_type, t.timestamp_fields,
-		       t.normalizer_id, n.name, n.version, n.transforms, n.field_mappings, n.timestamp_fields
+		       t.normalizer_id, n.name, n.version, n.transforms, n.field_mappings, n.value_mappings, n.timestamp_fields
 		FROM ingest_tokens t
 		LEFT JOIN normalizers n ON t.normalizer_id = n.id
 		WHERE t.token_hash = $1 AND t.is_active = true
 	`, tokenHash).Scan(&v.TokenID, &v.FractalID, &v.ParserType, &tsRaw,
-		&normalizerID, &normName, &normVersion, &transformsRaw, &mappingsRaw, &normTsFieldsRaw)
+		&normalizerID, &normName, &normVersion, &transformsRaw, &mappingsRaw, &valueMappingsRaw, &normTsFieldsRaw)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("invalid ingest token")
@@ -220,7 +220,7 @@ func (s *Storage) ValidateToken(ctx context.Context, rawToken string) (*Validate
 	json.Unmarshal(tsRaw, &v.TimestampFields)
 
 	if normalizerID.Valid {
-		v.Normalizer = normalizers.CompileFromRaw(normName.String, int(normVersion.Int64), transformsRaw, mappingsRaw, normTsFieldsRaw)
+		v.Normalizer = normalizers.CompileFromRaw(normName.String, int(normVersion.Int64), transformsRaw, mappingsRaw, valueMappingsRaw, normTsFieldsRaw)
 	}
 	return &v, nil
 }

@@ -101,6 +101,12 @@ type QueryPlan struct {
 	TraversalInclude []string
 	TraversalDepth   int
 
+	// Process-tree (ptg) fields: MV-backed process lineage traversal over proc_lineage.
+	IsProcessTree        bool
+	ProcessTreeStart     string
+	ProcessTreeDepth     int
+	ProcessTreeDirection string // "forward" | "backward" | "both"
+
 	// AnalyzeFields-specific fields
 	AnalyzeFieldsList      []string
 	AnalyzeFieldsScanLimit int
@@ -193,6 +199,9 @@ func (p *QueryPlan) PushStage() {
 func (p *QueryPlan) Render(opts QueryOptions) (string, error) {
 	if p.IsTraversal {
 		return p.renderTraversal(opts)
+	}
+	if p.IsProcessTree {
+		return p.renderProcessTree(opts)
 	}
 	if p.IsAnalyze {
 		return p.renderAnalyze(opts)
@@ -368,6 +377,25 @@ func (p *QueryPlan) renderTraversal(opts QueryOptions) (string, error) {
 		return "", err
 	}
 	// Copy result metadata back to plan
+	p.FieldOrder = result.FieldOrder
+	p.IsAggregated = result.IsAggregated
+	return result.SQL, nil
+}
+
+func (p *QueryPlan) renderProcessTree(opts QueryOptions) (string, error) {
+	source := p.SourceStage()
+	result, err := buildProcessTreeSQL(
+		p.ProcessTreeStart,
+		p.ProcessTreeDepth,
+		p.ProcessTreeDirection,
+		source.Layer.Having,
+		p.ChartType,
+		p.ChartConfig,
+		opts,
+	)
+	if err != nil {
+		return "", err
+	}
 	p.FieldOrder = result.FieldOrder
 	p.IsAggregated = result.IsAggregated
 	return result.SQL, nil

@@ -128,6 +128,7 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Transforms    []Transform    `json:"transforms"`
 		FieldMappings []FieldMapping `json:"field_mappings"`
+		ValueMappings []ValueMapping `json:"value_mappings"`
 		SampleJSON    string         `json:"sample_json"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -143,6 +144,7 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 	n := &Normalizer{
 		Transforms:    req.Transforms,
 		FieldMappings: req.FieldMappings,
+		ValueMappings: req.ValueMappings,
 	}
 	compiled := n.Compile()
 
@@ -157,29 +159,51 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 	built := BuildFieldsWithNested(obj)
 	normalizedFields := compiled.ApplyTransformsWithNested(built.Fields, built.NestedKeys)
 
-	// Build preview results: show the final normalized fields.
-	// Detect collisions (multiple output keys mapping to the same normalized key).
-	var results []previewFieldResult
-	collisions := make(map[string][]string)
-	keySources := make(map[string]int)
-
-	for k := range normalizedFields {
-		keySources[k]++
+	// Identify derived-field targets and, for override detection, the field set
+	// produced WITHOUT value mappings. A target present in baseFields means the
+	// derived field overwrote an existing normalized field.
+	derivedTargets := make(map[string]bool, len(req.ValueMappings))
+	for _, vm := range req.ValueMappings {
+		if vm.ToField != "" {
+			derivedTargets[vm.ToField] = true
+		}
+	}
+	baseFields := map[string]string{}
+	if len(derivedTargets) > 0 {
+		b := BuildFieldsWithNested(obj)
+		base := (&Normalizer{Transforms: req.Transforms, FieldMappings: req.FieldMappings}).Compile()
+		baseFields = base.ApplyTransformsWithNested(b.Fields, b.NestedKeys)
 	}
 
+	var results []previewFieldResult
 	for normKey, normVal := range normalizedFields {
-		_, hasCollision := collisions[normKey]
+		// Only badge a field when the value map actually produced or changed it:
+		// a new key (absent from baseFields), or an existing key whose value the map
+		// overwrote. An unchanged value means the map did not fire (unmatched, no
+		// default), so it stays unbadged.
+		derived := false
+		override := false
+		if derivedTargets[normKey] {
+			baseVal, inBase := baseFields[normKey]
+			if !inBase {
+				derived = true
+			} else if baseVal != normVal {
+				derived = true
+				override = true
+			}
+		}
 		results = append(results, previewFieldResult{
 			Original:   normKey,
 			Normalized: normKey,
 			Value:      normVal,
-			Collision:  hasCollision,
+			Derived:    derived,
+			Override:   override,
 		})
 	}
 
 	h.respondSuccess(w, map[string]interface{}{
 		"fields":     results,
-		"collisions": collisions,
+		"collisions": map[string][]string{},
 	})
 }
 
@@ -189,6 +213,8 @@ type previewFieldResult struct {
 	Normalized string `json:"normalized"`
 	Value      string `json:"value"`
 	Collision  bool   `json:"collision,omitempty"`
+	Derived    bool   `json:"derived,omitempty"`
+	Override   bool   `json:"override,omitempty"`
 }
 
 // HandleTokenUsage returns tokens using a given normalizer, with fractal names.
@@ -240,6 +266,7 @@ func (h *Handler) HandleExportYAML(w http.ResponseWriter, r *http.Request) {
 		Description:     n.Description,
 		Transforms:      n.Transforms,
 		FieldMappings:   n.FieldMappings,
+		ValueMappings:   n.ValueMappings,
 		TimestampFields: n.TimestampFields,
 	}
 
@@ -283,6 +310,7 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 		Description:     export.Description,
 		Transforms:      export.Transforms,
 		FieldMappings:   export.FieldMappings,
+		ValueMappings:   export.ValueMappings,
 		TimestampFields: export.TimestampFields,
 	}
 

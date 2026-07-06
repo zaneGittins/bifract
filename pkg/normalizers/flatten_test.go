@@ -717,6 +717,11 @@ func TestStringifyValue(t *testing.T) {
 		{float64(3.14), "3.14"},
 		{float64(0), "0"},
 		{float64(-1), "-1"},
+		// Large/whole numbers must render as plain decimals, never exponential,
+		// so exact-match lookups (value maps, BQL equality) work.
+		{float64(1000000), "1000000"},
+		{float64(4294967295), "4294967295"},
+		{float64(5000000), "5000000"},
 		{true, "true"},
 		{false, "false"},
 		{nil, ""},

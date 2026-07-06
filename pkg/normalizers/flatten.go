@@ -3,6 +3,7 @@ package normalizers
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"bifract/pkg/settings"
@@ -213,7 +214,11 @@ func stringifyValue(v interface{}) string {
 	case string:
 		return val
 	case float64:
-		return fmt.Sprintf("%v", val)
+		// JSON unmarshals all numbers to float64. Format without exponents
+		// ('f', -1) so whole/large numbers render as plain decimals ("1000000",
+		// not "1e+06"); this keeps stored values exact-match friendly (value maps,
+		// BQL equality) while ClickHouse still parses them for aggregation.
+		return strconv.FormatFloat(val, 'f', -1, 64)
 	case bool:
 		return fmt.Sprintf("%v", val)
 	case nil:

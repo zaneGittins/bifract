@@ -53,6 +53,15 @@ func (h *QueryHandler) queryTableName() string {
 	return "logs"
 }
 
+// procLineageTableName returns the process-lineage read table for ptg() traversal,
+// mirroring queryTableName's cluster-vs-single-node selection.
+func (h *QueryHandler) procLineageTableName() string {
+	if h.db != nil {
+		return h.db.ProcLineageReadTable()
+	}
+	return "proc_lineage"
+}
+
 // SetRBACResolver injects the RBAC resolver for access filtering.
 func (h *QueryHandler) SetRBACResolver(resolver *rbac.Resolver) {
 	h.rbacResolver = resolver
@@ -611,6 +620,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		CommentLogIDs:         commentLogIDs,
 		GeoIPEnabled:          h.geoIPEnabled,
 		TableName:             h.queryTableName(),
+		ProcLineageTable:      h.procLineageTableName(),
 		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
 	translationResult, err := parser.TranslateToSQLWithOrder(pipeline, opts)
@@ -861,6 +871,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		HasCommentFilter:      hasComment,
 		GeoIPEnabled:          h.geoIPEnabled,
 		TableName:             h.queryTableName(),
+		ProcLineageTable:      h.procLineageTableName(),
 		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
 	if _, err := parser.TranslateToSQLWithOrder(pipeline, opts); err != nil {

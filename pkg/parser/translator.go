@@ -32,6 +32,7 @@ type QueryOptions struct {
 	AlertExtraFields      []string                      // Additional fields to project in alert auto-projection (throttle field, template fields)
 	GeoIPEnabled          bool                          // True when MaxMind GeoLite2 dictionaries are loaded
 	TableName             string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
+	ProcLineageTable      string                        // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
 	IncludeShardNum       bool                          // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
 	SourceMode            SourceMode                    // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
 }
@@ -421,6 +422,24 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 			source.Layer.Limit,
 			source.Layer.Having,
 			plan.ChartType, plan.ChartConfig, opts, plan.HasTableCmd,
+		)
+	}
+	if plan.IsProcessTree {
+		if plan.IsAggregated {
+			return nil, fmt.Errorf("ptg() cannot be combined with aggregation functions")
+		}
+		if plan.IsChain {
+			return nil, fmt.Errorf("ptg() cannot be combined with chain()")
+		}
+		// proc_lineage is a live ClickHouse table, not part of the Iceberg archive; reject
+		// ptg() over archived/recall data rather than silently querying the hot table.
+		if opts.SourceMode == SourceIceberg {
+			return nil, fmt.Errorf("ptg() operates on live process lineage and is not available over archived data")
+		}
+		return buildProcessTreeSQL(
+			plan.ProcessTreeStart, plan.ProcessTreeDepth, plan.ProcessTreeDirection,
+			source.Layer.Having,
+			plan.ChartType, plan.ChartConfig, opts,
 		)
 	}
 	if plan.IsAnalyze {

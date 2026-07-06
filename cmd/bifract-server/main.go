@@ -267,6 +267,19 @@ func main() {
 		}()
 	}
 
+	// proc_lineage retention is decoupled from logs and kept long for DFIR (year-old
+	// process trees). BIFRACT_PROC_LINEAGE_TTL_DAYS overrides the 365-day DDL default via
+	// a metadata-only MODIFY TTL. Runs in the background; the table exists after init.
+	if days := getEnvInt("BIFRACT_PROC_LINEAGE_TTL_DAYS", 0); days > 0 {
+		go func() {
+			if err := db.ReconcileProcLineageTTL(context.Background(), days); err != nil {
+				log.Printf("Warning: proc_lineage TTL reconcile (%d days) failed: %v", days, err)
+			} else {
+				log.Printf("proc_lineage TTL set to %d days", days)
+			}
+		}()
+	}
+
 	// Initialize settings from database
 	if err := settings.Init(pg); err != nil {
 		log.Printf("Warning: Failed to initialize settings: %v", err)

@@ -68,6 +68,20 @@ func (c *CompiledNormalizer) ApplyTransformsWithNested(fields map[string]string,
 		result = mapped
 	}
 
+	// Apply additive value mappings (derived fields) after field mappings, so
+	// FromField references the already-renamed key. Never touches the source.
+	for _, vm := range c.ValueMappings {
+		src, ok := result[vm.FromField]
+		if !ok {
+			continue
+		}
+		if mappedVal, ok := vm.Map[src]; ok {
+			result[vm.ToField] = mappedVal
+		} else if vm.Default != "" {
+			result[vm.ToField] = vm.Default
+		}
+	}
+
 	return result
 }
 

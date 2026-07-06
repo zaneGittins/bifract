@@ -144,6 +144,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 		CommentLogIDs:         commentLogIDs,
 		GeoIPEnabled:          h.geoIPEnabled,
 		TableName:             h.queryTableName(),
+		ProcLineageTable:      h.procLineageTableName(),
 		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
 	translationResult, err := parser.TranslateToSQLWithOrder(pipeline, opts)

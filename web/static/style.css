@@ -14064,6 +14064,37 @@ div.vis-tooltip {
     flex-shrink: 0;
 }
 
+.normalizer-derived-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.normalizer-derived-row .derived-from,
+.normalizer-derived-row .derived-to {
+    flex: 1;
+}
+
+.normalizer-derived-row .derived-default {
+    flex: 0.7;
+}
+
+.normalizer-derived-row .mapping-arrow {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    white-space: nowrap;
+}
+
+.normalizer-derived-row .derived-values-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.normalizer-derived-row .mapping-remove {
+    flex-shrink: 0;
+}
+
 .normalizer-ts-field-row {
     display: flex;
     align-items: center;
@@ -14429,6 +14460,32 @@ div.vis-tooltip {
     border: 1px solid rgba(248, 113, 113, 0.2);
     color: #f87171;
     font-size: 0.825rem;
+}
+
+.preview-derived-row {
+    background: rgba(52, 211, 153, 0.07);
+}
+
+.preview-derived-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    background: rgba(52, 211, 153, 0.15);
+    color: #34d399;
+    margin-left: 0.4rem;
+    font-weight: 500;
+}
+
+.preview-override-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+    margin-left: 0.4rem;
+    font-weight: 500;
 }
 
 .preview-error {

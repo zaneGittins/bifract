@@ -852,6 +852,12 @@
                                     <button class="btn-secondary btn-sm" onclick="Normalizers.addMappingRow()" style="margin-top: 0.5rem;">+ Add Mapping</button>
                                 </div>
                                 <div class="form-group" style="margin-top: 1.5rem;">
+                                    <label>Derived Fields <span class="form-help-inline">(applied after field mappings)</span></label>
+                                    <p class="help-text">Derive a new field from an existing field's value without removing the source (e.g. event_id 1 -> bifract_category process_creation). Enter the value map as key=value lines.</p>
+                                    <div id="normalizerDerivedFields"></div>
+                                    <button class="btn-secondary btn-sm" onclick="Normalizers.addDerivedFieldRow()" style="margin-top: 0.5rem;">+ Add Derived Field</button>
+                                </div>
+                                <div class="form-group" style="margin-top: 1.5rem;">
                                     <label>Timestamp Fields <span class="form-help-inline">(checked in order during ingestion)</span></label>
                                     <p class="help-text">Configure which fields to check for timestamps and their Go time format. If no match is found, ingest time is used.</p>
                                     <div id="normalizerTimestampFields"></div>
@@ -887,6 +893,22 @@
                     <div class="mapping-sources-modal-footer">
                         <button class="btn-secondary" onclick="Normalizers.closeMappingSourcesModal()">Cancel</button>
                         <button class="btn-primary" onclick="Normalizers.saveMappingSourcesModal()">Apply</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Derived Field Values Modal -->
+            <div id="derivedValuesModal" class="mapping-sources-modal-overlay" style="display: none;">
+                <div class="mapping-sources-modal">
+                    <div class="mapping-sources-modal-header">
+                        <h3>Edit Value Map</h3>
+                        <button class="btn-sm btn-secondary" onclick="Normalizers.closeDerivedValuesModal()">&times;</button>
+                    </div>
+                    <p class="help-text">One mapping per line as <code>value=result</code> (e.g. <code>1=process_creation</code>). Paste a block to add many at once.</p>
+                    <textarea id="derivedValuesTextarea" rows="12" placeholder="1=process_creation&#10;3=network_connect&#10;11=file_write"></textarea>
+                    <div class="mapping-sources-modal-footer">
+                        <button class="btn-secondary" onclick="Normalizers.closeDerivedValuesModal()">Cancel</button>
+                        <button class="btn-primary" onclick="Normalizers.saveDerivedValuesModal()">Apply</button>
                     </div>
                 </div>
             </div>

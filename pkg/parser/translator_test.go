@@ -1373,6 +1373,149 @@ func TestMathAssignment(t *testing.T) {
 	})
 }
 
+func TestPTGFunction(t *testing.T) {
+	opts := QueryOptions{
+		StartTime:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:          time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:          1000,
+		FractalID:        "test-fractal",
+		ProcLineageTable: "proc_lineage",
+	}
+
+	translate := func(t *testing.T, query string) string {
+		t.Helper()
+		pipeline, err := ParseQuery(query)
+		if err != nil {
+			t.Fatalf("Failed to parse %q: %v", query, err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate %q: %v", query, err)
+		}
+		return result.SQL
+	}
+
+	t.Run("both (default) traverses proc_lineage with forward+backward CTEs", func(t *testing.T) {
+		sql := translate(t, `ptg(start="ABC123")`)
+		for _, want := range []string{
+			"WITH RECURSIVE tree_fwd AS",
+			"tree_bwd AS",
+			"FROM proc_lineage FINAL",
+			"process_guid = 'ABC123'",
+			"l.parent_guid = t._node_id",  // forward: children
+			"l.process_guid = t._node_id", // backward: ancestors
+			"UNION DISTINCT",
+			"t._depth < 10", // default depth
+			"ORDER BY _path ASC",
+			"fractal_id = 'test-fractal'",
+		} {
+			if !strings.Contains(sql, want) {
+				t.Errorf("expected %q in SQL, got: %s", want, sql)
+			}
+		}
+	})
+
+	t.Run("forward only", func(t *testing.T) {
+		sql := translate(t, `ptg(start="ABC", direction=forward, depth=5)`)
+		if !strings.Contains(sql, "WITH RECURSIVE tree AS") {
+			t.Errorf("expected single tree CTE, got: %s", sql)
+		}
+		if strings.Contains(sql, "tree_bwd") {
+			t.Errorf("forward-only should not emit tree_bwd, got: %s", sql)
+		}
+		if !strings.Contains(sql, "l.parent_guid = t._node_id") {
+			t.Errorf("expected forward child join, got: %s", sql)
+		}
+		if !strings.Contains(sql, "t._depth < 5") {
+			t.Errorf("expected depth 5, got: %s", sql)
+		}
+	})
+
+	t.Run("backward only walks up via process_guid", func(t *testing.T) {
+		sql := translate(t, `ptg(start="ABC", direction=backward)`)
+		if !strings.Contains(sql, "l.process_guid = t._node_id") {
+			t.Errorf("expected backward parent join, got: %s", sql)
+		}
+		if strings.Contains(sql, "l.parent_guid = t._node_id") {
+			t.Errorf("backward should not use forward join, got: %s", sql)
+		}
+	})
+
+	t.Run("depth is capped at 50", func(t *testing.T) {
+		sql := translate(t, `ptg(start="ABC", depth=99)`)
+		if !strings.Contains(sql, "t._depth < 50") {
+			t.Errorf("expected depth cap 50, got: %s", sql)
+		}
+	})
+
+	t.Run("pipes to graph() unchanged", func(t *testing.T) {
+		pipeline, err := ParseQuery(`ptg(start="ABC") | graph(child=process_guid, parent=parent_guid, labels=image)`)
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("translate failed: %v", err)
+		}
+		if result.ChartType != "graph" {
+			t.Errorf("expected ChartType graph, got %q", result.ChartType)
+		}
+	})
+
+	t.Run("drops logs fields.* pre-filters (flat table, v1 scoping)", func(t *testing.T) {
+		sql := translate(t, `image="cmd.exe" | ptg(start="ABC")`)
+		if strings.Contains(sql, "fields.") {
+			t.Errorf("proc_lineage is flat; fields.* filters must be dropped, got: %s", sql)
+		}
+	})
+
+	t.Run("drops free-text norm_log pre-filter (would crash flat table)", func(t *testing.T) {
+		// Regression: a leading full-text search compiles to match(lower(norm_log), ...),
+		// which does not contain "fields." and used to leak into the proc_lineage query,
+		// crashing with "Unknown expression norm_log".
+		sql := translate(t, `"powershell" | ptg(start="ABC")`)
+		if strings.Contains(sql, "norm_log") || strings.Contains(sql, "raw_log") {
+			t.Errorf("logs-only columns must not leak into proc_lineage query, got: %s", sql)
+		}
+	})
+
+	t.Run("preserves fractal isolation", func(t *testing.T) {
+		sql := translate(t, `ptg(start="ABC")`)
+		if !strings.Contains(sql, "fractal_id = 'test-fractal'") {
+			t.Errorf("base case must scope to the fractal, got: %s", sql)
+		}
+		if !strings.Contains(sql, "l.fractal_id = 'test-fractal'") {
+			t.Errorf("recursive case must also scope to the fractal, got: %s", sql)
+		}
+	})
+
+	t.Run("_depth post-filter applies on raw UInt32 (not the toString alias)", func(t *testing.T) {
+		// Regression: `toString(_depth) AS _depth` in the same SELECT as `WHERE _depth <= 2`
+		// made ClickHouse resolve _depth to the String alias -> code 386 NO_COMMON_TYPE.
+		// The toString projection must be in a strictly OUTER select than the filter.
+		sql := translate(t, `ptg(start="A", direction=forward) | _depth <= 2`)
+		if !strings.Contains(sql, "WHERE _depth <= 2") {
+			t.Fatalf("expected inner _depth filter, got: %s", sql)
+		}
+		ts := strings.Index(sql, "toString(_depth)")
+		wh := strings.Index(sql, "WHERE _depth")
+		if ts < 0 || wh < 0 || ts > wh {
+			t.Errorf("toString(_depth) must be in the outer SELECT (before the inner WHERE); got toString@%d where@%d: %s", ts, wh, sql)
+		}
+	})
+
+	t.Run("requires start=", func(t *testing.T) {
+		_, err := ParseQuery(`ptg(depth=5)`)
+		if err != nil {
+			return // parse-time rejection is fine
+		}
+		pipeline, _ := ParseQuery(`ptg(depth=5)`)
+		if _, err := TranslateToSQLWithOrder(pipeline, opts); err == nil {
+			t.Error("expected error when start= is missing")
+		}
+	})
+}
+
 func TestBFSFunction(t *testing.T) {
 	opts := QueryOptions{
 		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1394,13 +1537,15 @@ func TestBFSFunction(t *testing.T) {
 		if !strings.Contains(sql, "WITH RECURSIVE traversal AS") {
 			t.Errorf("Expected recursive CTE, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`process_guid`::String AS _node_id") {
+		// process_guid / parent_process_guid are type-hinted defaults, so jsonFieldRef
+		// emits the bare sub-column (no ::String cast) -- required for the bloom index to fire.
+		if !strings.Contains(sql, "fields.`process_guid` AS _node_id") {
 			t.Errorf("Expected child field as _node_id, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`parent_process_guid`::String = t._node_id") {
+		if !strings.Contains(sql, "fields.`parent_process_guid` = t._node_id") {
 			t.Errorf("Expected parent join condition, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`process_guid`::String = 'ABC123'") {
+		if !strings.Contains(sql, "fields.`process_guid` = 'ABC123'") {
 			t.Errorf("Expected start value filter, got: %s", sql)
 		}
 		if !strings.Contains(sql, "ORDER BY _depth ASC") {
@@ -1520,11 +1665,12 @@ func TestBFSFunction(t *testing.T) {
 			t.Fatalf("Failed to translate: %v", err)
 		}
 		sql := result.SQL
-		// Should extract child and parent fields plus include fields
-		if !strings.Contains(sql, "fields.`process_guid`::String AS _process_guid") {
+		// Should extract child and parent fields plus include fields. process_guid /
+		// parent_process_guid are type-hinted, so they emit bare sub-columns (no ::String).
+		if !strings.Contains(sql, "fields.`process_guid` AS _process_guid") {
 			t.Errorf("Expected child field extraction, got: %s", sql)
 		}
-		if !strings.Contains(sql, "fields.`parent_process_guid`::String AS _parent_process_guid") {
+		if !strings.Contains(sql, "fields.`parent_process_guid` AS _parent_process_guid") {
 			t.Errorf("Expected parent field extraction, got: %s", sql)
 		}
 		if !strings.Contains(sql, "fields.`image` AS _image") {

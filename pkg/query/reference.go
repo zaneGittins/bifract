@@ -938,6 +938,22 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 			{
+				Name:        "ptg",
+				Category:    "Traversal",
+				Description: "Process Tree Graph: fast, MV-backed traversal of process lineage over the proc_lineage table (one row per process-create event). A drop-in replacement for dfs/bfs on process trees that does not OOM on large graphs or long timeframes, because each hop is a primary-key point lookup instead of a full scan of logs. Seed on a process_guid; direction selects descendants, ancestors, or both. Always returns process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, _depth, _path. Requires an EDR source normalized to bifract_category='process_creation'. Prune with a post-filter, e.g. `| _depth <= 3`. Pairs with graph() for visualization. NOTE: the tree is scoped ONLY by start=, the time range, and the fractal -- any filter placed before ptg() (e.g. computer_name=\"host\") is ignored. Set the query time range to cover the whole investigation window: proc_lineage is retained ~365 days, but ptg() only sees events within the selected time range, so a narrow range will silently omit older ancestors/descendants.",
+				Syntax:      `| ptg(start="<process_guid>", depth=N, direction=forward|backward|both)`,
+				Parameters: []Param{
+					{Name: "start", Type: "string", Required: true, Description: "process_guid of the seed node"},
+					{Name: "depth", Type: "number", Required: false, Description: "Maximum traversal depth (default: 10, max: 50)"},
+					{Name: "direction", Type: "string", Required: false, Description: "forward = descendants, backward = ancestors, both = both (default: both)"},
+				},
+				Examples: []string{
+					`ptg(start="{GUID}") | graph(child=process_guid, parent=parent_guid, labels=image)`,
+					`ptg(start="{GUID}", direction=backward, depth=20)`,
+					`ptg(start="{GUID}", direction=forward) | table(process_guid, image, commandline, _depth)`,
+				},
+			},
+			{
 				Name:        "bfs",
 				Category:    "Traversal",
 				Description: "Breadth-first search traversal of parent-child relationships in log data. Starts from a specific node and discovers all connected nodes level by level. Always returns child and parent fields. Use include= to add extra fields. Pairs well with graph() for visualization.",

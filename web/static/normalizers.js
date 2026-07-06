@@ -258,6 +258,8 @@ const Normalizers = {
         document.getElementById('normalizerMappings').innerHTML = '';
         this.addMappingRow();
 
+        document.getElementById('normalizerDerivedFields').innerHTML = '';
+
         document.getElementById('normalizerTimestampFields').innerHTML = '';
 
         const previewContainer = document.getElementById('normalizerPreviewContainer');
@@ -290,6 +292,13 @@ const Normalizers = {
                     this.addMappingRow((m.sources || []).join(', '), m.target);
                 });
             }
+
+            const derivedContainer = document.getElementById('normalizerDerivedFields');
+            derivedContainer.innerHTML = '';
+            const valueMappings = n.value_mappings || [];
+            valueMappings.forEach(vm => {
+                this.addDerivedFieldRow(vm.from_field, vm.to_field, vm.map, vm.default);
+            });
 
             const tsContainer = document.getElementById('normalizerTimestampFields');
             tsContainer.innerHTML = '';
@@ -432,6 +441,71 @@ const Normalizers = {
         this._editingSourcesInput = null;
     },
 
+    // --- Derived fields (value mappings) ---
+
+    _editingDerivedRow: null,
+
+    addDerivedFieldRow(fromField, toField, valueMap, def) {
+        const container = document.getElementById('normalizerDerivedFields');
+        if (!container) return;
+
+        const row = document.createElement('div');
+        row.className = 'normalizer-derived-row';
+        row._valueMap = (valueMap && typeof valueMap === 'object') ? { ...valueMap } : {};
+        const count = Object.keys(row._valueMap).length;
+
+        row.innerHTML = `
+            <input type="text" class="derived-from" placeholder="source_field (e.g. event_id)" value="${Utils.escapeHtml(fromField || '')}">
+            <span class="mapping-arrow">-></span>
+            <input type="text" class="derived-to" placeholder="derived_field (e.g. category)" value="${Utils.escapeHtml(toField || '')}">
+            <button type="button" class="btn-sm btn-secondary derived-values-btn"><span class="derived-values-count">${count}</span> value${count !== 1 ? 's' : ''}</button>
+            <input type="text" class="derived-default" placeholder="fallback (optional)" value="${Utils.escapeHtml(def || '')}">
+            <button class="btn-sm btn-danger mapping-remove" onclick="this.parentElement.remove()" title="Remove">&times;</button>
+        `;
+        row.querySelector('.derived-values-btn').addEventListener('click', () => this.openDerivedValuesModal(row));
+        container.appendChild(row);
+    },
+
+    _renderDerivedValuesCount(row) {
+        const count = Object.keys(row._valueMap || {}).length;
+        const btn = row.querySelector('.derived-values-btn');
+        if (btn) btn.innerHTML = `<span class="derived-values-count">${count}</span> value${count !== 1 ? 's' : ''}`;
+    },
+
+    openDerivedValuesModal(row) {
+        this._editingDerivedRow = row;
+        const map = row._valueMap || {};
+        const lines = Object.entries(map).map(([k, v]) => `${k}=${v}`).join('\n');
+        const textarea = document.getElementById('derivedValuesTextarea');
+        textarea.value = lines;
+        document.getElementById('derivedValuesModal').style.display = 'flex';
+        textarea.focus();
+    },
+
+    saveDerivedValuesModal() {
+        const textarea = document.getElementById('derivedValuesTextarea');
+        const map = {};
+        textarea.value.split('\n').forEach(line => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            const idx = trimmed.indexOf('=');
+            if (idx <= 0) return;
+            const k = trimmed.substring(0, idx).trim();
+            const v = trimmed.substring(idx + 1).trim();
+            if (k) map[k] = v;
+        });
+        if (this._editingDerivedRow) {
+            this._editingDerivedRow._valueMap = map;
+            this._renderDerivedValuesCount(this._editingDerivedRow);
+        }
+        this.closeDerivedValuesModal();
+    },
+
+    closeDerivedValuesModal() {
+        document.getElementById('derivedValuesModal').style.display = 'none';
+        this._editingDerivedRow = null;
+    },
+
     _getFormData() {
         const name = document.getElementById('normalizerName').value.trim();
         const description = document.getElementById('normalizerDescription').value.trim();
@@ -451,6 +525,18 @@ const Normalizers = {
             }
         });
 
+        const valueMappings = [];
+        const derivedRows = document.querySelectorAll('#normalizerDerivedFields .normalizer-derived-row');
+        derivedRows.forEach(row => {
+            const fromField = row.querySelector('.derived-from').value.trim();
+            const toField = row.querySelector('.derived-to').value.trim();
+            const def = row.querySelector('.derived-default').value.trim();
+            const map = row._valueMap || {};
+            if (fromField && toField && (Object.keys(map).length > 0 || def)) {
+                valueMappings.push({ from_field: fromField, to_field: toField, map, default: def });
+            }
+        });
+
         const timestampFields = [];
         const tsRows = document.querySelectorAll('#normalizerTimestampFields .normalizer-ts-field-row');
         tsRows.forEach(row => {
@@ -461,7 +547,7 @@ const Normalizers = {
             }
         });
 
-        return { name, description, transforms, field_mappings: fieldMappings, timestamp_fields: timestampFields };
+        return { name, description, transforms, field_mappings: fieldMappings, value_mappings: valueMappings, timestamp_fields: timestampFields };
     },
 
     async saveNormalizer() {
@@ -617,6 +703,7 @@ const Normalizers = {
                 body: JSON.stringify({
                     transforms: formData.transforms,
                     field_mappings: formData.field_mappings,
+                    value_mappings: formData.value_mappings,
                     sample_json: sampleJSON
                 })
             });
@@ -642,12 +729,19 @@ const Normalizers = {
                 <tbody>`;
 
             fields.forEach(f => {
-                const collisionClass = f.collision ? ' class="preview-collision-row"' : '';
-                const collisionBadge = f.collision ? ' <span class="preview-collision-badge">collision</span>' : '';
+                const classes = [];
+                if (f.collision) classes.push('preview-collision-row');
+                if (f.derived) classes.push('preview-derived-row');
+                if (f.override) classes.push('preview-override-row');
+                const rowClass = classes.length ? ` class="${classes.join(' ')}"` : '';
+                let badges = '';
+                if (f.collision) badges += ' <span class="preview-collision-badge">collision</span>';
+                if (f.derived) badges += ' <span class="preview-derived-badge">derived</span>';
+                if (f.override) badges += ' <span class="preview-override-badge">override</span>';
                 const value = f.value.length > 80 ? Utils.escapeHtml(f.value.substring(0, 80)) + '...' : Utils.escapeHtml(f.value);
-                html += `<tr${collisionClass}>
+                html += `<tr${rowClass}>
                     <td><code>${Utils.escapeHtml(f.original)}</code></td>
-                    <td><code>${Utils.escapeHtml(f.normalized)}</code>${collisionBadge}</td>
+                    <td><code>${Utils.escapeHtml(f.normalized)}</code>${badges}</td>
                     <td class="preview-value">${value}</td>
                 </tr>`;
             });

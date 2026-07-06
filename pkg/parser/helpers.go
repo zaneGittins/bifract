@@ -271,6 +271,152 @@ func buildTraversalSQL(
 	}, nil
 }
 
+// procLineageFractalCond builds the fractal-isolation predicate for proc_lineage,
+// mirroring addBaseConditions exactly (prism FractalIDs, single FractalID, and the
+// IncludeEmptyFractalID legacy-data case). prefix is "" for the base case or "l." for the
+// recursive JOIN alias. Returns "" when no fractal scope is set (same as logs queries).
+func procLineageFractalCond(opts QueryOptions, prefix string) string {
+	col := prefix + "fractal_id"
+	if len(opts.FractalIDs) > 0 {
+		quoted := make([]string, 0, len(opts.FractalIDs)+1)
+		for _, id := range opts.FractalIDs {
+			quoted = append(quoted, fmt.Sprintf("'%s'", escapeString(id)))
+		}
+		if opts.IncludeEmptyFractalID {
+			quoted = append(quoted, "''")
+		}
+		return col + " IN (" + strings.Join(quoted, ", ") + ")"
+	}
+	if opts.FractalID != "" {
+		if opts.IncludeEmptyFractalID {
+			return fmt.Sprintf("%s IN ('%s', '')", col, escapeString(opts.FractalID))
+		}
+		return fmt.Sprintf("%s = '%s'", col, escapeString(opts.FractalID))
+	}
+	return ""
+}
+
+// buildProcessTreeSQL generates a recursive CTE for ptg() over the flat proc_lineage
+// table (MV-backed process lineage): the fast replacement for dfs/bfs-on-logs for process
+// trees. Unlike buildTraversalSQL it uses bare columns (no fields.* JSON access, no
+// norm_log) and reads proc_lineage FINAL so re-ingested / iceberg-replayed duplicates
+// collapse. Only the time/fractal base conditions are applied (proc_lineage is flat, so
+// user fields.* filters are dropped -- v1 scoping).
+func buildProcessTreeSQL(
+	startValue string, maxDepth int, direction string,
+	havingConditions []string,
+	chartType string, chartConfig map[string]interface{},
+	opts QueryOptions,
+) (*TranslationResult, error) {
+	tbl := opts.ProcLineageTable
+	if tbl == "" {
+		tbl = "proc_lineage"
+	}
+
+	// Reconstruct ONLY base time + fractal scoping from opts. proc_lineage is flat, so
+	// user pre-filters (fields.* field filters, norm_log free-text search, etc.) do not
+	// apply and are intentionally dropped (v1 scoping). Rebuilding from opts -- rather than
+	// reusing source.Layer.Where -- guarantees fractal isolation and prevents leaking
+	// logs-only columns (norm_log/raw_log/ingest_timestamp) that would crash the query.
+	tsStart := opts.StartTime.Format("2006-01-02 15:04:05")
+	tsEnd := opts.EndTime.Format("2006-01-02 15:04:05")
+	baseConds := []string{
+		fmt.Sprintf("timestamp >= '%s'", tsStart),
+		fmt.Sprintf("timestamp <= '%s'", tsEnd),
+	}
+	recConds := []string{
+		fmt.Sprintf("l.timestamp >= '%s'", tsStart),
+		fmt.Sprintf("l.timestamp <= '%s'", tsEnd),
+	}
+	if fc := procLineageFractalCond(opts, ""); fc != "" {
+		baseConds = append(baseConds, fc)
+		recConds = append(recConds, procLineageFractalCond(opts, "l."))
+	}
+	baseConds = append(baseConds, fmt.Sprintf("process_guid = '%s'", escapeString(startValue)))
+	baseWhere := strings.Join(baseConds, " AND ")
+	recTail := " AND " + strings.Join(recConds, " AND ")
+
+	// Post-traversal filters route here from window-field conditions (_depth/_path). Drop
+	// any that reference logs-only columns (a compound like `_depth<=3 AND image="x"` would
+	// otherwise inject fields.image and crash the flat-table query).
+	var safeHaving []string
+	for _, h := range havingConditions {
+		if strings.Contains(h, "fields.") || strings.Contains(h, "norm_log") || strings.Contains(h, "raw_log") {
+			continue
+		}
+		safeHaving = append(safeHaving, h)
+	}
+	havingConditions = safeHaving
+
+	const dataCols = "timestamp, log_id, process_guid, parent_guid, image, parent_image, commandline, computer_name"
+	const dataColsL = "l.timestamp, l.log_id, l.process_guid, l.parent_guid, l.image, l.parent_image, l.commandline, l.computer_name"
+	const unionCols = "timestamp, log_id, process_guid, parent_guid, image, parent_image, commandline, computer_name, _depth, _path"
+	const finalCols = "formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') AS timestamp, process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, toString(_depth) AS _depth, _path"
+
+	// One recursive CTE body per direction. forward = descendants (join children on
+	// l.parent_guid = t._node_id); backward = ancestors (walk up via l.process_guid =
+	// t._node_id, carrying parent_guid as the next node to find).
+	cte := func(name, dir string) string {
+		if dir == "backward" {
+			return fmt.Sprintf(
+				"%s AS (SELECT %s, toUInt32(0) AS _depth, parent_guid AS _node_id, process_guid AS _path FROM %s FINAL WHERE %s"+
+					" UNION ALL "+
+					"SELECT %s, t._depth + 1 AS _depth, l.parent_guid AS _node_id, concat(l.process_guid, ' > ', t._path) AS _path"+
+					" FROM %s AS l FINAL INNER JOIN %s t ON l.process_guid = t._node_id WHERE t._depth < %d%s)",
+				name, dataCols, tbl, baseWhere, dataColsL, tbl, name, maxDepth, recTail)
+		}
+		return fmt.Sprintf(
+			"%s AS (SELECT %s, toUInt32(0) AS _depth, process_guid AS _node_id, process_guid AS _path FROM %s FINAL WHERE %s"+
+				" UNION ALL "+
+				"SELECT %s, t._depth + 1 AS _depth, l.process_guid AS _node_id, concat(t._path, ' > ', l.process_guid) AS _path"+
+				" FROM %s AS l FINAL INNER JOIN %s t ON l.parent_guid = t._node_id WHERE t._depth < %d%s)",
+			name, dataCols, tbl, baseWhere, dataColsL, tbl, name, maxDepth, recTail)
+	}
+
+	var withClause, traversal string
+	switch direction {
+	case "forward", "backward":
+		withClause = "WITH RECURSIVE " + cte("tree", direction) + " "
+		traversal = "tree"
+	default: // both
+		withClause = "WITH RECURSIVE " + cte("tree_fwd", "forward") + ", " + cte("tree_bwd", "backward") + " "
+		traversal = fmt.Sprintf("(SELECT %s FROM tree_fwd UNION DISTINCT SELECT %s FROM tree_bwd)", unionCols, unionCols)
+	}
+
+	// Post-traversal filters (e.g. _depth <= 3) MUST be applied in an inner scope where
+	// _depth is still UInt32. If the filter shares a SELECT with `toString(_depth) AS _depth`,
+	// ClickHouse resolves the WHERE identifier to the String alias (NO_COMMON_TYPE, code 386),
+	// so the toString projection lives in a strictly outer SELECT than the filter.
+	inner := "SELECT " + unionCols + " FROM " + traversal
+	if len(havingConditions) > 0 {
+		inner += " WHERE " + strings.Join(havingConditions, " AND ")
+	}
+
+	var sql strings.Builder
+	sql.WriteString(withClause)
+	sql.WriteString("SELECT ")
+	sql.WriteString(finalCols)
+	sql.WriteString(" FROM (")
+	sql.WriteString(inner)
+	sql.WriteString(") ORDER BY _path ASC")
+	if opts.MaxRows > 0 {
+		sql.WriteString(fmt.Sprintf(" LIMIT %d", opts.MaxRows))
+	}
+
+	finalSQL := sql.String()
+	if err := validateGeneratedSQL(finalSQL); err != nil {
+		return nil, err
+	}
+
+	return &TranslationResult{
+		SQL:          finalSQL,
+		FieldOrder:   []string{"timestamp", "process_guid", "parent_guid", "image", "parent_image", "commandline", "computer_name", "_depth", "_path"},
+		IsAggregated: false,
+		ChartType:    chartType,
+		ChartConfig:  chartConfig,
+	}, nil
+}
+
 // qualifyColumnRefs prefixes bare column references with a table alias,
 // skipping content inside SQL string literals to avoid corrupting values.
 func qualifyColumnRefs(sql, alias string) string {
@@ -806,6 +952,9 @@ var jsonDefaultTypeHintedFields = map[string]bool{
 	"duration":           true,
 	"orig_bytes":         true,
 	"resp_bytes":         true,
+	"bifract_category":   true,
+	"process_guid":        true,
+	"parent_process_guid": true,
 }
 
 // jsonCustomTypeHintedFields holds user-defined custom fields loaded from Postgres.

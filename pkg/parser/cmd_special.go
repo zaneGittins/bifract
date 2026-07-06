@@ -317,6 +317,63 @@ func (h *bfsHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+// ptgHandler handles ptg() (Process Tree Graph): MV-backed process-lineage traversal
+// over proc_lineage, a fast replacement for dfs/bfs-on-logs for process trees.
+type ptgHandler struct{}
+
+func (h *ptgHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
+	// Set process-tree mode early so condition routing sends _depth/_path filters to HAVING.
+	ctx.Plan.IsProcessTree = true
+	ctx.Registry.Register("_depth", FieldKindWindow, "_depth", ctx.CmdIndex)
+	ctx.Registry.Register("_path", FieldKindWindow, "_path", ctx.CmdIndex)
+	return nil
+}
+
+func (h *ptgHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	if ctx.Plan.ProcessTreeStart != "" {
+		return fmt.Errorf("cannot use multiple ptg() functions in the same query")
+	}
+	if ctx.Plan.IsTraversal {
+		return fmt.Errorf("ptg() cannot be combined with bfs()/dfs()")
+	}
+	var start, direction string
+	depth := 0
+	for _, arg := range cmd.Arguments {
+		switch {
+		case strings.HasPrefix(arg, "start="):
+			start = strings.Trim(strings.TrimPrefix(arg, "start="), "\"'")
+		case strings.HasPrefix(arg, "depth="):
+			if d, err := strconv.Atoi(strings.TrimPrefix(arg, "depth=")); err == nil && d > 0 {
+				depth = d
+			}
+		case strings.HasPrefix(arg, "direction="):
+			direction = strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "direction="), "\"'"))
+		}
+	}
+	if start == "" {
+		return fmt.Errorf("ptg() requires a start= parameter, e.g. ptg(start=\"<process_guid>\")")
+	}
+	if depth == 0 {
+		depth = 10
+	}
+	if depth > 50 {
+		depth = 50
+	}
+	if direction == "" {
+		direction = "both"
+	}
+	if direction != "forward" && direction != "backward" && direction != "both" {
+		return fmt.Errorf("ptg() direction= must be forward, backward, or both (got %q)", direction)
+	}
+	ctx.Plan.IsProcessTree = true
+	ctx.Plan.ProcessTreeStart = start
+	ctx.Plan.ProcessTreeDepth = depth
+	ctx.Plan.ProcessTreeDirection = direction
+	ctx.Registry.SetResolveExpr("_depth", "_depth")
+	ctx.Registry.SetResolveExpr("_path", "_path")
+	return nil
+}
+
 // analyzefieldsHandler handles analyzefields(field1, field2, limit=N)
 type analyzefieldsHandler struct{}
 
@@ -549,6 +606,7 @@ func (h *heatmapHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 func init() {
 	registerCommand(&tableHandler{}, "table")
 	registerCommand(&bfsHandler{}, "bfs", "dfs")
+	registerCommand(&ptgHandler{}, "ptg")
 	registerCommand(&analyzefieldsHandler{}, "analyzefields")
 	registerCommand(&chainHandler{}, "chain")
 	registerAggregatingCommand(&heatmapHandler{}, "heatmap")

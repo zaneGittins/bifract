@@ -34,7 +34,10 @@ CREATE TABLE IF NOT EXISTS logs (
         `conn_state`         String,
         `duration`           String,
         `orig_bytes`         String,
-        `resp_bytes`         String
+        `resp_bytes`         String,
+        `bifract_category`   String,
+        `process_guid`        String,
+        `parent_process_guid` String
     ),
     fractal_id LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3),
@@ -73,7 +76,11 @@ CREATE TABLE IF NOT EXISTS logs (
     INDEX idx_src_port           fields.src_port           TYPE set(4096)          GRANULARITY 1,
     INDEX idx_dst_port           fields.dst_port           TYPE set(4096)          GRANULARITY 1,
     INDEX idx_proto              fields.proto              TYPE set(16)            GRANULARITY 1,
-    INDEX idx_conn_state         fields.conn_state         TYPE set(64)            GRANULARITY 1
+    INDEX idx_conn_state         fields.conn_state         TYPE set(64)            GRANULARITY 1,
+    -- process_guid bloom accelerates the process-tree leaf-fetch (pgr) that filters
+    -- logs by GUID. parent_process_guid is type-hint only (no index): nothing filters
+    -- logs by it; proc_lineage carries its own parent_guid bloom.
+    INDEX idx_process_guid       fields.process_guid       TYPE bloom_filter(0.001) GRANULARITY 1
 ) ENGINE = MergeTree()
 PARTITION BY (fractal_id, toDate(timestamp))
 ORDER BY (timestamp, log_id)
@@ -98,6 +105,7 @@ ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port 
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port       TYPE set(4096)          GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_proto              fields.proto          TYPE set(16)            GRANULARITY 1;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_conn_state         fields.conn_state     TYPE set(64)            GRANULARITY 1;
+ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_process_guid       fields.process_guid   TYPE bloom_filter(0.001) GRANULARITY 1;
 
 -- Defensive columns for installs that predate norm_log. ADD COLUMN IF NOT EXISTS is a
 -- no-op on fresh installs (already defined inline). norm_log defaults from the fields
@@ -169,7 +177,10 @@ CREATE TABLE IF NOT EXISTS logs_hot (
         `conn_state`         String,
         `duration`           String,
         `orig_bytes`         String,
-        `resp_bytes`         String
+        `resp_bytes`         String,
+        `bifract_category`   String,
+        `process_guid`        String,
+        `parent_process_guid` String
     ),
     fractal_id       LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3)
@@ -191,3 +202,43 @@ SELECT
     fractal_id,
     ingest_timestamp
 FROM logs;
+
+-- Process-lineage skeleton: one row per process-create event, ordered by
+-- (fractal_id, process_guid) so ptg() traversal hops are primary-key point lookups
+-- instead of full-table scans over logs (which OOMs dfs/bfs at scale). This is a
+-- self-sufficient, compact table (no raw_log/norm_log/fields bulk): the process tree
+-- renders from these columns alone even after the source logs tier/expire, so it is
+-- retained on a long, DFIR-driven TTL decoupled from logs. ReplacingMergeTree dedups
+-- on re-ingestion / iceberg replay (process_guid is globally unique per process).
+-- TTL is a default; the app applies BIFRACT_PROC_LINEAGE_TTL_DAYS via MODIFY TTL at startup.
+CREATE TABLE IF NOT EXISTS proc_lineage (
+    fractal_id    LowCardinality(String),
+    timestamp     DateTime64(3),
+    log_id        String,
+    process_guid  String,
+    parent_guid   String,
+    image         LowCardinality(String),
+    parent_image  LowCardinality(String),
+    commandline   String,
+    computer_name LowCardinality(String),
+    INDEX idx_parent_guid parent_guid TYPE bloom_filter(0.001) GRANULARITY 1
+) ENGINE = ReplacingMergeTree(timestamp)
+ORDER BY (fractal_id, process_guid)
+TTL toDateTime(timestamp) + INTERVAL 365 DAY
+SETTINGS index_granularity = 8192;
+
+-- Populates proc_lineage from process-create events, keyed on the normalized
+-- category (Phase A). ::String is safe whether or not the type hint is applied yet.
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_lineage_mv TO proc_lineage AS
+SELECT
+    fractal_id,
+    timestamp,
+    log_id,
+    fields.process_guid::String        AS process_guid,
+    fields.parent_process_guid::String AS parent_guid,
+    fields.image::String               AS image,
+    fields.parent_image::String        AS parent_image,
+    fields.commandline::String         AS commandline,
+    fields.computer_name::String       AS computer_name
+FROM logs
+WHERE fields.bifract_category = 'process_creation' AND fields.process_guid != '';
