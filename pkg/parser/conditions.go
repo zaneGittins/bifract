@@ -47,7 +47,7 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 		var target *[]HavingCondition
 
 		if entry != nil {
-			switch entry.Kind {
+			switch entry.ClassifyKind() {
 			case FieldKindWindow:
 				if plan.IsTraversal || plan.IsProcessTree {
 					target = &plan.pendingHavingConditions
@@ -105,7 +105,7 @@ func classifyCompoundTarget(cond HavingCondition, registry *FieldRegistry, plan 
 		priority := 0
 		entry := registry.Get(c.Field)
 		if entry != nil {
-			switch entry.Kind {
+			switch entry.ClassifyKind() {
 			case FieldKindWindow:
 				if plan.IsTraversal || plan.IsProcessTree {
 					priority = 2
@@ -135,6 +135,15 @@ func classifyCompoundTarget(cond HavingCondition, registry *FieldRegistry, plan 
 	}
 	walk(cond)
 
+	// A HAVING target only works if every leaf field is available at the groupby
+	// (HAVING) stage. A compound that mixes an aggregate with a column produced by
+	// a later projection stage (e.g. a sprintf/concat output) cannot live in that
+	// stage's HAVING; route it to WHERE so it binds to the deepest stage where all
+	// its fields coexist (the aggregate is carried there as a plain column).
+	if maxPriority == 2 && !compoundFitsHavingStage(cond, plan) {
+		maxPriority = 0
+	}
+
 	switch maxPriority {
 	case 2:
 		return &plan.pendingHavingConditions
@@ -145,14 +154,72 @@ func classifyCompoundTarget(cond HavingCondition, registry *FieldRegistry, plan 
 	}
 }
 
-// materializeConditions generates SQL from the classified pending conditions
-// using the fully-populated registry (after Execute). Appends to SourceStage
-// which matches the original routing target (CurrentStage before any PushStage).
-func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
-	source := plan.SourceStage()
+// compoundFitsHavingStage reports whether every leaf field of a compound is
+// available at the HAVING (groupby) stage, i.e. none is first produced by a
+// projection stage deeper than it.
+func compoundFitsHavingStage(cond HavingCondition, plan *QueryPlan) bool {
+	hs := plan.havingStageIndex()
+	fits := true
+	var walk func(c HavingCondition)
+	walk = func(c HavingCondition) {
+		if c.IsCompound {
+			for _, child := range c.Children {
+				walk(child)
+			}
+			return
+		}
+		if fieldFirstStage(c.Field, plan) > hs {
+			fits = false
+		}
+	}
+	walk(cond)
+	return fits
+}
 
-	if clause := materializeCondGroup(plan.pendingWhereConditions, registry); clause != "" {
-		source.Layer.Where = append(source.Layer.Where, clause)
+// fieldFirstStage returns the earliest stage index that PRODUCES `field` (as an
+// aggregate/group-key or a computed projection column), i.e. the shallowest
+// stage whose WHERE/HAVING can reference it. A carried passthrough column (whose
+// SELECT is the bare field name) forwards but does not produce the field, so it
+// is skipped in favor of the earlier producing stage. Fields never materialized
+// in a SELECT (base log fields, JSON sub-columns) resolve to the source stage.
+func fieldFirstStage(field string, plan *QueryPlan) int {
+	for i := 0; i < len(plan.Stages); i++ {
+		for _, sel := range plan.Stages[i].Layer.Selects {
+			s := sel.String()
+			if strings.Trim(extractFieldAlias(s), "`") == field && s != field {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+// materializeConditions generates SQL from the classified pending conditions
+// using the fully-populated registry (after Execute). Each condition is bound to
+// the query stage that owns its referenced fields: pre-aggregation filters to the
+// source stage, HAVING to the groupby stage, post-aggregation projection-column
+// filters to the projection stage that produces them.
+func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
+	// WHERE conditions bind to the stage that owns the fields they reference.
+	// Pre-aggregation filters (base/JSON/pre-agg scalars) bind to the source
+	// stage; a filter on a column materialized only by a post-aggregation
+	// projection stage (e.g. a sprintf/concat output, or a post-agg `:=`
+	// assignment) binds to that stage. Without this, such a filter lands in the
+	// innermost source WHERE where the column does not exist, producing a
+	// ClickHouse "unknown identifier" (or, for a carried aggregate, error 184).
+	byStage := make(map[int][]HavingCondition)
+	var stageOrder []int
+	for _, cond := range plan.pendingWhereConditions {
+		idx := whereBindingStageIndex(cond, plan)
+		if _, seen := byStage[idx]; !seen {
+			stageOrder = append(stageOrder, idx)
+		}
+		byStage[idx] = append(byStage[idx], cond)
+	}
+	for _, idx := range stageOrder {
+		if clause := materializeCondGroup(byStage[idx], registry); clause != "" {
+			plan.Stages[idx].Layer.Where = append(plan.Stages[idx].Layer.Where, clause)
+		}
 	}
 	// HAVING binds to the outermost aggregation stage, not the innermost source
 	// stage, so chained-groupby filters apply to the final aggregates.
@@ -163,6 +230,43 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 	if clause := materializeCondGroup(plan.pendingDeferredConditions, registry); clause != "" {
 		plan.DeferredWhere = append(plan.DeferredWhere, clause)
 	}
+}
+
+// whereBindingStageIndex returns the index of the deepest stage that owns the
+// fields referenced by a WHERE-bucket condition. It walks compound children so a
+// compound stays a unit bound to the deepest stage any leaf requires. Fields not
+// materialized by a post-aggregation projection stage (base log fields, JSON
+// sub-columns, pre-aggregation scalars) bind to the source stage (index 0).
+func whereBindingStageIndex(cond HavingCondition, plan *QueryPlan) int {
+	maxIdx := 0
+	var walk func(c HavingCondition)
+	walk = func(c HavingCondition) {
+		if c.IsCompound {
+			for _, child := range c.Children {
+				walk(child)
+			}
+			return
+		}
+		if idx := fieldOwningStage(c.Field, plan); idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+	walk(cond)
+	return maxIdx
+}
+
+// fieldOwningStage returns the index of the deepest post-source stage whose
+// SELECT list materializes the given field as a column, or 0 (source stage) when
+// no projection stage produces it.
+func fieldOwningStage(field string, plan *QueryPlan) int {
+	for i := len(plan.Stages) - 1; i >= 1; i-- {
+		for _, sel := range plan.Stages[i].Layer.Selects {
+			if strings.Trim(extractFieldAlias(sel.String()), "`") == field {
+				return i
+			}
+		}
+	}
+	return 0
 }
 
 // materializeCondGroup builds SQL for a group of conditions and joins them.

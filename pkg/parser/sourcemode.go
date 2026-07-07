@@ -117,6 +117,8 @@ var icebergAllowedCommands = map[string]bool{
 	// post-processing
 	"sort": true, "head": true, "tail": true, "headtail": true,
 	"limit": true, "dedup": true,
+	// column projection / rendering (fields resolve via the mode-aware registry)
+	"table": true,
 	// time bucketing over aggregates
 	"timechart": true, "histogram": true, "bucket": true,
 }
@@ -133,7 +135,7 @@ func icebergSupportedFeatures(pipeline *PipelineNode) error {
 	}
 	for _, cmd := range pipeline.Commands {
 		if !icebergAllowedCommands[strings.ToLower(cmd.Name)] {
-			return fmt.Errorf("command %q is not supported in archive search yet (supported: field filters, free-text/regex search, stats aggregations, groupby, sort, dedup, head/tail/limit, timechart)", cmd.Name)
+			return fmt.Errorf("command %q is not supported in archive search yet (supported: field filters, free-text/regex search, stats aggregations, groupby, sort, dedup, head/tail/limit, timechart, table)", cmd.Name)
 		}
 	}
 	return nil

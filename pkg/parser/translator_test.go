@@ -5336,6 +5336,44 @@ func TestAggregationPipelineFixes(t *testing.T) {
 		}
 	})
 
+	t.Run("aggregate filter after a post-agg transform routes to HAVING not source WHERE", func(t *testing.T) {
+		// Regression: a stage-pushing transform (sprintf) between groupby and an
+		// aggregate filter used to downgrade _count in the scoped registry, so
+		// _count > 5 was misrouted into the innermost source WHERE (ClickHouse
+		// error 184, aggregate in WHERE). It must land in HAVING on the groupby
+		// stage, exactly as when no transform intervenes.
+		sql := mustTranslate(t, `a=x | groupby(h,limit=1000) | sprintf("%s", h, as=hx) | _count > 5`, opts)
+		if !strings.Contains(sql, "GROUP BY h HAVING _count > 5") {
+			t.Errorf("aggregate filter not routed to HAVING on groupby stage: %s", sql)
+		}
+		if strings.Contains(sql, "AND _count > 5 GROUP BY") {
+			t.Errorf("aggregate filter leaked into source WHERE (error 184): %s", sql)
+		}
+	})
+
+	t.Run("filter on a post-agg projection column binds to that projection stage", func(t *testing.T) {
+		// A filter on a column produced only by a post-aggregation projection
+		// stage (sprintf output) must bind to that stage's WHERE, not the source
+		// scan where the column does not exist.
+		sql := mustTranslate(t, `a=x | groupby(h) | sprintf("%s!", h, as=hx) | hx = "x!"`, opts)
+		if !strings.Contains(sql, "AS hx FROM (") || !strings.Contains(sql, ") WHERE hx = 'x!'") {
+			t.Errorf("projection-column filter not bound to its projection stage: %s", sql)
+		}
+	})
+
+	t.Run("compound filter mixing aggregate and projection column binds where both coexist", func(t *testing.T) {
+		// The aggregate is carried into the projection stage as a plain column, so
+		// the whole compound can be satisfied there via WHERE; it must not go to
+		// the groupby HAVING (where the projection column does not exist).
+		sql := mustTranslate(t, `a=x | groupby(h) | sprintf("%s", h, as=hx) | _count > 5 AND hx = "a"`, opts)
+		if !strings.Contains(sql, ") WHERE (_count > 5 AND hx = 'a')") {
+			t.Errorf("mixed aggregate/projection compound not bound to projection stage: %s", sql)
+		}
+		if strings.Contains(sql, "HAVING") {
+			t.Errorf("mixed compound wrongly placed in HAVING (projection column absent there): %s", sql)
+		}
+	})
+
 	t.Run("post-aggregation assignment is staged before a column-dropping table", func(t *testing.T) {
 		sql := mustTranslate(t, `a=x | groupby(host,function=multi([selectFirst(cpu,as=first_cpu),selectLast(cpu,as=last_cpu),count(as=n)])) | change_percent := (last_cpu - first_cpu) / first_cpu * 100 | table([host,change_percent,n])`, opts)
 		// change_percent must be computed in a stage that still has its inputs,

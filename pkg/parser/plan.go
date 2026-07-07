@@ -180,12 +180,17 @@ func (p *QueryPlan) SourceStage() *QueryStage {
 // aggregate) are appended after materialization, so at materialize time this
 // correctly resolves to the groupby stage that produced the referenced aggregate.
 func (p *QueryPlan) havingStage() *QueryStage {
+	return &p.Stages[p.havingStageIndex()]
+}
+
+// havingStageIndex returns the index of the stage havingStage() resolves to.
+func (p *QueryPlan) havingStageIndex() int {
 	for i := len(p.Stages) - 1; i >= 0; i-- {
 		if len(p.Stages[i].Layer.GroupBy) > 0 {
-			return &p.Stages[i]
+			return i
 		}
 	}
-	return p.SourceStage()
+	return 0
 }
 
 // PushStage adds a new empty stage to the pipeline.

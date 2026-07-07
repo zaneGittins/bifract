@@ -190,6 +190,9 @@ const Recall = {
     _elapsedTimer: null,
     _recent: [],
     _visToken: 0,         // guards out-of-order archive-availability checks
+    _pager: null,         // scoped client-side pagination for the results table
+    _fieldOrder: null,    // column order of the active job's results
+    _isAggregated: false, // whether the active job's results are aggregated
 
     init() {
         if (this._initDone) return;
@@ -201,6 +204,17 @@ const Recall = {
                 tableRoot: '#recallResults',
                 storageKey: 'recallLogDetailPanelWidth',
             });
+        }
+
+        // Client-side pagination over the already-fetched result set (the
+        // archive job returns the full set up front, so we page it locally,
+        // mirroring the Query tab's page-size behavior).
+        if (window.createPagination) {
+            this._pager = window.createPagination({
+                barId: 'recallPaginationBar',
+                numbersId: 'recallPageNumbers',
+            });
+            this._pager.init((pageRows) => this.renderPage(pageRows));
         }
 
         const runBtn = document.getElementById('recallRunBtn');
@@ -448,6 +462,11 @@ const Recall = {
         this.stopElapsed();
         const pane = document.getElementById('recallResults');
 
+        // Any non-success terminal state clears the table; drop the page bar too.
+        if (job.status !== 'succeeded' || job.results_expired) {
+            if (this._pager) this._pager.reset();
+        }
+
         if (job.status === 'failed') {
             this.setStatus(`<span class="recall-chip recall-chip-failed">Failed</span><span>${this.esc(job.error || 'Search failed.')}</span>`, 'error');
             if (pane) pane.innerHTML = `<div class="no-results">${this.esc(job.error || 'Search failed.')}</div>`;
@@ -479,10 +498,23 @@ const Recall = {
         }
         this.setStatus(statusHtml, '');
 
+        this._fieldOrder = job.field_order || null;
+        this._isAggregated = !!job.is_aggregated;
+        if (this._pager) {
+            this._pager.setResults(results);
+        } else {
+            this.renderPage(results);
+        }
+    },
+
+    // Render a single page of results into the Recall pane. Reused as the
+    // pager's render callback so switching pages re-renders the table in place.
+    renderPage(rows) {
+        const pane = document.getElementById('recallResults');
         if (pane && window.QueryExecutor && typeof QueryExecutor.renderResultsToElement === 'function') {
-            QueryExecutor.renderResultsToElement(results, pane, job.field_order || null, {
+            QueryExecutor.renderResultsToElement(rows, pane, this._fieldOrder || null, {
                 detailHost: 'recall',
-                isAggregated: !!job.is_aggregated,
+                isAggregated: this._isAggregated,
             });
         }
     },

@@ -30,6 +30,27 @@ type FieldEntry struct {
 	ProducedBy int    // command index (-1 for base fields)
 	ResolveAs  string // Override for Resolve(); when set, returned instead of Expr
 	Inline     bool   // when true, references are folded in as the expression, never an alias
+	// OriginKind preserves the field's identity BEFORE any stage-scoping downgrade.
+	// ScopeToOutputs re-registers an aggregate/window output as FieldKindAssignment
+	// (a plain column of the new stage) for expression resolution, which loses the
+	// information that a filter on it must route to HAVING/deferred rather than the
+	// source WHERE. OriginKind keeps that original kind so condition classification
+	// stays correct across carry-forward stages.
+	OriginKind FieldKind
+}
+
+// ClassifyKind returns the FieldKind that condition routing (WHERE vs HAVING vs
+// deferred) should use. Expression resolution uses the scoped Kind (a carried
+// aggregate resolves to a bare column reference), but routing must honor the
+// pre-scope identity: a carried aggregate still needs HAVING, a carried window
+// value still defers. A genuine per-row assignment (OriginKind == Assignment)
+// keeps routing to WHERE.
+func (e *FieldEntry) ClassifyKind() FieldKind {
+	if e.Kind == FieldKindAssignment &&
+		e.OriginKind != FieldKindAssignment && e.OriginKind != FieldKindBase {
+		return e.OriginKind
+	}
+	return e.Kind
 }
 
 // FieldRegistry is a single source of truth for all field metadata in a query pipeline.
@@ -79,6 +100,7 @@ func (r *FieldRegistry) Register(name string, kind FieldKind, expr string, produ
 		Kind:       kind,
 		Expr:       expr,
 		ProducedBy: producedBy,
+		OriginKind: kind,
 	}
 }
 
@@ -233,11 +255,19 @@ func (r *FieldRegistry) ScopeToOutputs(outputs map[string]bool) {
 	r.order = nil
 	for name := range outputs {
 		kind := FieldKindBase
+		// Preserve the pre-scope identity for condition routing (see OriginKind).
+		// Defaults to the scoped kind for plain carried columns (group keys).
+		origin := kind
 		if e, ok := prev[name]; ok {
 			switch e.Kind {
 			case FieldKindAggregate, FieldKindAssignment, FieldKindWindow:
 				// Already numeric in the prior stage: no coercion downstream.
 				kind = FieldKindAssignment
+			}
+			if e.OriginKind != FieldKindBase {
+				origin = e.OriginKind
+			} else {
+				origin = e.Kind
 			}
 		}
 		r.fields[name] = &FieldEntry{
@@ -246,6 +276,7 @@ func (r *FieldRegistry) ScopeToOutputs(outputs map[string]bool) {
 			Expr:       name,
 			ResolveAs:  name,
 			ProducedBy: -1,
+			OriginKind: origin,
 		}
 		r.order = append(r.order, name)
 	}

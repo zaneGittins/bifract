@@ -896,7 +896,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 			}
 		}
 		if !hasFieldsMap {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "norm_log AS _all_fields"})
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: contentColMode(ctx.Opts.SourceMode) + " AS _all_fields"})
 		}
 	}
 
@@ -941,7 +941,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 			}
 		}
 		if !hasFields && plan.HasTableCmd && !plan.TableHasExplicitColumns {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "norm_log AS fields"})
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: contentColMode(ctx.Opts.SourceMode) + " AS fields"})
 		}
 		if ctx.Opts.IncludeShardNum {
 			hasShardNum := false
