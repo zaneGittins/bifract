@@ -127,21 +127,10 @@ services:
       BIFRACT_ARCHIVE_SPOOL_PATH: /var/lib/bifract/spool
       BIFRACT_ARCHIVE_SPOOL_MAX_BYTES: ${BIFRACT_ARCHIVE_SPOOL_MAX_BYTES:-10737418240}
       BIFRACT_ARCHIVE_ROLL_BYTES: ${BIFRACT_ARCHIVE_ROLL_BYTES:-134217728}
-      # Archive object-storage backend: the server needs this (not just the
-      # archiver sidecar) to read the archive back on the restore/recall path and
-      # to display the correct backend in the admin UI. Must match the archiver.
+      # Archive backend, for the admin UI display only. Restore/recall and the
+      # actual object-storage writes run in the bifract-archiver sidecar, which
+      # owns the S3/Azure credentials; the server never reads them.
       BIFRACT_ARCHIVE_BACKEND: ${BIFRACT_ARCHIVE_BACKEND:-disk}
-      BIFRACT_ARCHIVE_DISK_PATH: /var/lib/bifract/archive
-      BIFRACT_ARCHIVE_PREFIX: ${BIFRACT_ARCHIVE_PREFIX:-}
-      BIFRACT_ARCHIVE_S3_ENDPOINT: ${BIFRACT_ARCHIVE_S3_ENDPOINT:-}
-      BIFRACT_ARCHIVE_S3_BUCKET: ${BIFRACT_ARCHIVE_S3_BUCKET:-}
-      BIFRACT_ARCHIVE_S3_REGION: ${BIFRACT_ARCHIVE_S3_REGION:-us-east-1}
-      BIFRACT_ARCHIVE_S3_ACCESS_KEY: ${BIFRACT_ARCHIVE_S3_ACCESS_KEY:-}
-      BIFRACT_ARCHIVE_S3_SECRET_KEY: ${BIFRACT_ARCHIVE_S3_SECRET_KEY:-}
-      BIFRACT_ARCHIVE_AZURE_ACCOUNT: ${BIFRACT_ARCHIVE_AZURE_ACCOUNT:-}
-      BIFRACT_ARCHIVE_AZURE_KEY: ${BIFRACT_ARCHIVE_AZURE_KEY:-}
-      BIFRACT_ARCHIVE_AZURE_CONTAINER: ${BIFRACT_ARCHIVE_AZURE_CONTAINER:-}
-      BIFRACT_ARCHIVE_AZURE_ENDPOINT: ${BIFRACT_ARCHIVE_AZURE_ENDPOINT:-}
       MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
       MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
       MAXMIND_EDITION_IDS: ${MAXMIND_EDITION_IDS:-GeoLite2-City-CSV,GeoLite2-ASN-CSV}
@@ -151,7 +140,6 @@ services:
     volumes:
       - bifract-maxmind:/data/maxmind
       - bifract-spool:/var/lib/bifract/spool
-      - bifract-archive:/var/lib/bifract/archive
 {{- if eq .IPAccess "mtls-app"}}
       - ./caddy/client-ca:/client-ca:ro
 {{- end}}
