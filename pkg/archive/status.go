@@ -12,6 +12,16 @@ import (
 // Cheap: reads catalog metadata, not object listings.
 func (c *Catalog) Stats(ctx context.Context) (fractalCount int, totalBytes int64, totalRecords int64, err error) {
 	ns := catalog.ToIdentifier(Namespace)
+	// The namespace is created lazily on the first archive commit. Before any
+	// data is archived it does not exist yet; report an empty footprint rather
+	// than an error so the heartbeat still records liveness (an error here would
+	// abort maybeHeartbeat before writeHeartbeat, making the admin UI show the
+	// archiver as "not responding" until the first commit).
+	if ok, e := c.cat.CheckNamespaceExists(ctx, ns); e != nil {
+		return 0, 0, 0, e
+	} else if !ok {
+		return 0, 0, 0, nil
+	}
 	for ident, e := range c.cat.ListTables(ctx, ns) {
 		if e != nil {
 			return fractalCount, totalBytes, totalRecords, e

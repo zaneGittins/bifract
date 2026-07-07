@@ -1827,6 +1827,10 @@ const NormLogIndexName = "norm_log_ngram_lc"
 // schema-init lock ("bifract\0").
 const rawLogIndexBackfillLockID int64 = 0x6269667261637401 // "bifract\x01"
 
+// indexBackfillDoneKey returns the settings-table key that durably records that the
+// one-time MATERIALIZE INDEX backfill for idx has been submitted.
+func indexBackfillDoneKey(idx string) string { return idx + "_backfilled" }
+
 // StartNormLogIndexBackfill materializes the lower(norm_log) n-gram index on parts
 // written before the index existed, so historical data benefits from granule
 // pruning. It never blocks startup:
@@ -1836,20 +1840,37 @@ const rawLogIndexBackfillLockID int64 = 0x6269667261637401 // "bifract\x01"
 //     large tables, so the rebuild runs here in a background goroutine.
 //   - The ALTER is submitted with alter_sync=0, so it returns as soon as the
 //     mutation is queued and ClickHouse rebuilds parts asynchronously.
-//   - A Postgres advisory lock ensures only one replica submits it. Submitting is
-//     skipped when a matching mutation already exists; re-running would be cheap
-//     anyway because ClickHouse skips parts that already carry the index.
+//   - A Postgres advisory lock ensures only one replica submits it.
 //
-// pg may be nil, in which case the system.mutations existence check is the only
-// guard (sufficient for single-replica deployments).
+// Re-submitting MATERIALIZE INDEX is NOT cheap: ClickHouse rebuilds the index on
+// every active part, saturating CPU even when the data is already indexed. The
+// system.mutations existence check alone cannot prevent this, because ClickHouse
+// prunes finished mutation records once a table exceeds finished_mutations_to_keep
+// (100 by default) -- and schema reconciliation issues many ALTER mutations, so the
+// original backfill record is eventually evicted. We therefore persist a durable
+// marker in Postgres the moment the backfill is queued; once set, the backfill is
+// never resubmitted, regardless of mutation-history eviction or restarts. The
+// mutation is durable server-side once queued, so it completes even if this process
+// exits immediately after submitting.
+//
+// pg may be nil, in which case the (fragile) system.mutations existence check is the
+// only guard, acceptable for single-replica deployments without Postgres.
 func (c *ClickHouseClient) StartNormLogIndexBackfill(ctx context.Context, pg *PostgresClient) {
 	go func() {
+		doneKey := indexBackfillDoneKey(NormLogIndexName)
+
 		if pg != nil {
 			unlock, ok := pg.TryAdvisoryLock(ctx, rawLogIndexBackfillLockID)
 			if !ok {
 				return // another replica owns the backfill
 			}
 			defer unlock()
+
+			// Durable guard: once submitted, never submit again. Survives
+			// ClickHouse pruning the mutation record on busy clusters.
+			if v, err := pg.GetSetting(ctx, doneKey); err == nil && v == "true" {
+				return
+			}
 		}
 
 		exists, err := c.indexMutationExists(ctx, NormLogIndexName)
@@ -1857,14 +1878,23 @@ func (c *ClickHouseClient) StartNormLogIndexBackfill(ctx context.Context, pg *Po
 			log.Printf("[IndexBackfill] check existing mutation: %v", err)
 			return
 		}
-		if exists {
-			return // already submitted (running or finished)
+		if !exists {
+			if err := c.submitMaterializeIndex(ctx, NormLogIndexName); err != nil {
+				log.Printf("[IndexBackfill] submit MATERIALIZE INDEX %s: %v", NormLogIndexName, err)
+				return
+			}
+			log.Printf("[IndexBackfill] submitted MATERIALIZE INDEX %s; backfilling existing parts in the background", NormLogIndexName)
 		}
-		if err := c.submitMaterializeIndex(ctx, NormLogIndexName); err != nil {
-			log.Printf("[IndexBackfill] submit MATERIALIZE INDEX %s: %v", NormLogIndexName, err)
-			return
+
+		// The mutation is now queued durably (or was already present). Record the
+		// marker so future restarts skip the expensive re-materialization even
+		// after ClickHouse prunes the mutation record.
+		if pg != nil {
+			if err := pg.SetSetting(ctx, doneKey, "true"); err != nil {
+				log.Printf("[IndexBackfill] persist backfill marker: %v", err)
+			}
 		}
-		log.Printf("[IndexBackfill] submitted MATERIALIZE INDEX %s; backfilling existing parts in the background", NormLogIndexName)
+
 		c.awaitIndexMutation(ctx, NormLogIndexName)
 	}()
 }

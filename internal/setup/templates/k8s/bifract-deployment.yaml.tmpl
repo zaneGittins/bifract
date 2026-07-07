@@ -155,6 +155,51 @@ spec:
                   name: bifract-secrets
                   key: ARCHIVE_ROLL_BYTES
                   optional: true
+            # Archive object-storage backend: the server needs this (not just the
+            # archiver) to read the archive back on the restore/recall path and to
+            # display the correct backend in the admin UI. Must match the archiver.
+            - name: BIFRACT_ARCHIVE_BACKEND
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_BACKEND
+                  optional: true
+            - name: BIFRACT_ARCHIVE_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_PREFIX
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_ENDPOINT
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_BUCKET
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_REGION
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_ACCESS_KEY
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_SECRET_KEY
+                  optional: true
             # S3 (for PostgreSQL backups)
             - name: BIFRACT_S3_ENDPOINT
               valueFrom:

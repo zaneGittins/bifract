@@ -35,12 +35,16 @@ func New(pg *storage.PostgresClient) *NotificationWriter {
 func (w *NotificationWriter) Write(notifType, severity, title, message string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// Params are explicitly cast to text: an untyped $1 in the SELECT list
+	// defaults to text while `notification_type = $1` compares against a varchar
+	// column, leaving $1 deduced as both types (Postgres error 42P08). Casting
+	// pins $1 to a single type everywhere it appears.
 	_, err := w.db.ExecContext(ctx, `
 		INSERT INTO health_notifications (notification_type, severity, title, message)
-		SELECT $1, $2, $3, $4
+		SELECT $1::text, $2::text, $3::text, $4::text
 		WHERE NOT EXISTS (
 			SELECT 1 FROM health_notifications
-			WHERE notification_type = $1
+			WHERE notification_type = $1::text
 			  AND created_at > NOW() - INTERVAL '4 hours'
 		)`, notifType, severity, title, message)
 	if err != nil {
