@@ -152,16 +152,18 @@
                                     <div class="perf-metric-value" id="metricActiveQueries">--</div>
                                 </div>
                                 <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Memory Usage</div>
+                                    <div class="perf-metric-label" id="metricMemoryLabel">Memory Usage</div>
                                     <div class="perf-metric-value" id="metricMemory">--</div>
+                                    <div class="perf-metric-sub" id="metricMemorySub"></div>
                                 </div>
                                 <div class="perf-metric-card">
                                     <div class="perf-metric-label">Active Merges</div>
                                     <div class="perf-metric-value" id="metricMerges">--</div>
                                 </div>
                                 <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Uptime</div>
+                                    <div class="perf-metric-label" id="metricUptimeLabel">Uptime</div>
                                     <div class="perf-metric-value" id="metricUptime">--</div>
+                                    <div class="perf-metric-sub" id="metricUptimeSub"></div>
                                 </div>
                             </div>
 
@@ -635,6 +637,19 @@
                         </div>
                         <label class="toggle-switch">
                             <input type="checkbox" id="archiveEnabledToggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="settings-card">
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <label for="endpointAnalysisToggle" class="setting-label">Advanced Endpoint Analysis</label>
+                            <p class="setting-description">Build process-lineage (ptg) and process-frequency (pgr) baselines from endpoint logs for behavioral hunting. This adds materialized views that run on every ingested log, so leave it off unless you use these features. When re-enabled, baselines resume from that point forward. <span id="endpointAnalysisHint" class="setting-inline-hint"></span></p>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="endpointAnalysisToggle">
                             <span class="toggle-slider"></span>
                         </label>
                     </div>

@@ -29,6 +29,7 @@ type IngestSource interface {
 	Depth() int
 	Healthy() bool
 	CPUPressure() bool
+	MemPressure() bool
 	DiskPressure() bool
 	ConsecutiveFailures() int64
 }
@@ -45,36 +46,37 @@ type Collector struct {
 	reg *prometheus.Registry
 
 	// Ingest counters.
-	ingestAccepted     prometheus.Counter
-	ingestInserted     prometheus.Counter
-	ingestErrors       prometheus.Counter
-	ingestDrops        prometheus.Counter
-	ingestRetries      prometheus.Counter
+	ingestAccepted prometheus.Counter
+	ingestInserted prometheus.Counter
+	ingestErrors   prometheus.Counter
+	ingestDrops    prometheus.Counter
+	ingestRetries  prometheus.Counter
 
 	// Ingest gauges.
 	ingestQueueDepth   prometheus.Gauge
 	ingestHealthy      prometheus.Gauge
 	ingestCPUPressure  prometheus.Gauge
+	ingestMemPressure  prometheus.Gauge
 	ingestDiskPressure prometheus.Gauge
 	ingestConsecFails  prometheus.Gauge
 
 	// Alert gauges.
-	alertsCached       prometheus.Gauge
-	alertsRunning      prometheus.Gauge
+	alertsCached  prometheus.Gauge
+	alertsRunning prometheus.Gauge
 
 	// Build info.
-	buildInfo          *prometheus.GaugeVec
+	buildInfo *prometheus.GaugeVec
 
 	// Sources (set via Attach methods).
 	ingestSource atomic.Pointer[IngestSource]
 	alertSource  atomic.Pointer[AlertSource]
 
 	// Snapshot of previous counter values for computing deltas.
-	prevAccepted     atomic.Int64
-	prevInserted     atomic.Int64
-	prevErrors       atomic.Int64
-	prevDrops        atomic.Int64
-	prevRetries      atomic.Int64
+	prevAccepted atomic.Int64
+	prevInserted atomic.Int64
+	prevErrors   atomic.Int64
+	prevDrops    atomic.Int64
+	prevRetries  atomic.Int64
 }
 
 // New creates a Collector with a dedicated Prometheus registry (no default
@@ -134,6 +136,12 @@ func New(version string) *Collector {
 			Name:      "cpu_pressure",
 			Help:      "1 if ClickHouse CPU backpressure is active, 0 otherwise.",
 		}),
+		ingestMemPressure: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "bifract",
+			Subsystem: "ingest",
+			Name:      "mem_pressure",
+			Help:      "1 if ClickHouse memory backpressure is active, 0 otherwise.",
+		}),
 		ingestDiskPressure: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "bifract",
 			Subsystem: "ingest",
@@ -177,6 +185,7 @@ func New(version string) *Collector {
 		c.ingestQueueDepth,
 		c.ingestHealthy,
 		c.ingestCPUPressure,
+		c.ingestMemPressure,
 		c.ingestDiskPressure,
 		c.ingestConsecFails,
 		c.alertsCached,
@@ -238,6 +247,11 @@ func (c *Collector) collect() {
 			c.ingestCPUPressure.Set(1)
 		} else {
 			c.ingestCPUPressure.Set(0)
+		}
+		if s.MemPressure() {
+			c.ingestMemPressure.Set(1)
+		} else {
+			c.ingestMemPressure.Set(0)
 		}
 		if s.DiskPressure() {
 			c.ingestDiskPressure.Set(1)

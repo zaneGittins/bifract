@@ -54,6 +54,18 @@ const (
 	diskPressureTrigger = 90.0
 	diskPressureRelease = 80.0
 
+	// memPressureTrigger is the memory% (cgroup-aware) above which backpressure
+	// activates; memPressureRelease is where it deactivates. Near the cgroup memory
+	// limit the kernel OOM-killer is imminent and inserts/merges are the first to be
+	// killed, so shed ingest before that happens. On cgroup-limited (k8s/container)
+	// deployments this reads the pod's own limit, not the node's.
+	memPressureTrigger = 90.0
+	memPressureRelease = 80.0
+	// memPressureSustainSamples consecutive high polls before activating (3 x 5s = 15s),
+	// a shorter debounce than CPU since sustained high memory is closer to an OOM-kill
+	// and worth reacting to sooner, while still filtering a transient cache fill.
+	memPressureSustainSamples int64 = 3
+
 	// spoolPressureTrigger/Release are fractions of the archive spool's max
 	// bytes at which spool backpressure activates/deactivates. The gap prevents
 	// oscillation. Only evaluated when the archive spool is configured.
@@ -98,13 +110,17 @@ type IngestQueue struct {
 
 	// cpuPressure is 1 when ClickHouse CPU backpressure is active, 0 otherwise.
 	// Set by the background CPU monitor based on system.asynchronous_metrics.
-	cpuPressure  atomic.Int64
+	cpuPressure   atomic.Int64
 	cpuHighStreak atomic.Int64 // consecutive polls above cpuPressureTrigger
 	// diskPressure is 1 when ClickHouse disk usage exceeds the high watermark.
 	// External ingestion is rejected while active; system fractals (audit,
 	// alerts, system) bypass this since they write directly via InsertLogs.
 	diskPressure atomic.Int64
-	stop         chan struct{} // signals CPU/disk monitor to exit
+	// memPressure is 1 when ClickHouse memory (cgroup-aware) is near its limit.
+	// Set by the background monitor to shed ingest before an OOM-kill.
+	memPressure   atomic.Int64
+	memHighStreak atomic.Int64  // consecutive polls above memPressureTrigger
+	stop          chan struct{} // signals CPU/disk/memory monitor to exit
 
 	// spool is the durable archive spool (nil unless the archive feature is
 	// provisioned). archiveEnabled gates the tee at runtime so a provisioned-
@@ -126,6 +142,7 @@ type IngestQueue struct {
 	// Pending drop counts per reason, flushed as system events every 30s.
 	pendingDropsCPU   atomic.Int64
 	pendingDropsDisk  atomic.Int64
+	pendingDropsMem   atomic.Int64
 	pendingDropsQueue atomic.Int64
 	pendingDropsSpool atomic.Int64
 	lastDropFlushUnix atomic.Int64
@@ -159,8 +176,8 @@ func NewIngestQueue(db *storage.ClickHouseClient, bufferSize, workers int) *Inge
 	}
 	q.wg.Add(1)
 	go q.monitorCPU()
-	log.Printf("[Ingest Queue] Started %d workers, buffer size %d, max enqueue batch %d, batch coalesce %d/%v, CPU backpressure %.0f%%/%.0f%%, disk backpressure %.0f%%/%.0f%%",
-		workers, bufferSize, maxEnqueueBatch, defaultMaxBatchSize, defaultFlushInterval, cpuPressureTrigger, cpuPressureRelease, diskPressureTrigger, diskPressureRelease)
+	log.Printf("[Ingest Queue] Started %d workers, buffer size %d, max enqueue batch %d, batch coalesce %d/%v, CPU backpressure %.0f%%/%.0f%%, memory backpressure %.0f%%/%.0f%%, disk backpressure %.0f%%/%.0f%%",
+		workers, bufferSize, maxEnqueueBatch, defaultMaxBatchSize, defaultFlushInterval, cpuPressureTrigger, cpuPressureRelease, memPressureTrigger, memPressureRelease, diskPressureTrigger, diskPressureRelease)
 	return q
 }
 
@@ -196,6 +213,15 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 		n := int64(len(logs))
 		q.Metrics.QueueDrops.Add(n)
 		q.pendingDropsCPU.Add(n)
+		return false
+	}
+
+	// Memory backpressure: reject when ClickHouse is near its (cgroup) memory limit,
+	// so we stop feeding inserts before the kernel OOM-kills them.
+	if q.memPressure.Load() == 1 {
+		n := int64(len(logs))
+		q.Metrics.QueueDrops.Add(n)
+		q.pendingDropsMem.Add(n)
 		return false
 	}
 
@@ -279,6 +305,9 @@ func (q *IngestQueue) Healthy() bool {
 	if q.cpuPressure.Load() == 1 {
 		return false
 	}
+	if q.memPressure.Load() == 1 {
+		return false
+	}
 	if q.diskPressure.Load() == 1 {
 		return false
 	}
@@ -357,6 +386,8 @@ func (q *IngestQueue) monitorCPU() {
 				}
 			}
 
+			q.monitorMemory()
+
 			q.monitorSpool()
 
 			q.flushDropEvents()
@@ -397,6 +428,96 @@ func (q *IngestQueue) monitorSpool() {
 			"value":  fmt.Sprintf("%.1f", frac*100),
 		})
 	}
+}
+
+// monitorMemory sets/clears memPressure from ClickHouse's (cgroup-aware) memory
+// usage with trigger/release hysteresis and a short sustain, mirroring the CPU
+// monitor. Guards against the OOM class of incident where inserts get killed and the
+// distribution queue backs up.
+func (q *IngestQueue) monitorMemory() {
+	pct, err := q.queryClickHouseMemory()
+	if err != nil {
+		q.memHighStreak.Store(0)
+		return
+	}
+	if pct >= memPressureTrigger {
+		streak := q.memHighStreak.Add(1)
+		if streak >= memPressureSustainSamples && q.memPressure.Load() == 0 {
+			q.memPressure.Store(1)
+			log.Printf("[Ingest Queue] Memory backpressure ON (%.1f%%, sustained %ds)", pct, memPressureSustainSamples*int64(cpuPollInterval.Seconds()))
+			q.writeSystemEvent("ingest.backpressure.on", map[string]string{
+				"reason":    "memory_pressure",
+				"value":     fmt.Sprintf("%.1f", pct),
+				"threshold": fmt.Sprintf("%.1f", memPressureTrigger),
+			})
+			if q.notifWriter != nil {
+				go q.notifWriter.Write("ingest.memory_pressure", "warning",
+					"Ingest Memory Backpressure Active",
+					fmt.Sprintf("Memory at %.1f%% (threshold %.1f%%)", pct, memPressureTrigger))
+			}
+		}
+	} else {
+		q.memHighStreak.Store(0)
+		if pct < memPressureRelease && q.memPressure.Load() == 1 {
+			q.memPressure.Store(0)
+			log.Printf("[Ingest Queue] Memory backpressure OFF (%.1f%%)", pct)
+			q.writeSystemEvent("ingest.backpressure.off", map[string]string{
+				"reason": "memory_pressure",
+				"value":  fmt.Sprintf("%.1f", pct),
+			})
+		}
+	}
+}
+
+// queryClickHouseMemory returns the highest memory utilization (0-100) across all
+// ClickHouse nodes, preferring the cgroup limit over node RAM. In cluster mode it
+// takes the max so backpressure triggers when any node is near its limit.
+func (q *IngestQueue) queryClickHouseMemory() (float64, error) {
+	addrs := q.db.Addrs()
+	if len(addrs) <= 1 {
+		return q.queryNodeMemory(nil)
+	}
+	var maxPct float64
+	var lastErr error
+	for _, addr := range addrs {
+		pct, err := q.queryNodeMemory(&addr)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if pct > maxPct {
+			maxPct = pct
+		}
+	}
+	if maxPct > 0 || lastErr == nil {
+		return maxPct, nil
+	}
+	return 0, lastErr
+}
+
+// queryNodeMemory queries memory metrics from a single ClickHouse node.
+// If addr is nil, uses the shared connection pool.
+func (q *IngestQueue) queryNodeMemory(addr *string) (float64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var rows []map[string]interface{}
+	var err error
+	if addr != nil {
+		conn, openErr := storage.OpenClickHouseAddr(*addr, q.db.User, q.db.Password)
+		if openErr != nil {
+			return 0, openErr
+		}
+		defer conn.Close()
+		rows, err = storage.QueryConn(ctx, conn, storage.SystemMemoryMetricsSQL)
+	} else {
+		rows, err = q.db.Query(ctx, storage.SystemMemoryMetricsSQL)
+	}
+	if err != nil {
+		return 0, err
+	}
+	pct, _ := storage.MemoryPercentFromMetrics(storage.MetricRowsToMap(rows))
+	return pct, nil
 }
 
 // queryClickHouseCPU returns the highest CPU utilization (0-100) across
@@ -441,53 +562,15 @@ func (q *IngestQueue) queryNodeCPU(addr *string) (float64, error) {
 			return 0, openErr
 		}
 		defer conn.Close()
-		rows, err = storage.QueryConn(ctx, conn, `SELECT metric, value FROM system.asynchronous_metrics
-			WHERE metric IN (
-				'OSUserTime', 'OSNiceTime', 'OSSystemTime',
-				'OSIdleTime', 'OSIOWaitTime',
-				'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
-			)`)
+		rows, err = storage.QueryConn(ctx, conn, storage.SystemCPUMetricsSQL)
 	} else {
-		rows, err = q.db.Query(ctx, `SELECT metric, value FROM system.asynchronous_metrics
-			WHERE metric IN (
-				'OSUserTime', 'OSNiceTime', 'OSSystemTime',
-				'OSIdleTime', 'OSIOWaitTime',
-				'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
-			)`)
+		rows, err = q.db.Query(ctx, storage.SystemCPUMetricsSQL)
 	}
 	if err != nil {
 		return 0, err
 	}
-
-	var user, nice, system, idle, iowait, irq, softirq, steal float64
-	for _, row := range rows {
-		name, _ := row["metric"].(string)
-		val := asFloat64(row["value"])
-		switch name {
-		case "OSUserTime":
-			user = val
-		case "OSNiceTime":
-			nice = val
-		case "OSSystemTime":
-			system = val
-		case "OSIdleTime":
-			idle = val
-		case "OSIOWaitTime":
-			iowait = val
-		case "OSIrqTime":
-			irq = val
-		case "OSSoftIrqTime":
-			softirq = val
-		case "OSStealTime":
-			steal = val
-		}
-	}
-	busy := user + nice + system + irq + softirq + steal
-	total := busy + idle + iowait
-	if total <= 0 {
-		return 0, nil
-	}
-	return busy / total * 100, nil
+	pct, _ := storage.CPUPercentFromMetrics(storage.MetricRowsToMap(rows))
+	return pct, nil
 }
 
 // queryClickHouseDisk returns the highest disk usage percentage (0-100) across
@@ -619,6 +702,7 @@ func (q *IngestQueue) flushDropEvents() {
 		count  *atomic.Int64
 	}{
 		{"cpu_pressure", &q.pendingDropsCPU},
+		{"memory_pressure", &q.pendingDropsMem},
 		{"disk_pressure", &q.pendingDropsDisk},
 		{"queue_full", &q.pendingDropsQueue},
 		{"spool_pressure", &q.pendingDropsSpool},
@@ -659,15 +743,16 @@ func (q *IngestQueue) LastIngested(fractalID string) time.Time {
 
 // Metrics source methods (satisfy metrics.IngestSource interface).
 
-func (q *IngestQueue) AcceptedTotal() int64         { return q.Metrics.Accepted.Load() }
-func (q *IngestQueue) InsertedTotal() int64         { return q.Metrics.Inserted.Load() }
-func (q *IngestQueue) InsertErrorsTotal() int64     { return q.Metrics.InsertErrors.Load() }
-func (q *IngestQueue) QueueDropsTotal() int64       { return q.Metrics.QueueDrops.Load() }
-func (q *IngestQueue) RetriesTotal() int64          { return q.Metrics.Retries.Load() }
-func (q *IngestQueue) CPUPressure() bool            { return q.cpuPressure.Load() == 1 }
-func (q *IngestQueue) DiskPressure() bool           { return q.diskPressure.Load() == 1 }
-func (q *IngestQueue) SpoolPressure() bool          { return q.spoolPressure.Load() == 1 }
-func (q *IngestQueue) ConsecutiveFailures() int64   { return q.consecutiveFailures.Load() }
+func (q *IngestQueue) AcceptedTotal() int64       { return q.Metrics.Accepted.Load() }
+func (q *IngestQueue) InsertedTotal() int64       { return q.Metrics.Inserted.Load() }
+func (q *IngestQueue) InsertErrorsTotal() int64   { return q.Metrics.InsertErrors.Load() }
+func (q *IngestQueue) QueueDropsTotal() int64     { return q.Metrics.QueueDrops.Load() }
+func (q *IngestQueue) RetriesTotal() int64        { return q.Metrics.Retries.Load() }
+func (q *IngestQueue) CPUPressure() bool          { return q.cpuPressure.Load() == 1 }
+func (q *IngestQueue) MemPressure() bool          { return q.memPressure.Load() == 1 }
+func (q *IngestQueue) DiskPressure() bool         { return q.diskPressure.Load() == 1 }
+func (q *IngestQueue) SpoolPressure() bool        { return q.spoolPressure.Load() == 1 }
+func (q *IngestQueue) ConsecutiveFailures() int64 { return q.consecutiveFailures.Load() }
 
 // worker drains the channel and coalesces multiple small batches into larger
 // ClickHouse inserts. It flushes when the coalesced batch reaches

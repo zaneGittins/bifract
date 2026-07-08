@@ -242,3 +242,59 @@ SELECT
     fields.computer_name::String       AS computer_name
 FROM logs
 WHERE fields.bifract_category = 'process_creation' AND fields.process_guid != '';
+
+-- proc_freq: NoDoze frequency baseline for pgr() edge scoring. Abstracted + aggregated
+-- behavioral patterns (src process -> relationship -> abstracted target) with count + host
+-- set. Abstraction expressions MUST match pkg/parser/abstractExpr() (locked by the parity
+-- test in pkg/parser/provenance_test.go) so pgr() read-side join keys line up.
+CREATE TABLE IF NOT EXISTS proc_freq (
+    fractal_id  LowCardinality(String),
+    src_image   LowCardinality(String),
+    event_type  LowCardinality(String),
+    target_norm String,
+    day         Date,
+    event_count SimpleAggregateFunction(sum, UInt64),
+    hosts       AggregateFunction(groupUniqArray(256), String)
+) ENGINE = AggregatingMergeTree()
+ORDER BY (fractal_id, src_image, event_type, target_norm, day)
+TTL day + INTERVAL 180 DAY
+SETTINGS index_granularity = 8192;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_spawn_mv TO proc_freq AS
+SELECT
+    fractal_id,
+    lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.parent_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
+    'spawn' AS event_type,
+    lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
+    toDate(timestamp) AS day,
+    toUInt64(count()) AS event_count,
+    groupUniqArrayState(256)(fields.computer_name::String) AS hosts
+FROM logs
+WHERE fields.bifract_category = 'process_creation' AND fields.parent_image::String != '' AND fields.image::String != ''
+GROUP BY fractal_id, src_image, event_type, target_norm, day;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_file_mv TO proc_freq AS
+SELECT
+    fractal_id,
+    lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
+    'file_write' AS event_type,
+    lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.artifact::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
+    toDate(timestamp) AS day,
+    toUInt64(count()) AS event_count,
+    groupUniqArrayState(256)(fields.computer_name::String) AS hosts
+FROM logs
+WHERE fields.bifract_category = 'file_write' AND fields.image::String != '' AND fields.artifact::String != ''
+GROUP BY fractal_id, src_image, event_type, target_norm, day;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_net_mv TO proc_freq AS
+SELECT
+    fractal_id,
+    lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
+    'net_connect' AS event_type,
+    multiIf(match(fields.dst_ip::String, '^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|127\\.|169\\.254\\.)'), concat(replaceRegexpOne(fields.dst_ip::String, '\\.[0-9]{1,3}$', ''), '.0/24'), match(fields.dst_ip::String, '^(::1$|fe80:|fc|fd)'), 'internal', fields.dst_ip::String) AS target_norm,
+    toDate(timestamp) AS day,
+    toUInt64(count()) AS event_count,
+    groupUniqArrayState(256)(fields.computer_name::String) AS hosts
+FROM logs
+WHERE fields.bifract_category = 'network_connect' AND fields.image::String != '' AND fields.dst_ip::String != ''
+GROUP BY fractal_id, src_image, event_type, target_norm, day;

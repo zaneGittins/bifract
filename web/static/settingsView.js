@@ -57,6 +57,10 @@ const SettingsView = {
         if (archiveToggle) {
             archiveToggle.addEventListener('change', () => this.saveArchiveEnabled());
         }
+        const endpointAnalysisToggle = document.getElementById('endpointAnalysisToggle');
+        if (endpointAnalysisToggle) {
+            endpointAnalysisToggle.addEventListener('change', () => this.saveEndpointAnalysis());
+        }
     },
 
     // Loads the Iceberg archive enable state. The toggle is disabled (with a
@@ -101,6 +105,50 @@ const SettingsView = {
         } catch (err) {
             toggle.checked = !enabled; // revert on failure
             if (window.Toast) Toast.error('Archive Update Failed', err.message);
+        }
+    },
+
+    async loadEndpointAnalysisToggle() {
+        const toggle = document.getElementById('endpointAnalysisToggle');
+        if (!toggle) return;
+        try {
+            const res = await fetch('/api/v1/system/endpoint-analysis', { credentials: 'include' });
+            if (!res.ok) return;
+            const d = await res.json();
+            toggle.checked = !!d.enabled;
+        } catch (err) {
+            console.error('[Settings] endpoint-analysis load error:', err);
+        }
+    },
+
+    async saveEndpointAnalysis() {
+        const toggle = document.getElementById('endpointAnalysisToggle');
+        const hint = document.getElementById('endpointAnalysisHint');
+        if (!toggle) return;
+        const enabled = toggle.checked;
+        toggle.disabled = true;
+        if (hint) hint.textContent = enabled ? 'Enabling…' : 'Disabling…';
+        try {
+            const res = await fetch('/api/v1/system/endpoint-analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ enabled })
+            });
+            if (!res.ok) {
+                const msg = await res.text();
+                throw new Error(msg || 'Failed to update setting');
+            }
+            if (window.Toast) {
+                Toast.success('Advanced Endpoint Analysis ' + (enabled ? 'Enabled' : 'Disabled'),
+                    enabled ? 'Process baselines are now building from new logs.' : 'Per-insert analysis paused. Existing baseline data is retained.');
+            }
+        } catch (err) {
+            toggle.checked = !enabled; // revert on failure
+            if (window.Toast) Toast.error('Update Failed', err.message);
+        } finally {
+            toggle.disabled = false;
+            if (hint) hint.textContent = '';
         }
     },
 
@@ -153,6 +201,7 @@ const SettingsView = {
         // Load data
         await this.loadSettings();
         await this.loadArchiveToggle();
+        await this.loadEndpointAnalysisToggle();
         await this.loadMTLSStatus();
         await this.loadUsers();
 

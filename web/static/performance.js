@@ -171,7 +171,7 @@ const Performance = {
             const pressureData = await (await pressurePromise).json();
 
             if (metData.success) {
-                this.renderMetrics(metData.metrics || {}, metData.async_metrics || {}, metData.log_storage || {}, metData.disk || {});
+                this.renderMetrics(metData.metrics || {}, metData.async_metrics || {}, metData.log_storage || {}, metData.disk || {}, metData.cluster || null);
                 if (tab === 'overview') {
                     this.renderCpuChart(
                         metData.cpu_history || [],
@@ -881,16 +881,67 @@ const Performance = {
         section.style.display = dq ? '' : 'none';
     },
 
-    renderMetrics(metrics, asyncMetrics, logStorage, disk) {
-        const activeQueries = metrics['Query'] || 0;
-        const merges = metrics['Merge'] || 0;
-        const memTracking = metrics['MemoryTracking'] || 0;
-        const uptime = asyncMetrics['Uptime'] || 0;
+    // Renders the four SERVER overview cards. In cluster mode the node-local
+    // system.metrics gauges only reflect one node, so the backend supplies a
+    // `cluster` object with fanned-out aggregates: queries and merges are summed
+    // cluster-wide, memory becomes the worst node's utilization, and Uptime is
+    // repurposed as shard health. Single-node keeps the original node-local view.
+    renderServerCards(metrics, asyncMetrics, cluster) {
+        const memLabel = document.getElementById('metricMemoryLabel');
+        const memSub = document.getElementById('metricMemorySub');
+        const upLabel = document.getElementById('metricUptimeLabel');
+        const upSub = document.getElementById('metricUptimeSub');
 
-        this.setText('metricActiveQueries', activeQueries);
-        this.setText('metricMemory', this.formatBytes(memTracking));
-        this.setText('metricMerges', merges);
-        this.setText('metricUptime', this.formatUptime(uptime));
+        if (cluster) {
+            this.setText('metricActiveQueries', cluster.active_queries || 0);
+            this.setText('metricMerges', cluster.active_merges || 0);
+
+            // Card 2: worst-node memory utilization.
+            const pct = typeof cluster.mem_peak_pct === 'number' ? cluster.mem_peak_pct : 0;
+            if (memLabel) memLabel.textContent = 'Peak Memory';
+            const memEl = document.getElementById('metricMemory');
+            if (memEl) {
+                memEl.textContent = pct.toFixed(0) + '%';
+                memEl.className = 'perf-metric-value' +
+                    (pct > 85 ? ' perf-metric-danger' : pct > 70 ? ' perf-metric-warning' : '');
+            }
+            if (memSub) memSub.textContent = cluster.mem_peak_node ? 'on ' + cluster.mem_peak_node : '';
+
+            // Card 4: shard health, repurposed from Uptime. A shard is healthy when
+            // at least one of its replicas is reachable (data stays available).
+            const total = cluster.nodes_total || 0;
+            const healthy = cluster.nodes_healthy || 0;
+            if (upLabel) upLabel.textContent = 'Shards';
+            const upEl = document.getElementById('metricUptime');
+            if (upEl) {
+                upEl.textContent = healthy + ' / ' + total;
+                upEl.className = 'perf-metric-value' +
+                    (total > 0 && healthy < total ? ' perf-metric-danger' : '');
+            }
+            if (upSub) upSub.textContent = (total > 0 && healthy < total)
+                ? (total - healthy) + ' degraded' : 'all healthy';
+            return;
+        }
+
+        // Single-node: node-local gauges.
+        if (memLabel) memLabel.textContent = 'Memory Usage';
+        if (memSub) memSub.textContent = '';
+        if (upLabel) upLabel.textContent = 'Uptime';
+        if (upSub) upSub.textContent = '';
+
+        const memEl = document.getElementById('metricMemory');
+        if (memEl) memEl.className = 'perf-metric-value';
+        const upEl = document.getElementById('metricUptime');
+        if (upEl) upEl.className = 'perf-metric-value';
+
+        this.setText('metricActiveQueries', metrics['Query'] || 0);
+        this.setText('metricMemory', this.formatBytes(metrics['MemoryTracking'] || 0));
+        this.setText('metricMerges', metrics['Merge'] || 0);
+        this.setText('metricUptime', this.formatUptime(asyncMetrics['Uptime'] || 0));
+    },
+
+    renderMetrics(metrics, asyncMetrics, logStorage, disk, cluster) {
+        this.renderServerCards(metrics, asyncMetrics, cluster);
 
         // Log-specific storage metrics
         const logRows = logStorage['log_rows'] || 0;

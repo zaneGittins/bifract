@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -41,8 +42,40 @@ type ClickHouseClient struct {
 	// fields are kept. Invalidated when ReconcileSchemaFields changes the hints.
 	typeHintMu     sync.RWMutex
 	typeHintFields map[string]bool
+
+	// insertSettings are optional per-insert ClickHouse settings (group-by spill,
+	// async_insert) applied to InsertLogs. Computed once at Initialize against the
+	// server's supported setting names, then read-only. nil/empty means none.
+	insertSettings clickhouse.Settings
+
+	// schemaReady is closed when Initialize has finished applying migrations and
+	// creating tables. In cluster mode migrations run in a background goroutine, so
+	// callers that must observe the post-migration schema (e.g. the endpoint-analysis
+	// MV reconcile) wait on this via WaitForSchemaReady before acting.
+	schemaReady     chan struct{}
+	schemaReadyOnce sync.Once
 }
 
+// markSchemaReady signals that Initialize's schema work is complete (idempotent).
+func (c *ClickHouseClient) markSchemaReady() {
+	c.schemaReadyOnce.Do(func() {
+		if c.schemaReady != nil {
+			close(c.schemaReady)
+		}
+	})
+}
+
+// WaitForSchemaReady blocks until Initialize's schema work is complete or ctx is done.
+// Safe to call before Initialize; returns immediately if the signal was never wired.
+func (c *ClickHouseClient) WaitForSchemaReady(ctx context.Context) {
+	if c.schemaReady == nil {
+		return
+	}
+	select {
+	case <-c.schemaReady:
+	case <-ctx.Done():
+	}
+}
 
 // Addrs returns the host:port addresses this client connects to.
 func (c *ClickHouseClient) Addrs() []string { return c.addrs }
@@ -133,6 +166,31 @@ func (c *ClickHouseClient) ReconcileProcLineageTTL(ctx context.Context, days int
 	}
 	stmt := fmt.Sprintf(
 		"ALTER TABLE proc_lineage%s MODIFY TTL toDateTime(timestamp) + INTERVAL %d DAY",
+		c.OnClusterSQL(), days,
+	)
+	return c.conn.Exec(ctx, stmt)
+}
+
+// ProcFreqReadTable returns the read table for the pgr() frequency baseline. In cluster
+// mode this fans out to all shards via proc_freq_distributed; the scoring join re-aggregates
+// the AggregatingMergeTree state across shards (sum / groupUniqArrayMerge).
+func (c *ClickHouseClient) ProcFreqReadTable() string {
+	if c.Cluster != "" {
+		return "proc_freq_distributed"
+	}
+	return "proc_freq"
+}
+
+// ReconcileProcFreqTTL applies a configured retention (in days) to proc_freq via a
+// metadata-only ALTER ... MODIFY TTL. proc_freq is the aggregated behavioral baseline; a
+// longer window gives more stable rarity for infrequent-but-normal behavior. Tuned via
+// BIFRACT_PROC_FREQ_TTL_DAYS. days <= 0 leaves the DDL default (180 days) in place.
+func (c *ClickHouseClient) ReconcileProcFreqTTL(ctx context.Context, days int) error {
+	if days <= 0 {
+		return nil
+	}
+	stmt := fmt.Sprintf(
+		"ALTER TABLE proc_freq%s MODIFY TTL day + INTERVAL %d DAY",
 		c.OnClusterSQL(), days,
 	)
 	return c.conn.Exec(ctx, stmt)
@@ -283,8 +341,16 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 			if err := c.conn.Exec(ctx, procDistSQL); err != nil {
 				return fmt.Errorf("failed to create proc_lineage distributed table: %w\nstatement: %s", err, procDistSQL)
 			}
+			freqDistSQL := fmt.Sprintf(
+				"CREATE TABLE IF NOT EXISTS proc_freq_distributed%s AS proc_freq ENGINE = Distributed('%s', currentDatabase(), 'proc_freq', rand())",
+				c.OnClusterSQL(), EscCHStr(c.Cluster),
+			)
+			if err := c.conn.Exec(ctx, freqDistSQL); err != nil {
+				return fmt.Errorf("failed to create proc_freq distributed table: %w\nstatement: %s", err, freqDistSQL)
+			}
 		}
 		setClickHouseMigrationsBaseline(ctx, c.conn, c.RewriteEngine, migrations, migrationsDir)
+		c.markSchemaReady()
 		return nil
 	}
 
@@ -308,21 +374,40 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 			"CREATE TABLE IF NOT EXISTS proc_lineage_distributed AS proc_lineage ENGINE = Distributed('%s', currentDatabase(), 'proc_lineage', rand())",
 			EscCHStr(c.Cluster),
 		)
+		freqDistSQL := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS proc_freq_distributed AS proc_freq ENGINE = Distributed('%s', currentDatabase(), 'proc_freq', rand())",
+			EscCHStr(c.Cluster),
+		)
 		go func() {
 			initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+
+			// Consistency gate: only apply migrations when every shard is reachable, so a
+			// migration is never applied to a subset of shards (which would leave the
+			// cluster on divergent schemas). If any shard is down we skip the apply this
+			// cycle; it self-heals on the next pod restart once all shards are back.
+			// Distributed table creation and column reconciliation below still run per
+			// reachable node, since they are idempotent and metadata-only.
+			shardsOK := true
+			if err := ensureAllShardsReachable(ctx, c.addrs, c.Database, c.User, c.Password, initPool); err != nil {
+				shardsOK = false
+				log.Printf("Skipping cluster migration apply (self-heals on next restart): %v", err)
+			}
+
 			for _, addr := range c.addrs {
 				hostConn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, initPool)
 				if err != nil {
 					log.Printf("Warning: cluster migration sync to %s failed: %v", addr, err)
 					continue
 				}
-				n, err := runMigrationsOnConn(ctx, hostConn, c.RewriteEngine, migrations, migrationsDir)
-				if err != nil {
-					log.Printf("Warning: migration sync on %s: %v", addr, err)
-				} else if n > 0 {
-					log.Printf("Applied %d ClickHouse migration(s) to shard %s", n, addr)
+				if shardsOK {
+					n, err := runMigrationsOnConn(ctx, hostConn, c.RewriteEngine, true, migrations, migrationsDir)
+					if err != nil {
+						log.Printf("Warning: migration sync on %s: %v", addr, err)
+					} else if n > 0 {
+						log.Printf("Applied %d ClickHouse migration(s) to shard %s", n, addr)
+					}
 				}
-				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL, procDistSQL} {
+				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL, procDistSQL, freqDistSQL} {
 					stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
 					hostConn.Exec(stmtCtx, stmt)
 					stmtCancel()
@@ -335,6 +420,7 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 					{"logs_histogram_distributed", "logs_histogram"},
 					{"logs_hot_distributed", "logs_hot"},
 					{"proc_lineage_distributed", "proc_lineage"},
+					{"proc_freq_distributed", "proc_freq"},
 				} {
 					syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
 					if err := syncDistributedColumns(syncCtx, hostConn, c.Database, pair[0], pair[1]); err != nil {
@@ -345,18 +431,40 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 				hostConn.Close()
 			}
 			log.Printf("Cluster schema sync complete")
+			c.markSchemaReady()
 		}()
 		return nil
 	}
 
-	// Single-node upgrade: apply only pending migrations.
-	n, err := runMigrationsOnConn(ctx, c.conn, nil, migrations, migrationsDir)
-	if err != nil {
-		return fmt.Errorf("clickhouse migrations: %w", err)
+	// Single-node upgrade: apply only pending migrations. Retry with backoff so a
+	// transient failure (ClickHouse still warming up, a briefly slow statement) does
+	// not turn into a pod CrashLoopBackOff. Per-statement progress means each retry
+	// resumes where the last left off rather than repeating completed work.
+	var n int
+	var err error
+	backoff := 5 * time.Second
+	for attempt := 1; attempt <= migrationMaxAttempts; attempt++ {
+		n, err = runMigrationsOnConn(ctx, c.conn, nil, false, migrations, migrationsDir)
+		if err == nil {
+			break
+		}
+		if attempt == migrationMaxAttempts {
+			return fmt.Errorf("clickhouse migrations (after %d attempts): %w", attempt, err)
+		}
+		log.Printf("ClickHouse migration attempt %d/%d failed, retrying in %s: %v", attempt, migrationMaxAttempts, backoff, err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff < 60*time.Second {
+			backoff *= 2
+		}
 	}
 	if n > 0 {
 		log.Printf("Applied %d ClickHouse migration(s)", n)
 	}
+	c.markSchemaReady()
 	return nil
 }
 
@@ -506,11 +614,69 @@ func loadClickHouseMigrations(fsys embed.FS, dir string) ([]chMigrationEntry, er
 	return migrations, nil
 }
 
+// migrationMaxAttempts bounds single-node migration retries before giving up.
+const migrationMaxAttempts = 5
+
+// migrationStmtTimeout is the per-statement deadline for ClickHouse migrations.
+// Migrations can legitimately run for minutes (replicated ALTERs waiting on Keeper,
+// column/index materializations, future backfills), so the default is intentionally
+// large; it exists only to break a genuinely hung statement, not to bound normal
+// work. The old 30s deadline forced any slow-but-healthy statement to time out, which
+// (since a file is only recorded as applied after all its statements succeed) made the
+// whole migration re-run from statement 1 on every restart. Override in seconds with
+// BIFRACT_MIGRATION_STMT_TIMEOUT.
+func migrationStmtTimeout() time.Duration {
+	const def = 30 * time.Minute
+	if v := os.Getenv("BIFRACT_MIGRATION_STMT_TIMEOUT"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return def
+}
+
+// loadCompletedSteps returns the set of statement indices already applied for a
+// migration file, so an interrupted run resumes instead of re-executing earlier
+// statements. This narrows, but does not close, the re-execution window: a statement
+// that succeeds but whose recordCompletedStep does not commit (process crash between
+// the two, or two replicas of a shard racing on the shared bookkeeping table) will run
+// again on restart. That is safe for the idempotent CREATE/ALTER ... IF [NOT] EXISTS
+// statements every current migration uses; a future non-idempotent backfill
+// (INSERT...SELECT) MUST be written idempotently (guarded / dedup'd target) and cannot
+// rely on this checkpoint for exactly-once.
+func loadCompletedSteps(ctx context.Context, conn driver.Conn, number int) (map[int]bool, error) {
+	rows, err := conn.Query(ctx, "SELECT statement_index FROM logs._bifract_migration_steps WHERE number = ?", uint32(number))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	done := make(map[int]bool)
+	for rows.Next() {
+		var idx uint32
+		if err := rows.Scan(&idx); err != nil {
+			return nil, err
+		}
+		done[int(idx)] = true
+	}
+	return done, rows.Err()
+}
+
+// recordCompletedStep marks one statement of a migration file as applied.
+func recordCompletedStep(ctx context.Context, conn driver.Conn, number, statementIndex int, name string) error {
+	record := fmt.Sprintf("INSERT INTO logs._bifract_migration_steps (number, statement_index, name) VALUES (%d, %d, '%s')",
+		number, statementIndex, strings.ReplaceAll(name, "'", "''"))
+	return conn.Exec(ctx, record)
+}
+
 // runMigrationsOnConn applies pending ClickHouse migrations via conn.
 // transformStmt, if non-nil, is applied to each DDL statement before execution
 // (used in cluster mode to rewrite engine names to their Replicated variants).
+// clusterMode runs DDL with alter_sync=0/mutations_sync=0 so an ALTER does not
+// block on a restarting replica (the Replicated engine still propagates via Keeper).
+// Progress is recorded per statement, so a statement that fails or times out does not
+// force the file's already-applied statements to re-run on the next restart.
 // Returns the number of migrations applied.
-func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt func(string) string, migrations embed.FS, migrationsDir string) (int, error) {
+func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt func(string) string, clusterMode bool, migrations embed.FS, migrationsDir string) (int, error) {
 	const createMigrationsTable = `CREATE TABLE IF NOT EXISTS logs._bifract_migrations (
 		number UInt32,
 		name String,
@@ -518,12 +684,23 @@ func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt fu
 	) ENGINE = ReplacingMergeTree()
 	ORDER BY number`
 
-	tableSQL := createMigrationsTable
-	if transformStmt != nil {
-		tableSQL = transformStmt(tableSQL)
-	}
-	if err := conn.Exec(ctx, tableSQL); err != nil {
-		return 0, fmt.Errorf("create migrations table: %w", err)
+	// Per-statement bookkeeping: which statements of an in-progress file already
+	// succeeded, so a later slow/failed statement does not re-run the earlier ones.
+	const createStepsTable = `CREATE TABLE IF NOT EXISTS logs._bifract_migration_steps (
+		number UInt32,
+		statement_index UInt32,
+		name String,
+		applied_at DateTime DEFAULT now()
+	) ENGINE = ReplacingMergeTree()
+	ORDER BY (number, statement_index)`
+
+	for _, ddl := range []string{createMigrationsTable, createStepsTable} {
+		if transformStmt != nil {
+			ddl = transformStmt(ddl)
+		}
+		if err := conn.Exec(ctx, ddl); err != nil {
+			return 0, fmt.Errorf("create migration bookkeeping table: %w", err)
+		}
 	}
 
 	var maxApplied uint32
@@ -536,12 +713,22 @@ func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt fu
 		return 0, err
 	}
 
+	stmtTimeout := migrationStmtTimeout()
+
 	applied := 0
 	for _, m := range allMigrations {
 		if uint32(m.number) <= maxApplied {
 			continue
 		}
-		for _, stmt := range splitClickHouseSQL(m.sql) {
+
+		done, err := loadCompletedSteps(ctx, conn, m.number)
+		if err != nil {
+			return applied, fmt.Errorf("load migration steps %s: %w", m.name, err)
+		}
+
+		// Index by raw split position so it is stable across runs regardless of which
+		// statements the filter below skips.
+		for i, stmt := range splitClickHouseSQL(m.sql) {
 			stmt = strings.TrimSpace(stmt)
 			if stmt == "" {
 				continue
@@ -555,14 +742,30 @@ func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt fu
 				!strings.HasPrefix(upper, "RENAME ") {
 				continue
 			}
+			if done[i] {
+				continue
+			}
 			if transformStmt != nil {
 				stmt = transformStmt(stmt)
 			}
-			stmtCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			execCtx := ctx
+			if clusterMode {
+				// Do not block migration DDL on replica acknowledgement: during a rolling
+				// restart a replica may be temporarily down, and alter_sync=1 (the default)
+				// would stall the ALTER until it returns.
+				execCtx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+					"alter_sync":     0,
+					"mutations_sync": 0,
+				}))
+			}
+			stmtCtx, cancel := context.WithTimeout(execCtx, stmtTimeout)
 			execErr := conn.Exec(stmtCtx, stmt)
 			cancel()
 			if execErr != nil {
-				return applied, fmt.Errorf("migration %s: %w", m.name, execErr)
+				return applied, fmt.Errorf("migration %s (statement %d): %w", m.name, i, execErr)
+			}
+			if err := recordCompletedStep(ctx, conn, m.number, i, m.name); err != nil {
+				return applied, fmt.Errorf("record migration step %s: %w", m.name, err)
 			}
 		}
 		record := fmt.Sprintf("INSERT INTO logs._bifract_migrations (number, name) VALUES (%d, '%s')",
@@ -573,6 +776,27 @@ func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt fu
 		applied++
 	}
 	return applied, nil
+}
+
+// ensureAllShardsReachable verifies every shard address accepts a trivial query.
+// It gates cluster migrations: applying to only the reachable subset would leave
+// shards on divergent schemas. Returns an error naming the first unreachable shard.
+func ensureAllShardsReachable(ctx context.Context, addrs []string, database, user, password string, pool ClickHousePoolConfig) error {
+	for _, addr := range addrs {
+		conn, err := openClickHouseConn([]string{addr}, database, user, password, pool)
+		if err != nil {
+			return fmt.Errorf("shard %s unreachable: %w", addr, err)
+		}
+		pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		var one uint8
+		err = conn.QueryRow(pingCtx, "SELECT 1").Scan(&one)
+		cancel()
+		conn.Close()
+		if err != nil {
+			return fmt.Errorf("shard %s not ready: %w", addr, err)
+		}
+	}
+	return nil
 }
 
 // setClickHouseMigrationsBaseline marks all known migrations as applied without
@@ -741,7 +965,9 @@ func NewClickHouseClientWithPool(host string, port int, database, user, password
 	if err != nil {
 		return nil, err
 	}
-	return &ClickHouseClient{conn: conn, addrs: []string{addr}, User: user, Password: password, Database: database}, nil
+	c := &ClickHouseClient{conn: conn, addrs: []string{addr}, User: user, Password: password, Database: database, schemaReady: make(chan struct{})}
+	c.configureInsertSettings()
+	return c, nil
 }
 
 // validClusterName matches only safe ClickHouse cluster identifiers.
@@ -784,7 +1010,9 @@ func NewClickHouseClusterClient(hosts []string, port int, database, user, passwo
 	if err != nil {
 		return nil, err
 	}
-	return &ClickHouseClient{conn: conn, addrs: addrs, User: user, Password: password, Database: database, Cluster: cluster}, nil
+	c := &ClickHouseClient{conn: conn, addrs: addrs, User: user, Password: password, Database: database, Cluster: cluster, schemaReady: make(chan struct{})}
+	c.configureInsertSettings()
+	return c, nil
 }
 
 // openClickHouseConn opens a connection to ClickHouse with the given addresses.
@@ -900,6 +1128,88 @@ func (c *ClickHouseClient) ShardHealth(ctx context.Context) (total, healthy int,
 	return int(distMonInt64(rows[0]["total"])), int(distMonInt64(rows[0]["healthy"])), nil
 }
 
+// ClusterServerStats holds the cluster-wide SERVER panel gauges. Load metrics are
+// summed across every replica; memory reports the single worst node.
+type ClusterServerStats struct {
+	NodesTotal    int     `json:"nodes_total"`
+	NodesHealthy  int     `json:"nodes_healthy"`
+	ActiveQueries int64   `json:"active_queries"`
+	ActiveMerges  int64   `json:"active_merges"`
+	MemPeakPct    float64 `json:"mem_peak_pct"`
+	MemPeakNode   string  `json:"mem_peak_node"`
+	MemPeakBytes  int64   `json:"mem_peak_bytes"`
+}
+
+// ClusterServerStats aggregates node-local ClickHouse server gauges across every
+// replica for the System tab's SERVER panel in cluster mode. Active queries and
+// merges are summed cluster-wide (the meaningful quantity is total load); memory
+// reports the single worst node by cgroup-aware utilization, since a cluster
+// degrades when any one node saturates, not on average. Returns nil, nil for
+// single-node deployments (the caller falls back to node-local gauges).
+func (c *ClickHouseClient) ClusterServerStats(ctx context.Context) (*ClusterServerStats, error) {
+	if !c.IsCluster() {
+		return nil, nil
+	}
+	cl := EscCHStr(c.Cluster)
+	stats := &ClusterServerStats{}
+
+	total, healthy, err := c.ShardHealth(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stats.NodesTotal, stats.NodesHealthy = total, healthy
+
+	// Load gauges: summed across all replicas.
+	loadRows, err := c.Query(ctx, fmt.Sprintf(`
+		SELECT
+			sumIf(value, metric = 'Query') AS active_queries,
+			sumIf(value, metric = 'Merge') AS active_merges
+		FROM clusterAllReplicas('%s', system.metrics)
+		WHERE metric IN ('Query', 'Merge')
+		SETTINGS skip_unavailable_shards = 1`, cl))
+	if err != nil {
+		return nil, err
+	}
+	if len(loadRows) > 0 {
+		stats.ActiveQueries = distMonInt64(loadRows[0]["active_queries"])
+		stats.ActiveMerges = distMonInt64(loadRows[0]["active_merges"])
+	}
+
+	// Memory saturation: worst node by cgroup-aware utilization, using the same
+	// computation the backpressure monitor and metrics collector rely on (prefers
+	// the pod's cgroup limit over node RAM, which matters in k8s), so the panel
+	// agrees with them. hostName() is evaluated on each remote replica, labelling
+	// rows by their origin node.
+	memRows, err := c.Query(ctx, fmt.Sprintf(`
+		SELECT hostName() AS node, metric, value
+		FROM clusterAllReplicas('%s', system.asynchronous_metrics)
+		WHERE metric IN ('CGroupMemoryUsed', 'CGroupMemoryTotal', 'MemoryResident', 'OSMemoryTotal')
+		SETTINGS skip_unavailable_shards = 1`, cl))
+	if err != nil {
+		return nil, err
+	}
+	perNode := map[string][]map[string]interface{}{}
+	for _, r := range memRows {
+		node, _ := r["node"].(string)
+		perNode[node] = append(perNode[node], r)
+	}
+	for node, rows := range perNode {
+		m := MetricRowsToMap(rows)
+		pct, ok := MemoryPercentFromMetrics(m)
+		if !ok || pct <= stats.MemPeakPct {
+			continue
+		}
+		stats.MemPeakPct = pct
+		stats.MemPeakNode = node
+		if used := m["CGroupMemoryUsed"]; used > 0 {
+			stats.MemPeakBytes = int64(used)
+		} else {
+			stats.MemPeakBytes = int64(m["MemoryResident"])
+		}
+	}
+	return stats, nil
+}
+
 func (c *ClickHouseClient) Close() error {
 	return c.conn.Close()
 }
@@ -910,9 +1220,56 @@ func (c *ClickHouseClient) Conn() driver.Conn {
 	return c.conn
 }
 
+// configureInsertSettings computes the optional per-insert ClickHouse settings from
+// the environment, applied to InsertLogs. ClickHouse is guaranteed >= 26.6, so every
+// referenced setting exists (an unknown setting would otherwise fail the insert).
+func (c *ClickHouseClient) configureInsertSettings() {
+	s := clickhouse.Settings{}
+
+	// GROUP BY spill: an insert into logs synchronously fires several aggregating
+	// materialized views (rarity/beacon/long-connection/proc models). Bounding their
+	// aggregation memory as a fraction of the server's per-query memory limit lets a
+	// heavy block spill to disk instead of OOM-ing the insert (which backs up the
+	// distribution queue and stalls merges). Memory-proportional, so it scales with
+	// node size. Set BIFRACT_INSERT_GROUPBY_SPILL_RATIO to 0 to disable.
+	ratio := getenvFloat("BIFRACT_INSERT_GROUPBY_SPILL_RATIO", 0.5)
+	if ratio > 0 {
+		s["max_bytes_ratio_before_external_group_by"] = ratio
+	}
+
+	// async_insert (opt-in via BIFRACT_ASYNC_INSERT=1): coalesce inserts server-side
+	// into fewer, larger parts, easing merge pressure. wait_for_async_insert=1 keeps
+	// the client blocked until the buffer is flushed, so a successful insert still
+	// means durably written and ingest acks/backpressure stay meaningful.
+	if os.Getenv("BIFRACT_ASYNC_INSERT") == "1" {
+		s["async_insert"] = 1
+		s["wait_for_async_insert"] = 1
+	}
+
+	if len(s) > 0 {
+		c.insertSettings = s
+		log.Printf("[ClickHouse] Per-insert settings: %v", s)
+	}
+}
+
+// getenvFloat reads a float env var, returning def when unset or unparseable.
+func getenvFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
+}
+
 func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) error {
 	if len(logs) == 0 {
 		return nil
+	}
+
+	// Apply the per-insert relief settings (group-by spill, optional async_insert).
+	if len(c.insertSettings) > 0 {
+		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(c.insertSettings))
 	}
 
 	// norm_log is intentionally omitted: it is a ClickHouse DEFAULT toString(fields)

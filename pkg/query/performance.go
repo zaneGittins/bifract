@@ -80,15 +80,11 @@ func (mc *MetricsCollector) run() {
 	}
 }
 
-const cpuMetricsSQL = `SELECT metric, value FROM system.asynchronous_metrics
-	WHERE metric IN (
-		'OSUserTime', 'OSNiceTime', 'OSSystemTime',
-		'OSIdleTime', 'OSIOWaitTime',
-		'OSIrqTime', 'OSSoftIrqTime', 'OSStealTime'
-	)`
+// cgroup-aware: prefers the container's CPU/memory cgroup quota, falling back to
+// node-level metrics. See pkg/storage/health_metrics.go.
+const cpuMetricsSQL = storage.SystemCPUMetricsSQL
 
-const memoryMetricsSQL = `SELECT metric, value FROM system.asynchronous_metrics
-	WHERE metric IN ('MemoryResident', 'OSMemoryTotal')`
+const memoryMetricsSQL = storage.SystemMemoryMetricsSQL
 
 // collect samples CPU% per ClickHouse node plus the average alert evaluation
 // latency, then persists everything to Postgres in a single batched insert.
@@ -134,8 +130,9 @@ func (mc *MetricsCollector) collect() {
 	mc.maybeCheckBaseline()
 }
 
-// sampleCPU queries instantaneous OS CPU ratios from a single ClickHouse node
-// and returns CPU% (0-100). addr is nil for the shared single-node connection.
+// sampleCPU queries CPU metrics from a single ClickHouse node and returns CPU%
+// (0-100), cgroup-aware (prefers the container quota). addr is nil for the shared
+// single-node connection.
 func (mc *MetricsCollector) sampleCPU(key string, addr *string) (float64, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -158,45 +155,10 @@ func (mc *MetricsCollector) sampleCPU(key string, addr *string) (float64, bool) 
 		return 0, false
 	}
 
-	var user, nice, sys, idle, iowait, irq, softirq, steal float64
-	for _, row := range rows {
-		metric, _ := row["metric"].(string)
-		value := toFloat64(row["value"])
-		switch metric {
-		case "OSUserTime":
-			user = value
-		case "OSNiceTime":
-			nice = value
-		case "OSSystemTime":
-			sys = value
-		case "OSIdleTime":
-			idle = value
-		case "OSIOWaitTime":
-			iowait = value
-		case "OSIrqTime":
-			irq = value
-		case "OSSoftIrqTime":
-			softirq = value
-		case "OSStealTime":
-			steal = value
-		}
-	}
-
-	busy := user + nice + sys + irq + softirq + steal
-	total := busy + idle + iowait
-	if total <= 0 {
-		log.Printf("[MetricsCollector] OS CPU metrics not available (node %s)", key)
+	pct, ok := storage.CPUPercentFromMetrics(storage.MetricRowsToMap(rows))
+	if !ok {
+		log.Printf("[MetricsCollector] CPU metrics not available (node %s)", key)
 		return 0, false
-	}
-
-	// Modern ClickHouse (23+) reports OS* metrics as instantaneous ratios
-	// (value per core, summed across cores), not cumulative jiffies.
-	// Compute CPU% directly from the ratio of busy to total time.
-	pct := math.Round(busy/total*1000) / 10
-	if pct < 0 {
-		pct = 0
-	} else if pct > 100 {
-		pct = 100
 	}
 	return pct, true
 }
@@ -220,9 +182,9 @@ func (mc *MetricsCollector) sampleAlertLatency() (float64, bool) {
 	return avg.Float64, true
 }
 
-// sampleMemory queries MemoryResident and OSMemoryTotal from a single
-// ClickHouse node and returns memory usage as a percentage (0-100).
-// addr is nil for the shared single-node connection.
+// sampleMemory queries memory metrics from a single ClickHouse node and returns
+// usage as a percentage (0-100), cgroup-aware (prefers the container memory limit
+// over node RAM). addr is nil for the shared single-node connection.
 func (mc *MetricsCollector) sampleMemory(key string, addr *string) (float64, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -245,26 +207,9 @@ func (mc *MetricsCollector) sampleMemory(key string, addr *string) (float64, boo
 		return 0, false
 	}
 
-	var resident, total float64
-	for _, row := range rows {
-		metric, _ := row["metric"].(string)
-		value := toFloat64(row["value"])
-		switch metric {
-		case "MemoryResident":
-			resident = value
-		case "OSMemoryTotal":
-			total = value
-		}
-	}
-
-	if total <= 0 {
+	pct, ok := storage.MemoryPercentFromMetrics(storage.MetricRowsToMap(rows))
+	if !ok {
 		return 0, false
-	}
-	pct := math.Round(resident/total*1000) / 10
-	if pct < 0 {
-		pct = 0
-	} else if pct > 100 {
-		pct = 100
 	}
 	return pct, true
 }
@@ -522,6 +467,16 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		result["async_metrics"] = asyncMap
+	}
+
+	// Cluster-wide SERVER gauges. In cluster mode the node-local system.metrics
+	// reads above only reflect whichever node the driver hit, so the SERVER panel
+	// switches to these fanned-out aggregates (summed load, worst-node memory,
+	// node health). nil for single-node deployments (frontend keeps node-local).
+	if cluster, err := h.db.ClusterServerStats(r.Context()); err != nil {
+		log.Printf("[Performance] cluster server stats query failed: %v", err)
+	} else if cluster != nil {
+		result["cluster"] = cluster
 	}
 
 	// Recent query performance

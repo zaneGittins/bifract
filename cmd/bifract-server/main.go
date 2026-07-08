@@ -280,11 +280,42 @@ func main() {
 		}()
 	}
 
+	// proc_freq is the aggregated pgr() frequency baseline; a longer window gives more
+	// stable rarity. BIFRACT_PROC_FREQ_TTL_DAYS overrides the 180-day DDL default.
+	if days := getEnvInt("BIFRACT_PROC_FREQ_TTL_DAYS", 0); days > 0 {
+		go func() {
+			if err := db.ReconcileProcFreqTTL(context.Background(), days); err != nil {
+				log.Printf("Warning: proc_freq TTL reconcile (%d days) failed: %v", days, err)
+			} else {
+				log.Printf("proc_freq TTL set to %d days", days)
+			}
+		}()
+	}
+
 	// Initialize settings from database
 	if err := settings.Init(pg); err != nil {
 		log.Printf("Warning: Failed to initialize settings: %v", err)
 	}
 	log.Println("Settings initialized")
+
+	// Reconcile the "Advanced endpoint analysis" MVs (proc_lineage/proc_freq) to the
+	// persisted toggle before ingest starts, so the heavy per-insert triggers only fire
+	// when the operator has opted in. Off by default; runs on every startup (idempotent).
+	{
+		eaEnabled := false
+		if v, _ := pg.GetSetting(context.Background(), storage.AdvancedEndpointAnalysisSetting); v == "true" {
+			eaEnabled = true
+		}
+		// Wait for schema work to finish first: in cluster mode migrations run in a
+		// background goroutine, so reconciling too early could miss (and then race with)
+		// an MV the migration is about to create attached.
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		db.WaitForSchemaReady(waitCtx)
+		waitCancel()
+		if err := db.ReconcileEndpointAnalysisMVs(context.Background(), eaEnabled); err != nil {
+			log.Printf("Warning: failed to reconcile advanced endpoint analysis MVs: %v", err)
+		}
+	}
 
 	// Initialize fractal management system
 	log.Println("Initializing fractal management system...")
@@ -881,6 +912,51 @@ func main() {
 				}
 				// Reflect immediately in the running tee (the poller also refreshes).
 				ingestQueue.SetArchiveEnabled(body.Enabled)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "enabled": body.Enabled})
+			})
+
+			// Advanced endpoint analysis toggle (admin only): gates the process
+			// lineage/frequency materialized views (heavy per-insert triggers).
+			r.Get("/system/endpoint-analysis", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				enabled := false
+				if v, _ := pg.GetSetting(r.Context(), storage.AdvancedEndpointAnalysisSetting); v == "true" {
+					enabled = true
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"enabled": enabled})
+			})
+			r.Post("/system/endpoint-analysis", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				var body struct {
+					Enabled bool `json:"enabled"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "Invalid JSON", http.StatusBadRequest)
+					return
+				}
+				// Attach/detach the MVs first; only persist the setting if that succeeds,
+				// so the stored flag always matches the actual ClickHouse state.
+				if err := db.ReconcileEndpointAnalysisMVs(r.Context(), body.Enabled); err != nil {
+					log.Printf("endpoint-analysis reconcile failed: %v", err)
+					http.Error(w, "Failed to apply change to ClickHouse", http.StatusInternalServerError)
+					return
+				}
+				val := "false"
+				if body.Enabled {
+					val = "true"
+				}
+				if err := pg.SetSetting(r.Context(), storage.AdvancedEndpointAnalysisSetting, val); err != nil {
+					http.Error(w, "Failed to save", http.StatusInternalServerError)
+					return
+				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "enabled": body.Enabled})
 			})
