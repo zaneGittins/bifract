@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -827,6 +828,20 @@ type k8sTemplateData struct {
 	DashboardTick       int
 	DashboardMinRefresh int
 	DashboardWorkers    int
+
+	// ClickHouse memory tuning, derived from the CH memory limit. We set an
+	// explicit max_server_memory_usage and disable the cgroup memory worker
+	// (memory_worker_use_cgroup=0): under container memory limits, page cache
+	// counts toward cgroup usage, and the observer clamps ClickHouse's effective
+	// limit down as cache fills -- which starves merges/inserts and can stall the
+	// cluster. An explicit cap at 80% of the pod limit (20% headroom for OS/cache)
+	// avoids that. CHMaxBytesToMerge caps merge output well below the memory budget
+	// so the O(N)-memory vertical merge of the wide fields JSON column can never
+	// schedule a merge too large to complete (the 150GB default can exceed RAM).
+	// Both are 0 when MemLimit can't be parsed, in which case the template omits
+	// the block and ClickHouse defaults apply.
+	CHMaxServerMemory int64
+	CHMaxBytesToMerge int64
 }
 
 // k8sManifestFile maps an embedded template to its output path.
@@ -855,6 +870,14 @@ var k8sManifests = []k8sManifestFile{
 func writeK8sManifests(cfg *K8sConfig) error {
 	if cfg.UserSecrets == nil {
 		cfg.UserSecrets = make(map[string]string)
+	}
+	// Derive ClickHouse memory settings from the CH pod memory limit. 80% of the
+	// limit leaves ~20% headroom for the OS and (reclaimable) page cache; the merge
+	// cap is ~40% of that budget so a single large merge stays well within memory.
+	var chMaxServerMemory, chMaxBytesToMerge int64
+	if chMemBytes := parseK8sMemToBytes(cfg.SizeProfile.ClickHouse.MemLimit); chMemBytes > 0 {
+		chMaxServerMemory = chMemBytes * 8 / 10
+		chMaxBytesToMerge = chMaxServerMemory * 4 / 10
 	}
 	data := k8sTemplateData{
 		ImageTag:               cfg.ImageTag,
@@ -885,6 +908,8 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		DashboardTick:          fallbackInt(cfg.DashboardTick, defaultDashboardTick),
 		DashboardMinRefresh:    fallbackInt(cfg.DashboardMinRefresh, defaultDashboardMinRefresh),
 		DashboardWorkers:       fallbackInt(cfg.DashboardWorkers, defaultDashboardWorkers),
+		CHMaxServerMemory:      chMaxServerMemory,
+		CHMaxBytesToMerge:      chMaxBytesToMerge,
 		CH:                     cfg.SizeProfile.ClickHouse,
 		CHKeeper:               cfg.SizeProfile.CHKeeper,
 		BifractRes:             cfg.SizeProfile.Bifract,
@@ -974,6 +999,32 @@ func formatStorageSize(gb int) string {
 		return fmt.Sprintf("%dTi", gb/1024)
 	}
 	return fmt.Sprintf("%dGi", gb)
+}
+
+// parseK8sMemToBytes parses a Kubernetes memory quantity ("44Gi", "512Mi",
+// "2Ti", or a bare byte count) into bytes. Returns 0 when it can't be parsed,
+// which callers treat as "unknown" (falling back to ClickHouse defaults).
+func parseK8sMemToBytes(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	mult := int64(1)
+	switch {
+	case strings.HasSuffix(s, "Ti"):
+		mult, s = 1<<40, strings.TrimSuffix(s, "Ti")
+	case strings.HasSuffix(s, "Gi"):
+		mult, s = 1<<30, strings.TrimSuffix(s, "Gi")
+	case strings.HasSuffix(s, "Mi"):
+		mult, s = 1<<20, strings.TrimSuffix(s, "Mi")
+	case strings.HasSuffix(s, "Ki"):
+		mult, s = 1<<10, strings.TrimSuffix(s, "Ki")
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n * mult
 }
 
 func buildCHHostsList(shards int) string {

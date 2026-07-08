@@ -75,6 +75,22 @@ spec:
       secret:
         name: bifract-secrets
         key: CLICKHOUSE_PASSWORD_HASH
+{{- if .CHMaxServerMemory}}
+    # Explicit memory cap + disabled cgroup memory worker. Under a container memory
+    # limit, page cache counts toward cgroup usage, and ClickHouse's cgroup observer
+    # clamps its own effective memory limit down as cache fills -- starving merges
+    # and inserts and, under load, stalling the cluster. An explicit cap (80% of the
+    # pod limit, 20% headroom for OS/reclaimable cache) plus memory_worker_use_cgroup=0
+    # avoids that. max_bytes_to_merge_at_max_space_in_pool is capped well below the
+    # memory budget because vertical merges of the wide fields JSON column cost O(N)
+    # memory; the 150GB default can select a merge too large to complete in RAM.
+    # Values are derived from the CH memory limit (see writeK8sManifests).
+    extraConfig:
+      max_server_memory_usage: {{.CHMaxServerMemory}}
+      memory_worker_use_cgroup: 0
+      merge_tree:
+        max_bytes_to_merge_at_max_space_in_pool: {{.CHMaxBytesToMerge}}
+{{- end}}
     extraUsersConfig:
       profiles:
         default:
