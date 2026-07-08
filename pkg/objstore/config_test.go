@@ -38,7 +38,7 @@ func TestWarehouseURI(t *testing.T) {
 		{Config{Backend: BackendS3, S3Bucket: "logs"}, "s3://logs"},
 		{Config{Backend: BackendS3, S3Bucket: "logs", Prefix: "/archive/"}, "s3://logs/archive"},
 		{Config{Backend: BackendMinIO, S3Bucket: "logs"}, "s3://logs"},
-		{Config{Backend: BackendAzure, AzureContainer: "arc", Prefix: "p"}, "abfs://arc/p"},
+		{Config{Backend: BackendAzure, AzureAccount: "acct", AzureContainer: "arc", Prefix: "p"}, "abfs://arc@acct.dfs.core.windows.net/p"},
 	}
 	for _, tc := range cases {
 		if got := tc.cfg.WarehouseURI(); got != tc.want {

@@ -54,8 +54,11 @@ func chIcebergTableFunc(obj objstore.Config, tableLocation string) (string, erro
 
 	case objstore.BackendAzure:
 		// icebergAzure(storage_account_url, container, blobpath, account_name, account_key)
+		// Location is abfs://<container>@<account>.<host>/<path> (container in the
+		// userinfo position, matching iceberg-go's ADLS URI parser).
 		rest := strings.TrimPrefix(strings.TrimPrefix(loc, "abfs://"), "abfss://")
-		container, blobPath, _ := strings.Cut(rest, "/")
+		container, hostAndPath, _ := strings.Cut(rest, "@")
+		_, blobPath, _ := strings.Cut(hostAndPath, "/")
 		endpoint := obj.AzureEndpoint
 		if endpoint == "" {
 			endpoint = fmt.Sprintf("https://%s.blob.core.windows.net", obj.AzureAccount)

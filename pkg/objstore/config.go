@@ -128,7 +128,9 @@ func (c Config) WarehouseURI() string {
 	case BackendS3, BackendMinIO:
 		return joinURI("s3://"+c.S3Bucket, c.prefixed(""))
 	case BackendAzure:
-		return joinURI("abfs://"+c.AzureContainer, c.prefixed(""))
+		// iceberg-go's ADLS parser requires <container>@<account>.<host>, with the
+		// container in the URI's userinfo position (it reads uri.User.Username()).
+		return joinURI("abfs://"+c.AzureContainer+"@"+c.AzureAccount+".dfs.core.windows.net", c.prefixed(""))
 	}
 	return ""
 }
