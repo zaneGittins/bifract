@@ -433,8 +433,8 @@ func main() {
 		log.Printf("Warning: Failed to load initial alerts cache: %v", err)
 	}
 
-	alertEngine.Start(time.Duration(config.AlertEvalInterval) * time.Second)
-	log.Printf("Alert system initialized (evaluation interval: %ds)", config.AlertEvalInterval)
+	alertEngine.Start()
+	log.Printf("Alert system initialized (evaluation interval is admin-configurable via Limits settings)")
 
 	// Scheduled model scorer (network analysis: beacon / long_connection). Idle
 	// no-op on deployments with no network models: one cheap Postgres SELECT per
@@ -1832,8 +1832,6 @@ type Config struct {
 	IngestRateLimit int
 	IngestRateBurst int
 
-	// Alert evaluation
-	AlertEvalInterval int // seconds
 	// Model scorer heartbeat (scheduled network models). Per-model rescore cadence
 	// is derived from each model's window; this is just the tick granularity.
 	ModelScoreInterval int // seconds
@@ -1887,8 +1885,7 @@ func loadConfig() Config {
 		IngestRateLimit: getEnvInt("BIFRACT_INGEST_RATE_LIMIT", 10000),
 		IngestRateBurst: getEnvInt("BIFRACT_INGEST_RATE_BURST", 20000),
 
-		// Alert evaluation default
-		AlertEvalInterval:   getEnvInt("BIFRACT_ALERT_EVAL_INTERVAL", 60),
+		// Alert evaluation default (interval itself is admin-configurable via Limits settings)
 		ModelScoreInterval:  getEnvInt("BIFRACT_MODEL_SCORE_INTERVAL", 600),
 		AlertIngestDeferPct: getEnvInt("BIFRACT_ALERT_INGEST_DEFER_PCT", 25),
 
@@ -1924,7 +1921,7 @@ func loadConfig() Config {
 	log.Printf("  Ingest Queue: %d slots, %d workers", config.IngestQueueSize, config.IngestWorkers)
 	log.Printf("  Max Body Size: %d bytes", config.MaxBodySize)
 	log.Printf("  Rate Limit: %d req/s (burst: %d)", config.IngestRateLimit, config.IngestRateBurst)
-	log.Printf("  Alert Eval Interval: %ds", config.AlertEvalInterval)
+	log.Printf("  Alert Eval Interval: admin-configurable via Limits settings")
 	log.Printf("  Model Score Interval: %ds", config.ModelScoreInterval)
 	log.Printf("  Alert Ingest Defer: %d%% of queue depth", config.AlertIngestDeferPct)
 	if config.ClickHouseCluster != "" {

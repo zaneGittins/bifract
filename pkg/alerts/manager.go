@@ -599,7 +599,10 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 		severity = "medium"
 	}
 
-	// Update alert (clear disabled_reason when re-enabling)
+	// Update alert (clear disabled_reason when re-enabling). Re-enabling also
+	// resets last_evaluated_at to near-now, mirroring the zero-cursor fallback
+	// in engine.go, so a rule that was disabled doesn't wake up with a stale
+	// cursor and force a cold-table catch-up scan across the gap.
 	query := `
 		UPDATE alerts
 		SET name = $2, description = $3, query_string = $4, enabled = $5,
@@ -608,6 +611,7 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 		    alert_type = $12, window_duration = $13,
 		    schedule_cron = $14, query_window_seconds = $15,
 		    disabled_reason = CASE WHEN $5 = true THEN NULL ELSE disabled_reason END,
+		    last_evaluated_at = CASE WHEN $5 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END,
 		    updated_at = NOW()
 		WHERE id = $1
 	`
@@ -2013,9 +2017,14 @@ func (m *Manager) ListAllFeedAlerts(ctx context.Context, fractalID, prismID stri
 }
 
 // EnableFeedAlerts enables or disables all alerts for a given feed.
+// Re-enabling resets last_evaluated_at to near-now (mirroring the zero-cursor
+// fallback in engine.go) so a rule that was disabled doesn't wake up with a
+// stale cursor and force a cold-table catch-up scan across the gap.
 func (m *Manager) EnableFeedAlerts(ctx context.Context, feedID string, enabled bool, updatedBy string) error {
 	_, err := m.pg.Exec(ctx,
-		"UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '' WHERE feed_id = $3",
+		`UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '',
+		    last_evaluated_at = CASE WHEN $1 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END
+		 WHERE feed_id = $3`,
 		enabled, updatedBy, feedID)
 	if err != nil {
 		return fmt.Errorf("toggle feed alerts: %w", err)
@@ -2025,9 +2034,12 @@ func (m *Manager) EnableFeedAlerts(ctx context.Context, feedID string, enabled b
 }
 
 // ToggleFeedAlert enables or disables a single feed alert.
+// Re-enabling resets last_evaluated_at to near-now; see EnableFeedAlerts.
 func (m *Manager) ToggleFeedAlert(ctx context.Context, alertID string, enabled bool, updatedBy string) error {
 	result, err := m.pg.Exec(ctx,
-		"UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '' WHERE id = $3 AND feed_id IS NOT NULL",
+		`UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '',
+		    last_evaluated_at = CASE WHEN $1 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END
+		 WHERE id = $3 AND feed_id IS NOT NULL`,
 		enabled, updatedBy, alertID)
 	if err != nil {
 		return fmt.Errorf("toggle feed alert: %w", err)
@@ -2041,12 +2053,15 @@ func (m *Manager) ToggleFeedAlert(ctx context.Context, alertID string, enabled b
 }
 
 // BatchToggleAlerts enables or disables a set of non-feed alerts by ID.
+// Re-enabling resets last_evaluated_at to near-now; see EnableFeedAlerts.
 func (m *Manager) BatchToggleAlerts(ctx context.Context, alertIDs []string, enabled bool, updatedBy string) (int, error) {
 	if len(alertIDs) == 0 {
 		return 0, nil
 	}
 	result, err := m.pg.Exec(ctx,
-		"UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '' WHERE id = ANY($3) AND feed_id IS NULL",
+		`UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '',
+		    last_evaluated_at = CASE WHEN $1 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END
+		 WHERE id = ANY($3) AND feed_id IS NULL`,
 		enabled, updatedBy, pq.Array(alertIDs))
 	if err != nil {
 		return 0, fmt.Errorf("batch toggle alerts: %w", err)
@@ -2057,12 +2072,15 @@ func (m *Manager) BatchToggleAlerts(ctx context.Context, alertIDs []string, enab
 }
 
 // BatchToggleFeedAlerts enables or disables a set of feed alerts by ID.
+// Re-enabling resets last_evaluated_at to near-now; see EnableFeedAlerts.
 func (m *Manager) BatchToggleFeedAlerts(ctx context.Context, alertIDs []string, enabled bool, updatedBy string) (int, error) {
 	if len(alertIDs) == 0 {
 		return 0, nil
 	}
 	result, err := m.pg.Exec(ctx,
-		"UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '' WHERE id = ANY($3) AND feed_id IS NOT NULL",
+		`UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '',
+		    last_evaluated_at = CASE WHEN $1 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END
+		 WHERE id = ANY($3) AND feed_id IS NOT NULL`,
 		enabled, updatedBy, pq.Array(alertIDs))
 	if err != nil {
 		return 0, fmt.Errorf("batch toggle feed alerts: %w", err)

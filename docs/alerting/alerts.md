@@ -1,6 +1,8 @@
 # Alerts
 
-Alerts run BQL queries on a schedule and trigger actions on hits. A background ticker (default 30 seconds, `BIFRACT_ALERT_EVAL_INTERVAL`) evaluates all enabled alerts using a cursor-based approach on the ingest timestamp. Each alert tracks `last_evaluated_at`, so no logs are missed across restarts.
+Alerts run BQL queries on a schedule and trigger actions on hits. A background ticker (default 60 seconds, configurable from Settings &rarr; Limits &rarr; Alert Evaluation Interval) evaluates all enabled alerts using a cursor-based approach on the ingest timestamp. Each alert tracks `last_evaluated_at`, so no logs are missed across restarts. Changing the interval takes effect on the next tick, with no restart required.
+
+Re-enabling a previously disabled alert resets its cursor to a few minutes before now rather than resuming from its old, potentially stale value — this avoids a large cold-storage catch-up scan across the disabled window, at the cost of not retroactively evaluating logs that arrived while the alert was disabled.
 
 ## Alert Configuration
 
@@ -32,8 +34,8 @@ image=/powershell/i | table(image, user, commandline, timestamp, log_id)
 
 **When auto-projection is skipped:** Queries that contain any pipeline command (`table()`, `groupby()`, `multi()`, `match()`, etc.) or field assignments (`:=`) are never modified. Regular user search queries are also unaffected.
 
-## Environment Variables
+## Settings
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BIFRACT_ALERT_EVAL_INTERVAL` | `30s` | How often the alert ticker runs |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Alert Evaluation Interval | `60s` | How often the alert ticker runs, minimum 60s. Configured from Settings &rarr; Limits (admin only), not an environment variable. |

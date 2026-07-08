@@ -53,6 +53,10 @@ const SettingsView = {
         if (queryTimeoutSelect) {
             queryTimeoutSelect.addEventListener('change', () => this.saveSettings());
         }
+        const alertEvalIntervalSelect = document.getElementById('alertEvalIntervalSettings');
+        if (alertEvalIntervalSelect) {
+            alertEvalIntervalSelect.addEventListener('change', () => this.saveSettings());
+        }
         const archiveToggle = document.getElementById('archiveEnabledToggle');
         if (archiveToggle) {
             archiveToggle.addEventListener('change', () => this.saveArchiveEnabled());
@@ -245,6 +249,10 @@ const SettingsView = {
                 if (queryTimeoutSelect) {
                     queryTimeoutSelect.value = String(data.settings.query_timeout_seconds ?? 60);
                 }
+                const alertEvalIntervalSelect = document.getElementById('alertEvalIntervalSettings');
+                if (alertEvalIntervalSelect) {
+                    alertEvalIntervalSelect.value = String(data.settings.alert_eval_interval_seconds || 60);
+                }
             }
         } catch (error) {
             console.error('Failed to load settings:', error);
@@ -259,7 +267,8 @@ const SettingsView = {
                 credentials: 'include',
                 body: JSON.stringify({
                     alert_timeout_seconds: parseInt(document.getElementById('alertTimeoutSettings')?.value || '5', 10),
-                    query_timeout_seconds: parseInt(document.getElementById('queryTimeoutSettings')?.value || '60', 10)
+                    query_timeout_seconds: parseInt(document.getElementById('queryTimeoutSettings')?.value || '60', 10),
+                    alert_eval_interval_seconds: parseInt(document.getElementById('alertEvalIntervalSettings')?.value || '60', 10)
                 })
             });
 

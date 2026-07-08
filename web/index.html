@@ -627,6 +627,20 @@
                             <option value="0">Unlimited</option>
                         </select>
                     </div>
+
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <label for="alertEvalIntervalSettings" class="setting-label">Alert Evaluation Interval</label>
+                            <p class="setting-description">How often the alert engine ticks and evaluates every enabled alert. Lower values detect matches sooner but issue more ClickHouse queries; raise this if you have a large number of enabled alerts.</p>
+                        </div>
+                        <select id="alertEvalIntervalSettings" class="setting-select">
+                            <option value="60">1 minute</option>
+                            <option value="120">2 minutes</option>
+                            <option value="180">3 minutes</option>
+                            <option value="300">5 minutes</option>
+                            <option value="600">10 minutes</option>
+                        </select>
+                    </div>
                 </div>
 
                 <div class="settings-card">

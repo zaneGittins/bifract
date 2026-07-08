@@ -18,13 +18,19 @@ type TimestampField struct {
 	Format string `json:"format"` // Time format (e.g., "2006-01-02T15:04:05.0000000Z07:00")
 }
 
+// minAlertEvalIntervalSeconds floors the admin-configurable alert evaluation
+// interval so a mistyped setting can't put the engine into a tight loop that
+// hammers ClickHouse with every enabled alert's query every few seconds.
+const minAlertEvalIntervalSeconds = 60
+
 // Settings holds all Bifract configuration
 type Settings struct {
-	TimestampFields     []TimestampField `json:"timestamp_fields"`
-	AlertTimeoutSeconds int              `json:"alert_timeout_seconds"`
-	QueryTimeoutSeconds int              `json:"query_timeout_seconds"`
-	mu                  sync.RWMutex
-	pg                  *storage.PostgresClient
+	TimestampFields          []TimestampField `json:"timestamp_fields"`
+	AlertTimeoutSeconds      int              `json:"alert_timeout_seconds"`
+	QueryTimeoutSeconds      int              `json:"query_timeout_seconds"`
+	AlertEvalIntervalSeconds int              `json:"alert_eval_interval_seconds"`
+	mu                       sync.RWMutex
+	pg                       *storage.PostgresClient
 }
 
 // Global settings instance
@@ -41,10 +47,11 @@ func Init(pg *storage.PostgresClient) error {
 	}
 
 	globalSettings = &Settings{
-		TimestampFields:     defaultTimestampFields,
-		AlertTimeoutSeconds: 5,  // 5s default for alert queries
-		QueryTimeoutSeconds: 60, // 60s default for search queries
-		pg:                  pg,
+		TimestampFields:          defaultTimestampFields,
+		AlertTimeoutSeconds:      5,  // 5s default for alert queries
+		QueryTimeoutSeconds:      60, // 60s default for search queries
+		AlertEvalIntervalSeconds: 60, // 60s default between alert engine ticks
+		pg:                       pg,
 	}
 
 	// Load from database
@@ -75,6 +82,14 @@ func Init(pg *storage.PostgresClient) error {
 		}
 	}
 
+	// Load alert_eval_interval_seconds
+	alertEvalInterval, err := pg.GetSetting(ctx, "alert_eval_interval_seconds")
+	if err == nil && alertEvalInterval != "" {
+		if v, err := strconv.Atoi(alertEvalInterval); err == nil && v >= minAlertEvalIntervalSeconds {
+			globalSettings.AlertEvalIntervalSeconds = v
+		}
+	}
+
 	return nil
 }
 
@@ -87,16 +102,18 @@ func Get() Settings {
 				{Field: "timestamp", Format: time.RFC3339Nano},
 				{Field: "@timestamp", Format: time.RFC3339Nano},
 			},
-			AlertTimeoutSeconds: 5,
-			QueryTimeoutSeconds: 60,
+			AlertTimeoutSeconds:      5,
+			QueryTimeoutSeconds:      60,
+			AlertEvalIntervalSeconds: 60,
 		}
 	}
 	globalSettings.mu.RLock()
 	defer globalSettings.mu.RUnlock()
 	return Settings{
-		TimestampFields:     globalSettings.TimestampFields,
-		AlertTimeoutSeconds: globalSettings.AlertTimeoutSeconds,
-		QueryTimeoutSeconds: globalSettings.QueryTimeoutSeconds,
+		TimestampFields:          globalSettings.TimestampFields,
+		AlertTimeoutSeconds:      globalSettings.AlertTimeoutSeconds,
+		QueryTimeoutSeconds:      globalSettings.QueryTimeoutSeconds,
+		AlertEvalIntervalSeconds: globalSettings.AlertEvalIntervalSeconds,
 	}
 }
 
@@ -106,11 +123,16 @@ func Update(s *Settings) error {
 		return nil
 	}
 
+	if s.AlertEvalIntervalSeconds < minAlertEvalIntervalSeconds {
+		return fmt.Errorf("alert_eval_interval_seconds must be at least %d", minAlertEvalIntervalSeconds)
+	}
+
 	globalSettings.mu.Lock()
 	defer globalSettings.mu.Unlock()
 	globalSettings.TimestampFields = s.TimestampFields
 	globalSettings.AlertTimeoutSeconds = s.AlertTimeoutSeconds
 	globalSettings.QueryTimeoutSeconds = s.QueryTimeoutSeconds
+	globalSettings.AlertEvalIntervalSeconds = s.AlertEvalIntervalSeconds
 
 	// Persist to database
 	ctx := context.Background()
@@ -130,7 +152,12 @@ func Update(s *Settings) error {
 	}
 
 	// Save query_timeout_seconds
-	return globalSettings.pg.SetSetting(ctx, "query_timeout_seconds", fmt.Sprintf("%d", s.QueryTimeoutSeconds))
+	if err := globalSettings.pg.SetSetting(ctx, "query_timeout_seconds", fmt.Sprintf("%d", s.QueryTimeoutSeconds)); err != nil {
+		return err
+	}
+
+	// Save alert_eval_interval_seconds
+	return globalSettings.pg.SetSetting(ctx, "alert_eval_interval_seconds", fmt.Sprintf("%d", s.AlertEvalIntervalSeconds))
 }
 
 // Handler handles settings API requests

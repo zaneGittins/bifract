@@ -238,13 +238,15 @@ func (e *Engine) shouldSkipAlert(alert *Alert) bool {
 	return lastData.Before(alert.LastEvaluatedAt)
 }
 
-// Start launches the background alert evaluation loop.
-func (e *Engine) Start(interval time.Duration) {
+// Start launches the background alert evaluation loop. The tick interval is
+// read from admin settings (Limits page) rather than fixed at startup, so it
+// can be changed live without restarting the process.
+func (e *Engine) Start() {
 	e.startedAt = time.Now()
 	e.stopCh = make(chan struct{})
 	e.evalWg.Add(1)
-	go e.evaluationLoop(interval)
-	log.Printf("[Alert Engine] Started (interval: %v, max concurrent: %d)", interval, maxConcurrent)
+	go e.evaluationLoop()
+	log.Printf("[Alert Engine] Started (interval: %v, max concurrent: %d)", alertEvalInterval(), maxConcurrent)
 }
 
 // Stop halts the background evaluation loop and waits for it to finish.
@@ -268,10 +270,11 @@ func (e *Engine) IsRunning() bool {
 	return e.running.Load()
 }
 
-func (e *Engine) evaluationLoop(interval time.Duration) {
+func (e *Engine) evaluationLoop() {
 	defer e.evalWg.Done()
 
-	ticker := time.NewTicker(interval)
+	currentInterval := alertEvalInterval()
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
 	for {
@@ -281,8 +284,22 @@ func (e *Engine) evaluationLoop(interval time.Duration) {
 		case <-ticker.C:
 			e.evaluateAllAlerts()
 			e.maybeRunRetention()
+
+			// Re-read the admin-configured interval each cycle so a change
+			// on the Limits page takes effect on the next tick, with no
+			// process restart required.
+			if next := alertEvalInterval(); next != currentInterval {
+				currentInterval = next
+				ticker.Reset(currentInterval)
+			}
 		}
 	}
+}
+
+// alertEvalInterval returns the current admin-configured alert evaluation
+// interval from settings.
+func alertEvalInterval() time.Duration {
+	return time.Duration(settings.Get().AlertEvalIntervalSeconds) * time.Second
 }
 
 // alertEngineLockID is the Postgres advisory lock ID used to ensure only one

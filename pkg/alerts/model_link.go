@@ -69,10 +69,13 @@ func (m *Manager) DeleteLinkedAlert(ctx context.Context, alertID string) error {
 }
 
 // SetLinkedAlertEnabled toggles the backing alert's enabled state and refreshes
-// the engine cache so the change takes effect immediately.
+// the engine cache so the change takes effect immediately. Re-enabling resets
+// last_evaluated_at to near-now; see EnableFeedAlerts.
 func (m *Manager) SetLinkedAlertEnabled(ctx context.Context, alertID string, enabled bool) error {
 	result, err := m.pg.Exec(ctx,
-		"UPDATE alerts SET enabled = $1, disabled_reason = '' WHERE id = $2", enabled, alertID)
+		`UPDATE alerts SET enabled = $1, disabled_reason = '',
+		    last_evaluated_at = CASE WHEN $1 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END
+		 WHERE id = $2`, enabled, alertID)
 	if err != nil {
 		return fmt.Errorf("toggle linked alert: %w", err)
 	}
