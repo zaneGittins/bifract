@@ -24,6 +24,14 @@ func DefaultMaintainOptions() MaintainOptions {
 	return MaintainOptions{ExpireOlderThan: 7 * 24 * time.Hour, RetainLast: 10}
 }
 
+// maintainScanConcurrency caps compaction's concurrent file-decode workers.
+// iceberg-go defaults this to runtime.GOMAXPROCS(0), which reads the node's
+// total CPU count rather than this container's cgroup limit -- on a
+// many-core node that lets compaction fan out far beyond what the pod is
+// actually allowed, which is what caused repeated OOMKills on an abnormal
+// backlog. Matches the maintain CronJob's own CPU limit; bump alongside it.
+const maintainScanConcurrency = 4
+
 // Maintain runs compaction + snapshot expiry across every fractal's Iceberg
 // table. It is intended to run as a SINGLETON (k8s CronJob with concurrencyPolicy
 // Forbid, or leader-elected via a Postgres advisory lock) so concurrent passes
@@ -87,7 +95,11 @@ func compactTable(ctx context.Context, tbl *icetable.Table) (bool, error) {
 		}
 	}
 	tx := tbl.NewTransaction()
-	if _, err := tx.RewriteDataFiles(ctx, groups, icetable.RewriteDataFilesOptions{}); err != nil {
+	if _, err := tx.RewriteDataFiles(ctx, groups, icetable.RewriteDataFilesOptions{
+		GroupOptions: []icetable.CompactionGroupOption{
+			icetable.WithCompactionScanConcurrency(maintainScanConcurrency),
+		},
+	}); err != nil {
 		return false, err
 	}
 	if _, err := tx.Commit(ctx); err != nil {

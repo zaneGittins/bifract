@@ -27,6 +27,7 @@ import (
 	"bifract/pkg/storage"
 
 	_ "github.com/lib/pq"
+	_ "go.uber.org/automaxprocs"
 )
 
 // archiveEnabledSetting mirrors the server's Postgres settings key so the tee
