@@ -34,8 +34,9 @@ func ToSnakeCase(s string) string {
 		if unicode.IsUpper(r) {
 			// Add underscore before uppercase letter if:
 			// 1. Not at the beginning
-			// 2. Previous char is lowercase OR next char is lowercase (for handling acronyms)
-			if i > 0 {
+			// 2. Previous char isn't already an underscore (avoid double underscores)
+			// 3. Previous char is lowercase OR next char is lowercase (for handling acronyms)
+			if i > 0 && runes[i-1] != '_' {
 				prevIsLower := unicode.IsLower(runes[i-1])
 				nextIsLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
 
