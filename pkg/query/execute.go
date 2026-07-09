@@ -145,8 +145,37 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 		GeoIPEnabled:          h.geoIPEnabled,
 		TableName:             h.queryTableName(),
 		ProcLineageTable:      h.procLineageTableName(),
+		ProcFreqTable:         h.procFreqTableName(),
 		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
+
+	// pgr() is a two-pass provenance query orchestrated in the handler, not a single
+	// translated statement -- intercept it here and return the scored edge graph.
+	if pp, ok := parser.ExtractProvenanceParams(pipeline); ok {
+		if opts.SourceMode == parser.SourceIceberg {
+			return nil, fmt.Errorf("pgr() operates on live process lineage and is not available over archived data")
+		}
+		pgrStart := time.Now()
+		rows, perr := h.runProvenanceGraph(ctx, pp, opts)
+		if perr != nil {
+			return nil, perr
+		}
+		// pgr() yields the scored edge table by default; render the provenance graph only
+		// when the pipeline pipes to pgraph().
+		chartType, chartConfig := "", map[string]interface{}{}
+		if cfg, hasPgraph := parser.ExtractPGraphConfig(pipeline); hasPgraph {
+			chartType, chartConfig = "pgraph", cfg
+		}
+		return &ExecuteResult{
+			Results:     rows,
+			Count:       len(rows),
+			ExecutionMs: time.Since(pgrStart).Milliseconds(),
+			ChartType:   chartType,
+			ChartConfig: chartConfig,
+			FieldOrder:  provenanceFieldOrder,
+		}, nil
+	}
+
 	translationResult, err := parser.TranslateToSQLWithOrder(pipeline, opts)
 	if err != nil {
 		return nil, fmt.Errorf("query error: %w", err)

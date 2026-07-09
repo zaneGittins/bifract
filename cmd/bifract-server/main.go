@@ -85,30 +85,19 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Ingest-only data-plane mode (`bifract-server ingest`), matching the archiver's
+	// command-arg dispatch. No arg = the full server below (control plane + query + UI).
+	if len(os.Args) > 1 && os.Args[1] == "ingest" {
+		runIngestServer()
+		return
+	}
+
 	// Load configuration from environment
 	config := loadConfig()
 
 	// Initialize PostgreSQL client
-	log.Println("Connecting to PostgreSQL...")
-	pg, err := storage.NewPostgresClient(
-		config.PostgresHost,
-		config.PostgresPort,
-		config.PostgresDB,
-		config.PostgresUser,
-		config.PostgresPassword,
-	)
-	if err != nil {
-		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
-	}
+	pg := connectPostgres(config)
 	defer pg.Close()
-
-	// Health check
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := pg.HealthCheck(ctx); err != nil {
-		log.Fatalf("PostgreSQL health check failed: %v", err)
-	}
-	log.Println("Successfully connected to PostgreSQL")
 
 	log.Println("Initializing PostgreSQL schema...")
 	pgInitSQL := dbsql.PostgresSQL
@@ -129,89 +118,9 @@ func main() {
 	log.Println("Health notification writer initialized")
 
 	// Initialize ClickHouse clients (separate pools for ingest vs queries)
-	log.Println("Connecting to ClickHouse...")
-
-	queryPool := storage.DefaultQueryPoolConfig()
-	if config.CHQueryMaxConns > 0 {
-		queryPool.MaxOpenConns = config.CHQueryMaxConns
-		queryPool.MaxIdleConns = config.CHQueryMaxConns / 4
-		if queryPool.MaxIdleConns < 2 {
-			queryPool.MaxIdleConns = 2
-		}
-	}
-
-	ingestPool := storage.DefaultIngestPoolConfig()
-	if config.CHIngestMaxConns > 0 {
-		ingestPool.MaxOpenConns = config.CHIngestMaxConns
-		ingestPool.MaxIdleConns = config.CHIngestMaxConns / 2
-		if ingestPool.MaxIdleConns < 2 {
-			ingestPool.MaxIdleConns = 2
-		}
-	}
-
-	var db, dbIngest *storage.ClickHouseClient
-
-	if config.ClickHouseCluster != "" && config.ClickHouseHosts != "" {
-		// Cluster mode: connect to multiple hosts
-		hosts := strings.Split(config.ClickHouseHosts, ",")
-		db, err = storage.NewClickHouseClusterClient(
-			hosts, config.ClickHousePort,
-			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
-			config.ClickHouseCluster, queryPool,
-		)
-		if err != nil {
-			log.Fatalf("Failed to connect to ClickHouse cluster (query pool): %v", err)
-		}
-		// When a dedicated write LB host is set, route ingest writes through it so
-		// k8s spreads connections across all shards. The query pool (db) keeps all
-		// shard addresses so schema sync in Initialize() reaches every shard.
-		ingestHosts := hosts
-		if config.ClickHouseWriteHost != "" {
-			ingestHosts = []string{config.ClickHouseWriteHost}
-		}
-		dbIngest, err = storage.NewClickHouseClusterClient(
-			ingestHosts, config.ClickHousePort,
-			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
-			config.ClickHouseCluster, ingestPool,
-		)
-		if err != nil {
-			log.Fatalf("Failed to connect to ClickHouse cluster (ingest pool): %v", err)
-		}
-	} else {
-		// Single-node mode (default)
-		db, err = storage.NewClickHouseClientWithPool(
-			config.ClickHouseHost, config.ClickHousePort,
-			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
-			queryPool,
-		)
-		if err != nil {
-			log.Fatalf("Failed to connect to ClickHouse (query pool): %v", err)
-		}
-		dbIngest, err = storage.NewClickHouseClientWithPool(
-			config.ClickHouseHost, config.ClickHousePort,
-			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
-			ingestPool,
-		)
-		if err != nil {
-			log.Fatalf("Failed to connect to ClickHouse (ingest pool): %v", err)
-		}
-	}
+	db, dbIngest := connectClickHouse(config)
 	defer db.Close()
 	defer dbIngest.Close()
-
-	// Health check both pools
-	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := db.HealthCheck(ctx); err != nil {
-		log.Fatalf("ClickHouse health check failed (query pool): %v", err)
-	}
-	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := dbIngest.HealthCheck(ctx); err != nil {
-		log.Fatalf("ClickHouse health check failed (ingest pool): %v", err)
-	}
-	log.Printf("Successfully connected to ClickHouse (query pool: %d conns, ingest pool: %d conns)",
-		queryPool.MaxOpenConns, ingestPool.MaxOpenConns)
 
 	log.Println("Initializing ClickHouse schema...")
 	if err := db.Initialize(context.Background(), dbsql.ClickHouseSQL, dbsql.ClickHouseMigrations, dbsql.ClickHouseMigrationsDir); err != nil {
@@ -1767,7 +1676,7 @@ func main() {
 	sseHub.Close()
 
 	// Stop accepting new HTTP connections
-	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)

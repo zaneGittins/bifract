@@ -89,8 +89,14 @@ type QueueMetrics struct {
 // If the channel is full, Enqueue returns false so the handler can
 // respond with 429 Too Many Requests (backpressure).
 type IngestQueue struct {
-	ch           chan []storage.LogEntry
-	db           *storage.ClickHouseClient
+	ch chan []storage.LogEntry
+	db *storage.ClickHouseClient
+	// metricsDB, when set, is the client the backpressure monitors poll for
+	// ClickHouse CPU/memory/disk metrics. Inserts always go through db (the ingest
+	// pool, which may be pinned to a single write LB), but health should reflect
+	// every shard, so callers point this at the all-shards query client. Falls back
+	// to db when unset.
+	metricsDB    *storage.ClickHouseClient
 	workers      int
 	bufSize      int // total channel capacity, cached for depth-based backpressure
 	quotaManager *QuotaManager
@@ -157,6 +163,20 @@ type notifWriterIface interface {
 // SetNotificationWriter wires in the health notification writer (called from
 // main.go after both are constructed).
 func (q *IngestQueue) SetNotificationWriter(w notifWriterIface) { q.notifWriter = w }
+
+// SetMetricsClient points the backpressure monitors at a client whose Addrs() cover
+// every ClickHouse shard, so CPU/memory/disk pressure trips when any shard is hot even
+// though inserts route through a single write LB. Optional; falls back to the insert
+// client. Call before Start()/monitors run.
+func (q *IngestQueue) SetMetricsClient(c *storage.ClickHouseClient) { q.metricsDB = c }
+
+// mdb returns the client the health monitors should poll (all-shards when set).
+func (q *IngestQueue) mdb() *storage.ClickHouseClient {
+	if q.metricsDB != nil {
+		return q.metricsDB
+	}
+	return q.db
+}
 
 // NewIngestQueue creates and starts a buffered ingestion queue.
 // bufferSize controls how many pending batches can be held in memory.
@@ -473,7 +493,7 @@ func (q *IngestQueue) monitorMemory() {
 // ClickHouse nodes, preferring the cgroup limit over node RAM. In cluster mode it
 // takes the max so backpressure triggers when any node is near its limit.
 func (q *IngestQueue) queryClickHouseMemory() (float64, error) {
-	addrs := q.db.Addrs()
+	addrs := q.mdb().Addrs()
 	if len(addrs) <= 1 {
 		return q.queryNodeMemory(nil)
 	}
@@ -504,14 +524,14 @@ func (q *IngestQueue) queryNodeMemory(addr *string) (float64, error) {
 	var rows []map[string]interface{}
 	var err error
 	if addr != nil {
-		conn, openErr := storage.OpenClickHouseAddr(*addr, q.db.User, q.db.Password)
+		conn, openErr := storage.OpenClickHouseAddr(*addr, q.mdb().User, q.mdb().Password)
 		if openErr != nil {
 			return 0, openErr
 		}
 		defer conn.Close()
 		rows, err = storage.QueryConn(ctx, conn, storage.SystemMemoryMetricsSQL)
 	} else {
-		rows, err = q.db.Query(ctx, storage.SystemMemoryMetricsSQL)
+		rows, err = q.mdb().Query(ctx, storage.SystemMemoryMetricsSQL)
 	}
 	if err != nil {
 		return 0, err
@@ -525,7 +545,7 @@ func (q *IngestQueue) queryNodeMemory(addr *string) (float64, error) {
 // connection pool. In cluster mode it queries each node individually and
 // returns the max, so backpressure triggers when any node is overloaded.
 func (q *IngestQueue) queryClickHouseCPU() (float64, error) {
-	addrs := q.db.Addrs()
+	addrs := q.mdb().Addrs()
 	if len(addrs) <= 1 {
 		return q.queryNodeCPU(nil)
 	}
@@ -557,14 +577,14 @@ func (q *IngestQueue) queryNodeCPU(addr *string) (float64, error) {
 	var err error
 
 	if addr != nil {
-		conn, openErr := storage.OpenClickHouseAddr(*addr, q.db.User, q.db.Password)
+		conn, openErr := storage.OpenClickHouseAddr(*addr, q.mdb().User, q.mdb().Password)
 		if openErr != nil {
 			return 0, openErr
 		}
 		defer conn.Close()
 		rows, err = storage.QueryConn(ctx, conn, storage.SystemCPUMetricsSQL)
 	} else {
-		rows, err = q.db.Query(ctx, storage.SystemCPUMetricsSQL)
+		rows, err = q.mdb().Query(ctx, storage.SystemCPUMetricsSQL)
 	}
 	if err != nil {
 		return 0, err
@@ -576,7 +596,7 @@ func (q *IngestQueue) queryNodeCPU(addr *string) (float64, error) {
 // queryClickHouseDisk returns the highest disk usage percentage (0-100) across
 // all ClickHouse nodes. Queries the system.disks table for the default disk.
 func (q *IngestQueue) queryClickHouseDisk() (float64, error) {
-	addrs := q.db.Addrs()
+	addrs := q.mdb().Addrs()
 	if len(addrs) <= 1 {
 		return q.queryNodeDisk(nil)
 	}
@@ -609,14 +629,14 @@ func (q *IngestQueue) queryNodeDisk(addr *string) (float64, error) {
 	var err error
 
 	if addr != nil {
-		conn, openErr := storage.OpenClickHouseAddr(*addr, q.db.User, q.db.Password)
+		conn, openErr := storage.OpenClickHouseAddr(*addr, q.mdb().User, q.mdb().Password)
 		if openErr != nil {
 			return 0, openErr
 		}
 		defer conn.Close()
 		rows, err = storage.QueryConn(ctx, conn, diskQuery)
 	} else {
-		rows, err = q.db.Query(ctx, diskQuery)
+		rows, err = q.mdb().Query(ctx, diskQuery)
 	}
 	if err != nil {
 		return 0, err

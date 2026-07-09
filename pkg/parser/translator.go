@@ -33,6 +33,7 @@ type QueryOptions struct {
 	GeoIPEnabled          bool                          // True when MaxMind GeoLite2 dictionaries are loaded
 	TableName             string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
 	ProcLineageTable      string                        // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
+	ProcFreqTable         string                        // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
 	IncludeShardNum       bool                          // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
 	SourceMode            SourceMode                    // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
 }

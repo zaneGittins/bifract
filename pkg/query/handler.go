@@ -62,6 +62,14 @@ func (h *QueryHandler) procLineageTableName() string {
 	return "proc_lineage"
 }
 
+// procFreqTableName returns the frequency-baseline read table for pgr() scoring.
+func (h *QueryHandler) procFreqTableName() string {
+	if h.db != nil {
+		return h.db.ProcFreqReadTable()
+	}
+	return "proc_freq"
+}
+
 // SetRBACResolver injects the RBAC resolver for access filtering.
 func (h *QueryHandler) SetRBACResolver(resolver *rbac.Resolver) {
 	h.rbacResolver = resolver
@@ -256,6 +264,9 @@ type preparedQuery struct {
 	histBucketCount     int
 	pipeline            *parser.PipelineNode
 	translationOpts     parser.QueryOptions
+	isProvenance        bool                     // pgr(): handled via the two-pass provenance path, not sql
+	provenanceParams    parser.ProvenanceParams
+	provenanceRows      []map[string]interface{} // pgr() scored edge rows (computed in prepareQuery)
 }
 
 // buildWindowSQL re-translates the query with a narrower time window and a
@@ -621,8 +632,48 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		GeoIPEnabled:          h.geoIPEnabled,
 		TableName:             h.queryTableName(),
 		ProcLineageTable:      h.procLineageTableName(),
+		ProcFreqTable:         h.procFreqTableName(),
 		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
+
+	// pgr() is a two-pass provenance query, not a single translated statement. Run it here
+	// (once) and stash the scored edge rows on prep so both the buffered and streaming
+	// handlers emit the same result -- this also keeps it off the streaming SQL path (which
+	// would otherwise run an empty statement). pgr() yields a table by default; a downstream
+	// graph() sets the chart config.
+	if pp, ok := parser.ExtractProvenanceParams(pipeline); ok {
+		if opts.SourceMode == parser.SourceIceberg {
+			respondJSON(w, http.StatusBadRequest, QueryResponse{
+				Success: false, Query: req.Query, ErrorType: "translate",
+				Error: "pgr() operates on live process lineage and is not available over archived data",
+			})
+			return
+		}
+		rows, perr := h.runProvenanceGraph(r.Context(), pp, opts)
+		if perr != nil {
+			respondJSON(w, http.StatusInternalServerError, QueryResponse{
+				Success: false, Query: req.Query, ErrorType: "execution", Error: perr.Error(),
+			})
+			return
+		}
+		ct, cc := "", map[string]interface{}{}
+		if cfg, hasPgraph := parser.ExtractPGraphConfig(pipeline); hasPgraph {
+			ct, cc = "pgraph", cfg
+		}
+		prep = &preparedQuery{
+			req:            req,
+			isProvenance:   true,
+			provenanceRows: rows,
+			chartType:      ct,
+			chartConfig:    cc,
+			fieldOrder:     provenanceFieldOrder,
+			startTime:      startTime,
+			endTime:        endTime,
+			selectedIndex:  selectedIndex,
+		}
+		return
+	}
+
 	translationResult, err := parser.TranslateToSQLWithOrder(pipeline, opts)
 	if err != nil {
 		log.Printf("[QueryHandler] Failed to translate query: %v", err)
@@ -872,6 +923,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		GeoIPEnabled:          h.geoIPEnabled,
 		TableName:             h.queryTableName(),
 		ProcLineageTable:      h.procLineageTableName(),
+		ProcFreqTable:         h.procFreqTableName(),
 		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
 	if _, err := parser.TranslateToSQLWithOrder(pipeline, opts); err != nil {
@@ -892,6 +944,10 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	prep := h.prepareQuery(w, r)
 	if prep == nil {
+		return
+	}
+	if prep.isProvenance {
+		h.respondProvenanceGraph(w, prep)
 		return
 	}
 	req := prep.req
@@ -1212,6 +1268,12 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	prep := h.prepareQuery(w, r)
 	if prep == nil {
 		return // prepareQuery already wrote the response
+	}
+	// pgr() rows are already computed in prepareQuery; emit them over the NDJSON stream
+	// protocol (meta -> rows -> done) rather than the streaming SQL path.
+	if prep.isProvenance {
+		h.streamProvenanceGraph(w, prep)
+		return
 	}
 
 	flusher, ok := w.(http.Flusher)
