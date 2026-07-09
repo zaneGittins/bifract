@@ -2077,6 +2077,8 @@ const QueryExecutor = {
             this.renderBarChart(results);
         } else if (this.chartType === 'graph') {
             this.renderGraph(results);
+        } else if (this.chartType === 'pgraph') {
+            this.renderProvenanceGraph(results);
         } else if (this.chartType === 'mesh') {
             this.renderMesh(results);
         } else if (this.chartType === 'singleval') {
@@ -2807,6 +2809,124 @@ const QueryExecutor = {
             setTimeout(() => document.addEventListener('click', closeMenu), 0);
         });
 
+    },
+
+    // pgraph() renders pgr()'s scored provenance graph: nodes shaped by entity type
+    // (process = box, file = ellipse, socket = diamond, the NoDoze convention) and edges
+    // colored by anomaly_score (rare = red/bold) with injection/handle-access dashed. Node
+    // type is read from the id prefix (file:/net:), the rest are process guids.
+    renderProvenanceGraph(results) {
+        const chartCanvas = document.getElementById('resultsChart');
+        const networkDiv = document.getElementById('networkGraph');
+        if (!networkDiv) return;
+        if (chartCanvas) chartCanvas.style.display = 'none';
+        networkDiv.style.display = 'block';
+        if (this.currentChart) { this.currentChart.destroy(); this.currentChart = null; }
+
+        const cv = ThemeManager.getCSSVar;
+        const limit = (this.chartConfig && this.chartConfig.limit) || 500;
+        const rows = (results || []).slice(0, limit);
+
+        const typeOf = (id) => {
+            if (!id) return 'process';
+            if (id.startsWith('file:')) return 'file';
+            if (id.startsWith('net:')) return 'net';
+            if (id.startsWith('dns:')) return 'dns';
+            return 'process';
+        };
+        const shapeOf = (t) => t === 'file' ? 'ellipse' : (t === 'net' ? 'diamond' : (t === 'dns' ? 'triangle' : 'box'));
+        const colorOf = { process: cv('--graph-node-parent') || '#3b82f6', file: '#8b7cc8', net: '#e0a458', dns: '#4bb3a5' };
+        const strip = (id) => String(id).replace(/^(file:|net:|dns:)/, '');
+        const short = (s) => { s = String(s); const b = s.split(/[\\/]/).pop() || s; return b.length > 24 ? b.slice(0, 24) + '…' : b; };
+
+        const nodes = new vis.DataSet();
+        const edges = new vis.DataSet();
+        const labelById = new Map(); // child label is authoritative; parent-only nodes fall back to their id
+        // logInfoById maps a node to its originating log so a click can open the source event.
+        // A node that only ever appears as a parent (e.g. the tree root) has no originating edge.
+        const logInfoById = new Map();
+        rows.forEach(r => {
+            if (r.parent && !labelById.has(r.parent)) labelById.set(r.parent, null);
+            if (r.child) {
+                labelById.set(r.child, (r.label != null && r.label !== '') ? r.label : strip(r.child));
+                if (r.log_id) logInfoById.set(r.child, { log_id: r.log_id, event_time: r.event_time });
+            }
+        });
+        labelById.forEach((lbl, id) => {
+            const t = typeOf(id);
+            const clickable = logInfoById.has(id);
+            nodes.add({
+                id, label: short(lbl != null ? lbl : strip(id)), shape: shapeOf(t), size: 16,
+                color: { background: colorOf[t], border: colorOf[t] },
+                font: { color: cv('--graph-label') || '#eee', size: 11, face: 'Inter', strokeWidth: 3, strokeColor: cv('--graph-label-stroke') || 'rgba(0,0,0,0.5)' },
+                title: `${t}: ${strip(id)}${clickable ? ' — click to view source log' : ''}`,
+            });
+        });
+
+        rows.forEach(r => {
+            if (!r.parent || !r.child) return;
+            const score = parseFloat(r.anomaly_score);
+            const et = r.event_type || '';
+            const color = isNaN(score) ? '#6b7280' : (score >= 0.9 ? '#e5484d' : (score >= 0.7 ? '#f5a623' : '#6b7280'));
+            edges.add({
+                from: r.parent, to: r.child,
+                arrows: { to: { enabled: true, scaleFactor: 0.6, type: 'arrow' } },
+                color: { color, opacity: 0.9 },
+                width: (!isNaN(score) && score >= 0.7) ? 2.5 : 1.2,
+                dashes: (et === 'remote_thread' || et === 'process_access'),
+                title: `${et}${isNaN(score) ? '' : ' — anomaly ' + score.toFixed(2)}`,
+                smooth: { enabled: true, type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 },
+            });
+        });
+
+        this.currentChart = new vis.Network(networkDiv, { nodes, edges }, {
+            layout: { hierarchical: { direction: 'UD', sortMethod: 'directed', levelSeparation: 100, nodeSpacing: 150, treeSpacing: 200 } },
+            physics: { enabled: false },
+            interaction: { hover: true, zoomView: true, dragView: true, dragNodes: true, zoomSpeed: 1.0 },
+        });
+
+        // Clicking a node opens its originating log in the standard detail drawer (over the
+        // graph). Uses the fast timestamp-pruned lookup: event_time is a UTC wall-clock, so
+        // convert it to RFC3339 (space -> T, append Z) for the by-timestamp endpoint.
+        this.currentChart.on('selectNode', (params) => {
+            const id = params.nodes && params.nodes[0];
+            if (!id) return;
+            const info = logInfoById.get(id);
+            if (info && info.log_id) this.fetchProvenanceNodeLog(info);
+        });
+    },
+
+    async fetchProvenanceNodeLog(info) {
+        try {
+            const rfc = info.event_time ? String(info.event_time).replace(' ', 'T') + 'Z' : '';
+            const body = { timestamp: rfc, log_id: info.log_id };
+            const fid = window.FractalContext && FractalContext.currentFractal && FractalContext.currentFractal.id;
+            if (fid) body.fractal_id = fid;
+            const resp = await fetch('/api/v1/logs/by-timestamp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            if (!data.success || !data.log) {
+                if (window.Toast) Toast.info('Log unavailable', 'The source log could not be found (it may have aged out).');
+                return;
+            }
+            const log = data.log;
+            const detailData = {
+                ...(log.fields && typeof log.fields === 'object' ? log.fields : {}),
+                timestamp: log.timestamp,
+                log_id: log.log_id,
+                fractal_id: log.fractal_id,
+            };
+            if (window.LogDetail) {
+                LogDetail.setContext([detailData], 0, false, 'search');
+                LogDetail.show(detailData, false, 'search');
+            }
+        } catch (e) {
+            if (window.Toast) Toast.error('Error', 'Failed to fetch the source log.');
+        }
     },
 
     // mesh() renders an undirected, weighted, bidirectional network (Arkime-style

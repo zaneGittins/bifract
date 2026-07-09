@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -23,6 +24,20 @@ var endpointAnalysisMVNames = []string{
 	"proc_freq_spawn_mv",
 	"proc_freq_file_mv",
 	"proc_freq_net_mv",
+	"proc_freq_dns_mv",
+	"proc_freq_rthread_mv",
+	"proc_freq_pacc_mv",
+}
+
+// endpointMVInList renders endpointAnalysisMVNames as a SQL IN-list literal, so the
+// attached/detached state queries derive from the single source of truth above and can
+// never drift from it (a drift previously left the EID 8/10 MVs ungated).
+func endpointMVInList() string {
+	quoted := make([]string, len(endpointAnalysisMVNames))
+	for i, n := range endpointAnalysisMVNames {
+		quoted[i] = "'" + n + "'"
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // AdvancedEndpointAnalysisSetting is the Postgres settings key backing the toggle.
@@ -80,15 +95,14 @@ func (c *ClickHouseClient) ReconcileEndpointAnalysisMVs(ctx context.Context, ena
 // gets created attached by a later startup once migrations run, rather than erroring on
 // ATTACH of a non-existent table.
 func reconcileEndpointMVsOnConn(ctx context.Context, conn driver.Conn, enabled bool) error {
+	inList := endpointMVInList()
 	attached, err := loadEndpointMVSet(ctx, conn, `SELECT name FROM system.tables
-		WHERE database = currentDatabase()
-		  AND name IN ('proc_lineage_mv','proc_freq_spawn_mv','proc_freq_file_mv','proc_freq_net_mv')`)
+		WHERE database = currentDatabase() AND name IN (`+inList+`)`)
 	if err != nil {
 		return fmt.Errorf("check endpoint MV state: %w", err)
 	}
 	detached, err := loadEndpointMVSet(ctx, conn, `SELECT table FROM system.detached_tables
-		WHERE database = currentDatabase()
-		  AND table IN ('proc_lineage_mv','proc_freq_spawn_mv','proc_freq_file_mv','proc_freq_net_mv')`)
+		WHERE database = currentDatabase() AND table IN (`+inList+`)`)
 	if err != nil {
 		return fmt.Errorf("check detached endpoint MV state: %w", err)
 	}
