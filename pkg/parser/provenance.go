@@ -139,26 +139,25 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, opts QueryOpti
 	aIP := func(col string) string { return abstractExpr(col, AbstractIP) }
 
 	// Each edge SELECT yields: src_node, dst_node, label, event_type, fkey_src, fkey_tgt,
-	// log_id, event_time. log_id + event_time identify the originating log so a clicked graph
-	// node can fetch its source event via the fast timestamp-pruned lookup. event_time is
-	// rendered in explicit UTC (toString(timestamp, 'UTC')) -- the timestamp column carries no
-	// timezone, so a bare toString would use the server TZ and break the round-trip on any
-	// non-UTC cluster. The frontend turns this UTC wall-clock into RFC3339 with a trailing Z.
+	// log_id, timestamp, fractal_id. log_id + timestamp + fractal_id are exactly the columns
+	// the standard log-detail fetch (/logs/fields) needs, projected in the same shape a normal
+	// search row uses (toString(timestamp)) -- so clicking a pgr table row or a pgraph node
+	// goes through the identical, proven detail-load path instead of a bespoke lookup.
 	spawnEdges := fmt.Sprintf(
 		"SELECT parent_guid AS src_node, process_guid AS dst_node, image AS label, 'spawn' AS event_type, "+
-			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp, 'UTC') AS event_time FROM %s FINAL WHERE process_guid IN (%s)%s",
+			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id FROM %s FINAL WHERE process_guid IN (%s)%s",
 		aPath("parent_image"), aPath("image"), procLineage, inList, frac())
 
 	fileEdges := fmt.Sprintf(
 		"SELECT fields.process_guid::String AS src_node, concat('file:', %[1]s) AS dst_node, "+
-			"fields.target_file::String AS label, 'file_write' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp, 'UTC') AS event_time "+
+			"fields.target_file::String AS label, 'file_write' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id "+
 			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
 			"AND fields.bifract_category = 'file_write' AND fields.image::String != '' AND fields.target_file::String != ''",
 		aPath("fields.target_file::String"), aPath("fields.image::String"), logs, timeWin, frac(), inList)
 
 	netEdges := fmt.Sprintf(
 		"SELECT fields.process_guid::String AS src_node, concat('net:', %[1]s) AS dst_node, "+
-			"fields.dst_ip::String AS label, 'net_connect' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp, 'UTC') AS event_time "+
+			"fields.dst_ip::String AS label, 'net_connect' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id "+
 			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
 			"AND fields.bifract_category = 'network_connect' AND fields.image::String != '' AND fields.dst_ip::String != ''",
 		aIP("fields.dst_ip::String"), aPath("fields.image::String"), logs, timeWin, frac(), inList)
@@ -167,7 +166,7 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, opts QueryOpti
 	// abstracted (lowercased, root-dot-stripped) query name.
 	dnsEdges := fmt.Sprintf(
 		"SELECT fields.process_guid::String AS src_node, concat('dns:', %[1]s) AS dst_node, "+
-			"fields.query::String AS label, 'dns_query' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp, 'UTC') AS event_time "+
+			"fields.query::String AS label, 'dns_query' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id "+
 			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
 			"AND fields.bifract_category = 'dns_query' AND fields.image::String != '' AND fields.query::String != ''",
 		abstractExpr("fields.query::String", AbstractDomain), aPath("fields.image::String"), logs, timeWin, frac(), inList)
@@ -178,7 +177,7 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, opts QueryOpti
 	p2pEdges := func(category, eventType string) string {
 		return fmt.Sprintf(
 			"SELECT fields.source_process_guid::String AS src_node, fields.target_process_guid::String AS dst_node, "+
-				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp, 'UTC') AS event_time "+
+				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id "+
 				"FROM %[3]s WHERE %[4]s%[5]s AND fields.source_process_guid::String IN (%[6]s) "+
 				"AND fields.bifract_category = '%[8]s' AND fields.image::String != '' AND fields.target_image::String != '' "+
 				"AND fields.target_process_guid::String != ''",
@@ -203,8 +202,8 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, opts QueryOpti
 		procFreq, freqWhere))
 	b.WriteString(fmt.Sprintf("ft AS (SELECT src_image, event_type, sum(event_count) AS tot FROM %[1]s%[2]s GROUP BY src_image, event_type) ",
 		procFreq, freqWhere))
-	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, event_time FROM (")
-	b.WriteString("SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.log_id AS log_id, e.event_time AS event_time, ")
+	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id FROM (")
+	b.WriteString("SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.log_id AS log_id, e.timestamp AS timestamp, e.fractal_id AS fractal_id, ")
 	b.WriteString("if(coalesce(ft.tot, 0) = 0, 1.0, round(1 - coalesce(fe.cnt, 0) / ft.tot, 4)) AS anomaly_score ")
 	b.WriteString(fmt.Sprintf("FROM (%s) AS e ", edges))
 	b.WriteString("LEFT JOIN fe ON fe.src_image = e.fkey_src AND fe.event_type = e.event_type AND fe.target_norm = e.fkey_tgt ")

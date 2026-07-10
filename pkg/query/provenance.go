@@ -103,4 +103,7 @@ func (h *QueryHandler) runProvenanceGraph(ctx context.Context, p parser.Provenan
 }
 
 // provenanceFieldOrder is the column order of the pgr() scored edge list.
-var provenanceFieldOrder = []string{"parent", "child", "label", "event_type", "anomaly_score", "log_id", "event_time"}
+// provenanceFieldOrder is the display column order. fractal_id is intentionally omitted here
+// (the frontend hides it) but IS present in every row so the standard /logs/fields detail
+// fetch -- which needs log_id + timestamp + fractal_id -- works from a pgr row or pgraph node.
+var provenanceFieldOrder = []string{"parent", "child", "label", "event_type", "anomaly_score", "log_id", "timestamp"}

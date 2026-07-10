@@ -159,13 +159,15 @@ func (c *ClickHouseClient) ProcLineageReadTable() string {
 // metadata-only ALTER ... MODIFY TTL. proc_lineage is decoupled from logs retention and
 // kept long for DFIR (year-old process trees are common), so operators tune it with
 // BIFRACT_PROC_LINEAGE_TTL_DAYS without editing DDL. Re-applying the same expression is a
-// cheap no-op. days <= 0 leaves the DDL default (365 days) in place.
+// cheap no-op. days <= 0 leaves the DDL default (730 days) in place.
 func (c *ClickHouseClient) ReconcileProcLineageTTL(ctx context.Context, days int) error {
 	if days <= 0 {
 		return nil
 	}
+	// materialize_ttl_after_modify = 0: metadata-only change, no part-rewriting mutation
+	// (which would run on every startup the env var is set). New/merged parts adopt the TTL.
 	stmt := fmt.Sprintf(
-		"ALTER TABLE proc_lineage%s MODIFY TTL toDateTime(timestamp) + INTERVAL %d DAY",
+		"ALTER TABLE proc_lineage%s MODIFY TTL toDateTime(timestamp) + INTERVAL %d DAY SETTINGS materialize_ttl_after_modify = 0",
 		c.OnClusterSQL(), days,
 	)
 	return c.conn.Exec(ctx, stmt)
@@ -184,13 +186,14 @@ func (c *ClickHouseClient) ProcFreqReadTable() string {
 // ReconcileProcFreqTTL applies a configured retention (in days) to proc_freq via a
 // metadata-only ALTER ... MODIFY TTL. proc_freq is the aggregated behavioral baseline; a
 // longer window gives more stable rarity for infrequent-but-normal behavior. Tuned via
-// BIFRACT_PROC_FREQ_TTL_DAYS. days <= 0 leaves the DDL default (180 days) in place.
+// BIFRACT_PROC_FREQ_TTL_DAYS. days <= 0 leaves the DDL default (730 days) in place.
 func (c *ClickHouseClient) ReconcileProcFreqTTL(ctx context.Context, days int) error {
 	if days <= 0 {
 		return nil
 	}
+	// metadata-only (see ReconcileProcLineageTTL): no part-rewriting mutation on startup.
 	stmt := fmt.Sprintf(
-		"ALTER TABLE proc_freq%s MODIFY TTL day + INTERVAL %d DAY",
+		"ALTER TABLE proc_freq%s MODIFY TTL day + INTERVAL %d DAY SETTINGS materialize_ttl_after_modify = 0",
 		c.OnClusterSQL(), days,
 	)
 	return c.conn.Exec(ctx, stmt)

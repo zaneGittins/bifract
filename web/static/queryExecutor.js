@@ -2854,7 +2854,7 @@ const QueryExecutor = {
             if (r.parent && !labelById.has(r.parent)) labelById.set(r.parent, null);
             if (r.child) {
                 labelById.set(r.child, (r.label != null && r.label !== '') ? r.label : strip(r.child));
-                if (r.log_id) logInfoById.set(r.child, { log_id: r.log_id, event_time: r.event_time });
+                if (r.log_id) logInfoById.set(r.child, { log_id: r.log_id, timestamp: r.timestamp, fractal_id: r.fractal_id, _shard_num: r._shard_num });
             }
         });
         labelById.forEach((lbl, id) => {
@@ -2895,47 +2895,23 @@ const QueryExecutor = {
         });
 
         // Clicking a node opens its originating log in the standard detail drawer (over the
-        // graph). Uses the fast timestamp-pruned lookup: event_time is a UTC wall-clock, so
-        // convert it to RFC3339 (space -> T, append Z) for the by-timestamp endpoint.
+        // graph), using the exact same path as a table row: hand LogDetail the log_id +
+        // timestamp + fractal_id (+ shard_num) carried on the edge and let it lazy-load the
+        // fields via /logs/fields. No bespoke fetch -- identical to normal search results.
         this.currentChart.on('selectNode', (params) => {
             const id = params.nodes && params.nodes[0];
             if (!id) return;
             const info = logInfoById.get(id);
-            if (info && info.log_id) this.fetchProvenanceNodeLog(info);
-        });
-    },
-
-    async fetchProvenanceNodeLog(info) {
-        try {
-            const rfc = info.event_time ? String(info.event_time).replace(' ', 'T') + 'Z' : '';
-            const body = { timestamp: rfc, log_id: info.log_id };
-            const fid = window.FractalContext && FractalContext.currentFractal && FractalContext.currentFractal.id;
-            if (fid) body.fractal_id = fid;
-            const resp = await fetch('/api/v1/logs/by-timestamp', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify(body),
-            });
-            const data = await resp.json();
-            if (!data.success || !data.log) {
-                if (window.Toast) Toast.info('Log unavailable', 'The source log could not be found (it may have aged out).');
-                return;
-            }
-            const log = data.log;
+            if (!info || !info.log_id || !window.LogDetail) return;
             const detailData = {
-                ...(log.fields && typeof log.fields === 'object' ? log.fields : {}),
-                timestamp: log.timestamp,
-                log_id: log.log_id,
-                fractal_id: log.fractal_id,
+                log_id: info.log_id,
+                timestamp: info.timestamp,
+                fractal_id: info.fractal_id,
+                _shard_num: info._shard_num,
             };
-            if (window.LogDetail) {
-                LogDetail.setContext([detailData], 0, false, 'search');
-                LogDetail.show(detailData, false, 'search');
-            }
-        } catch (e) {
-            if (window.Toast) Toast.error('Error', 'Failed to fetch the source log.');
-        }
+            LogDetail.setContext([detailData], 0, false, 'search');
+            LogDetail.show(detailData, false, 'search');
+        });
     },
 
     // mesh() renders an undirected, weighted, bidirectional network (Arkime-style

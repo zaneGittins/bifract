@@ -224,7 +224,7 @@ CREATE TABLE IF NOT EXISTS proc_lineage (
     INDEX idx_parent_guid parent_guid TYPE bloom_filter(0.001) GRANULARITY 1
 ) ENGINE = ReplacingMergeTree(timestamp)
 ORDER BY (fractal_id, process_guid)
-TTL toDateTime(timestamp) + INTERVAL 365 DAY
+TTL toDateTime(timestamp) + INTERVAL 730 DAY
 SETTINGS index_granularity = 8192;
 
 -- Populates proc_lineage from process-create events, keyed on the normalized
@@ -257,7 +257,7 @@ CREATE TABLE IF NOT EXISTS proc_freq (
     hosts       AggregateFunction(groupUniqArray(256), String)
 ) ENGINE = AggregatingMergeTree()
 ORDER BY (fractal_id, src_image, event_type, target_norm, day)
-TTL day + INTERVAL 180 DAY
+TTL day + INTERVAL 730 DAY
 SETTINGS index_granularity = 8192;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_spawn_mv TO proc_freq AS
