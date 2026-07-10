@@ -969,18 +969,21 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			{
 				Name:        "pgr",
 				Category:    "Traversal",
-				Description: "Process provenance Graph with NoDoze-style anomaly scoring. Builds the ptg() spawn tree from a start process_guid, then adds file-write, network, DNS, remote-thread, and process-access edges for every process in the tree and scores each edge by rarity against the proc_freq frequency baseline. anomaly_score is in [0,1]: 1.0 = never-before-seen behavior for that source, 0 = ubiquitous. Keeps the full spawn spine plus any non-spawn edge at or above threshold (default 0.7), so rare/suspicious activity surfaces while common noise is pruned. Returns parent, child, label, event_type, anomaly_score, log_id, event_time. Requires an EDR source normalized with bifract_category (process_creation, file_write, network_connect, dns_query, remote_thread, process_access). Same scoping as ptg(): scoped ONLY by start=, the time range, and the fractal -- any filter before pgr() is ignored, and a narrow time range silently omits older lineage. Yields a table by default (for export/LLM); pipe to pgraph() to visualize.",
-				Syntax:      `| pgr(start="<process_guid>", depth=N, direction=forward|backward|both, threshold=0.0-1.0)`,
+				Description: "Process provenance Graph with NoDoze-style anomaly scoring. Builds the ptg() spawn tree from a start process_guid, then adds file-write, network, DNS, remote-thread, and process-access edges for every process in the tree and scores each edge by rarity against the proc_freq frequency baseline. anomaly_score is in [0,1]: 1.0 = never-before-seen behavior for that source, 0 = ubiquitous. Keeps the full spawn spine plus any non-spawn edge at or above threshold (default 0.7), so rare/suspicious activity surfaces while common noise is pruned. Returns parent, child, label, event_type, anomaly_score, log_id, timestamp. Requires an EDR source normalized with bifract_category (process_creation, file_write, network_connect, dns_query, remote_thread, process_access). Same scoping as ptg(): pgr() is self-contained -- it is scoped ONLY by start=, the time range, and the fractal, and any filter placed in the pipeline (before or after pgr) is ignored. To narrow which edge types appear, use include=/exclude= (NOT a pipeline filter): e.g. exclude=file_write drops all file-write edges, which also skips scanning for them (faster). A narrow time range silently omits older lineage. Yields a table by default (for export/LLM); pipe to pgraph() to visualize.",
+				Syntax:      `| pgr(start="<process_guid>", depth=N, direction=forward|backward|both, threshold=0.0-1.0, exclude="file_write,net_connect")`,
 				Parameters: []Param{
 					{Name: "start", Type: "string", Required: true, Description: "process_guid of the seed node"},
 					{Name: "depth", Type: "number", Required: false, Description: "Maximum tree traversal depth (default: 10, max: 50)"},
 					{Name: "direction", Type: "string", Required: false, Description: "forward = descendants, backward = ancestors, both = both (default: both)"},
 					{Name: "threshold", Type: "number", Required: false, Description: "Prune non-spawn edges below this anomaly_score, 0.0-1.0 (default: 0.7)"},
+					{Name: "include", Type: "string", Required: false, Description: "Only generate these non-spawn edge types (comma-separated): file_write, net_connect (a.k.a network_connect), dns_query, remote_thread, process_access. The spawn tree is always included."},
+					{Name: "exclude", Type: "string", Required: false, Description: "Drop these edge types (comma-separated), e.g. exclude=\"file_write,net_connect\". Applied after include=. Skips scanning logs for the excluded types."},
 				},
 				Examples: []string{
 					`pgr(start="{GUID}")`,
 					`pgr(start="{GUID}", threshold=0.9) | pgraph()`,
-					`pgr(start="{GUID}", direction=forward, depth=20) | table(parent, child, event_type, anomaly_score)`,
+					`pgr(start="{GUID}", exclude="file_write") | pgraph()`,
+					`pgr(start="{GUID}", include="dns_query,net_connect") | pgraph()`,
 				},
 			},
 			{

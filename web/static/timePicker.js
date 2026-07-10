@@ -78,6 +78,47 @@ const TimePicker = {
         if (!silent) this.saveToStorage();
     },
 
+    // applyState restores a full time-range selection (from a saved query,
+    // history entry, or share link) into the picker, syncing the relative/
+    // absolute input fields so reopening the panel shows the right values.
+    // `state` uses camelCase: { type, relativeN, relativeUnit, customStart, customEnd }.
+    applyState(state, silent) {
+        if (!state || !state.type) return;
+        const newState = { type: state.type };
+        if (state.type === 'custom' && state.customStart && state.customEnd) {
+            newState.customStart = state.customStart;
+            newState.customEnd = state.customEnd;
+            const absStart = document.getElementById('tpAbsStart');
+            const absEnd = document.getElementById('tpAbsEnd');
+            if (absStart) absStart.value = this._toDatetimeLocal(state.customStart);
+            if (absEnd) absEnd.value = this._toDatetimeLocal(state.customEnd);
+        } else if (state.type === 'relative' && state.relativeN) {
+            newState.relativeN = parseInt(state.relativeN, 10);
+            newState.relativeUnit = state.relativeUnit || 'hours';
+            const nEl = document.getElementById('tpRelativeN');
+            const unitEl = document.getElementById('tpRelativeUnit');
+            if (nEl) nEl.value = newState.relativeN;
+            if (unitEl) unitEl.value = newState.relativeUnit;
+        }
+        this.setState(newState, silent);
+    },
+
+    // serializeRange snapshots the current selection into the snake_case shape
+    // persisted with saved queries and query history. Only the fields relevant
+    // to the active type are populated.
+    serializeRange() {
+        const { type, relativeN, relativeUnit, customStart, customEnd } = this.state;
+        const out = { time_range: type };
+        if (type === 'custom') {
+            out.custom_start = customStart || '';
+            out.custom_end = customEnd || '';
+        } else if (type === 'relative') {
+            out.relative_n = relativeN;
+            out.relative_unit = relativeUnit;
+        }
+        return out;
+    },
+
     _storageKey(suffix) {
         const fractalId = window.FractalContext?.currentFractal?.id
             || window.FractalSelector?.getCurrentFractalId?.()

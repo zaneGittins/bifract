@@ -12,11 +12,50 @@ const maxProvenanceGuids = 10000
 
 // ProvenanceParams are the parsed pgr() arguments the handler orchestrates the two-pass
 // query with. start/depth/direction match ptg(); threshold prunes non-spawn edges below it.
+// EdgeTypes is the resolved set of non-spawn edge types to generate (spawn -- the tree spine
+// -- is always included); include=/exclude= narrow it. Empty means "all".
 type ProvenanceParams struct {
 	Start     string
 	Depth     int
 	Direction string
 	Threshold float64
+	EdgeTypes map[string]bool // non-spawn event_types to include; nil/empty = all
+}
+
+// provenanceLeafTypes are the non-spawn edge event_types pgr can emit. spawn is the tree
+// backbone and is always present, so it is not listed here.
+var provenanceLeafTypes = []string{"file_write", "net_connect", "dns_query", "remote_thread", "process_access"}
+
+// normalizeEdgeType maps user-facing aliases (the raw bifract_category names) onto the pgr
+// output event_type values, so exclude="network_connect" and exclude="net_connect" both work.
+func normalizeEdgeType(s string) string {
+	switch strings.ToLower(strings.TrimSpace(strings.Trim(s, "\"'"))) {
+	case "network_connect", "net_connect":
+		return "net_connect"
+	case "process_creation", "spawn":
+		return "spawn"
+	case "file_write":
+		return "file_write"
+	case "dns_query", "dns":
+		return "dns_query"
+	case "remote_thread":
+		return "remote_thread"
+	case "process_access":
+		return "process_access"
+	}
+	return ""
+}
+
+// parseEdgeTypeList splits a comma/space-separated argument value into normalized event_types.
+func parseEdgeTypeList(v string) []string {
+	v = strings.Trim(v, "\"'[]")
+	var out []string
+	for _, tok := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if t := normalizeEdgeType(tok); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // ExtractProvenanceParams scans a parsed pipeline for a pgr() command and returns its
@@ -32,6 +71,7 @@ func ExtractProvenanceParams(pipeline *PipelineNode) (ProvenanceParams, bool) {
 			continue
 		}
 		p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7}
+		var includeTypes, excludeTypes []string
 		for _, arg := range cmd.Arguments {
 			switch {
 			case strings.HasPrefix(arg, "start="):
@@ -46,7 +86,26 @@ func ExtractProvenanceParams(pipeline *PipelineNode) (ProvenanceParams, bool) {
 				if t, err := strconv.ParseFloat(strings.TrimPrefix(arg, "threshold="), 64); err == nil && t >= 0 && t <= 1 {
 					p.Threshold = t
 				}
+			case strings.HasPrefix(arg, "include="):
+				includeTypes = parseEdgeTypeList(strings.TrimPrefix(arg, "include="))
+			case strings.HasPrefix(arg, "exclude="):
+				excludeTypes = parseEdgeTypeList(strings.TrimPrefix(arg, "exclude="))
 			}
+		}
+		// Resolve the non-spawn edge-type set: start from include= (or all leaf types), then
+		// drop any exclude=. spawn is the backbone and is never filtered out here.
+		p.EdgeTypes = map[string]bool{}
+		base := includeTypes
+		if len(base) == 0 {
+			base = provenanceLeafTypes
+		}
+		for _, t := range base {
+			if t != "spawn" {
+				p.EdgeTypes[t] = true
+			}
+		}
+		for _, t := range excludeTypes {
+			delete(p.EdgeTypes, t)
 		}
 		if p.Depth > 50 {
 			p.Depth = 50
@@ -100,10 +159,14 @@ func BuildProcessTreeQuery(p ProvenanceParams, opts QueryOptions) (string, error
 // by time + guid + category), score each against proc_freq (anomaly = 1 - freq(edge)/freq(src,rel,*)),
 // and keep the full spawn spine plus any non-spawn edge at/above threshold. Output columns:
 // parent, child, label, event_type, anomaly_score -- an edge list graph() renders directly.
-func BuildProvenanceScoringSQL(guids []string, threshold float64, opts QueryOptions) (string, error) {
+// edgeTypes selects which non-spawn edge branches to generate (nil/empty = all); spawn is
+// always included as the tree backbone. Skipping a branch avoids scanning logs for that
+// bifract_category entirely -- a real cost saving at scale, not just a post-filter.
+func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[string]bool, opts QueryOptions) (string, error) {
 	if len(guids) == 0 {
 		return "", fmt.Errorf("pgr: no process guids to score")
 	}
+	want := func(t string) bool { return len(edgeTypes) == 0 || edgeTypes[t] }
 	if len(guids) > maxProvenanceGuids {
 		guids = guids[:maxProvenanceGuids]
 	}
@@ -184,11 +247,24 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, opts QueryOpti
 			aPath("fields.image::String"), aPath("fields.target_image::String"), logs, timeWin, frac(), inList, eventType, category)
 	}
 
-	edges := strings.Join([]string{
-		spawnEdges, fileEdges, netEdges, dnsEdges,
-		p2pEdges("remote_thread", "remote_thread"),
-		p2pEdges("process_access", "process_access"),
-	}, " UNION ALL ")
+	// spawn is always present (the tree spine); leaf branches are included per edgeTypes.
+	parts := []string{spawnEdges}
+	if want("file_write") {
+		parts = append(parts, fileEdges)
+	}
+	if want("net_connect") {
+		parts = append(parts, netEdges)
+	}
+	if want("dns_query") {
+		parts = append(parts, dnsEdges)
+	}
+	if want("remote_thread") {
+		parts = append(parts, p2pEdges("remote_thread", "remote_thread"))
+	}
+	if want("process_access") {
+		parts = append(parts, p2pEdges("process_access", "process_access"))
+	}
+	edges := strings.Join(parts, " UNION ALL ")
 
 	freqWhere := ""
 	if fractal != "" {

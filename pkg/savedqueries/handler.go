@@ -42,11 +42,17 @@ type SavedQuery struct {
 	Favorited   bool            `json:"favorited"`
 	UseCount    int64           `json:"use_count"`
 	LastUsedAt  *time.Time      `json:"last_used_at,omitempty"`
-	FractalID   string          `json:"fractal_id,omitempty"`
-	PrismID     string          `json:"prism_id,omitempty"`
-	CreatedBy   string          `json:"created_by"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	// Persisted time range, applied when the query is run (absolute or relative).
+	TimeRange    string    `json:"time_range,omitempty"`
+	CustomStart  string    `json:"custom_start,omitempty"`
+	CustomEnd    string    `json:"custom_end,omitempty"`
+	RelativeN    *int      `json:"relative_n,omitempty"`
+	RelativeUnit string    `json:"relative_unit,omitempty"`
+	FractalID    string    `json:"fractal_id,omitempty"`
+	PrismID      string    `json:"prism_id,omitempty"`
+	CreatedBy    string    `json:"created_by"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // normalizeVariables validates and canonicalizes the variable bindings for
@@ -76,6 +82,52 @@ func normalizeVisibility(v string) string {
 		return "personal"
 	}
 	return "shared"
+}
+
+var validRangeTypes = map[string]bool{
+	"5m": true, "15m": true, "30m": true, "1h": true, "2h": true, "4h": true,
+	"6h": true, "12h": true, "24h": true, "7d": true, "30d": true,
+	"relative": true, "custom": true, "all": true,
+}
+
+var validRelativeUnits = map[string]bool{
+	"minutes": true, "hours": true, "days": true, "weeks": true,
+}
+
+// rangeArgs validates the persisted time-range fields and returns the SQL
+// arguments (already nil where a column should be NULL). An unknown range type
+// stores nothing, so a bad payload cannot poison the saved range.
+func rangeArgs(timeRange, customStart, customEnd, relativeUnit string, relativeN *int) (tr, cs, ce, rn, ru interface{}) {
+	t := strings.ToLower(strings.TrimSpace(timeRange))
+	if !validRangeTypes[t] {
+		return nil, nil, nil, nil, nil
+	}
+	tr = t
+	switch t {
+	case "custom":
+		cs = parseTime(customStart)
+		ce = parseTime(customEnd)
+	case "relative":
+		unit := strings.ToLower(strings.TrimSpace(relativeUnit))
+		if relativeN != nil && *relativeN > 0 && validRelativeUnits[unit] {
+			rn = *relativeN
+			ru = unit
+		}
+	}
+	return
+}
+
+// parseTime converts an RFC3339 string to a nullable timestamp arg. Empty or
+// unparseable input becomes SQL NULL.
+func parseTime(s string) interface{} {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.UTC()
+	}
+	return nil
 }
 
 type APIResponse struct {
@@ -182,6 +234,8 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 			COALESCE(sq.variables, '[]'),
 			COALESCE(sq.visibility, 'shared'), (f.username IS NOT NULL) AS favorited,
 			COALESCE(sq.use_count, 0), sq.last_used_at,
+			COALESCE(sq.time_range, ''), sq.custom_start, sq.custom_end,
+			sq.relative_n, COALESCE(sq.relative_unit, ''),
 			COALESCE(sq.fractal_id::text, ''), COALESCE(sq.prism_id::text, ''),
 			COALESCE(sq.created_by, ''), sq.created_at, sq.updated_at
 		FROM saved_queries sq
@@ -216,9 +270,12 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var sq SavedQuery
 		var lastUsed sql.NullTime
+		var customStart, customEnd sql.NullTime
+		var relativeN sql.NullInt64
 		if err := rows.Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags),
 			&sq.Variables,
 			&sq.Visibility, &sq.Favorited, &sq.UseCount, &lastUsed,
+			&sq.TimeRange, &customStart, &customEnd, &relativeN, &sq.RelativeUnit,
 			&sq.FractalID, &sq.PrismID, &sq.CreatedBy, &sq.CreatedAt, &sq.UpdatedAt); err != nil {
 			log.Printf("[SavedQueries] Failed to scan row: %v", err)
 			h.respondError(w, http.StatusInternalServerError, "Failed to load saved queries")
@@ -227,6 +284,16 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		if lastUsed.Valid {
 			t := lastUsed.Time.UTC()
 			sq.LastUsedAt = &t
+		}
+		if customStart.Valid {
+			sq.CustomStart = customStart.Time.UTC().Format(time.RFC3339)
+		}
+		if customEnd.Valid {
+			sq.CustomEnd = customEnd.Time.UTC().Format(time.RFC3339)
+		}
+		if relativeN.Valid {
+			n := int(relativeN.Int64)
+			sq.RelativeN = &n
 		}
 		if sq.Tags == nil {
 			sq.Tags = []string{}
@@ -248,12 +315,17 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name        string          `json:"name"`
-		QueryText   string          `json:"query_text"`
-		Description string          `json:"description"`
-		Tags        []string        `json:"tags"`
-		Variables   json.RawMessage `json:"variables"`
-		Visibility  string          `json:"visibility"`
+		Name         string          `json:"name"`
+		QueryText    string          `json:"query_text"`
+		Description  string          `json:"description"`
+		Tags         []string        `json:"tags"`
+		Variables    json.RawMessage `json:"variables"`
+		Visibility   string          `json:"visibility"`
+		TimeRange    string          `json:"time_range"`
+		CustomStart  string          `json:"custom_start"`
+		CustomEnd    string          `json:"custom_end"`
+		RelativeN    *int            `json:"relative_n"`
+		RelativeUnit string          `json:"relative_unit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
@@ -265,6 +337,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	req.Description = strings.TrimSpace(req.Description)
 	visibility := normalizeVisibility(req.Visibility)
 	variables := normalizeVariables(req.Variables)
+	trArg, csArg, ceArg, rnArg, ruArg := rangeArgs(req.TimeRange, req.CustomStart, req.CustomEnd, req.RelativeUnit, req.RelativeN)
 
 	if req.Name == "" {
 		h.respondError(w, http.StatusBadRequest, "name is required")
@@ -314,10 +387,10 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 
 	var sq SavedQuery
 	err = h.pg.QueryRow(r.Context(), `
-		INSERT INTO saved_queries (name, query_text, description, tags, variables, visibility, fractal_id, prism_id, created_by)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+		INSERT INTO saved_queries (name, query_text, description, tags, variables, visibility, fractal_id, prism_id, created_by, time_range, custom_start, custom_end, relative_n, relative_unit)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id, name, query_text, COALESCE(description, ''), tags, COALESCE(variables, '[]'), COALESCE(visibility, 'shared'), COALESCE(use_count, 0), COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`,
-		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), variables, visibility, fractalIDPtr, prismIDPtr, username,
+		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), variables, visibility, fractalIDPtr, prismIDPtr, username, trArg, csArg, ceArg, rnArg, ruArg,
 	).Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags), &sq.Variables, &sq.Visibility, &sq.UseCount,
 		&sq.FractalID, &sq.PrismID, &sq.CreatedBy, &sq.CreatedAt, &sq.UpdatedAt)
 
@@ -351,12 +424,17 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name        string          `json:"name"`
-		QueryText   string          `json:"query_text"`
-		Description string          `json:"description"`
-		Tags        []string        `json:"tags"`
-		Variables   json.RawMessage `json:"variables"`
-		Visibility  string          `json:"visibility"`
+		Name         string          `json:"name"`
+		QueryText    string          `json:"query_text"`
+		Description  string          `json:"description"`
+		Tags         []string        `json:"tags"`
+		Variables    json.RawMessage `json:"variables"`
+		Visibility   string          `json:"visibility"`
+		TimeRange    string          `json:"time_range"`
+		CustomStart  string          `json:"custom_start"`
+		CustomEnd    string          `json:"custom_end"`
+		RelativeN    *int            `json:"relative_n"`
+		RelativeUnit string          `json:"relative_unit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
@@ -368,6 +446,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	req.Description = strings.TrimSpace(req.Description)
 	visibility := normalizeVisibility(req.Visibility)
 	variables := normalizeVariables(req.Variables)
+	trArg, csArg, ceArg, rnArg, ruArg := rangeArgs(req.TimeRange, req.CustomStart, req.CustomEnd, req.RelativeUnit, req.RelativeN)
 
 	if req.Name == "" {
 		h.respondError(w, http.StatusBadRequest, "name is required")
@@ -404,16 +483,21 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	var sq SavedQuery
 	var lastUsed sql.NullTime
+	var customStart, customEnd sql.NullTime
+	var relativeN sql.NullInt64
 	err = h.pg.QueryRow(r.Context(), fmt.Sprintf(`
-		UPDATE saved_queries SET name = $1, query_text = $2, description = $3, tags = $4, visibility = $5, variables = $9::jsonb
+		UPDATE saved_queries SET name = $1, query_text = $2, description = $3, tags = $4, visibility = $5, variables = $9::jsonb,
+			time_range = $10, custom_start = $11, custom_end = $12, relative_n = $13, relative_unit = $14
 		WHERE id = $7 AND %s
 		RETURNING id, name, query_text, COALESCE(description, ''), tags, COALESCE(variables, '[]'), COALESCE(visibility, 'shared'),
 			COALESCE(use_count, 0), last_used_at,
 			EXISTS (SELECT 1 FROM saved_query_favorites f WHERE f.saved_query_id = saved_queries.id AND f.username = $8),
+			COALESCE(time_range, ''), custom_start, custom_end, relative_n, COALESCE(relative_unit, ''),
 			COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`, whereScope),
-		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), visibility, scopeArg, id, username, variables,
+		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), visibility, scopeArg, id, username, variables, trArg, csArg, ceArg, rnArg, ruArg,
 	).Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags), &sq.Variables, &sq.Visibility,
 		&sq.UseCount, &lastUsed, &sq.Favorited,
+		&sq.TimeRange, &customStart, &customEnd, &relativeN, &sq.RelativeUnit,
 		&sq.FractalID, &sq.PrismID, &sq.CreatedBy, &sq.CreatedAt, &sq.UpdatedAt)
 
 	if err != nil {
@@ -432,6 +516,16 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	if lastUsed.Valid {
 		t := lastUsed.Time.UTC()
 		sq.LastUsedAt = &t
+	}
+	if customStart.Valid {
+		sq.CustomStart = customStart.Time.UTC().Format(time.RFC3339)
+	}
+	if customEnd.Valid {
+		sq.CustomEnd = customEnd.Time.UTC().Format(time.RFC3339)
+	}
+	if relativeN.Valid {
+		n := int(relativeN.Int64)
+		sq.RelativeN = &n
 	}
 	if sq.Tags == nil {
 		sq.Tags = []string{}

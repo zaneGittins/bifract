@@ -26,6 +26,7 @@ const QueryPalette = {
     editingId: null,
     saveFormOpen: false,
     promoteText: null,      // query text being promoted from history into Saved
+    promoteRange: null,     // time range carried from the promoted history row
     _pendingHistory: null,  // run metadata captured by the executor
 
     init() {
@@ -97,6 +98,7 @@ const QueryPalette = {
         this.saveFormOpen = false;
         this.editingId = null;
         this.promoteText = null;
+        this.promoteRange = null;
         // Show cached history immediately, then refresh from the server.
         if (this.activeTab === 'history') this.history = this.readCache();
         this.render();
@@ -126,6 +128,7 @@ const QueryPalette = {
         this.saveFormOpen = false;
         this.editingId = null;
         this.promoteText = null;
+        this.promoteRange = null;
         document.querySelectorAll('.palette-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
         this.render();
         this.reload();
@@ -208,7 +211,9 @@ const QueryPalette = {
     // run=true executes immediately; run=false loads into the editor for review.
     activate(item, run) {
         if (!item) return;
-        if (this.activeTab === 'history') this.applyTimeRange(item);
+        // Both saved queries and history rows carry the time range they were run
+        // with; restore it so the query executes against its own range.
+        this.applyTimeRange(item);
         // Saved queries carry remembered @variable values; history rows do not.
         const vars = this.activeTab === 'saved' ? item.variables : null;
         if (run) {
@@ -259,17 +264,14 @@ const QueryPalette = {
     },
 
     applyTimeRange(it) {
-        if (!it || !it.time_range) return;
-        const sel = document.getElementById('timeRange');
-        if (!sel || ![...sel.options].some(o => o.value === it.time_range)) return;
-        sel.value = it.time_range;
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
-        if (it.time_range === 'custom') {
-            const cs = document.getElementById('customStart');
-            const ce = document.getElementById('customEnd');
-            if (cs && it.custom_start) cs.value = this.fmtLocal(it.custom_start);
-            if (ce && it.custom_end) ce.value = this.fmtLocal(it.custom_end);
-        }
+        if (!it || !it.time_range || !window.TimePicker) return;
+        TimePicker.applyState({
+            type: it.time_range,
+            customStart: it.custom_start,
+            customEnd: it.custom_end,
+            relativeN: it.relative_n,
+            relativeUnit: it.relative_unit,
+        });
     },
 
     // ----- Rendering -----
@@ -321,7 +323,7 @@ const QueryPalette = {
         if (it.run_count > 1) meta.push(`${it.run_count}×`);
         if (it.last_run_at) meta.push(this.relTime(it.last_run_at));
         if (it.result_count != null) meta.push(`${Number(it.result_count).toLocaleString()} results`);
-        const tr = it.time_range ? `<span class="palette-badge">${this.escapeHtml(this.timeLabel(it.time_range))}</span>` : '';
+        const tr = it.time_range ? `<span class="palette-badge">${this.escapeHtml(this.rangeLabel(it))}</span>` : '';
         const err = it.status === 'error' ? '<span class="palette-badge err">error</span>' : '';
         return `
           <div class="palette-row${active}" data-idx="${i}">
@@ -347,6 +349,7 @@ const QueryPalette = {
         const meta = [];
         if (it.use_count) meta.push(`used ${it.use_count}×`);
         if (it.last_used_at) meta.push(this.relTime(it.last_used_at));
+        const tr = it.time_range ? `<span class="palette-badge">${this.escapeHtml(this.rangeLabel(it))}</span>` : '';
         return `
           <div class="palette-row${active}" data-idx="${i}">
             <button class="palette-fav${it.favorited ? ' on' : ''}" title="Favorite" onclick="event.stopPropagation();QueryPalette.toggleFavorite('${this.escapeJs(it.id)}')">${it.favorited ? STAR_FILLED : STAR_OUTLINE}</button>
@@ -355,7 +358,7 @@ const QueryPalette = {
               ${desc}
               <div class="palette-query">${hl}</div>
               ${tags ? `<div class="palette-tags">${tags}</div>` : ''}
-              ${meta.length ? `<div class="palette-meta"><span>${meta.join(' · ')}</span></div>` : ''}
+              ${(tr || meta.length) ? `<div class="palette-meta">${tr}<span>${meta.join(' · ')}</span></div>` : ''}
             </div>
             <div class="palette-row-actions">
               <button class="palette-icon-btn" title="Run" onclick="event.stopPropagation();QueryPalette.runIdx(${i})">${PLAY_ICON}</button>
@@ -368,9 +371,14 @@ const QueryPalette = {
     renderSaveForm() {
         const q = (this.promoteText || document.getElementById('queryInput')?.value || '').trim();
         const preview = q ? (window.SyntaxHighlight ? SyntaxHighlight.highlight(q) : this.escapeHtml(q)) : '<span class="palette-dim">No query in the editor</span>';
+        // Show which time range will be saved with the query.
+        const rangeSrc = this.promoteText ? this.promoteRange : (window.TimePicker ? TimePicker.serializeRange() : null);
+        const rangeText = rangeSrc ? this.rangeLabel(rangeSrc) : '';
+        const rangeRow = rangeText ? `<div class="palette-meta"><span class="palette-dim">Time range</span><span class="palette-badge">${this.escapeHtml(rangeText)}</span></div>` : '';
         return `
           <div class="palette-form">
             <div class="palette-form-preview">${preview}</div>
+            ${rangeRow}
             <input id="paletteFormName" class="palette-input" placeholder="Name" maxlength="255" />
             <input id="paletteFormDesc" class="palette-input" placeholder="Description (optional)" />
             <input id="paletteFormTags" class="palette-input" placeholder="Tags (comma-separated)" />
@@ -425,7 +433,7 @@ const QueryPalette = {
             this.switchTab('saved');
         }
         this.saveFormOpen = !this.saveFormOpen;
-        if (!this.saveFormOpen) this.promoteText = null;
+        if (!this.saveFormOpen) { this.promoteText = null; this.promoteRange = null; }
         this.render();
         if (this.saveFormOpen) {
             const n = document.getElementById('paletteFormName');
@@ -439,6 +447,9 @@ const QueryPalette = {
         const text = it.query_text;
         this.switchTab('saved');
         this.promoteText = text;
+        // Carry the history row's time range into the save form so the saved
+        // query keeps the range it was originally run with.
+        this.promoteRange = this._rangeFields(it);
         this.saveFormOpen = true;
         this.render();
         const n = document.getElementById('paletteFormName');
@@ -462,18 +473,24 @@ const QueryPalette = {
             ? []
             : ((window.QueryExecutor && QueryExecutor.varManager) ? QueryExecutor.varManager.serialize() : []);
         const variables = this._variablesForQuery(queryText, prevVals);
+        // Promoting from history carries that row's range; a normal save snapshots
+        // the live time picker so the saved query runs against the same window.
+        const range = this.promoteText
+            ? (this.promoteRange || {})
+            : (window.TimePicker ? TimePicker.serializeRange() : {});
         try {
             const resp = await fetch('/api/v1/saved-queries', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ name, query_text: queryText, description, tags, visibility, variables })
+                body: JSON.stringify({ name, query_text: queryText, description, tags, visibility, variables, ...range })
             });
             const data = await resp.json();
             if (!data.success) { if (window.Toast) Toast.show(data.error || 'Failed to save', 'error'); return; }
             if (window.Toast) Toast.show('Query saved', 'success');
             this.saveFormOpen = false;
             this.promoteText = null;
+            this.promoteRange = null;
             this.loadSaved(this.searchTerm);
         } catch (err) {
             console.error('[QueryPalette] save failed:', err);
@@ -503,12 +520,14 @@ const QueryPalette = {
         const tags = tagsStr.split(',').map(t => t.trim()).filter(Boolean);
         const existing = this.saved.find(s => s.id === id);
         const variables = this._variablesForQuery(queryText, existing && existing.variables);
+        // Editing does not expose the time range, so preserve the stored one.
+        const range = existing ? this._rangeFields(existing) : {};
         try {
             const resp = await fetch(`/api/v1/saved-queries/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ name, query_text: queryText, description, tags, visibility, variables })
+                body: JSON.stringify({ name, query_text: queryText, description, tags, visibility, variables, ...range })
             });
             const data = await resp.json();
             if (!data.success) { if (window.Toast) Toast.show(data.error || 'Failed to update', 'error'); return; }
@@ -577,6 +596,8 @@ const QueryPalette = {
                     time_range: meta.timeRange || '',
                     custom_start: meta.customStart || '',
                     custom_end: meta.customEnd || '',
+                    relative_n: meta.relativeN != null ? meta.relativeN : null,
+                    relative_unit: meta.relativeUnit || '',
                     result_count: meta.resultCount != null ? meta.resultCount : null,
                     duration_ms: meta.durationMs != null ? meta.durationMs : null,
                     status: meta.status || 'ok'
@@ -591,6 +612,8 @@ const QueryPalette = {
             time_range: meta.timeRange || '',
             custom_start: meta.customStart || '',
             custom_end: meta.customEnd || '',
+            relative_n: meta.relativeN != null ? meta.relativeN : null,
+            relative_unit: meta.relativeUnit || '',
             result_count: meta.resultCount,
             duration_ms: meta.durationMs,
             status: meta.status || 'ok',
@@ -680,15 +703,41 @@ const QueryPalette = {
         return d.toLocaleDateString();
     },
 
-    fmtLocal(iso) {
-        const d = new Date(iso);
-        if (isNaN(d.getTime())) return '';
-        const p = (n) => String(n).padStart(2, '0');
-        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    // _rangeFields extracts the persisted snake_case time-range fields from a row
+    // (saved query or history entry) into the shape the API expects.
+    _rangeFields(src) {
+        if (!src || !src.time_range) return {};
+        return {
+            time_range: src.time_range,
+            custom_start: src.custom_start || '',
+            custom_end: src.custom_end || '',
+            relative_n: src.relative_n != null ? src.relative_n : null,
+            relative_unit: src.relative_unit || '',
+        };
     },
 
-    timeLabel(t) {
-        const map = { '5m': '5m', '15m': '15m', '1h': '1h', '24h': '24h', '7d': '7d', '30d': '30d', 'all': 'All time', 'custom': 'Custom' };
+    // rangeLabel renders a short human label for a stored time range, covering
+    // presets, relative (n + unit) and custom (absolute date span).
+    rangeLabel(it) {
+        const t = it && it.time_range;
+        if (!t) return '';
+        if (t === 'relative') {
+            const u = { minutes: 'm', hours: 'h', days: 'd', weeks: 'w' }[it.relative_unit]
+                || (it.relative_unit ? it.relative_unit[0] : 'h');
+            return `Last ${it.relative_n || 1}${u}`;
+        }
+        if (t === 'custom') {
+            const fmt = d => { const x = new Date(d); return isNaN(x.getTime()) ? '' : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+            if (it.custom_start && it.custom_end) return `${fmt(it.custom_start)} – ${fmt(it.custom_end)}`;
+            return 'Custom';
+        }
+        if (t === 'all') return 'All time';
+        const map = {
+            '5m': 'Last 5m', '15m': 'Last 15m', '30m': 'Last 30m',
+            '1h': 'Last 1h', '2h': 'Last 2h', '4h': 'Last 4h',
+            '6h': 'Last 6h', '12h': 'Last 12h', '24h': 'Last 24h',
+            '7d': 'Last 7d', '30d': 'Last 30d',
+        };
         return map[t] || t;
     },
 

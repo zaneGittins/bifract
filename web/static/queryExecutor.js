@@ -325,12 +325,15 @@ const QueryExecutor = {
 
         // Capture run metadata; the history entry is recorded on finalize once
         // result count and duration are known (see _finalizeQuery).
-        const trToken = window.TimePicker?.state?.type || '24h';
+        const trState = window.TimePicker?.state || { type: '24h' };
+        const trToken = trState.type || '24h';
         this._pendingHistory = {
             query: query,
             timeRange: trToken,
             customStart: trToken === 'custom' ? (this.currentTimeRange?.start || '') : '',
-            customEnd: trToken === 'custom' ? (this.currentTimeRange?.end || '') : ''
+            customEnd: trToken === 'custom' ? (this.currentTimeRange?.end || '') : '',
+            relativeN: trToken === 'relative' ? trState.relativeN : null,
+            relativeUnit: trToken === 'relative' ? (trState.relativeUnit || '') : ''
         };
 
         // Hide previous results and show loading
@@ -2812,106 +2815,549 @@ const QueryExecutor = {
 
     },
 
-    // pgraph() renders pgr()'s scored provenance graph: nodes shaped by entity type
-    // (process = box, file = ellipse, socket = diamond, the NoDoze convention) and edges
-    // colored by anomaly_score (rare = red/bold) with injection/handle-access dashed. Node
-    // type is read from the id prefix (file:/net:), the rest are process guids.
+    // pgraph() renders pgr()'s scored provenance graph two ways behind a toolbar toggle:
+    //  - Graph: a top-down node-link tree. Process nodes are boxes; a process's file/net/dns
+    //    artifacts are COLLAPSED into one "files (N)" badge per type (click to expand), so the
+    //    spawn spine stays readable even when a process touches hundreds of artifacts.
+    //  - Tree: an indented, collapsible outline (the CrowdStrike-style process tree) that reads
+    //    top-down at any scale. Both share one parsed model and open the source log on click.
     renderProvenanceGraph(results) {
-        const chartCanvas = document.getElementById('resultsChart');
         const networkDiv = document.getElementById('networkGraph');
         if (!networkDiv) return;
+        const chartCanvas = document.getElementById('resultsChart');
         if (chartCanvas) chartCanvas.style.display = 'none';
-        // A prior graph()/mesh() render may have docked #networkGraph inside a .graph-stage
-        // that renderChart's shared setup then hides; re-show it so pgraph is never blank.
-        const stage = networkDiv.closest('.graph-stage');
-        if (stage) stage.style.display = 'flex';
-        networkDiv.style.display = 'block';
         if (this.currentChart) { this.currentChart.destroy(); this.currentChart = null; }
 
-        const cv = ThemeManager.getCSSVar;
         const limit = (this.chartConfig && this.chartConfig.limit) || 500;
-        const rows = (results || []).slice(0, limit);
+        this._pgModel = this._pgBuildModel((results || []).slice(0, limit));
+        this._pgExpanded = new Set();
+        this._pgSearch = '';
+        this._pgMinAnomaly = 0;
+        if (!['topdown', 'diagonal', 'tree'].includes(this._pgView)) this._pgView = 'topdown';
 
-        const typeOf = (id) => {
-            if (!id) return 'process';
-            if (id.startsWith('file:')) return 'file';
-            if (id.startsWith('net:')) return 'net';
-            if (id.startsWith('dns:')) return 'dns';
-            return 'process';
-        };
-        const shapeOf = (t) => t === 'file' ? 'ellipse' : (t === 'net' ? 'diamond' : (t === 'dns' ? 'triangle' : 'box'));
-        const colorOf = { process: cv('--graph-node-parent') || '#3b82f6', file: '#8b7cc8', net: '#e0a458', dns: '#4bb3a5' };
-        const strip = (id) => String(id).replace(/^(file:|net:|dns:)/, '');
-        const short = (s) => { s = String(s); const b = s.split(/[\\/]/).pop() || s; return b.length > 24 ? b.slice(0, 24) + '…' : b; };
+        // Stage (flex host shared with graph()/mesh()) + a sibling tree container.
+        const graphHost = networkDiv.closest('.chart-container') || networkDiv.parentElement;
+        let stage = graphHost.querySelector('.graph-stage');
+        if (!stage) { stage = document.createElement('div'); stage.className = 'graph-stage'; graphHost.insertBefore(stage, networkDiv); stage.appendChild(networkDiv); }
+        stage.style.display = 'flex';
+        let treeDiv = stage.querySelector('.pg-tree');
+        if (!treeDiv) { treeDiv = document.createElement('div'); treeDiv.className = 'pg-tree'; stage.appendChild(treeDiv); }
+        // Drop any leftover graph()-specific chrome docked in this host.
+        const oldDetail = graphHost.querySelector('.graph-detail-panel'); if (oldDetail) oldDetail.remove();
 
-        const nodes = new vis.DataSet();
-        const edges = new vis.DataSet();
-        const labelById = new Map(); // child label is authoritative; parent-only nodes fall back to their id
-        // logInfoById maps a node to its originating log so a click can open the source event.
-        // A node that only ever appears as a parent (e.g. the tree root) has no originating edge.
-        const logInfoById = new Map();
-        rows.forEach(r => {
-            if (r.parent && !labelById.has(r.parent)) labelById.set(r.parent, null);
-            if (r.child) {
-                labelById.set(r.child, (r.label != null && r.label !== '') ? r.label : strip(r.child));
-                if (r.log_id) logInfoById.set(r.child, { log_id: r.log_id, timestamp: r.timestamp, fractal_id: r.fractal_id, _shard_num: r._shard_num });
+        this._pgBuildToolbar(graphHost, stage);
+        this._pgRender();
+    },
+
+    // Theme-aware colors: node type off dedicated CSS vars (fall back to the prior hex), edge
+    // severity off the app's semantic vars so anomaly coloring tracks light/dark like the rest.
+    _pgTypeColor(type) {
+        const cv = ThemeManager.getCSSVar;
+        switch (type) {
+            case 'file': return cv('--pg-file') || '#8b7cc8';
+            case 'net': return cv('--pg-net') || '#e0a458';
+            case 'dns': return cv('--pg-dns') || '#4bb3a5';
+            case 'agg': return cv('--pg-agg') || '#6e7491';
+            default: return cv('--pg-process') || '#7c8699';
+        }
+    },
+    _pgAnomalyColor(score) {
+        const cv = ThemeManager.getCSSVar;
+        if (isNaN(score)) return cv('--graph-node-neutral') || '#6b7280';
+        if (score >= 0.9) return cv('--error') || '#e5484d';
+        if (score >= 0.7) return cv('--warning') || '#f5a623';
+        return cv('--graph-node-neutral') || '#6b7280';
+    },
+
+    _pgTypeOf(id) {
+        if (!id) return 'process';
+        if (id.startsWith('file:')) return 'file';
+        if (id.startsWith('net:')) return 'net';
+        if (id.startsWith('dns:')) return 'dns';
+        return 'process';
+    },
+    _pgLeafNoun(type) { return type === 'file' ? 'files' : type === 'net' ? 'connections' : type === 'dns' ? 'domains' : type; },
+    _pgShort(s) { s = String(s == null ? '' : s); const b = s.split(/[\\/]/).pop() || s; return b.length > 26 ? b.slice(0, 26) + '…' : b; },
+
+    // Parse pgr rows into a model both views consume. Process->process edges (spawn, and the
+    // remote_thread/process_access interactions) form the tree; file/net/dns edges are grouped
+    // per (process, type) so they can be collapsed.
+    _pgBuildModel(rows) {
+        const procLabel = new Map();     // guid -> image label
+        const spawnKids = new Map();     // parent guid -> [child guid]
+        const interactions = new Map();  // src guid -> [{target,type,anomaly,label,info}]
+        const leafGroups = new Map();    // parent guid -> {file:[],net:[],dns:[]} of {id,label,anomaly,info}
+        const logInfoById = new Map();   // node id -> {log_id,timestamp,fractal_id,_shard_num}
+        const anomalyByNode = new Map(); // node id -> anomaly on its incoming edge
+        const isChild = new Set();       // process guids seen as a spawn child
+        const procSet = new Set();
+        const ensureProc = (g, lbl) => { procSet.add(g); if (lbl != null && lbl !== '' && !procLabel.get(g)) procLabel.set(g, lbl); else if (!procLabel.has(g)) procLabel.set(g, procLabel.get(g) || null); };
+        const push = (map, k, v) => { if (!map.has(k)) map.set(k, []); map.get(k).push(v); };
+
+        (rows || []).forEach(r => {
+            if (!r.parent || !r.child) return;
+            const et = r.event_type || '';
+            const anomaly = parseFloat(r.anomaly_score);
+            const info = r.log_id ? { log_id: r.log_id, timestamp: r.timestamp, fractal_id: r.fractal_id, _shard_num: r._shard_num } : null;
+            const ctype = this._pgTypeOf(r.child);
+            if (ctype === 'process') {
+                ensureProc(r.parent, null);
+                ensureProc(r.child, r.label);
+                if (info) logInfoById.set(r.child, info);
+                anomalyByNode.set(r.child, anomaly);
+                if (et === 'spawn') { push(spawnKids, r.parent, r.child); isChild.add(r.child); }
+                else { push(interactions, r.parent, { target: r.child, type: et, anomaly, label: r.label, info }); }
+            } else {
+                ensureProc(r.parent, null);
+                if (!leafGroups.has(r.parent)) leafGroups.set(r.parent, { file: [], net: [], dns: [] });
+                leafGroups.get(r.parent)[ctype].push({ id: r.child, label: r.label, anomaly, info });
+                if (info) logInfoById.set(r.child, info);
+                anomalyByNode.set(r.child, anomaly);
             }
         });
-        labelById.forEach((lbl, id) => {
-            const t = typeOf(id);
-            const clickable = logInfoById.has(id);
-            nodes.add({
-                id, label: short(lbl != null ? lbl : strip(id)), shape: shapeOf(t), size: 16,
-                color: { background: colorOf[t], border: colorOf[t] },
-                font: { color: cv('--graph-label') || '#eee', size: 11, face: 'Inter', strokeWidth: 3, strokeColor: cv('--graph-label-stroke') || 'rgba(0,0,0,0.5)' },
-                title: `${t}: ${strip(id)}${clickable ? ' — click to view source log' : ''}`,
+        const roots = [];
+        procSet.forEach(g => { if (!isChild.has(g)) roots.push(g); });
+        return { procLabel, spawnKids, interactions, leafGroups, logInfoById, anomalyByNode, procSet, roots };
+    },
+
+    _pgOpenLog(info) {
+        if (!info || !info.log_id || !window.LogDetail) return;
+        const detailData = { log_id: info.log_id, timestamp: info.timestamp, fractal_id: info.fractal_id, _shard_num: info._shard_num };
+        LogDetail.setContext([detailData], 0, false, 'search');
+        LogDetail.show(detailData, false, 'search');
+    },
+
+    // Toolbar: Graph/Tree segmented toggle + fit/zoom/export (graph-only). Mirrors .graph-toolbar.
+    _pgBuildToolbar(graphHost, stage) {
+        let bar = graphHost.querySelector('.graph-toolbar');
+        if (bar) bar.remove();
+        bar = document.createElement('div');
+        bar.className = 'graph-toolbar';
+        const m = this._pgModel;
+        const procN = m.procSet.size, isTree = this._pgView === 'tree';
+        bar.innerHTML = `
+            <div class="pg-view-toggle" role="tablist">
+                <button class="pg-view-btn${this._pgView === 'topdown' ? ' active' : ''}" data-view="topdown" title="Top-down tree">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5 6.5 16.8M12 7.5l5.5 9.3"/></svg>
+                    <span>Top-down</span>
+                </button>
+                <button class="pg-view-btn${this._pgView === 'diagonal' ? ' active' : ''}" data-view="diagonal" title="Diagonal timeline tree">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20 20 4"/><circle cx="6.5" cy="17.5" r="2"/><circle cx="13" cy="11" r="2"/><circle cx="19" cy="5" r="2"/><path d="m13 11 4 5M6.5 17.5 3 21"/></svg>
+                    <span>Diagonal</span>
+                </button>
+                <button class="pg-view-btn${this._pgView === 'tree' ? ' active' : ''}" data-view="tree" title="Indented process tree">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><path d="M4 5v14M4 12h3M4 6h3M4 18h3"/></svg>
+                    <span>Tree</span>
+                </button>
+            </div>
+            <div class="graph-stats"><span class="graph-stat-item"><span class="graph-stat-count">${procN}</span> processes</span></div>
+            <div class="pg-filters">
+                <div class="pg-search-wrap">
+                    <svg class="pg-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                    <input type="text" class="pg-search" placeholder="Search nodes…" value="${(this._pgSearch || '').replace(/"/g, '&quot;')}">
+                </div>
+                <label class="pg-thresh" title="Hide non-spawn edges below this anomaly score">
+                    <span class="pg-thresh-lbl">anomaly ≥</span>
+                    <input type="range" class="pg-thresh-range" min="0" max="1" step="0.05" value="${this._pgMinAnomaly || 0}">
+                    <span class="pg-thresh-val">${(this._pgMinAnomaly || 0).toFixed(2)}</span>
+                </label>
+            </div>
+            <div class="graph-controls pg-graph-controls"${isTree ? ' style="display:none"' : ''}>
+                <button class="toolbar-icon-btn" id="pgFitBtn" title="Fit to view"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg></button>
+                <button class="toolbar-icon-btn" id="pgZoomInBtn" title="Zoom in"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6"/><path d="M8 11h6"/></svg></button>
+                <button class="toolbar-icon-btn" id="pgZoomOutBtn" title="Zoom out"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M8 11h6"/></svg></button>
+                <span class="graph-toolbar-sep"></span>
+                <button class="toolbar-icon-btn" id="pgExportBtn" title="Export as PNG"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+            </div>`;
+        graphHost.insertBefore(bar, stage);
+        bar.querySelectorAll('.pg-view-btn').forEach(btn => btn.addEventListener('click', () => {
+            const v = btn.dataset.view;
+            if (v === this._pgView) return;
+            this._pgView = v;
+            bar.querySelectorAll('.pg-view-btn').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+            const gc = bar.querySelector('.pg-graph-controls'); if (gc) gc.style.display = v === 'tree' ? 'none' : '';
+            this._pgRender();
+        }));
+        const searchInput = bar.querySelector('.pg-search');
+        if (searchInput) searchInput.addEventListener('input', Utils.debounce((e) => {
+            this._pgSearch = e.target.value.trim();
+            if (this._pgView === 'tree') this._pgRender();
+            else this._pgApplySearch();
+        }, 160));
+        const range = bar.querySelector('.pg-thresh-range'), rangeVal = bar.querySelector('.pg-thresh-val');
+        if (range) range.addEventListener('input', Utils.debounce((e) => {
+            this._pgMinAnomaly = parseFloat(e.target.value) || 0;
+            if (rangeVal) rangeVal.textContent = this._pgMinAnomaly.toFixed(2);
+            this._pgRender();
+        }, 120));
+        if (range) range.addEventListener('input', (e) => { if (rangeVal) rangeVal.textContent = (parseFloat(e.target.value) || 0).toFixed(2); });
+        bar.querySelector('#pgFitBtn')?.addEventListener('click', () => this.currentChart && this.currentChart.fit({ animation: { duration: 300 }, padding: 40 }));
+        bar.querySelector('#pgZoomInBtn')?.addEventListener('click', () => this.currentChart && this.currentChart.moveTo({ scale: this.currentChart.getScale() * 1.3, animation: { duration: 150 } }));
+        bar.querySelector('#pgZoomOutBtn')?.addEventListener('click', () => this.currentChart && this.currentChart.moveTo({ scale: this.currentChart.getScale() / 1.3, animation: { duration: 150 } }));
+        bar.querySelector('#pgExportBtn')?.addEventListener('click', () => {
+            const canvas = document.querySelector('#networkGraph canvas'); if (!canvas) return;
+            const link = document.createElement('a'); link.download = 'bifract-provenance.png'; link.href = canvas.toDataURL('image/png'); link.click();
+            if (window.Toast) Toast.show('Graph exported as PNG', 'success');
+        });
+    },
+
+    _pgRender() {
+        const networkDiv = document.getElementById('networkGraph');
+        const stage = networkDiv.closest('.graph-stage');
+        const treeDiv = stage && stage.querySelector('.pg-tree');
+        if (this._pgView === 'tree') {
+            if (this.currentChart) { this.currentChart.destroy(); this.currentChart = null; }
+            networkDiv.style.display = 'none';
+            if (treeDiv) { treeDiv.style.display = 'block'; this._pgRenderTree(treeDiv); }
+        } else {
+            if (treeDiv) treeDiv.style.display = 'none';
+            networkDiv.style.display = 'block';
+            this._pgRenderGraph(networkDiv);
+        }
+    },
+
+    // ---- Graph view: node-link with per-type leaf aggregation ----
+    // Two layouts share this renderer: 'topdown' (vis hierarchical) and 'diagonal' (a custom
+    // tidy-tree rotated onto a diagonal timeline axis, the CrowdStrike/Elastic style).
+    _pgRenderGraph(networkDiv) {
+        const cv = ThemeManager.getCSSVar;
+        const m = this._pgModel;
+        const diagonal = this._pgView === 'diagonal';
+        const nodes = new vis.DataSet();
+        const edges = new vis.DataSet();
+        const colorById = new Map();
+        const matchText = new Map(); // id -> lowercased searchable text
+        const childrenLayout = new Map(); // parent -> [child] over TREE edges (excludes cross-links)
+        const link = (p, c) => { if (!childrenLayout.has(p)) childrenLayout.set(p, []); childrenLayout.get(p).push(c); };
+        const passT = (a) => isNaN(a) || a >= (this._pgMinAnomaly || 0); // anomaly threshold (spawn is exempt)
+        const font = { color: cv('--graph-label') || '#eee', size: 11, face: 'Inter', strokeWidth: 3, strokeColor: cv('--graph-label-stroke') || 'rgba(0,0,0,0.5)' };
+        const shapeOf = (t) => t === 'file' ? 'ellipse' : (t === 'net' ? 'diamond' : (t === 'dns' ? 'triangle' : 'box'));
+        // Straight segments read as a diagonal cascade; gentle vertical beziers for top-down.
+        const smooth = diagonal ? { enabled: false } : { enabled: true, type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 };
+        const addProc = (g) => {
+            if (nodes.get(g)) return;
+            const lbl = m.procLabel.get(g);
+            const c = this._pgTypeColor('process');
+            colorById.set(g, c);
+            matchText.set(g, String(lbl != null ? lbl : g).toLowerCase());
+            const clickable = m.logInfoById.has(g);
+            nodes.add({ id: g, label: this._pgShort(lbl != null ? lbl : g), shape: diagonal ? 'hexagon' : 'box', size: diagonal ? 15 : 18, color: { background: c, border: c }, font, title: `process: ${lbl != null ? lbl : g}${clickable ? '\nclick to view source log' : ''}` });
+        };
+        m.procSet.forEach(addProc);
+        // spawn edges (the tree backbone -- never filtered by the anomaly threshold)
+        m.spawnKids.forEach((kids, parent) => kids.forEach(k => {
+            const a = m.anomalyByNode.get(k);
+            link(parent, k);
+            edges.add({ from: parent, to: k, arrows: { to: { enabled: true, scaleFactor: 0.6 } }, color: { color: this._pgAnomalyColor(a), opacity: 0.9 }, width: (!isNaN(a) && a >= 0.7) ? 2.5 : 1.4, title: 'spawn', smooth });
+        }));
+        // interaction edges (injection / handle-access) between processes, dashed (cross-links,
+        // not part of the layout tree)
+        m.interactions.forEach((list, src) => list.filter(it => passT(it.anomaly)).forEach(it => {
+            if (!nodes.get(it.target)) addProc(it.target);
+            edges.add({ from: src, to: it.target, arrows: { to: { enabled: true, scaleFactor: 0.6 } }, color: { color: this._pgAnomalyColor(it.anomaly), opacity: 0.9 }, width: (!isNaN(it.anomaly) && it.anomaly >= 0.7) ? 2.5 : 1.4, dashes: true, title: `${it.type}${isNaN(it.anomaly) ? '' : ' — anomaly ' + it.anomaly.toFixed(2)}`, smooth: diagonal ? { enabled: true, type: 'curvedCW', roundness: 0.2 } : smooth });
+        }));
+        // leaf groups: collapse >=2 into a badge (expandable); render a single leaf directly
+        this._pgAggMeta = new Map();
+        m.leafGroups.forEach((groups, parent) => {
+            ['file', 'net', 'dns'].forEach(type => {
+                const members = (groups[type] || []).filter(x => passT(x.anomaly));
+                if (!members.length) return;
+                const c = this._pgTypeColor(type);
+                const addLeaf = (x, from) => {
+                    colorById.set(x.id, c);
+                    matchText.set(x.id, String(x.label || '').toLowerCase());
+                    link(from, x.id);
+                    nodes.add({ id: x.id, label: this._pgShort(x.label), shape: shapeOf(type), size: 14, color: { background: c, border: c }, font, title: `${type}: ${x.label}\nclick to view source log` });
+                    edges.add({ from, to: x.id, arrows: { to: { enabled: true, scaleFactor: 0.5 } }, color: { color: this._pgAnomalyColor(x.anomaly), opacity: 0.85 }, width: (!isNaN(x.anomaly) && x.anomaly >= 0.7) ? 2.2 : 1.1, smooth });
+                };
+                if (members.length < 2) { addLeaf(members[0], parent); return; }
+                const key = 'agg:' + parent + ':' + type;
+                const maxA = members.reduce((mx, x) => Math.max(mx, isNaN(x.anomaly) ? 0 : x.anomaly), 0);
+                const expanded = this._pgExpanded.has(key);
+                colorById.set(key, c);
+                matchText.set(key, (this._pgLeafNoun(type) + ' ' + type).toLowerCase());
+                link(parent, key);
+                nodes.add({ id: key, label: `${expanded ? '▾' : '▸'} ${this._pgLeafNoun(type)} (${members.length})`, shape: 'box', size: 15, color: { background: c, border: cv('--graph-label-stroke') || c }, borderWidth: 2, font: { ...font, size: 12 }, title: `${members.length} ${this._pgLeafNoun(type)} — click to ${expanded ? 'collapse' : 'expand'}` });
+                edges.add({ from: parent, to: key, arrows: { to: { enabled: true, scaleFactor: 0.6 } }, color: { color: this._pgAnomalyColor(maxA), opacity: 0.9 }, width: maxA >= 0.7 ? 2.4 : 1.3, dashes: [2, 3], title: `${members.length} ${this._pgLeafNoun(type)}`, smooth });
+                this._pgAggMeta.set(key, { members });
+                if (expanded) members.forEach(x => addLeaf(x, key));
             });
         });
 
-        rows.forEach(r => {
-            if (!r.parent || !r.child) return;
-            const score = parseFloat(r.anomaly_score);
-            const et = r.event_type || '';
-            const color = isNaN(score) ? '#6b7280' : (score >= 0.9 ? '#e5484d' : (score >= 0.7 ? '#f5a623' : '#6b7280'));
-            edges.add({
-                from: r.parent, to: r.child,
-                arrows: { to: { enabled: true, scaleFactor: 0.6, type: 'arrow' } },
-                color: { color, opacity: 0.9 },
-                width: (!isNaN(score) && score >= 0.7) ? 2.5 : 1.2,
-                dashes: (et === 'remote_thread' || et === 'process_access'),
-                title: `${et}${isNaN(score) ? '' : ' — anomaly ' + score.toFixed(2)}`,
-                smooth: { enabled: true, type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 },
-            });
-        });
+        // Diagonal layout: compute tidy-tree positions ourselves, rotate onto the timeline
+        // axis, and hand vis fixed coordinates (no hierarchical layout).
+        let layoutOpt;
+        if (diagonal) {
+            const roots = m.roots.length ? m.roots : Array.from(m.procSet);
+            const pos = this._pgDiagonalPositions(roots, childrenLayout);
+            const ups = [];
+            pos.forEach((p, id) => ups.push({ id, x: Math.round(p.x), y: Math.round(p.y) }));
+            nodes.update(ups);
+            layoutOpt = { hierarchical: false, improvedLayout: false };
+        } else {
+            layoutOpt = { hierarchical: { direction: 'UD', sortMethod: 'directed', levelSeparation: 170, nodeSpacing: 140, treeSpacing: 200 } };
+        }
 
-        // Size to the viewport (mirrors renderGraph) so the container has a real height even
-        // when it was previously collapsed inside a hidden stage.
         networkDiv.style.height = this.fitGraphHeight(networkDiv, nodes.length, 30) + 'px';
-
+        // Preserve zoom/pan only across an aggregate expand/collapse (same layout); a fresh
+        // render or a layout switch re-fits.
+        const preserve = (this._pgKeepView && this.currentChart) ? { scale: this.currentChart.getScale(), pos: this.currentChart.getViewPosition() } : null;
+        this._pgKeepView = false;
+        if (this.currentChart) { this.currentChart.destroy(); this.currentChart = null; }
         this.currentChart = new vis.Network(networkDiv, { nodes, edges }, {
-            layout: { hierarchical: { direction: 'UD', sortMethod: 'directed', levelSeparation: 100, nodeSpacing: 150, treeSpacing: 200 } },
+            layout: layoutOpt,
             physics: { enabled: false },
             interaction: { hover: true, zoomView: true, dragView: true, dragNodes: true, zoomSpeed: 1.0 },
         });
+        this._pgAddMinimap(networkDiv, colorById);
+        this._pgNodes = nodes; this._pgBaseColor = colorById; this._pgMatch = matchText;
+        if (this._pgSearch) this._pgApplySearch();
 
-        // Clicking a node opens its originating log in the standard detail drawer (over the
-        // graph), using the exact same path as a table row: hand LogDetail the log_id +
-        // timestamp + fractal_id (+ shard_num) carried on the edge and let it lazy-load the
-        // fields via /logs/fields. No bespoke fetch -- identical to normal search results.
         this.currentChart.on('selectNode', (params) => {
             const id = params.nodes && params.nodes[0];
             if (!id) return;
-            const info = logInfoById.get(id);
-            if (!info || !info.log_id || !window.LogDetail) return;
-            const detailData = {
-                log_id: info.log_id,
-                timestamp: info.timestamp,
-                fractal_id: info.fractal_id,
-                _shard_num: info._shard_num,
-            };
-            LogDetail.setContext([detailData], 0, false, 'search');
-            LogDetail.show(detailData, false, 'search');
+            if (this._pgAggMeta.has(id)) {
+                if (this._pgExpanded.has(id)) this._pgExpanded.delete(id); else this._pgExpanded.add(id);
+                this._pgKeepView = true;
+                this._pgRenderGraph(networkDiv);
+                return;
+            }
+            this._pgOpenLog(m.logInfoById.get(id));
         });
+
+        if (preserve) {
+            // Toggling a group: keep the user's zoom/pan instead of snapping.
+            setTimeout(() => { if (this.currentChart) this.currentChart.moveTo({ scale: preserve.scale, position: preserve.pos }); }, 0);
+        } else {
+            setTimeout(() => {
+                if (!this.currentChart) return;
+                if (nodes.length < 10) this.currentChart.moveTo({ position: { x: 0, y: 0 }, scale: 0.85, animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+                else this.currentChart.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' }, padding: 40 });
+            }, 150);
+        }
+    },
+
+    // Diagonal "timeline tree" positions -- the CrowdStrike/Elastic construction: a
+    // depth x DFS-preorder grid (NOT a centered tidy-tree). x = depth (deeper -> right),
+    // y = traversal row (later -> down). A linear chain lands on a straight diagonal because
+    // every step is +1 depth and +1 row; branches fan down-right off the backbone. Edges are
+    // drawn straight, so they all run in the same down-right direction like the references.
+    _pgDiagonalPositions(roots, childrenOf) {
+        const X_GAP = 210, Y_GAP = 120; // slope ~= atan(120/210) ~= 30deg for the main chain
+        const pos = new Map();
+        let row = 0;
+        const seen = new Set();
+        const assign = (id, depth) => {
+            if (seen.has(id)) return; // cycle guard
+            seen.add(id);
+            pos.set(id, { x: depth * X_GAP, y: row * Y_GAP });
+            row += 1;
+            (childrenOf.get(id) || []).forEach(k => assign(k, depth + 1));
+        };
+        roots.forEach(r => assign(r, 0));
+        return pos;
+    },
+
+    _pgAddMinimap(networkDiv, colorById) {
+        const cv = ThemeManager.getCSSVar;
+        const neutralColor = this._pgTypeColor('agg');
+        const accentColor = cv('--accent-primary') || '#8b7cc8';
+        let minimap = networkDiv.querySelector('.graph-minimap');
+        if (minimap) minimap.remove();
+        minimap = document.createElement('canvas');
+        minimap.className = 'graph-minimap';
+        minimap.width = 240; minimap.height = 160;
+        networkDiv.appendChild(minimap);
+        const mmCtx = minimap.getContext('2d');
+        const drawMinimap = () => {
+            if (!this.currentChart || !minimap.isConnected) return;
+            const positions = this.currentChart.getPositions();
+            const ids = Object.keys(positions);
+            const w = minimap.width, h = minimap.height;
+            mmCtx.clearRect(0, 0, w, h);
+            mmCtx.fillStyle = cv('--bg-secondary') || '#111';
+            mmCtx.fillRect(0, 0, w, h);
+            if (ids.length === 0) return;
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            ids.forEach(id => { const p = positions[id]; if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; });
+            const pad = 14;
+            const spanX = Math.max(1, maxX - minX), spanY = Math.max(1, maxY - minY);
+            const scale = Math.min((w - 2 * pad) / spanX, (h - 2 * pad) / spanY);
+            const offX = (w - spanX * scale) / 2, offY = (h - spanY * scale) / 2;
+            const toMM = (x, y) => ({ x: offX + (x - minX) * scale, y: offY + (y - minY) * scale });
+            ids.forEach(id => {
+                const p = positions[id]; const mm = toMM(p.x, p.y);
+                mmCtx.fillStyle = colorById.get(id) || neutralColor;
+                mmCtx.beginPath(); mmCtx.arc(mm.x, mm.y, 2, 0, Math.PI * 2); mmCtx.fill();
+            });
+            const tl = this.currentChart.DOMtoCanvas({ x: 0, y: 0 });
+            const br = this.currentChart.DOMtoCanvas({ x: networkDiv.clientWidth, y: networkDiv.clientHeight });
+            const a = toMM(tl.x, tl.y), b = toMM(br.x, br.y);
+            mmCtx.strokeStyle = accentColor; mmCtx.lineWidth = 1.5;
+            mmCtx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+            minimap._map = { minX, minY, scale, offX, offY };
+        };
+        this.currentChart.on('afterDrawing', () => drawMinimap());
+        const mmNavigate = (ev) => {
+            const map = minimap._map; if (!map) return;
+            const rect = minimap.getBoundingClientRect();
+            const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+            this.currentChart.moveTo({ position: { x: map.minX + (mx - map.offX) / map.scale, y: map.minY + (my - map.offY) / map.scale }, animation: { duration: 150 } });
+        };
+        let mmDragging = false;
+        minimap.addEventListener('mousedown', (e) => { mmDragging = true; mmNavigate(e); e.preventDefault(); });
+        if (this._pgMmMove) window.removeEventListener('mousemove', this._pgMmMove);
+        if (this._pgMmUp) window.removeEventListener('mouseup', this._pgMmUp);
+        this._pgMmMove = (e) => { if (mmDragging) mmNavigate(e); };
+        this._pgMmUp = () => { mmDragging = false; };
+        window.addEventListener('mousemove', this._pgMmMove);
+        window.addEventListener('mouseup', this._pgMmUp);
+    },
+
+    // Live node search in the graph view: dim non-matches, accent the matches. No rebuild
+    // (mutates the existing DataSet) so zoom/pan and the current expansion state are kept.
+    _pgApplySearch() {
+        if (this._pgView === 'tree' || !this._pgNodes) return;
+        const term = (this._pgSearch || '').toLowerCase();
+        const accent = ThemeManager.getCSSVar('--accent-primary') || '#9c6ade';
+        const ups = [];
+        this._pgNodes.forEach(n => {
+            const base = (this._pgBaseColor && this._pgBaseColor.get(n.id)) || '#6b7280';
+            const hit = !term || ((this._pgMatch.get(n.id) || '').includes(term));
+            ups.push({ id: n.id, opacity: hit ? 1 : 0.13, color: { background: base, border: (term && hit) ? accent : base } });
+        });
+        this._pgNodes.update(ups);
+    },
+
+    // ---- Tree view: CrowdStrike-style indented process tree ----
+    // Elbow guide connectors on the left, process-name rows with per-type activity-count
+    // badges (children / files / connections / domains), an anomaly severity pill, and a
+    // chevron to fold subtrees. Clicking a leaf badge drills its artifacts inline.
+    _pgRenderTree(container) {
+        const m = this._pgModel;
+        if (!this._pgTreeCollapsed) this._pgTreeCollapsed = new Set(); // guids folded
+        if (!this._pgLeafOpen) this._pgLeafOpen = new Set();           // "guid:type" drilled-in
+        const esc = Utils.escapeHtml;
+        const S = (v) => esc(this._pgShort(v));
+        const ICON = {
+            proc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12M18 9a3 3 0 0 0-3 3H9m9-3a3 3 0 0 1 0 6"/><circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="4" r="1.5"/><circle cx="20" cy="9" r="1.5"/></svg>',
+            file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
+            net: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11a4 4 0 0 1 0 8H9m0 0 3-3m-3 3 3 3"/></svg>',
+            dns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18"/></svg>',
+            inject: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h11m0 0-4-4m4 4-4 4"/><path d="M19 4v16"/></svg>',
+            gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9h5M8 13h8"/></svg>',
+        };
+        const rows = [];
+        const term = (this._pgSearch || '').toLowerCase();
+        const min = this._pgMinAnomaly || 0;
+        const passT = (a) => isNaN(a) || a >= min;
+        const fGroups = (guid) => { const g = m.leafGroups.get(guid) || { file: [], net: [], dns: [] }; return { file: g.file.filter(x => passT(x.anomaly)), net: g.net.filter(x => passT(x.anomaly)), dns: g.dns.filter(x => passT(x.anomaly)) }; };
+        const fInter = (guid) => (m.interactions.get(guid) || []).filter(it => passT(it.anomaly));
+        const mLeaf = (x) => !term || String(x.label || '').toLowerCase().includes(term);
+        const mInter = (it) => !term || String(it.label || it.target).toLowerCase().includes(term);
+        const mNode = (guid) => !term || String(m.procLabel.get(guid) || guid).toLowerCase().includes(term);
+        const subMatch = new Map();
+        const computeMatch = (guid, path) => {
+            if (subMatch.has(guid)) return subMatch.get(guid);
+            if (path.has(guid)) return false;
+            path.add(guid);
+            const g = fGroups(guid);
+            let hit = mNode(guid) || g.file.some(mLeaf) || g.net.some(mLeaf) || g.dns.some(mLeaf) || fInter(guid).some(mInter);
+            (m.spawnKids.get(guid) || []).forEach(k => { if (computeMatch(k, path)) hit = true; });
+            path.delete(guid);
+            subMatch.set(guid, hit);
+            return hit;
+        };
+        const guidesHtml = (anc, isLast) => {
+            let h = '';
+            for (let i = 0; i < anc.length; i++) {
+                if (i === anc.length - 1) h += `<span class="pg-g pg-g-elbow${isLast ? ' pg-g-last' : ''}"></span>`;
+                else h += `<span class="pg-g${anc[i] ? ' pg-g-v' : ''}"></span>`;
+            }
+            return h;
+        };
+        const anomalyPill = (a) => {
+            if (isNaN(a)) return '<span class="pg-anom-spacer"></span>';
+            const cls = a >= 0.9 ? 'high' : a >= 0.7 ? 'med' : 'low';
+            return `<span class="pg-anom pg-anom-${cls}" title="anomaly ${a.toFixed(2)}">${a.toFixed(2)}</span>`;
+        };
+        const hl = (text) => {
+            const s = this._pgShort(text);
+            if (!term) return esc(s);
+            const j = s.toLowerCase().indexOf(term);
+            if (j < 0) return esc(s);
+            return esc(s.slice(0, j)) + '<mark class="pg-hl">' + esc(s.slice(j, j + term.length)) + '</mark>' + esc(s.slice(j + term.length));
+        };
+        const badge = (type, count, guid, drill) => {
+            const zero = count === 0;
+            const on = drill && this._pgLeafOpen.has(guid + ':' + type);
+            const attr = (drill && count > 0) ? ` data-drill="${esc(guid)}" data-type="${type}"` : '';
+            const noun = type === 'proc' ? 'child process' : type === 'file' ? 'file' : type === 'net' ? 'connection' : 'domain';
+            return `<span class="pg-badge pg-badge-${type}${zero ? ' pg-zero' : ''}${on ? ' pg-on' : ''}"${attr} title="${count} ${noun}${count === 1 ? '' : 's'}${drill && count > 0 ? ' — click to expand' : ''}">${ICON[type]}<b>${count}</b></span>`;
+        };
+        const leafChildRow = (anc, isLast, type, x) => {
+            const dl = x.info ? ` data-log='${esc(JSON.stringify(x.info))}'` : '';
+            rows.push(`<div class="pg-row pg-leaf"${dl}>${guidesHtml(anc, isLast)}<span class="pg-icon pg-icon-${type}">${ICON[type]}</span><span class="pg-name" title="${esc(x.label || '')}">${hl(x.label)}</span>${anomalyPill(x.anomaly)}</div>`);
+        };
+        const seen = new Set();
+        const walk = (guid, anc, isLast) => {
+            const cyc = seen.has(guid);
+            const groups = fGroups(guid);          // anomaly-threshold applied
+            const interAll = fInter(guid);
+            const kidsAll = m.spawnKids.get(guid) || [];
+            const collapsed = !term && this._pgTreeCollapsed.has(guid); // search auto-expands
+            const leafTotal = groups.file.length + groups.net.length + groups.dns.length;
+            const childCount = kidsAll.length + interAll.length;
+            const hasKids = !cyc && (childCount > 0 || leafTotal > 0);
+            const info = m.logInfoById.get(guid);
+            const dl = info ? ` data-log='${esc(JSON.stringify(info))}'` : '';
+            const chev = hasKids ? `<button class="pg-chev${collapsed ? ' pg-collapsed' : ''}" data-guid="${esc(guid)}" title="${collapsed ? 'Expand' : 'Collapse'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>` : '<span class="pg-chev pg-chev-none"></span>';
+            const badges = `<span class="pg-badges">${badge('proc', childCount, guid, false)}${badge('file', groups.file.length, guid, true)}${badge('net', groups.net.length, guid, true)}${badge('dns', groups.dns.length, guid, true)}</span>`;
+            rows.push(`<div class="pg-row pg-proc${cyc ? ' pg-cycle' : ''}"${dl}>${guidesHtml(anc, isLast)}${chev}<span class="pg-icon pg-icon-proc">${ICON.gear}</span><span class="pg-name" title="${esc(m.procLabel.get(guid) || guid)}">${hl(m.procLabel.get(guid) || guid)}${cyc ? ' <em class="pg-muted">(cycle)</em>' : ''}</span>${badges}${anomalyPill(m.anomalyByNode.get(guid))}</div>`);
+            if (cyc || collapsed) return;
+            seen.add(guid);
+            // rendered children: interactions, drilled/matching artifact leaves, child processes
+            const interactions = term ? interAll.filter(mInter) : interAll;
+            const openTypes = term
+                ? ['file', 'net', 'dns'].filter(t => groups[t].some(mLeaf))
+                : ['file', 'net', 'dns'].filter(t => this._pgLeafOpen.has(guid + ':' + t) && groups[t].length);
+            const leafItems = [];
+            openTypes.forEach(t => (term ? groups[t].filter(mLeaf) : groups[t]).forEach(x => leafItems.push({ t, x })));
+            const kids = term ? kidsAll.filter(k => computeMatch(k, new Set())) : kidsAll;
+            const childAnc = anc.slice(); if (childAnc.length) childAnc[childAnc.length - 1] = !isLast;
+            const total = interactions.length + leafItems.length + kids.length;
+            let idx = 0;
+            interactions.forEach(it => {
+                const dl2 = it.info ? ` data-log='${esc(JSON.stringify(it.info))}'` : '';
+                rows.push(`<div class="pg-row pg-leaf pg-inject"${dl2}>${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-inject">${ICON.inject}</span><span class="pg-name">${hl(it.label || it.target)}</span><span class="pg-tag">${esc(it.type)}</span>${anomalyPill(it.anomaly)}</div>`);
+            });
+            leafItems.forEach(({ t, x }) => leafChildRow(childAnc.concat([false]), ++idx === total, t, x));
+            kids.forEach(k => walk(k, childAnc.concat([false]), ++idx === total));
+            seen.delete(guid);
+        };
+        const rootsAll = m.roots.length ? m.roots : Array.from(m.procSet);
+        const roots = term ? rootsAll.filter(r => computeMatch(r, new Set())) : rootsAll;
+        roots.forEach((r, i) => walk(r, [], i === roots.length - 1));
+
+        container.innerHTML = `<div class="pg-tree-scroll" role="tree">${rows.join('') || '<div class="pg-empty">No processes in this graph.</div>'}</div>`;
+        container.querySelectorAll('.pg-chev[data-guid]').forEach(btn => btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const g = btn.dataset.guid;
+            if (this._pgTreeCollapsed.has(g)) this._pgTreeCollapsed.delete(g); else this._pgTreeCollapsed.add(g);
+            this._pgRenderTree(container);
+        }));
+        container.querySelectorAll('.pg-badge[data-drill]').forEach(b => b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const key = b.dataset.drill + ':' + b.dataset.type;
+            if (this._pgLeafOpen.has(key)) this._pgLeafOpen.delete(key); else this._pgLeafOpen.add(key);
+            this._pgRenderTree(container);
+        }));
+        let selected = null;
+        container.querySelectorAll('.pg-row[data-log]').forEach(row => row.addEventListener('click', () => {
+            if (selected) selected.classList.remove('pg-selected');
+            row.classList.add('pg-selected'); selected = row;
+            try { this._pgOpenLog(JSON.parse(row.dataset.log)); } catch (e) { /* ignore */ }
+        }));
     },
 
     // mesh() renders an undirected, weighted, bidirectional network (Arkime-style
@@ -3893,23 +4339,11 @@ const QueryExecutor = {
 
             // Set time range
             if (window.TimePicker) {
-                const newState = { type: timeRangeValue };
-                if (timeRangeValue === 'custom' && customStart && customEnd) {
-                    newState.customStart = customStart;
-                    newState.customEnd = customEnd;
-                    const absStart = document.getElementById('tpAbsStart');
-                    const absEnd = document.getElementById('tpAbsEnd');
-                    if (absStart) absStart.value = TimePicker._toDatetimeLocal(customStart);
-                    if (absEnd) absEnd.value = TimePicker._toDatetimeLocal(customEnd);
-                } else if (timeRangeValue === 'relative' && relativeN) {
-                    newState.relativeN = parseInt(relativeN, 10);
-                    newState.relativeUnit = relativeUnit || 'hours';
-                    const nEl = document.getElementById('tpRelativeN');
-                    const unitEl = document.getElementById('tpRelativeUnit');
-                    if (nEl) nEl.value = newState.relativeN;
-                    if (unitEl) unitEl.value = newState.relativeUnit;
-                }
-                TimePicker.setState(newState, true);
+                TimePicker.applyState({
+                    type: timeRangeValue,
+                    customStart, customEnd,
+                    relativeN, relativeUnit
+                }, true);
             }
 
             // Trigger syntax highlighting if available

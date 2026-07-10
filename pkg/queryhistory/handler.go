@@ -35,17 +35,19 @@ type Handler struct {
 }
 
 type QueryHistory struct {
-	ID          string    `json:"id"`
-	QueryText   string    `json:"query_text"`
-	TimeRange   string    `json:"time_range,omitempty"`
-	CustomStart string    `json:"custom_start,omitempty"`
-	CustomEnd   string    `json:"custom_end,omitempty"`
-	ResultCount *int64    `json:"result_count,omitempty"`
-	DurationMs  *int64    `json:"duration_ms,omitempty"`
-	Status      string    `json:"status,omitempty"`
-	RunCount    int64     `json:"run_count"`
-	FirstRunAt  time.Time `json:"first_run_at"`
-	LastRunAt   time.Time `json:"last_run_at"`
+	ID           string    `json:"id"`
+	QueryText    string    `json:"query_text"`
+	TimeRange    string    `json:"time_range,omitempty"`
+	CustomStart  string    `json:"custom_start,omitempty"`
+	CustomEnd    string    `json:"custom_end,omitempty"`
+	RelativeN    *int64    `json:"relative_n,omitempty"`
+	RelativeUnit string    `json:"relative_unit,omitempty"`
+	ResultCount  *int64    `json:"result_count,omitempty"`
+	DurationMs   *int64    `json:"duration_ms,omitempty"`
+	Status       string    `json:"status,omitempty"`
+	RunCount     int64     `json:"run_count"`
+	FirstRunAt   time.Time `json:"first_run_at"`
+	LastRunAt    time.Time `json:"last_run_at"`
 }
 
 type APIResponse struct {
@@ -156,6 +158,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	fractalIDPtr, prismIDPtr := scopeArgs(fractalID, prismID)
 
 	query := `SELECT id, query_text, COALESCE(time_range, ''), custom_start, custom_end,
+			relative_n, COALESCE(relative_unit, ''),
 			result_count, duration_ms, COALESCE(status, ''), run_count, first_run_at, last_run_at
 		FROM query_history
 		WHERE username = $1 AND COALESCE(fractal_id, prism_id) = COALESCE($2::uuid, $3::uuid)`
@@ -180,10 +183,12 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 			qh          QueryHistory
 			customStart sql.NullTime
 			customEnd   sql.NullTime
+			relativeN   sql.NullInt64
 			resultCount sql.NullInt64
 			durationMs  sql.NullInt64
 		)
 		if err := rows.Scan(&qh.ID, &qh.QueryText, &qh.TimeRange, &customStart, &customEnd,
+			&relativeN, &qh.RelativeUnit,
 			&resultCount, &durationMs, &qh.Status, &qh.RunCount, &qh.FirstRunAt, &qh.LastRunAt); err != nil {
 			log.Printf("[QueryHistory] Failed to scan row: %v", err)
 			h.respondError(w, http.StatusInternalServerError, "Failed to load query history")
@@ -194,6 +199,9 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		}
 		if customEnd.Valid {
 			qh.CustomEnd = customEnd.Time.UTC().Format(time.RFC3339)
+		}
+		if relativeN.Valid {
+			qh.RelativeN = &relativeN.Int64
 		}
 		if resultCount.Valid {
 			qh.ResultCount = &resultCount.Int64
@@ -215,13 +223,15 @@ func (h *Handler) HandleRecord(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		QueryText   string `json:"query_text"`
-		TimeRange   string `json:"time_range"`
-		CustomStart string `json:"custom_start"`
-		CustomEnd   string `json:"custom_end"`
-		ResultCount *int64 `json:"result_count"`
-		DurationMs  *int64 `json:"duration_ms"`
-		Status      string `json:"status"`
+		QueryText    string `json:"query_text"`
+		TimeRange    string `json:"time_range"`
+		CustomStart  string `json:"custom_start"`
+		CustomEnd    string `json:"custom_end"`
+		RelativeN    *int64 `json:"relative_n"`
+		RelativeUnit string `json:"relative_unit"`
+		ResultCount  *int64 `json:"result_count"`
+		DurationMs   *int64 `json:"duration_ms"`
+		Status       string `json:"status"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
@@ -253,22 +263,24 @@ func (h *Handler) HandleRecord(w http.ResponseWriter, r *http.Request) {
 
 	upsert := `
 		INSERT INTO query_history
-			(username, query_text, time_range, custom_start, custom_end, result_count, duration_ms, status, fractal_id, prism_id)
-		VALUES ($1, $2, NULLIF($3,''), $4, $5, $6, $7, NULLIF($8,''), $9, $10)
+			(username, query_text, time_range, custom_start, custom_end, result_count, duration_ms, status, fractal_id, prism_id, relative_n, relative_unit)
+		VALUES ($1, $2, NULLIF($3,''), $4, $5, $6, $7, NULLIF($8,''), $9, $10, $11, NULLIF($12,''))
 		ON CONFLICT (username, md5(query_text), COALESCE(fractal_id, prism_id))
 		DO UPDATE SET
-			run_count    = query_history.run_count + 1,
-			last_run_at  = NOW(),
-			time_range   = EXCLUDED.time_range,
-			custom_start = EXCLUDED.custom_start,
-			custom_end   = EXCLUDED.custom_end,
-			result_count = EXCLUDED.result_count,
-			duration_ms  = EXCLUDED.duration_ms,
-			status       = EXCLUDED.status`
+			run_count     = query_history.run_count + 1,
+			last_run_at   = NOW(),
+			time_range    = EXCLUDED.time_range,
+			custom_start  = EXCLUDED.custom_start,
+			custom_end    = EXCLUDED.custom_end,
+			relative_n    = EXCLUDED.relative_n,
+			relative_unit = EXCLUDED.relative_unit,
+			result_count  = EXCLUDED.result_count,
+			duration_ms   = EXCLUDED.duration_ms,
+			status        = EXCLUDED.status`
 
 	_, err = h.pg.Exec(r.Context(), upsert,
 		username, req.QueryText, req.TimeRange, parseTime(req.CustomStart), parseTime(req.CustomEnd),
-		req.ResultCount, req.DurationMs, req.Status, fractalIDPtr, prismIDPtr)
+		req.ResultCount, req.DurationMs, req.Status, fractalIDPtr, prismIDPtr, req.RelativeN, req.RelativeUnit)
 	if err != nil {
 		log.Printf("[QueryHistory] Failed to record: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to record query")

@@ -774,12 +774,17 @@ const Autocomplete = {
                     e.preventDefault(); e.stopImmediatePropagation(); this._move(1); break;
                 case 'ArrowUp':
                     e.preventDefault(); e.stopImmediatePropagation(); this._move(-1); break;
-                case 'Enter':
                 case 'Tab':
                     if (this._items.length) {
                         e.preventDefault(); e.stopImmediatePropagation();
                         this._accept(this._selected);
                     }
+                    break;
+                case 'Enter':
+                    // Close the menu but let Enter through to run the query.
+                    // Accepting a suggestion is Tab/->/click only, matching the
+                    // ghost-text behavior below.
+                    this._hideMenu();
                     break;
                 case 'Escape':
                     e.preventDefault(); e.stopImmediatePropagation(); this._hideMenu(); break;

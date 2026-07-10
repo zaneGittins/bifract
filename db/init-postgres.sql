@@ -1185,6 +1185,15 @@ ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS use_count    INTEGER NOT NULL
 -- so reopening it restores the values the author last ran it with.
 ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS variables    JSONB DEFAULT '[]';
 
+-- Persisted time range, applied when the query is run. time_range holds the
+-- picker token (preset like '24h', or 'relative'/'custom'/'all'); custom_start/
+-- custom_end hold an absolute span; relative_n/relative_unit hold a relative one.
+ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS time_range    VARCHAR(32);
+ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS custom_start  TIMESTAMP;
+ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS custom_end    TIMESTAMP;
+ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS relative_n    INTEGER;
+ALTER TABLE saved_queries ADD COLUMN IF NOT EXISTS relative_unit VARCHAR(16);
+
 -- Per-user favorites. A shared saved query cannot store one user's pin on the
 -- row itself, so favorites live in their own join table.
 CREATE TABLE IF NOT EXISTS saved_query_favorites (
@@ -1228,6 +1237,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_query_history_dedup
     ON query_history (username, md5(query_text), COALESCE(fractal_id, prism_id));
 CREATE INDEX IF NOT EXISTS idx_query_history_list
     ON query_history (username, COALESCE(fractal_id, prism_id), last_run_at DESC);
+
+-- Relative range components (n + unit), so a relative range like "last 3 hours"
+-- is fully restorable when re-running a history entry (time_range only stores
+-- the 'relative' token).
+ALTER TABLE query_history ADD COLUMN IF NOT EXISTS relative_n    INTEGER;
+ALTER TABLE query_history ADD COLUMN IF NOT EXISTS relative_unit VARCHAR(16);
 
 -- ============================
 -- Context Links System Tables

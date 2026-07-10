@@ -88,7 +88,7 @@ func (h *QueryHandler) runProvenanceGraph(ctx context.Context, p parser.Provenan
 	if len(guids) == 0 {
 		return []map[string]interface{}{}, nil
 	}
-	scoreSQL, err := parser.BuildProvenanceScoringSQL(guids, p.Threshold, opts)
+	scoreSQL, err := parser.BuildProvenanceScoringSQL(guids, p.Threshold, p.EdgeTypes, opts)
 	if err != nil {
 		return nil, fmt.Errorf("pgr: build scoring query: %w", err)
 	}
