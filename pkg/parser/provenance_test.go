@@ -20,18 +20,16 @@ func TestAbstractExprMatchesMVs(t *testing.T) {
 	type use struct{ col, kind string }
 	all := []use{
 		{"fields.parent_image::String", AbstractPath}, // spawn src
-		{"fields.image::String", AbstractPath},        // spawn target / file+net+dns src
+		{"fields.image::String", AbstractPath},        // spawn target / file+net+dns src / p2p actor src
 		{"fields.target_file::String", AbstractPath},  // file target
 		{"fields.dst_ip::String", AbstractIP},         // net target
-		{"fields.source_image::String", AbstractPath}, // remote_thread/process_access src
 		{"fields.target_image::String", AbstractPath}, // remote_thread/process_access target
 		{"fields.query::String", AbstractDomain},      // dns target
 	}
-	// migration 009 introduces/repairs these MVs (image src, file target, p2p images, dns query).
+	// migration 009 introduces/repairs these MVs (image src, file target, p2p target, dns query).
 	delta009 := []use{
 		{"fields.image::String", AbstractPath},
 		{"fields.target_file::String", AbstractPath},
-		{"fields.source_image::String", AbstractPath},
 		{"fields.target_image::String", AbstractPath},
 		{"fields.query::String", AbstractDomain},
 	}

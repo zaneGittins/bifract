@@ -315,25 +315,25 @@ GROUP BY fractal_id, src_image, event_type, target_norm, day;
 CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_rthread_mv TO proc_freq AS
 SELECT
     fractal_id,
-    lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.source_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
+    lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
     'remote_thread' AS event_type,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(timestamp) AS day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
-WHERE fields.bifract_category = 'remote_thread' AND fields.source_image::String != '' AND fields.target_image::String != ''
+WHERE fields.bifract_category = 'remote_thread' AND fields.image::String != '' AND fields.target_image::String != ''
 GROUP BY fractal_id, src_image, event_type, target_norm, day;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_pacc_mv TO proc_freq AS
 SELECT
     fractal_id,
-    lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.source_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
+    lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
     'process_access' AS event_type,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(timestamp) AS day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
-WHERE fields.bifract_category = 'process_access' AND fields.source_image::String != '' AND fields.target_image::String != ''
+WHERE fields.bifract_category = 'process_access' AND fields.image::String != '' AND fields.target_image::String != ''
 GROUP BY fractal_id, src_image, event_type, target_norm, day;

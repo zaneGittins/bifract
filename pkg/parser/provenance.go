@@ -171,14 +171,16 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, opts QueryOpti
 		abstractExpr("fields.query::String", AbstractDomain), aPath("fields.image::String"), logs, timeWin, frac(), inList)
 
 	// Process->process edges (injection / handle-access): source_process_guid in the tree,
-	// real target_process_guid node.
+	// real target_process_guid node. The actor's image is normalized to fields.image (same as
+	// spawn/file/net/dns src); only the victim keeps the target_image field.
 	p2pEdges := func(category, eventType string) string {
 		return fmt.Sprintf(
 			"SELECT fields.source_process_guid::String AS src_node, fields.target_process_guid::String AS dst_node, "+
 				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS event_time "+
 				"FROM %[3]s WHERE %[4]s%[5]s AND fields.source_process_guid::String IN (%[6]s) "+
-				"AND fields.bifract_category = '%[8]s' AND fields.source_image::String != '' AND fields.target_image::String != ''",
-			aPath("fields.source_image::String"), aPath("fields.target_image::String"), logs, timeWin, frac(), inList, eventType, category)
+				"AND fields.bifract_category = '%[8]s' AND fields.image::String != '' AND fields.target_image::String != '' "+
+				"AND fields.target_process_guid::String != ''",
+			aPath("fields.image::String"), aPath("fields.target_image::String"), logs, timeWin, frac(), inList, eventType, category)
 	}
 
 	edges := strings.Join([]string{
