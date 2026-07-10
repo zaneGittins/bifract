@@ -938,6 +938,19 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 			{
+				Name:        "pgraph",
+				Category:    "Visualization",
+				Description: "Renders a pgr() provenance graph: processes are boxes, files ellipses, network destinations diamonds, and DNS domains triangles. Edges are colored by anomaly_score (red = high, orange = elevated, muted = common) and injection/handle-access edges are dashed. Click any node to open its originating log. Reads pgr()'s fixed output columns, so it takes no field arguments -- only an optional limit=. Without pgraph(), pgr() returns the scored edge table (for export, an LLM, or further piping).",
+				Syntax:      `| pgr(...) | pgraph(limit=N)`,
+				Parameters: []Param{
+					{Name: "limit", Type: "number", Required: false, Description: "Maximum number of edges to render (default: 500)"},
+				},
+				Examples: []string{
+					`pgr(start="{GUID}") | pgraph()`,
+					`pgr(start="{GUID}", threshold=0.8) | pgraph(limit=300)`,
+				},
+			},
+			{
 				Name:        "ptg",
 				Category:    "Traversal",
 				Description: "Process Tree Graph: fast, MV-backed traversal of process lineage over the proc_lineage table (one row per process-create event). A drop-in replacement for dfs/bfs on process trees that does not OOM on large graphs or long timeframes, because each hop is a primary-key point lookup instead of a full scan of logs. Seed on a process_guid; direction selects descendants, ancestors, or both. Always returns process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, _depth, _path. Requires an EDR source normalized to bifract_category='process_creation'. Prune with a post-filter, e.g. `| _depth <= 3`. Pairs with graph() for visualization. NOTE: the tree is scoped ONLY by start=, the time range, and the fractal -- any filter placed before ptg() (e.g. computer_name=\"host\") is ignored. Set the query time range to cover the whole investigation window: proc_lineage is retained ~365 days, but ptg() only sees events within the selected time range, so a narrow range will silently omit older ancestors/descendants.",
@@ -951,6 +964,23 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 					`ptg(start="{GUID}") | graph(child=process_guid, parent=parent_guid, labels=image)`,
 					`ptg(start="{GUID}", direction=backward, depth=20)`,
 					`ptg(start="{GUID}", direction=forward) | table(process_guid, image, commandline, _depth)`,
+				},
+			},
+			{
+				Name:        "pgr",
+				Category:    "Traversal",
+				Description: "Process provenance Graph with NoDoze-style anomaly scoring. Builds the ptg() spawn tree from a start process_guid, then adds file-write, network, DNS, remote-thread, and process-access edges for every process in the tree and scores each edge by rarity against the proc_freq frequency baseline. anomaly_score is in [0,1]: 1.0 = never-before-seen behavior for that source, 0 = ubiquitous. Keeps the full spawn spine plus any non-spawn edge at or above threshold (default 0.7), so rare/suspicious activity surfaces while common noise is pruned. Returns parent, child, label, event_type, anomaly_score, log_id, event_time. Requires an EDR source normalized with bifract_category (process_creation, file_write, network_connect, dns_query, remote_thread, process_access). Same scoping as ptg(): scoped ONLY by start=, the time range, and the fractal -- any filter before pgr() is ignored, and a narrow time range silently omits older lineage. Yields a table by default (for export/LLM); pipe to pgraph() to visualize.",
+				Syntax:      `| pgr(start="<process_guid>", depth=N, direction=forward|backward|both, threshold=0.0-1.0)`,
+				Parameters: []Param{
+					{Name: "start", Type: "string", Required: true, Description: "process_guid of the seed node"},
+					{Name: "depth", Type: "number", Required: false, Description: "Maximum tree traversal depth (default: 10, max: 50)"},
+					{Name: "direction", Type: "string", Required: false, Description: "forward = descendants, backward = ancestors, both = both (default: both)"},
+					{Name: "threshold", Type: "number", Required: false, Description: "Prune non-spawn edges below this anomaly_score, 0.0-1.0 (default: 0.7)"},
+				},
+				Examples: []string{
+					`pgr(start="{GUID}")`,
+					`pgr(start="{GUID}", threshold=0.9) | pgraph()`,
+					`pgr(start="{GUID}", direction=forward, depth=20) | table(parent, child, event_type, anomaly_score)`,
 				},
 			},
 			{

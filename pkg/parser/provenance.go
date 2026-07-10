@@ -140,23 +140,25 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, opts QueryOpti
 
 	// Each edge SELECT yields: src_node, dst_node, label, event_type, fkey_src, fkey_tgt,
 	// log_id, event_time. log_id + event_time identify the originating log so a clicked graph
-	// node can fetch its source event via the fast timestamp-pruned lookup. Server TZ is UTC,
-	// so toString(timestamp) is a UTC wall-clock the frontend turns into RFC3339 with a Z.
+	// node can fetch its source event via the fast timestamp-pruned lookup. event_time is
+	// rendered in explicit UTC (toString(timestamp, 'UTC')) -- the timestamp column carries no
+	// timezone, so a bare toString would use the server TZ and break the round-trip on any
+	// non-UTC cluster. The frontend turns this UTC wall-clock into RFC3339 with a trailing Z.
 	spawnEdges := fmt.Sprintf(
 		"SELECT parent_guid AS src_node, process_guid AS dst_node, image AS label, 'spawn' AS event_type, "+
-			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp) AS event_time FROM %s FINAL WHERE process_guid IN (%s)%s",
+			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp, 'UTC') AS event_time FROM %s FINAL WHERE process_guid IN (%s)%s",
 		aPath("parent_image"), aPath("image"), procLineage, inList, frac())
 
 	fileEdges := fmt.Sprintf(
 		"SELECT fields.process_guid::String AS src_node, concat('file:', %[1]s) AS dst_node, "+
-			"fields.target_file::String AS label, 'file_write' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS event_time "+
+			"fields.target_file::String AS label, 'file_write' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp, 'UTC') AS event_time "+
 			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
 			"AND fields.bifract_category = 'file_write' AND fields.image::String != '' AND fields.target_file::String != ''",
 		aPath("fields.target_file::String"), aPath("fields.image::String"), logs, timeWin, frac(), inList)
 
 	netEdges := fmt.Sprintf(
 		"SELECT fields.process_guid::String AS src_node, concat('net:', %[1]s) AS dst_node, "+
-			"fields.dst_ip::String AS label, 'net_connect' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS event_time "+
+			"fields.dst_ip::String AS label, 'net_connect' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp, 'UTC') AS event_time "+
 			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
 			"AND fields.bifract_category = 'network_connect' AND fields.image::String != '' AND fields.dst_ip::String != ''",
 		aIP("fields.dst_ip::String"), aPath("fields.image::String"), logs, timeWin, frac(), inList)
@@ -165,7 +167,7 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, opts QueryOpti
 	// abstracted (lowercased, root-dot-stripped) query name.
 	dnsEdges := fmt.Sprintf(
 		"SELECT fields.process_guid::String AS src_node, concat('dns:', %[1]s) AS dst_node, "+
-			"fields.query::String AS label, 'dns_query' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS event_time "+
+			"fields.query::String AS label, 'dns_query' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp, 'UTC') AS event_time "+
 			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
 			"AND fields.bifract_category = 'dns_query' AND fields.image::String != '' AND fields.query::String != ''",
 		abstractExpr("fields.query::String", AbstractDomain), aPath("fields.image::String"), logs, timeWin, frac(), inList)
@@ -176,7 +178,7 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, opts QueryOpti
 	p2pEdges := func(category, eventType string) string {
 		return fmt.Sprintf(
 			"SELECT fields.source_process_guid::String AS src_node, fields.target_process_guid::String AS dst_node, "+
-				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS event_time "+
+				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp, 'UTC') AS event_time "+
 				"FROM %[3]s WHERE %[4]s%[5]s AND fields.source_process_guid::String IN (%[6]s) "+
 				"AND fields.bifract_category = '%[8]s' AND fields.image::String != '' AND fields.target_image::String != '' "+
 				"AND fields.target_process_guid::String != ''",

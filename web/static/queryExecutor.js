@@ -688,6 +688,7 @@ const QueryExecutor = {
 
         const outputTypeLabels = {
             piechart: 'Pie Chart', barchart: 'Bar Chart', graph: 'Graph', mesh: 'Mesh Network',
+            pgraph: 'Provenance Graph',
             singleval: 'Single Value', timechart: 'Time Chart', histogram: 'Histogram',
             heatmap: 'Heat Map', worldmap: 'World Map',
         };
@@ -2820,6 +2821,10 @@ const QueryExecutor = {
         const networkDiv = document.getElementById('networkGraph');
         if (!networkDiv) return;
         if (chartCanvas) chartCanvas.style.display = 'none';
+        // A prior graph()/mesh() render may have docked #networkGraph inside a .graph-stage
+        // that renderChart's shared setup then hides; re-show it so pgraph is never blank.
+        const stage = networkDiv.closest('.graph-stage');
+        if (stage) stage.style.display = 'flex';
         networkDiv.style.display = 'block';
         if (this.currentChart) { this.currentChart.destroy(); this.currentChart = null; }
 
@@ -2878,6 +2883,10 @@ const QueryExecutor = {
                 smooth: { enabled: true, type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 },
             });
         });
+
+        // Size to the viewport (mirrors renderGraph) so the container has a real height even
+        // when it was previously collapsed inside a hidden stage.
+        networkDiv.style.height = this.fitGraphHeight(networkDiv, nodes.length, 30) + 'px';
 
         this.currentChart = new vis.Network(networkDiv, { nodes, edges }, {
             layout: { hierarchical: { direction: 'UD', sortMethod: 'directed', levelSeparation: 100, nodeSpacing: 150, treeSpacing: 200 } },
