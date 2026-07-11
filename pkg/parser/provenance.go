@@ -19,10 +19,15 @@ const (
 	maxReconnectCandidateArtifacts = 500
 	// maxReconnectPeers caps total peer edges the reverse lookup returns.
 	maxReconnectPeers = 200
-	// reconnectHostPrevalenceMax is the net/dns rarity gate: an artifact touched by more
-	// than this many hosts is treated as common infrastructure (CDN, resolver, update
-	// server) and does NOT bridge trees.
+	// reconnectHostPrevalenceMax is the ABSOLUTE floor of the net/dns rarity gate: an artifact
+	// on at most this many hosts always qualifies (keeps small deployments working).
 	reconnectHostPrevalenceMax = 3
+	// reconnectHostFraction scales the gate with fleet size: an artifact also qualifies while
+	// it is on at most this fraction of all hosts. So a widespread-but-rare C2 (e.g. 9 of 200
+	// hosts) still bridges -- many hosts hitting the same rare IP is a STRONGER signal, not a
+	// reason to drop it -- while true ubiquitous infrastructure (CDNs, resolvers on most hosts)
+	// is still pruned. Consistent with the score's global-rarity term (1 - hosts/total).
+	reconnectHostFraction = "0.5"
 	// groupUniqArray cap on the proc_freq.hosts state -- MUST match the DDL (256) or CH
 	// errors code 43 on the merge.
 	procFreqHostsCap = 256
@@ -403,9 +408,17 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 	}
 	// Leading-WHERE fractal fragment for proc_freq (event_type filter always present).
 	freqFrac := ""
+	freqWhereClause := ""
 	if fractal != "" {
 		freqFrac = " AND " + fractal
+		freqWhereClause = " WHERE " + fractal
 	}
+
+	// Rarity gate ceiling (net/dns): an artifact bridges while it is on <= max(absolute floor,
+	// fraction * total_hosts) hosts. Scales with the fleet so a rare C2 on many hosts still
+	// reconnects; only near-ubiquitous infrastructure is pruned.
+	totalHosts := fmt.Sprintf("(SELECT length(groupUniqArrayMerge(%d)(hosts)) FROM %s%s)", procFreqHostsCap, procFreq, freqWhereClause)
+	hostGate := fmt.Sprintf("greatest(toUInt64(%d), toUInt64(%s * %s))", reconnectHostPrevalenceMax, reconnectHostFraction, totalHosts)
 
 	extIP := fmt.Sprintf(externalIPNegTmpl, "fields.dst_ip::String")
 
@@ -443,9 +456,9 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 				"FROM %[1]s WHERE %[2]s%[3]s AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'network_connect' "+
 				"AND fields.dst_ip::String != '' AND %[5]s LIMIT %[6]d) AS c WHERE ip IN ("+
 				"SELECT target_norm FROM %[7]s WHERE event_type = 'net_connect'%[8]s GROUP BY target_norm "+
-				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]d) GROUP BY ip",
+				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]s) GROUP BY ip",
 			logs, timeWin, fracAnd, inList, extIP, maxReconnectCandidateArtifacts,
-			procFreq, freqFrac, procFreqHostsCap, reconnectHostPrevalenceMax)
+			procFreq, freqFrac, procFreqHostsCap, hostGate)
 		peerScan := fmt.Sprintf(
 			"SELECT fields.process_guid::String AS peer_guid, fields.dst_ip::String AS ip, fields.image::String AS img, "+
 				"log_id, toString(timestamp) AS ts, fractal_id FROM %[1]s WHERE %[2]s%[3]s "+
@@ -467,9 +480,9 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 				"FROM %[2]s WHERE %[3]s%[4]s AND fields.process_guid::String IN (%[5]s) AND fields.bifract_category = 'dns_query' "+
 				"AND fields.query::String != '' LIMIT %[6]d) AS c WHERE q IN ("+
 				"SELECT target_norm FROM %[7]s WHERE event_type = 'dns_query'%[8]s GROUP BY target_norm "+
-				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]d) GROUP BY q",
+				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]s) GROUP BY q",
 			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, maxReconnectCandidateArtifacts,
-			procFreq, freqFrac, procFreqHostsCap, reconnectHostPrevalenceMax)
+			procFreq, freqFrac, procFreqHostsCap, hostGate)
 		peerScan := fmt.Sprintf(
 			"SELECT fields.process_guid::String AS peer_guid, %[1]s AS q, fields.image::String AS img, "+
 				"log_id, toString(timestamp) AS ts, fractal_id FROM %[2]s WHERE %[3]s%[4]s "+
