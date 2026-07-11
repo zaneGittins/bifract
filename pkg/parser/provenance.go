@@ -207,19 +207,19 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	// goes through the identical, proven detail-load path instead of a bespoke lookup.
 	spawnEdges := fmt.Sprintf(
 		"SELECT parent_guid AS src_node, process_guid AS dst_node, image AS label, 'spawn' AS event_type, "+
-			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id FROM %s FINAL WHERE process_guid IN (%s)%s",
+			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, computer_name AS host FROM %s FINAL WHERE process_guid IN (%s)%s",
 		aPath("parent_image"), aPath("image"), procLineage, inList, frac())
 
 	fileEdges := fmt.Sprintf(
 		"SELECT fields.process_guid::String AS src_node, concat('file:', %[1]s) AS dst_node, "+
-			"fields.target_file::String AS label, 'file_write' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id "+
+			"fields.target_file::String AS label, 'file_write' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host "+
 			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
 			"AND fields.bifract_category = 'file_write' AND fields.image::String != '' AND fields.target_file::String != ''",
 		aPath("fields.target_file::String"), aPath("fields.image::String"), logs, timeWin, frac(), inList)
 
 	netEdges := fmt.Sprintf(
 		"SELECT fields.process_guid::String AS src_node, concat('net:', %[1]s) AS dst_node, "+
-			"fields.dst_ip::String AS label, 'net_connect' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id "+
+			"fields.dst_ip::String AS label, 'net_connect' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host "+
 			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
 			"AND fields.bifract_category = 'network_connect' AND fields.image::String != '' AND fields.dst_ip::String != ''",
 		aIP("fields.dst_ip::String"), aPath("fields.image::String"), logs, timeWin, frac(), inList)
@@ -228,7 +228,7 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	// abstracted (lowercased, root-dot-stripped) query name.
 	dnsEdges := fmt.Sprintf(
 		"SELECT fields.process_guid::String AS src_node, concat('dns:', %[1]s) AS dst_node, "+
-			"fields.query::String AS label, 'dns_query' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id "+
+			"fields.query::String AS label, 'dns_query' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host "+
 			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
 			"AND fields.bifract_category = 'dns_query' AND fields.image::String != '' AND fields.query::String != ''",
 		abstractExpr("fields.query::String", AbstractDomain), aPath("fields.image::String"), logs, timeWin, frac(), inList)
@@ -239,7 +239,7 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	p2pEdges := func(category, eventType string) string {
 		return fmt.Sprintf(
 			"SELECT fields.source_process_guid::String AS src_node, fields.target_process_guid::String AS dst_node, "+
-				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id "+
+				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host "+
 				"FROM %[3]s WHERE %[4]s%[5]s AND fields.source_process_guid::String IN (%[6]s) "+
 				"AND fields.bifract_category = '%[8]s' AND fields.image::String != '' AND fields.target_image::String != '' "+
 				"AND fields.target_process_guid::String != ''",
@@ -294,8 +294,8 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	// lines can be enormous, so truncate to 300 chars in SQL -- never pull the full string.
 	b.WriteString(fmt.Sprintf("pm AS (SELECT fields.process_guid::String AS guid, any(substring(if(fields.commandline::String != '', fields.commandline::String, fields.command_line::String), 1, 300)) AS command_line, any(fields.user::String) AS proc_user FROM %[1]s WHERE %[2]s%[3]s AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'process_creation' GROUP BY guid) ",
 		logs, timeWin, frac(), inList))
-	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user FROM (")
-	b.WriteString("SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.log_id AS log_id, e.timestamp AS timestamp, e.fractal_id AS fractal_id, coalesce(pm.command_line, '') AS command_line, coalesce(pm.proc_user, '') AS proc_user, ")
+	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user, host FROM (")
+	b.WriteString("SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.log_id AS log_id, e.timestamp AS timestamp, e.fractal_id AS fractal_id, e.host AS host, coalesce(pm.command_line, '') AS command_line, coalesce(pm.proc_user, '') AS proc_user, ")
 	b.WriteString(fmt.Sprintf("multiIf(e.event_type = 'spawn', if(coalesce(ft.tot, 0) = 0, 1.0, round(1 - coalesce(fe.cnt, 0) / ft.tot, 4)), "+
 		"round(greatest(if(coalesce(ft.tot, 0) = 0, 1.0, 1 - coalesce(fe.cnt, 0) / ft.tot), if(%[1]s = 0, 0, 1 - coalesce(gf.hostct, 0) / %[1]s)), 4)) AS anomaly_score ", totalHosts))
 	b.WriteString(fmt.Sprintf("FROM (%s) AS e ", edges))
@@ -340,6 +340,7 @@ type ReconnectPeer struct {
 	PeerLogID   string  // source log of the peer's touch (detail lookup)
 	PeerTS      string  // peer log timestamp (string)
 	PeerFractal string  // peer log fractal_id
+	PeerHost    string  // peer computer_name (for cross-host link notation)
 }
 
 // reconnectEdgeType maps a reconnection recon_type onto the p.EdgeTypes gate key (the
@@ -357,6 +358,10 @@ var reconnectEdgeType = map[string]string{
 // only external destinations (where shared C2 infrastructure lives). Mirrors the private
 // ranges in ipAbstractTmpl so the two never disagree on what "internal" means.
 const externalIPNegTmpl = `NOT match(%[1]s, '^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|127\\.|169\\.254\\.|::1|fe80:|fc|fd)')`
+
+// ipv4Re is a quoted RE2 literal (for match()) that recognises a bare IPv4 address -- used to
+// pull IP-form endpoints out of dns_query query/query_results.
+const ipv4Re = `'^([0-9]{1,3}\\.){3}[0-9]{1,3}$'`
 
 // BuildReconnectionSQL is the cross-tree reverse lookup. Given the current subgraph's guids
 // it returns peer-candidate rows (schema: recon_type, peer_guid, object_id, label, anomaly,
@@ -420,8 +425,6 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 	totalHosts := fmt.Sprintf("(SELECT length(groupUniqArrayMerge(%d)(hosts)) FROM %s%s)", procFreqHostsCap, procFreq, freqWhereClause)
 	hostGate := fmt.Sprintf("greatest(toUInt64(%d), toUInt64(%s * %s))", reconnectHostPrevalenceMax, reconnectHostFraction, totalHosts)
 
-	extIP := fmt.Sprintf(externalIPNegTmpl, "fields.dst_ip::String")
-
 	// Common column order for every UNION branch:
 	// recon_type, peer_guid, src_guid, object_id, label, anomaly, peer_image, peer_log_id, peer_ts, peer_fractal
 	var parts []string
@@ -442,34 +445,45 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 		parts = append(parts, fmt.Sprintf(
 			"SELECT 'file' AS recon_type, pl.process_guid AS peer_guid, wp.writer AS src_guid, '' AS object_id, "+
 				"pl.image AS label, toFloat64(1.0) AS anomaly, pl.image AS peer_image, pl.log_id AS peer_log_id, "+
-				"toString(pl.timestamp) AS peer_ts, pl.fractal_id AS peer_fractal "+
+				"toString(pl.timestamp) AS peer_ts, pl.fractal_id AS peer_fractal, pl.computer_name AS peer_host "+
 				"FROM %[1]s AS pl FINAL INNER JOIN (%[2]s) AS wp ON lower(pl.image) = wp.p "+
 				"WHERE %[3]spl.process_guid NOT IN (%[4]s) LIMIT %[5]d",
 			procLineage, writtenPaths, plWhere, inList, maxReconnectPeers))
 	}
 
-	// net: two processes -> same rare external IP. src = a tree toucher of that IP, so the
-	// shared IP node converges (tree side + peer side) independent of pass-2 pruning.
+	// net (endpoint IP): two processes touch the same rare external IP, where "touch" means
+	// CONNECT to it (network_connect.dst_ip) OR RESOLVE it (dns_query: an IP-form query name,
+	// or any IP in the ';'-separated query_results). This bridges the DNS-resolve -> connect
+	// chain -- one process resolves a domain/IP, others connect to that IP -- which pure
+	// connect<->connect matching misses. src = a tree toucher of the IP, so the shared IP node
+	// converges (tree + peer) independent of pass-2 pruning.
 	if want("net") {
+		// endpointIPs(guidCond): (guid, ip, img, log_id, ts, fractal) for external IPv4 endpoints
+		// a process either connected to or resolved. guidCond is the process_guid predicate.
+		endpointIPs := func(guidCond string) string {
+			return fmt.Sprintf(
+				"SELECT guid, ip, img, log_id, ts, fractal, host FROM ("+
+					"SELECT fields.process_guid::String AS guid, fields.dst_ip::String AS ip, fields.image::String AS img, log_id, toString(timestamp) AS ts, fractal_id AS fractal, fields.computer_name::String AS host "+
+					"FROM %[1]s WHERE %[2]s%[3]s AND fields.bifract_category = 'network_connect' AND fields.process_guid::String %[4]s AND fields.dst_ip::String != '' "+
+					"UNION ALL "+
+					"SELECT fields.process_guid::String AS guid, ip, fields.image::String AS img, log_id, toString(timestamp) AS ts, fractal_id AS fractal, fields.computer_name::String AS host "+
+					"FROM %[1]s ARRAY JOIN arrayFilter(x -> x != '', arrayConcat(splitByChar(';', fields.query_results::String), array(fields.query::String))) AS ip "+
+					"WHERE %[2]s%[3]s AND fields.bifract_category = 'dns_query' AND fields.process_guid::String %[4]s"+
+					") WHERE match(ip, %[5]s) AND %[6]s",
+				logs, timeWin, fracAnd, guidCond, ipv4Re, fmt.Sprintf(externalIPNegTmpl, "ip"))
+		}
 		rareIP := fmt.Sprintf(
-			"SELECT ip, any(t) AS toucher FROM (SELECT DISTINCT fields.dst_ip::String AS ip, fields.process_guid::String AS t "+
-				"FROM %[1]s WHERE %[2]s%[3]s AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'network_connect' "+
-				"AND fields.dst_ip::String != '' AND %[5]s LIMIT %[6]d) AS c WHERE ip IN ("+
-				"SELECT target_norm FROM %[7]s WHERE event_type = 'net_connect'%[8]s GROUP BY target_norm "+
-				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]s) GROUP BY ip",
-			logs, timeWin, fracAnd, inList, extIP, maxReconnectCandidateArtifacts,
+			"SELECT ip, any(guid) AS toucher FROM (SELECT DISTINCT ip, guid FROM (%[1]s) LIMIT %[2]d) AS c WHERE ip IN ("+
+				"SELECT target_norm FROM %[3]s WHERE event_type = 'net_connect'%[4]s GROUP BY target_norm "+
+				"HAVING length(groupUniqArrayMerge(%[5]d)(hosts)) <= %[6]s) GROUP BY ip",
+			endpointIPs(fmt.Sprintf("IN (%s)", inList)), maxReconnectCandidateArtifacts,
 			procFreq, freqFrac, procFreqHostsCap, hostGate)
-		peerScan := fmt.Sprintf(
-			"SELECT fields.process_guid::String AS peer_guid, fields.dst_ip::String AS ip, fields.image::String AS img, "+
-				"log_id, toString(timestamp) AS ts, fractal_id FROM %[1]s WHERE %[2]s%[3]s "+
-				"AND fields.bifract_category = 'network_connect' AND fields.process_guid::String NOT IN (%[4]s) AND fields.dst_ip::String != ''",
-			logs, timeWin, fracAnd, inList)
 		parts = append(parts, fmt.Sprintf(
-			"SELECT 'net' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, concat('net:', %[1]s) AS object_id, "+
+			"SELECT 'net' AS recon_type, l.guid AS peer_guid, any(ri.toucher) AS src_guid, concat('net:', %[1]s) AS object_id, "+
 				"any(l.ip) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
-				"any(l.ts) AS peer_ts, any(l.fractal_id) AS peer_fractal "+
+				"any(l.ts) AS peer_ts, any(l.fractal) AS peer_fractal, any(l.host) AS peer_host "+
 				"FROM (%[2]s) AS l INNER JOIN (%[3]s) AS ri ON l.ip = ri.ip GROUP BY peer_guid, object_id LIMIT %[4]d",
-			abstractExpr("l.ip", AbstractIP), peerScan, rareIP, maxReconnectPeers))
+			abstractExpr("l.ip", AbstractIP), endpointIPs(fmt.Sprintf("NOT IN (%s)", inList)), rareIP, maxReconnectPeers))
 	}
 
 	// dns: two processes -> same rare domain. Same converging shape as net.
@@ -485,13 +499,13 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 			procFreq, freqFrac, procFreqHostsCap, hostGate)
 		peerScan := fmt.Sprintf(
 			"SELECT fields.process_guid::String AS peer_guid, %[1]s AS q, fields.image::String AS img, "+
-				"log_id, toString(timestamp) AS ts, fractal_id FROM %[2]s WHERE %[3]s%[4]s "+
+				"log_id, toString(timestamp) AS ts, fractal_id, fields.computer_name::String AS host FROM %[2]s WHERE %[3]s%[4]s "+
 				"AND fields.bifract_category = 'dns_query' AND fields.process_guid::String NOT IN (%[5]s) AND fields.query::String != ''",
 			aDom("fields.query::String"), logs, timeWin, fracAnd, inList)
 		parts = append(parts, fmt.Sprintf(
 			"SELECT 'dns' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, concat('dns:', l.q) AS object_id, "+
 				"any(l.q) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
-				"any(l.ts) AS peer_ts, any(l.fractal_id) AS peer_fractal "+
+				"any(l.ts) AS peer_ts, any(l.fractal_id) AS peer_fractal, any(l.host) AS peer_host "+
 				"FROM (%[1]s) AS l INNER JOIN (%[2]s) AS ri ON l.q = ri.q GROUP BY peer_guid, object_id LIMIT %[3]d",
 			peerScan, rareDom, maxReconnectPeers))
 	}
@@ -502,7 +516,7 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 		return fmt.Sprintf(
 			"SELECT '%[1]s' AS recon_type, fields.target_process_guid::String AS peer_guid, '' AS src_guid, '' AS object_id, "+
 				"any(fields.target_image::String) AS label, toFloat64(%[2]s) AS anomaly, any(fields.target_image::String) AS peer_image, "+
-				"'' AS peer_log_id, '' AS peer_ts, '' AS peer_fractal "+
+				"'' AS peer_log_id, '' AS peer_ts, '' AS peer_fractal, any(fields.computer_name::String) AS peer_host "+
 				"FROM %[3]s WHERE %[4]s%[5]s AND fields.bifract_category = '%[6]s' "+
 				"AND fields.source_process_guid::String IN (%[7]s) AND fields.target_process_guid::String != '' "+
 				"AND fields.target_process_guid::String NOT IN (%[7]s) GROUP BY peer_guid LIMIT %[8]d",
@@ -529,12 +543,12 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 //   - injection/access: none (pass-2 owns source->target); peer is expansion-only.
 // Edges are deduped by (parent, child, event_type). Every value is escaped.
 func AppendReconnectionEdges(pass2SQL string, peers []ReconnectPeer) string {
-	const cols = "parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user"
+	const cols = "parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user, host"
 	base := "SELECT " + cols + " FROM (" + pass2SQL + ")"
 
 	seen := map[string]bool{}
 	var lits []string
-	emit := func(parent, child, label, eventType string, anomaly float64, logID, ts, fractal string) {
+	emit := func(parent, child, label, eventType string, anomaly float64, logID, ts, fractal, host string) {
 		if parent == "" || child == "" {
 			return
 		}
@@ -545,19 +559,19 @@ func AppendReconnectionEdges(pass2SQL string, peers []ReconnectPeer) string {
 		seen[key] = true
 		lits = append(lits, fmt.Sprintf(
 			"SELECT '%s' AS parent, '%s' AS child, '%s' AS label, '%s' AS event_type, toFloat64(%s) AS anomaly_score, "+
-				"'%s' AS log_id, '%s' AS timestamp, '%s' AS fractal_id, '' AS command_line, '' AS proc_user",
+				"'%s' AS log_id, '%s' AS timestamp, '%s' AS fractal_id, '' AS command_line, '' AS proc_user, '%s' AS host",
 			escapeString(parent), escapeString(child), escapeString(label), escapeString(eventType),
-			strconv.FormatFloat(anomaly, 'f', 4, 64), escapeString(logID), escapeString(ts), escapeString(fractal)))
+			strconv.FormatFloat(anomaly, 'f', 4, 64), escapeString(logID), escapeString(ts), escapeString(fractal), escapeString(host)))
 	}
 
 	for _, pe := range peers {
 		et := "reconnect_" + pe.ReconType
 		switch {
 		case pe.ObjectID != "": // net/dns: converge both endpoints on the shared object node
-			emit(pe.SrcGUID, pe.ObjectID, pe.Label, et, pe.Anomaly, "", "", "")
-			emit(pe.PeerGUID, pe.ObjectID, pe.Label, et, pe.Anomaly, pe.PeerLogID, pe.PeerTS, pe.PeerFractal)
+			emit(pe.SrcGUID, pe.ObjectID, pe.Label, et, pe.Anomaly, "", "", "", "")
+			emit(pe.PeerGUID, pe.ObjectID, pe.Label, et, pe.Anomaly, pe.PeerLogID, pe.PeerTS, pe.PeerFractal, pe.PeerHost)
 		case pe.ReconType == "file" && pe.SrcGUID != "": // file: writer -> executor
-			emit(pe.SrcGUID, pe.PeerGUID, pe.Label, et, pe.Anomaly, pe.PeerLogID, pe.PeerTS, pe.PeerFractal)
+			emit(pe.SrcGUID, pe.PeerGUID, pe.Label, et, pe.Anomaly, pe.PeerLogID, pe.PeerTS, pe.PeerFractal, pe.PeerHost)
 		}
 		// injection/access: skip (pass-2 owns the source->target edge)
 	}

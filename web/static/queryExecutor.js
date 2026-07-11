@@ -2900,6 +2900,7 @@ const QueryExecutor = {
         const anomalyByNode = new Map(); // node id -> anomaly on its incoming edge
         const procMeta = new Map();      // guid -> {cmd, user} (command line + user, cmd truncated server-side)
         const procTime = new Map();      // guid -> epoch ms (process creation / first-seen time)
+        const procHost = new Map();      // guid -> computer_name (for cross-host reconnection notation)
         const isChild = new Set();       // process guids seen as a spawn child
         const procSet = new Set();
         const ensureProc = (g, lbl) => { procSet.add(g); if (lbl != null && lbl !== '' && !procLabel.get(g)) procLabel.set(g, lbl); else if (!procLabel.has(g)) procLabel.set(g, procLabel.get(g) || null); };
@@ -2911,6 +2912,10 @@ const QueryExecutor = {
             const anomaly = parseFloat(r.anomaly_score);
             const info = r.log_id ? { log_id: r.log_id, timestamp: r.timestamp, fractal_id: r.fractal_id, _shard_num: r._shard_num } : null;
             const ctype = this._pgTypeOf(r.child);
+            if (r.host) { // host rides each row: process rows carry the child's host, leaf rows the parent's
+                if (ctype === 'process') { if (!procHost.get(r.child)) procHost.set(r.child, r.host); }
+                else if (!procHost.get(r.parent)) procHost.set(r.parent, r.host);
+            }
             if (ctype === 'process') {
                 ensureProc(r.parent, null);
                 ensureProc(r.child, r.label);
@@ -2975,12 +2980,14 @@ const QueryExecutor = {
         // Per-process reconnection links (for the table's link chip + click-to-highlight): every
         // process paired with each peer it shares a cross-tree object with, plus dropped/executed
         // file bridges. Bidirectional so either endpoint can surface its links.
-        const linkInfo = new Map(); // guid -> [{type,label,peerGuid}]
+        const linkInfo = new Map(); // guid -> [{type,label,peerGuid,peerHost,crossHost}]
         const addLink = (g, type, label, peerGuid) => {
             if (!g || !peerGuid || g === peerGuid) return;
             if (!linkInfo.has(g)) linkInfo.set(g, []);
             const arr = linkInfo.get(g);
-            if (!arr.some(l => l.type === type && l.label === label && l.peerGuid === peerGuid)) arr.push({ type, label, peerGuid });
+            if (arr.some(l => l.type === type && l.label === label && l.peerGuid === peerGuid)) return;
+            const ph = procHost.get(peerGuid) || '', gh = procHost.get(g) || '';
+            arr.push({ type, label, peerGuid, peerHost: ph, crossHost: !!(ph && gh && ph !== gh) });
         };
         sharedLeaves.forEach(id => {
             const owners = Array.from(leafOwners.get(id) || []);
@@ -2992,7 +2999,7 @@ const QueryExecutor = {
         }));
 
         return { procLabel, spawnKids, interactions, leafGroups, leafOwners, leafMeta, sharedLeaves, linkInfo,
-            logInfoById, anomalyByNode, procMeta, procTime, procSet, roots, rootOf, homeRoot, externalProcs };
+            logInfoById, anomalyByNode, procMeta, procTime, procHost, procSet, roots, rootOf, homeRoot, externalProcs };
     },
 
     // Parse pgr's "YYYY-MM-DD HH:MM:SS.mmm" (UTC, no tz) into epoch ms, or null.
@@ -3293,10 +3300,15 @@ const QueryExecutor = {
             const isCol = collapsed.has(id);
             const toggle = kidN ? `<button class="pg-toggle${isCol ? ' pg-toggle-plus' : ''}" data-toggle="${esc(id)}" title="${isCol ? 'Expand' : 'Collapse'} ${kidN} child process${kidN === 1 ? '' : 'es'}">${isCol ? '+' : '−'}</button>` : '';
             const ext = m.externalProcs && m.externalProcs.has(id);
+            const host = m.procHost && m.procHost.get(id);
+            // Reconnected peers on a different host get a small muted host tag so a cross-computer
+            // hop reads at a glance; same-host reconnections stay unadorned.
+            const homeHost = this._pgFocus && m.procHost ? m.procHost.get(this._pgFocus) : null;
+            const hostLabel = (ext && host && (!homeHost || host !== homeHost)) ? `<span class="pg-node-host" title="host">${esc(host)}</span>` : '';
             const cls = `pg-node pg-sev-${sevOf(a)}${id === this._pgFocus ? ' pg-focus' : ''}${isCol ? ' pg-collapsed' : ''}${ext ? ' pg-node-external' : ''}`;
-            nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${ext ? '\nreconnected from another tree' : ''}${info ? '\nclick to view source log' : ''}">` +
+            nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${host ? '\nhost: ' + esc(String(host)) : ''}${ext ? '\nreconnected from another tree' : ''}${info ? '\nclick to view source log' : ''}">` +
                 `<span class="pg-hexwrap"><span class="pg-hex">${ICON.proc}</span>${toggle}</span>` +
-                `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(name))}</span>${sub}</span></div>`;
+                `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(name))}</span>${hostLabel}${sub}</span></div>`;
         });
 
         // 4) Assemble. Fill the available viewport height; a transformed canvas holds edges,
@@ -3429,7 +3441,7 @@ const QueryExecutor = {
         if (type === 'link') {
             const links = (m.linkInfo && m.linkInfo.get(guid)) || [];
             const kind = (t) => t === 'file' ? 'dropped & ran' : t === 'net' ? 'shared IP' : t === 'dns' ? 'shared domain' : 'shared';
-            items = links.map(l => ({ label: l.label, anomaly: NaN, info: m.logInfoById.get(l.peerGuid), tag: kind(l.type) + ' · ' + this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid) }));
+            items = links.map(l => ({ label: l.label, anomaly: NaN, info: m.logInfoById.get(l.peerGuid), tag: kind(l.type) + ' · ' + this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid), host: l.crossHost ? l.peerHost : '' }));
             heading = 'Reconnections';
         } else if (type === 'inject') {
             items = (m.interactions.get(guid) || []).filter(it => passT(it.anomaly)).map(it => ({ label: it.label || it.target, anomaly: it.anomaly, info: it.info, tag: it.type }));
@@ -3445,7 +3457,8 @@ const QueryExecutor = {
             const dl = it.info ? ` data-log='${esc(JSON.stringify(it.info))}'` : '';
             const pill = isNaN(it.anomaly) ? '' : `<span class="pg-anom pg-anom-${sevOf(it.anomaly)}">${it.anomaly.toFixed(2)}</span>`;
             const tag = it.tag ? `<span class="pg-tag">${esc(it.tag)}</span>` : '';
-            return `<div class="pg-drawer-row"${dl} title="${esc(String(it.label || ''))}"><span class="pg-drawer-val">${esc(String(it.label || ''))}</span>${tag}${pill}</div>`;
+            const hostChip = it.host ? `<span class="pg-host-chip" title="on another host">${esc(String(it.host))}</span>` : '';
+            return `<div class="pg-drawer-row"${dl} title="${esc(String(it.label || ''))}"><span class="pg-drawer-val">${esc(String(it.label || ''))}</span>${tag}${hostChip}${pill}</div>`;
         }).join('') || '<div class="pg-drawer-empty">No matching activity.</div>';
         drawer.innerHTML = `<div class="pg-drawer-head"><div class="pg-drawer-title"><span class="pg-drawer-heading">${esc(heading)}</span><span class="pg-drawer-proc" title="${esc(String(proc))}">${esc(this._pgShort(proc))}</span></div>` +
             `<button class="pg-drawer-close" title="Close">&times;</button></div>` +
@@ -3630,6 +3643,10 @@ const QueryExecutor = {
         const m = this._pgModel;
         if (!this._pgTreeCollapsed) this._pgTreeCollapsed = new Set(); // guids folded
         if (!this._pgLeafOpen) this._pgLeafOpen = new Set();           // "guid:type" drilled-in
+        // Show per-row host only when the result spans >1 host (a reconnection pulled in another
+        // computer's tree); a single-host tree stays clean. Cross-host rows get emphasized.
+        const multiHost = m.procHost ? new Set(Array.from(m.procHost.values()).filter(Boolean)).size > 1 : false;
+        const focusHost = this._pgFocus && m.procHost ? m.procHost.get(this._pgFocus) : null;
         const esc = Utils.escapeHtml;
         const S = (v) => esc(this._pgShort(v));
         const ICON = {
@@ -3724,12 +3741,15 @@ const QueryExecutor = {
             // Name + optional command-line/user subline (triage context). +N when folded.
             const dc = collapsed ? descCount(guid) : 0;
             const descHtml = dc > 0 ? ` <span class="pg-desc" title="${dc} hidden descendant process${dc === 1 ? '' : 'es'}">+${dc}</span>` : '';
-            const meta = m.procMeta.get(guid);
+            const meta = m.procMeta.get(guid) || {};
+            const rowHost = m.procHost && m.procHost.get(guid);
+            const showHost = multiHost && rowHost;
             let subline = '';
-            if (meta && (meta.cmd || meta.user)) {
+            if (meta.cmd || meta.user || showHost) {
                 const u = meta.user ? `<span class="pg-sub-user" title="user">${esc(meta.user)}</span>` : '';
+                const h = showHost ? `<span class="pg-sub-host${rowHost !== focusHost ? ' pg-sub-host-x' : ''}" title="host: ${esc(String(rowHost))}">${esc(String(rowHost))}</span>` : '';
                 const c = meta.cmd ? `<span class="pg-sub-cmd" title="${esc(meta.cmd)}">${esc(meta.cmd)}</span>` : '';
-                subline = `<span class="pg-subline">${u}${c}</span>`;
+                subline = `<span class="pg-subline">${u}${h}${c}</span>`;
             }
             const nameCell = `<span class="pg-name-wrap"><span class="pg-name" title="${esc(m.procLabel.get(guid) || guid)}">${hl(m.procLabel.get(guid) || guid)}${cyc ? ' <em class="pg-muted">(cycle)</em>' : ''}${descHtml}</span>${subline}</span>`;
             // Time (absolute-aware) + gap since parent.
@@ -3773,7 +3793,8 @@ const QueryExecutor = {
                 const peerName = m.procLabel.get(l.peerGuid) || l.peerGuid;
                 const licon = ICON[l.type] || ICON.link;
                 const kindTxt = l.type === 'file' ? 'dropped & ran' : l.type === 'net' ? 'shared IP' : l.type === 'dns' ? 'shared domain' : 'shared';
-                rows.push(`<div class="pg-row pg-leaf pg-link-item" data-peer="${esc(l.peerGuid)}" title="Reconnects to ${esc(String(peerName))} — click to jump">${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-link">${licon}</span><span class="pg-name">${hl(l.label)}</span><span class="pg-link-peer">${hl(peerName)}</span><span class="pg-tag pg-tag-recon">${kindTxt}</span></div>`);
+                const hostChip = l.crossHost && l.peerHost ? `<span class="pg-host-chip" title="on another host">${esc(String(l.peerHost))}</span>` : '';
+                rows.push(`<div class="pg-row pg-leaf pg-link-item" data-peer="${esc(l.peerGuid)}" title="Reconnects to ${esc(String(peerName))}${l.crossHost ? ' on ' + esc(String(l.peerHost)) : ''} — click to jump">${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-link">${licon}</span><span class="pg-name">${hl(l.label)}</span><span class="pg-link-peer">${hl(peerName)}</span>${hostChip}<span class="pg-tag pg-tag-recon">${kindTxt}</span></div>`);
             });
             kids.forEach(k => walk(k, childAnc.concat([false]), ++idx === total, guid));
             seen.delete(guid);

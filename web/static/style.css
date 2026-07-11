@@ -17132,6 +17132,13 @@ div.vis-tooltip {
     font-size: 11px; line-height: 1.35; margin-top: 1px;
 }
 .pg-sub-user { flex: 0 0 auto; color: var(--pg-net); font-weight: 600; }
+/* per-process host in the subline (only shown when the tree spans >1 host). */
+.pg-sub-host {
+    flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
+    color: var(--text-secondary); font-weight: 600; font-size: 10.5px;
+}
+.pg-sub-host::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: currentColor; opacity: .6; }
+.pg-sub-host-x { color: var(--pg-recon, #a855f7); } /* on a different host than the start node */
 .pg-sub-cmd {
     min-width: 0; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     font-family: var(--font-mono, ui-monospace, monospace); font-size: 10.5px;
@@ -17164,6 +17171,17 @@ div.vis-tooltip {
 .pg-icon-link { color: var(--pg-recon, #a855f7); }
 .pg-link-item { cursor: pointer; }
 .pg-link-peer { color: var(--pg-recon, #a855f7); font-weight: 600; font-size: 12px; margin-left: 2px; }
+/* Cross-host notation: a small muted "computer" chip on reconnections that hop to another host. */
+.pg-host-chip {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 10px; font-weight: 600; color: var(--text-secondary);
+    padding: 1px 6px; border-radius: 999px;
+    border: 1px solid var(--border-color); background: var(--bg-secondary, rgba(0,0,0,.12));
+    white-space: nowrap;
+}
+.pg-host-chip::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: var(--pg-recon, #a855f7); flex: 0 0 6px; }
+/* Graph: muted host under a reconnected peer node's name. */
+.pg-node-host { font-size: 9.5px; font-weight: 600; color: var(--text-secondary); letter-spacing: .2px; line-height: 1; }
 /* Subtle highlight of the linked counterpart row when a process is selected. */
 .pg-row.pg-link-hl {
     background: color-mix(in srgb, var(--pg-recon, #a855f7) 13%, transparent);

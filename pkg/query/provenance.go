@@ -12,7 +12,7 @@ import (
 // provenanceColumns are the flat columns the pgr() scored edge list exposes. pgr() is a source
 // command (parser/source_command.go): it is resolved into a SQL subquery source and these
 // resolve as bare columns for any downstream BQL (filter/aggregate/sort/table/pgraph).
-var provenanceColumns = []string{"parent", "child", "label", "event_type", "anomaly_score", "log_id", "timestamp", "fractal_id", "command_line", "proc_user"}
+var provenanceColumns = []string{"parent", "child", "label", "event_type", "anomaly_score", "log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host"}
 
 // provenanceNumericColumns is the subset of provenanceColumns that are already numeric in the
 // subquery (so downstream numeric comparisons must not string-coerce them).
@@ -20,7 +20,7 @@ var provenanceNumericColumns = []string{"anomaly_score"}
 
 // provenanceEmptyScoreSQL yields zero rows with the pgr output shape, so a query over an empty
 // tree behaves correctly (count() -> 0, etc.) without special-casing every caller.
-const provenanceEmptyScoreSQL = "SELECT '' AS parent, '' AS child, '' AS label, '' AS event_type, toFloat64(0) AS anomaly_score, '' AS log_id, '' AS timestamp, '' AS fractal_id, '' AS command_line, '' AS proc_user WHERE 1 = 0"
+const provenanceEmptyScoreSQL = "SELECT '' AS parent, '' AS child, '' AS label, '' AS event_type, toFloat64(0) AS anomaly_score, '' AS log_id, '' AS timestamp, '' AS fractal_id, '' AS command_line, '' AS proc_user, '' AS host WHERE 1 = 0"
 
 // provenanceScoreSQL runs pass 1 (tree traversal, collect guids) and returns the pass-2
 // scored-edge SQL, which becomes the query's subquery source. Returns a zero-row stub when the
@@ -112,6 +112,7 @@ func parseReconnectPeers(rows []map[string]interface{}) []parser.ReconnectPeer {
 			PeerLogID:   reconString(r["peer_log_id"]),
 			PeerTS:      reconString(r["peer_ts"]),
 			PeerFractal: reconString(r["peer_fractal"]),
+			PeerHost:    reconString(r["peer_host"]),
 		}
 		if pe.PeerGUID == "" {
 			continue
