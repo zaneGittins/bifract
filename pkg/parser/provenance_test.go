@@ -83,3 +83,93 @@ func TestAbstractExpr(t *testing.T) {
 		t.Errorf("domain abstraction drifted:\n got:  %s\n want: %s", got, wantDomain)
 	}
 }
+
+// pgrCmd builds a CommandNode for pgr() with the given args (helper for parse tests).
+func pgrCmd(args ...string) CommandNode { return CommandNode{Name: "pgr", Arguments: args} }
+
+func TestParseProvenanceReconnect(t *testing.T) {
+	if p, ok := ParseProvenanceParams(pgrCmd(`start="W1"`)); !ok || !p.Reconnect {
+		t.Fatalf("reconnect should default true, got ok=%v reconnect=%v", ok, p.Reconnect)
+	}
+	for _, off := range []string{"reconnect=false", "reconnect=0", `reconnect="no"`} {
+		if p, _ := ParseProvenanceParams(pgrCmd(`start="W1"`, off)); p.Reconnect {
+			t.Errorf("%q should disable reconnect", off)
+		}
+	}
+	if p, _ := ParseProvenanceParams(pgrCmd(`start="W1"`, "reconnect=true")); !p.Reconnect {
+		t.Error("reconnect=true should enable reconnect")
+	}
+}
+
+func reconOpts() QueryOptions {
+	o := QueryOptions{ProcLineageTable: "proc_lineage", ProcFreqTable: "proc_freq", FractalID: "f1"}
+	return o
+}
+
+func TestBuildReconnectionSQL(t *testing.T) {
+	p := ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{}}
+	sql, err := BuildReconnectionSQL([]string{"g1", "g2"}, p, reconOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"'file' AS recon_type", "'net' AS recon_type", "'dns' AS recon_type",
+		"'remote_thread' AS recon_type", "'process_access' AS recon_type",
+		"src_guid", "object_id",
+		"event_type = 'net_connect'",       // rarity gate
+		"groupUniqArrayMerge(256)(hosts)",  // host-prevalence gate
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("reconnection SQL missing %q", want)
+		}
+	}
+
+	// reconnect=false yields no SQL.
+	if s, _ := BuildReconnectionSQL([]string{"g1"}, ProvenanceParams{Reconnect: false}, reconOpts()); s != "" {
+		t.Error("reconnect=false should yield empty SQL")
+	}
+	// include= narrows the generated branches.
+	only := ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{"net_connect": true}}
+	s, _ := BuildReconnectionSQL([]string{"g1"}, only, reconOpts())
+	if !strings.Contains(s, "'net' AS recon_type") || strings.Contains(s, "'dns' AS recon_type") {
+		t.Error("include=net_connect should generate only the net branch")
+	}
+}
+
+func TestAppendReconnectionEdges(t *testing.T) {
+	peers := []ReconnectPeer{
+		{ReconType: "file", PeerGUID: "exec", SrcGUID: "writer", Label: "c:\\a.exe", Anomaly: 1.0},
+		{ReconType: "net", PeerGUID: "peer", SrcGUID: "tree", ObjectID: "net:1.2.3.4", Label: "1.2.3.4", Anomaly: 0.85},
+		{ReconType: "remote_thread", PeerGUID: "victim", Anomaly: 0.95}, // pass-2 owns; must NOT be emitted
+	}
+	out := AppendReconnectionEdges("SELECT 1", peers)
+	// file: writer -> executor
+	if !strings.Contains(out, "'writer' AS parent, 'exec' AS child") || !strings.Contains(out, "'reconnect_file'") {
+		t.Error("file bridge should be writer->executor")
+	}
+	// net: both endpoints converge on the object node
+	if !strings.Contains(out, "'tree' AS parent, 'net:1.2.3.4' AS child") ||
+		!strings.Contains(out, "'peer' AS parent, 'net:1.2.3.4' AS child") {
+		t.Error("net bridge should wire both tree toucher and peer to the object node")
+	}
+	// injection target is not emitted as a literal edge
+	if strings.Contains(out, "'victim'") {
+		t.Error("injection/access peer must not be emitted (pass-2 owns it)")
+	}
+}
+
+func TestAppendReconnectionEdgesDedup(t *testing.T) {
+	// Two net peers sharing one object node must emit the tree-side edge only once.
+	peers := []ReconnectPeer{
+		{ReconType: "net", PeerGUID: "p1", SrcGUID: "tree", ObjectID: "net:9.9.9.9", Label: "9.9.9.9", Anomaly: 0.85},
+		{ReconType: "net", PeerGUID: "p2", SrcGUID: "tree", ObjectID: "net:9.9.9.9", Label: "9.9.9.9", Anomaly: 0.85},
+	}
+	out := AppendReconnectionEdges("SELECT 1", peers)
+	if n := strings.Count(out, "'tree' AS parent, 'net:9.9.9.9' AS child"); n != 1 {
+		t.Errorf("tree-side convergence edge should be deduped to 1, got %d", n)
+	}
+	if strings.Count(out, "'p1' AS parent, 'net:9.9.9.9' AS child") != 1 ||
+		strings.Count(out, "'p2' AS parent, 'net:9.9.9.9' AS child") != 1 {
+		t.Error("each peer's convergence edge should appear once")
+	}
+}

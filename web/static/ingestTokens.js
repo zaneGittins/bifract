@@ -54,6 +54,13 @@ const IngestTokens = {
             if (e.key === 'Enter') this.createToken();
             if (e.key === 'Escape') this.hideCreateModal();
         });
+
+        document.getElementById('cancelEditTokenModalBtn')?.addEventListener('click', () => this.closeEdit());
+        document.getElementById('submitEditTokenModalBtn')?.addEventListener('click', () => this.saveEdit());
+        document.getElementById('editTokenName')?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') this.saveEdit();
+            if (e.key === 'Escape') this.closeEdit();
+        });
     },
 
     show() {
@@ -116,18 +123,6 @@ const IngestTokens = {
         }
     },
 
-    renderNormalizerSelect(id, selectedId) {
-        const defaultNorm = this.availableNormalizers.find(n => n.is_default);
-        const selected = selectedId || (defaultNorm ? defaultNorm.id : '');
-        let options = '<option value="">None (no normalization)</option>';
-        for (const n of this.availableNormalizers) {
-            const sel = n.id === selected ? 'selected' : '';
-            const badge = n.is_default ? ' (default)' : '';
-            options += `<option value="${this.esc(n.id)}" ${sel}>${this.esc(n.name)}${badge}</option>`;
-        }
-        return `<select id="${id}">${options}</select>`;
-    },
-
     handleSearch(query) {
         this.searchQuery = query.trim().toLowerCase();
         this.currentPage = 0;
@@ -187,7 +182,6 @@ const IngestTokens = {
             const statusClass = t.is_active ? 'active' : 'inactive';
             const defaultBadge = t.is_default ? '<span class="token-default-badge">DEFAULT</span>' : '';
             const lastUsed = t.last_used_at ? this.timeAgo(t.last_used_at) : 'Never';
-            const isEditing = this.editingToken?.id === t.id;
 
             let tokenCell = '';
             if (t.token_value) {
@@ -222,42 +216,7 @@ const IngestTokens = {
                     </svg>
                 </button>`;
 
-            let editRow = '';
-            if (isEditing) {
-                editRow = `<tr class="token-edit-row"><td colspan="5">
-                    <div class="token-inline-edit">
-                        <div class="ingest-form-grid">
-                            <div class="ingest-form-group">
-                                <label for="editTokenName">Name</label>
-                                <input type="text" id="editTokenName" value="${this.esc(t.name)}">
-                            </div>
-                            <div class="ingest-form-group">
-                                <label for="editTokenParser">Parser</label>
-                                <select id="editTokenParser">
-                                    <option value="json" ${t.parser_type === 'json' ? 'selected' : ''}>JSON</option>
-                                    <option value="kv" ${t.parser_type === 'kv' ? 'selected' : ''}>Key=Value</option>
-                                    <option value="syslog" ${t.parser_type === 'syslog' ? 'selected' : ''}>Syslog</option>
-                                </select>
-                            </div>
-                            <div class="ingest-form-group full-width">
-                                <label for="editTokenDesc">Description</label>
-                                <input type="text" id="editTokenDesc" value="${this.esc(t.description || '')}">
-                            </div>
-                            <div class="ingest-form-group">
-                                <label for="editTokenNormalizer">Normalizer</label>
-                                ${this.renderNormalizerSelect('editTokenNormalizer', t.normalizer_id || '')}
-                                <span class="form-help">Transform and standardize field names on ingest</span>
-                            </div>
-                        </div>
-                        <div class="ingest-form-actions">
-                            <button class="btn-secondary" onclick="IngestTokens.closeEdit()">Cancel</button>
-                            <button class="btn-primary" onclick="IngestTokens.saveEdit()">Save</button>
-                        </div>
-                    </div>
-                </td></tr>`;
-            }
-
-            return `<tr class="ingest-token-row ${statusClass}${isEditing ? ' editing' : ''}" data-token-id="${t.id}">
+            return `<tr class="ingest-token-row ${statusClass}" data-token-id="${t.id}">
                 <td>
                     <div class="token-name">${this.esc(t.name)}${defaultBadge}</div>
                     ${t.description ? `<div class="token-description">${this.esc(t.description)}</div>` : ''}
@@ -286,7 +245,7 @@ const IngestTokens = {
                         ${deleteBtn}
                     </div>
                 </td>
-            </tr>${editRow}`;
+            </tr>`;
         }).join('');
 
         this.updatePagination();
@@ -518,22 +477,27 @@ const IngestTokens = {
     // -- Edit panel --
 
     openEdit(token) {
-        if (this.editingToken?.id === token.id) {
-            this.editingToken = null;
-        } else {
-            this.editingToken = { ...token };
-            this.hideCreateModal();
-        }
-        this.renderDynamicPanels();
-        this.renderTable();
-        if (this.editingToken) {
-            document.getElementById('editTokenName')?.focus();
-        }
+        const modal = document.getElementById('editIngestTokenModal');
+        if (!modal) return;
+        this.hideCreateModal();
+        this.editingToken = { ...token };
+
+        const nameInput = document.getElementById('editTokenName');
+        const descInput = document.getElementById('editTokenDesc');
+        const parserSelect = document.getElementById('editTokenParser');
+        if (nameInput) nameInput.value = token.name || '';
+        if (descInput) descInput.value = token.description || '';
+        if (parserSelect) parserSelect.value = token.parser_type || 'json';
+        this._populateNormalizerSelect('editTokenNormalizer', token.normalizer_id || '');
+
+        modal.style.display = 'flex';
+        setTimeout(() => nameInput?.focus(), 100);
     },
 
     closeEdit() {
+        const modal = document.getElementById('editIngestTokenModal');
+        if (modal) modal.style.display = 'none';
         this.editingToken = null;
-        this.renderTable();
     },
 
     async saveEdit() {
@@ -567,7 +531,7 @@ const IngestTokens = {
             });
             const data = await resp.json();
             if (data.success) {
-                this.editingToken = null;
+                this.closeEdit();
                 await this.loadTokens();
             } else {
                 if (window.Toast) Toast.error(data.error || 'Failed to update token');

@@ -3580,6 +3580,46 @@ throttleTimeSeconds: 3600"></textarea>
         </div>
     </div>
 
+    <!-- Edit Ingest Token Modal -->
+    <div id="editIngestTokenModal" class="modal" onclick="if(event.target===this)IngestTokens.closeEdit()">
+        <div class="modal-content" style="max-width:560px;">
+            <div class="modal-header">
+                <h2>Edit Ingest Token</h2>
+                <button class="close-btn" onclick="IngestTokens.closeEdit()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="ingest-form-grid">
+                    <div class="ingest-form-group">
+                        <label for="editTokenName">Name</label>
+                        <input type="text" id="editTokenName" placeholder="e.g. Velociraptor, Syslog">
+                    </div>
+                    <div class="ingest-form-group">
+                        <label for="editTokenParser">Parser</label>
+                        <select id="editTokenParser">
+                            <option value="json">JSON</option>
+                            <option value="kv">Key=Value</option>
+                            <option value="syslog">Syslog</option>
+                        </select>
+                        <span class="form-help">How incoming log data is parsed</span>
+                    </div>
+                    <div class="ingest-form-group full-width">
+                        <label for="editTokenDesc">Description (optional)</label>
+                        <input type="text" id="editTokenDesc" placeholder="What sends logs with this token?">
+                    </div>
+                    <div class="ingest-form-group full-width">
+                        <label for="editTokenNormalizer">Normalizer</label>
+                        <select id="editTokenNormalizer"></select>
+                        <span class="form-help">Transform and standardize field names on ingest</span>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" id="cancelEditTokenModalBtn" class="btn-secondary">Cancel</button>
+                    <button type="button" id="submitEditTokenModalBtn" class="btn-primary">Save Changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Query Reference Overlay (opened from the BQL editor's ? hint) -->
     <div id="queryRefOverlay" class="qref-overlay" role="dialog" aria-modal="true" aria-label="Query reference">
         <div class="qref-overlay-scrim"></div>

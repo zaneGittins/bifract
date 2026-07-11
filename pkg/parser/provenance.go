@@ -10,6 +10,24 @@ import (
 // pathological tree can't produce an unbounded query.
 const maxProvenanceGuids = 10000
 
+// Reconnection (NoDoze object-mediated) caps. Every value bounds a step so cross-tree
+// reconnection stays per-subgraph and rarity-pruned -- never an all-pairs join over the
+// full table. See pkg/query/provenance.go for how the resolver orchestrates these.
+const (
+	// maxReconnectCandidateArtifacts caps the distinct artifacts (written paths / external
+	// IPs / domains) pulled from the current subgraph before the reverse lookup.
+	maxReconnectCandidateArtifacts = 500
+	// maxReconnectPeers caps total peer edges the reverse lookup returns.
+	maxReconnectPeers = 200
+	// reconnectHostPrevalenceMax is the net/dns rarity gate: an artifact touched by more
+	// than this many hosts is treated as common infrastructure (CDN, resolver, update
+	// server) and does NOT bridge trees.
+	reconnectHostPrevalenceMax = 3
+	// groupUniqArray cap on the proc_freq.hosts state -- MUST match the DDL (256) or CH
+	// errors code 43 on the merge.
+	procFreqHostsCap = 256
+)
+
 // ProvenanceParams are the parsed pgr() arguments the handler orchestrates the two-pass
 // query with. start/depth/direction match ptg(); threshold prunes non-spawn edges below it.
 // EdgeTypes is the resolved set of non-spawn edge types to generate (spawn -- the tree spine
@@ -20,6 +38,7 @@ type ProvenanceParams struct {
 	Direction string
 	Threshold float64
 	EdgeTypes map[string]bool // non-spawn event_types to include; nil/empty = all
+	Reconnect bool            // enable cross-tree reconnection via shared leaves (default true)
 }
 
 // provenanceLeafTypes are the non-spawn edge event_types pgr can emit. spawn is the tree
@@ -62,12 +81,15 @@ func parseEdgeTypeList(v string) []string {
 // missing. pgr is a source command (see source_command.go): the query layer's source resolver
 // calls this, then orchestrates the two-pass query into a subquery source.
 func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
-	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7}
+	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7, Reconnect: true}
 	var includeTypes, excludeTypes []string
 	for _, arg := range cmd.Arguments {
 		switch {
 		case strings.HasPrefix(arg, "start="):
 			p.Start = strings.Trim(strings.TrimPrefix(arg, "start="), "\"'")
+		case strings.HasPrefix(arg, "reconnect="):
+			v := strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "reconnect="), "\"'"))
+			p.Reconnect = v != "false" && v != "0" && v != "no"
 		case strings.HasPrefix(arg, "depth="):
 			if d, err := strconv.Atoi(strings.TrimPrefix(arg, "depth=")); err == nil && d > 0 {
 				p.Depth = d
@@ -275,6 +297,246 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	// only whitelists for WITH RECURSIVE queries). The only external input is the guid set,
 	// escaped via escapeString above, so it cannot break out of its string literals.
 	return b.String(), nil
+}
+
+// ReconnectPeer is one candidate cross-tree reconnection returned by the reverse lookup
+// (BuildReconnectionSQL). The emitted bridge depends on ReconType:
+//   - net/dns: ObjectID is the shared leaf-node id (e.g. "net:1.2.3.4"). Both the tree-side
+//     toucher (SrcGUID) and the external peer (PeerGUID) are wired to it, so it converges
+//     into one shared-object node regardless of pass-2's anomaly pruning.
+//   - file: a direct SrcGUID(writer) -> PeerGUID(executor) edge (dropped-then-executed).
+//     ObjectID is empty; the file path rides in Label. This matches "one process writes a
+//     file, another launches with that image" -- a connection between the two processes.
+//   - remote_thread/process_access: pass-2 already emits source->target, so these are only
+//     expansion candidates (ObjectID and SrcGUID empty, not emitted as a literal edge).
+type ReconnectPeer struct {
+	ReconType   string  // file | net | dns | remote_thread | process_access
+	PeerGUID    string  // the reconnected process (outside the current tree); expansion seed
+	SrcGUID     string  // tree-side endpoint: file writer, or a tree toucher of the artifact
+	ObjectID    string  // shared leaf-node id for net/dns (empty for file/injection/access)
+	Label       string  // raw artifact (IP/domain/path)
+	Anomaly     float64 // bridge severity, drives ranking + edge color
+	PeerImage   string  // peer process image (node label)
+	PeerLogID   string  // source log of the peer's touch (detail lookup)
+	PeerTS      string  // peer log timestamp (string)
+	PeerFractal string  // peer log fractal_id
+}
+
+// reconnectEdgeType maps a reconnection recon_type onto the p.EdgeTypes gate key (the
+// bifract_category-derived event_type), so include=/exclude= filters reconnection the same
+// way they filter in-tree leaf edges.
+var reconnectEdgeType = map[string]string{
+	"file":           "file_write",
+	"net":            "net_connect",
+	"dns":            "dns_query",
+	"remote_thread":  "remote_thread",
+	"process_access": "process_access",
+}
+
+// externalIPNegTmpl matches a PRIVATE/loopback/link-local address; used negated to keep
+// only external destinations (where shared C2 infrastructure lives). Mirrors the private
+// ranges in ipAbstractTmpl so the two never disagree on what "internal" means.
+const externalIPNegTmpl = `NOT match(%[1]s, '^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|127\\.|169\\.254\\.|::1|fe80:|fc|fd)')`
+
+// BuildReconnectionSQL is the cross-tree reverse lookup. Given the current subgraph's guids
+// it returns peer-candidate rows (schema: recon_type, peer_guid, object_id, label, anomaly,
+// peer_image, peer_log_id, peer_ts, peer_fractal). It is deliberately per-subgraph and
+// rarity-pruned so it never becomes an all-pairs join over the full table:
+//   - file: proc_lineage processes launched with image == a path THIS tree wrote (dropped
+//     then executed). proc_lineage is the small process skeleton; image is LowCardinality.
+//   - net/dns: logs rows touching an external IP / domain THIS tree touched, but only for
+//     artifacts whose proc_freq host-prevalence is <= reconnectHostPrevalenceMax (rare), so
+//     shared CDNs/resolvers/update servers do not reconnect everything. The net lookup rides
+//     the existing idx_dst_ip bloom.
+//   - remote_thread/process_access: target guids this tree injected into / opened -- emitted
+//     already by pass-2, so returned only as expansion candidates (object_id empty).
+// Returns "" (no error) when reconnection is disabled or no edge type is selected.
+func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions) (string, error) {
+	if !p.Reconnect || len(guids) == 0 {
+		return "", nil
+	}
+	want := func(reconType string) bool {
+		et := reconnectEdgeType[reconType]
+		return len(p.EdgeTypes) == 0 || p.EdgeTypes[et]
+	}
+	if len(guids) > maxProvenanceGuids {
+		guids = guids[:maxProvenanceGuids]
+	}
+	quoted := make([]string, len(guids))
+	for i, g := range guids {
+		quoted[i] = "'" + escapeString(g) + "'"
+	}
+	inList := strings.Join(quoted, ", ")
+
+	logs := opts.EffectiveTableName()
+	procLineage := opts.ProcLineageTable
+	if procLineage == "" {
+		procLineage = "proc_lineage"
+	}
+	procFreq := opts.ProcFreqTable
+	if procFreq == "" {
+		procFreq = "proc_freq"
+	}
+
+	tsStart := opts.StartTime.Format("2006-01-02 15:04:05")
+	tsEnd := opts.EndTime.Format("2006-01-02 15:04:05")
+	timeWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", tsStart, tsEnd)
+	fractal := procLineageFractalCond(opts, "")
+	fracAnd := ""
+	if fractal != "" {
+		fracAnd = " AND " + fractal
+	}
+	// Leading-WHERE fractal fragment for proc_freq (event_type filter always present).
+	freqFrac := ""
+	if fractal != "" {
+		freqFrac = " AND " + fractal
+	}
+
+	extIP := fmt.Sprintf(externalIPNegTmpl, "fields.dst_ip::String")
+
+	// Common column order for every UNION branch:
+	// recon_type, peer_guid, src_guid, object_id, label, anomaly, peer_image, peer_log_id, peer_ts, peer_fractal
+	var parts []string
+
+	// file: write -> execute. peer = process launched with image == a path this tree wrote;
+	// src = the tree writer of that path. Emitted later as a direct writer -> executor edge.
+	if want("file") {
+		writtenPaths := fmt.Sprintf(
+			"SELECT lower(fields.target_file::String) AS p, fields.process_guid::String AS writer FROM %[1]s WHERE %[2]s%[3]s "+
+				"AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'file_write' "+
+				"AND fields.target_file::String != '' GROUP BY p, writer LIMIT %[5]d",
+			logs, timeWin, fracAnd, inList, maxReconnectCandidateArtifacts)
+		plFrac := procLineageFractalCond(opts, "pl.")
+		plWhere := ""
+		if plFrac != "" {
+			plWhere = plFrac + " AND "
+		}
+		parts = append(parts, fmt.Sprintf(
+			"SELECT 'file' AS recon_type, pl.process_guid AS peer_guid, wp.writer AS src_guid, '' AS object_id, "+
+				"pl.image AS label, toFloat64(1.0) AS anomaly, pl.image AS peer_image, pl.log_id AS peer_log_id, "+
+				"toString(pl.timestamp) AS peer_ts, pl.fractal_id AS peer_fractal "+
+				"FROM %[1]s AS pl FINAL INNER JOIN (%[2]s) AS wp ON lower(pl.image) = wp.p "+
+				"WHERE %[3]spl.process_guid NOT IN (%[4]s) LIMIT %[5]d",
+			procLineage, writtenPaths, plWhere, inList, maxReconnectPeers))
+	}
+
+	// net: two processes -> same rare external IP. src = a tree toucher of that IP, so the
+	// shared IP node converges (tree side + peer side) independent of pass-2 pruning.
+	if want("net") {
+		rareIP := fmt.Sprintf(
+			"SELECT ip, any(t) AS toucher FROM (SELECT DISTINCT fields.dst_ip::String AS ip, fields.process_guid::String AS t "+
+				"FROM %[1]s WHERE %[2]s%[3]s AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'network_connect' "+
+				"AND fields.dst_ip::String != '' AND %[5]s LIMIT %[6]d) AS c WHERE ip IN ("+
+				"SELECT target_norm FROM %[7]s WHERE event_type = 'net_connect'%[8]s GROUP BY target_norm "+
+				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]d) GROUP BY ip",
+			logs, timeWin, fracAnd, inList, extIP, maxReconnectCandidateArtifacts,
+			procFreq, freqFrac, procFreqHostsCap, reconnectHostPrevalenceMax)
+		peerScan := fmt.Sprintf(
+			"SELECT fields.process_guid::String AS peer_guid, fields.dst_ip::String AS ip, fields.image::String AS img, "+
+				"log_id, toString(timestamp) AS ts, fractal_id FROM %[1]s WHERE %[2]s%[3]s "+
+				"AND fields.bifract_category = 'network_connect' AND fields.process_guid::String NOT IN (%[4]s) AND fields.dst_ip::String != ''",
+			logs, timeWin, fracAnd, inList)
+		parts = append(parts, fmt.Sprintf(
+			"SELECT 'net' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, concat('net:', %[1]s) AS object_id, "+
+				"any(l.ip) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
+				"any(l.ts) AS peer_ts, any(l.fractal_id) AS peer_fractal "+
+				"FROM (%[2]s) AS l INNER JOIN (%[3]s) AS ri ON l.ip = ri.ip GROUP BY peer_guid, object_id LIMIT %[4]d",
+			abstractExpr("l.ip", AbstractIP), peerScan, rareIP, maxReconnectPeers))
+	}
+
+	// dns: two processes -> same rare domain. Same converging shape as net.
+	if want("dns") {
+		aDom := func(col string) string { return abstractExpr(col, AbstractDomain) }
+		rareDom := fmt.Sprintf(
+			"SELECT q, any(t) AS toucher FROM (SELECT DISTINCT %[1]s AS q, fields.process_guid::String AS t "+
+				"FROM %[2]s WHERE %[3]s%[4]s AND fields.process_guid::String IN (%[5]s) AND fields.bifract_category = 'dns_query' "+
+				"AND fields.query::String != '' LIMIT %[6]d) AS c WHERE q IN ("+
+				"SELECT target_norm FROM %[7]s WHERE event_type = 'dns_query'%[8]s GROUP BY target_norm "+
+				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]d) GROUP BY q",
+			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, maxReconnectCandidateArtifacts,
+			procFreq, freqFrac, procFreqHostsCap, reconnectHostPrevalenceMax)
+		peerScan := fmt.Sprintf(
+			"SELECT fields.process_guid::String AS peer_guid, %[1]s AS q, fields.image::String AS img, "+
+				"log_id, toString(timestamp) AS ts, fractal_id FROM %[2]s WHERE %[3]s%[4]s "+
+				"AND fields.bifract_category = 'dns_query' AND fields.process_guid::String NOT IN (%[5]s) AND fields.query::String != ''",
+			aDom("fields.query::String"), logs, timeWin, fracAnd, inList)
+		parts = append(parts, fmt.Sprintf(
+			"SELECT 'dns' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, concat('dns:', l.q) AS object_id, "+
+				"any(l.q) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
+				"any(l.ts) AS peer_ts, any(l.fractal_id) AS peer_fractal "+
+				"FROM (%[1]s) AS l INNER JOIN (%[2]s) AS ri ON l.q = ri.q GROUP BY peer_guid, object_id LIMIT %[3]d",
+			peerScan, rareDom, maxReconnectPeers))
+	}
+
+	// remote_thread / process_access: target guids this tree acted on. pass-2 already emits
+	// the source->target edge, so these are expansion candidates only (src_guid/object_id empty).
+	p2p := func(reconType, category string, anomaly string) string {
+		return fmt.Sprintf(
+			"SELECT '%[1]s' AS recon_type, fields.target_process_guid::String AS peer_guid, '' AS src_guid, '' AS object_id, "+
+				"any(fields.target_image::String) AS label, toFloat64(%[2]s) AS anomaly, any(fields.target_image::String) AS peer_image, "+
+				"'' AS peer_log_id, '' AS peer_ts, '' AS peer_fractal "+
+				"FROM %[3]s WHERE %[4]s%[5]s AND fields.bifract_category = '%[6]s' "+
+				"AND fields.source_process_guid::String IN (%[7]s) AND fields.target_process_guid::String != '' "+
+				"AND fields.target_process_guid::String NOT IN (%[7]s) GROUP BY peer_guid LIMIT %[8]d",
+			reconType, anomaly, logs, timeWin, fracAnd, category, inList, maxReconnectPeers)
+	}
+	if want("remote_thread") {
+		parts = append(parts, p2p("remote_thread", "remote_thread", "0.95"))
+	}
+	if want("process_access") {
+		parts = append(parts, p2p("process_access", "process_access", "0.9"))
+	}
+
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return strings.Join(parts, " UNION ALL "), nil
+}
+
+// AppendReconnectionEdges wraps the pass-2 scored-edge SQL and UNION ALLs the reconnection
+// bridge edges. Reconnection owns these edges explicitly (as literal rows) so a shared
+// object node always converges even when pass-2 prunes the underlying low-anomaly leaf edge:
+//   - net/dns: two edges -- tree-toucher -> object node AND peer -> object node.
+//   - file: one edge -- writer -> executor (the file path in Label; no object node).
+//   - injection/access: none (pass-2 owns source->target); peer is expansion-only.
+// Edges are deduped by (parent, child, event_type). Every value is escaped.
+func AppendReconnectionEdges(pass2SQL string, peers []ReconnectPeer) string {
+	const cols = "parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user"
+	base := "SELECT " + cols + " FROM (" + pass2SQL + ")"
+
+	seen := map[string]bool{}
+	var lits []string
+	emit := func(parent, child, label, eventType string, anomaly float64, logID, ts, fractal string) {
+		if parent == "" || child == "" {
+			return
+		}
+		key := parent + "\x00" + child + "\x00" + eventType
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		lits = append(lits, fmt.Sprintf(
+			"SELECT '%s' AS parent, '%s' AS child, '%s' AS label, '%s' AS event_type, toFloat64(%s) AS anomaly_score, "+
+				"'%s' AS log_id, '%s' AS timestamp, '%s' AS fractal_id, '' AS command_line, '' AS proc_user",
+			escapeString(parent), escapeString(child), escapeString(label), escapeString(eventType),
+			strconv.FormatFloat(anomaly, 'f', 4, 64), escapeString(logID), escapeString(ts), escapeString(fractal)))
+	}
+
+	for _, pe := range peers {
+		et := "reconnect_" + pe.ReconType
+		switch {
+		case pe.ObjectID != "": // net/dns: converge both endpoints on the shared object node
+			emit(pe.SrcGUID, pe.ObjectID, pe.Label, et, pe.Anomaly, "", "", "")
+			emit(pe.PeerGUID, pe.ObjectID, pe.Label, et, pe.Anomaly, pe.PeerLogID, pe.PeerTS, pe.PeerFractal)
+		case pe.ReconType == "file" && pe.SrcGUID != "": // file: writer -> executor
+			emit(pe.SrcGUID, pe.PeerGUID, pe.Label, et, pe.Anomaly, pe.PeerLogID, pe.PeerTS, pe.PeerFractal)
+		}
+		// injection/access: skip (pass-2 owns the source->target edge)
+	}
+	if len(lits) == 0 {
+		return base
+	}
+	return base + " UNION ALL " + strings.Join(lits, " UNION ALL ")
 }
 
 // Provenance (pgr) abstraction helpers. proc_freq stores ABSTRACTED behavioral keys so

@@ -90,15 +90,6 @@
     opacity: 0.7;
 }
 
-.ingest-token-row.editing {
-    background: rgba(96, 165, 250, 0.06);
-    border-left-color: var(--accent-primary) !important;
-}
-
-.ingest-token-row.editing td {
-    border-bottom: none;
-}
-
 .ingest-token-row:last-child td {
     border-bottom: none;
 }
@@ -245,18 +236,6 @@
     font-size: 1rem;
 }
 
-/* Inline edit row */
-.token-edit-row td {
-    padding: 0 !important;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.token-inline-edit {
-    background: var(--bg-tertiary);
-    padding: 1rem 1.25rem;
-    border-top: 1px solid var(--accent-primary);
-}
-
 /* Toggle switch */
 .token-toggle {
     position: relative;
@@ -353,12 +332,6 @@
 .ingest-form-group .form-help {
     color: var(--text-secondary);
     font-size: 0.75rem;
-}
-
-.ingest-form-actions {
-    display: flex;
-    gap: 0.75rem;
-    justify-content: flex-end;
 }
 
 /* Token reveal banner */

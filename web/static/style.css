@@ -16875,6 +16875,9 @@ div.vis-tooltip {
 .pg-arrow.pg-e-high { fill: var(--error); }
 .pg-arrow.pg-e-med  { fill: var(--warning); }
 .pg-arrow.pg-e-low, .pg-arrow.pg-e-none { fill: color-mix(in srgb, var(--graph-node-neutral) 72%, transparent); }
+/* Reconnection bridge (NoDoze object-mediated): distinct violet, dashed, always visible so a
+   cross-tree link never recedes like a low-anomaly spawn edge. */
+.pg-e-recon { stroke: var(--pg-recon, #a855f7); stroke-dasharray: 6 4; opacity: .95; }
 
 /* Nodes: hexagon chip (coloured by anomaly severity) + name + activity badges + pill. */
 .pg-node {
@@ -16905,6 +16908,32 @@ div.vis-tooltip {
 .pg-node-sub { display: flex; align-items: center; gap: 5px; }
 .pg-node-agg .pg-node-sub { font-size: 10.5px; }
 
+/* Shared-object convergence nodes: the reconnection bridges (two trees meet on one artifact).
+   Shape encodes the type (diamond = IP, circle = domain, rounded square = file). */
+.pg-onode { position: absolute; display: flex; align-items: center; gap: 8px; transform: translateY(-50%); cursor: pointer; max-width: 220px; }
+.pg-ohex {
+    flex: 0 0 32px; width: 32px; height: 32px; color: #fff;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--pg-recon, #a855f7); box-shadow: 0 2px 7px rgba(0,0,0,.4); transition: transform .12s;
+}
+.pg-onode:hover .pg-ohex { transform: scale(1.09); }
+.pg-ohex svg { width: 16px; height: 16px; }
+.pg-onode-net .pg-ohex { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.pg-onode-dns .pg-ohex { border-radius: 50%; }
+.pg-onode-file .pg-ohex { border-radius: 7px; }
+.pg-onode.pg-sev-high .pg-ohex { background: var(--error); }
+.pg-onode.pg-sev-med .pg-ohex { background: var(--warning); }
+.pg-onode-tag { font-size: 10px; font-weight: 700; color: var(--pg-recon, #a855f7); letter-spacing: .3px; white-space: nowrap; }
+
+/* External (reconnected) process: violet ring + small "linked" tag so a peer tree is distinct. */
+.pg-node-external .pg-hex { box-shadow: 0 0 0 2px var(--pg-recon, #a855f7), 0 2px 7px rgba(0,0,0,.4); }
+.pg-ext-tag {
+    display: inline-block; align-self: flex-start; font-size: 9px; font-weight: 700; letter-spacing: .5px;
+    color: var(--pg-recon, #a855f7); text-transform: uppercase; line-height: 1;
+    padding: 1px 4px; border: 1px solid color-mix(in srgb, var(--pg-recon, #a855f7) 55%, transparent); border-radius: 4px;
+}
+.pg-recon-note { font-size: 11.5px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
+
 .pg-mb {
     display: inline-flex; align-items: center; gap: 2px;
     font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums;
@@ -16917,17 +16946,21 @@ div.vis-tooltip {
 .pg-mb-net  { color: var(--pg-net); }
 .pg-mb-dns  { color: var(--pg-dns); }
 .pg-mb-inject { color: var(--error); }
+.pg-mb-link { color: var(--pg-recon, #a855f7); background: color-mix(in srgb, var(--pg-recon, #a855f7) 14%, transparent); border-radius: 5px; padding: 0 4px; }
 .pg-node .pg-anom { min-width: 0; margin-left: 2px; padding: 1px 6px; font-size: 10.5px; }
 
 .pg-node.pg-dim { opacity: .16; }
 .pg-node.pg-match .pg-hex { box-shadow: 0 0 0 2px var(--accent-primary), 0 2px 7px rgba(0,0,0,.4); }
 
-/* Queried start node: a soft accent ring so the eye lands on it first. */
+/* Queried start node: filled with the accent colour (distinct from the red/orange/gray
+   anomaly-severity palette) + a ring, so the eye lands on your anchor first regardless of
+   its own anomaly. Keeps the process icon -- it is still a process, just the one you chose. */
 .pg-hexwrap { position: relative; flex: 0 0 36px; width: 36px; height: 36px; }
 .pg-node.pg-focus .pg-hex {
+    background: var(--accent-primary); color: #fff;
     box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 4px var(--accent-primary), 0 2px 8px rgba(0,0,0,.45);
 }
-.pg-node.pg-focus .pg-node-name { color: var(--accent-primary); }
+.pg-node.pg-focus .pg-node-name { color: var(--accent-primary); font-weight: 700; }
 
 /* +/- fold toggle, tucked on the hex corner (CrowdStrike-style). */
 .pg-toggle {
@@ -17123,6 +17156,19 @@ div.vis-tooltip {
     font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
     color: var(--text-muted); border: 1px solid var(--border-color);
     border-radius: 4px; padding: 1px 5px;
+}
+/* Reconnection: link-count badge, drill rows, and click-to-highlight the linked row. */
+.pg-tag-recon { color: var(--pg-recon, #a855f7); border-color: color-mix(in srgb, var(--pg-recon, #a855f7) 55%, transparent); }
+.pg-badge-link { color: var(--pg-recon, #a855f7); background: color-mix(in srgb, var(--pg-recon, #a855f7) 14%, transparent); border-color: color-mix(in srgb, var(--pg-recon, #a855f7) 40%, transparent); }
+.pg-badge-link.pg-on { background: color-mix(in srgb, var(--pg-recon, #a855f7) 26%, transparent); }
+.pg-icon-link { color: var(--pg-recon, #a855f7); }
+.pg-link-item { cursor: pointer; }
+.pg-link-peer { color: var(--pg-recon, #a855f7); font-weight: 600; font-size: 12px; margin-left: 2px; }
+/* Subtle highlight of the linked counterpart row when a process is selected. */
+.pg-row.pg-link-hl {
+    background: color-mix(in srgb, var(--pg-recon, #a855f7) 13%, transparent);
+    box-shadow: inset 2px 0 0 var(--pg-recon, #a855f7);
+    transition: background .2s;
 }
 
 /* activity-count badges */

@@ -2894,6 +2894,8 @@ const QueryExecutor = {
         const spawnKids = new Map();     // parent guid -> [child guid]
         const interactions = new Map();  // src guid -> [{target,type,anomaly,label,info}]
         const leafGroups = new Map();    // parent guid -> {file:[],net:[],dns:[]} of {id,label,anomaly,info}
+        const leafOwners = new Map();    // leaf id -> Set(process guid) -- reverse index for shared-leaf detection
+        const leafMeta = new Map();      // leaf id -> {type,label,anomaly} for promoted shared-object nodes
         const logInfoById = new Map();   // node id -> {log_id,timestamp,fractal_id,_shard_num}
         const anomalyByNode = new Map(); // node id -> anomaly on its incoming edge
         const procMeta = new Map();      // guid -> {cmd, user} (command line + user, cmd truncated server-side)
@@ -2922,18 +2924,75 @@ const QueryExecutor = {
                 const t = this._pgParseTime(r.timestamp);
                 if (t != null && (et === 'spawn' || !procTime.has(r.child))) procTime.set(r.child, t);
                 if (et === 'spawn') { push(spawnKids, r.parent, r.child); isChild.add(r.child); }
-                else { push(interactions, r.parent, { target: r.child, type: et, anomaly, label: r.label, info }); }
+                else { push(interactions, r.parent, { target: r.child, type: et, anomaly, label: r.label, info, recon: et.indexOf('reconnect') === 0 }); }
             } else {
                 ensureProc(r.parent, null);
                 if (!leafGroups.has(r.parent)) leafGroups.set(r.parent, { file: [], net: [], dns: [] });
-                leafGroups.get(r.parent)[ctype].push({ id: r.child, label: r.label, anomaly, info });
+                // Dedup the same leaf under one parent: pass-2's leaf edge and a reconnect edge
+                // can both arrive for it. Keep one entry, max anomaly, flagged recon if either was.
+                const grp = leafGroups.get(r.parent)[ctype];
+                let entry = grp.find(e => e.id === r.child);
+                if (!entry) { entry = { id: r.child, label: r.label, anomaly, info }; grp.push(entry); }
+                else if (anomaly > entry.anomaly) entry.anomaly = anomaly;
+                if (et.indexOf('reconnect') === 0) entry.recon = true;
+                if (!leafOwners.has(r.child)) leafOwners.set(r.child, new Set());
+                leafOwners.get(r.child).add(r.parent);
+                if (!leafMeta.has(r.child)) leafMeta.set(r.child, { type: ctype, label: r.label, anomaly });
+                else if (anomaly > leafMeta.get(r.child).anomaly) leafMeta.get(r.child).anomaly = anomaly;
                 if (info) logInfoById.set(r.child, info);
-                anomalyByNode.set(r.child, anomaly);
+                anomalyByNode.set(r.child, Math.max(anomaly, anomalyByNode.get(r.child) || 0));
             }
         });
         const roots = [];
         procSet.forEach(g => { if (!isChild.has(g)) roots.push(g); });
-        return { procLabel, spawnKids, interactions, leafGroups, logInfoById, anomalyByNode, procMeta, procTime, procSet, roots };
+
+        // Tree membership: which spawn root each process descends from. The tree containing the
+        // queried start guid (_pgFocus) is "home"; everything under a different root arrived via
+        // reconnection and is flagged external so the renderer can style it as a peer.
+        const parentOf = new Map();
+        spawnKids.forEach((kids, p) => kids.forEach(c => { if (!parentOf.has(c)) parentOf.set(c, p); }));
+        const rootOf = new Map();
+        procSet.forEach(g => {
+            let cur = g, guard = 0; const chain = [];
+            while (parentOf.has(cur) && guard++ < 100000) { chain.push(cur); cur = parentOf.get(cur); }
+            chain.forEach(n => rootOf.set(n, cur)); rootOf.set(g, cur);
+        });
+        const homeRoot = this._pgFocus ? (rootOf.get(this._pgFocus) || this._pgFocus) : null;
+        const externalProcs = new Set();
+        if (homeRoot) procSet.forEach(g => { if ((rootOf.get(g) || g) !== homeRoot) externalProcs.add(g); });
+
+        // Shared object nodes: a leaf touched by processes in >= 2 DIFFERENT trees is a
+        // reconnection bridge (that is the whole point -- linking trees). A leaf shared by two
+        // processes within one tree is NOT a reconnection and stays a per-process chip.
+        const sharedLeaves = new Set();
+        leafOwners.forEach((owners, id) => {
+            if (owners.size < 2) return;
+            const rs = new Set();
+            owners.forEach(o => rs.add(rootOf.get(o) || o));
+            if (rs.size >= 2) sharedLeaves.add(id);
+        });
+
+        // Per-process reconnection links (for the table's link chip + click-to-highlight): every
+        // process paired with each peer it shares a cross-tree object with, plus dropped/executed
+        // file bridges. Bidirectional so either endpoint can surface its links.
+        const linkInfo = new Map(); // guid -> [{type,label,peerGuid}]
+        const addLink = (g, type, label, peerGuid) => {
+            if (!g || !peerGuid || g === peerGuid) return;
+            if (!linkInfo.has(g)) linkInfo.set(g, []);
+            const arr = linkInfo.get(g);
+            if (!arr.some(l => l.type === type && l.label === label && l.peerGuid === peerGuid)) arr.push({ type, label, peerGuid });
+        };
+        sharedLeaves.forEach(id => {
+            const owners = Array.from(leafOwners.get(id) || []);
+            const meta = leafMeta.get(id) || {};
+            owners.forEach(a => owners.forEach(b => { if ((rootOf.get(a) || a) !== (rootOf.get(b) || b)) addLink(a, meta.type || this._pgTypeOf(id), meta.label || id, b); }));
+        });
+        interactions.forEach((list, src) => list.forEach(it => {
+            if (it.recon) { addLink(src, 'file', it.label, it.target); addLink(it.target, 'file', it.label, src); }
+        }));
+
+        return { procLabel, spawnKids, interactions, leafGroups, leafOwners, leafMeta, sharedLeaves, linkInfo,
+            logInfoById, anomalyByNode, procMeta, procTime, procSet, roots, rootOf, homeRoot, externalProcs };
     },
 
     // Parse pgr's "YYYY-MM-DD HH:MM:SS.mmm" (UTC, no tz) into epoch ms, or null.
@@ -3107,6 +3166,7 @@ const QueryExecutor = {
             net: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11a4 4 0 0 1 0 8H9m0 0 3-3m-3 3 3 3"/></svg>',
             dns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18"/></svg>',
             inject: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h11m0 0-4-4m4 4-4 4"/><path d="M19 4v16"/></svg>',
+            link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15 15 9"/><path d="M10.5 6.5 12 5a4 4 0 0 1 6 6l-1.5 1.5"/><path d="M13.5 17.5 12 19a4 4 0 0 1-6-6l1.5-1.5"/></svg>',
         };
         const sevOf = (a) => isNaN(a) ? 'none' : (a >= 0.9 ? 'high' : (a >= 0.7 ? 'med' : 'low'));
 
@@ -3121,6 +3181,22 @@ const QueryExecutor = {
         const rootList = (m.roots.length ? m.roots : Array.from(m.procSet)).slice();
         const pos = this._pgOutlineLayout(rootList, kidsOf);
         if (!pos.size) { host.innerHTML = '<div class="pg-empty">No processes in this graph.</div>'; return; }
+
+        // Reconnection is drawn as ONE violet link between two linked processes (however many
+        // artifacts they share), not as fan-out to shared object nodes -- that made a spiderweb.
+        // The shared artifacts are revealed by clicking the link chip on the node. Unique
+        // unordered pairs of cross-tree linked, both-visible processes.
+        const linkPairs = new Map();
+        if (m.linkInfo) m.linkInfo.forEach((links, a) => {
+            if (!pos.has(a)) return;
+            links.forEach(l => {
+                if (!pos.has(l.peerGuid)) return;
+                const lo = a < l.peerGuid ? a : l.peerGuid, hi = a < l.peerGuid ? l.peerGuid : a;
+                const key = lo + '\x00' + hi;
+                if (!linkPairs.has(key)) linkPairs.set(key, { a: lo, b: hi });
+            });
+        });
+
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         pos.forEach(p => { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; });
         const PAD_L = 46, PAD_T = 40, PAD_R = 300, PAD_B = 56; // room for hex + right-hand labels
@@ -3143,10 +3219,17 @@ const QueryExecutor = {
         });
         m.interactions.forEach((list, src) => {
             const sp = pos.get(src); if (!sp) return;
-            list.filter(it => passT(it.anomaly)).forEach(it => {
+            // reconnect_file bridges are folded into the single link edge below (via linkPairs).
+            list.filter(it => passT(it.anomaly) && !it.recon).forEach(it => {
                 const tp = pos.get(it.target); if (!tp) return;
                 edgeSegs.push({ x1: sp.x, y1: sp.y, x2: tp.x, y2: tp.y, a: it.anomaly, sev: sevOf(it.anomaly), w: (!isNaN(it.anomaly) && it.anomaly >= 0.7) ? 2.4 : 1.5, dash: 1 });
             });
+        });
+        // One reconnection link per cross-tree pair, no arrow (it aggregates however many shared
+        // artifacts/bridges the two processes have; the link chip reveals them).
+        linkPairs.forEach(lp => {
+            const sp = pos.get(lp.a), tp = pos.get(lp.b);
+            edgeSegs.push({ x1: sp.x, y1: sp.y, x2: tp.x, y2: tp.y, a: NaN, sev: 'none', w: 1.6, dash: 1, recon: true, toObj: true });
         });
         // Straight segments: a linear chain is colinear (row == depth), so consecutive edges
         // align into one clean diagonal spine, exactly like the CrowdStrike/Elastic rail.
@@ -3154,15 +3237,26 @@ const QueryExecutor = {
         const pathFor = (e) => {
             const dx = e.x2 - e.x1, dy = e.y2 - e.y1, len = Math.hypot(dx, dy) || 1;
             const ux = dx / len, uy = dy / len;
-            return `M${(e.x1 + ux * 19).toFixed(1)},${(e.y1 + uy * 19).toFixed(1)} L${(e.x2 - ux * 21).toFixed(1)},${(e.y2 - uy * 21).toFixed(1)}`;
+            const x1 = e.x1 + ux * 19, y1 = e.y1 + uy * 19, x2 = e.x2 - ux * 21, y2 = e.y2 - uy * 21;
+            if (e.recon) {
+                // Gently bow reconnection bridges so they read as distinct links without the
+                // heavy sweep that tangles a long cross-canvas curve.
+                const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, bow = Math.min(38, len * 0.1);
+                return `M${x1.toFixed(1)},${y1.toFixed(1)} Q${(mx - uy * bow).toFixed(1)},${(my + ux * bow).toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+            }
+            return `M${x1.toFixed(1)},${y1.toFixed(1)} L${x2.toFixed(1)},${y2.toFixed(1)}`;
         };
         const marker = (sev) => `<marker id="pgar-${sev}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="pg-arrow pg-e-${sev}"/></marker>`;
         let svg = `<svg class="pg-edge-layer" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><defs>${['high', 'med', 'low', 'none'].map(marker).join('')}</defs>`;
-        edgeSegs.forEach(e => { svg += `<path d="${pathFor(e)}" class="pg-e pg-e-${e.sev}${e.dash ? ' pg-e-dash' : ''}" style="stroke-width:${e.w}" marker-end="url(#pgar-${e.sev})"/>`; });
+        edgeSegs.forEach(e => {
+            const cls = `pg-e pg-e-${e.sev}${e.dash ? ' pg-e-dash' : ''}${e.recon ? ' pg-e-recon' : ''}`;
+            const mk = (e.recon && e.toObj) ? '' : ` marker-end="url(#pgar-${e.sev})"`;
+            svg += `<path d="${pathFor(e)}" class="${cls}" style="stroke-width:${e.w}"${mk}/>`;
+        });
         svg += '</svg>';
         let elabels = '';
         edgeSegs.forEach(e => {
-            if (isNaN(e.a)) return;
+            if (isNaN(e.a) || e.recon) return; // recon bridges are long curves; a midpoint pill floats and clutters
             const mx = ((e.x1 + e.x2) / 2).toFixed(1), my = ((e.y1 + e.y2) / 2).toFixed(1);
             elabels += `<span class="pg-elabel pg-anom pg-anom-${e.sev}" style="left:${mx}px;top:${my}px" title="anomaly ${e.a.toFixed(2)}">${e.a.toFixed(2)}</span>`;
         });
@@ -3172,25 +3266,35 @@ const QueryExecutor = {
         const miniBadge = (t, n, guid) => n ? `<span class="pg-mb pg-mb-${t} pg-mb-click" data-chip="${esc(guid)}" data-ctype="${t}" title="${n} ${this._pgLeafNoun(t)} — click to inspect">${ICON[t]}${n}</span>` : '';
         let nodesHtml = '';
         pos.forEach((p, id) => {
+            if (p.obj) return; // object nodes are rendered separately below
             const name = m.procLabel.get(id) || id;
             const a = m.anomalyByNode.get(id);
             const grp = m.leafGroups.get(id) || { file: [], net: [], dns: [] };
-            const fc = grp.file.filter(x => passT(x.anomaly)).length;
-            const nc = grp.net.filter(x => passT(x.anomaly)).length;
-            const dc = grp.dns.filter(x => passT(x.anomaly)).length;
-            const inj = (m.interactions.get(id) || []).filter(it => passT(it.anomaly)).length;
+            // Shared (cross-tree) leaves are represented by the reconnection LINK, so they drop
+            // out of the per-process file/net/dns chips; unshared activity still shows as chips.
+            const notShared = (x) => !(m.sharedLeaves && m.sharedLeaves.has(x.id));
+            const fc = grp.file.filter(x => passT(x.anomaly) && notShared(x)).length;
+            const nc = grp.net.filter(x => passT(x.anomaly) && notShared(x)).length;
+            const dc = grp.dns.filter(x => passT(x.anomaly) && notShared(x)).length;
+            // Reconnect interactions (file bridges) are drawn as the link edge, so they don't
+            // also count toward the process-interaction chip.
+            const inj = (m.interactions.get(id) || []).filter(it => passT(it.anomaly) && !it.recon).length;
+            // Reconnection link chip: number of shared artifacts/bridges to visible peers.
+            const lc = ((m.linkInfo && m.linkInfo.get(id)) || []).filter(l => pos.has(l.peerGuid)).length;
             const info = m.logInfoById.get(id);
             const dl = info ? ` data-log='${esc(JSON.stringify(info))}'` : '';
             match.set(id, String(name).toLowerCase());
             const badges = miniBadge('file', fc, id) + miniBadge('net', nc, id) + miniBadge('dns', dc, id) +
-                (inj ? `<span class="pg-mb pg-mb-inject pg-mb-click" data-chip="${esc(id)}" data-ctype="inject" title="${inj} process interaction${inj === 1 ? '' : 's'} — click to inspect">${ICON.inject}${inj}</span>` : '');
+                (inj ? `<span class="pg-mb pg-mb-inject pg-mb-click" data-chip="${esc(id)}" data-ctype="inject" title="${inj} process interaction${inj === 1 ? '' : 's'} — click to inspect">${ICON.inject}${inj}</span>` : '') +
+                (lc ? `<span class="pg-mb pg-mb-link pg-mb-click" data-chip="${esc(id)}" data-ctype="link" title="${lc} reconnection${lc === 1 ? '' : 's'} — click to see what links">${ICON.link}${lc}</span>` : '');
             const sub = badges ? `<span class="pg-node-sub">${badges}</span>` : '';
             // +/- fold toggle for processes that spawned children.
             const kidN = (m.spawnKids.get(id) || []).length;
             const isCol = collapsed.has(id);
             const toggle = kidN ? `<button class="pg-toggle${isCol ? ' pg-toggle-plus' : ''}" data-toggle="${esc(id)}" title="${isCol ? 'Expand' : 'Collapse'} ${kidN} child process${kidN === 1 ? '' : 'es'}">${isCol ? '+' : '−'}</button>` : '';
-            const cls = `pg-node pg-sev-${sevOf(a)}${id === this._pgFocus ? ' pg-focus' : ''}${isCol ? ' pg-collapsed' : ''}`;
-            nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${info ? '\nclick to view source log' : ''}">` +
+            const ext = m.externalProcs && m.externalProcs.has(id);
+            const cls = `pg-node pg-sev-${sevOf(a)}${id === this._pgFocus ? ' pg-focus' : ''}${isCol ? ' pg-collapsed' : ''}${ext ? ' pg-node-external' : ''}`;
+            nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${ext ? '\nreconnected from another tree' : ''}${info ? '\nclick to view source log' : ''}">` +
                 `<span class="pg-hexwrap"><span class="pg-hex">${ICON.proc}</span>${toggle}</span>` +
                 `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(name))}</span>${sub}</span></div>`;
         });
@@ -3271,7 +3375,7 @@ const QueryExecutor = {
             moved = false; // reset here so a click after a pan is never mistaken for a drag
             // Don't pan/capture when the press starts on a node, the minimap, or the drawer --
             // capturing the pointer would swallow their own clicks (close button, rows).
-            if (e.target.closest('.pg-node') || e.target.closest('.pg-minimap') || e.target.closest('.pg-drawer')) return;
+            if (e.target.closest('.pg-node') || e.target.closest('.pg-onode') || e.target.closest('.pg-minimap') || e.target.closest('.pg-drawer')) return;
             dragging = true; sx = e.clientX; sy = e.clientY; ox = this._pgVS.x; oy = this._pgVS.y;
             host.classList.add('pg-panning');
             try { host.setPointerCapture(e.pointerId); } catch (_) { }
@@ -3299,6 +3403,8 @@ const QueryExecutor = {
             const chip = e.target.closest('.pg-mb-click');
             if (chip) { this._pgOpenDrawer(chip.dataset.chip, chip.dataset.ctype); return; }
             if (moved) return;
+            const onode = e.target.closest('.pg-onode');
+            if (onode) { this._pgOpenObjectDrawer(onode.dataset.oid, onode.dataset.otype); return; }
             const node = e.target.closest('.pg-node'); if (!node) return;
             // In the graph, a node opens the in-graph detail drawer (keeps the busy canvas
             // uncluttered). The Table view still uses the global LogDetail panel.
@@ -3320,7 +3426,12 @@ const QueryExecutor = {
         const passT = (a) => isNaN(a) || a >= min;
         const proc = m.procLabel.get(guid) || guid;
         let items, heading;
-        if (type === 'inject') {
+        if (type === 'link') {
+            const links = (m.linkInfo && m.linkInfo.get(guid)) || [];
+            const kind = (t) => t === 'file' ? 'dropped & ran' : t === 'net' ? 'shared IP' : t === 'dns' ? 'shared domain' : 'shared';
+            items = links.map(l => ({ label: l.label, anomaly: NaN, info: m.logInfoById.get(l.peerGuid), tag: kind(l.type) + ' · ' + this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid) }));
+            heading = 'Reconnections';
+        } else if (type === 'inject') {
             items = (m.interactions.get(guid) || []).filter(it => passT(it.anomaly)).map(it => ({ label: it.label || it.target, anomaly: it.anomaly, info: it.info, tag: it.type }));
             heading = 'Process interactions';
         } else {
@@ -3355,6 +3466,41 @@ const QueryExecutor = {
         drawer.classList.remove('open');
         const mm = host.querySelector('.pg-minimap'); if (mm) mm.style.opacity = '';
         setTimeout(() => { if (!drawer.classList.contains('open')) drawer.hidden = true; }, 220);
+    },
+
+    // Shared-object node click: list the processes that reconnect through this artifact (the
+    // rare IP/domain both trees touched), each opening its source log.
+    _pgOpenObjectDrawer(oid, type) {
+        const host = this._pgGraphHost, m = this._pgModel;
+        const drawer = host && host.querySelector('.pg-drawer');
+        if (!drawer || !oid) return;
+        const esc = Utils.escapeHtml;
+        const meta = (m.leafMeta && m.leafMeta.get(oid)) || {};
+        const owners = Array.from((m.leafOwners && m.leafOwners.get(oid)) || []);
+        const sevOf = (a) => isNaN(a) ? 'none' : (a >= 0.9 ? 'high' : (a >= 0.7 ? 'med' : 'low'));
+        const heading = type === 'net' ? 'Shared IP' : type === 'dns' ? 'Shared domain' : 'Shared file';
+        const rows = owners.map(g => {
+            const info = m.logInfoById.get(g);
+            const dl = info ? ` data-log='${esc(JSON.stringify(info))}'` : '';
+            const ext = m.externalProcs && m.externalProcs.has(g);
+            const nm = m.procLabel.get(g) || g;
+            const tag = ext ? '<span class="pg-tag">linked</span>' : '';
+            return `<div class="pg-drawer-row"${dl} data-guid="${esc(g)}" title="${esc(String(nm))}"><span class="pg-drawer-val">${esc(this._pgShort(nm))}</span>${tag}</div>`;
+        }).join('') || '<div class="pg-drawer-empty">No owners.</div>';
+        const pill = isNaN(meta.anomaly) ? '' : `<span class="pg-anom pg-anom-${sevOf(meta.anomaly)}">${(+meta.anomaly).toFixed(2)}</span>`;
+        drawer.innerHTML = `<div class="pg-drawer-head"><div class="pg-drawer-title"><span class="pg-drawer-heading">${esc(heading)}</span>` +
+            `<span class="pg-drawer-proc" title="${esc(String(meta.label || oid))}">${esc(this._pgShort(meta.label || oid))}</span></div>` +
+            `<button class="pg-drawer-close" title="Close">&times;</button></div>` +
+            `<div class="pg-drawer-actions"><span class="pg-recon-note">Reconnection bridge ${pill}</span></div>` +
+            `<div class="pg-drawer-count">shared by ${owners.length} process${owners.length === 1 ? '' : 'es'}</div>` +
+            `<div class="pg-drawer-body">${rows}</div>`;
+        drawer.hidden = false;
+        requestAnimationFrame(() => drawer.classList.add('open'));
+        const mm = host.querySelector('.pg-minimap'); if (mm) mm.style.opacity = '0';
+        drawer.querySelector('.pg-drawer-close')?.addEventListener('click', () => this._pgCloseDrawer());
+        drawer.querySelectorAll('.pg-drawer-row[data-log]').forEach(r => r.addEventListener('click', () => {
+            try { this._pgOpenLog(JSON.parse(r.dataset.log)); } catch (_) { }
+        }));
     },
 
     // Node click in the graph: slide out the process's log detail in-graph (so the busy
@@ -3493,6 +3639,7 @@ const QueryExecutor = {
             dns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18"/></svg>',
             inject: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h11m0 0-4-4m4 4-4 4"/><path d="M19 4v16"/></svg>',
             gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9h5M8 13h8"/></svg>',
+            link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15 15 9"/><path d="M10.5 6.5 12 5a4 4 0 0 1 6 6l-1.5 1.5"/><path d="M13.5 17.5 12 19a4 4 0 0 1-6-6l1.5-1.5"/></svg>',
         };
         const rows = [];
         const term = (this._pgSearch || '').toLowerCase();
@@ -3539,7 +3686,7 @@ const QueryExecutor = {
             if (!count) return ''; // hide zero-count chips to cut noise
             const on = drill && this._pgLeafOpen.has(guid + ':' + type);
             const attr = (drill && count > 0) ? ` data-drill="${esc(guid)}" data-type="${type}"` : '';
-            const noun = type === 'proc' ? 'child process' : type === 'file' ? 'file' : type === 'net' ? 'connection' : 'domain';
+            const noun = type === 'proc' ? 'child process' : type === 'file' ? 'file' : type === 'net' ? 'connection' : type === 'link' ? 'reconnection' : 'domain';
             return `<span class="pg-badge pg-badge-${type}${on ? ' pg-on' : ''}"${attr} title="${count} ${noun}${count === 1 ? '' : 's'}${drill && count > 0 ? ' — click to expand' : ''}">${ICON[type]}<b>${count}</b></span>`;
         };
         const leafChildRow = (anc, isLast, type, x) => {
@@ -3572,7 +3719,8 @@ const QueryExecutor = {
             const info = m.logInfoById.get(guid);
             const dl = info ? ` data-log='${esc(JSON.stringify(info))}'` : '';
             const chev = hasKids ? `<button class="pg-chev${collapsed ? ' pg-collapsed' : ''}" data-guid="${esc(guid)}" title="${collapsed ? 'Expand' : 'Collapse'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>` : '<span class="pg-chev pg-chev-none"></span>';
-            const badges = `<span class="pg-badges">${badge('proc', childCount, guid, false)}${badge('file', groups.file.length, guid, true)}${badge('net', groups.net.length, guid, true)}${badge('dns', groups.dns.length, guid, true)}</span>`;
+            const linkN = (m.linkInfo && m.linkInfo.get(guid) || []).length;
+            const badges = `<span class="pg-badges">${badge('proc', childCount, guid, false)}${badge('file', groups.file.length, guid, true)}${badge('net', groups.net.length, guid, true)}${badge('dns', groups.dns.length, guid, true)}${badge('link', linkN, guid, true)}</span>`;
             // Name + optional command-line/user subline (triage context). +N when folded.
             const dc = collapsed ? descCount(guid) : 0;
             const descHtml = dc > 0 ? ` <span class="pg-desc" title="${dc} hidden descendant process${dc === 1 ? '' : 'es'}">+${dc}</span>` : '';
@@ -3607,14 +3755,26 @@ const QueryExecutor = {
             const leafItems = [];
             openTypes.forEach(t => (term ? groups[t].filter(mLeaf) : groups[t]).forEach(x => leafItems.push({ t, x })));
             const kids = term ? kidsAll.filter(k => computeMatch(k, new Set())) : kidsAll;
+            // Reconnection links drill: shared cross-tree artifact -> the peer process.
+            const linkList = (m.linkInfo && m.linkInfo.get(guid)) || [];
+            const linkItems = (!term && this._pgLeafOpen.has(guid + ':link')) ? linkList : [];
+            // Non-reconnect interactions render as their own rows; reconnect (file bridge) ones
+            // are surfaced through the link drill instead, so they aren't shown twice.
+            const shownInter = interactions.filter(it => !it.recon);
             const childAnc = anc.slice(); if (childAnc.length) childAnc[childAnc.length - 1] = !isLast;
-            const total = interactions.length + leafItems.length + kids.length;
+            const total = shownInter.length + leafItems.length + linkItems.length + kids.length;
             let idx = 0;
-            interactions.forEach(it => {
+            shownInter.forEach(it => {
                 const dl2 = it.info ? ` data-log='${esc(JSON.stringify(it.info))}'` : '';
                 rows.push(`<div class="pg-row pg-leaf pg-inject"${dl2}>${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-inject">${ICON.inject}</span><span class="pg-name">${hl(it.label || it.target)}</span><span class="pg-tag">${esc(it.type)}</span>${anomalyPill(it.anomaly)}</div>`);
             });
             leafItems.forEach(({ t, x }) => leafChildRow(childAnc.concat([false]), ++idx === total, t, x));
+            linkItems.forEach(l => {
+                const peerName = m.procLabel.get(l.peerGuid) || l.peerGuid;
+                const licon = ICON[l.type] || ICON.link;
+                const kindTxt = l.type === 'file' ? 'dropped & ran' : l.type === 'net' ? 'shared IP' : l.type === 'dns' ? 'shared domain' : 'shared';
+                rows.push(`<div class="pg-row pg-leaf pg-link-item" data-peer="${esc(l.peerGuid)}" title="Reconnects to ${esc(String(peerName))} — click to jump">${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-link">${licon}</span><span class="pg-name">${hl(l.label)}</span><span class="pg-link-peer">${hl(peerName)}</span><span class="pg-tag pg-tag-recon">${kindTxt}</span></div>`);
+            });
             kids.forEach(k => walk(k, childAnc.concat([false]), ++idx === total, guid));
             seen.delete(guid);
         };
@@ -3639,15 +3799,31 @@ const QueryExecutor = {
         }));
         // Selection (row highlight) doubles as the keyboard cursor; persists across re-renders
         // by guid so folding/unfolding keeps your place.
+        const clearHl = () => container.querySelectorAll('.pg-row.pg-link-hl').forEach(r => r.classList.remove('pg-link-hl'));
+        const rowByGuid = (g) => g ? container.querySelector(`.pg-row.pg-proc[data-guid="${(window.CSS && CSS.escape) ? CSS.escape(g) : g}"]`) : null;
         const selectRow = (row, open) => {
             container.querySelectorAll('.pg-row.pg-kbsel').forEach(r => r.classList.remove('pg-kbsel'));
+            clearHl();
             if (!row) return;
             row.classList.add('pg-kbsel');
             this._pgTreeSelGuid = row.dataset.guid || null;
+            // Subtly highlight the rows this process reconnects to (click-to-see-what-links).
+            const g = row.dataset.guid;
+            if (g && m.linkInfo && m.linkInfo.has(g)) {
+                new Set(m.linkInfo.get(g).map(l => l.peerGuid)).forEach(pg => { const pr = rowByGuid(pg); if (pr) pr.classList.add('pg-link-hl'); });
+            }
             row.scrollIntoView({ block: 'nearest' });
             if (open && row.dataset.log) { try { this._pgOpenLog(JSON.parse(row.dataset.log)); } catch (e) { /* ignore */ } }
         };
-        container.querySelectorAll('.pg-row').forEach(row => row.addEventListener('click', () => selectRow(row, true)));
+        container.querySelectorAll('.pg-row').forEach(row => row.addEventListener('click', () => {
+            // A link drill item jumps to (and flashes) its peer process row.
+            if (row.dataset.peer) {
+                const pr = rowByGuid(row.dataset.peer);
+                if (pr) { clearHl(); pr.classList.add('pg-link-hl'); pr.scrollIntoView({ block: 'center' }); }
+                return;
+            }
+            selectRow(row, true);
+        }));
         if (this._pgTreeSelGuid) {
             const r = container.querySelector(`.pg-row[data-guid="${(window.CSS && CSS.escape) ? CSS.escape(this._pgTreeSelGuid) : this._pgTreeSelGuid}"]`);
             if (r) r.classList.add('pg-kbsel');

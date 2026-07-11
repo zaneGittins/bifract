@@ -3,6 +3,8 @@ package query
 import (
 	"context"
 	"fmt"
+	"log"
+	"sort"
 
 	"bifract/pkg/parser"
 )
@@ -50,11 +52,152 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	if len(guids) == 0 {
 		return provenanceEmptyScoreSQL, nil
 	}
-	scoreSQL, err := parser.BuildProvenanceScoringSQL(guids, p.Threshold, p.EdgeTypes, opts)
+
+	// Cross-tree reconnection (NoDoze object-mediated): find peer processes in OTHER trees
+	// that share a leaf with this subgraph, auto-expand the most anomalous ones into real
+	// subtrees, and emit bridge edges for the rest. Bounded and rarity-pruned; see
+	// parser.BuildReconnectionSQL. Failure is non-fatal -- pgr still returns the base tree.
+	combined := guids
+	var emitPeers []parser.ReconnectPeer
+	if p.Reconnect {
+		reconSQL, rErr := parser.BuildReconnectionSQL(guids, p, opts)
+		if rErr != nil {
+			log.Printf("[pgr] build reconnection query: %v", rErr)
+		} else if reconSQL != "" {
+			reconRows, qErr := h.db.QueryLowPriority(ctx, reconSQL)
+			if qErr != nil {
+				log.Printf("[pgr] reconnection lookup failed: %v", qErr)
+			} else {
+				peers := parseReconnectPeers(reconRows)
+				combined, _ = h.expandReconnectionPeers(ctx, guids, peers, opts)
+				// Reconnection owns its bridge edges (AppendReconnectionEdges), so emit every
+				// peer: the emit logic decides shape (net/dns converge on the object node,
+				// file is writer->executor, injection/access are skipped -- pass-2 owns those).
+				emitPeers = peers
+			}
+		}
+	}
+
+	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, opts)
 	if err != nil {
 		return "", fmt.Errorf("pgr: build scoring query: %w", err)
 	}
+	if len(emitPeers) > 0 {
+		scoreSQL = parser.AppendReconnectionEdges(scoreSQL, emitPeers)
+	}
 	return scoreSQL, nil
+}
+
+// Reconnection expansion caps (orchestration side; SQL-side caps live in pkg/parser).
+const (
+	reconnectMaxExpand      = 5    // high-anomaly peers auto-expanded into real subtrees
+	reconnectExpandDepth    = 3    // shallow descendant depth per expanded peer
+	reconnectExpandMaxGuids = 2000 // hard cap on total guids after expansion
+	reconnectHighAnomaly    = 0.8  // only peers at/above this bridge severity expand
+)
+
+// parseReconnectPeers converts the reverse-lookup rows into typed peers, dropping any
+// without a peer guid.
+func parseReconnectPeers(rows []map[string]interface{}) []parser.ReconnectPeer {
+	peers := make([]parser.ReconnectPeer, 0, len(rows))
+	for _, r := range rows {
+		pe := parser.ReconnectPeer{
+			ReconType:   reconString(r["recon_type"]),
+			PeerGUID:    reconString(r["peer_guid"]),
+			SrcGUID:     reconString(r["src_guid"]),
+			ObjectID:    reconString(r["object_id"]),
+			Label:       reconString(r["label"]),
+			Anomaly:     reconFloat(r["anomaly"]),
+			PeerImage:   reconString(r["peer_image"]),
+			PeerLogID:   reconString(r["peer_log_id"]),
+			PeerTS:      reconString(r["peer_ts"]),
+			PeerFractal: reconString(r["peer_fractal"]),
+		}
+		if pe.PeerGUID == "" {
+			continue
+		}
+		peers = append(peers, pe)
+	}
+	return peers
+}
+
+// expandReconnectionPeers ranks peers by bridge severity and traverses a shallow descendant
+// subtree for the top reconnectMaxExpand of them (>= reconnectHighAnomaly), merging those
+// guids into the tree set (capped). Returns the combined guid set and the set of expanded
+// peer guids. Traversal failures are logged and skipped -- expansion is best-effort.
+func (h *QueryHandler) expandReconnectionPeers(ctx context.Context, treeGuids []string, peers []parser.ReconnectPeer, opts parser.QueryOptions) ([]string, map[string]bool) {
+	expanded := map[string]bool{}
+
+	// Best anomaly per distinct peer, ordered by that anomaly descending.
+	best := map[string]float64{}
+	order := make([]string, 0, len(peers))
+	for _, pe := range peers {
+		if _, ok := best[pe.PeerGUID]; !ok {
+			order = append(order, pe.PeerGUID)
+		}
+		if pe.Anomaly > best[pe.PeerGUID] {
+			best[pe.PeerGUID] = pe.Anomaly
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool { return best[order[i]] > best[order[j]] })
+
+	seen := make(map[string]bool, len(treeGuids))
+	for _, g := range treeGuids {
+		seen[g] = true
+	}
+	combined := append([]string(nil), treeGuids...)
+
+	expandCount := 0
+	for _, g := range order {
+		if expandCount >= reconnectMaxExpand || len(combined) >= reconnectExpandMaxGuids {
+			break
+		}
+		if best[g] < reconnectHighAnomaly {
+			break // order is descending, so nothing further qualifies
+		}
+		pp := parser.ProvenanceParams{Start: g, Depth: reconnectExpandDepth, Direction: "forward"}
+		sql, err := parser.BuildProcessTreeQuery(pp, opts)
+		if err != nil {
+			continue
+		}
+		rows, err := h.db.QueryLowPriority(ctx, sql)
+		if err != nil {
+			log.Printf("[pgr] expand peer %s: %v", g, err)
+			continue
+		}
+		expanded[g] = true
+		expandCount++
+		for _, r := range rows {
+			sg := reconString(r["process_guid"])
+			if sg == "" || seen[sg] {
+				continue
+			}
+			seen[sg] = true
+			combined = append(combined, sg)
+			if len(combined) >= reconnectExpandMaxGuids {
+				log.Printf("[pgr] reconnection expansion hit guid cap (%d)", reconnectExpandMaxGuids)
+				break
+			}
+		}
+	}
+	return combined, expanded
+}
+
+func reconString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func reconFloat(v interface{}) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	}
+	return 0
 }
 
 // resolvedSource is a source command's SQL subquery + the flat columns it exposes.
