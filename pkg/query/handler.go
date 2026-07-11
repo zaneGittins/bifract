@@ -264,9 +264,6 @@ type preparedQuery struct {
 	histBucketCount     int
 	pipeline            *parser.PipelineNode
 	translationOpts     parser.QueryOptions
-	isProvenance        bool                     // pgr(): handled via the two-pass provenance path, not sql
-	provenanceParams    parser.ProvenanceParams
-	provenanceRows      []map[string]interface{} // pgr() scored edge rows (computed in prepareQuery)
 }
 
 // buildWindowSQL re-translates the query with a narrower time window and a
@@ -636,42 +633,31 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
 
-	// pgr() is a two-pass provenance query, not a single translated statement. Run it here
-	// (once) and stash the scored edge rows on prep so both the buffered and streaming
-	// handlers emit the same result -- this also keeps it off the streaming SQL path (which
-	// would otherwise run an empty statement). pgr() yields a table by default; a downstream
-	// graph() sets the chart config.
-	if pp, ok := parser.ExtractProvenanceParams(pipeline); ok {
-		if opts.SourceMode == parser.SourceIceberg {
+	// Source commands (e.g. pgr()) generate the pipeline's source rather than filtering the
+	// logs table. Resolve the source command into a SQL subquery source (opts.SourceSubquery)
+	// and drop it from the pipeline; the rest of the pipeline (filters/aggregations/charts,
+	// including pgraph()) then translates over that source like any other query. Everything
+	// downstream keys off opts.SourceSubquery -- no per-command special-casing.
+	var sourceFocus string
+	if src, ok := parser.FirstSourceCommand(pipeline); ok {
+		if perr := parser.ValidateSourceCommandPlacement(pipeline); perr != nil {
 			respondJSON(w, http.StatusBadRequest, QueryResponse{
-				Success: false, Query: req.Query, ErrorType: "translate",
-				Error: "pgr() operates on live process lineage and is not available over archived data",
+				Success: false, Query: req.Query, ErrorType: "translate", Error: perr.Error(),
 			})
 			return
 		}
-		rows, perr := h.runProvenanceGraph(r.Context(), pp, opts)
-		if perr != nil {
-			respondJSON(w, http.StatusInternalServerError, QueryResponse{
-				Success: false, Query: req.Query, ErrorType: "execution", Error: perr.Error(),
+		rs, rerr := h.resolveSourceCommand(r.Context(), src, opts)
+		if rerr != nil {
+			respondJSON(w, http.StatusBadRequest, QueryResponse{
+				Success: false, Query: req.Query, ErrorType: "translate", Error: rerr.Error(),
 			})
 			return
 		}
-		ct, cc := "", map[string]interface{}{}
-		if cfg, hasPgraph := parser.ExtractPGraphConfig(pipeline); hasPgraph {
-			ct, cc = "pgraph", cfg
-		}
-		prep = &preparedQuery{
-			req:            req,
-			isProvenance:   true,
-			provenanceRows: rows,
-			chartType:      ct,
-			chartConfig:    cc,
-			fieldOrder:     provenanceFieldOrder,
-			startTime:      startTime,
-			endTime:        endTime,
-			selectedIndex:  selectedIndex,
-		}
-		return
+		opts.SourceSubquery = rs.SQL
+		opts.SourceColumns = rs.Columns
+		opts.SourceNumericColumns = rs.NumericColumns
+		sourceFocus = rs.Focus
+		pipeline = parser.StripCommand(pipeline, src.Name)
 	}
 
 	translationResult, err := parser.TranslateToSQLWithOrder(pipeline, opts)
@@ -694,19 +680,35 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	isAggregated = translationResult.IsAggregated
 	chartType = translationResult.ChartType
 	chartConfig = translationResult.ChartConfig
+	// Surface the source command's focus node (pgr start guid) so pgraph() can center/highlight it.
+	if sourceFocus != "" && chartType == "pgraph" {
+		if chartConfig == nil {
+			chartConfig = map[string]interface{}{}
+		}
+		chartConfig["focus"] = sourceFocus
+	}
+
+	// A subquery source (a resolved source command like pgr()) is already scoped inside the
+	// subquery and exposes a formatted-String timestamp, so cursor/timestamp paging, the
+	// timestamp histogram, and progressive streaming don't apply -- the query is always fully
+	// computed. This is a property of the source, not of any one command.
+	hasSubquerySource := opts.SourceSubquery != ""
 
 	// Track whether cursor pagination applies (non-aggregated, no explicit LIMIT keyword in query)
-	appliedCursorPaging := !isAggregated && !sqlLimitRE.MatchString(sql)
+	appliedCursorPaging := !isAggregated && !sqlLimitRE.MatchString(sql) && !hasSubquerySource
 
 	// A query can be progressively streamed newest-first only when it is a plain
 	// non-aggregated, non-charted search left in the translator's default
 	// timestamp-DESC order. Explicit sorts, aggregations, and charts must be
 	// fully computed before any meaningful result exists.
-	streamable := translationResult.DefaultTimeOrder && !isAggregated && chartType == ""
+	streamable := translationResult.DefaultTimeOrder && !isAggregated && chartType == "" && !hasSubquerySource
 
 	// Add LIMIT to queries that don't already have one
 	if !sqlLimitRE.MatchString(sql) {
 		if isAggregated {
+			sql += " LIMIT 10000"
+		} else if hasSubquerySource {
+			// No cursor/timestamp paging over a subquery source; a plain generous cap.
 			sql += " LIMIT 10000"
 		} else {
 			// Ensure stable secondary sort so cursor pages don't drift on timestamp ties
@@ -734,8 +736,9 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		}
 	}
 
-	// Build histogram query for non-aggregated raw log queries (skip on cursor pages — already shown)
-	needsHistogram := !isAggregated && chartType == "" && req.Cursor == ""
+	// Build histogram query for non-aggregated raw log queries (skip on cursor pages — already
+	// shown, and for composed pgr() whose source has no scannable timestamp partition).
+	needsHistogram := !isAggregated && chartType == "" && req.Cursor == "" && !hasSubquerySource
 	var histogramSQL string
 	var histBucketSec, histBucketCount int
 	if needsHistogram {
@@ -944,10 +947,6 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	prep := h.prepareQuery(w, r)
 	if prep == nil {
-		return
-	}
-	if prep.isProvenance {
-		h.respondProvenanceGraph(w, prep)
 		return
 	}
 	req := prep.req
@@ -1268,12 +1267,6 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	prep := h.prepareQuery(w, r)
 	if prep == nil {
 		return // prepareQuery already wrote the response
-	}
-	// pgr() rows are already computed in prepareQuery; emit them over the NDJSON stream
-	// protocol (meta -> rows -> done) rather than the streaming SQL path.
-	if prep.isProvenance {
-		h.streamProvenanceGraph(w, prep)
-		return
 	}
 
 	flusher, ok := w.(http.Flusher)

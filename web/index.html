@@ -1096,6 +1096,25 @@
         </section>
 
         <div class="search-results-split">
+        <!-- Fields rail (left, push layout) -->
+        <aside id="fieldsRail" class="fields-rail">
+            <div class="fr-header">
+                <span class="fr-title">Fields</span>
+                <span id="fieldsRailCount" class="fr-count"></span>
+                <div class="fr-header-actions">
+                    <button id="fieldsRailSort" class="fr-icon-btn" title="Sort alphabetically">#</button>
+                    <button id="fieldsRailClose" class="fr-icon-btn fr-close" title="Close">&times;</button>
+                </div>
+            </div>
+            <div id="fieldsRailNote" class="fr-sample-note" style="display:none;"></div>
+            <div class="fr-filter">
+                <input id="fieldsRailFilter" type="text" class="fr-filter-input" placeholder="Filter fields..." />
+            </div>
+            <div id="fieldsRailBody" class="fr-body">
+                <div class="fr-empty">Run a search to explore its fields</div>
+            </div>
+        </aside>
+
         <!-- Results Section -->
         <section class="results-section">
             <!-- Timeline (integrated into results) -->
@@ -1124,6 +1143,7 @@
                     <span id="resultsCount" class="result-count">-</span>
                     <span id="executionTime" class="execution-time"></span>
                     <div class="results-btn-group">
+                        <button id="fieldsRailToggle" class="export-btn fields-rail-toggle" title="Show fields sidebar">Fields</button>
                         <button id="wrapToggleBtn" class="export-btn wrap-toggle-btn" style="display: none;" onclick="QueryExecutor.toggleWrap()" title="Toggle row wrap">wrap</button>
                         <button id="exportCsvBtn" class="export-btn" style="display: none;" onclick="QueryExecutor.exportToCsv()">csv</button>
                         <button id="fullscreenBtn" class="results-fullscreen-btn" onclick="QueryExecutor.toggleFullscreen()" title="Toggle fullscreen">
@@ -1170,24 +1190,6 @@
                 </div>
             </div>
 
-            <!-- Field Statistics Drawer -->
-            <div id="fieldStatsDrawer" class="fs-drawer">
-                <div class="fs-drawer-handle" onclick="FieldStats.toggle()">
-                    <div class="fs-drawer-grip"></div>
-                    <span class="fs-drawer-label">Fields</span>
-                    <div class="fs-drawer-actions" onclick="event.stopPropagation()">
-                        <button id="fieldStatsSortBtn" class="fs-sort-btn" title="Sort alphabetically" onclick="FieldStats.toggleSort()">#</button>
-                    </div>
-                </div>
-                <div class="fs-drawer-body">
-                    <div class="fs-filter">
-                        <input type="text" class="fs-filter-input" placeholder="Filter fields..." oninput="FieldStats.handleFilter(this.value)" />
-                    </div>
-                    <div id="fieldStatsBody" class="fs-body">
-                        <div class="fs-empty">Run a query to see field statistics</div>
-                    </div>
-                </div>
-            </div>
         </section>
 
         <!-- Unified Log Detail Panel (right, push layout) -->

@@ -114,7 +114,7 @@ func TestModelLookup_TableWithModelColumns(t *testing.T) {
 		t.Errorf("beacon_score must come from the join, got:\n%s", sql)
 	}
 	// The non-model table columns are still projected from the source.
-	if !strings.Contains(sql, "fields.`src_ip` AS src_ip") {
+	if !strings.Contains(sql, "fields.`src_ip`::String AS src_ip") {
 		t.Errorf("expected src_ip projected in source, got:\n%s", sql)
 	}
 }

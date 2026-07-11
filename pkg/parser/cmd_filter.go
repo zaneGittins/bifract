@@ -26,7 +26,9 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		case "timestamp", normLogColumn, "log_id", "normalizer":
 			fieldRef = field
 		default:
-			fieldRef = jsonFieldRef(field)
+			// IN / NOT IN reject a bare Dynamic subcolumn (error 43); cast raw JSON
+			// refs to ::String for mixed-history safety (index preserved).
+			fieldRef = groupableCast(jsonFieldRef(field))
 		}
 	}
 

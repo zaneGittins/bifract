@@ -36,10 +36,30 @@ type QueryOptions struct {
 	ProcFreqTable         string                        // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
 	IncludeShardNum       bool                          // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
 	SourceMode            SourceMode                    // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
+	// SourceSubquery makes the pipeline read FROM a pre-built SQL subquery instead of the
+	// logs table. Used to compose downstream BQL (filter/aggregate/sort/table) on top of a
+	// pgr() scored edge list: the two-pass pgr SQL becomes the source and its flat output
+	// columns (SourceColumns) resolve as bare columns. Base time/fractal conditions are NOT
+	// re-applied (the subquery already scoped them).
+	SourceSubquery       string
+	SourceColumns        []string // flat column names exposed by SourceSubquery (resolve bare, not fields.x)
+	SourceNumericColumns []string // subset of SourceColumns that are already numeric (no string-coercion on compare)
+}
+
+// sourceColumnSelects renders a subquery source's flat columns as a default SELECT list.
+func sourceColumnSelects(cols []string) []SelectExpr {
+	out := make([]SelectExpr, 0, len(cols))
+	for _, c := range cols {
+		out = append(out, SelectExpr{Expr: c})
+	}
+	return out
 }
 
 // EffectiveTableName returns the table name to query, defaulting to "logs".
 func (o QueryOptions) EffectiveTableName() string {
+	if o.SourceSubquery != "" {
+		return "(" + o.SourceSubquery + ") AS pgr_src"
+	}
 	if o.TableName != "" {
 		return o.TableName
 	}
@@ -73,6 +93,26 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 		}
 	}
 	registry := NewFieldRegistry(opts.SourceMode)
+	// A subquery source (a resolved source command) exposes flat columns; register them so
+	// bare references resolve to the column name (not fields.`x` JSON access). Numeric columns
+	// register as Assignment (already numeric -> no toFloat64OrZero coercion, which errors on a
+	// non-String); string columns as Base (coerce on numeric compare, harmless for strings).
+	if opts.SourceSubquery != "" {
+		numeric := make(map[string]bool, len(opts.SourceNumericColumns))
+		for _, c := range opts.SourceNumericColumns {
+			numeric[c] = true
+		}
+		for _, c := range opts.SourceColumns {
+			if numeric[c] {
+				// Assignment kind = already numeric (no coercion); SetResolveExpr pins the bare
+				// column so Resolve returns it directly instead of falling through to fields.`x`.
+				registry.Register(c, FieldKindAssignment, c, -1)
+				registry.SetResolveExpr(c, c)
+			} else {
+				registry.Register(c, FieldKindBase, c, -1)
+			}
+		}
+	}
 	plan := NewQueryPlan()
 	ctx := &CommandContext{
 		Registry: registry,
@@ -176,7 +216,10 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 			if assignment.Expression == "timestamp" {
 				expression = "timestamp"
 			} else {
-				expression = jsonFieldRef(assignment.Expression)
+				// Materialized as a column and referenced downstream (possibly in
+				// GROUP BY via its alias); cast raw JSON refs to ::String so a
+				// Dynamic-stored path stays groupable.
+				expression = groupableCast(jsonFieldRef(assignment.Expression))
 			}
 		case TokenFunction:
 			expression = fmt.Sprintf("'%s'", escapeString(assignment.Expression))
@@ -184,7 +227,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 			if assignment.Expression == "timestamp" {
 				expression = "timestamp"
 			} else {
-				expression = jsonFieldRef(assignment.Expression)
+				expression = groupableCast(jsonFieldRef(assignment.Expression))
 			}
 		}
 
@@ -300,6 +343,137 @@ func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds 
 	return sql, nil
 }
 
+// FieldStatsParams configures the sampled field-statistics aggregation.
+type FieldStatsParams struct {
+	SampleSize int // max rows scanned (a bounded, most-recent superset of the results window)
+	TopN       int // top values reported per field
+	MaxFields  int // cap on the number of distinct fields returned
+	ValueLen   int // per-value character cap (payload safety for long values)
+}
+
+// BuildFieldStatsSQL builds a bounded, sampled aggregation reporting per-field
+// coverage, cardinality, and top values for a BQL query's matched events. Like
+// BuildHistogramSQL it reuses ONLY the WHERE portion of the pipeline (time range,
+// fractal scope, user filters, comment() and computed-column filters); downstream
+// aggregation/transform/sort commands never affect it, so the stats always describe
+// the underlying events the search matched.
+//
+// The scan is bounded by SampleSize via an inner `ORDER BY <ts> DESC LIMIT`, so
+// ClickHouse can stop early and cost stays predictable no matter how many rows
+// match. The sample is the most-recent SampleSize matching events, a strict
+// superset of the results table (which shows fewer, also newest-first).
+//
+// Fields are read from norm_log (the flat ZSTD serialization of the JSON `fields`
+// column) rather than reconstructing the JSON sub-columns, then exploded with
+// JSONExtractKeysAndValues. A synthetic `__rows__` entry -- one per sampled row --
+// carries the exact sample size back in the same query (its `present` is the
+// denominator for coverage); the caller strips it from the field list.
+//
+// Returns ("", nil) for source-command compositions (pgr() etc.), whose source is
+// a subquery without a norm_log column: the caller treats that as "unsupported".
+func BuildFieldStatsSQL(pipeline *PipelineNode, opts QueryOptions, p FieldStatsParams) (string, error) {
+	if opts.SourceSubquery != "" {
+		return "", nil
+	}
+	if p.SampleSize <= 0 {
+		p.SampleSize = 50000
+	}
+	if p.TopN <= 0 {
+		p.TopN = 10
+	}
+	if p.MaxFields <= 0 {
+		p.MaxFields = 250
+	}
+	if p.ValueLen <= 0 {
+		p.ValueLen = 256
+	}
+
+	plan := NewQueryPlan()
+	addBaseConditions(plan, opts)
+
+	// User's filter conditions (the WHERE portion of their BQL query).
+	if pipeline.Filter != nil {
+		whereSQL, err := buildWhereClause(pipeline.Filter.Conditions)
+		if err != nil {
+			return "", err
+		}
+		if whereSQL != "" {
+			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, whereSQL)
+		}
+	}
+
+	// comment() filter, resolved to log_ids upstream (mirrors BuildHistogramSQL).
+	if opts.HasCommentFilter {
+		if len(opts.CommentLogIDs) == 0 {
+			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, "1 = 0")
+		} else {
+			quoted := make([]string, len(opts.CommentLogIDs))
+			for i, id := range opts.CommentLogIDs {
+				quoted[i] = fmt.Sprintf("'%s'", escapeString(id))
+			}
+			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where,
+				fmt.Sprintf("log_id IN (%s)", strings.Join(quoted, ", ")))
+		}
+	}
+
+	// Computed-column filters (e.g. len(field) | _len > 500), same as the histogram.
+	if len(pipeline.HavingConditions) > 0 {
+		if computedWhere := histogramComputedWhere(pipeline, opts); computedWhere != "" {
+			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, computedWhere)
+		}
+	}
+
+	where := strings.Join(plan.SourceStage().Layer.Where, " AND ")
+	if where == "" {
+		where = "1 = 1"
+	}
+	tbl := opts.EffectiveTableName()
+	tsCol := "timestamp"
+	if opts.UseIngestTimestamp {
+		tsCol = "ingest_timestamp"
+	}
+
+	// Nested build:
+	//   sample  -> newest SampleSize matching norm_log values (bounded scan)
+	//   explode -> arrayJoin JSON keys/values, prefixed with a __rows__ sentinel
+	//   perval  -> count per (key, value), EMPTY VALUES EXCLUDED
+	//   ranked  -> row_number() per key by frequency (bounds top-N materialization)
+	//   outer   -> present, cardinality (distinct-in-sample), top values + counts
+	//
+	// Empty values are dropped (kv.2 != ''): the `fields` JSON has typed sub-columns
+	// that serialize as "" for every row, so counting keys would make every field
+	// look 100% present. Excluding empties makes `present` mean "populated in N
+	// events", makes coverage the populated fraction, and makes fields that are empty
+	// across the whole sample fall out entirely (no surviving rows). The __rows__
+	// sentinel carries a non-empty value ('1') so it survives that same filter and
+	// still reports the exact sample size.
+	sql := fmt.Sprintf(`SELECT
+    key,
+    sum(cnt) AS present,
+    count() AS cardinality,
+    groupArrayIf(val, rnk <= %d) AS top_values,
+    groupArrayIf(cnt, rnk <= %d) AS top_counts
+FROM (
+    SELECT key, val, cnt,
+           row_number() OVER (PARTITION BY key ORDER BY cnt DESC, val ASC) AS rnk
+    FROM (
+        SELECT kv.1 AS key, substringUTF8(kv.2, 1, %d) AS val, count() AS cnt
+        FROM (
+            SELECT norm_log FROM %s WHERE %s ORDER BY %s DESC LIMIT %d
+        )
+        ARRAY JOIN arrayConcat([('__rows__', '1')], JSONExtractKeysAndValues(norm_log, 'String')) AS kv
+        WHERE kv.1 != '' AND kv.2 != ''
+        GROUP BY key, val
+    )
+)
+GROUP BY key
+ORDER BY (key = '__rows__') DESC, present DESC
+LIMIT %d`,
+		p.TopN, p.TopN, p.ValueLen, tbl, where, tsCol, p.SampleSize, p.MaxFields+1)
+
+	return sql, nil
+}
+
 // histogramComputedWhere returns a WHERE clause fragment that makes the histogram
 // respect pipe commands that filter on computed columns (e.g. len(field) | _len > 500).
 // It mirrors the main translator flow — Declare, classifyConditions, Execute,
@@ -366,6 +540,12 @@ func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) string {
 
 // addBaseConditions adds time range and fractal isolation conditions.
 func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
+	// A subquery source (pgr composition) is already scoped by time + fractal inside the
+	// subquery, and its timestamp column is a formatted String -- re-applying datetime range
+	// / fractal predicates here would be redundant and type-incorrect. Skip them.
+	if opts.SourceSubquery != "" {
+		return
+	}
 	source := plan.SourceStage()
 
 	tsCol := "timestamp"
@@ -735,12 +915,15 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentF
 			continue
 		}
 
-		// Generate SELECT from raw field reference
+		// Generate SELECT from raw field reference. Cast raw JSON subcolumns to
+		// ::String so the grouped column is groupable even when the underlying
+		// path is stored as Dynamic (rows ingested before the field was
+		// type-hinted); a bare Dynamic ref triggers ClickHouse error 44.
 		quotedName, err := sanitizeIdentifier(fieldName)
 		if err != nil {
 			return fmt.Errorf("groupBy: %w", err)
 		}
-		selects = append(selects, fmt.Sprintf("%s AS %s", gf, quotedName))
+		selects = append(selects, fmt.Sprintf("%s AS %s", groupableCast(gf), quotedName))
 		addedAliases[quotedName] = true
 		source.Layer.GroupBy[i] = quotedName
 	}
@@ -810,6 +993,24 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentF
 func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentFields []string) {
 	plan := ctx.Plan
 
+	// Subquery source (a resolved source command like pgr()): project the source's flat
+	// columns, never the logs-table norm_log/base defaults. Explicit table() columns are set
+	// by tableHandler (already bare); aggregate/select handlers set their own Selects.
+	if ctx.Opts.SourceSubquery != "" {
+		if !plan.IsAggregated {
+			if !(plan.HasTableCmd && plan.TableHasExplicitColumns && len(source.Layer.Selects) > 0) {
+				source.Layer.Selects = sourceColumnSelects(ctx.Opts.SourceColumns)
+			}
+			existing := selectExprStrings(source.Layer.Selects)
+			for _, af := range assignmentFields {
+				if !contains(existing, af) {
+					source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: af})
+				}
+			}
+		}
+		return
+	}
+
 	// In iceberg mode there is no materialized norm_log column; the normalized
 	// content is reconstructed from the MAP so the result shape matches hot Query.
 	normLogSel := "norm_log"
@@ -842,7 +1043,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 					{Expr: "fractal_id"},
 				}
 				for field := range fields {
-					safe := fmt.Sprintf("%s AS `%s`", jsonFieldRef(field), field)
+					safe := fmt.Sprintf("%s AS `%s`", groupableCast(jsonFieldRef(field)), field)
 					source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: safe})
 				}
 				return

@@ -163,12 +163,21 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			computedExpr := ctx.Registry.Resolve(field)
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", computedExpr, safeAlias)})
 			nonAggregateFields = append(nonAggregateFields, field)
+		} else if ctx.Opts.SourceSubquery != "" {
+			// Over a subquery source (a source command like pgr()) every field is a flat
+			// column; resolve bare via the registry rather than as a fields.`x` JSON path.
+			safeAlias, err := sanitizeIdentifier(field)
+			if err != nil {
+				return fmt.Errorf("table(): %w", err)
+			}
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", resolveFieldRef(field, ctx.Registry), safeAlias)})
+			nonAggregateFields = append(nonAggregateFields, field)
 		} else {
 			safeAlias, err := sanitizeIdentifier(field)
 			if err != nil {
 				return fmt.Errorf("table(): %w", err)
 			}
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", ctx.Registry.fieldRef(field), safeAlias)})
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", groupableCast(ctx.Registry.fieldRef(field)), safeAlias)})
 			nonAggregateFields = append(nonAggregateFields, field)
 		}
 	}
@@ -465,7 +474,9 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if f == "timestamp" || f == normLogColumn || f == "log_id" || f == "normalizer" {
 				arrayElems = append(arrayElems, f)
 			} else {
-				arrayElems = append(arrayElems, jsonFieldRef(f))
+				// Array element feeds arrayJoin -> _entity -> GROUP BY; a bare
+				// Dynamic subcolumn errors 44, so cast to ::String.
+				arrayElems = append(arrayElems, groupableCast(jsonFieldRef(f)))
 			}
 		}
 		entityExpr := fmt.Sprintf("arrayJoin(arrayFilter(x -> x != '', [%s]))", strings.Join(arrayElems, ", "))
@@ -487,7 +498,8 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if chainField == "timestamp" || chainField == normLogColumn || chainField == "log_id" || chainField == "normalizer" {
 			fieldRef = chainField
 		} else {
-			fieldRef = jsonFieldRef(chainField)
+			// chain() groups by this field; a bare Dynamic subcolumn errors 44.
+			fieldRef = groupableCast(jsonFieldRef(chainField))
 		}
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", fieldRef, safeField)})
 		source.Layer.GroupBy = append(source.Layer.GroupBy, fieldRef)

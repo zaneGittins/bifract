@@ -58,96 +58,68 @@ func parseEdgeTypeList(v string) []string {
 	return out
 }
 
-// ExtractProvenanceParams scans a parsed pipeline for a pgr() command and returns its
-// arguments. ok is false when there is no pgr() (or start= is missing). The query handler
-// calls this before translation and, on a match, orchestrates the two-pass provenance query
-// instead of the normal single-statement path (mirrors ExtractCommentParams).
-func ExtractProvenanceParams(pipeline *PipelineNode) (ProvenanceParams, bool) {
-	if pipeline == nil {
-		return ProvenanceParams{}, false
-	}
-	for _, cmd := range pipeline.Commands {
-		if cmd.Name != "pgr" {
-			continue
-		}
-		p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7}
-		var includeTypes, excludeTypes []string
-		for _, arg := range cmd.Arguments {
-			switch {
-			case strings.HasPrefix(arg, "start="):
-				p.Start = strings.Trim(strings.TrimPrefix(arg, "start="), "\"'")
-			case strings.HasPrefix(arg, "depth="):
-				if d, err := strconv.Atoi(strings.TrimPrefix(arg, "depth=")); err == nil && d > 0 {
-					p.Depth = d
-				}
-			case strings.HasPrefix(arg, "direction="):
-				p.Direction = strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "direction="), "\"'"))
-			case strings.HasPrefix(arg, "threshold="):
-				if t, err := strconv.ParseFloat(strings.TrimPrefix(arg, "threshold="), 64); err == nil && t >= 0 && t <= 1 {
-					p.Threshold = t
-				}
-			case strings.HasPrefix(arg, "include="):
-				includeTypes = parseEdgeTypeList(strings.TrimPrefix(arg, "include="))
-			case strings.HasPrefix(arg, "exclude="):
-				excludeTypes = parseEdgeTypeList(strings.TrimPrefix(arg, "exclude="))
+// ParseProvenanceParams parses a pgr() command node's arguments. ok is false when start= is
+// missing. pgr is a source command (see source_command.go): the query layer's source resolver
+// calls this, then orchestrates the two-pass query into a subquery source.
+func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
+	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7}
+	var includeTypes, excludeTypes []string
+	for _, arg := range cmd.Arguments {
+		switch {
+		case strings.HasPrefix(arg, "start="):
+			p.Start = strings.Trim(strings.TrimPrefix(arg, "start="), "\"'")
+		case strings.HasPrefix(arg, "depth="):
+			if d, err := strconv.Atoi(strings.TrimPrefix(arg, "depth=")); err == nil && d > 0 {
+				p.Depth = d
 			}
-		}
-		// Resolve the non-spawn edge-type set: start from include= (or all leaf types), then
-		// drop any exclude=. spawn is the backbone and is never filtered out here.
-		p.EdgeTypes = map[string]bool{}
-		base := includeTypes
-		if len(base) == 0 {
-			base = provenanceLeafTypes
-		}
-		for _, t := range base {
-			if t != "spawn" {
-				p.EdgeTypes[t] = true
+		case strings.HasPrefix(arg, "direction="):
+			p.Direction = strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "direction="), "\"'"))
+		case strings.HasPrefix(arg, "threshold="):
+			if t, err := strconv.ParseFloat(strings.TrimPrefix(arg, "threshold="), 64); err == nil && t >= 0 && t <= 1 {
+				p.Threshold = t
 			}
+		case strings.HasPrefix(arg, "include="):
+			includeTypes = parseEdgeTypeList(strings.TrimPrefix(arg, "include="))
+		case strings.HasPrefix(arg, "exclude="):
+			excludeTypes = parseEdgeTypeList(strings.TrimPrefix(arg, "exclude="))
 		}
-		for _, t := range excludeTypes {
-			delete(p.EdgeTypes, t)
-		}
-		if p.Depth > 50 {
-			p.Depth = 50
-		}
-		if p.Direction != "forward" && p.Direction != "backward" && p.Direction != "both" {
-			p.Direction = "both"
-		}
-		return p, p.Start != ""
 	}
-	return ProvenanceParams{}, false
-}
-
-// ExtractPGraphConfig returns the render config when a pgr() pipeline pipes to pgraph() --
-// the provenance-native visualization (process/file/socket nodes shaped by type, edges
-// colored by anomaly_score). So `pgr(...)` alone yields the scored edge table (export / LLM /
-// further piping) and `pgr(...) | pgraph()` renders the graph. pgraph() reads pgr()'s fixed
-// output columns, so the only arg is an optional limit=.
-func ExtractPGraphConfig(pipeline *PipelineNode) (map[string]interface{}, bool) {
-	if pipeline == nil {
-		return nil, false
+	// Resolve the non-spawn edge-type set: start from include= (or all leaf types), then drop
+	// any exclude=. spawn is the backbone and is never filtered out here.
+	p.EdgeTypes = map[string]bool{}
+	base := includeTypes
+	if len(base) == 0 {
+		base = provenanceLeafTypes
 	}
-	for _, cmd := range pipeline.Commands {
-		if cmd.Name != "pgraph" {
-			continue
+	for _, t := range base {
+		if t != "spawn" {
+			p.EdgeTypes[t] = true
 		}
-		cfg := map[string]interface{}{"limit": 500}
-		for _, arg := range cmd.Arguments {
-			if strings.HasPrefix(arg, "limit=") {
-				if n, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && n > 0 {
-					cfg["limit"] = n
-				}
-			}
-		}
-		return cfg, true
 	}
-	return nil, false
+	for _, t := range excludeTypes {
+		delete(p.EdgeTypes, t)
+	}
+	if p.Depth > 50 {
+		p.Depth = 50
+	}
+	if p.Direction != "forward" && p.Direction != "backward" && p.Direction != "both" {
+		p.Direction = "both"
+	}
+	return p, p.Start != ""
 }
 
 // BuildProcessTreeQuery is pass 1: the ptg() spawn-tree SQL. The handler runs it and
 // collects the process_guid set (tree membership) to bound the pass-2 leaf-fetch.
+//
+// The tree's completeness must NOT depend on the display row limit: buildProcessTreeSQL
+// caps its output at opts.MaxRows, and if that (the configured MaxQueryRows) is smaller than
+// the tree, it drops whole right-side/deep branches -- so a child only a few levels down
+// silently disappears. Override the cap to the guid budget (the same bound pass 2 uses), so
+// the tree is only ever limited by maxProvenanceGuids, not by the smaller display limit.
 func BuildProcessTreeQuery(p ProvenanceParams, opts QueryOptions) (string, error) {
-	res, err := buildProcessTreeSQL(p.Start, p.Depth, p.Direction, nil, "", nil, opts)
+	topts := opts
+	topts.MaxRows = maxProvenanceGuids
+	res, err := buildProcessTreeSQL(p.Start, p.Depth, p.Direction, nil, "", nil, topts)
 	if err != nil {
 		return "", err
 	}
@@ -276,16 +248,24 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("WITH fe AS (SELECT src_image, event_type, target_norm, sum(event_count) AS cnt FROM %[1]s%[2]s GROUP BY src_image, event_type, target_norm), ",
 		procFreq, freqWhere))
-	b.WriteString(fmt.Sprintf("ft AS (SELECT src_image, event_type, sum(event_count) AS tot FROM %[1]s%[2]s GROUP BY src_image, event_type) ",
+	b.WriteString(fmt.Sprintf("ft AS (SELECT src_image, event_type, sum(event_count) AS tot FROM %[1]s%[2]s GROUP BY src_image, event_type), ",
 		procFreq, freqWhere))
-	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id FROM (")
-	b.WriteString("SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.log_id AS log_id, e.timestamp AS timestamp, e.fractal_id AS fractal_id, ")
+	// pm = per-process command line + user, read query-only from the process_creation logs of
+	// the tree's guids (the same bounded keyhole: guid IN + time window + category). Command
+	// lines can be enormous, so truncate to 300 chars in SQL -- never pull the full string.
+	b.WriteString(fmt.Sprintf("pm AS (SELECT fields.process_guid::String AS guid, any(substring(if(fields.commandline::String != '', fields.commandline::String, fields.command_line::String), 1, 300)) AS command_line, any(fields.user::String) AS proc_user FROM %[1]s WHERE %[2]s%[3]s AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'process_creation' GROUP BY guid) ",
+		logs, timeWin, frac(), inList))
+	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user FROM (")
+	b.WriteString("SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.log_id AS log_id, e.timestamp AS timestamp, e.fractal_id AS fractal_id, coalesce(pm.command_line, '') AS command_line, coalesce(pm.proc_user, '') AS proc_user, ")
 	b.WriteString("if(coalesce(ft.tot, 0) = 0, 1.0, round(1 - coalesce(fe.cnt, 0) / ft.tot, 4)) AS anomaly_score ")
 	b.WriteString(fmt.Sprintf("FROM (%s) AS e ", edges))
 	b.WriteString("LEFT JOIN fe ON fe.src_image = e.fkey_src AND fe.event_type = e.event_type AND fe.target_norm = e.fkey_tgt ")
-	b.WriteString("LEFT JOIN ft ON ft.src_image = e.fkey_src AND ft.event_type = e.event_type) AS scored ")
+	b.WriteString("LEFT JOIN ft ON ft.src_image = e.fkey_src AND ft.event_type = e.event_type LEFT JOIN pm ON pm.guid = e.dst_node) AS scored ")
 	b.WriteString(fmt.Sprintf("WHERE event_type = 'spawn' OR anomaly_score >= %s ", strconv.FormatFloat(threshold, 'f', -1, 64)))
-	b.WriteString("ORDER BY anomaly_score DESC")
+	// Spawn edges are the tree backbone (often anomaly ~0). Order them FIRST so that if the
+	// LIMIT truncates, it drops low-signal leaf edges -- never the process structure, which
+	// would make child nodes vanish. Within each group, rarest first.
+	b.WriteString("ORDER BY (event_type = 'spawn') DESC, anomaly_score DESC")
 	if opts.MaxRows > 0 {
 		b.WriteString(fmt.Sprintf(" LIMIT %d", opts.MaxRows))
 	}

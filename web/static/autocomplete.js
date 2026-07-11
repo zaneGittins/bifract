@@ -224,8 +224,8 @@ const Autocomplete = {
         // known ahead of any query (base columns + configured schema fields), so
         // completion works even before the first search. Deduplicated.
         const set = new Set();
-        if (window.FieldStats && FieldStats.stats) {
-            Object.keys(FieldStats.stats).forEach(f => set.add(f));
+        if (window.FieldStats && typeof FieldStats.getFieldNames === 'function') {
+            FieldStats.getFieldNames().forEach(f => set.add(f));
         }
         if (window.BQLLang && typeof BQLLang.knownFields === 'function') {
             BQLLang.knownFields().forEach(f => set.add(f));

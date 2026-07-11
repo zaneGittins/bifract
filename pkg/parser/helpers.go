@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // buildAnalyzeFieldsSQL generates a query that computes per-field statistics.
@@ -110,8 +109,11 @@ func buildTraversalSQL(
 		return nil, fmt.Errorf("%s(): invalid parent field: %w", mode, err)
 	}
 
-	childRef := jsonFieldRef(childField)
-	parentRef := jsonFieldRef(parentField)
+	// Cast to ::String: childRef/parentRef feed the recursive INNER JOIN ON key
+	// and concat(_path); a bare Dynamic subcolumn errors 44 there. The base-case
+	// equality childRef = 'startvalue' stays index-safe (no-op cast is elided).
+	childRef := groupableCast(jsonFieldRef(childField))
+	parentRef := groupableCast(jsonFieldRef(parentField))
 
 	// Always include child and parent fields; deduplicate
 	seen := map[string]bool{childField: true, parentField: true}
@@ -144,7 +146,7 @@ func buildTraversalSQL(
 	// Build include field expressions for CTE columns
 	var baseIncludeCols, recursiveIncludeCols string
 	for _, f := range allInclude {
-		ref := jsonFieldRef(f)
+		ref := groupableCast(jsonFieldRef(f))
 		safeAlias := strings.ReplaceAll(f, ".", "_")
 		baseIncludeCols += fmt.Sprintf(", %s AS _%s", ref, safeAlias)
 		recursiveIncludeCols += fmt.Sprintf(", l.%s AS _%s", ref, safeAlias)
@@ -729,6 +731,14 @@ func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string,
 		case "=$":
 			sql = buildEndsWithAnySQL(fieldRef, values, false)
 		}
+	} else if (cond.Operator == "=" || cond.Operator == "!=") && len(cond.Values) > 1 {
+		// Comma-separated equality list -> IN / NOT IN.
+		negate := cond.Operator == "!="
+		if registry != nil && registry.sourceMode == SourceIceberg && isJSONField {
+			sql = buildIcebergEqualityListSQL(cond.Field, cond.Values, negate)
+		} else {
+			sql = buildEqualityListSQL(fieldRef, cond.Values, negate, isJSONField)
+		}
 	} else {
 		// For comparison operators, try to convert to numeric if the value looks numeric
 		// This allows queries like: bytes > 1000
@@ -957,43 +967,34 @@ var jsonDefaultTypeHintedFields = map[string]bool{
 	"parent_process_guid": true,
 }
 
-// jsonCustomTypeHintedFields holds user-defined custom fields loaded from Postgres.
-// Protected by jsonFieldMu for concurrent access from query and admin goroutines.
-var (
-	jsonCustomTypeHintedFields = map[string]bool{}
-	jsonFieldMu                sync.RWMutex
-)
-
-// isTypeHinted reports whether field has an explicit String type hint in the JSON
-// column, meaning a bare sub-column reference (no ::String cast) is correct and
-// the skip index optimizer will match it against bloom_filter/set indexes.
-func isTypeHinted(field string) bool {
-	if jsonDefaultTypeHintedFields[field] {
-		return true
-	}
-	jsonFieldMu.RLock()
-	v := jsonCustomTypeHintedFields[field]
-	jsonFieldMu.RUnlock()
-	return v
-}
-
-// SetCustomTypeHintedFields replaces the custom type-hinted field set with the
-// provided map. Called at startup and from the schema-fields admin handler after
-// any create/delete/reset operation. Safe for concurrent use.
-func SetCustomTypeHintedFields(custom map[string]bool) {
-	jsonFieldMu.Lock()
-	jsonCustomTypeHintedFields = custom
-	jsonFieldMu.Unlock()
-}
+// SetCustomTypeHintedFields is retained as a no-op for API stability (called at
+// startup and from the schema-fields admin handler). It formerly told the parser
+// which custom fields were type-hinted so jsonFieldRef could emit a bare (no
+// ::String) sub-column ref for them. jsonFieldRef now casts all refs uniformly
+// (the bare-ref optimization was based on a false premise; see jsonFieldRef), so
+// this set no longer affects query generation. The ClickHouse-side schema hint /
+// skip-index management is driven by ReconcileSchemaFields (from Postgres),
+// independent of this call.
+func SetCustomTypeHintedFields(custom map[string]bool) {}
 
 // jsonFieldRef returns the ClickHouse JSON subcolumn reference for a field name.
 // Dots in the field name are treated as nested path separators, producing
 // fields.`event`.`name` for "event.name".
 //
-// Type-hinted fields use a direct reference — required for the skip index optimizer
-// to fire (CAST expressions are not matched against bloom_filter/set indexes).
-// Dynamic (non-hinted) fields append ::String so GROUP BY and aggregations work;
-// Dynamic type is not directly groupable in ClickHouse.
+// ALL subcolumn refs are cast to ::String, uniformly. This is the single
+// invariant that makes every downstream context safe: GROUP BY / ORDER BY /
+// DISTINCT / LIMIT BY / IN / JOIN keys / multiSearch / isIPv4String all REJECT a
+// bare Dynamic subcolumn (error 44/43), and on a mixed-history table a path is
+// stored as Dynamic in parts ingested before it was type-hinted. The ::String
+// cast is a no-op for concretely-typed paths and does NOT defeat the skip index:
+// a cast to the column's own type is elided by the ClickHouse analyzer before
+// index analysis (verified on CH 26.6 for bloom_filter AND set indexes, both =
+// and IN, with identical granule pruning). Bifract runs CH 26.6+ everywhere.
+//
+// The former "bare ref for type-hinted fields" optimization was based on the
+// false premise that CAST breaks index matching; it also caused a whole class of
+// error-44/43 bugs on mixed-history tables. Removed. See groupableCast (now an
+// idempotent no-op given this invariant, kept as a defensive guard).
 func jsonFieldRef(field string) string {
 	parts := strings.Split(field, ".")
 	var b strings.Builder
@@ -1004,11 +1005,7 @@ func jsonFieldRef(field string) string {
 		b.WriteString(escaped)
 		b.WriteString("`")
 	}
-	ref := b.String()
-	if len(parts) == 1 && isTypeHinted(parts[0]) {
-		return ref
-	}
-	return ref + "::String"
+	return b.String() + "::String"
 }
 
 // validateNumeric ensures a value is a valid number, preventing SQL injection in numeric contexts.
@@ -1138,11 +1135,56 @@ const normLogColumn = "norm_log"
 // pattern by the lexer for /regex/i and by the parser for bare-term searches.
 const caseInsensitiveFlag = "(?i)"
 
+// buildEqualityListSQL renders a comma-separated equality list (field="a","b")
+// as an IN / NOT IN predicate. For JSON sub-columns the negated form also
+// admits NULL so rows missing the field are not silently dropped (NULL NOT IN
+// (...) evaluates to NULL, which is falsy).
+func buildEqualityListSQL(fieldRef string, values []string, negate, isJSONField bool) string {
+	// IN / NOT IN reject a bare Dynamic subcolumn (error 43). Cast raw JSON refs
+	// to ::String so a mixed-history (pre-type-hint) path still works; the skip
+	// index is preserved (a no-op cast to the column's own type is elided by the
+	// analyzer). Matches the existing fields.X::String IN (...) pattern in
+	// provenance.go.
+	fieldRef = groupableCast(fieldRef)
+	quoted := make([]string, len(values))
+	for i, v := range values {
+		quoted[i] = "'" + escapeString(v) + "'"
+	}
+	list := strings.Join(quoted, ", ")
+	if negate {
+		if isJSONField {
+			return fmt.Sprintf("(%s IS NULL OR %s NOT IN (%s))", fieldRef, fieldRef, list)
+		}
+		return fmt.Sprintf("%s NOT IN (%s)", fieldRef, list)
+	}
+	return fmt.Sprintf("%s IN (%s)", fieldRef, list)
+}
+
+// buildIcebergEqualityListSQL renders a comma-separated equality list against an
+// Iceberg source, reusing icebergEqualityPredicate per value so MAP correctness
+// and promoted `_ice_` column pruning are preserved.
+func buildIcebergEqualityListSQL(field string, values []string, negate bool) string {
+	parts := make([]string, len(values))
+	for i, v := range values {
+		parts[i] = icebergEqualityPredicate(field, v)
+	}
+	inner := strings.Join(parts, " OR ")
+	if negate {
+		return "NOT (" + inner + ")"
+	}
+	return "(" + inner + ")"
+}
+
 // buildContainsAnySQL returns a case-insensitive substring-contains-any expression.
 // Uses multiSearchAnyCaseInsensitive (Volnitsky/SIMD multi-pattern search), which is
 // significantly faster than equivalent regex alternation and is accelerated by text
 // (inverted) skip indexes when those are present on the target column.
 func buildContainsAnySQL(fieldRef string, values []string, negate bool) string {
+	// multiSearchAnyCaseInsensitive rejects a bare Dynamic subcolumn. Cast raw
+	// JSON refs to ::String so a mixed-history (pre-type-hint) path still works;
+	// bloom_filter/set indexes do not accelerate substring search anyway, so no
+	// index is lost.
+	fieldRef = groupableCast(fieldRef)
 	quoted := make([]string, len(values))
 	for i, v := range values {
 		quoted[i] = "'" + escapeString(v) + "'"
@@ -1364,7 +1406,29 @@ func contains(slice []string, item string) bool {
 // expression if one exists (e.g. from lowercase, eval) or falling back to
 // the JSON subcolumn reference.
 func resolveFieldRef(field string, registry *FieldRegistry) string {
-	return registry.Resolve(field)
+	return groupableCast(registry.Resolve(field))
+}
+
+// groupableCast makes a resolved reference safe for GROUP BY / ORDER BY /
+// DISTINCT / display projection contexts. Type-hinted JSON subcolumns are
+// emitted bare (no ::String) by jsonFieldRef so WHERE-clause bloom/set skip
+// indexes fire, but a bare reference is NOT groupable when the underlying path
+// is stored as Dynamic -- which happens for rows ingested before the field was
+// type-hinted (a mixed-history table). ClickHouse rejects GROUP/ORDER on a
+// Dynamic column with error 44 (ILLEGAL_COLUMN). Casting to ::String is a no-op
+// for a concretely typed String path and makes a Dynamic path groupable, so it
+// is always safe here. resolveFieldRef is never used to build the base-scan
+// WHERE clause (that path calls registry.fieldRef directly), so the skip-index
+// optimization is unaffected.
+//
+// Only raw hot-mode JSON subcolumn refs (fields.`x`) need it; iceberg MAP refs
+// (fields['x']) are already String, computed/base columns and already-cast refs
+// are left untouched.
+func groupableCast(ref string) string {
+	if strings.HasPrefix(ref, "fields.`") && !strings.HasSuffix(ref, "::String") {
+		return ref + "::String"
+	}
+	return ref
 }
 
 // numericCast wraps a resolved field reference for use inside aggregate
@@ -1461,9 +1525,9 @@ func convertMathExprToSQL(expr string, registry *FieldRegistry, selfField ...str
 					result.WriteString(fmt.Sprintf("toFloat64OrNull(toString(%s))", ident))
 				}
 			} else if registry != nil {
-				result.WriteString(fmt.Sprintf("toFloat64OrNull(%s)", registry.fieldRef(ident)))
+				result.WriteString(fmt.Sprintf("toFloat64OrNull(%s)", groupableCast(registry.fieldRef(ident))))
 			} else {
-				result.WriteString(fmt.Sprintf("toFloat64OrNull(%s)", jsonFieldRef(ident)))
+				result.WriteString(fmt.Sprintf("toFloat64OrNull(%s)", groupableCast(jsonFieldRef(ident))))
 			}
 		} else {
 			result.WriteRune(ch)
@@ -1710,10 +1774,12 @@ func processStatsFn(fn string, selectFields *[]string, computedFields map[string
 	// resolveField resolves a field name using the registry when available,
 	// falling back to jsonFieldRef for plain fields.
 	resolveField := func(field string) string {
+		// Feeds stats sub-functions (uniq/values/first/last/group); cast raw JSON
+		// refs to ::String so Dynamic-stored paths are groupable/correct.
 		if registry != nil {
-			return registry.Resolve(field)
+			return groupableCast(registry.Resolve(field))
 		}
-		return jsonFieldRef(field)
+		return groupableCast(jsonFieldRef(field))
 	}
 
 	// castNumeric wraps a resolved field expression with the correct numeric

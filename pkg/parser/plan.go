@@ -227,6 +227,10 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 			parts[i] = s.String()
 		}
 		selectClause = strings.Join(parts, ", ")
+	} else if opts.SourceSubquery != "" && len(opts.SourceColumns) > 0 {
+		// Subquery source (pgr composition): default to its flat columns (there is no
+		// norm_log to project).
+		selectClause = strings.Join(opts.SourceColumns, ", ")
 	} else {
 		selectClause = "toString(timestamp) as timestamp, norm_log, log_id"
 		if opts.SourceMode == SourceIceberg {
@@ -352,7 +356,15 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		innerSQL = outer.String()
 	}
 
-	if err := validateGeneratedSQL(innerSQL); err != nil {
+	// Validate for injection-style patterns. A subquery source (a resolved source command
+	// like pgr()) is trusted machine-generated SQL that legitimately contains UNION ALL (its
+	// edge-type union) and its only user input (guids/start) is already escaped; exempt it
+	// from the check while still validating the user-generated wrapper around it.
+	toValidate := innerSQL
+	if opts.SourceSubquery != "" {
+		toValidate = strings.Replace(toValidate, opts.SourceSubquery, "source_subquery", 1)
+	}
+	if err := validateGeneratedSQL(toValidate); err != nil {
 		return "", err
 	}
 
@@ -482,7 +494,9 @@ func (p *QueryPlan) wrapWithJoin(outerSQL string) string {
 	// Otherwise, use the JSON field reference so ClickHouse can find it.
 	outerKeyRef := p.JoinKey
 	if !p.outerHasColumn(outerSQL, p.JoinKey) {
-		outerKeyRef = jsonFieldRef(p.JoinKey)
+		// JOIN on a bare Dynamic subcolumn errors 44; cast raw JSON keys to
+		// ::String so a mixed-history (pre-type-hint) path can be joined.
+		outerKeyRef = groupableCast(jsonFieldRef(p.JoinKey))
 	}
 
 	var sql strings.Builder

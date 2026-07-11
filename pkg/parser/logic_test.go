@@ -29,7 +29,7 @@ var termTypes = []termDef{
 	{"regex", `/error/i`, "match(lower(norm_log), 'error')"},
 	{"field_eq", `status="200"`, "fields.`status`::String = '200'"},
 	{"field_regex", `image=/powershell/i`, "'(?i)powershell')"},
-	{"field_neq", `user!="admin"`, "fields.`user`"},
+	{"field_neq", `user!="admin"`, "fields.`user`::String"},
 }
 
 // parseAndTranslate is a helper that parses a BQL query and translates it.
@@ -195,7 +195,7 @@ func TestORDoesNotBleed(t *testing.T) {
 		{
 			name:       "OR group between AND terms",
 			query:      `service="web" AND ("error" OR "warning") AND user="admin"`,
-			outerFrags: []string{"fields.`service`::String = 'web'", "fields.`user` = 'admin'"},
+			outerFrags: []string{"fields.`service`::String = 'web'", "fields.`user`::String = 'admin'"},
 		},
 		{
 			name:       "parenthesized OR with AND",
@@ -205,7 +205,7 @@ func TestORDoesNotBleed(t *testing.T) {
 		{
 			name:       "OR in pipeline between AND stages",
 			query:      `* | service="test" | "A" OR "B" OR "C" | user="admin"`,
-			outerFrags: []string{"fields.`service`::String = 'test'", "fields.`user` = 'admin'"},
+			outerFrags: []string{"fields.`service`::String = 'test'", "fields.`user`::String = 'admin'"},
 		},
 	}
 
@@ -325,7 +325,7 @@ func TestPipelineBooleanConditions(t *testing.T) {
 		{
 			name:    "multiple pipes with boolean",
 			query:   `service="web" | "error" OR "warning" | user="admin"`,
-			wantSQL: []string{"fields.`service`::String = 'web'", "match(lower(norm_log), 'error')", "fields.`user` = 'admin'"},
+			wantSQL: []string{"fields.`service`::String = 'web'", "match(lower(norm_log), 'error')", "fields.`user`::String = 'admin'"},
 		},
 		{
 			name:    "chained pipeline with OR and AND",

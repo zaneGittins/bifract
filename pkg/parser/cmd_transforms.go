@@ -1076,7 +1076,9 @@ func (h *lookupIPHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 	var fieldRef string
 	if ipField != "" {
-		fieldRef = jsonFieldRef(ipField)
+		// geoip wraps the value in IP functions (isIPv4String/IPv4StringToNum)
+		// that reject a bare Dynamic subcolumn; cast to ::String.
+		fieldRef = groupableCast(jsonFieldRef(ipField))
 	}
 
 	for _, c := range includeColumns {
@@ -1119,7 +1121,7 @@ func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("lookupIP() requires MaxMind GeoLite2 configuration (set MAXMIND_LICENSE_KEY and MAXMIND_ACCOUNT_ID)")
 	}
 
-	fieldRef := jsonFieldRef(ipField)
+	fieldRef := groupableCast(jsonFieldRef(ipField))
 
 	for _, col := range includeColumns {
 		if _, okCity := geoIPCityFields[col]; !okCity {

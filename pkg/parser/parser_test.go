@@ -26,7 +26,7 @@ func TestBasicFieldEquals(t *testing.T) {
 			query:   "event_id=11",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`event_id` = '11'")
+				return containsSubstr([]string{sql}, "fields.`event_id`::String = '11'")
 			},
 		},
 		{
@@ -42,7 +42,7 @@ func TestBasicFieldEquals(t *testing.T) {
 			query:   "event_id=*",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return strings.Contains(sql, "fields.`event_id` != ''")
+				return strings.Contains(sql, "fields.`event_id`::String != ''")
 			},
 		},
 		{
@@ -50,7 +50,7 @@ func TestBasicFieldEquals(t *testing.T) {
 			query:   "event_id=* | groupby(event_id)",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return strings.Contains(sql, "fields.`event_id` != ''") &&
+				return strings.Contains(sql, "fields.`event_id`::String != ''") &&
 					strings.Contains(sql, "GROUP BY")
 			},
 		},
@@ -77,7 +77,7 @@ func TestBasicFieldEquals(t *testing.T) {
 			query:   `event_id=* | program_name!="suricata"`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return strings.Contains(sql, "fields.`event_id` != ''") &&
+				return strings.Contains(sql, "fields.`event_id`::String != ''") &&
 					strings.Contains(sql, "fields.`program_name`::String IS NULL") &&
 					strings.Contains(sql, "fields.`program_name`::String != 'suricata'")
 			},
@@ -332,12 +332,12 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT single condition",
 			query:     `NOT user="admin"`,
-			wantWhere: "NOT (fields.`user` = 'admin')",
+			wantWhere: "NOT (fields.`user`::String = 'admin')",
 		},
 		{
 			name:      "NOT single regex",
 			query:     `NOT image=/powershell/i`,
-			wantWhere: "NOT (match(fields.`image`, '(?i)powershell'))",
+			wantWhere: "NOT (match(fields.`image`::String, '(?i)powershell'))",
 		},
 		{
 			name:      "NOT single condition in parens",
@@ -354,7 +354,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT (A OR B) wraps entire group",
 			query:     `NOT (user="admin" OR user="root")`,
-			wantWhere: "NOT (fields.`user` = 'admin' OR fields.`user` = 'root')",
+			wantWhere: "NOT (fields.`user`::String = 'admin' OR fields.`user`::String = 'root')",
 		},
 		{
 			name:      "NOT (A OR B OR C) wraps entire group",
@@ -364,7 +364,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT (A OR B OR C) with many values",
 			query:     `NOT (event_id=1 OR event_id=2 OR event_id=3 OR event_id=4 OR event_id=5)`,
-			wantWhere: "NOT (fields.`event_id` = '1' OR fields.`event_id` = '2' OR fields.`event_id` = '3' OR fields.`event_id` = '4' OR fields.`event_id` = '5')",
+			wantWhere: "NOT (fields.`event_id`::String = '1' OR fields.`event_id`::String = '2' OR fields.`event_id`::String = '3' OR fields.`event_id`::String = '4' OR fields.`event_id`::String = '5')",
 		},
 
 		// --- NOT with grouped AND ---
@@ -376,7 +376,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT (A AND B) with regex and string",
 			query:     `NOT (image=/cmd/i AND user="admin")`,
-			wantWhere: "NOT (match(fields.`image`, '(?i)cmd') AND fields.`user` = 'admin')",
+			wantWhere: "NOT (match(fields.`image`::String, '(?i)cmd') AND fields.`user`::String = 'admin')",
 		},
 		{
 			name:      "NOT group with implicit AND",
@@ -388,19 +388,19 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "A AND NOT (B OR C)",
 			query:     `event_id=1 AND NOT (user="admin" OR user="root")`,
-			wantWhere: "(fields.`event_id` = '1' AND NOT (fields.`user` = 'admin' OR fields.`user` = 'root'))",
+			wantWhere: "(fields.`event_id`::String = '1' AND NOT (fields.`user`::String = 'admin' OR fields.`user`::String = 'root'))",
 		},
 		{
 			name:      "A AND NOT (B AND C)",
 			query:     `event_id=1 AND NOT (user="admin" AND image=/cmd/i)`,
-			wantWhere: "(fields.`event_id` = '1' AND NOT (fields.`user` = 'admin' AND match(fields.`image`, '(?i)cmd')))",
+			wantWhere: "(fields.`event_id`::String = '1' AND NOT (fields.`user`::String = 'admin' AND match(fields.`image`::String, '(?i)cmd')))",
 		},
 
 		// --- Multiple NOT groups ---
 		{
 			name:      "NOT (A OR B) AND NOT (C OR D)",
 			query:     `NOT (user="admin" OR user="root") AND NOT (image=/cmd/i OR image=/powershell/i)`,
-			wantWhere: "(NOT (fields.`user` = 'admin' OR fields.`user` = 'root') AND NOT (match(fields.`image`, '(?i)cmd') OR match(fields.`image`, '(?i)powershell')))",
+			wantWhere: "(NOT (fields.`user`::String = 'admin' OR fields.`user`::String = 'root') AND NOT (match(fields.`image`::String, '(?i)cmd') OR match(fields.`image`::String, '(?i)powershell')))",
 		},
 
 		// --- Groups without NOT ---
@@ -429,14 +429,14 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "(A OR B) AND NOT (C OR D) AND E",
 			query:     `(event_id=1 OR event_id=3) AND NOT (user="admin" OR user="system") AND image=/powershell/i`,
-			wantWhere: "((fields.`event_id` = '1' OR fields.`event_id` = '3') AND NOT (fields.`user` = 'admin' OR fields.`user` = 'system') AND match(fields.`image`, '(?i)powershell'))",
+			wantWhere: "((fields.`event_id`::String = '1' OR fields.`event_id`::String = '3') AND NOT (fields.`user`::String = 'admin' OR fields.`user`::String = 'system') AND match(fields.`image`::String, '(?i)powershell'))",
 		},
 
 		// --- Double negation ---
 		{
 			name:      "NOT (NOT A OR B)",
 			query:     `NOT (NOT image=/cmd/i OR user="admin")`,
-			wantWhere: "NOT (NOT (match(fields.`image`, '(?i)cmd')) OR fields.`user` = 'admin')",
+			wantWhere: "NOT (NOT (match(fields.`image`::String, '(?i)cmd')) OR fields.`user`::String = 'admin')",
 		},
 		{
 			name:      "NOT (A) AND NOT B (paren vs bare)",
@@ -470,7 +470,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT group with regex",
 			query:     `NOT (image=/cmd/i OR image=/powershell/i)`,
-			wantWhere: "NOT (match(fields.`image`, '(?i)cmd') OR match(fields.`image`, '(?i)powershell'))",
+			wantWhere: "NOT (match(fields.`image`::String, '(?i)cmd') OR match(fields.`image`::String, '(?i)powershell'))",
 		},
 
 		// --- Sigma-realistic patterns ---
@@ -479,9 +479,9 @@ func TestNOTGroupParentheses(t *testing.T) {
 			query: `(parent_image=/.*\\addinutil\.exe$/i AND NOT ((image=/.*\\conhost\.exe$/i OR image=/.*\\werfault\.exe$/i)))`,
 			checkSQL: func(sql string) bool {
 				w := extractWhere(sql)
-				return strings.Contains(w, "match(fields.`parent_image`") &&
-					strings.Contains(w, "NOT (match(fields.`image`") &&
-					strings.Contains(w, ") OR match(fields.`image`")
+				return strings.Contains(w, "match(fields.`parent_image`::String") &&
+					strings.Contains(w, "NOT (match(fields.`image`::String") &&
+					strings.Contains(w, ") OR match(fields.`image`::String")
 			},
 		},
 		{
@@ -489,9 +489,9 @@ func TestNOTGroupParentheses(t *testing.T) {
 			query: `((image=/powershell/i OR image=/pwsh/i) AND (commandline=/Invoke-WebRequest/i OR commandline=/wget/i) AND NOT (user="SYSTEM"))`,
 			checkSQL: func(sql string) bool {
 				w := extractWhere(sql)
-				return strings.Contains(w, "match(fields.`image`, '(?i)powershell') OR match(fields.`image`, '(?i)pwsh')") &&
-					strings.Contains(w, "match(fields.`commandline`, '(?i)Invoke-WebRequest') OR match(fields.`commandline`, '(?i)wget')") &&
-					strings.Contains(w, "NOT (fields.`user` = 'SYSTEM')")
+				return strings.Contains(w, "match(fields.`image`::String, '(?i)powershell') OR match(fields.`image`::String, '(?i)pwsh')") &&
+					strings.Contains(w, "match(fields.`commandline`::String, '(?i)Invoke-WebRequest') OR match(fields.`commandline`::String, '(?i)wget')") &&
+					strings.Contains(w, "NOT (fields.`user`::String = 'SYSTEM')")
 			},
 		},
 		{
@@ -499,9 +499,9 @@ func TestNOTGroupParentheses(t *testing.T) {
 			query: `((image=/ps/i OR image=/pwsh/i) AND (cmd=/iex/i OR cmd=/iwr/i) AND NOT (user="SYSTEM" AND parent=/svchost/i))`,
 			checkSQL: func(sql string) bool {
 				w := extractWhere(sql)
-				return strings.Contains(w, "(match(fields.`image`, '(?i)ps') OR match(fields.`image`, '(?i)pwsh'))") &&
+				return strings.Contains(w, "(match(fields.`image`::String, '(?i)ps') OR match(fields.`image`::String, '(?i)pwsh'))") &&
 					strings.Contains(w, "(match(fields.`cmd`::String, '(?i)iex') OR match(fields.`cmd`::String, '(?i)iwr'))") &&
-					strings.Contains(w, "NOT (fields.`user` = 'SYSTEM' AND match(fields.`parent`::String, '(?i)svchost'))")
+					strings.Contains(w, "NOT (fields.`user`::String = 'SYSTEM' AND match(fields.`parent`::String, '(?i)svchost'))")
 			},
 		},
 
@@ -516,8 +516,8 @@ func TestNOTGroupParentheses(t *testing.T) {
 				// Should be: NOT ((a group) AND (b group))
 				return strings.Contains(w, "NOT (") &&
 					!strings.Contains(w, "AND NOT (") &&
-					strings.Contains(w, "fields.`a`") &&
-					strings.Contains(w, "fields.`b`")
+					strings.Contains(w, "fields.`a`::String") &&
+					strings.Contains(w, "fields.`b`::String")
 			},
 		},
 	}
@@ -579,8 +579,8 @@ func TestGroupByQueries(t *testing.T) {
 			query:   "groupby([image,target_filename])",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`image`") &&
-					containsSubstr([]string{sql}, "fields.`target_filename`") &&
+				return containsSubstr([]string{sql}, "fields.`image`::String") &&
+					containsSubstr([]string{sql}, "fields.`target_filename`::String") &&
 					containsSubstr([]string{sql}, "GROUP BY")
 			},
 		},
@@ -589,7 +589,7 @@ func TestGroupByQueries(t *testing.T) {
 			query:   "event_id=11 | groupby(service)",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`event_id` = '11'") &&
+				return containsSubstr([]string{sql}, "fields.`event_id`::String = '11'") &&
 					containsSubstr([]string{sql}, "GROUP BY")
 			},
 		},
@@ -656,7 +656,7 @@ func TestComplexQueries(t *testing.T) {
 			query:   "event_id=11 | target_filename=/\\.exe$/i | groupby([image,target_filename])",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "fields.`event_id` = '11'") &&
+				return containsSubstr([]string{sql}, "fields.`event_id`::String = '11'") &&
 					containsSubstr([]string{sql}, "match(fields.`target_filename`::String, '(?i)\\\\.exe$')") &&
 					containsSubstr([]string{sql}, "GROUP BY")
 			},
@@ -667,8 +667,8 @@ func TestComplexQueries(t *testing.T) {
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "timestamp") &&
-					containsSubstr([]string{sql}, "fields.`service`") &&
-					containsSubstr([]string{sql}, "fields.`message`")
+					containsSubstr([]string{sql}, "fields.`service`::String") &&
+					containsSubstr([]string{sql}, "fields.`message`::String")
 			},
 		},
 		{
@@ -746,7 +746,7 @@ func TestComparisonOperators(t *testing.T) {
 			checkSQL: func(sql string) bool {
 				// duration is a promoted, type-hinted field, so it is referenced as a
 				// bare String sub-column (no ::String cast).
-				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`duration`) < 100")
+				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`duration`::String) < 100")
 			},
 		},
 		{
@@ -1149,7 +1149,7 @@ func TestStringFunctions(t *testing.T) {
 			query:   `* | regex(field=commandline,pattern="(?<dest>https?://\\S+)")`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "extractAllGroups(fields.`commandline`") &&
+				return containsSubstr([]string{sql}, "extractAllGroups(fields.`commandline`::String") &&
 					containsSubstr([]string{sql}, "https?://") &&
 					containsSubstr([]string{sql}, "AS dest")
 			},
@@ -1298,7 +1298,7 @@ func TestSpecializedFunctions(t *testing.T) {
 			query:   `event_id=1 | case { user=/gittinsz/ | status:="ok"; user=/noveloa/i | status:="ok2"; * | status := "nope"; } | groupby(status)`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "match(fields.`user`,") &&
+				return containsSubstr([]string{sql}, "match(fields.`user`::String,") &&
 					containsSubstr([]string{sql}, "gittinsz") &&
 					containsSubstr([]string{sql}, "(?i)noveloa") &&
 					containsSubstr([]string{sql}, "AS status") &&
@@ -1310,7 +1310,7 @@ func TestSpecializedFunctions(t *testing.T) {
 			query:   `* | case { user=/admin.*/ | role:="administrator"; user=/guest/i | role:="visitor"; * | role:="unknown"; }`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "match(fields.`user`,") &&
+				return containsSubstr([]string{sql}, "match(fields.`user`::String,") &&
 					containsSubstr([]string{sql}, "admin.*") &&
 					containsSubstr([]string{sql}, "(?i)guest") &&
 					containsSubstr([]string{sql}, "AS role")
@@ -1779,12 +1779,12 @@ func TestMatchCommand(t *testing.T) {
 			query: `* | match(dict="threat_intel", field=src_ip, column=ip, include=[country]) | groupby(country)`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				// SELECT must use dictGetOrDefault for country, not fields.`country`
+				// SELECT must use dictGetOrDefault for country, not fields.`country`::String
 				return strings.Contains(sql, "dictGetOrDefault(") &&
 					strings.Contains(sql, " AS country") &&
 					strings.Contains(sql, "GROUP BY") &&
 					strings.Contains(sql, "country") &&
-					!strings.Contains(sql, "fields.`country`")
+					!strings.Contains(sql, "fields.`country`::String")
 			},
 		},
 		{
@@ -1910,7 +1910,7 @@ func TestLookupIPCommand(t *testing.T) {
 			checkSQL: func(sql string) bool {
 				return strings.Contains(sql, "dictGetOrDefault('geoip_city_lookup'") &&
 					strings.Contains(sql, "GROUP BY") &&
-					!strings.Contains(sql, "fields.`country`")
+					!strings.Contains(sql, "fields.`country`::String")
 			},
 		},
 		{

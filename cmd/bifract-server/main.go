@@ -718,6 +718,7 @@ func main() {
 			// Query and status
 			r.Post("/query", queryHandler.HandleQuery)
 			r.Post("/query/stream", queryHandler.HandleQueryStream)
+			r.Post("/query/fieldstats", queryHandler.HandleFieldStats)
 			r.Post("/query/validate", queryHandler.HandleValidate)
 			r.Get("/query/reference", queryHandler.HandleReference)
 			r.Get("/query/fields", schemaFieldsHandler.HandleCatalog)

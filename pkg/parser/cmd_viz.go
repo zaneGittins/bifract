@@ -111,6 +111,28 @@ func (h *graphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+// pgraphHandler handles pgraph(limit=N): the provenance-native visualization for a pgr()
+// scored edge list (process/file/socket/dns nodes shaped by type, edges colored by
+// anomaly_score). Unlike graph()/mesh() it reads pgr()'s fixed output columns, so its only
+// argument is an optional render limit. It is a plain chart command -- pgr() (the source
+// command) is already resolved into the query's subquery source before this runs.
+type pgraphHandler struct{}
+
+func (h *pgraphHandler) Declare(cmd CommandNode, ctx *CommandContext) error { return nil }
+
+func (h *pgraphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	ctx.Plan.ChartType = "pgraph"
+	ctx.Plan.ChartConfig["limit"] = 3000
+	for _, arg := range cmd.Arguments {
+		if strings.HasPrefix(arg, "limit=") {
+			if limit, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && limit > 0 {
+				ctx.Plan.ChartConfig["limit"] = limit
+			}
+		}
+	}
+	return nil
+}
+
 // meshHandler handles mesh(src=field, dst=field, weight=field, size=field,
 // color=field, label=field1,field2, directed=bool, limit=N). Unlike graph()
 // (a directed parent-child tree), mesh() renders an undirected, weighted,
@@ -427,6 +449,7 @@ func init() {
 	registerAggregatingCommand(&barchartHandler{}, "barchart")
 	registerCommand(&graphHandler{}, "graph")
 	registerCommand(&meshHandler{}, "mesh")
+	registerCommand(&pgraphHandler{}, "pgraph")
 	registerAggregatingCommand(&singlevalHandler{}, "singleval")
 	registerAggregatingCommand(&timechartHandler{}, "timechart")
 	registerCommand(&graphWorldHandler{}, "graphWorld", "graphworld", "worldmap")

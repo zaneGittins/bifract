@@ -48,19 +48,19 @@ func TestIcebergSourceMode(t *testing.T) {
 				"ingest_timestamp >=",
 				"toString(fields) AS norm_log",
 			},
-			wantNotContain: []string{"fields.`src_ip`", "hasToken"},
+			wantNotContain: []string{"fields.`src_ip`::String", "hasToken"},
 		},
 		{
 			name:           "unpromoted field equality is plain MAP access",
 			query:          `status_code="500"`,
 			wantContain:    []string{"fields['status_code'] = '500'"},
-			wantNotContain: []string{"_ice_status_code", "fields.`status_code`"},
+			wantNotContain: []string{"_ice_status_code", "fields.`status_code`::String"},
 		},
 		{
 			name:           "numeric comparison casts MAP value",
 			query:          `duration>5`,
 			wantContain:    []string{"toFloat64OrZero(fields['duration']) > 5"},
-			wantNotContain: []string{"fields.`duration`"},
+			wantNotContain: []string{"fields.`duration`::String"},
 		},
 		{
 			name:           "free-text search targets toString(fields)",
@@ -72,7 +72,7 @@ func TestIcebergSourceMode(t *testing.T) {
 			name:           "groupby uses MAP access, not JSON sub-column",
 			query:          `event_id=* | groupby(event_id)`,
 			wantContain:    []string{"fields['event_id'] AS event_id", "GROUP BY event_id"},
-			wantNotContain: []string{"fields.`event_id`"},
+			wantNotContain: []string{"fields.`event_id`::String"},
 		},
 		{
 			name:           "aggregate arg over unpromoted field casts MAP value",
@@ -100,7 +100,7 @@ func TestIcebergSourceMode(t *testing.T) {
 
 func TestIcebergRejectsUnsupported(t *testing.T) {
 	for _, q := range []string{
-		`user=bob | lowercase(user)`,
+		`::Stringuser=bob | lowercase(user)`,
 		`* | model_lookup(beacon, dst_ip)`,
 	} {
 		pipeline, err := ParseQuery(q)
@@ -129,7 +129,7 @@ func TestHotModeUnchangedForPromotedField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.SQL, "fields.`src_ip`") {
+	if !strings.Contains(res.SQL, "fields.`src_ip`::String") {
 		t.Errorf("hot mode should use JSON sub-column, got: %s", res.SQL)
 	}
 	if strings.Contains(res.SQL, "_ice_") || strings.Contains(res.SQL, "fields['src_ip']") {

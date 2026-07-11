@@ -2,75 +2,37 @@ package query
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"time"
 
 	"bifract/pkg/parser"
 )
 
-// respondProvenanceGraph writes the already-computed pgr() scored edge rows as a buffered
-// JSON QueryResponse (the non-streaming HandleQuery path).
-func (h *QueryHandler) respondProvenanceGraph(w http.ResponseWriter, prep *preparedQuery) {
-	respondJSON(w, http.StatusOK, QueryResponse{
-		Success:     true,
-		Results:     prep.provenanceRows,
-		Count:       len(prep.provenanceRows),
-		Query:       prep.req.Query,
-		FieldOrder:  prep.fieldOrder,
-		ChartType:   prep.chartType,
-		ChartConfig: prep.chartConfig,
-		TimeStart:   prep.startTime.Format(time.RFC3339),
-		TimeEnd:     prep.endTime.Format(time.RFC3339),
-	})
-}
+// provenanceColumns are the flat columns the pgr() scored edge list exposes. pgr() is a source
+// command (parser/source_command.go): it is resolved into a SQL subquery source and these
+// resolve as bare columns for any downstream BQL (filter/aggregate/sort/table/pgraph).
+var provenanceColumns = []string{"parent", "child", "label", "event_type", "anomaly_score", "log_id", "timestamp", "fractal_id", "command_line", "proc_user"}
 
-// streamProvenanceGraph emits the already-computed pgr() rows over the NDJSON stream
-// protocol (meta -> rows -> done), matching HandleQueryStream's non-streamable branch so the
-// frontend's streaming client parses it identically to an aggregation/chart result.
-func (h *QueryHandler) streamProvenanceGraph(w http.ResponseWriter, prep *preparedQuery) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		respondJSON(w, http.StatusInternalServerError, QueryResponse{Success: false, Error: "Streaming not supported by server"})
-		return
-	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	enc := json.NewEncoder(w)
-	write := func(frame map[string]interface{}) { _ = enc.Encode(frame); flusher.Flush() }
+// provenanceNumericColumns is the subset of provenanceColumns that are already numeric in the
+// subquery (so downstream numeric comparisons must not string-coerce them).
+var provenanceNumericColumns = []string{"anomaly_score"}
 
-	write(map[string]interface{}{
-		"type":          "meta",
-		"streaming":     false,
-		"field_order":   prep.fieldOrder,
-		"is_aggregated": false,
-		"chart_type":    prep.chartType,
-		"chart_config":  prep.chartConfig,
-		"time_start":    prep.startTime.Format(time.RFC3339),
-		"time_end":      prep.endTime.Format(time.RFC3339),
-	})
-	for _, row := range prep.provenanceRows {
-		sanitizeFloats(row)
-	}
-	write(map[string]interface{}{"type": "rows", "data": prep.provenanceRows})
-	write(map[string]interface{}{"type": "done", "count": len(prep.provenanceRows), "execution_ms": 0})
-}
+// provenanceEmptyScoreSQL yields zero rows with the pgr output shape, so a query over an empty
+// tree behaves correctly (count() -> 0, etc.) without special-casing every caller.
+const provenanceEmptyScoreSQL = "SELECT '' AS parent, '' AS child, '' AS label, '' AS event_type, toFloat64(0) AS anomaly_score, '' AS log_id, '' AS timestamp, '' AS fractal_id, '' AS command_line, '' AS proc_user WHERE 1 = 0"
 
-// runProvenanceGraph orchestrates the pgr() two-pass query: pass 1 traverses the ptg()
-// spawn tree to collect the process-guid set (tree membership), pass 2 fetches + scores
-// every edge among/from those guids against the proc_freq baseline. Returns the scored,
-// threshold-pruned edge rows (columns: parent, child, label, event_type, anomaly_score).
-func (h *QueryHandler) runProvenanceGraph(ctx context.Context, p parser.ProvenanceParams, opts parser.QueryOptions) ([]map[string]interface{}, error) {
+// provenanceScoreSQL runs pass 1 (tree traversal, collect guids) and returns the pass-2
+// scored-edge SQL, which becomes the query's subquery source. Returns a zero-row stub when the
+// tree is empty. The pass-2 SQL already carries `ORDER BY (event_type='spawn') DESC,
+// anomaly_score DESC LIMIT`, so the spawn backbone is prioritized inside the subquery and an
+// outer LIMIT never re-truncates process structure.
+func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.ProvenanceParams, opts parser.QueryOptions) (string, error) {
 	treeSQL, err := parser.BuildProcessTreeQuery(p, opts)
 	if err != nil {
-		return nil, fmt.Errorf("pgr: build tree query: %w", err)
+		return "", fmt.Errorf("pgr: build tree query: %w", err)
 	}
 	treeRows, err := h.db.QueryLowPriority(ctx, treeSQL)
 	if err != nil {
-		return nil, fmt.Errorf("pgr: tree pass: %w", err)
+		return "", fmt.Errorf("pgr: tree pass: %w", err)
 	}
 	seen := make(map[string]struct{}, len(treeRows))
 	guids := make([]string, 0, len(treeRows))
@@ -86,24 +48,53 @@ func (h *QueryHandler) runProvenanceGraph(ctx context.Context, p parser.Provenan
 		guids = append(guids, g)
 	}
 	if len(guids) == 0 {
-		return []map[string]interface{}{}, nil
+		return provenanceEmptyScoreSQL, nil
 	}
 	scoreSQL, err := parser.BuildProvenanceScoringSQL(guids, p.Threshold, p.EdgeTypes, opts)
 	if err != nil {
-		return nil, fmt.Errorf("pgr: build scoring query: %w", err)
+		return "", fmt.Errorf("pgr: build scoring query: %w", err)
 	}
-	rows, err := h.db.QueryLowPriority(ctx, scoreSQL)
-	if err != nil {
-		return nil, fmt.Errorf("pgr: scoring pass: %w", err)
-	}
-	if rows == nil {
-		rows = []map[string]interface{}{}
-	}
-	return rows, nil
+	return scoreSQL, nil
 }
 
-// provenanceFieldOrder is the column order of the pgr() scored edge list.
-// provenanceFieldOrder is the display column order. fractal_id is intentionally omitted here
-// (the frontend hides it) but IS present in every row so the standard /logs/fields detail
-// fetch -- which needs log_id + timestamp + fractal_id -- works from a pgr row or pgraph node.
-var provenanceFieldOrder = []string{"parent", "child", "label", "event_type", "anomaly_score", "log_id", "timestamp"}
+// resolvedSource is a source command's SQL subquery + the flat columns it exposes.
+type resolvedSource struct {
+	SQL            string
+	Columns        []string // exposed flat columns, in default projection order
+	NumericColumns []string // subset of Columns already numeric (no string-coercion on compare)
+	Focus          string   // optional node identifier the viz should center/highlight (pgr start)
+}
+
+// sourceResolver produces a resolvedSource for a source command. Resolution runs in the query
+// layer because it may need the database (e.g. pgr()'s pass-1 tree traversal). Register one per
+// source-command name; the core translate/handler path stays generic.
+type sourceResolver func(h *QueryHandler, ctx context.Context, cmd parser.CommandNode, opts parser.QueryOptions) (*resolvedSource, error)
+
+var sourceResolvers = map[string]sourceResolver{
+	"pgr": resolvePgrSource,
+}
+
+// resolveSourceCommand resolves a source command into its subquery source.
+func (h *QueryHandler) resolveSourceCommand(ctx context.Context, cmd parser.CommandNode, opts parser.QueryOptions) (*resolvedSource, error) {
+	r, ok := sourceResolvers[cmd.Name]
+	if !ok {
+		return nil, fmt.Errorf("unknown source command: %s()", cmd.Name)
+	}
+	return r(h, ctx, cmd, opts)
+}
+
+// resolvePgrSource resolves pgr() into its two-pass scored-edge subquery.
+func resolvePgrSource(h *QueryHandler, ctx context.Context, cmd parser.CommandNode, opts parser.QueryOptions) (*resolvedSource, error) {
+	if opts.SourceMode == parser.SourceIceberg {
+		return nil, fmt.Errorf("pgr() operates on live process lineage and is not available over archived data")
+	}
+	p, ok := parser.ParseProvenanceParams(cmd)
+	if !ok {
+		return nil, fmt.Errorf("pgr() requires start=\"<process_guid>\"")
+	}
+	sql, err := h.provenanceScoreSQL(ctx, p, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &resolvedSource{SQL: sql, Columns: provenanceColumns, NumericColumns: provenanceNumericColumns, Focus: p.Start}, nil
+}

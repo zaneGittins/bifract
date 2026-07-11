@@ -12,6 +12,13 @@ const LogDetail = {
     hosts: {},
     activeHost: null,
 
+    // Sticky field filter. The term carries across next/prev navigation and clicks
+    // on other rows of the SAME result set; it resets when the panel closes or a new
+    // query builds a fresh result set (see setContext/close). filterMode selects what
+    // the term matches (field names, values, or both) and persists across sessions.
+    filterTerm: '',
+    filterMode: { fields: true, values: false },
+
     // Resolve a host's element references from its panel root (class-based, so
     // each surface can reuse the same markup without duplicate IDs).
     _resolveHost(panelEl, opts) {
@@ -77,6 +84,7 @@ const LogDetail = {
     },
 
     init() {
+        this.filterMode = this._loadFilterMode();
         this.registerHost('search', '#logDetailPanel', { tableRoot: '#resultsTable', storageKey: 'logDetailPanelWidth' });
         this.registerHost('alert', '#alertLogDetailPanel', { tableRoot: '#queryResults', storageKey: 'alertLogDetailPanelWidth' });
 
@@ -90,6 +98,12 @@ const LogDetail = {
     },
 
     setContext(results, index, isAggregated, hostRef) {
+        // Clear the sticky filter only when switching to a different result set.
+        // Clicking another row in the same table passes the same `results` array,
+        // so the filter carries over; a new query builds a new array and resets it.
+        if (results !== this.results) {
+            this.filterTerm = '';
+        }
         this.results = results;
         this.currentIndex = index;
         this.isAggregated = isAggregated;
@@ -253,10 +267,20 @@ const LogDetail = {
         searchInput.type = 'text';
         searchInput.placeholder = 'Filter fields...';
         searchInput.className = 'log-detail-search-input';
+        searchInput.value = this.filterTerm || '';
         searchInput.addEventListener('input', (e) => {
+            this.filterTerm = e.target.value;
             this.filterFields(e.target.value);
         });
         searchContainer.appendChild(searchInput);
+
+        // F/V mode toggles: match field names, values, or both. At least one stays on.
+        const toggles = document.createElement('div');
+        toggles.className = 'log-detail-filter-toggles';
+        toggles.appendChild(this._makeModeToggle('fields', 'F', 'Match field names'));
+        toggles.appendChild(this._makeModeToggle('values', 'V', 'Match field values'));
+        searchContainer.appendChild(toggles);
+
         fieldsPane.appendChild(searchContainer);
 
         const fieldsContainer = document.createElement('div');
@@ -318,10 +342,17 @@ const LogDetail = {
         if (!hasFields && !hasAllFields && logData.log_id) {
             this._lazyLoadFields(logData, fieldsContainer);
         } else {
-            this.renderFields(logData, fieldsContainer);
+            this.renderFields(logData, fieldsContainer, this.filterTerm || '');
         }
 
         panel.classList.add('open');
+
+        // On width-constrained viewports the detail panel and the Fields rail
+        // compete for the center table, so they are mutually exclusive there:
+        // opening a log's detail collapses the rail. Wide screens keep both.
+        if (panel.id === 'logDetailPanel' && window.FieldStats && FieldStats.isOpen && window.innerWidth < 1200) {
+            FieldStats.close();
+        }
     },
 
     _renderFieldsSkeleton(container) {
@@ -354,7 +385,7 @@ const LogDetail = {
                 // Raw tab renders without a second round-trip.
                 if (data.raw_log !== undefined) logData.raw_log = data.raw_log;
                 this.currentLogData = logData;
-                this.renderFields(logData, fieldsContainer);
+                this.renderFields(logData, fieldsContainer, this.filterTerm || '');
             } else {
                 fieldsContainer.innerHTML = '<div class="fields-loading">No fields available.</div>';
             }
@@ -473,15 +504,26 @@ const LogDetail = {
         });
 
         sortedFields.forEach(key => {
-            if (filterTerm && !key.toLowerCase().includes(filterTerm.toLowerCase())) {
-                return;
-            }
-
             const value = flattenedData[key];
             // Skip empty fields: JSON schema type-hint sub-columns materialize as "" even
             // when the log did not contain them, so they are noise in the detail grid.
             if ((value === '' || value === null || value === undefined) && key !== 'timestamp') {
                 return;
+            }
+
+            if (filterTerm) {
+                const term = filterTerm.toLowerCase();
+                const nameMatch = this.filterMode.fields && key.toLowerCase().includes(term);
+                let valueMatch = false;
+                if (this.filterMode.values) {
+                    const valStr = (typeof value === 'object' && value !== null)
+                        ? JSON.stringify(value)
+                        : String(value);
+                    valueMatch = valStr.toLowerCase().includes(term);
+                }
+                if (!nameMatch && !valueMatch) {
+                    return;
+                }
             }
             const fieldDiv = document.createElement('div');
             fieldDiv.className = 'log-field';
@@ -603,6 +645,45 @@ const LogDetail = {
         this.renderFields(this.currentLogData, container, filterTerm);
     },
 
+    _makeModeToggle(mode, label, title) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'log-detail-mode-toggle' + (this.filterMode[mode] ? ' active' : '');
+        btn.textContent = label;
+        btn.title = title;
+        btn.addEventListener('click', () => {
+            const other = mode === 'fields' ? 'values' : 'fields';
+            // Never allow both modes off: block turning off the last active one.
+            if (this.filterMode[mode] && !this.filterMode[other]) return;
+            this.filterMode[mode] = !this.filterMode[mode];
+            btn.classList.toggle('active', this.filterMode[mode]);
+            this._saveFilterMode();
+            this.filterFields(this.filterTerm || '');
+        });
+        return btn;
+    },
+
+    _loadFilterMode() {
+        const fallback = { fields: true, values: false };
+        try {
+            const raw = localStorage.getItem('logDetailFilterMode');
+            if (!raw) return fallback;
+            const parsed = JSON.parse(raw);
+            // Guard against a corrupt/both-off value that would match nothing.
+            if (typeof parsed.fields === 'boolean' && typeof parsed.values === 'boolean'
+                && (parsed.fields || parsed.values)) {
+                return { fields: parsed.fields, values: parsed.values };
+            }
+        } catch (e) { /* ignore */ }
+        return fallback;
+    },
+
+    _saveFilterMode() {
+        try {
+            localStorage.setItem('logDetailFilterMode', JSON.stringify(this.filterMode));
+        } catch (e) { /* ignore */ }
+    },
+
     close() {
         // Close every registered panel and clear selection in each backing
         // table. This is called both from in-view close buttons and from global
@@ -618,6 +699,7 @@ const LogDetail = {
 
         this.results = null;
         this.currentIndex = -1;
+        this.filterTerm = '';
     }
 };
 

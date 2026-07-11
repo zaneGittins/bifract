@@ -332,7 +332,12 @@ func modelLookupFieldRef(field string) string {
 	case "timestamp", normLogColumn, "log_id", "fractal_id", "ingest_timestamp", "normalizer":
 		return field
 	default:
-		return jsonFieldRef(field)
+		// The key is projected as _mlk_k<i> then concat/compared against the
+		// model table's String key columns -- a non-skip-index context. Cast to
+		// ::String so a Dynamic-stored path (pre-type-hint rows) still joins and
+		// does not trigger ClickHouse error 44. No-op for concretely typed paths;
+		// String content is identical, so match semantics are preserved.
+		return groupableCast(jsonFieldRef(field))
 	}
 }
 

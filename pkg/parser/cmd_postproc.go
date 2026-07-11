@@ -44,7 +44,9 @@ func (h *sortHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				fieldRef = contentColMode(ctx.Opts.SourceMode)
 			}
 		default:
-			fieldRef = ctx.Registry.fieldRef(field)
+			// Cast raw JSON subcolumns to ::String so ORDER BY works on paths
+			// stored as Dynamic (pre-type-hint rows); a bare Dynamic ref errors 44.
+			fieldRef = groupableCast(ctx.Registry.fieldRef(field))
 		}
 	}
 
@@ -162,7 +164,9 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if ctx.Registry.IsComputed(field) {
 				dedupFields = append(dedupFields, field)
 			} else {
-				dedupFields = append(dedupFields, ctx.Registry.fieldRef(field))
+				// LIMIT BY is a grouping context: cast raw JSON subcolumns to
+				// ::String so Dynamic-stored paths don't trigger error 44.
+				dedupFields = append(dedupFields, groupableCast(ctx.Registry.fieldRef(field)))
 			}
 		}
 		ctx.Plan.CurrentStage().Layer.LimitBy = fmt.Sprintf("LIMIT 1 BY %s", strings.Join(dedupFields, ", "))

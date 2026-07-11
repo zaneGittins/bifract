@@ -399,6 +399,16 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 		}
 	}
 
+	if (cond.Operator == "=" || cond.Operator == "!=") && len(cond.Values) > 1 {
+		// Comma-separated equality list -> IN / NOT IN. Negation is folded into
+		// the operator by negateHavingCondition (= <-> !=), matching single value.
+		negate := cond.Operator == "!="
+		if registry.sourceMode == SourceIceberg && isJSONField {
+			return buildIcebergEqualityListSQL(cond.Field, cond.Values, negate)
+		}
+		return buildEqualityListSQL(fieldRef, cond.Values, negate, isJSONField)
+	}
+
 	switch cond.Operator {
 	case "=":
 		// Equality is answered by the field's column/sub-column alone; no raw_log token

@@ -791,7 +791,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if len(source.Layer.GroupBy) > 0 {
 				lastField := source.Layer.GroupBy[len(source.Layer.GroupBy)-1]
 				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-					Expr: fmt.Sprintf("COUNT(DISTINCT %s) AS _count", lastField),
+					Expr: fmt.Sprintf("COUNT(DISTINCT %s) AS _count", groupableCast(lastField)),
 				})
 				ctx.Plan.IsAggregated = true
 			}

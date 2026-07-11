@@ -658,7 +658,38 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 		return nil, newPosError(valTok, "expected value, got %s", valTok.Type)
 	}
 
+	// Comma-separated equality list: field="a","b","c" -> IN / NOT IN.
+	// Only plain literal values (no regex, no wildcard) participate.
+	if (cond.Operator == "=" || cond.Operator == "!=") && !cond.IsRegex && !strings.Contains(cond.Value, "*") {
+		values, err := p.collectEqualityList(cond.Value)
+		if err != nil {
+			return nil, err
+		}
+		cond.Values = values
+	}
+
 	return cond, nil
+}
+
+// collectEqualityList extends an already-parsed equality value with any
+// comma-separated additional values (field="a","b","c"), returning the full
+// list including the first value. Returns nil when no comma follows, leaving
+// the condition as a single-value match.
+func (p *Parser) collectEqualityList(first string) ([]string, error) {
+	if p.current().Type != TokenComma {
+		return nil, nil
+	}
+	values := []string{first}
+	for p.current().Type == TokenComma {
+		p.advance() // consume comma
+		vt := p.current()
+		if vt.Type != TokenString && vt.Type != TokenField && vt.Type != TokenValue {
+			return nil, newPosError(vt, "expected value after ',' in list, got %s", vt.Type)
+		}
+		values = append(values, vt.Value)
+		p.advance()
+	}
+	return values, nil
 }
 
 func (p *Parser) parseCommand() (*CommandNode, error) {
@@ -1144,6 +1175,15 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 		p.advance()
 	} else {
 		return nil, newPosError(valTok, "expected value in HAVING condition, got %s", valTok.Type)
+	}
+
+	// Comma-separated equality list: field="a","b","c" -> IN / NOT IN.
+	if (having.Operator == "=" || having.Operator == "!=") && !having.IsRegex && !strings.Contains(having.Value, "*") {
+		values, err := p.collectEqualityList(having.Value)
+		if err != nil {
+			return nil, err
+		}
+		having.Values = values
 	}
 
 	return having, nil

@@ -969,7 +969,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			{
 				Name:        "pgr",
 				Category:    "Traversal",
-				Description: "Process provenance Graph with NoDoze-style anomaly scoring. Builds the ptg() spawn tree from a start process_guid, then adds file-write, network, DNS, remote-thread, and process-access edges for every process in the tree and scores each edge by rarity against the proc_freq frequency baseline. anomaly_score is in [0,1]: 1.0 = never-before-seen behavior for that source, 0 = ubiquitous. Keeps the full spawn spine plus any non-spawn edge at or above threshold (default 0.7), so rare/suspicious activity surfaces while common noise is pruned. Returns parent, child, label, event_type, anomaly_score, log_id, timestamp. Requires an EDR source normalized with bifract_category (process_creation, file_write, network_connect, dns_query, remote_thread, process_access). Same scoping as ptg(): pgr() is self-contained -- it is scoped ONLY by start=, the time range, and the fractal, and any filter placed in the pipeline (before or after pgr) is ignored. To narrow which edge types appear, use include=/exclude= (NOT a pipeline filter): e.g. exclude=file_write drops all file-write edges, which also skips scanning for them (faster). A narrow time range silently omits older lineage. Yields a table by default (for export/LLM); pipe to pgraph() to visualize.",
+				Description: "Process provenance Graph with NoDoze-style anomaly scoring. Builds the ptg() spawn tree from a start process_guid, then adds file-write, network, DNS, remote-thread, and process-access edges for every process in the tree and scores each edge by rarity against the proc_freq frequency baseline. anomaly_score is in [0,1]: 1.0 = never-before-seen behavior for that source, 0 = ubiquitous. Keeps the full spawn spine plus any non-spawn edge at or above threshold (default 0.7), so rare/suspicious activity surfaces while common noise is pruned. Outputs the scored edge list with columns parent, child, label, event_type, anomaly_score, log_id, timestamp. Requires an EDR source normalized with bifract_category (process_creation, file_write, network_connect, dns_query, remote_thread, process_access). pgr() is a SOURCE command: it must be the FIRST thing in the query (it is scoped only by start=, the time range, and the fractal, so a filter placed BEFORE it is rejected as an error). Downstream BQL composes over the scored edges like any other source -- filter, aggregate, sort, table, and pgraph all work, e.g. `pgr(...) | anomaly_score >= 0.9 | count()` or `pgr(...) | groupby(event_type) count()`. Use include=/exclude= to narrow which edge types are generated (faster than filtering, since excluded types are never scanned). A narrow time range silently omits older lineage. Yields a table by default (for export/LLM); pipe to pgraph() to visualize.",
 				Syntax:      `| pgr(start="<process_guid>", depth=N, direction=forward|backward|both, threshold=0.0-1.0, exclude="file_write,net_connect")`,
 				Parameters: []Param{
 					{Name: "start", Type: "string", Required: true, Description: "process_guid of the seed node"},
@@ -980,10 +980,11 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 					{Name: "exclude", Type: "string", Required: false, Description: "Drop these edge types (comma-separated), e.g. exclude=\"file_write,net_connect\". Applied after include=. Skips scanning logs for the excluded types."},
 				},
 				Examples: []string{
-					`pgr(start="{GUID}")`,
+					`pgr(start="{GUID}") | pgraph()`,
 					`pgr(start="{GUID}", threshold=0.9) | pgraph()`,
-					`pgr(start="{GUID}", exclude="file_write") | pgraph()`,
-					`pgr(start="{GUID}", include="dns_query,net_connect") | pgraph()`,
+					`pgr(start="{GUID}") | anomaly_score >= 0.9 | count()`,
+					`pgr(start="{GUID}") | groupby(event_type) count()`,
+					`pgr(start="{GUID}", exclude="file_write") | table(parent, child, event_type, anomaly_score) | sort(anomaly_score, order=desc)`,
 				},
 			},
 			{

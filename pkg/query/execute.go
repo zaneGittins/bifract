@@ -149,32 +149,25 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
 
-	// pgr() is a two-pass provenance query orchestrated in the handler, not a single
-	// translated statement -- intercept it here and return the scored edge graph.
-	if pp, ok := parser.ExtractProvenanceParams(pipeline); ok {
-		if opts.SourceMode == parser.SourceIceberg {
-			return nil, fmt.Errorf("pgr() operates on live process lineage and is not available over archived data")
-		}
-		pgrStart := time.Now()
-		rows, perr := h.runProvenanceGraph(ctx, pp, opts)
-		if perr != nil {
+	// Source commands (e.g. pgr()) generate the pipeline's source. Resolve into a subquery
+	// source and drop the command; the rest of the pipeline (including pgraph()) translates
+	// over it like any other query. Guards below key off opts.SourceSubquery.
+	var sourceFocus string
+	if src, ok := parser.FirstSourceCommand(pipeline); ok {
+		if perr := parser.ValidateSourceCommandPlacement(pipeline); perr != nil {
 			return nil, perr
 		}
-		// pgr() yields the scored edge table by default; render the provenance graph only
-		// when the pipeline pipes to pgraph().
-		chartType, chartConfig := "", map[string]interface{}{}
-		if cfg, hasPgraph := parser.ExtractPGraphConfig(pipeline); hasPgraph {
-			chartType, chartConfig = "pgraph", cfg
+		rs, rerr := h.resolveSourceCommand(ctx, src, opts)
+		if rerr != nil {
+			return nil, rerr
 		}
-		return &ExecuteResult{
-			Results:     rows,
-			Count:       len(rows),
-			ExecutionMs: time.Since(pgrStart).Milliseconds(),
-			ChartType:   chartType,
-			ChartConfig: chartConfig,
-			FieldOrder:  provenanceFieldOrder,
-		}, nil
+		opts.SourceSubquery = rs.SQL
+		opts.SourceColumns = rs.Columns
+		opts.SourceNumericColumns = rs.NumericColumns
+		sourceFocus = rs.Focus
+		pipeline = parser.StripCommand(pipeline, src.Name)
 	}
+	hasSubquerySource := opts.SourceSubquery != ""
 
 	translationResult, err := parser.TranslateToSQLWithOrder(pipeline, opts)
 	if err != nil {
@@ -187,6 +180,8 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 	// non-cursor branch of HandleQuery so widget results match interactive runs.
 	if !sqlLimitRE.MatchString(sql) {
 		if isAggregated {
+			sql += " LIMIT 10000"
+		} else if hasSubquerySource {
 			sql += " LIMIT 10000"
 		} else {
 			if idx := strings.LastIndex(sql, " ORDER BY"); idx >= 0 {
@@ -221,6 +216,9 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 	chartConfig := translationResult.ChartConfig
 	if chartConfig == nil {
 		chartConfig = map[string]interface{}{}
+	}
+	if sourceFocus != "" && translationResult.ChartType == "pgraph" {
+		chartConfig["focus"] = sourceFocus
 	}
 
 	return &ExecuteResult{
