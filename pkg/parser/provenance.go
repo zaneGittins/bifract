@@ -265,13 +265,25 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 		freqWhere = " WHERE " + fractal
 	}
 
-	// fe = per-edge count; ft = denominator freq(src,rel,*). Unseen (src,rel) with no baseline
-	// -> anomaly 1.0. Keep the whole spawn spine; prune only non-spawn edges below threshold.
+	// Anomaly = greatest of two rarity signals (non-spawn edges):
+	//   1. source-relative: 1 - freq(src,rel,target)/freq(src,rel,*)  (fe/ft) -- "how unusual
+	//      is this target FOR this source". Blind spot: a process that only ever does one thing
+	//      (e.g. malware that only talks to its C2) scores its sole behavior 0 -- it looks normal
+	//      for itself, so its rare C2 connection would be pruned.
+	//   2. global rarity: 1 - hosts(rel,target)/total_hosts  (gf/th) -- "how rare is this target
+	//      across the enterprise". A C2 IP touched by 1 of 500 hosts scores ~1 regardless of how
+	//      often the source hits it, so single-behavior malware no longer hides. A never-seen
+	//      target (not in the baseline) scores 1. On single-host data this term is ~0, so scoring
+	//      falls back to the source-relative signal (no regression there).
+	// Spawn keeps the pure source-relative score (structure is never pruned; only coloured).
+	totalHosts := fmt.Sprintf("(SELECT length(groupUniqArrayMerge(%[1]d)(hosts)) FROM %[2]s%[3]s)", procFreqHostsCap, procFreq, freqWhere)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("WITH fe AS (SELECT src_image, event_type, target_norm, sum(event_count) AS cnt FROM %[1]s%[2]s GROUP BY src_image, event_type, target_norm), ",
 		procFreq, freqWhere))
 	b.WriteString(fmt.Sprintf("ft AS (SELECT src_image, event_type, sum(event_count) AS tot FROM %[1]s%[2]s GROUP BY src_image, event_type), ",
 		procFreq, freqWhere))
+	b.WriteString(fmt.Sprintf("gf AS (SELECT event_type, target_norm, length(groupUniqArrayMerge(%[3]d)(hosts)) AS hostct FROM %[1]s%[2]s GROUP BY event_type, target_norm), ",
+		procFreq, freqWhere, procFreqHostsCap))
 	// pm = per-process command line + user, read query-only from the process_creation logs of
 	// the tree's guids (the same bounded keyhole: guid IN + time window + category). Command
 	// lines can be enormous, so truncate to 300 chars in SQL -- never pull the full string.
@@ -279,10 +291,13 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 		logs, timeWin, frac(), inList))
 	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user FROM (")
 	b.WriteString("SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.log_id AS log_id, e.timestamp AS timestamp, e.fractal_id AS fractal_id, coalesce(pm.command_line, '') AS command_line, coalesce(pm.proc_user, '') AS proc_user, ")
-	b.WriteString("if(coalesce(ft.tot, 0) = 0, 1.0, round(1 - coalesce(fe.cnt, 0) / ft.tot, 4)) AS anomaly_score ")
+	b.WriteString(fmt.Sprintf("multiIf(e.event_type = 'spawn', if(coalesce(ft.tot, 0) = 0, 1.0, round(1 - coalesce(fe.cnt, 0) / ft.tot, 4)), "+
+		"round(greatest(if(coalesce(ft.tot, 0) = 0, 1.0, 1 - coalesce(fe.cnt, 0) / ft.tot), if(%[1]s = 0, 0, 1 - coalesce(gf.hostct, 0) / %[1]s)), 4)) AS anomaly_score ", totalHosts))
 	b.WriteString(fmt.Sprintf("FROM (%s) AS e ", edges))
 	b.WriteString("LEFT JOIN fe ON fe.src_image = e.fkey_src AND fe.event_type = e.event_type AND fe.target_norm = e.fkey_tgt ")
-	b.WriteString("LEFT JOIN ft ON ft.src_image = e.fkey_src AND ft.event_type = e.event_type LEFT JOIN pm ON pm.guid = e.dst_node) AS scored ")
+	b.WriteString("LEFT JOIN ft ON ft.src_image = e.fkey_src AND ft.event_type = e.event_type ")
+	b.WriteString("LEFT JOIN gf ON gf.event_type = e.event_type AND gf.target_norm = e.fkey_tgt ")
+	b.WriteString("LEFT JOIN pm ON pm.guid = e.dst_node) AS scored ")
 	b.WriteString(fmt.Sprintf("WHERE event_type = 'spawn' OR anomaly_score >= %s ", strconv.FormatFloat(threshold, 'f', -1, 64)))
 	// Spawn edges are the tree backbone (often anomaly ~0). Order them FIRST so that if the
 	// LIMIT truncates, it drops low-signal leaf edges -- never the process structure, which
