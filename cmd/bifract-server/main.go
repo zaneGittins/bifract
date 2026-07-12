@@ -96,7 +96,7 @@ func main() {
 	config := loadConfig()
 
 	// Initialize PostgreSQL client
-	pg := connectPostgres(config)
+	pg := mustConnectPostgres(config)
 	defer pg.Close()
 
 	log.Println("Initializing PostgreSQL schema...")
@@ -118,7 +118,7 @@ func main() {
 	log.Println("Health notification writer initialized")
 
 	// Initialize ClickHouse clients (separate pools for ingest vs queries)
-	db, dbIngest := connectClickHouse(config)
+	db, dbIngest := mustConnectClickHouse(config)
 	defer db.Close()
 	defer dbIngest.Close()
 
@@ -225,6 +225,22 @@ func main() {
 		if err := db.ReconcileEndpointAnalysisMVs(context.Background(), eaEnabled); err != nil {
 			log.Printf("Warning: failed to reconcile advanced endpoint analysis MVs: %v", err)
 		}
+	}
+
+	// Ensure every logs materialized view runs with DEFINER privileges, then provision
+	// the least-privilege ingest ClickHouse user. Together these let the ingest tier
+	// insert (through the MVs) with no read access to log data, so a compromised ingest
+	// container cannot exfiltrate logs. MV security runs unconditionally (harmless);
+	// the user is provisioned only when the ingest password is configured. The ingest
+	// tier tolerates the brief startup window before this completes via insert retry.
+	if err := db.ReconcileMaterializedViewSecurity(context.Background()); err != nil {
+		log.Printf("Warning: failed to reconcile materialized view security: %v", err)
+	}
+	if err := db.EnsureIngestUser(context.Background(), getEnv("BIFRACT_INGEST_CLICKHOUSE_PASSWORD", "")); err != nil {
+		log.Printf("Warning: failed to ensure ingest ClickHouse user: %v", err)
+	}
+	if err := pg.EnsureIngestRole(context.Background(), getEnv("BIFRACT_INGEST_POSTGRES_PASSWORD", "")); err != nil {
+		log.Printf("Warning: failed to ensure ingest Postgres role: %v", err)
 	}
 
 	// Initialize fractal management system
@@ -376,6 +392,12 @@ func main() {
 
 	// Initialize per-fractal disk quota manager
 	quotaManager := ingest.NewQuotaManager(pg, dbIngest)
+	// Rollover enforcement runs only in the app tier (admin ClickHouse identity),
+	// using the all-shards query client. It trims over-quota rollover fractals by
+	// dropping whole oldest partitions. A Postgres advisory lock makes it a single
+	// runner across app-tier replicas. The ingest tier never runs this: its
+	// INSERT-only ClickHouse user cannot DROP PARTITION.
+	quotaManager.StartRolloverSweep(db)
 
 	// Initialize ingestion queue and handlers (uses dedicated ingest pool)
 	log.Println("Initializing ingestion queue...")
@@ -775,14 +797,24 @@ func main() {
 				_ = pg.QueryRow(r.Context(),
 					"SELECT updated_at, last_commit_at, fractal_count, total_bytes, total_records FROM archive_status WHERE id = 1").
 					Scan(&updatedAt, &lastCommit, &fractalCount, &totalBytes, &totalRecords)
+				// Prefer this process's own spool (single-container/full-server); in a
+				// split deployment the spool lives in the ingest tier, so fall back to the
+				// state it publishes to Postgres.
+				provisioned := ingestQueue.SpoolProvisioned()
+				usedBytes, maxBytes := ingestQueue.SpoolUsageBytes(), ingestQueue.SpoolMaxBytes()
+				pressure := ingestQueue.SpoolPressure()
+				if !provisioned {
+					st := pg.ReadSpoolStatus(r.Context())
+					provisioned, usedBytes, maxBytes, pressure = st.Provisioned, st.UsedBytes, st.MaxBytes, st.Pressure
+				}
 				resp := map[string]interface{}{
 					"enabled":     enabled,
-					"provisioned": ingestQueue.SpoolProvisioned(),
+					"provisioned": provisioned,
 					"backend":     getEnv("BIFRACT_ARCHIVE_BACKEND", "disk"),
 					"spool": map[string]interface{}{
-						"used_bytes": ingestQueue.SpoolUsageBytes(),
-						"max_bytes":  ingestQueue.SpoolMaxBytes(),
-						"pressure":   ingestQueue.SpoolPressure(),
+						"used_bytes": usedBytes,
+						"max_bytes":  maxBytes,
+						"pressure":   pressure,
 					},
 					"fractal_count":  fractalCount,
 					"total_bytes":    totalBytes,
@@ -801,8 +833,10 @@ func main() {
 					return
 				}
 				// Guardrail: archiving can only be enabled when the spool machinery
-				// is provisioned (dormant-but-present after --upgrade).
-				if !ingestQueue.SpoolProvisioned() {
+				// is provisioned (dormant-but-present after --upgrade). In a split
+				// deployment the spool lives in the ingest tier, so also accept its
+				// published provisioned state.
+				if !ingestQueue.SpoolProvisioned() && !pg.ReadSpoolStatus(r.Context()).Provisioned {
 					http.Error(w, "Archive not provisioned. Run bifract --upgrade to add the archiver, then retry.", http.StatusBadRequest)
 					return
 				}
@@ -825,6 +859,62 @@ func main() {
 				ingestQueue.SetArchiveEnabled(body.Enabled)
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "enabled": body.Enabled})
+			})
+			// Clear the Iceberg catalog (admin only): resets the archive to zero so a
+			// fractal can start fresh. The Iceberg catalog is Postgres-backed
+			// (iceberg_tables + iceberg_namespace_properties), so deleting every row
+			// for our archive namespace drops all per-fractal tables and the namespace
+			// in one shot -- no Iceberg/object-store client needed, which keeps this
+			// runnable from the server tier (that deliberately does not link the
+			// archiver's Arrow/Iceberg stack) and is uniform across docker and k8s (a
+			// single shared Postgres). We scope by table_namespace/namespace = the
+			// archive namespace ("bifract"), NOT catalog_name: iceberg-go's SQL catalog
+			// persists catalog_name as its own default ("sql"), so a catalog_name filter
+			// would match nothing. Object-storage data files are NOT purged here; the
+			// admin empties the bucket/container to reclaim space and to avoid orphaned
+			// files shadowing recreated tables (see the UI warning).
+			r.Post("/system/archive/clear", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				// Require archiving disabled so the archiver is not concurrently
+				// recreating tables/namespaces mid-clear (races a clean reset to zero).
+				if v, _ := pg.GetSetting(r.Context(), archiveEnabledSetting); v == "true" {
+					http.Error(w, "Disable archiving before clearing the catalog.", http.StatusConflict)
+					return
+				}
+				// archiveNamespace matches archive.Namespace (the single namespace every
+				// fractal table lives under). All three writes run in one transaction so
+				// a mid-clear failure never leaves orphaned namespace_properties rows or a
+				// stale footprint; the whole reset either lands or rolls back.
+				const archiveNamespace = "bifract"
+				tx, err := pg.Begin(r.Context())
+				if err != nil {
+					http.Error(w, "Failed to clear catalog", http.StatusInternalServerError)
+					return
+				}
+				defer tx.Rollback(r.Context())
+				if _, err := tx.Exec(r.Context(), "DELETE FROM iceberg_tables WHERE table_namespace = $1", archiveNamespace); err != nil {
+					http.Error(w, "Failed to clear catalog tables", http.StatusInternalServerError)
+					return
+				}
+				if _, err := tx.Exec(r.Context(), "DELETE FROM iceberg_namespace_properties WHERE namespace = $1", archiveNamespace); err != nil {
+					http.Error(w, "Failed to clear catalog namespaces", http.StatusInternalServerError)
+					return
+				}
+				// Zero the footprint the admin UI shows; the archiver heartbeat keeps it
+				// at zero until new data is archived.
+				if _, err := tx.Exec(r.Context(), "UPDATE archive_status SET fractal_count = 0, total_bytes = 0, total_records = 0, updated_at = NOW() WHERE id = 1"); err != nil {
+					http.Error(w, "Failed to reset archive status", http.StatusInternalServerError)
+					return
+				}
+				if err := tx.Commit(r.Context()); err != nil {
+					http.Error(w, "Failed to commit catalog clear", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 			})
 
 			// Advanced endpoint analysis toggle (admin only): gates the process
@@ -1082,9 +1172,11 @@ func main() {
 				if v, _ := pg.GetSetting(r.Context(), "archive_enabled"); v == "true" {
 					enabled = true
 				}
+				// Provisioned in-process (full server) or in the split ingest tier.
+				provisioned := ingestQueue.SpoolProvisioned() || pg.ReadSpoolStatus(r.Context()).Provisioned
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(map[string]interface{}{
-					"available": enabled && ingestQueue.SpoolProvisioned(),
+					"available": enabled && provisioned,
 				})
 			})
 
@@ -1959,6 +2051,15 @@ func startArchiveSpool(q *ingest.IngestQueue, pg *storage.PostgresClient) {
 			enabled = v == "true"
 		}
 		q.SetArchiveEnabled(enabled)
+		// Publish spool state so the app/UI tier can report archive provisioning and
+		// usage even when (in a split deployment) the spool lives in this separate
+		// ingest container.
+		_ = pg.PublishSpoolStatus(context.Background(), storage.SpoolStatus{
+			Provisioned: q.SpoolProvisioned(),
+			UsedBytes:   q.SpoolUsageBytes(),
+			MaxBytes:    q.SpoolMaxBytes(),
+			Pressure:    q.SpoolPressure(),
+		})
 	}
 	refresh()
 	log.Printf("Archive spool provisioned at %s (max %d bytes, enabled=%v)", spoolPath, maxBytes, q.ArchiveEnabled())

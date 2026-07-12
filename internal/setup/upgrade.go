@@ -105,6 +105,29 @@ func RunUpgrade(dir string) error {
 	if v, ok := existingEnv["CLICKHOUSE_PASSWORD"]; ok {
 		cfg.ClickHousePassword = v
 	}
+	// Least-privilege ingest DB passwords: preserve if present, else generate strong
+	// ones for installs that predate the split. The app provisions/rotates the
+	// bifract_ingest user+role to match on startup.
+	if v, ok := existingEnv["BIFRACT_INGEST_CLICKHOUSE_PASSWORD"]; ok && v != "" {
+		cfg.IngestClickHousePassword = v
+	} else {
+		pw, err := GenerateAlphanumeric(24)
+		if err != nil {
+			return fmt.Errorf("generate ingest clickhouse password: %w", err)
+		}
+		cfg.IngestClickHousePassword = pw
+		printDone("Generated least-privilege ingest ClickHouse password")
+	}
+	if v, ok := existingEnv["BIFRACT_INGEST_POSTGRES_PASSWORD"]; ok && v != "" {
+		cfg.IngestPostgresPassword = v
+	} else {
+		pw, err := GenerateAlphanumeric(24)
+		if err != nil {
+			return fmt.Errorf("generate ingest postgres password: %w", err)
+		}
+		cfg.IngestPostgresPassword = pw
+		printDone("Generated least-privilege ingest Postgres password")
+	}
 	if v, ok := existingEnv["LITELLM_MASTER_KEY"]; ok {
 		cfg.LiteLLMMasterKey = v
 	}

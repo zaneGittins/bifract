@@ -25,9 +25,10 @@ import (
 )
 
 // connectPostgres opens and health-checks the Postgres client (no schema init).
-// Shared by the full server and the ingest server so the connection logic lives once.
-func connectPostgres(config Config) *storage.PostgresClient {
-	log.Println("Connecting to PostgreSQL...")
+// Shared by the full server (Fatalf on error via mustConnectPostgres) and the ingest
+// server (retry). Returns an error so the ingest tier can tolerate the startup window
+// before its least-privilege role exists.
+func connectPostgres(config Config) (*storage.PostgresClient, error) {
 	pg, err := storage.NewPostgresClient(
 		config.PostgresHost,
 		config.PostgresPort,
@@ -36,23 +37,33 @@ func connectPostgres(config Config) *storage.PostgresClient {
 		config.PostgresPassword,
 	)
 	if err != nil {
-		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
+		return nil, fmt.Errorf("connect: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := pg.HealthCheck(ctx); err != nil {
-		log.Fatalf("PostgreSQL health check failed: %v", err)
+		pg.Close()
+		return nil, fmt.Errorf("health check: %w", err)
+	}
+	return pg, nil
+}
+
+// mustConnectPostgres is the full-server wrapper (Fatalf on failure).
+func mustConnectPostgres(config Config) *storage.PostgresClient {
+	log.Println("Connecting to PostgreSQL...")
+	pg, err := connectPostgres(config)
+	if err != nil {
+		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
 	}
 	log.Println("Successfully connected to PostgreSQL")
 	return pg
 }
 
 // connectClickHouse builds the query (all-shards) and ingest (write-routed) ClickHouse
-// clients and health-checks both (no schema init). Shared by the full server and the
-// ingest server.
-func connectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient) {
-	log.Println("Connecting to ClickHouse...")
-
+// clients and health-checks both (no schema init). Returns an error so the ingest tier
+// can retry through the startup window before its least-privilege user exists; the full
+// server uses mustConnectClickHouse (Fatalf).
+func connectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient, err error) {
 	queryPool := storage.DefaultQueryPoolConfig()
 	if config.CHQueryMaxConns > 0 {
 		queryPool.MaxOpenConns = config.CHQueryMaxConns
@@ -71,7 +82,6 @@ func connectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient) {
 		}
 	}
 
-	var err error
 	if config.ClickHouseCluster != "" && config.ClickHouseHosts != "" {
 		// Cluster mode: connect to multiple hosts.
 		hosts := strings.Split(config.ClickHouseHosts, ",")
@@ -81,7 +91,7 @@ func connectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient) {
 			config.ClickHouseCluster, queryPool,
 		)
 		if err != nil {
-			log.Fatalf("Failed to connect to ClickHouse cluster (query pool): %v", err)
+			return nil, nil, fmt.Errorf("cluster query pool: %w", err)
 		}
 		// When a dedicated write LB host is set, route ingest writes through it so k8s
 		// spreads connections across all shards; the query pool (db) keeps all shard
@@ -96,7 +106,8 @@ func connectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient) {
 			config.ClickHouseCluster, ingestPool,
 		)
 		if err != nil {
-			log.Fatalf("Failed to connect to ClickHouse cluster (ingest pool): %v", err)
+			db.Close()
+			return nil, nil, fmt.Errorf("cluster ingest pool: %w", err)
 		}
 	} else {
 		// Single-node mode (default).
@@ -106,7 +117,7 @@ func connectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient) {
 			queryPool,
 		)
 		if err != nil {
-			log.Fatalf("Failed to connect to ClickHouse (query pool): %v", err)
+			return nil, nil, fmt.Errorf("query pool: %w", err)
 		}
 		dbIngest, err = storage.NewClickHouseClientWithPool(
 			config.ClickHouseHost, config.ClickHousePort,
@@ -114,39 +125,85 @@ func connectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient) {
 			ingestPool,
 		)
 		if err != nil {
-			log.Fatalf("Failed to connect to ClickHouse (ingest pool): %v", err)
+			db.Close()
+			return nil, nil, fmt.Errorf("ingest pool: %w", err)
 		}
 	}
 
-	healthCheck := func(name string, c *storage.ClickHouseClient) {
+	for _, hc := range []struct {
+		name string
+		c    *storage.ClickHouseClient
+	}{{"query pool", db}, {"ingest pool", dbIngest}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := c.HealthCheck(ctx); err != nil {
-			log.Fatalf("ClickHouse health check failed (%s): %v", name, err)
+		herr := hc.c.HealthCheck(ctx)
+		cancel()
+		if herr != nil {
+			db.Close()
+			dbIngest.Close()
+			return nil, nil, fmt.Errorf("%s health check: %w", hc.name, herr)
 		}
 	}
-	healthCheck("query pool", db)
-	healthCheck("ingest pool", dbIngest)
-	log.Printf("Successfully connected to ClickHouse (query pool: %d conns, ingest pool: %d conns)",
-		queryPool.MaxOpenConns, ingestPool.MaxOpenConns)
+	return db, dbIngest, nil
+}
+
+// mustConnectClickHouse is the full-server wrapper (Fatalf on failure).
+func mustConnectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient) {
+	log.Println("Connecting to ClickHouse...")
+	db, dbIngest, err := connectClickHouse(config)
+	if err != nil {
+		log.Fatalf("Failed to connect to ClickHouse: %v", err)
+	}
+	log.Println("Successfully connected to ClickHouse")
 	return db, dbIngest
+}
+
+// connectIngestDBsWithRetry dials Postgres + ClickHouse with the ingest tier's
+// least-privilege credentials, retrying through the startup window before the app tier
+// provisions those identities (on k8s the deployments start independently). Fatalf after
+// the ceiling so a genuine misconfiguration still surfaces.
+func connectIngestDBsWithRetry(config Config) (*storage.PostgresClient, *storage.ClickHouseClient, *storage.ClickHouseClient) {
+	deadline := time.Now().Add(5 * time.Minute)
+	logged := false
+	for {
+		pg, perr := connectPostgres(config)
+		if perr == nil {
+			db, dbIngest, cherr := connectClickHouse(config)
+			if cherr == nil {
+				log.Println("Connected to PostgreSQL and ClickHouse (ingest identity)")
+				return pg, db, dbIngest
+			}
+			pg.Close()
+			perr = cherr
+		}
+		if time.Now().After(deadline) {
+			log.Fatalf("Ingest server could not connect to databases within the startup window: %v", perr)
+		}
+		if !logged {
+			log.Printf("Waiting for ingest DB identities to be provisioned (retrying): %v", perr)
+			logged = true
+		}
+		time.Sleep(3 * time.Second)
+	}
 }
 
 // waitForWriteTable polls (bounded) until the ingest write table exists, so an ingest
 // server that boots before the full-server tier finishes migrations does not drop a
 // startup burst. The queue's insert retry/backoff is the backstop past the ceiling.
+// Checks via system.tables (not SELECT FROM logs) so it works for the least-privilege
+// ingest user, which has no read access to log data.
 func waitForWriteTable(dbIngest *storage.ClickHouseClient) {
 	table := dbIngest.WriteTable()
 	deadline := time.Now().Add(2 * time.Minute)
+	query := "SELECT name FROM system.tables WHERE database = currentDatabase() AND name = '" + table + "'"
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := dbIngest.Query(ctx, "SELECT 1 FROM "+table+" LIMIT 0")
+		rows, err := dbIngest.Query(ctx, query)
 		cancel()
-		if err == nil {
+		if err == nil && len(rows) > 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			log.Printf("Warning: ingest starting before write table %s is ready: %v", table, err)
+			log.Printf("Warning: ingest starting before write table %s is ready", table)
 			return
 		}
 		time.Sleep(250 * time.Millisecond)
@@ -162,14 +219,16 @@ func runIngestServer() {
 	log.Printf("Starting Bifract in INGEST mode (port %d, workers %d, queue %d)",
 		config.Port, config.IngestWorkers, config.IngestQueueSize)
 
-	pg := connectPostgres(config)
+	// Retry connecting so the ingest tier does not crash-loop during the window where
+	// the app tier is still provisioning the least-privilege ingest DB identities
+	// (on k8s the app and ingest deployments start independently). Bounded so a genuine
+	// misconfiguration still surfaces.
+	pg, db, dbIngest := connectIngestDBsWithRetry(config)
 	defer pg.Close()
-
-	notifWriter := notifications.New(pg)
-
-	db, dbIngest := connectClickHouse(config)
 	defer db.Close()
 	defer dbIngest.Close()
+
+	notifWriter := notifications.New(pg)
 
 	// Ingest mode never runs migrations. Wait (bounded) for the schema so cold starts
 	// after a fresh deploy don't drop the first burst.

@@ -20,8 +20,9 @@ type SearchResult struct {
 
 // Search runs a BQL query against a single fractal's Iceberg archive for an
 // ingest-time window, reading directly through a ClickHouse iceberg*() table
-// function. It reuses the hot BQL translator in SourceIceberg mode (MAP field
-// access, promoted `_ice_` column pruning, toString(fields) content) and filters
+// function. It reuses the hot BQL translator in SourceIceberg mode
+// (JSONExtractString(norm_log) field access, promoted `_ice_` column pruning,
+// norm_log free-text content) and filters
 // on ingest_timestamp -- the archive's partition axis -- so ClickHouse prunes
 // whole ingest-date partitions. Aggregation-free results are capped at maxRows
 // with LimitHit set when the cap is reached.
@@ -56,10 +57,10 @@ func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj 
 		return nil, err
 	}
 
-	// ClickHouse 26.6+ (the pinned/bundled version) reads the iceberg `fields` Map,
-	// the `_ice_` promoted columns, and their Parquet bloom filters correctly, so
-	// no read work-arounds are needed. (CH 26.2 required disabling PREWHERE and
-	// bloom push-down; those bugs are fixed as of 26.6.)
+	// Field access reads the `norm_log` String column (via JSONExtractString) plus
+	// the `_ice_` promoted columns and their Parquet bloom filters. norm_log is a
+	// plain String, so it sidesteps the ClickHouse Iceberg Map-decode bug (Code
+	// 117, upstream #91580) that broke field-dense fractals under a Map column.
 	rows, err := ch.Query(ctx, res.SQL)
 	if err != nil {
 		return nil, fmt.Errorf("archive: search query failed: %w", err)

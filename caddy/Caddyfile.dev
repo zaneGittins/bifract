@@ -9,25 +9,29 @@
 		format json
 	}
 
-	# Block external access to internal-only endpoints
-	respond /api/v1/internal/* 403
-
-	# Skip access logging for high-volume ingest endpoints
-	@ingest path /api/v1/ingest* /_bulk
-	handle @ingest {
-		skip_log
-		reverse_proxy bifract-app:8080
-	}
-
-	# SSE endpoints need immediate flushing
+	@ingest path /api/v1/ingest* /_bulk /v1/logs
 	@sse path */events */stream
-	handle @sse {
-		reverse_proxy bifract-app:8080 {
-			flush_interval -1
-		}
-	}
 
-	handle {
+	# Ordered routing so the internal-endpoint 403 wins before the catch-all proxy
+	# (a bare `respond` loses to a catch-all `handle {}` outside a route block).
+	route {
+		# Block external access to internal-only endpoints
+		respond /api/v1/internal/* 403
+
+		# High-volume ingest endpoints go to the dedicated ingest tier (skip logging).
+		handle @ingest {
+			log_skip
+			reverse_proxy bifract-ingest:8080
+		}
+
+		# SSE endpoints need immediate flushing
+		handle @sse {
+			reverse_proxy bifract-app:8080 {
+				flush_interval -1
+			}
+		}
+
+		# Everything else -> app tier
 		reverse_proxy bifract-app:8080
 	}
 }

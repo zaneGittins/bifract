@@ -82,6 +82,10 @@ services:
       CLICKHOUSE_DB: logs
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-bifract}
+      # Least-privilege ingest identities (app provisions them at startup so the ingest
+      # tier gets INSERT-only CH access + a curated PG role; cannot read logs or auth data).
+      BIFRACT_INGEST_CLICKHOUSE_PASSWORD: ${BIFRACT_INGEST_CLICKHOUSE_PASSWORD:-bifractingestdev}
+      BIFRACT_INGEST_POSTGRES_PASSWORD: ${BIFRACT_INGEST_POSTGRES_PASSWORD:-bifractingestdev}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: bifract
@@ -100,28 +104,67 @@ services:
       BIFRACT_S3_ACCESS_KEY: ${BIFRACT_S3_ACCESS_KEY:-}
       BIFRACT_S3_SECRET_KEY: ${BIFRACT_S3_SECRET_KEY:-}
       BIFRACT_S3_REGION: ${BIFRACT_S3_REGION:-}
-      # Archive tee (dormant-but-present): the spool volume is always mounted so
-      # archiving can be enabled at runtime (admin UI or BIFRACT_ARCHIVE_ENABLED)
-      # with no redeploy. The tee only spools when enabled; off = zero overhead.
+      # Archive: the spool + tee live in the bifract-ingest tier (the primary log
+      # producer); the app tier is not a spool writer. These are display-only hints
+      # for the admin UI. Enable state is read from Postgres; provisioned/usage come
+      # from the ingest tier's published status.
       BIFRACT_ARCHIVE_ENABLED: ${BIFRACT_ARCHIVE_ENABLED:-false}
-      BIFRACT_ARCHIVE_SPOOL_PATH: /var/lib/bifract/spool
-      BIFRACT_ARCHIVE_SPOOL_MAX_BYTES: ${BIFRACT_ARCHIVE_SPOOL_MAX_BYTES:-10737418240}
-      BIFRACT_ARCHIVE_ROLL_BYTES: ${BIFRACT_ARCHIVE_ROLL_BYTES:-134217728}
-      # Archive backend, for the admin UI display only. Restore/recall and the
-      # actual object-storage writes run in the bifract-archiver sidecar, which
-      # owns the S3/Azure credentials; the server never reads them.
       BIFRACT_ARCHIVE_BACKEND: ${BIFRACT_ARCHIVE_BACKEND:-disk}
       MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
       MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
       MAXMIND_EDITION_IDS: ${MAXMIND_EDITION_IDS:-GeoLite2-City-CSV,GeoLite2-ASN-CSV}
     volumes:
       - bifract-maxmind:/data/maxmind
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - bifract-network
+
+  # Ingest data-plane tier. Same image as bifract, run in ingest mode
+  # (`/bifract-server ingest`, matching the archiver's command-arg dispatch).
+  # Scales independently of the app/UI tier -- down to 0 to pause ingest during
+  # ClickHouse merge recovery while the app keeps serving. Caddy routes the external
+  # ingest paths here; the app tier keeps its own queue only for internal/audit
+  # writes. This tier is the primary archive-spool producer.
+  bifract-ingest:
+    image: bifract-dev
+    container_name: bifract-ingest
+    restart: unless-stopped
+    command: ["ingest"]
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_DB: logs
+      # Least-privilege ingest identities (INSERT-only on logs; curated PG grants).
+      CLICKHOUSE_USER: bifract_ingest
+      CLICKHOUSE_PASSWORD: ${BIFRACT_INGEST_CLICKHOUSE_PASSWORD:-bifractingestdev}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: bifract
+      POSTGRES_USER: bifract_ingest
+      POSTGRES_PASSWORD: ${BIFRACT_INGEST_POSTGRES_PASSWORD:-bifractingestdev}
+      BIFRACT_PORT: 8080
+      # Archive tee (dormant-but-present): the ingest tier is the sole spool writer.
+      BIFRACT_ARCHIVE_ENABLED: ${BIFRACT_ARCHIVE_ENABLED:-false}
+      BIFRACT_ARCHIVE_SPOOL_PATH: /var/lib/bifract/spool
+      BIFRACT_ARCHIVE_SPOOL_MAX_BYTES: ${BIFRACT_ARCHIVE_SPOOL_MAX_BYTES:-10737418240}
+      BIFRACT_ARCHIVE_ROLL_BYTES: ${BIFRACT_ARCHIVE_ROLL_BYTES:-134217728}
+      BIFRACT_ARCHIVE_BACKEND: ${BIFRACT_ARCHIVE_BACKEND:-disk}
+    volumes:
       - bifract-spool:/var/lib/bifract/spool
     depends_on:
       postgres:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
+      # Start after the app (which owns migrations). The app has no compose
+      # healthcheck here, so gate on start; the ingest tier's write-table readiness
+      # poll waits for the schema before draining, and the queue retries otherwise.
+      bifract:
+        condition: service_started
     networks:
       - bifract-network
 

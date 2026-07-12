@@ -27,7 +27,8 @@ graph TB
 
     subgraph docker ["Docker Network"]
         caddy["Caddy<br/><small>Reverse Proxy + TLS</small>"]
-        bifract["Bifract<br/><small>Go Backend + Web UI</small>"]
+        app["Bifract App<br/><small>Web UI + Query + Alerts</small>"]
+        ingest["Bifract Ingest<br/><small>Log Ingestion</small>"]
         pg[("PostgreSQL<br/><small>Users, Config, Alerts</small>")]
         ch[("ClickHouse<br/><small>Log Storage</small>")]
         litellm["LiteLLM<br/><small>AI Proxy</small>"]
@@ -35,13 +36,18 @@ graph TB
 
     users -- "HTTPS :443" --> caddy
     sources -- "HTTPS :8443" --> caddy
-    caddy -- ":8080" --> bifract
-    caddy -. "Access Logs" .-> bifract
-    bifract -- ":5432" --> pg
-    bifract -- ":9000" --> ch
-    bifract -- ":8000" --> litellm
+    caddy -- "UI / query :8080" --> app
+    caddy -- "ingest :8080" --> ingest
+    caddy -. "Access Logs" .-> ingest
+    app -- ":5432" --> pg
+    app -- ":9000" --> ch
+    ingest --> pg
+    ingest --> ch
+    app -- ":8000" --> litellm
     litellm -. "OpenAI / Anthropic API" .-> ext["LLM Providers"]
 ```
+
+The UI/query and ingest tiers run as separate containers so ingest can be scaled or paused independently of the app.
 
 ## System Requirements
 

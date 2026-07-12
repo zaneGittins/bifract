@@ -3,7 +3,9 @@
 # Runs as a background process inside the Caddy container.
 # Transforms Caddy fields to use src_ip/src_port/dest_ip/dst_port naming.
 
-BIFRACT_URL="${BIFRACT_INGEST_URL:-http://bifract-app:8080/api/v1/internal/ingest/system}"
+# Internal ingest lives in the ingest tier (bifract-ingest); the app tier no longer
+# receives external/internal ingest.
+BIFRACT_URL="${BIFRACT_INGEST_URL:-http://bifract-ingest:8080/api/v1/internal/ingest/system}"
 BATCH_SIZE="${BATCH_SIZE:-50}"
 FLUSH_INTERVAL="${FLUSH_INTERVAL:-10}"
 LOG_FILE="/var/log/caddy/access.log"
@@ -19,9 +21,9 @@ while [ ! -f "$LOG_FILE" ]; do
     sleep 2
 done
 
-# Wait for Bifract to be healthy
+# Wait for the ingest tier to be healthy (it serves the internal ingest endpoint)
 while true; do
-    if curl -sf http://bifract-app:8080/api/v1/health > /dev/null 2>&1; then
+    if curl -sf http://bifract-ingest:8080/api/v1/health > /dev/null 2>&1; then
         break
     fi
     sleep 5

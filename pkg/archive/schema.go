@@ -1,6 +1,8 @@
 package archive
 
 import (
+	"bytes"
+	"encoding/json"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -14,12 +16,21 @@ import (
 )
 
 // The Iceberg archive schema is intentionally STATIC. All normalized fields -
-// default and user-added - live in a single MAP<string,string> column, so
-// adding a schema field never requires evolving the Iceberg table. ClickHouse
-// re-derives its typed JSON sub-columns from the map on restore
-// (toJSONString(fields)::JSON), so BQL queries work identically on restored
-// data. Partitioning is by ingest date (monotonic -> sealable partitions);
-// event timestamp is a sorted column for min/max pruning.
+// default and user-added - are serialized into a single `norm_log` String
+// column holding a flat JSON object ({"key":"value",...}), so adding a schema
+// field never requires evolving the Iceberg table. A plain String is used
+// deliberately instead of a Parquet MAP<string,string>: ClickHouse's
+// icebergAzure()/icebergS3() Iceberg reader mis-decodes high-entry-count
+// repeated Map groups (Code 117, upstream CH #91580) on field-dense fractals,
+// whereas String columns (like raw_log/normalizer) read reliably at any scale.
+// ClickHouse re-derives its typed JSON sub-columns from norm_log on restore
+// (norm_log::JSON), and BQL archive search extracts fields via
+// JSONExtractString(norm_log, key), so queries work identically on archived and
+// restored data. Values are serialized as JSON strings (v1 accepts minor
+// type-fidelity divergence from the hot store's typed norm_log); the JSON `fields`
+// column's type hints coerce them back on restore. Partitioning is by ingest date
+// (monotonic -> sealable partitions); event timestamp is a sorted column for
+// min/max pruning.
 const (
 	partitionFieldName = "ingest_date"
 	partitionFieldID   = 1000
@@ -30,7 +41,6 @@ const (
 // deterministic order of parser.IcePromotedFields() so the schema and buildRecord
 // stay index-aligned and the translator's promoted-column predicate matches.
 func arrowSchema() *arrow.Schema {
-	mapType := arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String)
 	flds := []arrow.Field{
 		{Name: "timestamp", Type: arrow.FixedWidthTypes.Timestamp_ms, Nullable: false},
 		{Name: "ingest_timestamp", Type: arrow.FixedWidthTypes.Timestamp_ms, Nullable: false},
@@ -39,7 +49,10 @@ func arrowSchema() *arrow.Schema {
 		{Name: "fractal_id", Type: arrow.BinaryTypes.String, Nullable: false},
 		{Name: "raw_log", Type: arrow.BinaryTypes.String, Nullable: false},
 		{Name: "normalizer", Type: arrow.BinaryTypes.String, Nullable: false},
-		{Name: "fields", Type: mapType, Nullable: true},
+		// Flat JSON serialization of the normalized field map (mirrors the hot
+		// store's norm_log = toString(fields)). A String, not a Map, to dodge the
+		// ClickHouse Iceberg Map-decode bug on field-dense data (see file header).
+		{Name: "norm_log", Type: arrow.BinaryTypes.String, Nullable: false},
 	}
 	// Promoted top-level columns give ClickHouse icebergS3() min/max + bloom
 	// pruning on hot fields. Nullable so tables created before promotion evolve
@@ -90,10 +103,8 @@ func buildRecord(mem memory.Allocator, logs []storage.LogEntry) arrow.RecordBatc
 	logB := b.Field(3).(*array.StringBuilder)
 	fracB := b.Field(4).(*array.StringBuilder)
 	rawB := b.Field(5).(*array.StringBuilder)
-	normB := b.Field(6).(*array.StringBuilder)
-	mapB := b.Field(7).(*array.MapBuilder)
-	keyB := mapB.KeyBuilder().(*array.StringBuilder)
-	valB := mapB.ItemBuilder().(*array.StringBuilder)
+	normalizerB := b.Field(6).(*array.StringBuilder)
+	normLogB := b.Field(7).(*array.StringBuilder)
 
 	// Promoted `_ice_` column builders, index-aligned with arrowSchema (start at 8).
 	promoted := parser.IcePromotedFields()
@@ -110,17 +121,35 @@ func buildRecord(mem memory.Allocator, logs []storage.LogEntry) arrow.RecordBatc
 		logB.Append(e.LogID)
 		fracB.Append(e.FractalID)
 		rawB.Append(e.RawLog)
-		normB.Append(e.Normalizer)
-		mapB.Append(true)
-		for k, v := range e.Fields {
-			keyB.Append(k)
-			valB.Append(v)
-		}
+		normalizerB.Append(e.Normalizer)
+		normLogB.Append(marshalFields(e.Fields))
 		// Duplicate promoted field values into their typed columns for pruning;
 		// '' when the key is absent (map zero value) keeps new files non-null.
+		// Sourced from the in-memory map, so this is unaffected by the norm_log
+		// serialization above.
 		for pi, pf := range promoted {
 			promotedB[pi].Append(e.Fields[pf])
 		}
 	}
 	return b.NewRecordBatch()
+}
+
+// marshalFields serializes a normalized field map to a flat JSON object string,
+// the archive's norm_log representation. Keys are emitted in sorted order
+// (encoding/json sorts map keys) for stable output; HTML escaping is disabled so
+// substring/regex free-text search over norm_log matches the raw characters (as
+// the hot store's toString(fields) does). All values are JSON strings; the JSON
+// `fields` column's type hints coerce them back to typed values on restore.
+func marshalFields(m map[string]string) string {
+	if len(m) == 0 {
+		return "{}"
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
+		return "{}"
+	}
+	// Encoder.Encode appends a trailing newline; trim it.
+	return string(bytes.TrimRight(buf.Bytes(), "\n"))
 }

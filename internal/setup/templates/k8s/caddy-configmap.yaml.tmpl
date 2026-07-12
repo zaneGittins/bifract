@@ -38,7 +38,7 @@ data:
         max_size 200MiB
       }
 {{.IPBlock}}
-      @ingest_main path /api/v1/ingest* /_bulk
+      @ingest_main path /api/v1/ingest* /_bulk /v1/logs
 
       route {
         respond /api/v1/internal/* 403
@@ -71,8 +71,8 @@ data:
         max_size 200MiB
       }
 {{.IPBlockIngest}}
-      @ingest path /api/v1/ingest* /_bulk
-      @not_ingest not path /api/v1/ingest* /_bulk
+      @ingest path /api/v1/ingest* /_bulk /v1/logs
+      @not_ingest not path /api/v1/ingest* /_bulk /v1/logs
 
       route {
 {{- if .IPBlockIngest}}
@@ -80,7 +80,7 @@ data:
 {{- end}}
         respond @not_ingest 403
         log_skip
-        reverse_proxy bifract.bifract.svc.cluster.local:8080 {
+        reverse_proxy bifract-ingest.bifract.svc.cluster.local:8080 {
           header_up X-Real-IP {remote_host}
           header_up X-Forwarded-For {remote_host}
           header_up X-Forwarded-Proto {scheme}

@@ -654,6 +654,13 @@
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
+                    <div class="danger-action-item" id="archiveClearCatalogItem" style="margin-top:12px;">
+                        <div class="danger-action-info">
+                            <span class="danger-action-label">Clear Catalog</span>
+                            <span class="danger-action-desc">Drop every archived table from the Iceberg catalog and reset the footprint to zero, so archiving starts fresh. Disable archiving first. This does not delete the data files in object storage &mdash; empty your bucket/container manually to reclaim space and avoid stale files shadowing new tables.</span>
+                        </div>
+                        <button id="archiveClearCatalogBtn" class="danger-btn">Clear Catalog</button>
+                    </div>
                 </div>
 
                 <div class="settings-card">

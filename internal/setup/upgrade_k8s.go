@@ -234,12 +234,15 @@ type k8sSettings struct {
 
 	// maxmindPVCAccessMode and maxmindPVCStorageClass preserve user-customized
 	// PVC settings (e.g. ReadWriteMany + azurefile-csi for Azure) across upgrades.
-	maxmindPVCAccessMode  string
+	maxmindPVCAccessMode   string
 	maxmindPVCStorageClass string
 
 	// ingestQueueSize and ingestWorkers preserve user-tuned ingest queue settings.
 	ingestQueueSize int
 	ingestWorkers   int
+	// ingestReplicas preserves an operator-set ingest tier replica count (incl. a
+	// value scaled into the manifest) across regeneration.
+	ingestReplicas int
 
 	// dashboard* preserve user-tuned dashboard executor settings.
 	dashboardTick       int
@@ -251,14 +254,16 @@ type k8sSettings struct {
 // overwritten by live cluster values. Everything else is user-configurable
 // and will be merged from the live cluster when present.
 var coreSecretKeys = map[string]bool{
-	"POSTGRES_PASSWORD":        true,
-	"CLICKHOUSE_PASSWORD":      true,
-	"CLICKHOUSE_PASSWORD_HASH": true,
-	"PASSWORD_PEPPER":          true,
-	"ADMIN_PASSWORD_HASH":      true,
-	"FEED_ENCRYPTION_KEY":      true,
-	"BACKUP_ENCRYPTION_KEY":    true,
-	"LITELLM_MASTER_KEY":       true,
+	"POSTGRES_PASSWORD":          true,
+	"INGEST_POSTGRES_PASSWORD":   true,
+	"CLICKHOUSE_PASSWORD":        true,
+	"CLICKHOUSE_PASSWORD_HASH":   true,
+	"INGEST_CLICKHOUSE_PASSWORD": true,
+	"PASSWORD_PEPPER":            true,
+	"ADMIN_PASSWORD_HASH":        true,
+	"FEED_ENCRYPTION_KEY":        true,
+	"BACKUP_ENCRYPTION_KEY":      true,
+	"LITELLM_MASTER_KEY":         true,
 }
 
 // tryReadLiveSecrets reads the deployed Secret from the cluster using kubectl.
@@ -377,6 +382,13 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 				s.maxmindPVCStorageClass = extractValue(doc, `storageClassName:\s*(\S+)`)
 				break
 			}
+		}
+	}
+
+	// Preserve the ingest tier's replica count (separate deployment file).
+	if data, err := os.ReadFile(filepath.Join(dir, "bifract", "ingest-deployment.yaml")); err == nil {
+		if v := extractValue(string(data), `(?m)^\s*replicas:\s*(\d+)`); v != "" {
+			s.ingestReplicas, _ = strconv.Atoi(v)
 		}
 	}
 

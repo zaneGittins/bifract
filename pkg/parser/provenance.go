@@ -33,6 +33,23 @@ const (
 	procFreqHostsCap = 256
 )
 
+// Diffusion (NoDoze network-diffusion adaptation) caps. When diffuse is on, the FINAL anomaly
+// threshold is applied by the viz over the PROPAGATED score (a leaf under an anomalous chain is
+// promoted), so the scoring SQL cannot pre-filter leaves by the user threshold -- a promotable
+// leaf must survive to the client. Instead it keeps leaves above a low floor, capped per process,
+// so the payload stays bounded regardless of tree size (no unbounded scan -- the threshold filter
+// was always post-scan, so this changes rows returned, not granules read). See the frontend
+// _pgApplyDiffusion for the propagation itself.
+const (
+	// diffuseLeafFloor: leaves below this RAW anomaly are dropped in SQL -- they can never be
+	// promoted enough to matter and returning them all would flood the payload. Promotable
+	// leaves (some raw signal, under a hot chain) sit above it.
+	diffuseLeafFloor = "0.05"
+	// diffusePerProcLeaves caps non-spawn leaves returned PER PROCESS (top-N by raw anomaly), so
+	// one noisy process cannot blow the payload. procs are bounded by maxProvenanceGuids.
+	diffusePerProcLeaves = 64
+)
+
 // ProvenanceParams are the parsed pgr() arguments the handler orchestrates the two-pass
 // query with. start/depth/direction match ptg(); threshold prunes non-spawn edges below it.
 // EdgeTypes is the resolved set of non-spawn edge types to generate (spawn -- the tree spine
@@ -44,6 +61,7 @@ type ProvenanceParams struct {
 	Threshold float64
 	EdgeTypes map[string]bool // non-spawn event_types to include; nil/empty = all
 	Reconnect bool            // enable cross-tree reconnection via shared leaves (default true)
+	Diffuse   bool            // propagate anomaly along the tree (NoDoze diffusion); default true
 }
 
 // provenanceLeafTypes are the non-spawn edge event_types pgr can emit. spawn is the tree
@@ -86,7 +104,7 @@ func parseEdgeTypeList(v string) []string {
 // missing. pgr is a source command (see source_command.go): the query layer's source resolver
 // calls this, then orchestrates the two-pass query into a subquery source.
 func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
-	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7, Reconnect: true}
+	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7, Reconnect: true, Diffuse: true}
 	var includeTypes, excludeTypes []string
 	for _, arg := range cmd.Arguments {
 		switch {
@@ -95,6 +113,9 @@ func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
 		case strings.HasPrefix(arg, "reconnect="):
 			v := strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "reconnect="), "\"'"))
 			p.Reconnect = v != "false" && v != "0" && v != "no"
+		case strings.HasPrefix(arg, "diffuse="):
+			v := strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "diffuse="), "\"'"))
+			p.Diffuse = v != "false" && v != "0" && v != "no"
 		case strings.HasPrefix(arg, "depth="):
 			if d, err := strconv.Atoi(strings.TrimPrefix(arg, "depth=")); err == nil && d > 0 {
 				p.Depth = d
@@ -161,9 +182,15 @@ func BuildProcessTreeQuery(p ProvenanceParams, opts QueryOptions) (string, error
 // edgeTypes selects which non-spawn edge branches to generate (nil/empty = all); spawn is
 // always included as the tree backbone. Skipping a branch avoids scanning logs for that
 // bifract_category entirely -- a real cost saving at scale, not just a post-filter.
-func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[string]bool, opts QueryOptions) (string, error) {
+func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[string]bool, diffuse bool, opts QueryOptions) (string, error) {
 	if len(guids) == 0 {
 		return "", fmt.Errorf("pgr: no process guids to score")
+	}
+	// Defensive: a NaN/out-of-range threshold would emit an invalid or degenerate WHERE clause.
+	if threshold != threshold || threshold < 0 { // NaN or negative
+		threshold = 0
+	} else if threshold > 1 {
+		threshold = 1
 	}
 	want := func(t string) bool { return len(edgeTypes) == 0 || edgeTypes[t] }
 	if len(guids) > maxProvenanceGuids {
@@ -230,8 +257,8 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 		"SELECT fields.process_guid::String AS src_node, concat('dns:', %[1]s) AS dst_node, "+
 			"fields.query::String AS label, 'dns_query' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host "+
 			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
-			"AND fields.bifract_category = 'dns_query' AND fields.image::String != '' AND fields.query::String != ''",
-		abstractExpr("fields.query::String", AbstractDomain), aPath("fields.image::String"), logs, timeWin, frac(), inList)
+			"AND fields.bifract_category = 'dns_query' AND fields.image::String != '' AND fields.query::String != '' AND NOT match(fields.query::String, %[7]s)",
+		abstractExpr("fields.query::String", AbstractDomain), aPath("fields.image::String"), logs, timeWin, frac(), inList, ipv4Re)
 
 	// Process->process edges (injection / handle-access): source_process_guid in the tree,
 	// real target_process_guid node. The actor's image is normalized to fields.image (same as
@@ -270,18 +297,34 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 		freqWhere = " WHERE " + fractal
 	}
 
+	// Aggregate raw per-event leaf edges to one row per (src,dst,event_type). Without this a
+	// beaconing process (e.g. 10k connections to one C2) emits 10k identical edges that all get
+	// scored, sorted, and can eat the LIMIT -- pushing out other processes' edges. spawn edges
+	// are already one-per-process (proc_lineage FINAL). argMax/max keep a consistent latest
+	// (log_id,timestamp) pair for the detail lookup.
+	edgesAgg := fmt.Sprintf("SELECT src_node, dst_node, any(ev.label) AS label, event_type, any(ev.fkey_src) AS fkey_src, "+
+		"any(ev.fkey_tgt) AS fkey_tgt, argMax(ev.log_id, ev.timestamp) AS log_id, max(ev.timestamp) AS timestamp, any(ev.fractal_id) AS fractal_id, any(ev.host) AS host "+
+		"FROM (%s) AS ev GROUP BY src_node, dst_node, event_type", edges)
+
 	// Anomaly = greatest of two rarity signals (non-spawn edges):
-	//   1. source-relative: 1 - freq(src,rel,target)/freq(src,rel,*)  (fe/ft) -- "how unusual
-	//      is this target FOR this source". Blind spot: a process that only ever does one thing
-	//      (e.g. malware that only talks to its C2) scores its sole behavior 0 -- it looks normal
-	//      for itself, so its rare C2 connection would be pruned.
-	//   2. global rarity: 1 - hosts(rel,target)/total_hosts  (gf/th) -- "how rare is this target
-	//      across the enterprise". A C2 IP touched by 1 of 500 hosts scores ~1 regardless of how
-	//      often the source hits it, so single-behavior malware no longer hides. A never-seen
-	//      target (not in the baseline) scores 1. On single-host data this term is ~0, so scoring
-	//      falls back to the source-relative signal (no regression there).
+	//   1. source-relative: 1 - freq(src,rel,target)/freq(src,rel,*) (fe/ft) -- "how unusual is
+	//      this target FOR this source". Blind spot: a process that only ever does one thing
+	//      (malware that only talks to its C2) scores its sole behavior 0.
+	//   2. global rarity: 1 - hosts(rel,target)/total_hosts (gf/totalHosts) -- "how rare is this
+	//      target across the fleet". A rare C2 scores high regardless of source frequency.
+	// total_hosts uses uniqExact(computer_name) over proc_lineage (UNCAPPED true fleet size),
+	// not proc_freq's groupUniqArray(256) state which saturates at 256 and would under-score
+	// medium-prevalence artifacts on large fleets. When a target's host count saturates the cap
+	// it is treated as common (GR=0). A never-seen target (hostct 0) scores 1. When the source
+	// has no baseline (ft.tot=0) we fall back to global rarity alone rather than forcing 1.0,
+	// so a brand-new-but-benign process touching common targets is not all-max noise.
 	// Spawn keeps the pure source-relative score (structure is never pruned; only coloured).
-	totalHosts := fmt.Sprintf("(SELECT length(groupUniqArrayMerge(%[1]d)(hosts)) FROM %[2]s%[3]s)", procFreqHostsCap, procFreq, freqWhere)
+	totalHosts := fmt.Sprintf("(SELECT uniqExact(computer_name) FROM %s%s)", procLineage, freqWhere)
+	gr := fmt.Sprintf("if(coalesce(gf.hostct, 0) >= %[1]d, 0, if(%[2]s = 0, 0, 1 - coalesce(gf.hostct, 0) / %[2]s))", procFreqHostsCap, totalHosts)
+	anomExpr := fmt.Sprintf("multiIf(e.event_type = 'spawn', if(coalesce(ft.tot, 0) = 0, 1.0, round(1 - coalesce(fe.cnt, 0) / ft.tot, 4)), "+
+		"coalesce(ft.tot, 0) = 0, round(%[1]s, 4), "+
+		"round(greatest(1 - coalesce(fe.cnt, 0) / ft.tot, %[1]s), 4)) AS anomaly_score ", gr)
+
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("WITH fe AS (SELECT src_image, event_type, target_norm, sum(event_count) AS cnt FROM %[1]s%[2]s GROUP BY src_image, event_type, target_norm), ",
 		procFreq, freqWhere))
@@ -294,23 +337,37 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	// lines can be enormous, so truncate to 300 chars in SQL -- never pull the full string.
 	b.WriteString(fmt.Sprintf("pm AS (SELECT fields.process_guid::String AS guid, any(substring(if(fields.commandline::String != '', fields.commandline::String, fields.command_line::String), 1, 300)) AS command_line, any(fields.user::String) AS proc_user FROM %[1]s WHERE %[2]s%[3]s AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'process_creation' GROUP BY guid) ",
 		logs, timeWin, frac(), inList))
+	// Leaf gating differs by mode. Non-diffuse: filter leaves by the user threshold in SQL and
+	// keep the top MaxRows non-spawn edges globally. Diffuse: the FINAL threshold is applied by
+	// the viz over the PROPAGATED score, so a promotable leaf must survive -- SQL keeps leaves
+	// above a low floor, capped PER PROCESS (bounded payload), and the client re-thresholds.
+	// Either way ALL spawn edges are kept so process structure can never be truncated away.
+	leafFloor := strconv.FormatFloat(threshold, 'f', -1, 64)
+	partitionBy := "(event_type = 'spawn')"
+	capN, applyCap := opts.MaxRows, opts.MaxRows > 0
+	if diffuse {
+		leafFloor = diffuseLeafFloor
+		partitionBy = "(event_type = 'spawn'), parent" // per-process leaf cap
+		capN, applyCap = diffusePerProcLeaves, true
+	}
 	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user, host FROM (")
+	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user, host")
+	if applyCap {
+		b.WriteString(fmt.Sprintf(", row_number() OVER (PARTITION BY %s ORDER BY anomaly_score DESC) AS _rn", partitionBy))
+	}
+	b.WriteString(" FROM (")
 	b.WriteString("SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.log_id AS log_id, e.timestamp AS timestamp, e.fractal_id AS fractal_id, e.host AS host, coalesce(pm.command_line, '') AS command_line, coalesce(pm.proc_user, '') AS proc_user, ")
-	b.WriteString(fmt.Sprintf("multiIf(e.event_type = 'spawn', if(coalesce(ft.tot, 0) = 0, 1.0, round(1 - coalesce(fe.cnt, 0) / ft.tot, 4)), "+
-		"round(greatest(if(coalesce(ft.tot, 0) = 0, 1.0, 1 - coalesce(fe.cnt, 0) / ft.tot), if(%[1]s = 0, 0, 1 - coalesce(gf.hostct, 0) / %[1]s)), 4)) AS anomaly_score ", totalHosts))
-	b.WriteString(fmt.Sprintf("FROM (%s) AS e ", edges))
+	b.WriteString(anomExpr)
+	b.WriteString(fmt.Sprintf("FROM (%s) AS e ", edgesAgg))
 	b.WriteString("LEFT JOIN fe ON fe.src_image = e.fkey_src AND fe.event_type = e.event_type AND fe.target_norm = e.fkey_tgt ")
 	b.WriteString("LEFT JOIN ft ON ft.src_image = e.fkey_src AND ft.event_type = e.event_type ")
 	b.WriteString("LEFT JOIN gf ON gf.event_type = e.event_type AND gf.target_norm = e.fkey_tgt ")
 	b.WriteString("LEFT JOIN pm ON pm.guid = e.dst_node) AS scored ")
-	b.WriteString(fmt.Sprintf("WHERE event_type = 'spawn' OR anomaly_score >= %s ", strconv.FormatFloat(threshold, 'f', -1, 64)))
-	// Spawn edges are the tree backbone (often anomaly ~0). Order them FIRST so that if the
-	// LIMIT truncates, it drops low-signal leaf edges -- never the process structure, which
-	// would make child nodes vanish. Within each group, rarest first.
-	b.WriteString("ORDER BY (event_type = 'spawn') DESC, anomaly_score DESC")
-	if opts.MaxRows > 0 {
-		b.WriteString(fmt.Sprintf(" LIMIT %d", opts.MaxRows))
+	b.WriteString(fmt.Sprintf("WHERE event_type = 'spawn' OR anomaly_score >= %s) AS ranked ", leafFloor))
+	if applyCap {
+		b.WriteString(fmt.Sprintf("WHERE event_type = 'spawn' OR _rn <= %d ", capN))
 	}
+	b.WriteString("ORDER BY (event_type = 'spawn') DESC, anomaly_score DESC")
 
 	// Not run through validateGeneratedSQL: this statement is fully machine-composed and
 	// legitimately multi-source UNION ALLs the five edge types (which the shared validator
@@ -447,7 +504,7 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 				"pl.image AS label, toFloat64(1.0) AS anomaly, pl.image AS peer_image, pl.log_id AS peer_log_id, "+
 				"toString(pl.timestamp) AS peer_ts, pl.fractal_id AS peer_fractal, pl.computer_name AS peer_host "+
 				"FROM %[1]s AS pl FINAL INNER JOIN (%[2]s) AS wp ON lower(pl.image) = wp.p "+
-				"WHERE %[3]spl.process_guid NOT IN (%[4]s) LIMIT %[5]d",
+				"WHERE %[3]spl.process_guid NOT IN (%[4]s) ORDER BY pl.process_guid LIMIT %[5]d",
 			procLineage, writtenPaths, plWhere, inList, maxReconnectPeers))
 	}
 
@@ -458,55 +515,66 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 	// connect<->connect matching misses. src = a tree toucher of the IP, so the shared IP node
 	// converges (tree + peer) independent of pass-2 pruning.
 	if want("net") {
-		// endpointIPs(guidCond): (guid, ip, img, log_id, ts, fractal) for external IPv4 endpoints
-		// a process either connected to or resolved. guidCond is the process_guid predicate.
-		endpointIPs := func(guidCond string) string {
+		// endpointIPs(guidCond, ipFilter): (guid, ip, img, log_id, ts, fractal, host) for external
+		// IPv4/IPv6 endpoints a process connected to or resolved. When ipFilter (a subquery of
+		// candidate IPs) is set, it is pushed INTO the network_connect scan so the idx_dst_ip
+		// bloom can prune granules -- otherwise the peer side would scan the whole fleet's net/dns
+		// volume and only filter via the join. dns IPs are filtered on the outer ip.
+		endpointIPs := func(guidCond, ipFilter string) string {
+			netExtra, dnsOuter := "", ""
+			if ipFilter != "" {
+				netExtra = " AND fields.dst_ip::String IN (" + ipFilter + ")"
+				dnsOuter = " AND ip IN (" + ipFilter + ")"
+			}
 			return fmt.Sprintf(
 				"SELECT guid, ip, img, log_id, ts, fractal, host FROM ("+
 					"SELECT fields.process_guid::String AS guid, fields.dst_ip::String AS ip, fields.image::String AS img, log_id, toString(timestamp) AS ts, fractal_id AS fractal, fields.computer_name::String AS host "+
-					"FROM %[1]s WHERE %[2]s%[3]s AND fields.bifract_category = 'network_connect' AND fields.process_guid::String %[4]s AND fields.dst_ip::String != '' "+
+					"FROM %[1]s WHERE %[2]s%[3]s AND fields.bifract_category = 'network_connect' AND fields.process_guid::String %[4]s AND fields.dst_ip::String != ''%[7]s "+
 					"UNION ALL "+
 					"SELECT fields.process_guid::String AS guid, ip, fields.image::String AS img, log_id, toString(timestamp) AS ts, fractal_id AS fractal, fields.computer_name::String AS host "+
 					"FROM %[1]s ARRAY JOIN arrayFilter(x -> x != '', arrayConcat(splitByChar(';', fields.query_results::String), array(fields.query::String))) AS ip "+
 					"WHERE %[2]s%[3]s AND fields.bifract_category = 'dns_query' AND fields.process_guid::String %[4]s"+
-					") WHERE match(ip, %[5]s) AND %[6]s",
-				logs, timeWin, fracAnd, guidCond, ipv4Re, fmt.Sprintf(externalIPNegTmpl, "ip"))
+					") WHERE (match(ip, %[5]s) OR position(ip, ':') > 0) AND %[6]s%[8]s",
+				logs, timeWin, fracAnd, guidCond, ipv4Re, fmt.Sprintf(externalIPNegTmpl, "ip"), netExtra, dnsOuter)
 		}
 		rareIP := fmt.Sprintf(
 			"SELECT ip, any(guid) AS toucher FROM (SELECT DISTINCT ip, guid FROM (%[1]s) LIMIT %[2]d) AS c WHERE ip IN ("+
 				"SELECT target_norm FROM %[3]s WHERE event_type = 'net_connect'%[4]s GROUP BY target_norm "+
 				"HAVING length(groupUniqArrayMerge(%[5]d)(hosts)) <= %[6]s) GROUP BY ip",
-			endpointIPs(fmt.Sprintf("IN (%s)", inList)), maxReconnectCandidateArtifacts,
+			endpointIPs(fmt.Sprintf("IN (%s)", inList), ""), maxReconnectCandidateArtifacts,
 			procFreq, freqFrac, procFreqHostsCap, hostGate)
 		parts = append(parts, fmt.Sprintf(
 			"SELECT 'net' AS recon_type, l.guid AS peer_guid, any(ri.toucher) AS src_guid, concat('net:', %[1]s) AS object_id, "+
 				"any(l.ip) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
 				"any(l.ts) AS peer_ts, any(l.fractal) AS peer_fractal, any(l.host) AS peer_host "+
-				"FROM (%[2]s) AS l INNER JOIN (%[3]s) AS ri ON l.ip = ri.ip GROUP BY peer_guid, object_id LIMIT %[4]d",
-			abstractExpr("l.ip", AbstractIP), endpointIPs(fmt.Sprintf("NOT IN (%s)", inList)), rareIP, maxReconnectPeers))
+				"FROM (%[2]s) AS l INNER JOIN (%[3]s) AS ri ON l.ip = ri.ip GROUP BY peer_guid, object_id ORDER BY peer_guid LIMIT %[4]d",
+			abstractExpr("l.ip", AbstractIP), endpointIPs(fmt.Sprintf("NOT IN (%s)", inList), "SELECT ip FROM ("+rareIP+")"), rareIP, maxReconnectPeers))
 	}
 
-	// dns: two processes -> same rare domain. Same converging shape as net.
+	// dns: two processes -> same rare DOMAIN (IP-form queries are excluded here -- they route
+	// through the net endpoint branch instead, so an IP isn't shown as both a dns: and net: node).
 	if want("dns") {
 		aDom := func(col string) string { return abstractExpr(col, AbstractDomain) }
+		notIP := fmt.Sprintf(" AND NOT match(fields.query::String, %s)", ipv4Re)
 		rareDom := fmt.Sprintf(
 			"SELECT q, any(t) AS toucher FROM (SELECT DISTINCT %[1]s AS q, fields.process_guid::String AS t "+
 				"FROM %[2]s WHERE %[3]s%[4]s AND fields.process_guid::String IN (%[5]s) AND fields.bifract_category = 'dns_query' "+
-				"AND fields.query::String != '' LIMIT %[6]d) AS c WHERE q IN ("+
+				"AND fields.query::String != ''%[11]s LIMIT %[6]d) AS c WHERE q IN ("+
 				"SELECT target_norm FROM %[7]s WHERE event_type = 'dns_query'%[8]s GROUP BY target_norm "+
 				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]s) GROUP BY q",
 			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, maxReconnectCandidateArtifacts,
-			procFreq, freqFrac, procFreqHostsCap, hostGate)
+			procFreq, freqFrac, procFreqHostsCap, hostGate, notIP)
 		peerScan := fmt.Sprintf(
 			"SELECT fields.process_guid::String AS peer_guid, %[1]s AS q, fields.image::String AS img, "+
 				"log_id, toString(timestamp) AS ts, fractal_id, fields.computer_name::String AS host FROM %[2]s WHERE %[3]s%[4]s "+
-				"AND fields.bifract_category = 'dns_query' AND fields.process_guid::String NOT IN (%[5]s) AND fields.query::String != ''",
-			aDom("fields.query::String"), logs, timeWin, fracAnd, inList)
+				"AND fields.bifract_category = 'dns_query' AND fields.process_guid::String NOT IN (%[5]s) AND fields.query::String != ''%[6]s "+
+				"AND %[1]s IN (%[7]s)",
+			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, notIP, "SELECT q FROM ("+rareDom+")")
 		parts = append(parts, fmt.Sprintf(
 			"SELECT 'dns' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, concat('dns:', l.q) AS object_id, "+
 				"any(l.q) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
 				"any(l.ts) AS peer_ts, any(l.fractal_id) AS peer_fractal, any(l.host) AS peer_host "+
-				"FROM (%[1]s) AS l INNER JOIN (%[2]s) AS ri ON l.q = ri.q GROUP BY peer_guid, object_id LIMIT %[3]d",
+				"FROM (%[1]s) AS l INNER JOIN (%[2]s) AS ri ON l.q = ri.q GROUP BY peer_guid, object_id ORDER BY peer_guid LIMIT %[3]d",
 			peerScan, rareDom, maxReconnectPeers))
 	}
 
@@ -519,7 +587,7 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 				"'' AS peer_log_id, '' AS peer_ts, '' AS peer_fractal, any(fields.computer_name::String) AS peer_host "+
 				"FROM %[3]s WHERE %[4]s%[5]s AND fields.bifract_category = '%[6]s' "+
 				"AND fields.source_process_guid::String IN (%[7]s) AND fields.target_process_guid::String != '' "+
-				"AND fields.target_process_guid::String NOT IN (%[7]s) GROUP BY peer_guid LIMIT %[8]d",
+				"AND fields.target_process_guid::String NOT IN (%[7]s) GROUP BY peer_guid ORDER BY peer_guid LIMIT %[8]d",
 			reconType, anomaly, logs, timeWin, fracAnd, category, inList, maxReconnectPeers)
 	}
 	if want("remote_thread") {

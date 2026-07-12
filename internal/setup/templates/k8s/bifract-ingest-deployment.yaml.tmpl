@@ -1,0 +1,321 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifract-ingest
+  namespace: bifract
+spec:
+  # Independently scalable data-plane tier. Scale to 0 to pause ingest during
+  # ClickHouse merge recovery while the app/UI tier keeps serving.
+  replicas: {{.IngestReplicas}}
+  selector:
+    matchLabels:
+      app: bifract-ingest
+  template:
+    metadata:
+      labels:
+        app: bifract-ingest
+    spec:
+{{- if .ImagePullSecrets}}
+      imagePullSecrets:
+{{- range .ImagePullSecrets}}
+        - name: {{.}}
+{{- end}}
+{{- end}}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: bifract-ingest
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # Ingest data plane: `/bifract-server ingest`. No control plane, no UI.
+        - name: bifract-ingest
+          image: ghcr.io/zanegittins/bifract:{{.ImageTag}}
+          args: ["ingest"]
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: POSTGRES_HOST
+              value: postgres
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: bifract
+            # Least-privilege ingest PG role (curated grants; no users/sessions/api_keys).
+            - name: POSTGRES_USER
+              value: bifract_ingest
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: INGEST_POSTGRES_PASSWORD
+            - name: CLICKHOUSE_HOSTS
+              value: "{{.CHHostsList}}"
+{{- if gt .CHShards 1}}
+            - name: CLICKHOUSE_WRITE_HOST
+              value: "bifract-ch-clickhouse-lb"
+{{- end}}
+            - name: CLICKHOUSE_PORT
+              value: "9000"
+            - name: CLICKHOUSE_DB
+              value: logs
+            # Least-privilege ingest identity (INSERT-only on logs; cannot read log
+            # data). Provisioned by the app tier at startup.
+            - name: CLICKHOUSE_USER
+              value: bifract_ingest
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: INGEST_CLICKHOUSE_PASSWORD
+            - name: CLICKHOUSE_CLUSTER
+              value: default
+            - name: BIFRACT_PORT
+              value: "8080"
+            # Ingestion queue tuning
+            - name: BIFRACT_INGEST_QUEUE_SIZE
+              value: "{{.IngestQueueSize}}"
+            - name: BIFRACT_INGEST_WORKERS
+              value: "{{.IngestWorkers}}"
+            # Archive tee (dormant-but-present): the ingest tier is the sole spool
+            # writer. Off = zero overhead; enable at runtime (admin UI or the secret).
+            - name: BIFRACT_ARCHIVE_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_ENABLED
+                  optional: true
+            - name: BIFRACT_ARCHIVE_SPOOL_PATH
+              value: /var/lib/bifract/spool
+            - name: BIFRACT_ARCHIVE_SPOOL_MAX_BYTES
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_SPOOL_MAX_BYTES
+                  optional: true
+            - name: BIFRACT_ARCHIVE_ROLL_BYTES
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_ROLL_BYTES
+                  optional: true
+            - name: BIFRACT_ARCHIVE_BACKEND
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_BACKEND
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: spool
+              mountPath: /var/lib/bifract/spool
+          resources:
+            requests:
+              cpu: {{.BifractRes.CPURequest}}
+              memory: {{.BifractRes.MemRequest}}
+            limits:
+              cpu: "{{.BifractRes.CPULimit}}"
+              memory: {{.BifractRes.MemLimit}}
+        # Iceberg archive sidecar (dormant-but-present). Co-located with the ingest
+        # tier since that is where the bulk of logs are spooled. Shares the pod-local
+        # spool with the ingest container. Idles until archiving is enabled. Use an
+        # object-storage backend (s3/minio/azure) in k8s; the disk backend is
+        # pod-local (single-pod/testing only).
+        - name: bifract-archiver
+          image: ghcr.io/zanegittins/bifract:{{.ImageTag}}
+          command: ["/bifract-archiver", "run"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: POSTGRES_HOST
+              value: "postgres"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: "bifract"
+            - name: POSTGRES_USER
+              value: "bifract"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: POSTGRES_PASSWORD
+            # ClickHouse: the restore/reconcile worker writes archived rows back into
+            # the logs table. Cluster-aware (mirrors the server) so restore targets
+            # logs_distributed - rows shard across nodes and dedup/counts span the
+            # whole cluster instead of a single shard's local table.
+            - name: CLICKHOUSE_HOSTS
+              value: "{{.CHHostsList}}"
+            - name: CLICKHOUSE_CLUSTER
+              value: default
+            - name: CLICKHOUSE_PORT
+              value: "9000"
+            - name: CLICKHOUSE_DB
+              value: logs
+            - name: CLICKHOUSE_USER
+              value: default
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: CLICKHOUSE_PASSWORD
+            - name: BIFRACT_ARCHIVE_SPOOL_PATH
+              value: /var/lib/bifract/spool
+            - name: BIFRACT_ARCHIVE_DISK_PATH
+              value: /var/lib/bifract/archive
+            - name: BIFRACT_ARCHIVE_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_ENABLED
+                  optional: true
+            - name: BIFRACT_ARCHIVE_BACKEND
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_BACKEND
+                  optional: true
+            - name: BIFRACT_ARCHIVE_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_PREFIX
+                  optional: true
+            - name: BIFRACT_ARCHIVE_ROLL_BYTES
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_ROLL_BYTES
+                  optional: true
+            - name: BIFRACT_ARCHIVE_ROLL_INTERVAL
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_ROLL_INTERVAL
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_ENDPOINT
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_BUCKET
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_REGION
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_ACCESS_KEY
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_SECRET_KEY
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_ACCOUNT
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_KEY
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_CONTAINER
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_CONTAINER
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_ENDPOINT
+                  optional: true
+          volumeMounts:
+            - name: spool
+              mountPath: /var/lib/bifract/spool
+            - name: archiver-tmp
+              mountPath: /tmp
+            - name: archive-data
+              mountPath: /var/lib/bifract/archive
+          resources:
+            requests:
+              cpu: {{.ArchiverRes.CPURequest}}
+              memory: {{.ArchiverRes.MemRequest}}
+            limits:
+              cpu: "{{.ArchiverRes.CPULimit}}"
+              memory: {{.ArchiverRes.MemLimit}}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        # Pod-local spool shared between the ingest server (writer) and archiver
+        # (reader). emptyDir (disk medium) is ephemeral; a pod restart while the
+        # spool holds un-archived data relies on the reconcile path to heal any gap
+        # (ClickHouse still holds the recent window). NOT Memory medium.
+        - name: spool
+          emptyDir: {}
+        - name: archiver-tmp
+          emptyDir: {}
+        - name: archive-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifract-ingest
+  namespace: bifract
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app: bifract-ingest

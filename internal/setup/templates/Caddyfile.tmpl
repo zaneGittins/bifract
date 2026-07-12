@@ -128,7 +128,7 @@
 {{- end}}
 		respond @not_ingest 403
 		log_skip
-		reverse_proxy bifract-app:8080 {
+		reverse_proxy bifract-ingest:8080 {
 			header_up X-Real-IP {remote_host}
 			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto {scheme}

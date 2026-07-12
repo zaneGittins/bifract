@@ -9,13 +9,17 @@ import (
 // maintain CronJob render into valid manifests with no unresolved fields.
 func TestArchiveRendersK8s(t *testing.T) {
 	data := k8sTemplateData{
-		ImageTag:    "test",
-		Domain:      "example.com",
-		CHHostsList: "host1",
-		BifractRes:  ResourceProfile{"500m", "1", "512Mi", "1Gi"},
-		ArchiverRes: ResourceProfile{"500m", "1", "512Mi", "1Gi"},
+		ImageTag:       "test",
+		Domain:         "example.com",
+		CHHostsList:    "host1",
+		IngestReplicas: 1,
+		BifractRes:     ResourceProfile{"500m", "1", "512Mi", "1Gi"},
+		ArchiverRes:    ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 	}
 
+	// The app deployment renders cleanly and keeps the archive-backend display hint,
+	// but no longer carries the spool or the archiver sidecar (those moved to the
+	// ingest tier).
 	dep, err := renderK8sTemplate("templates/k8s/bifract-deployment.yaml.tmpl", data)
 	if err != nil {
 		t.Fatalf("deployment render failed: %v", err)
@@ -23,7 +27,25 @@ func TestArchiveRendersK8s(t *testing.T) {
 	if strings.Contains(dep, "<no value>") {
 		t.Fatalf("deployment produced <no value> (missing field)")
 	}
+	if !strings.Contains(dep, "BIFRACT_ARCHIVE_ENABLED") {
+		t.Errorf("app deployment missing BIFRACT_ARCHIVE_ENABLED display hint")
+	}
+	for _, unwanted := range []string{"name: bifract-archiver", "BIFRACT_ARCHIVE_SPOOL_PATH"} {
+		if strings.Contains(dep, unwanted) {
+			t.Errorf("app deployment should no longer contain %q (moved to ingest tier)", unwanted)
+		}
+	}
+
+	// The spool tee + archiver sidecar now live in the ingest deployment.
+	ing, err := renderK8sTemplate("templates/k8s/bifract-ingest-deployment.yaml.tmpl", data)
+	if err != nil {
+		t.Fatalf("ingest deployment render failed: %v", err)
+	}
+	if strings.Contains(ing, "<no value>") {
+		t.Fatalf("ingest deployment produced <no value> (missing field)")
+	}
 	for _, want := range []string{
+		`args: ["ingest"]`,
 		"BIFRACT_ARCHIVE_SPOOL_PATH",
 		"value: /var/lib/bifract/spool",
 		"name: bifract-archiver",
@@ -32,8 +54,8 @@ func TestArchiveRendersK8s(t *testing.T) {
 		"BIFRACT_ARCHIVE_S3_SECRET_KEY",
 		"name: spool",
 	} {
-		if !strings.Contains(dep, want) {
-			t.Errorf("rendered deployment missing %q", want)
+		if !strings.Contains(ing, want) {
+			t.Errorf("rendered ingest deployment missing %q", want)
 		}
 	}
 

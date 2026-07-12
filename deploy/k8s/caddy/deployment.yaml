@@ -75,7 +75,7 @@ spec:
               exec /scripts/ship-logs.sh
           env:
             - name: BIFRACT_INGEST_URL
-              value: "http://bifract.bifract.svc.cluster.local:8080/api/v1/internal/ingest/system"
+              value: "http://bifract-ingest.bifract.svc.cluster.local:8080/api/v1/internal/ingest/system"
           volumeMounts:
             - name: caddy-logs
               mountPath: /var/log/caddy

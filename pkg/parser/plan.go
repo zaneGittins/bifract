@@ -232,12 +232,9 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		// norm_log to project).
 		selectClause = strings.Join(opts.SourceColumns, ", ")
 	} else {
+		// Both hot and iceberg archives project the norm_log column directly
+		// (materialized in the hot store; a plain JSON String in the archive).
 		selectClause = "toString(timestamp) as timestamp, norm_log, log_id"
-		if opts.SourceMode == SourceIceberg {
-			// Iceberg has no materialized norm_log; reconstruct the normalized text
-			// from the MAP so the result shape matches hot Query.
-			selectClause = "toString(timestamp) as timestamp, toString(fields) as norm_log, log_id"
-		}
 	}
 
 	// model_lookup() join keys derive from `fields.X`, which only exist in this

@@ -8,6 +8,7 @@ resources:
   - clickhouse/clickhouse-installation.yaml
   - postgres/statefulset.yaml
   - bifract/deployment.yaml
+  - bifract/ingest-deployment.yaml
   - bifract/configmap.yaml
   - bifract/secrets.yaml
   - caddy/deployment.yaml

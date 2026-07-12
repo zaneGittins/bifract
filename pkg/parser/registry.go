@@ -62,8 +62,9 @@ type FieldRegistry struct {
 }
 
 // NewFieldRegistry creates a registry pre-populated with base fields for the
-// given source mode. In iceberg mode the norm_log base column resolves to
-// toString(fields) (the archive has no materialized norm_log).
+// given source mode. The norm_log base column resolves to the norm_log column in
+// both modes (materialized + indexed in the hot store; a plain JSON String in
+// the archive).
 func NewFieldRegistry(mode SourceMode) *FieldRegistry {
 	r := &FieldRegistry{
 		fields:     make(map[string]*FieldEntry),

@@ -61,6 +61,10 @@ const SettingsView = {
         if (archiveToggle) {
             archiveToggle.addEventListener('change', () => this.saveArchiveEnabled());
         }
+        const clearCatalogBtn = document.getElementById('archiveClearCatalogBtn');
+        if (clearCatalogBtn) {
+            clearCatalogBtn.addEventListener('click', () => this.clearCatalog());
+        }
         const endpointAnalysisToggle = document.getElementById('endpointAnalysisToggle');
         if (endpointAnalysisToggle) {
             endpointAnalysisToggle.addEventListener('change', () => this.saveEndpointAnalysis());
@@ -109,6 +113,48 @@ const SettingsView = {
         } catch (err) {
             toggle.checked = !enabled; // revert on failure
             if (window.Toast) Toast.error('Archive Update Failed', err.message);
+        }
+    },
+
+    // Clears the Iceberg catalog (all archived tables + namespace) via the
+    // admin-only endpoint, resetting the archive footprint to zero. The server
+    // rejects this while archiving is enabled, so disable the toggle first.
+    async clearCatalog() {
+        const btn = document.getElementById('archiveClearCatalogBtn');
+        const confirmed = confirm(
+            'Clear the Iceberg catalog?\n\n' +
+            'This drops every archived table and resets the archive footprint to zero. ' +
+            'Data files in object storage are NOT deleted — empty your bucket/container ' +
+            'manually to reclaim space.\n\n' +
+            'Archiving must be disabled first. This action cannot be undone.'
+        );
+        if (!confirmed) return;
+        const original = btn ? btn.innerHTML : '';
+        try {
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="spinner"></span> Clearing...';
+            }
+            const res = await fetch('/api/v1/system/archive/clear', {
+                method: 'POST',
+                credentials: 'include'
+            });
+            if (!res.ok) {
+                const msg = await res.text();
+                throw new Error(msg || 'Failed to clear catalog');
+            }
+            if (window.Toast) {
+                Toast.success('Catalog Cleared', 'The archive was reset to zero. Re-enable archiving to start fresh.');
+            }
+            // Refresh the toggle/status view (footprint is shown under System -> Archive).
+            this.loadArchiveToggle();
+        } catch (err) {
+            if (window.Toast) Toast.error('Clear Catalog Failed', err.message.trim());
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
         }
     },
 

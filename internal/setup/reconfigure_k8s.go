@@ -269,11 +269,26 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 		DashboardTick:       settings.dashboardTick,
 		DashboardMinRefresh: settings.dashboardMinRefresh,
 		DashboardWorkers:    settings.dashboardWorkers,
+		IngestReplicas:      settings.ingestReplicas,
 	}
 
 	// Core secrets
 	cfg.PostgresPassword = secrets["POSTGRES_PASSWORD"]
 	cfg.ClickHousePassword = secrets["CLICKHOUSE_PASSWORD"]
+	// Least-privilege ingest CH user password: preserve if present, else generate for
+	// installs that predate the split (the app provisions/rotates the user to match).
+	cfg.IngestClickHousePassword = secrets["INGEST_CLICKHOUSE_PASSWORD"]
+	if cfg.IngestClickHousePassword == "" {
+		if pw, err := GenerateAlphanumeric(24); err == nil {
+			cfg.IngestClickHousePassword = pw
+		}
+	}
+	cfg.IngestPostgresPassword = secrets["INGEST_POSTGRES_PASSWORD"]
+	if cfg.IngestPostgresPassword == "" {
+		if pw, err := GenerateAlphanumeric(24); err == nil {
+			cfg.IngestPostgresPassword = pw
+		}
+	}
 	cfg.PasswordPepper = secrets["PASSWORD_PEPPER"]
 	cfg.AdminPasswordHash = secrets["ADMIN_PASSWORD_HASH"]
 	cfg.LiteLLMMasterKey = secrets["LITELLM_MASTER_KEY"]

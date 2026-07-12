@@ -31,14 +31,16 @@ type SetupConfig struct {
 	CertPath   string
 	KeyPath    string
 
-	PostgresPassword    string
-	ClickHousePassword  string
-	LiteLLMMasterKey    string
-	AdminPassword       string
-	AdminPasswordHash   string
-	PasswordPepper      string
-	FeedEncryptionKey   string
-	BackupEncryptionKey string
+	PostgresPassword         string
+	IngestPostgresPassword   string // least-privilege ingest PG role (bifract_ingest)
+	ClickHousePassword       string
+	IngestClickHousePassword string // least-privilege ingest CH user (bifract_ingest)
+	LiteLLMMasterKey         string
+	AdminPassword            string
+	AdminPasswordHash        string
+	PasswordPepper           string
+	FeedEncryptionKey        string
+	BackupEncryptionKey      string
 
 	S3Endpoint  string
 	S3Bucket    string
@@ -105,7 +107,15 @@ func (c *SetupConfig) GeneratePasswords() error {
 	if err != nil {
 		return err
 	}
+	c.IngestPostgresPassword, err = GenerateAlphanumeric(24)
+	if err != nil {
+		return err
+	}
 	c.ClickHousePassword, err = GenerateAlphanumeric(24)
+	if err != nil {
+		return err
+	}
+	c.IngestClickHousePassword, err = GenerateAlphanumeric(24)
 	if err != nil {
 		return err
 	}

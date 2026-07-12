@@ -50,6 +50,27 @@ spec:
       ports:
         - port: 8080
 ---
+# Bifract ingest tier: only accept traffic from Caddy pods (external ingest is
+# routed here by Caddy).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-bifract-ingest-from-caddy
+  namespace: bifract
+spec:
+  podSelector:
+    matchLabels:
+      app: bifract-ingest
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: caddy
+      ports:
+        - port: 8080
+---
 # LiteLLM: only accept traffic from Bifract pods
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -87,6 +108,9 @@ spec:
         - podSelector:
             matchLabels:
               app: bifract
+        - podSelector:
+            matchLabels:
+              app: bifract-ingest
       ports:
         - port: 5432
 ---
@@ -104,11 +128,14 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # Bifract app connections
+    # Bifract app + ingest tier connections
     - from:
         - podSelector:
             matchLabels:
               app: bifract
+        - podSelector:
+            matchLabels:
+              app: bifract-ingest
       ports:
         - port: 9000
         - port: 8123

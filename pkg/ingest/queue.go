@@ -95,8 +95,9 @@ type IngestQueue struct {
 	// ClickHouse CPU/memory/disk metrics. Inserts always go through db (the ingest
 	// pool, which may be pinned to a single write LB), but health should reflect
 	// every shard, so callers point this at the all-shards query client. Falls back
-	// to db when unset.
-	metricsDB    *storage.ClickHouseClient
+	// to db when unset. Atomic because SetMetricsClient runs on the main goroutine
+	// after the monitor goroutine has already started in NewIngestQueue.
+	metricsDB    atomic.Pointer[storage.ClickHouseClient]
 	workers      int
 	bufSize      int // total channel capacity, cached for depth-based backpressure
 	quotaManager *QuotaManager
@@ -168,12 +169,12 @@ func (q *IngestQueue) SetNotificationWriter(w notifWriterIface) { q.notifWriter 
 // every ClickHouse shard, so CPU/memory/disk pressure trips when any shard is hot even
 // though inserts route through a single write LB. Optional; falls back to the insert
 // client. Call before Start()/monitors run.
-func (q *IngestQueue) SetMetricsClient(c *storage.ClickHouseClient) { q.metricsDB = c }
+func (q *IngestQueue) SetMetricsClient(c *storage.ClickHouseClient) { q.metricsDB.Store(c) }
 
 // mdb returns the client the health monitors should poll (all-shards when set).
 func (q *IngestQueue) mdb() *storage.ClickHouseClient {
-	if q.metricsDB != nil {
-		return q.metricsDB
+	if c := q.metricsDB.Load(); c != nil {
+		return c
 	}
 	return q.db
 }

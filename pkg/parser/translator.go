@@ -1011,12 +1011,10 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		return
 	}
 
-	// In iceberg mode there is no materialized norm_log column; the normalized
-	// content is reconstructed from the MAP so the result shape matches hot Query.
+	// Both hot and iceberg archives carry a norm_log column (materialized +
+	// indexed in the hot store; a plain JSON String in the archive), so the
+	// projection is identical and the result shape matches hot Query.
 	normLogSel := "norm_log"
-	if ctx.Opts.SourceMode == SourceIceberg {
-		normLogSel = "toString(fields) AS norm_log"
-	}
 
 	// No commands and no assignments: use default field set
 	if len(ctx.Pipeline.Commands) == 0 && len(ctx.Pipeline.Assignments) == 0 {
@@ -1120,7 +1118,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 			}
 			expr := name
 			if name == normLogColumn {
-				expr = normLogSel // toString(fields) AS norm_log in iceberg mode
+				expr = normLogSel
 			}
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: expr})
 		}

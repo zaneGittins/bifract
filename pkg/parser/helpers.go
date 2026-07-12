@@ -796,6 +796,26 @@ func escapeString(s string) string {
 	return s
 }
 
+// unescapeSQLString reverses escapeString (\\ -> \, \' -> '). A single left-to-
+// right scan is used rather than two ReplaceAlls so overlapping sequences like
+// \\' (an escaped backslash followed by an escaped quote) decode correctly.
+func unescapeSQLString(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			b.WriteByte(s[i]) // emit the escaped char (\ or ') literally
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
 // convertUnnamedGroupsToNonCapturing rewrites unnamed capturing groups (...)
 // to non-capturing (?:...) so that extractAllGroups indices align with named
 // group positions only. Escaped parens and named/non-capturing groups are left
@@ -1335,10 +1355,12 @@ func patternHasAlternation(pattern string) bool {
 }
 
 func extractFieldName(fieldRef string) string {
-	// Iceberg MAP access: fields['a.b'] -> a.b (single quotes may be escaped).
-	if strings.HasPrefix(fieldRef, "fields['") && strings.HasSuffix(fieldRef, "']") {
-		inner := fieldRef[len("fields['") : len(fieldRef)-len("']")]
-		return strings.ReplaceAll(inner, "\\'", "'")
+	// Iceberg norm_log access: JSONExtractString(norm_log, 'a.b') -> a.b. The key
+	// was escaped by escapeString (mapFieldRef), so reverse both escapes (\\ and \').
+	const jsonExtractPrefix = "JSONExtractString(norm_log, '"
+	if strings.HasPrefix(fieldRef, jsonExtractPrefix) && strings.HasSuffix(fieldRef, "')") {
+		inner := fieldRef[len(jsonExtractPrefix) : len(fieldRef)-len("')")]
+		return unescapeSQLString(inner)
 	}
 	// Extract field name from JSON subcolumn ref: fields.`a`.`b`::String -> a.b
 	ref := fieldRef
@@ -1421,9 +1443,9 @@ func resolveFieldRef(field string, registry *FieldRegistry) string {
 // WHERE clause (that path calls registry.fieldRef directly), so the skip-index
 // optimization is unaffected.
 //
-// Only raw hot-mode JSON subcolumn refs (fields.`x`) need it; iceberg MAP refs
-// (fields['x']) are already String, computed/base columns and already-cast refs
-// are left untouched.
+// Only raw hot-mode JSON subcolumn refs (fields.`x`) need it; iceberg norm_log
+// refs (JSONExtractString(norm_log, 'x')) are already String, computed/base
+// columns and already-cast refs are left untouched.
 func groupableCast(ref string) string {
 	if strings.HasPrefix(ref, "fields.`") && !strings.HasSuffix(ref, "::String") {
 		return ref + "::String"

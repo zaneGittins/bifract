@@ -20,7 +20,8 @@ graph TB
 
     subgraph k8s ["Kubernetes Cluster (bifract namespace)"]
         caddy["Caddy (LoadBalancer)<br/><small>Reverse Proxy + TLS + Log Shipper</small>"]
-        bifract["Bifract x2<br/><small>Stateless Replicas</small>"]
+        app["Bifract App x2<br/><small>UI + Query + Alerts</small>"]
+        ingest["Bifract Ingest x1<br/><small>Ingestion (independently scalable)</small>"]
         litellm["LiteLLM<br/><small>AI Proxy</small>"]
         pg[("PostgreSQL<br/><small>StatefulSet</small>")]
 
@@ -37,13 +38,18 @@ graph TB
 
     users -->|"HTTPS :443"| caddy
     sources -->|"HTTPS :8443"| caddy
-    caddy -->|":8080"| bifract
-    bifract --> pg
-    bifract -->|"Distributed table"| ch
-    bifract -->|"tee every log"| iceberg
-    bifract --> litellm
+    caddy -->|"UI / query :8080"| app
+    caddy -->|"ingest :8080"| ingest
+    app --> pg
+    ingest --> pg
+    app -->|"Distributed table"| ch
+    ingest -->|"Distributed table"| ch
+    ingest -->|"tee every log"| iceberg
+    app --> litellm
     shard0 & shard1 & shard2 --> keeper
 ```
+
+The ingest tier is a separate Deployment so it can be scaled (or paused to `0`) independently of the app tier, which keeps serving the UI, queries, and alerts.
 
 ClickHouse is sharded for throughput but **not replicated** — each shard is a single replica. Durability and disaster recovery come from the Apache Iceberg archive, which receives a copy of every ingested log. Keeper remains because it coordinates distributed (`ON CLUSTER`) DDL and cross-shard query routing even without replication.
 
@@ -117,7 +123,8 @@ You should see:
 - 1 PostgreSQL pod
 - 1 ClickHouse Keeper pod (managed by the operator via `KeeperCluster`)
 - 1 ClickHouse pod per shard (managed by the operator via `ClickHouseCluster`; single replica each)
-- 2 Bifract pods
+- 2 Bifract app pods
+- 1 Bifract ingest pod (independently scalable)
 - 1 Caddy pod (with a log shipper sidecar)
 - 1 LiteLLM pod
 

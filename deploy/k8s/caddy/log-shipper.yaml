@@ -9,7 +9,7 @@ data:
     # Ships Caddy JSON access logs to Bifract system fractal via internal ingest API.
     # Runs as a sidecar container alongside Caddy, sharing the log volume.
 
-    BIFRACT_URL="${BIFRACT_INGEST_URL:-http://bifract.bifract.svc.cluster.local:8080/api/v1/internal/ingest/system}"
+    BIFRACT_URL="${BIFRACT_INGEST_URL:-http://bifract-ingest.bifract.svc.cluster.local:8080/api/v1/internal/ingest/system}"
     BATCH_SIZE="${BATCH_SIZE:-50}"
     FLUSH_INTERVAL="${FLUSH_INTERVAL:-10}"
     LOG_FILE="/var/log/caddy/access.log"
@@ -22,7 +22,7 @@ data:
 
     # Wait for Bifract to be healthy
     while true; do
-        if curl -sf http://bifract.bifract.svc.cluster.local:8080/api/v1/health > /dev/null 2>&1; then
+        if curl -sf http://bifract-ingest.bifract.svc.cluster.local:8080/api/v1/health > /dev/null 2>&1; then
             break
         fi
         sleep 5

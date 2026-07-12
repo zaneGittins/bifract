@@ -24,21 +24,36 @@
 		format json
 	}
 
-	# Block external access to internal-only endpoints
-	respond /api/v1/internal/* 403
-
-	# SSE endpoints need immediate flushing (no response buffering)
+	@ingest path /api/v1/ingest* /_bulk /v1/logs
 	@sse path */events */stream
-	handle @sse {
-		reverse_proxy bifract-app:8080 {
-			flush_interval -1
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
-			header_up X-Forwarded-Proto {scheme}
-		}
-	}
 
-	handle {
+	# Ordered routing so the internal-endpoint 403 wins before the catch-all proxy
+	# (a bare `respond` loses to a catch-all `handle {}` outside a route block).
+	route {
+		# Block external access to internal-only endpoints
+		respond /api/v1/internal/* 403
+
+		# Ingest endpoints go to the dedicated ingest tier, even on the main port, so
+		# they never load the app/UI tier.
+		handle @ingest {
+			reverse_proxy bifract-ingest:8080 {
+				header_up X-Real-IP {remote_host}
+				header_up X-Forwarded-For {remote_host}
+				header_up X-Forwarded-Proto {scheme}
+			}
+		}
+
+		# SSE endpoints need immediate flushing (no response buffering)
+		handle @sse {
+			reverse_proxy bifract-app:8080 {
+				flush_interval -1
+				header_up X-Real-IP {remote_host}
+				header_up X-Forwarded-For {remote_host}
+				header_up X-Forwarded-Proto {scheme}
+			}
+		}
+
+		# Everything else -> app tier
 		reverse_proxy bifract-app:8080 {
 			header_up X-Real-IP {remote_host}
 			header_up X-Forwarded-For {remote_host}
@@ -61,7 +76,7 @@
 	# Only ingest endpoints are allowed on this port
 	@ingest path /api/v1/ingest* /_bulk /v1/logs
 	handle @ingest {
-		reverse_proxy bifract-app:8080 {
+		reverse_proxy bifract-ingest:8080 {
 			header_up X-Real-IP {remote_host}
 			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto {scheme}

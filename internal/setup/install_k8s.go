@@ -161,6 +161,10 @@ type K8sConfig struct {
 	DashboardTick       int
 	DashboardMinRefresh int
 	DashboardWorkers    int
+
+	// IngestReplicas is the ingest tier's replica count. Zero means "use default"
+	// (1); preserved across upgrades so an operator-set value survives regeneration.
+	IngestReplicas int
 }
 
 // Dashboard executor defaults (mirror the server's getEnvInt fallbacks).
@@ -779,25 +783,27 @@ func RunInstallK8s() error {
 
 // k8sTemplateData holds all values needed by the K8s manifest templates.
 type k8sTemplateData struct {
-	ImageTag            string
-	Domain              string
-	CHShards            int
-	CHStorageGB         int
-	CHStorageStr        string
-	CHPasswordHash      string
-	CHHostsList         string
-	PostgresPassword    string
-	ClickHousePassword  string
-	PasswordPepper      string
-	AdminPasswordHash   string
-	FeedEncryptionKey   string
-	BackupEncryptionKey string
-	LiteLLMMasterKey    string
-	IPBlock             string
-	IPBlockIngest       string
-	MTLSEnabled         bool
-	MTLSCACert          string
-	MTLSCAKey           string
+	ImageTag                 string
+	Domain                   string
+	CHShards                 int
+	CHStorageGB              int
+	CHStorageStr             string
+	CHPasswordHash           string
+	CHHostsList              string
+	PostgresPassword         string
+	IngestPostgresPassword   string
+	ClickHousePassword       string
+	IngestClickHousePassword string
+	PasswordPepper           string
+	AdminPasswordHash        string
+	FeedEncryptionKey        string
+	BackupEncryptionKey      string
+	LiteLLMMasterKey         string
+	IPBlock                  string
+	IPBlockIngest            string
+	MTLSEnabled              bool
+	MTLSCACert               string
+	MTLSCAKey                string
 
 	// Resource profiles
 	CH           ResourceProfile
@@ -823,6 +829,8 @@ type k8sTemplateData struct {
 	// IngestQueueSize and IngestWorkers tune the bifract ingest queue.
 	IngestQueueSize int
 	IngestWorkers   int
+	// IngestReplicas is the replica count for the independently-scalable ingest tier.
+	IngestReplicas int
 
 	// Dashboard executor tuning (resolved to defaults when unset).
 	DashboardTick       int
@@ -856,6 +864,7 @@ var k8sManifests = []k8sManifestFile{
 	{"templates/k8s/clickhouse-installation.yaml.tmpl", "clickhouse/clickhouse-installation.yaml"},
 	{"templates/k8s/postgres-statefulset.yaml.tmpl", "postgres/statefulset.yaml"},
 	{"templates/k8s/bifract-deployment.yaml.tmpl", "bifract/deployment.yaml"},
+	{"templates/k8s/bifract-ingest-deployment.yaml.tmpl", "bifract/ingest-deployment.yaml"},
 	{"templates/k8s/bifract-configmap.yaml.tmpl", "bifract/configmap.yaml"},
 	{"templates/k8s/bifract-secrets.yaml.tmpl", "bifract/secrets.yaml"},
 	{"templates/k8s/bifract-archive-maintain-cronjob.yaml.tmpl", "bifract/archive-maintain-cronjob.yaml"},
@@ -880,39 +889,42 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		chMaxBytesToMerge = chMaxServerMemory * 4 / 10
 	}
 	data := k8sTemplateData{
-		ImageTag:               cfg.ImageTag,
-		ImagePullSecrets:       cfg.ImagePullSecrets,
-		Domain:                 cfg.Domain,
-		CHShards:               cfg.CHShards,
-		CHStorageGB:            cfg.CHStorageGB,
-		CHStorageStr:           formatStorageSize(cfg.CHStorageGB),
-		CHPasswordHash:         fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
-		CHHostsList:            buildCHHostsList(cfg.CHShards),
-		PostgresPassword:       cfg.PostgresPassword,
-		ClickHousePassword:     cfg.ClickHousePassword,
-		PasswordPepper:         cfg.PasswordPepper,
-		AdminPasswordHash:      cfg.AdminPasswordHash,
-		FeedEncryptionKey:      cfg.FeedEncryptionKey,
-		BackupEncryptionKey:    cfg.BackupEncryptionKey,
-		LiteLLMMasterKey:       cfg.LiteLLMMasterKey,
-		UserSecrets:            cfg.UserSecrets,
-		IPBlock:                buildIPBlock(cfg),
-		IPBlockIngest:          buildIPBlockIngest(cfg),
-		MTLSEnabled:            cfg.MTLSEnabled,
-		MTLSCACert:             indentPEM(cfg.MTLSCACert, "    "),
-		MTLSCAKey:              indentPEM(cfg.MTLSCAKey, "    "),
-		MaxmindPVCAccessMode:   cfg.MaxmindPVCAccessMode,
-		MaxmindPVCStorageClass: cfg.MaxmindPVCStorageClass,
-		IngestQueueSize:        cfg.SizeProfile.IngestQueueSize,
-		IngestWorkers:          cfg.SizeProfile.IngestWorkers,
-		DashboardTick:          fallbackInt(cfg.DashboardTick, defaultDashboardTick),
-		DashboardMinRefresh:    fallbackInt(cfg.DashboardMinRefresh, defaultDashboardMinRefresh),
-		DashboardWorkers:       fallbackInt(cfg.DashboardWorkers, defaultDashboardWorkers),
-		CHMaxServerMemory:      chMaxServerMemory,
-		CHMaxBytesToMerge:      chMaxBytesToMerge,
-		CH:                     cfg.SizeProfile.ClickHouse,
-		CHKeeper:               cfg.SizeProfile.CHKeeper,
-		BifractRes:             cfg.SizeProfile.Bifract,
+		ImageTag:                 cfg.ImageTag,
+		ImagePullSecrets:         cfg.ImagePullSecrets,
+		Domain:                   cfg.Domain,
+		CHShards:                 cfg.CHShards,
+		CHStorageGB:              cfg.CHStorageGB,
+		CHStorageStr:             formatStorageSize(cfg.CHStorageGB),
+		CHPasswordHash:           fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
+		CHHostsList:              buildCHHostsList(cfg.CHShards),
+		PostgresPassword:         cfg.PostgresPassword,
+		ClickHousePassword:       cfg.ClickHousePassword,
+		IngestClickHousePassword: cfg.IngestClickHousePassword,
+		IngestPostgresPassword:   cfg.IngestPostgresPassword,
+		PasswordPepper:           cfg.PasswordPepper,
+		AdminPasswordHash:        cfg.AdminPasswordHash,
+		FeedEncryptionKey:        cfg.FeedEncryptionKey,
+		BackupEncryptionKey:      cfg.BackupEncryptionKey,
+		LiteLLMMasterKey:         cfg.LiteLLMMasterKey,
+		UserSecrets:              cfg.UserSecrets,
+		IPBlock:                  buildIPBlock(cfg),
+		IPBlockIngest:            buildIPBlockIngest(cfg),
+		MTLSEnabled:              cfg.MTLSEnabled,
+		MTLSCACert:               indentPEM(cfg.MTLSCACert, "    "),
+		MTLSCAKey:                indentPEM(cfg.MTLSCAKey, "    "),
+		MaxmindPVCAccessMode:     cfg.MaxmindPVCAccessMode,
+		MaxmindPVCStorageClass:   cfg.MaxmindPVCStorageClass,
+		IngestQueueSize:          cfg.SizeProfile.IngestQueueSize,
+		IngestWorkers:            cfg.SizeProfile.IngestWorkers,
+		IngestReplicas:           fallbackInt(cfg.IngestReplicas, 1),
+		DashboardTick:            fallbackInt(cfg.DashboardTick, defaultDashboardTick),
+		DashboardMinRefresh:      fallbackInt(cfg.DashboardMinRefresh, defaultDashboardMinRefresh),
+		DashboardWorkers:         fallbackInt(cfg.DashboardWorkers, defaultDashboardWorkers),
+		CHMaxServerMemory:        chMaxServerMemory,
+		CHMaxBytesToMerge:        chMaxBytesToMerge,
+		CH:                       cfg.SizeProfile.ClickHouse,
+		CHKeeper:                 cfg.SizeProfile.CHKeeper,
+		BifractRes:               cfg.SizeProfile.Bifract,
 		// The archive sidecar/maintenance mirrors the server's per-tier profile
 		// (comparable memory for Arrow/Iceberg roll buffers; adjust per deployment).
 		ArchiverRes:  cfg.SizeProfile.Bifract,

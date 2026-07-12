@@ -100,11 +100,13 @@ func (c *Catalog) Restore(ctx context.Context, ch *storage.ClickHouseClient, obj
 			readTable, chQuote(fractalID), chQuote(chTime(from)), chQuote(chTime(to)))
 	}
 
-	// fields is a MAP in Iceberg; convert to the logs JSON column. norm_log is
-	// left to its DEFAULT toString(fields).
+	// norm_log is a flat JSON String in Iceberg; cast it to the logs JSON column
+	// so ClickHouse re-applies the `fields` type hints. The hot-store norm_log
+	// column is left to its DEFAULT toString(fields), regenerated from the
+	// restored fields.
 	insert := fmt.Sprintf(
 		"INSERT INTO %s (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp, normalizer) "+
-			"SELECT timestamp, raw_log, log_id, toJSONString(fields)::JSON, fractal_id, ingest_timestamp, normalizer "+
+			"SELECT timestamp, raw_log, log_id, norm_log::JSON, fractal_id, ingest_timestamp, normalizer "+
 			"FROM %s WHERE %s", writeTable, tf, where)
 
 	before, err := countLogs(ctx, ch, fractalID, from, to)

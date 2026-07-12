@@ -129,7 +129,11 @@ func generateMVDDL(def ModelDefinition, mt ModelType, tableName, mvName string) 
 		return "", err
 	}
 
-	return fmt.Sprintf(`CREATE MATERIALIZED VIEW IF NOT EXISTS %s TO %s AS
+	// DEFINER runs the MV as the privileged creator (default), so the least-privilege
+	// ingest user can push inserts through it without needing SELECT on log data.
+	// Keep this on every logs-sourced MV (see ReconcileMaterializedViewSecurity).
+	return fmt.Sprintf(`CREATE MATERIALIZED VIEW IF NOT EXISTS %s TO %s
+DEFINER = default SQL SECURITY DEFINER AS
 %s`, mvName, tableName, selectSQL), nil
 }
 
@@ -526,7 +530,9 @@ func BuildNetStateMV(def ModelDefinition, mt ModelType, stateTable, mvName strin
 	dur := chNumericFieldRef(nf.DurationField)
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s TO %s AS\n", mvName, stateTable))
+	// DEFINER: run as the privileged creator so the least-privilege ingest user can
+	// push inserts through without SELECT on logs (see ReconcileMaterializedViewSecurity).
+	b.WriteString(fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s TO %s\nDEFINER = default SQL SECURITY DEFINER AS\n", mvName, stateTable))
 	b.WriteString("SELECT fractal_id,\n")
 	b.WriteString(fmt.Sprintf("    %s AS src,\n", src))
 	b.WriteString(fmt.Sprintf("    %s AS dst,\n", dst))

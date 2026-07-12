@@ -10900,6 +10900,37 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 8px;
     flex-shrink: 0;
 }
+/* pgraph toolbar: push the process/host counts (and the search that follows) to the right,
+   next to the view controls; the view toggle stays left. */
+.graph-stats.pg-stats-right { margin-left: auto; }
+/* Triage summary chips: reconnections (violet) + rare/anomalous count (warning-toned). */
+.pg-stat-recon .graph-stat-count { color: var(--pg-recon, #a855f7); }
+.pg-stat-recon { color: color-mix(in srgb, var(--pg-recon, #a855f7) 80%, var(--text-secondary)); }
+.pg-stat-rare .graph-stat-count { color: var(--warning); }
+.pg-stat-rare { color: color-mix(in srgb, var(--warning) 70%, var(--text-secondary)); }
+.graph-stats .pg-anom { margin-left: 4px; padding: 1px 6px; font-size: 10.5px; }
+
+/* Legend popover: anchored under the "?" button, dismissed on outside click. */
+.pg-common-controls { position: relative; }
+.pg-legend-q { font-size: 15px; font-weight: 700; line-height: 1; }
+.pg-legend {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; width: 260px;
+    background: var(--bg-secondary, var(--bg-tertiary)); border: 1px solid var(--border-color);
+    border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 26px rgba(0,0,0,.45);
+    font-size: 11.5px; color: var(--text-secondary); text-align: left; cursor: default;
+}
+.pg-legend-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); margin: 8px 0 4px; }
+.pg-legend-title:first-child { margin-top: 0; }
+.pg-legend-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.pg-legend-swatch { flex: 0 0 14px; width: 14px; height: 14px; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,.4); }
+.pg-sw-high { background: var(--error); }
+.pg-sw-med { background: var(--warning); }
+.pg-sw-low { background: var(--pg-process); }
+.pg-sw-focus { background: var(--accent-primary); }
+.pg-sw-ext { background: var(--pg-process); box-shadow: 0 0 0 2px var(--pg-recon, #a855f7); }
+.pg-legend-line { flex: 0 0 20px; width: 20px; height: 0; border-top: 2px solid var(--graph-node-neutral, #6b7280); }
+.pg-ll-recon { border-top: 2px dashed var(--pg-recon, #a855f7); }
+.pg-legend-note { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border-color); color: var(--text-muted); font-size: 10.5px; }
 
 .graph-stat-item {
     display: flex;
@@ -16908,22 +16939,6 @@ div.vis-tooltip {
 .pg-node-sub { display: flex; align-items: center; gap: 5px; }
 .pg-node-agg .pg-node-sub { font-size: 10.5px; }
 
-/* Shared-object convergence nodes: the reconnection bridges (two trees meet on one artifact).
-   Shape encodes the type (diamond = IP, circle = domain, rounded square = file). */
-.pg-onode { position: absolute; display: flex; align-items: center; gap: 8px; transform: translateY(-50%); cursor: pointer; max-width: 220px; }
-.pg-ohex {
-    flex: 0 0 32px; width: 32px; height: 32px; color: #fff;
-    display: inline-flex; align-items: center; justify-content: center;
-    background: var(--pg-recon, #a855f7); box-shadow: 0 2px 7px rgba(0,0,0,.4); transition: transform .12s;
-}
-.pg-onode:hover .pg-ohex { transform: scale(1.09); }
-.pg-ohex svg { width: 16px; height: 16px; }
-.pg-onode-net .pg-ohex { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
-.pg-onode-dns .pg-ohex { border-radius: 50%; }
-.pg-onode-file .pg-ohex { border-radius: 7px; }
-.pg-onode.pg-sev-high .pg-ohex { background: var(--error); }
-.pg-onode.pg-sev-med .pg-ohex { background: var(--warning); }
-.pg-onode-tag { font-size: 10px; font-weight: 700; color: var(--pg-recon, #a855f7); letter-spacing: .3px; white-space: nowrap; }
 
 /* External (reconnected) process: violet ring + small "linked" tag so a peer tree is distinct. */
 .pg-node-external .pg-hex { box-shadow: 0 0 0 2px var(--pg-recon, #a855f7), 0 2px 7px rgba(0,0,0,.4); }
@@ -17020,6 +17035,20 @@ div.vis-tooltip {
 }
 .pg-drawer-row[data-log]:hover .pg-drawer-val { color: var(--text-primary); text-decoration: underline; text-underline-offset: 2px; }
 .pg-drawer-empty { padding: 22px; text-align: center; color: var(--text-muted); font-size: 12px; }
+
+/* Two-line drawer row (reconnections): the actual value on top at full width, a muted
+   descriptor ("shared IP / dropped & ran · peer" + host) below, so the value never competes. */
+.pg-drawer-row2 { flex-direction: column; align-items: stretch; gap: 3px; }
+.pg-drawer-vline { display: flex; align-items: flex-start; gap: 8px; }
+.pg-drawer-val-full {
+    flex: 1 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+    color: var(--text-primary);
+}
+.pg-drawer-subline { display: flex; align-items: center; gap: 6px; padding-left: 1px; }
+.pg-drawer-subtag {
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--pg-recon, #a855f7);
+}
 
 /* Node-detail drawer: action buttons + key/value fields. */
 .pg-drawer-actions { display: flex; gap: 8px; padding: 10px 14px 4px; }

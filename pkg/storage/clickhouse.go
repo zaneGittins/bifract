@@ -2178,6 +2178,134 @@ func dropHotPartitionsOnConn(ctx context.Context, conn driver.Conn, label string
 	}
 }
 
+// FractalPartition describes one active logs partition (one fractal, one day)
+// and its on-disk size, summed across all shards in a cluster.
+type FractalPartition struct {
+	// Partition is ClickHouse's canonical partition expression, e.g.
+	// ('my-fractal','2026-07-01'). It is used verbatim in DROP PARTITION.
+	Partition string
+	FractalID string
+	Bytes     int64
+	MinTime   time.Time
+}
+
+// parseFractalFromPartition extracts the fractal_id from a logs partition string.
+// The PARTITION BY (fractal_id, toDate(timestamp)) key renders as ('<id>','<date>')
+// with any single quote in the id doubled (ClickHouse's canonical form).
+func parseFractalFromPartition(p string) string {
+	if !strings.HasPrefix(p, "('") {
+		return ""
+	}
+	rest := p[2:]
+	idx := strings.Index(rest, "','")
+	if idx < 0 {
+		return ""
+	}
+	return strings.ReplaceAll(rest[:idx], "''", "'")
+}
+
+// FractalPartitionUsage returns the on-disk size of every active logs partition,
+// grouped by (fractal, day) and summed across all shards. It reads only
+// system.parts (metadata), so it is cheap and safe to call frequently. Used by
+// quota rollover to find the oldest partitions to drop. Requires an admin-level
+// client (all shard addresses); the restricted ingest user is INSERT-only.
+func (c *ClickHouseClient) FractalPartitionUsage(ctx context.Context) ([]FractalPartition, error) {
+	agg := make(map[string]*FractalPartition)
+	collect := func(conn driver.Conn, label string) {
+		rows, err := conn.Query(ctx,
+			"SELECT partition, sum(bytes_on_disk) AS bytes, min(min_time) AS mn"+
+				" FROM system.parts"+
+				" WHERE database = currentDatabase() AND table = 'logs' AND active = 1"+
+				" GROUP BY partition",
+		)
+		if err != nil {
+			log.Printf("[QuotaRollover] usage query on %s: %v", label, err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var partition string
+			var bytes uint64
+			var mn time.Time
+			if err := rows.Scan(&partition, &bytes, &mn); err != nil {
+				log.Printf("[QuotaRollover] scan usage on %s: %v", label, err)
+				return
+			}
+			p := agg[partition]
+			if p == nil {
+				fid := parseFractalFromPartition(partition)
+				if fid == "" {
+					continue
+				}
+				p = &FractalPartition{Partition: partition, FractalID: fid, MinTime: mn}
+				agg[partition] = p
+			}
+			p.Bytes += int64(bytes)
+			if mn.Before(p.MinTime) {
+				p.MinTime = mn
+			}
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("[QuotaRollover] rows error on %s: %v", label, err)
+		}
+	}
+
+	if c.Cluster == "" {
+		collect(c.conn, "local")
+	} else {
+		pool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+		for _, addr := range c.addrs {
+			conn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, pool)
+			if err != nil {
+				log.Printf("[QuotaRollover] connect to %s: %v", addr, err)
+				continue
+			}
+			collect(conn, addr)
+			conn.Close()
+		}
+	}
+
+	out := make([]FractalPartition, 0, len(agg))
+	for _, p := range agg {
+		out = append(out, *p)
+	}
+	return out, nil
+}
+
+// DropLogPartition drops a single logs partition (one fractal, one day) on every
+// shard. DROP PARTITION is near-instant metadata and idempotent (dropping an
+// already-dropped partition is a no-op), so this is safe to retry and to run from
+// multiple pods. ON CLUSTER is deliberately avoided for the same reason as the hot
+// table cleaner (see StartHotTableCleaner): it serializes DDL through Keeper's
+// global queue, which a slow schema mutation can clog. partition must be a value
+// returned by FractalPartitionUsage (ClickHouse's canonical form).
+func (c *ClickHouseClient) DropLogPartition(ctx context.Context, partition string) error {
+	stmt := "ALTER TABLE logs DROP PARTITION " + partition
+	if c.Cluster == "" {
+		return c.conn.Exec(ctx, stmt)
+	}
+	pool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+	var firstErr error
+	for _, addr := range c.addrs {
+		conn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, pool)
+		if err != nil {
+			log.Printf("[QuotaRollover] connect to %s: %v", addr, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if err := conn.Exec(ctx, stmt); err != nil {
+			log.Printf("[QuotaRollover] drop partition %s on %s: %v", partition, addr, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+		conn.Close()
+	}
+	return firstErr
+}
+
 // NormLogIndexName is the lower(norm_log) n-gram text index (migration 006) used to
 // accelerate case-insensitive substring/regex search on the canonical text field.
 const NormLogIndexName = "norm_log_ngram_lc"

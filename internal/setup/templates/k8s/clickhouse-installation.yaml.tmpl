@@ -92,6 +92,11 @@ spec:
         max_bytes_to_merge_at_max_space_in_pool: {{.CHMaxBytesToMerge}}
 {{- end}}
     extraUsersConfig:
+      users:
+        # Allow the default (admin) user to run SQL access-control statements so the
+        # app can provision the least-privilege ingest user (bifract_ingest) at startup.
+        # Docker uses CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 for the same purpose.
+        default/access_management: 1
       profiles:
         default:
           distributed_background_insert_batch: 1

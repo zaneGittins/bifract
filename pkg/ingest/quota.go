@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,9 @@ import (
 
 const (
 	quotaRefreshInterval = 5 * time.Minute
+	// rolloverSweepInterval is how often the app tier scans for over-quota
+	// rollover fractals and trims them by dropping whole partitions.
+	rolloverSweepInterval = time.Minute
 	// After rollover, trim to this fraction of quota to avoid immediate re-trigger.
 	rolloverTargetFraction = 0.80
 )
@@ -27,9 +31,6 @@ type fractalQuotaState struct {
 	// in-memory deltas since last cache refresh (not yet in Postgres)
 	deltaBytes atomic.Int64
 	deltaCount atomic.Int64
-
-	// CAS guard: 1 when a rollover goroutine is already running
-	rollingOver atomic.Int32
 }
 
 // QuotaManager tracks per-fractal disk usage and enforces configured quotas.
@@ -39,6 +40,12 @@ type fractalQuotaState struct {
 type QuotaManager struct {
 	pg *storage.PostgresClient
 	ch *storage.ClickHouseClient
+
+	// admin is an admin-level ClickHouse client (all shard addresses) used only by
+	// the rollover sweep to DROP PARTITION. Set via StartRolloverSweep and only in
+	// the app tier; the ingest tier's ch is an INSERT-only user that cannot drop
+	// partitions, so it never runs the sweep.
+	admin *storage.ClickHouseClient
 
 	mu    sync.RWMutex
 	state map[string]*fractalQuotaState
@@ -86,8 +93,10 @@ func (qm *QuotaManager) CheckQuota(fractalID string, batchBytes int64) bool {
 	return estimated+batchBytes <= st.quotaBytes
 }
 
-// RecordInsert updates in-memory deltas after a successful ClickHouse insert.
-// For rollover fractals it triggers async cleanup if the quota is now exceeded.
+// RecordInsert updates in-memory deltas after a successful ClickHouse insert, so
+// the reject path (CheckQuota) has an accurate estimate between Postgres refreshes.
+// Rollover enforcement is handled out-of-band by the app tier's sweep (see
+// StartRolloverSweep); the ingest tier's ClickHouse user cannot DROP PARTITION.
 func (qm *QuotaManager) RecordInsert(fractalID string, batchBytes, batchCount int64) {
 	qm.mu.RLock()
 	st := qm.state[fractalID]
@@ -99,22 +108,6 @@ func (qm *QuotaManager) RecordInsert(fractalID string, batchBytes, batchCount in
 
 	st.deltaBytes.Add(batchBytes)
 	st.deltaCount.Add(batchCount)
-
-	if st.quotaBytes == 0 || st.action != "rollover" {
-		return
-	}
-
-	estimated := st.baseBytes + st.deltaBytes.Load()
-	if estimated > st.quotaBytes {
-		if st.rollingOver.CompareAndSwap(0, 1) {
-			go func() {
-				defer st.rollingOver.Store(0)
-				if err := qm.triggerRollover(fractalID, st); err != nil {
-					log.Printf("[Quota] Rollover failed for fractal %s: %v", fractalID, err)
-				}
-			}()
-		}
-	}
 }
 
 // NotifyCleared resets in-memory deltas for a fractal whose logs were just cleared.
@@ -130,79 +123,114 @@ func (qm *QuotaManager) NotifyCleared(fractalID string) {
 	st.deltaCount.Store(0)
 }
 
-// triggerRollover deletes the oldest logs for fractalID until usage is back
-// within rolloverTargetFraction of the quota.
-func (qm *QuotaManager) triggerRollover(fractalID string, st *fractalQuotaState) error {
-	estimated := st.baseBytes + st.deltaBytes.Load()
-	totalCount := st.baseLogCount + st.deltaCount.Load()
+// rolloverAdvisoryLockID is a Postgres session advisory-lock id ensuring only one
+// app-tier replica runs the rollover sweep at a time. "bifract\x02".
+const rolloverAdvisoryLockID int64 = 0x6269667261637402
 
-	target := int64(float64(st.quotaBytes) * rolloverTargetFraction)
-	excess := estimated - target
-	if excess <= 0 || totalCount == 0 {
-		return nil
+// StartRolloverSweep launches the background loop that enforces rollover-action
+// quotas by dropping whole (fractal, oldest-day) partitions. Only the app tier
+// should call this, passing an admin ClickHouse client (all shard addresses); the
+// ingest tier's INSERT-only user cannot DROP PARTITION. Under multiple app-tier
+// replicas a Postgres advisory lock guarantees a single active runner per tick, so
+// pods never over-trim by racing on the same fractal.
+func (qm *QuotaManager) StartRolloverSweep(admin *storage.ClickHouseClient) {
+	if admin == nil {
+		log.Printf("[Quota] Rollover sweep not started: nil admin client")
+		return
 	}
+	qm.admin = admin
+	qm.wg.Add(1)
+	go qm.rolloverLoop()
+}
 
-	avgBytesPerLog := estimated / totalCount
-	if avgBytesPerLog < 1 {
-		avgBytesPerLog = 1
+func (qm *QuotaManager) rolloverLoop() {
+	defer qm.wg.Done()
+	ticker := time.NewTicker(rolloverSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-qm.stop:
+			return
+		case <-ticker.C:
+			qm.sweepRollovers()
+		}
 	}
-	logsToDelete := (excess + avgBytesPerLog - 1) / avgBytesPerLog
+}
 
-	log.Printf("[Quota] Rolling over fractal %s: estimated %d bytes, quota %d, deleting ~%d oldest logs",
-		fractalID, estimated, st.quotaBytes, logsToDelete)
+// sweepRollovers finds every rollover-action fractal that is over quota and drops
+// its oldest partitions until it is back within rolloverTargetFraction. Whole
+// partitions (one fractal-day each) are dropped, which is near-instant metadata,
+// not a mutation. system.parts is the authoritative fresh usage source, so the
+// sweep is self-correcting and needs no delta bookkeeping.
+func (qm *QuotaManager) sweepRollovers() {
+	quotas := make(map[string]int64)
+	qm.mu.RLock()
+	for id, st := range qm.state {
+		if st.quotaBytes > 0 && st.action == "rollover" {
+			quotas[id] = st.quotaBytes
+		}
+	}
+	qm.mu.RUnlock()
+	if len(quotas) == 0 {
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// Find the timestamp of the logsToDelete-th oldest log. The primary key
-	// is (fractal_id, timestamp, log_id) so this scan is index-efficient.
-	cutoffQuery := fmt.Sprintf(
-		`SELECT max(timestamp) FROM (
-			SELECT timestamp FROM %s WHERE fractal_id = '%s'
-			ORDER BY fractal_id ASC, timestamp ASC
-			LIMIT %d
-		)`,
-		qm.ch.ReadTable(), storage.EscCHStr(fractalID), logsToDelete,
-	)
+	// Single active runner across app-tier replicas. Non-blocking: if another pod
+	// holds the lock, skip this tick and try again next interval. The lock is
+	// session-scoped and pinned to a dedicated connection, so if this pod crashes
+	// mid-sweep Postgres drops the session and auto-releases the lock -- it cannot
+	// get stuck. The sweep is also idempotent (DROP PARTITION no-ops if repeated),
+	// so a re-run after a crash is safe.
+	unlock, acquired := qm.pg.TryAdvisoryLock(ctx, rolloverAdvisoryLockID)
+	if !acquired {
+		return
+	}
+	defer unlock()
 
-	rows, err := qm.ch.Query(ctx, cutoffQuery)
+	parts, err := qm.admin.FractalPartitionUsage(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to find rollover cutoff: %w", err)
-	}
-	if len(rows) == 0 {
-		return nil
+		log.Printf("[Quota] Rollover sweep: partition usage query failed: %v", err)
+		return
 	}
 
-	cutoffRaw, ok := rows[0]["max(timestamp)"]
-	if !ok || cutoffRaw == nil {
-		return nil
-	}
-	cutoff, ok := cutoffRaw.(string)
-	if !ok || cutoff == "" {
-		return nil
-	}
-
-	deleteQuery := fmt.Sprintf(
-		"ALTER TABLE logs DELETE WHERE fractal_id = '%s' AND timestamp <= '%s'",
-		storage.EscCHStr(fractalID), storage.EscCHStr(cutoff),
-	)
-	if err := qm.ch.Exec(ctx, deleteQuery); err != nil {
-		return fmt.Errorf("rollover delete failed: %w", err)
+	byFractal := make(map[string][]storage.FractalPartition)
+	usage := make(map[string]int64)
+	for _, p := range parts {
+		if _, ok := quotas[p.FractalID]; !ok {
+			continue
+		}
+		byFractal[p.FractalID] = append(byFractal[p.FractalID], p)
+		usage[p.FractalID] += p.Bytes
 	}
 
-	// Update in-memory estimate; the next stats refresh will resync exact values.
-	freed := logsToDelete * avgBytesPerLog
-	st.deltaBytes.Add(-freed)
-	if st.deltaBytes.Load() < -st.baseBytes {
-		st.deltaBytes.Store(-st.baseBytes)
-	}
-	st.deltaCount.Add(-logsToDelete)
-	if st.deltaCount.Load() < -st.baseLogCount {
-		st.deltaCount.Store(-st.baseLogCount)
-	}
+	for fid, quota := range quotas {
+		total := usage[fid]
+		if total <= quota {
+			continue
+		}
+		target := int64(float64(quota) * rolloverTargetFraction)
+		ps := byFractal[fid]
+		sort.Slice(ps, func(i, j int) bool { return ps[i].MinTime.Before(ps[j].MinTime) })
 
-	log.Printf("[Quota] Rollover complete for fractal %s, freed ~%d bytes", fractalID, freed)
-	return nil
+		var freed int64
+		dropped := 0
+		// Keep at least the newest partition (current live day); never drop it all.
+		for i := 0; i < len(ps)-1 && total-freed > target; i++ {
+			if err := qm.admin.DropLogPartition(ctx, ps[i].Partition); err != nil {
+				log.Printf("[Quota] Rollover: drop partition %s for fractal %s: %v", ps[i].Partition, fid, err)
+				continue
+			}
+			freed += ps[i].Bytes
+			dropped++
+		}
+		if dropped > 0 {
+			log.Printf("[Quota] Rolled over fractal %s: dropped %d partition(s), freed ~%d bytes (was %d, quota %d)",
+				fid, dropped, freed, total, quota)
+		}
+	}
 }
 
 // refreshLoop periodically reloads quota config and current size_bytes from Postgres.
@@ -268,4 +296,3 @@ func (qm *QuotaManager) loadFromPostgres() error {
 	}
 	return rows.Err()
 }
-

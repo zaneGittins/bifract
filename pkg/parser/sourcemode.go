@@ -10,17 +10,18 @@ import (
 //
 // The zero value SourceHot preserves the exact ClickHouse `logs` translation
 // (JSON typed `fields`, norm_log n-gram index, skip-index-aware field refs).
-// SourceIceberg retargets field access to the archive's Map(String,String)
-// `fields` column and its `_ice_` promoted top-level columns, and drops
-// index-specific optimizations that do not exist on Parquet. Every iceberg
-// branch is gated on this value, so hot-mode output is unchanged.
+// SourceIceberg retargets field access to JSONExtractString over the archive's
+// flat-JSON `norm_log` String column and its `_ice_` promoted top-level columns,
+// and drops index-specific optimizations that do not exist on Parquet. Every
+// iceberg branch is gated on this value, so hot-mode output is unchanged.
 type SourceMode int
 
 const (
 	// SourceHot is the default: ClickHouse `logs`/`logs_distributed`, JSON `fields`.
 	SourceHot SourceMode = iota
 	// SourceIceberg targets an Iceberg archive read through ClickHouse iceberg*()
-	// table functions: `fields` is Map(String,String), no norm_log, no ngram index.
+	// table functions: fields live in a flat-JSON `norm_log` String column (no
+	// Map, no ngram index) plus `_ice_` promoted columns for pruning.
 	SourceIceberg
 )
 
@@ -72,16 +73,17 @@ func sanitizeIceName(field string) string {
 	return b.String()
 }
 
-// mapFieldRef returns the ClickHouse Map access for a field in Iceberg mode. The
-// archiver stores fields flat, so a dotted BQL path is the literal map key. A
-// missing key yields '' in ClickHouse (not NULL), which the existence/`!=`
-// codegen already tolerates.
+// mapFieldRef returns the ClickHouse field access for a field in Iceberg mode.
+// The archiver serializes fields into the flat JSON `norm_log` String column, so
+// a dotted BQL path is the literal top-level JSON key. JSONExtractString returns
+// '' (not NULL) for a missing key, which the existence/`!=` codegen already
+// tolerates.
 func mapFieldRef(field string) string {
-	return "fields['" + escapeString(field) + "']"
+	return "JSONExtractString(norm_log, '" + escapeString(field) + "')"
 }
 
 // fieldRefMode returns the field reference for the given source mode: the JSON
-// sub-column form in hot mode, the MAP access in iceberg mode.
+// sub-column form in hot mode, the norm_log JSON extraction in iceberg mode.
 func fieldRefMode(field string, mode SourceMode) string {
 	if mode == SourceIceberg {
 		return mapFieldRef(field)
@@ -89,14 +91,11 @@ func fieldRefMode(field string, mode SourceMode) string {
 	return jsonFieldRef(field)
 }
 
-// contentColMode returns the free-text/content column for the given mode. Hot
-// mode uses the norm_log n-gram-indexed column; iceberg has no norm_log, so the
-// normalized text is reconstructed from the MAP as toString(fields) (same
-// semantics as norm_log = toString of the serialized fields).
+// contentColMode returns the free-text/content column for the given mode. Both
+// modes use the norm_log column: hot mode has a materialized, n-gram-indexed
+// norm_log; the iceberg archive stores norm_log as a plain JSON String (no
+// index, but the same content), so free-text search matches identically.
 func contentColMode(mode SourceMode) string {
-	if mode == SourceIceberg {
-		return "toString(fields)"
-	}
 	return normLogColumn
 }
 
@@ -152,10 +151,10 @@ const icebergPromotionQueryEnabled = true
 
 // icebergEqualityPredicate builds the field-equality predicate for iceberg mode.
 // With promotion enabled it emits the correctness-safe dual predicate
-// `fields['x']='v' AND (_ice_x='v' OR _ice_x IS NULL)` (MAP clause always
-// correct; `_ice_x` prunes post-promotion files; IS NULL keeps pre-promotion
-// files). With promotion disabled (current default, see the const above) it emits
-// plain MAP equality.
+// `JSONExtractString(norm_log,'x')='v' AND (_ice_x='v' OR _ice_x IS NULL)` (the
+// norm_log clause is always correct; `_ice_x` prunes post-promotion files; IS
+// NULL keeps pre-promotion files). With promotion disabled it emits the plain
+// norm_log-extraction equality.
 func icebergEqualityPredicate(field, value string) string {
 	mapRef := mapFieldRef(field)
 	esc := escapeString(value)

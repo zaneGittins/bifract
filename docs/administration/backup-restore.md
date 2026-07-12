@@ -118,6 +118,12 @@ Set on the `bifract-archiver` service (compose) or the `bifract-secrets` Secret 
 
 *System → Archive* shows the live state: enabled/disabled, backend, spool usage + backpressure, archived fractal count, total archived size, and last-commit time (with a liveness indicator for the sidecar).
 
+### Clear catalog
+
+*Settings → Admin → Limits → Clear Catalog* resets the archive to zero so you can start fresh. Disable archiving first (the button is guarded otherwise).
+
+This drops the archived tables from the catalog but does **not** delete the data files in object storage. Empty the bucket/container yourself afterwards to reclaim space and to keep leftover files from interfering with new archiving.
+
 ### Restore & Reconcile
 
 Two modes replay archived data back into ClickHouse for an event-time window:

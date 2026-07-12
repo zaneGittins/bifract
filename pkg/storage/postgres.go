@@ -1466,13 +1466,13 @@ func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unl
 
 // Notebook represents a notebook document
 type Notebook struct {
-	ID                    string     `json:"id"`
-	Name                  string     `json:"name"`
-	Description           string     `json:"description"`
-	TimeRangeType         string     `json:"time_range_type"`
-	TimeRangeStart        *time.Time `json:"time_range_start,omitempty"`
-	TimeRangeEnd          *time.Time `json:"time_range_end,omitempty"`
-	MaxResultsPerSection  int        `json:"max_results_per_section"`
+	ID                    string          `json:"id"`
+	Name                  string          `json:"name"`
+	Description           string          `json:"description"`
+	TimeRangeType         string          `json:"time_range_type"`
+	TimeRangeStart        *time.Time      `json:"time_range_start,omitempty"`
+	TimeRangeEnd          *time.Time      `json:"time_range_end,omitempty"`
+	MaxResultsPerSection  int             `json:"max_results_per_section"`
 	FractalID             string          `json:"fractal_id,omitempty"`
 	PrismID               string          `json:"prism_id,omitempty"`
 	Variables             json.RawMessage `json:"variables"`
@@ -1486,14 +1486,14 @@ type Notebook struct {
 
 // NotebookSection represents a section within a notebook
 type NotebookSection struct {
-	ID              string      `json:"id"`
-	NotebookID      string      `json:"notebook_id"`
-	SectionType     string      `json:"section_type"`
-	Title           *string     `json:"title,omitempty"`
-	Content         string      `json:"content"`
-	RenderedContent *string     `json:"rendered_content,omitempty"`
-	OrderIndex      int         `json:"order_index"`
-	LastExecutedAt  *time.Time  `json:"last_executed_at,omitempty"`
+	ID              string          `json:"id"`
+	NotebookID      string          `json:"notebook_id"`
+	SectionType     string          `json:"section_type"`
+	Title           *string         `json:"title,omitempty"`
+	Content         string          `json:"content"`
+	RenderedContent *string         `json:"rendered_content,omitempty"`
+	OrderIndex      int             `json:"order_index"`
+	LastExecutedAt  *time.Time      `json:"last_executed_at,omitempty"`
 	LastResults     json.RawMessage `json:"last_results,omitempty"`
 	ChartType       *string         `json:"chart_type,omitempty"`
 	ChartConfig     json.RawMessage `json:"chart_config,omitempty"`
@@ -1639,7 +1639,6 @@ func (c *PostgresClient) GetNotebookByNameAndFractal(ctx context.Context, name, 
 
 	return &notebook, nil
 }
-
 
 // GetNotebooksByFractal retrieves notebooks for a specific fractal with pagination
 func (c *PostgresClient) GetNotebooksByFractal(ctx context.Context, fractalID string, limit, offset int) ([]Notebook, int, error) {
