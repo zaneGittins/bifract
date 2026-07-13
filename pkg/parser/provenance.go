@@ -411,14 +411,43 @@ var reconnectEdgeType = map[string]string{
 	"process_access": "process_access",
 }
 
-// externalIPNegTmpl matches a PRIVATE/loopback/link-local address; used negated to keep
-// only external destinations (where shared C2 infrastructure lives). Mirrors the private
-// ranges in ipAbstractTmpl so the two never disagree on what "internal" means.
-const externalIPNegTmpl = `NOT match(%[1]s, '^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|127\\.|169\\.254\\.|::1|fe80:|fc|fd)')`
+// privateV4Re / privateAddrRe: a ClickHouse regex ALTERNATION (no anchors) for the leading form of
+// a PRIVATE/internal address. Covers RFC1918 + loopback + link-local IPv4, IPv6 loopback (::1),
+// link-local (fe80:), ULA (fc00::/7 as fcXX:/fdXX:), and IPv4-MAPPED IPv6 (::ffff:<private-v4>,
+// which plain prefix matching missed and would leak internal endpoints through as "external").
+// internalIPMatch anchors it. Shared by the net endpoint filter and the DNS internal-lookup gate so
+// the two never disagree on what "internal" means.
+const privateV4Re = `10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|127\\.|169\\.254\\.`
+const privateAddrRe = privateV4Re + `|::1$|fe80:|f[cd][0-9a-f]{2}:|::ffff:(` + privateV4Re + `)`
+
+// internalIPMatch returns a ClickHouse boolean expr: true when the address expr `col` is internal.
+func internalIPMatch(col string) string {
+	return "match(" + col + ", '^(" + privateAddrRe + ")')"
+}
 
 // ipv4Re is a quoted RE2 literal (for match()) that recognises a bare IPv4 address -- used to
 // pull IP-form endpoints out of dns_query query/query_results.
 const ipv4Re = `'^([0-9]{1,3}\\.){3}[0-9]{1,3}$'`
+
+// internalDNSExpr returns a ClickHouse boolean expr that is TRUE for a BENIGN INTERNAL name lookup
+// that must not form a reconnection bridge. Reconnection peer edges are hard-capped, so noisy
+// internal name resolution (NetBIOS, AD service discovery, internal hosts) would crowd out real
+// shared-IOC bridges. A name is treated as internal when ANY holds:
+//   - single-label name (no dot after trimming a trailing root dot) -- NetBIOS / LLMNR / mDNS
+//   - AD service-discovery record -- starts with '_' (_ldap._tcp...) or contains '._msdcs.'
+//   - it resolves ONLY to internal addresses -- there is at least one IP-form result and none of the
+//     IP-form results are external (hostname/SRV-data results are ignored, so a mixed or non-IP
+//     result set never falsely excludes a real external lookup)
+// qCol/rCol are the query and query_results column expressions.
+func internalDNSExpr(qCol, rCol string) string {
+	resultsArr := "arrayFilter(x -> x != '', splitByChar(';', " + rCol + "))"
+	isIP := "(match(x, " + ipv4Re + ") OR position(x, ':') > 0)"
+	hasIP := "arrayExists(x -> " + isIP + ", " + resultsArr + ")"
+	hasExternalIP := "arrayExists(x -> " + isIP + " AND NOT " + internalIPMatch("x") + ", " + resultsArr + ")"
+	noTLD := "position(replaceRegexpOne(" + qCol + ", '\\\\.+$', ''), '.') = 0"
+	service := "startsWith(lower(" + qCol + "), '_') OR position(lower(" + qCol + "), '._msdcs.') > 0"
+	return "(" + noTLD + " OR " + service + " OR (" + hasIP + " AND NOT " + hasExternalIP + "))"
+}
 
 // BuildReconnectionSQL is the cross-tree reverse lookup. Given the current subgraph's guids
 // it returns peer-candidate rows (schema: recon_type, peer_guid, object_id, label, anomaly,
@@ -538,7 +567,7 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 					"FROM %[1]s ARRAY JOIN arrayFilter(x -> x != '', arrayConcat(splitByChar(';', fields.query_results::String), array(fields.query::String))) AS ip "+
 					"WHERE %[2]s%[3]s AND fields.bifract_category = 'dns_query' AND fields.process_guid::String %[4]s"+
 					") WHERE (match(ip, %[5]s) OR position(ip, ':') > 0) AND %[6]s%[8]s",
-				logs, timeWin, fracAnd, guidCond, ipv4Re, fmt.Sprintf(externalIPNegTmpl, "ip"), netExtra, dnsOuter)
+				logs, timeWin, fracAnd, guidCond, ipv4Re, "NOT "+internalIPMatch("ip"), netExtra, dnsOuter)
 		}
 		rareIP := fmt.Sprintf(
 			"SELECT ip, any(guid) AS toucher FROM (SELECT DISTINCT ip, guid FROM (%[1]s) LIMIT %[2]d) AS c WHERE ip GLOBAL IN ("+
@@ -559,20 +588,23 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 	if want("dns") {
 		aDom := func(col string) string { return abstractExpr(col, AbstractDomain) }
 		notIP := fmt.Sprintf(" AND NOT match(fields.query::String, %s)", ipv4Re)
+		// Drop benign internal name lookups (NetBIOS, AD service records, internal-only resolutions)
+		// so they don't consume the capped reconnection budget and crowd out real shared-IOC bridges.
+		notInternal := " AND NOT " + internalDNSExpr("fields.query::String", "fields.query_results::String")
 		rareDom := fmt.Sprintf(
 			"SELECT q, any(t) AS toucher FROM (SELECT DISTINCT %[1]s AS q, fields.process_guid::String AS t "+
 				"FROM %[2]s WHERE %[3]s%[4]s AND fields.process_guid::String IN (%[5]s) AND fields.bifract_category = 'dns_query' "+
-				"AND fields.query::String != ''%[11]s LIMIT %[6]d) AS c WHERE q GLOBAL IN ("+
+				"AND fields.query::String != ''%[11]s%[12]s LIMIT %[6]d) AS c WHERE q GLOBAL IN ("+
 				"SELECT target_norm FROM %[7]s WHERE event_type = 'dns_query'%[8]s GROUP BY target_norm "+
 				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]s) GROUP BY q",
 			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, maxReconnectCandidateArtifacts,
-			procFreq, freqFrac, procFreqHostsCap, hostGate, notIP)
+			procFreq, freqFrac, procFreqHostsCap, hostGate, notIP, notInternal)
 		peerScan := fmt.Sprintf(
 			"SELECT fields.process_guid::String AS peer_guid, %[1]s AS q, fields.image::String AS img, "+
 				"log_id, toString(timestamp) AS ts, fractal_id, fields.computer_name::String AS host FROM %[2]s WHERE %[3]s%[4]s "+
-				"AND fields.bifract_category = 'dns_query' AND fields.process_guid::String NOT IN (%[5]s) AND fields.query::String != ''%[6]s "+
+				"AND fields.bifract_category = 'dns_query' AND fields.process_guid::String NOT IN (%[5]s) AND fields.query::String != ''%[6]s%[8]s "+
 				"AND %[1]s GLOBAL IN (%[7]s)",
-			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, notIP, "SELECT q FROM ("+rareDom+")")
+			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, notIP, "SELECT q FROM ("+rareDom+")", notInternal)
 		parts = append(parts, fmt.Sprintf(
 			"SELECT 'dns' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, concat('dns:', l.q) AS object_id, "+
 				"any(l.q) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+

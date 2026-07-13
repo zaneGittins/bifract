@@ -1051,6 +1051,12 @@ func openClickHouseConn(addrs []string, database, user, password string, pool Cl
 		Settings: clickhouse.Settings{
 			"use_uncompressed_cache": 1,
 			"output_format_native_use_flattened_dynamic_and_json_serialization": 1,
+			// pgr()'s machine-generated scoring SQL repeats the (bounded) process guid IN-list across
+			// its edge branches and inlines reconnection/command-line data as literals, so a midsize
+			// graph legitimately exceeds ClickHouse's 256KB default and fails with code 62. This is a
+			// parser buffer ceiling (not an allocation) and the SQL is bounded, so raising it fleet-
+			// wide is safe and has no effect on the small SQL every other feature sends.
+			"max_query_size": maxGeneratedQuerySize,
 		},
 		DialTimeout:     pool.DialTimeout,
 		ReadTimeout:     0,
@@ -1464,11 +1470,22 @@ func (c *ClickHouseClient) QueryWithID(ctx context.Context, queryID, query strin
 	return c.Query(ctx, query)
 }
 
+// maxGeneratedQuerySize raises ClickHouse's max_query_size (default 256KB) for the query paths
+// that carry machine-generated SQL. pgr()'s scoring/reconnection SQL repeats the (bounded) process
+// guid IN-list across its edge branches and inlines reconnection edges as literals, so a midsize
+// graph legitimately exceeds 256KB and would fail with code 62. The generated SQL is bounded
+// (maxProvenanceGuids, maxReconnectPeers), so this headroom is safe; it is a parser buffer ceiling,
+// not an allocation, and has no effect on the small queries every other feature sends.
+const maxGeneratedQuerySize = 16 * 1024 * 1024 // 16 MB
+
 // QueryLowPriority executes a query at ClickHouse priority 5, yielding CPU
 // to user-facing queries (priority 0) when both are competing for threads.
 // Use for background work (alert evaluation) that should never starve users.
 func (c *ClickHouseClient) QueryLowPriority(ctx context.Context, query string) ([]map[string]interface{}, error) {
-	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"priority": 5}))
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"priority":       5,
+		"max_query_size": maxGeneratedQuerySize,
+	}))
 	return c.Query(ctx, query)
 }
 
@@ -1625,7 +1642,10 @@ func (c *ClickHouseClient) QueryRows(ctx context.Context, query string, args ...
 // Cancelling ctx (e.g. on client disconnect) aborts the underlying ClickHouse
 // query: the driver propagates cancellation to the connection.
 func (c *ClickHouseClient) StreamQuery(ctx context.Context, queryID, query string, onRow func(map[string]interface{}) error, onProgress func(read, total uint64)) error {
-	var opts []clickhouse.QueryOption
+	// Raise max_query_size: a pgr() source subquery (scoring + inlined reconnection/diffused edges)
+	// is machine-generated and legitimately large, so the default 256KB parser ceiling would fail
+	// it with code 62. Bounded worst case, safe headroom, no effect on ordinary search SQL.
+	opts := []clickhouse.QueryOption{clickhouse.WithSettings(clickhouse.Settings{"max_query_size": maxGeneratedQuerySize})}
 	if onProgress != nil {
 		var readSoFar uint64
 		opts = append(opts, clickhouse.WithProgress(func(p *clickhouse.Progress) {
@@ -1637,9 +1657,7 @@ func (c *ClickHouseClient) StreamQuery(ctx context.Context, queryID, query strin
 	if queryID != "" {
 		opts = append(opts, clickhouse.WithQueryID(queryID))
 	}
-	if len(opts) > 0 {
-		ctx = clickhouse.Context(ctx, opts...)
-	}
+	ctx = clickhouse.Context(ctx, opts...)
 
 	rows, err := c.conn.Query(ctx, query)
 	if err != nil {
