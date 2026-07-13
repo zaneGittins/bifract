@@ -666,11 +666,24 @@
                 <div class="settings-card">
                     <div class="setting-item">
                         <div class="setting-info">
-                            <label for="endpointAnalysisToggle" class="setting-label">Advanced Endpoint Analysis</label>
+                            <label for="endpointAnalysisToggle" class="setting-label">Endpoint Behavioral Analytics</label>
                             <p class="setting-description">Build process-lineage (ptg) and process-frequency (pgr) baselines from endpoint logs for behavioral hunting. This adds materialized views that run on every ingested log, so leave it off unless you use these features. When re-enabled, baselines resume from that point forward. <span id="endpointAnalysisHint" class="setting-inline-hint"></span></p>
                         </div>
                         <label class="toggle-switch">
                             <input type="checkbox" id="endpointAnalysisToggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="settings-card">
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <label for="sharedLinksEnabledToggle" class="setting-label">Dashboard Shared Links</label>
+                            <p class="setting-description">Allow analysts to create public, read-only links to a dashboard that anyone can view without signing in &mdash; for lobby TVs and shared wallboards. Links serve only cached results (never run queries) and remain behind your network controls (mTLS/IP). Leave off unless you need it; each link is revocable. <span id="sharedLinksHint" class="setting-inline-hint"></span></p>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="sharedLinksEnabledToggle">
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
@@ -1457,6 +1470,7 @@
                                         <option value="900">Every 15m</option>
                                     </select>
                                     <button id="dashboardTimeRangeBtn" class="btn-secondary">Time Range</button>
+                                    <button id="dashboardShareBtn" class="btn-secondary" style="display:none;">Share</button>
                                     <button id="addWidgetBtn" class="btn-primary">+ Add Widget</button>
                                     <button id="deleteDashboardBtn" class="btn-secondary" style="color:var(--error);">Delete</button>
                                 </div>

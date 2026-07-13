@@ -699,6 +699,16 @@ func main() {
 		})
 
 		// Public routes (no auth required)
+		// Shared Links: anonymous, read-only dashboard access. Serves ONLY cached
+		// widget results (never executes BQL) and is gated by the global
+		// shared_links_enabled toggle. Still sits behind Caddy mTLS/IP controls,
+		// which are enforced in front of this app on the listener. Because it is
+		// unauthenticated and each hit does several DB reads plus a keep-warm
+		// registration, it gets its own conservative per-IP rate limit (a
+		// legitimate wallboard polls every 30s+, so this is generous).
+		sharedLinkLimiter := ingest.NewRateLimiter(5, 20)
+		r.With(ingest.RateLimitMiddleware(sharedLinkLimiter)).
+			Get("/shared/{token}", dashboardHandler.HandleSharedDashboard)
 		r.Post("/auth/login", authHandler.HandleLogin)
 		r.Get("/auth/invite/validate", authHandler.HandleValidateInvite)
 		r.Post("/auth/invite/accept", authHandler.HandleAcceptInvite)
@@ -955,6 +965,44 @@ func main() {
 					val = "true"
 				}
 				if err := pg.SetSetting(r.Context(), storage.AdvancedEndpointAnalysisSetting, val); err != nil {
+					http.Error(w, "Failed to save", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "enabled": body.Enabled})
+			})
+
+			// Shared Links global toggle (admin only): master switch for public,
+			// no-auth, read-only dashboard access. Default off (opt-in). When off,
+			// every anonymous /shared/{token} request 404s and new links cannot be
+			// created; existing links can still be listed and revoked for cleanup.
+			// Readable by any authenticated user: the dashboard UI needs it to decide
+			// whether to show the "Share" button. It is a non-sensitive feature flag.
+			r.Get("/system/shared-links", func(w http.ResponseWriter, r *http.Request) {
+				enabled := false
+				if v, _ := pg.GetSetting(r.Context(), storage.SharedLinksEnabledSetting); v == "true" {
+					enabled = true
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"enabled": enabled})
+			})
+			r.Post("/system/shared-links", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				var body struct {
+					Enabled bool `json:"enabled"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "Invalid JSON", http.StatusBadRequest)
+					return
+				}
+				val := "false"
+				if body.Enabled {
+					val = "true"
+				}
+				if err := pg.SetSetting(r.Context(), storage.SharedLinksEnabledSetting, val); err != nil {
 					http.Error(w, "Failed to save", http.StatusInternalServerError)
 					return
 				}
@@ -1443,6 +1491,12 @@ func main() {
 				r.Get("/dashboards/{id}/export", dashboardHandler.HandleExportDashboard)
 				r.Post("/dashboards/import", dashboardHandler.HandleImportDashboard)
 				r.Get("/dashboards/{id}/events", dashboardHandler.HandleSSE)
+				// Shared Links management (create/revoke require analyst+ on the
+				// dashboard's scope; list is viewer+). The anonymous read route is
+				// registered separately in the public block below.
+				r.Get("/dashboards/{id}/shared-links", dashboardHandler.HandleListSharedLinks)
+				r.Post("/dashboards/{id}/shared-links", dashboardHandler.HandleCreateSharedLink)
+				r.Delete("/dashboards/{id}/shared-links/{link_id}", dashboardHandler.HandleRevokeSharedLink)
 			})
 
 			// Alert management (API keys require "alert_manage" permission)
@@ -1738,6 +1792,13 @@ func main() {
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			http.ServeFile(w, r, "./web/index.html")
+			return
+		}
+		// Pretty path for shared wallboards: /shared/<token> serves the standalone
+		// public render page (the token is read client-side and sent to the
+		// anonymous API). The page is a static file, so no auth is involved here.
+		if strings.HasPrefix(r.URL.Path, "/shared/") {
+			http.ServeFile(w, r, "./web/shared.html")
 			return
 		}
 		fs.ServeHTTP(w, r)

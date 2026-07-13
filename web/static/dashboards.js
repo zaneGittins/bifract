@@ -114,6 +114,12 @@ const Dashboards = {
             timeRangeBtn.addEventListener('click', timeRangeBtn._dashHandler);
         }
 
+        const shareBtn = document.getElementById('dashboardShareBtn');
+        if (shareBtn) {
+            shareBtn._dashHandler = () => this.showShareModal();
+            shareBtn.addEventListener('click', shareBtn._dashHandler);
+        }
+
         const refreshSelect = document.getElementById('dashboardRefreshSelect');
         if (refreshSelect) {
             refreshSelect._dashHandler = () => this.updateRefreshInterval(parseInt(refreshSelect.value, 10));
@@ -126,7 +132,7 @@ const Dashboards = {
             'createDashboardBtn', 'dashboardSearchInput',
             'dashboardsPrevBtn', 'dashboardsNextBtn',
             'addWidgetBtn', 'deleteDashboardBtn', 'dashboardTimeRangeBtn',
-            'dashboardRefreshSelect'
+            'dashboardShareBtn', 'dashboardRefreshSelect'
         ];
         ids.forEach(id => {
             const el = document.getElementById(id);
@@ -271,6 +277,7 @@ const Dashboards = {
             const refreshSelect = document.getElementById('dashboardRefreshSelect');
             if (refreshSelect) refreshSelect.value = String(this.currentDashboard.refresh_interval ?? 0);
 
+            this.updateShareButtonVisibility();
             this.renderVariablesBar();
             this.renderDashboardGrid();
             this._resolveDrilldown();
@@ -1413,6 +1420,204 @@ const Dashboards = {
     // =====================
     // Dashboard CRUD
     // =====================
+
+    // =====================
+    // Shared Links (public wallboards)
+    // =====================
+
+    // Shows the Share button only when the feature is globally enabled. Any
+    // authenticated user can read the flag; the backend still enforces analyst+
+    // on link creation.
+    async updateShareButtonVisibility() {
+        const btn = document.getElementById('dashboardShareBtn');
+        if (!btn) return;
+        try {
+            const res = await fetch('/api/v1/system/shared-links', { credentials: 'include' });
+            const d = res.ok ? await res.json() : { enabled: false };
+            this._sharedLinksEnabled = !!d.enabled;
+        } catch {
+            this._sharedLinksEnabled = false;
+        }
+        btn.style.display = this._sharedLinksEnabled ? '' : 'none';
+    },
+
+    buildShareUrl(token) {
+        return `${window.location.origin}/shared/${token}`;
+    },
+
+    formatShareDate(iso) {
+        if (!iso) return 'never';
+        try { return new Date(iso).toLocaleString(); } catch { return iso; }
+    },
+
+    showShareModal() {
+        if (!this.currentDashboard) return;
+        const existing = document.getElementById('shareLinksModal');
+        if (existing) existing.remove();
+
+        const esc = (window.Utils && Utils.escapeHtml) ? Utils.escapeHtml : (s => s);
+        const modal = document.createElement('div');
+        modal.id = 'shareLinksModal';
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+            <div class="modal-content" style="width:560px;max-width:95vw;">
+                <div class="modal-header">
+                    <h3>Share "${esc(this.currentDashboard.name)}"</h3>
+                    <button class="modal-close" onclick="document.getElementById('shareLinksModal').remove()">&#x2715;</button>
+                </div>
+                <div class="modal-body">
+                    <p class="setting-description" style="margin-top:0;">
+                        Anyone with a link can view this dashboard read-only, without signing in.
+                        Links show cached results only and stay behind your network controls (mTLS/IP).
+                    </p>
+                    <div class="form-group">
+                        <label>Label (optional)</label>
+                        <input type="text" id="shareLinkLabel" class="form-input" placeholder="e.g. Lobby TV" maxlength="200">
+                    </div>
+                    <div class="form-group">
+                        <label>Expires</label>
+                        <select id="shareLinkExpiry" class="form-input">
+                            <option value="0" selected>Never</option>
+                            <option value="86400">In 24 hours</option>
+                            <option value="604800">In 7 days</option>
+                            <option value="2592000">In 30 days</option>
+                            <option value="7776000">In 90 days</option>
+                        </select>
+                    </div>
+                    <div style="margin:4px 0 16px;">
+                        <button class="btn-primary" onclick="Dashboards.createSharedLink()">Create link</button>
+                    </div>
+                    <div id="shareLinkReveal" style="display:none;"></div>
+                    <div style="border-top:1px solid var(--border-color);padding-top:12px;">
+                        <label class="setting-label" style="display:block;margin-bottom:8px;">Active links</label>
+                        <div id="shareLinksList"><div style="color:var(--text-muted);font-size:0.85rem;">Loading…</div></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-secondary" onclick="document.getElementById('shareLinksModal').remove()">Close</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.remove();
+        });
+        this.loadSharedLinks();
+    },
+
+    async loadSharedLinks() {
+        const listEl = document.getElementById('shareLinksList');
+        if (!listEl || !this.currentDashboard) return;
+        try {
+            const res = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/shared-links`, { credentials: 'include' });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.error || 'Failed to load links');
+            const links = data.data || [];
+            listEl.innerHTML = this.renderSharedLinksList(links);
+        } catch (err) {
+            listEl.innerHTML = `<div style="color:var(--error);font-size:0.85rem;">${err.message}</div>`;
+        }
+    },
+
+    renderSharedLinksList(links) {
+        const esc = (window.Utils && Utils.escapeHtml) ? Utils.escapeHtml : (s => s);
+        if (!links.length) {
+            return `<div style="color:var(--text-muted);font-size:0.85rem;">No active links.</div>`;
+        }
+        return links.map(l => {
+            const label = l.label ? esc(l.label) : '<span style="color:var(--text-muted);">Untitled</span>';
+            const expiry = l.expires_at ? `Expires ${esc(this.formatShareDate(l.expires_at))}` : 'Never expires';
+            const last = l.last_accessed_at ? `Last viewed ${esc(this.formatShareDate(l.last_accessed_at))}` : 'Never viewed';
+            return `
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-color);">
+                    <div style="min-width:0;">
+                        <div style="font-weight:500;">${label}</div>
+                        <div style="font-size:0.78rem;color:var(--text-muted);font-family:monospace;">${esc(l.token_prefix)}…</div>
+                        <div style="font-size:0.78rem;color:var(--text-muted);">${expiry} &middot; ${last}</div>
+                    </div>
+                    <button class="btn-secondary" style="color:var(--error);flex-shrink:0;" onclick="Dashboards.revokeSharedLink('${esc(l.id)}')">Revoke</button>
+                </div>
+            `;
+        }).join('');
+    },
+
+    async createSharedLink() {
+        if (!this.currentDashboard) return;
+        const labelEl = document.getElementById('shareLinkLabel');
+        const expiryEl = document.getElementById('shareLinkExpiry');
+        const label = labelEl ? labelEl.value.trim() : '';
+        const expiresInSeconds = expiryEl ? parseInt(expiryEl.value, 10) || 0 : 0;
+        try {
+            const res = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/shared-links`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ label, expires_in_seconds: expiresInSeconds })
+            });
+            if (res.status === 403) throw new Error('You need analyst access on this fractal to create links.');
+            const data = await res.json();
+            if (!data.success || !data.token) throw new Error(data.error || 'Failed to create link');
+            this.showSharedLinkReveal(data.token);
+            if (labelEl) labelEl.value = '';
+            this.loadSharedLinks();
+        } catch (err) {
+            if (window.Toast) Toast.error('Could not create link', err.message);
+        }
+    },
+
+    // Reveals the full URL exactly once (the server stores only a hash and can
+    // never show it again).
+    showSharedLinkReveal(token) {
+        const box = document.getElementById('shareLinkReveal');
+        if (!box) return;
+        const url = this.buildShareUrl(token);
+        const esc = (window.Utils && Utils.escapeHtml) ? Utils.escapeHtml : (s => s);
+        box.style.display = 'block';
+        box.innerHTML = `
+            <div style="margin-bottom:16px;padding:12px;border:1px solid var(--accent-primary);border-radius:8px;background:var(--bg-tertiary);">
+                <div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">
+                    Copy this link now &mdash; it will not be shown again.
+                </div>
+                <div style="display:flex;gap:8px;">
+                    <input type="text" readonly value="${esc(url)}" id="shareRevealInput"
+                        style="flex:1;min-width:0;padding:8px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-family:monospace;font-size:0.8rem;">
+                    <button class="btn-primary" style="flex-shrink:0;" onclick="Dashboards.copySharedLink()">Copy</button>
+                </div>
+            </div>
+        `;
+        const input = document.getElementById('shareRevealInput');
+        if (input) { input.focus(); input.select(); }
+    },
+
+    copySharedLink() {
+        const input = document.getElementById('shareRevealInput');
+        if (!input) return;
+        const done = () => { if (window.Toast) Toast.success('Copied', 'Share link copied to clipboard.'); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(input.value).then(done).catch(() => { input.select(); document.execCommand('copy'); done(); });
+        } else {
+            input.select();
+            document.execCommand('copy');
+            done();
+        }
+    },
+
+    async revokeSharedLink(linkId) {
+        if (!this.currentDashboard) return;
+        if (!window.confirm('Revoke this link? Anyone using it will immediately lose access.')) return;
+        try {
+            const res = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/shared-links/${linkId}`, {
+                method: 'DELETE',
+                credentials: 'include'
+            });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.error || 'Failed to revoke');
+            if (window.Toast) Toast.success('Link revoked', 'The shared link no longer works.');
+            this.loadSharedLinks();
+        } catch (err) {
+            if (window.Toast) Toast.error('Could not revoke', err.message);
+        }
+    },
 
     showCreateDashboardModal() {
         const existing = document.getElementById('createDashboardModal');

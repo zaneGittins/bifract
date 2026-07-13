@@ -41,14 +41,21 @@ type ExecutorConfig struct {
 	MinInterval time.Duration
 	// Workers caps concurrent widget executions across all dashboards.
 	Workers int
+	// MaxSharedWarm caps how many distinct dashboards anonymous shared-link
+	// viewers may keep warm at once. It bounds the extra background query load a
+	// burst of leaked links can create; hitting the cap sheds new dashboards
+	// (logged) rather than growing unbounded. Authenticated (SSE) viewers are
+	// never subject to this cap.
+	MaxSharedWarm int
 }
 
 // DefaultExecutorConfig returns conservative defaults.
 func DefaultExecutorConfig() ExecutorConfig {
 	return ExecutorConfig{
-		Tick:        5 * time.Second,
-		MinInterval: 10 * time.Second,
-		Workers:     4,
+		Tick:          5 * time.Second,
+		MinInterval:   10 * time.Second,
+		Workers:       4,
+		MaxSharedWarm: 200,
 	}
 }
 
@@ -66,9 +73,11 @@ type Executor struct {
 
 	sem chan struct{} // worker-pool semaphore
 
-	mu       sync.Mutex
-	lastRun  map[string]time.Time // dashboardID -> last refresh time
-	inFlight map[string]bool      // dashboardID -> a refresh is currently running
+	mu              sync.Mutex
+	lastRun         map[string]time.Time // dashboardID -> last refresh time
+	inFlight        map[string]bool      // dashboardID -> a refresh is currently running
+	sharedWarm      map[string]time.Time // dashboardID -> keep-warm expiry (anonymous viewers)
+	sharedCapLogged bool                 // rate-limit the "cap reached" log line
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -87,19 +96,86 @@ func NewExecutor(pg *storage.PostgresClient, runner QueryRunner, hub *sse.Hub, h
 	if cfg.Workers <= 0 {
 		cfg.Workers = DefaultExecutorConfig().Workers
 	}
+	if cfg.MaxSharedWarm <= 0 {
+		cfg.MaxSharedWarm = DefaultExecutorConfig().MaxSharedWarm
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Executor{
-		pg:       pg,
-		runner:   runner,
-		hub:      hub,
-		health:   health,
-		cfg:      cfg,
-		sem:      make(chan struct{}, cfg.Workers),
-		lastRun:  make(map[string]time.Time),
-		inFlight: make(map[string]bool),
-		ctx:      ctx,
-		cancel:   cancel,
+		pg:         pg,
+		runner:     runner,
+		hub:        hub,
+		health:     health,
+		cfg:        cfg,
+		sem:        make(chan struct{}, cfg.Workers),
+		lastRun:    make(map[string]time.Time),
+		inFlight:   make(map[string]bool),
+		sharedWarm: make(map[string]time.Time),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
+}
+
+// MarkSharedActive registers a dashboard as being watched by an anonymous
+// shared-link viewer, so the background loop keeps its cached results fresh even
+// with no authenticated viewer present. The keep-warm entry expires after ~2x the
+// dashboard's effective refresh interval (floored), so it lapses shortly after the
+// viewer stops polling. Bounded by MaxSharedWarm: once the cap is reached, a new
+// dashboard is refused (logged) rather than growing the warm set without limit.
+// This is the ONLY way anonymous activity can trigger execution, and it only ever
+// runs the dashboard's own stored widgets, coalesced and backpressure-gated.
+func (e *Executor) MarkSharedActive(d *storage.Dashboard) {
+	if d == nil || d.ID == "" {
+		return
+	}
+	interval := e.effectiveInterval(d)
+	if interval <= 0 {
+		// Auto-refresh is off for this dashboard: keeping it warm would do
+		// nothing but occupy a slot and cost a GetDashboard per tick. The viewer
+		// still sees the last cached snapshot.
+		return
+	}
+	ttl := 2 * interval
+	if ttl < 90*time.Second {
+		ttl = 90 * time.Second
+	}
+	expiry := time.Now().Add(ttl)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, exists := e.sharedWarm[d.ID]; !exists && len(e.sharedWarm) >= e.cfg.MaxSharedWarm {
+		if !e.sharedCapLogged {
+			log.Printf("[DashboardExecutor] Shared keep-warm cap reached (%d); dashboard %s not kept warm until a slot frees", e.cfg.MaxSharedWarm, d.ID)
+			e.sharedCapLogged = true
+		}
+		return
+	}
+	e.sharedWarm[d.ID] = expiry
+	e.sharedCapLogged = false
+}
+
+// activeDashboards returns the set of dashboard IDs due for background refresh:
+// the union of dashboards with a live SSE room (authenticated viewers) and
+// non-expired shared keep-warm entries (anonymous viewers). Expired keep-warm
+// entries are pruned here.
+func (e *Executor) activeDashboards() map[string]bool {
+	active := make(map[string]bool)
+	for _, room := range e.hub.RoomsWithPrefix("dashboard:") {
+		id := strings.TrimPrefix(room, "dashboard:")
+		if id != "" {
+			active[id] = true
+		}
+	}
+	now := time.Now()
+	e.mu.Lock()
+	for id, expiry := range e.sharedWarm {
+		if now.After(expiry) {
+			delete(e.sharedWarm, id)
+			continue
+		}
+		active[id] = true
+	}
+	e.mu.Unlock()
+	return active
 }
 
 // Start launches the background scheduling loop.
@@ -140,20 +216,17 @@ func (e *Executor) tick() {
 		return
 	}
 
-	rooms := e.hub.RoomsWithPrefix("dashboard:")
-	if len(rooms) == 0 {
+	// Refresh dashboards watched by authenticated viewers (live SSE rooms) OR by
+	// anonymous shared-link viewers (keep-warm registry). Both are treated
+	// identically from here on: execution is coalesced per dashboard, floored, and
+	// runs only the dashboard's own stored widgets.
+	active := e.activeDashboards()
+	if len(active) == 0 {
 		return
 	}
 
 	now := time.Now()
-	active := make(map[string]bool, len(rooms))
-	for _, room := range rooms {
-		dashboardID := strings.TrimPrefix(room, "dashboard:")
-		if dashboardID == "" {
-			continue
-		}
-		active[dashboardID] = true
-
+	for dashboardID := range active {
 		d, err := e.pg.GetDashboard(e.ctx, dashboardID)
 		if err != nil {
 			continue

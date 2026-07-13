@@ -69,6 +69,10 @@ const SettingsView = {
         if (endpointAnalysisToggle) {
             endpointAnalysisToggle.addEventListener('change', () => this.saveEndpointAnalysis());
         }
+        const sharedLinksToggle = document.getElementById('sharedLinksEnabledToggle');
+        if (sharedLinksToggle) {
+            sharedLinksToggle.addEventListener('change', () => this.saveSharedLinksEnabled());
+        }
     },
 
     // Loads the Iceberg archive enable state. The toggle is disabled (with a
@@ -190,8 +194,52 @@ const SettingsView = {
                 throw new Error(msg || 'Failed to update setting');
             }
             if (window.Toast) {
-                Toast.success('Advanced Endpoint Analysis ' + (enabled ? 'Enabled' : 'Disabled'),
+                Toast.success('Endpoint Behavioral Analytics ' + (enabled ? 'Enabled' : 'Disabled'),
                     enabled ? 'Process baselines are now building from new logs.' : 'Per-insert analysis paused. Existing baseline data is retained.');
+            }
+        } catch (err) {
+            toggle.checked = !enabled; // revert on failure
+            if (window.Toast) Toast.error('Update Failed', err.message);
+        } finally {
+            toggle.disabled = false;
+            if (hint) hint.textContent = '';
+        }
+    },
+
+    async loadSharedLinksToggle() {
+        const toggle = document.getElementById('sharedLinksEnabledToggle');
+        if (!toggle) return;
+        try {
+            const res = await fetch('/api/v1/system/shared-links', { credentials: 'include' });
+            if (!res.ok) return;
+            const d = await res.json();
+            toggle.checked = !!d.enabled;
+        } catch (err) {
+            console.error('[Settings] shared-links load error:', err);
+        }
+    },
+
+    async saveSharedLinksEnabled() {
+        const toggle = document.getElementById('sharedLinksEnabledToggle');
+        const hint = document.getElementById('sharedLinksHint');
+        if (!toggle) return;
+        const enabled = toggle.checked;
+        toggle.disabled = true;
+        if (hint) hint.textContent = enabled ? 'Enabling…' : 'Disabling…';
+        try {
+            const res = await fetch('/api/v1/system/shared-links', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ enabled })
+            });
+            if (!res.ok) {
+                const msg = await res.text();
+                throw new Error(msg || 'Failed to update setting');
+            }
+            if (window.Toast) {
+                Toast.success('Dashboard Shared Links ' + (enabled ? 'Enabled' : 'Disabled'),
+                    enabled ? 'Analysts can now create public read-only dashboard links.' : 'Existing links now return not-found. They remain revocable.');
             }
         } catch (err) {
             toggle.checked = !enabled; // revert on failure
@@ -252,6 +300,7 @@ const SettingsView = {
         await this.loadSettings();
         await this.loadArchiveToggle();
         await this.loadEndpointAnalysisToggle();
+        await this.loadSharedLinksToggle();
         await this.loadMTLSStatus();
         await this.loadUsers();
 

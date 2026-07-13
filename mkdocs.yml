@@ -81,6 +81,7 @@ nav:
     - Alert Feeds: alerting/alert-feeds.md
   - Features:
     - Models: features/models.md
+    - Provenance Graph: features/provenance-graph.md
     - Dashboards & Notebooks: features/dashboards.md
     - Dictionaries: features/dictionaries.md
     - Normalizers: features/normalizers.md

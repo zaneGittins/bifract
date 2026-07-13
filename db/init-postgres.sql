@@ -411,6 +411,9 @@ INSERT INTO settings (key, value) VALUES ('alert_timeout_seconds', '5')
 ON CONFLICT (key) DO NOTHING;
 INSERT INTO settings (key, value) VALUES ('query_timeout_seconds', '60')
 ON CONFLICT (key) DO NOTHING;
+-- Shared Links (public no-auth dashboard access) default OFF: it is opt-in per install.
+INSERT INTO settings (key, value) VALUES ('shared_links_enabled', 'false')
+ON CONFLICT (key) DO NOTHING;
 
 -- ============================
 -- Dictionary System Tables
@@ -698,6 +701,29 @@ CREATE TRIGGER update_dashboards_updated_at BEFORE UPDATE ON dashboards
 DROP TRIGGER IF EXISTS update_dashboard_widgets_updated_at ON dashboard_widgets;
 CREATE TRIGGER update_dashboard_widgets_updated_at BEFORE UPDATE ON dashboard_widgets
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Shared Links: public, no-auth, read-only dashboard access (wallboards). A link
+-- grants anonymous read of exactly ONE dashboard's cached widget results, nothing
+-- else. Only the SHA-256 hash of the token is stored; the plaintext token is shown
+-- to the creator once. Gated globally by the 'shared_links_enabled' setting.
+CREATE TABLE IF NOT EXISTS dashboard_shared_links (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    dashboard_id UUID NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    token_prefix VARCHAR(16) NOT NULL,
+    label VARCHAR(200),
+    created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMP,
+    revoked_at TIMESTAMP,
+    last_accessed_at TIMESTAMP
+);
+-- Defensive column adds for installs created by an older dashboards block.
+ALTER TABLE dashboard_shared_links ADD COLUMN IF NOT EXISTS label VARCHAR(200);
+ALTER TABLE dashboard_shared_links ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;
+ALTER TABLE dashboard_shared_links ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP;
+ALTER TABLE dashboard_shared_links ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMP;
+CREATE INDEX IF NOT EXISTS idx_dashboard_shared_links_dashboard_id ON dashboard_shared_links(dashboard_id);
 
 
 -- ============================

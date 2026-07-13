@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <!-- The share token is in the URL path; never leak it via the Referer header
+         to CDNs or map-tile servers loaded by this page. -->
+    <meta name="referrer" content="no-referrer">
+    <title>Shared Dashboard - Bifract</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <script>
+        if (localStorage.getItem('bifract-theme') === 'light') {
+            document.documentElement.setAttribute('data-theme', 'light');
+        }
+        // Minimal ThemeManager shim: charts.js / worldmap.js resolve their colors
+        // through window.ThemeManager.getCSSVar (reading the --chart-* CSS vars from
+        // style.css). Without it every color falls back to '' and charts render
+        // black. We provide only the two methods those renderers use, instead of
+        // pulling in all of auth.js.
+        window.ThemeManager = {
+            isDark() { return document.documentElement.getAttribute('data-theme') !== 'light'; },
+            getCSSVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+        };
+    </script>
+
+    <!-- Chart rendering deps (same CDNs as the main app, already CSP-allowlisted) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/vis-network@9/standalone/umd/vis-network.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css" crossorigin="" />
+    <script defer src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <script defer src="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+    <style>
+        html, body { height: 100%; }
+        body {
+            font-family: var(--font-main);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        .shared-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            flex-shrink: 0;
+        }
+        .shared-title { font-size: 1.15rem; font-weight: 600; margin: 0; }
+        .shared-meta { display: flex; align-items: center; gap: 14px; }
+        .shared-live {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: 0.78rem; color: var(--text-muted);
+        }
+        .shared-live .dot {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: var(--accent-primary);
+            box-shadow: 0 0 0 0 var(--accent-glow);
+            animation: sharedPulse 2s infinite;
+        }
+        @keyframes sharedPulse {
+            0% { box-shadow: 0 0 0 0 var(--accent-glow); }
+            70% { box-shadow: 0 0 0 6px transparent; }
+            100% { box-shadow: 0 0 0 0 transparent; }
+        }
+        .shared-brand { font-size: 0.78rem; color: var(--text-muted); letter-spacing: 0.04em; }
+        .shared-theme-btn {
+            background: transparent; border: 1px solid var(--border-color);
+            color: var(--text-secondary); border-radius: 6px; width: 32px; height: 32px;
+            display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+            transition: var(--transition);
+        }
+        .shared-theme-btn:hover { background: var(--bg-hover); }
+        .shared-body { flex: 1; overflow: auto; padding: 16px 20px; }
+        #sharedGrid { position: relative; width: 100%; }
+        .shared-state {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 60vh; text-align: center; color: var(--text-muted); gap: 10px;
+        }
+        .shared-state h2 { color: var(--text-primary); font-weight: 600; margin: 0; }
+    </style>
+</head>
+<body>
+    <div class="shared-header">
+        <h1 class="shared-title" id="sharedTitle">Dashboard</h1>
+        <div class="shared-meta">
+            <span class="shared-live" id="sharedLive" style="display:none;"><span class="dot"></span><span id="sharedUpdated">Live</span></span>
+            <span class="shared-brand">Bifract</span>
+            <button class="shared-theme-btn" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
+                <svg id="themeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+            </button>
+        </div>
+    </div>
+    <div class="shared-body">
+        <div id="sharedGrid"></div>
+        <div class="shared-state" id="sharedState" style="display:none;">
+            <h2 id="sharedStateTitle">Loading…</h2>
+            <div id="sharedStateMsg"></div>
+        </div>
+    </div>
+
+    <script src="/static/utils.js"></script>
+    <script src="/static/charts.js"></script>
+    <script src="/static/worldmap.js"></script>
+    <script src="/static/sharedRender.js"></script>
+    <script>
+        // Theme toggle (standalone copy, mirrors login.html)
+        (function() {
+            const btn = document.getElementById('themeToggle');
+            const icon = document.getElementById('themeIcon');
+            const moonPath = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+            const sunPath = '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>';
+            function update(rerender) {
+                const light = document.documentElement.getAttribute('data-theme') === 'light';
+                icon.innerHTML = light ? sunPath : moonPath;
+                if (rerender && window.SharedRender) { SharedRender.rerenderAll(); SharedRender.relayout(); }
+            }
+            update();
+            btn.addEventListener('click', function() {
+                const light = document.documentElement.getAttribute('data-theme') === 'light';
+                if (light) { document.documentElement.removeAttribute('data-theme'); localStorage.removeItem('bifract-theme'); }
+                else { document.documentElement.setAttribute('data-theme', 'light'); localStorage.setItem('bifract-theme', 'light'); }
+                update(true);
+            });
+        })();
+
+        window.addEventListener('DOMContentLoaded', function() {
+            // Defer one tick so deferred CDN scripts (vis-network, leaflet) attach.
+            setTimeout(function() { SharedRender.init(); }, 0);
+        });
+    </script>
+</body>
+</html>
