@@ -96,7 +96,13 @@ spec:
         # Allow the default (admin) user to run SQL access-control statements so the
         # app can provision the least-privilege ingest user (bifract_ingest) at startup.
         # Docker uses CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 for the same purpose.
-        default/access_management: 1
+        # NOTE: this is the official ClickHouse operator (clickhouse.com/v1alpha1), which
+        # renders extraUsersConfig as literal nested YAML -- NOT Altinity's "user/key"
+        # slash paths. It must be nested (users.default.access_management), like profiles
+        # below; a "default/access_management" key becomes a bogus username with no auth
+        # and crashes ClickHouse on startup (Code 36/347).
+        default:
+          access_management: 1
       profiles:
         default:
           distributed_background_insert_batch: 1
