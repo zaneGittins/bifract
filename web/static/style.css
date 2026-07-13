@@ -17100,6 +17100,19 @@ div.vis-tooltip {
     font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
     color: var(--pg-recon, #a855f7);
 }
+/* Reconnection focus buttons (Source in head, Dest per row): center the graph on that process. */
+.pg-foci-btn {
+    font-size: 9.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+    color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 40%, transparent); border-radius: 5px;
+    padding: 1px 8px; cursor: pointer; white-space: nowrap; line-height: 1.5;
+}
+.pg-foci-btn:hover { background: color-mix(in srgb, var(--accent-primary) 24%, transparent); }
+.pg-drawer-subline .pg-foci-btn { margin-left: auto; }
+.pg-foci-src { margin-right: 8px; align-self: center; }
+/* Pulse a node when focused from the drawer. drop-shadow (not box-shadow) follows the hex clip-path. */
+@keyframes pgPulse { 0%, 100% { filter: none; } 45% { filter: drop-shadow(0 0 7px var(--accent-primary)) drop-shadow(0 0 3px var(--accent-primary)); } }
+.pg-node.pg-pulse .pg-hex { animation: pgPulse 1.3s ease-in-out 2; }
 
 /* Node-detail drawer: action buttons + key/value fields. */
 .pg-drawer-actions { display: flex; gap: 8px; padding: 10px 14px 4px; }

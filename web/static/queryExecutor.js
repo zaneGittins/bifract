@@ -2925,26 +2925,26 @@ const QueryExecutor = {
         if (this._pgSevScale.saturated && hi - lo >= 0.02) this._pgSevScale = { rel: true, saturated: true, lo, span: hi - lo };
     },
 
-    // Fan-out collapse: when a process spawns many similar children (e.g. 30x conhost.exe), those
-    // benign siblings drown the tree. Collapse each large same-image group into ONE aggregate node
-    // ("image xN"), but NEVER collapse a child that is itself interesting -- anything with its own
-    // subtree, file/net/dns activity, an interaction/reconnection, elevated anomaly, or that is the
-    // focus/external/ghost is always promoted to an individual node. So the common noise folds while
-    // an outlier (the one conhost that spawned cmd.exe) still stands out. This is the CrowdStrike /
-    // Elastic Resolver pattern. Aggregates are expandable (this._pgExpandedAggs).
+    // Fan-out collapse: when a process spawns many similar children (e.g. 30x msedge.exe), those
+    // siblings drown the tree. Collapse each large same-image group into ONE aggregate node
+    // ("image xN"). Two things are kept individual and never folded:
+    //   1. STRUCTURALLY interesting children -- a child with its own subtree, file/net/dns activity,
+    //      an interaction/reconnection, or that is the focus/external/ghost.
+    //   2. An anomaly OUTLIER *relative to its own sibling group* -- a member whose anomaly stands
+    //      clearly above the group's typical (median) level. This is the key subtlety: promotion is
+    //      GROUP-relative, not graph-relative. A fan of 30 identical msedge all at 0.97 has no
+    //      outlier (they are all equally rare), so it collapses; but 19 benign children + 1 rare one
+    //      still surfaces that one. (An earlier graph-relative rule kept every high-anomaly sibling,
+    //      so a uniformly-anomalous fan never collapsed.)
+    // CrowdStrike / Elastic Resolver pattern. Aggregates are expandable (this._pgExpandedAggs).
     _pgComputeFanout() {
         const m = this._pgModel;
         this._pgAgg = new Map();      // parentGuid -> { groups: [meta] }
         this._pgAggMeta = new Map();  // aggId -> { parent, image, members, count, anomaly, id }
         if (!m) return;
-        const MIN = 5; // only collapse a genuinely large same-image fan (> MIN members)
-        // In a saturated-but-uniform graph (everything ~1.0, thin baseline) anomaly is not
-        // discriminating, so it must NOT gate promotion -- else nothing collapses. There we rely on
-        // structural signals only. With real spread (relative shading on) or a normal graph, a
-        // genuinely top-band child is kept individual so a hot outlier is never hidden in a fold.
-        const scale = this._pgSevScale || {};
-        const useAnom = !(scale.saturated && !scale.rel);
-        const interesting = (c) => {
+        const MIN = 5;                 // only collapse a genuinely large same-image fan (> MIN members)
+        const OUTLIER = 0.15;          // an anomaly this far above the group median is a standout
+        const structural = (c) => {
             if (c === this._pgFocus) return true;
             if (m.ghostProcs && m.ghostProcs.has(c)) return true;
             if (m.externalProcs && m.externalProcs.has(c)) return true;
@@ -2953,14 +2953,13 @@ const QueryExecutor = {
             if (g && (g.file.length || g.net.length || g.dns.length)) return true;
             if ((m.interactions.get(c) || []).length) return true;
             if ((m.linkInfo && m.linkInfo.get(c) || []).length) return true;
-            if (useAnom && this._pgSev(m.anomalyByNode.get(c)) === 'high') return true;
             return false;
         };
         m.spawnKids.forEach((kids, parent) => {
             if (kids.length <= MIN) return;
             const byImage = new Map();
             kids.forEach(c => {
-                if (interesting(c)) return;
+                if (structural(c)) return;
                 const img = m.procLabel.get(c) || c;
                 if (!byImage.has(img)) byImage.set(img, []);
                 byImage.get(img).push(c);
@@ -2969,10 +2968,17 @@ const QueryExecutor = {
             let gi = 0;
             byImage.forEach((members, img) => {
                 if (members.length <= MIN) return;
+                // Group-relative outlier gate: fold members at/below (median + OUTLIER); a member
+                // above it stays individual. A uniform group (all ~equal) folds entirely.
+                const anoms = members.map(c => m.anomalyByNode.get(c)).filter(a => !isNaN(a)).sort((a, b) => a - b);
+                const median = anoms.length ? anoms[Math.floor(anoms.length / 2)] : 0;
+                const cutoff = median + OUTLIER;
+                const fold = members.filter(c => { const a = m.anomalyByNode.get(c); return isNaN(a) || a <= cutoff; });
+                if (fold.length <= MIN) return; // not enough uniform members left to bother collapsing
                 const aggId = 'pgagg:' + parent + ':' + (gi++);
                 let anomaly = NaN;
-                members.forEach(mm => { const a = m.anomalyByNode.get(mm); if (!isNaN(a) && (isNaN(anomaly) || a > anomaly)) anomaly = a; });
-                const meta = { parent, image: img, members, count: members.length, anomaly, id: aggId };
+                fold.forEach(mm => { const a = m.anomalyByNode.get(mm); if (!isNaN(a) && (isNaN(anomaly) || a > anomaly)) anomaly = a; });
+                const meta = { parent, image: img, members: fold, count: fold.length, anomaly, id: aggId };
                 groups.push(meta);
                 this._pgAggMeta.set(aggId, meta);
             });
@@ -3714,7 +3720,7 @@ const QueryExecutor = {
         if (type === 'link') {
             const links = (m.linkInfo && m.linkInfo.get(guid)) || [];
             const kind = (t) => t === 'file' ? 'dropped & ran' : t === 'net' ? 'shared IP' : t === 'dns' ? 'shared domain' : 'shared';
-            items = links.map(l => ({ label: l.label, anomaly: NaN, info: l.info || m.logInfoById.get(l.peerGuid), sub: kind(l.type) + ' · ' + this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid), host: l.crossHost ? l.peerHost : '' }));
+            items = links.map(l => ({ label: l.label, anomaly: NaN, info: l.info || m.logInfoById.get(l.peerGuid), sub: kind(l.type) + ' · ' + this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid), host: l.crossHost ? l.peerHost : '', peerGuid: l.peerGuid, peerName: this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid) }));
             heading = 'Reconnections';
         } else if (type === 'inject') {
             items = (m.interactions.get(guid) || []).filter(it => passT(it.anomaly)).map(it => ({ label: it.label || it.target, anomaly: it.anomaly, info: it.info, tag: it.type }));
@@ -3734,23 +3740,48 @@ const QueryExecutor = {
             // Two-line layout when there's a descriptor (reconnections): the actual value gets the
             // full width up top, the "shared IP / dropped & ran · peer" indicator sits muted below.
             if (it.sub) {
+                // Reconnection rows get a "Dest" button that centers the graph on the peer process
+                // (the row's own log opens on the row body). The shared Source button is in the head.
+                const destBtn = it.peerGuid ? `<button class="pg-foci-btn" data-focus="${esc(it.peerGuid)}" title="Center the graph on ${esc(String(it.peerName || ''))}">Dest</button>` : '';
                 return `<div class="pg-drawer-row pg-drawer-row2"${dl} title="${val}"><div class="pg-drawer-vline"><span class="pg-drawer-val pg-drawer-val-full">${val}</span>${pill}</div>` +
-                    `<div class="pg-drawer-subline"><span class="pg-drawer-subtag">${esc(String(it.sub))}</span>${hostChip}</div></div>`;
+                    `<div class="pg-drawer-subline"><span class="pg-drawer-subtag">${esc(String(it.sub))}</span>${hostChip}${destBtn}</div></div>`;
             }
             const tag = it.tag ? `<span class="pg-tag">${esc(it.tag)}</span>` : '';
             return `<div class="pg-drawer-row"${dl} title="${val}"><span class="pg-drawer-val">${val}</span>${tag}${hostChip}${pill}</div>`;
         }).join('') || '<div class="pg-drawer-empty">No matching activity.</div>';
+        // For reconnections, a Source button on the head centers the graph on the process these
+        // links belong to (every row shares it), so it isn't repeated per row.
+        const srcBtn = (type === 'link') ? `<button class="pg-foci-btn pg-foci-src" data-focus="${esc(guid)}" title="Center the graph on ${esc(String(proc))}">Source</button>` : '';
         drawer.innerHTML = `<div class="pg-drawer-head"><div class="pg-drawer-title"><span class="pg-drawer-heading">${esc(heading)}</span><span class="pg-drawer-proc" title="${esc(String(proc))}">${esc(this._pgShort(proc))}</span></div>` +
-            `<button class="pg-drawer-close" title="Close">&times;</button></div>` +
+            `${srcBtn}<button class="pg-drawer-close" title="Close">&times;</button></div>` +
             `<div class="pg-drawer-count">${items.length} ${items.length === 1 ? 'entry' : 'entries'}</div>` +
             `<div class="pg-drawer-body">${rows}</div>`;
         drawer.hidden = false;
         requestAnimationFrame(() => drawer.classList.add('open'));
         const mm = host.querySelector('.pg-minimap'); if (mm) mm.style.opacity = '0';
         drawer.querySelector('.pg-drawer-close')?.addEventListener('click', () => this._pgCloseDrawer());
+        drawer.querySelectorAll('[data-focus]').forEach(b => b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._pgFocusNode(b.dataset.focus);
+        }));
         drawer.querySelectorAll('.pg-drawer-row[data-log]').forEach(r => r.addEventListener('click', () => {
             try { this._pgOpenLog(JSON.parse(r.dataset.log)); } catch (_) { }
         }));
+    },
+
+    // Center the graph on a node and pulse it (from the reconnection drawer's Source/Dest buttons).
+    // Falls back to a toast when the target isn't in the current view (e.g. a peer left collapsed).
+    _pgFocusNode(id) {
+        if (!id) return;
+        this._pgCloseDrawer();
+        if (this._pgCenterOn(id, Math.max(0.7, (this._pgVS && this._pgVS.s) || 0.9))) {
+            const host = this._pgGraphHost;
+            const sel = (window.CSS && CSS.escape) ? CSS.escape(id) : id;
+            const el = host && host.querySelector(`.pg-node[data-id="${sel}"]`);
+            if (el) { el.classList.remove('pg-pulse'); void el.offsetWidth; el.classList.add('pg-pulse'); setTimeout(() => el.classList.remove('pg-pulse'), 1300); }
+        } else if (window.Toast) {
+            Toast.show('That process is not in the current view (expand its branch to see it)', 'info');
+        }
     },
     _pgCloseDrawer() {
         const host = this._pgGraphHost;

@@ -28,6 +28,16 @@ const (
 	// reason to drop it -- while true ubiquitous infrastructure (CDNs, resolvers on most hosts)
 	// is still pruned. Consistent with the score's global-rarity term (1 - hosts/total).
 	reconnectHostFraction = "0.5"
+	// reconnectImagePrevalenceMax / reconnectImageFraction: the net/dns rarity gate ALSO prunes by
+	// how many DISTINCT PROCESS IMAGES touch an artifact. Host-prevalence alone is useless on a
+	// single-host (or few-host) dataset -- every artifact is on 1 host and passes -- so benign but
+	// ubiquitous software infrastructure (ecs.office.com, telemetry/update/CDN endpoints, resolved by
+	// dozens of distinct images) floods reconnection and crowds out real shared-IOC bridges. A rare
+	// C2 is touched by very few images; common infra by many. Keep only artifacts on <= max(floor,
+	// fraction * total distinct images). This is the process-diversity analogue of the host gate and
+	// makes rarity work independent of host count.
+	reconnectImagePrevalenceMax = 4
+	reconnectImageFraction      = "0.1"
 	// groupUniqArray cap on the proc_freq.hosts state -- MUST match the DDL (256) or CH
 	// errors code 43 on the merge.
 	procFreqHostsCap = 256
@@ -510,6 +520,10 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 	// reconnects; only near-ubiquitous infrastructure is pruned.
 	totalHosts := fmt.Sprintf("(SELECT length(groupUniqArrayMerge(%d)(hosts)) FROM %s%s)", procFreqHostsCap, procFreq, freqWhereClause)
 	hostGate := fmt.Sprintf("greatest(toUInt64(%d), toUInt64(%s * %s))", reconnectHostPrevalenceMax, reconnectHostFraction, totalHosts)
+	// Process-diversity gate (see reconnectImagePrevalenceMax): prune artifacts touched by many
+	// distinct process images, so ubiquitous software infra is dropped even on single-host data.
+	totalImages := fmt.Sprintf("(SELECT uniqExact(src_image) FROM %s%s)", procFreq, freqWhereClause)
+	imageGate := fmt.Sprintf("greatest(toUInt64(%d), toUInt64(%s * %s))", reconnectImagePrevalenceMax, reconnectImageFraction, totalImages)
 
 	// Common column order for every UNION branch:
 	// recon_type, peer_guid, src_guid, object_id, label, anomaly, peer_image, peer_log_id, peer_ts, peer_fractal
@@ -572,9 +586,9 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 		rareIP := fmt.Sprintf(
 			"SELECT ip, any(guid) AS toucher FROM (SELECT DISTINCT ip, guid FROM (%[1]s) LIMIT %[2]d) AS c WHERE ip GLOBAL IN ("+
 				"SELECT target_norm FROM %[3]s WHERE event_type = 'net_connect'%[4]s GROUP BY target_norm "+
-				"HAVING length(groupUniqArrayMerge(%[5]d)(hosts)) <= %[6]s) GROUP BY ip",
+				"HAVING length(groupUniqArrayMerge(%[5]d)(hosts)) <= %[6]s AND uniqExact(src_image) <= %[7]s) GROUP BY ip",
 			endpointIPs(fmt.Sprintf("IN (%s)", inList), ""), maxReconnectCandidateArtifacts,
-			procFreq, freqFrac, procFreqHostsCap, hostGate)
+			procFreq, freqFrac, procFreqHostsCap, hostGate, imageGate)
 		parts = append(parts, fmt.Sprintf(
 			"SELECT 'net' AS recon_type, l.guid AS peer_guid, any(ri.toucher) AS src_guid, concat('net:', %[1]s) AS object_id, "+
 				"any(l.ip) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
@@ -596,9 +610,9 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 				"FROM %[2]s WHERE %[3]s%[4]s AND fields.process_guid::String IN (%[5]s) AND fields.bifract_category = 'dns_query' "+
 				"AND fields.query::String != ''%[11]s%[12]s LIMIT %[6]d) AS c WHERE q GLOBAL IN ("+
 				"SELECT target_norm FROM %[7]s WHERE event_type = 'dns_query'%[8]s GROUP BY target_norm "+
-				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]s) GROUP BY q",
+				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]s AND uniqExact(src_image) <= %[13]s) GROUP BY q",
 			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, maxReconnectCandidateArtifacts,
-			procFreq, freqFrac, procFreqHostsCap, hostGate, notIP, notInternal)
+			procFreq, freqFrac, procFreqHostsCap, hostGate, notIP, notInternal, imageGate)
 		peerScan := fmt.Sprintf(
 			"SELECT fields.process_guid::String AS peer_guid, %[1]s AS q, fields.image::String AS img, "+
 				"log_id, toString(timestamp) AS ts, fractal_id, fields.computer_name::String AS host FROM %[2]s WHERE %[3]s%[4]s "+
