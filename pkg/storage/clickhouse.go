@@ -1472,20 +1472,6 @@ func (c *ClickHouseClient) QueryLowPriority(ctx context.Context, query string) (
 	return c.Query(ctx, query)
 }
 
-// QueryLowPriorityGlobalJoin runs a low-priority query with distributed_product_mode='global'.
-// A query that nests IN/JOIN subqueries over a distributed table inside another distributed-table
-// query is rejected on a cluster by the default distributed_product_mode='deny' (error 288);
-// 'global' broadcasts the (small) subquery result to every shard (a GLOBAL IN/JOIN) so the query
-// runs and returns correct cluster-wide results. On a single node there are no distributed tables,
-// so the setting is a harmless no-op. Used for pgr()'s cross-tree reconnection lookup.
-func (c *ClickHouseClient) QueryLowPriorityGlobalJoin(ctx context.Context, query string) ([]map[string]interface{}, error) {
-	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
-		"priority":                 5,
-		"distributed_product_mode": "global",
-	}))
-	return c.Query(ctx, query)
-}
-
 func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[string]interface{}, error) {
 	rows, err := c.conn.Query(ctx, query)
 	if err != nil {

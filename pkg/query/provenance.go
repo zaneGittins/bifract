@@ -73,10 +73,10 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		if rErr != nil {
 			log.Printf("[pgr] build reconnection query: %v", rErr)
 		} else if reconSQL != "" {
-			// GlobalJoin: the reconnection lookup nests IN/JOIN subqueries over distributed tables
-			// (logs, proc_freq), which a cluster's default distributed_product_mode='deny' rejects
-			// (error 288). 'global' broadcasts the small subquery result so it runs correctly.
-			reconRows, qErr := h.db.QueryLowPriorityGlobalJoin(ctx, reconSQL)
+			// The reconnection SQL uses explicit GLOBAL IN / GLOBAL JOIN on its cross-distributed-table
+			// subqueries (see BuildReconnectionSQL), so it runs on a cluster without the fragile
+			// distributed_product_mode='global' setting (which errors code 36 on this query's shape).
+			reconRows, qErr := h.db.QueryLowPriority(ctx, reconSQL)
 			if qErr != nil {
 				// Distinguish a cancelled/timed-out request (bail so the caller sees it) from a
 				// genuine reconnection-feature failure (fall back to the base tree).

@@ -503,7 +503,7 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 			"SELECT 'file' AS recon_type, pl.process_guid AS peer_guid, wp.writer AS src_guid, '' AS object_id, "+
 				"pl.image AS label, toFloat64(1.0) AS anomaly, pl.image AS peer_image, pl.log_id AS peer_log_id, "+
 				"toString(pl.timestamp) AS peer_ts, pl.fractal_id AS peer_fractal, pl.computer_name AS peer_host "+
-				"FROM %[1]s AS pl FINAL INNER JOIN (%[2]s) AS wp ON lower(pl.image) = wp.p "+
+				"FROM %[1]s AS pl FINAL GLOBAL INNER JOIN (%[2]s) AS wp ON lower(pl.image) = wp.p "+
 				"WHERE %[3]spl.process_guid NOT IN (%[4]s) ORDER BY pl.process_guid LIMIT %[5]d",
 			procLineage, writtenPaths, plWhere, inList, maxReconnectPeers))
 	}
@@ -523,8 +523,11 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 		endpointIPs := func(guidCond, ipFilter string) string {
 			netExtra, dnsOuter := "", ""
 			if ipFilter != "" {
-				netExtra = " AND fields.dst_ip::String IN (" + ipFilter + ")"
-				dnsOuter = " AND ip IN (" + ipFilter + ")"
+				// GLOBAL IN: ipFilter is a subquery over the DISTRIBUTED logs/proc_freq tables. On a
+				// cluster a plain IN(subquery-over-distributed) is denied (code 288); GLOBAL broadcasts
+				// the small candidate-IP set to every shard. (No-op on a single node.)
+				netExtra = " AND fields.dst_ip::String GLOBAL IN (" + ipFilter + ")"
+				dnsOuter = " AND ip GLOBAL IN (" + ipFilter + ")"
 			}
 			return fmt.Sprintf(
 				"SELECT guid, ip, img, log_id, ts, fractal, host FROM ("+
@@ -538,7 +541,7 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 				logs, timeWin, fracAnd, guidCond, ipv4Re, fmt.Sprintf(externalIPNegTmpl, "ip"), netExtra, dnsOuter)
 		}
 		rareIP := fmt.Sprintf(
-			"SELECT ip, any(guid) AS toucher FROM (SELECT DISTINCT ip, guid FROM (%[1]s) LIMIT %[2]d) AS c WHERE ip IN ("+
+			"SELECT ip, any(guid) AS toucher FROM (SELECT DISTINCT ip, guid FROM (%[1]s) LIMIT %[2]d) AS c WHERE ip GLOBAL IN ("+
 				"SELECT target_norm FROM %[3]s WHERE event_type = 'net_connect'%[4]s GROUP BY target_norm "+
 				"HAVING length(groupUniqArrayMerge(%[5]d)(hosts)) <= %[6]s) GROUP BY ip",
 			endpointIPs(fmt.Sprintf("IN (%s)", inList), ""), maxReconnectCandidateArtifacts,
@@ -547,7 +550,7 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 			"SELECT 'net' AS recon_type, l.guid AS peer_guid, any(ri.toucher) AS src_guid, concat('net:', %[1]s) AS object_id, "+
 				"any(l.ip) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
 				"any(l.ts) AS peer_ts, any(l.fractal) AS peer_fractal, any(l.host) AS peer_host "+
-				"FROM (%[2]s) AS l INNER JOIN (%[3]s) AS ri ON l.ip = ri.ip GROUP BY peer_guid, object_id ORDER BY peer_guid LIMIT %[4]d",
+				"FROM (%[2]s) AS l GLOBAL INNER JOIN (%[3]s) AS ri ON l.ip = ri.ip GROUP BY peer_guid, object_id ORDER BY peer_guid LIMIT %[4]d",
 			abstractExpr("l.ip", AbstractIP), endpointIPs(fmt.Sprintf("NOT IN (%s)", inList), "SELECT ip FROM ("+rareIP+")"), rareIP, maxReconnectPeers))
 	}
 
@@ -559,7 +562,7 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 		rareDom := fmt.Sprintf(
 			"SELECT q, any(t) AS toucher FROM (SELECT DISTINCT %[1]s AS q, fields.process_guid::String AS t "+
 				"FROM %[2]s WHERE %[3]s%[4]s AND fields.process_guid::String IN (%[5]s) AND fields.bifract_category = 'dns_query' "+
-				"AND fields.query::String != ''%[11]s LIMIT %[6]d) AS c WHERE q IN ("+
+				"AND fields.query::String != ''%[11]s LIMIT %[6]d) AS c WHERE q GLOBAL IN ("+
 				"SELECT target_norm FROM %[7]s WHERE event_type = 'dns_query'%[8]s GROUP BY target_norm "+
 				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]s) GROUP BY q",
 			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, maxReconnectCandidateArtifacts,
@@ -568,13 +571,13 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 			"SELECT fields.process_guid::String AS peer_guid, %[1]s AS q, fields.image::String AS img, "+
 				"log_id, toString(timestamp) AS ts, fractal_id, fields.computer_name::String AS host FROM %[2]s WHERE %[3]s%[4]s "+
 				"AND fields.bifract_category = 'dns_query' AND fields.process_guid::String NOT IN (%[5]s) AND fields.query::String != ''%[6]s "+
-				"AND %[1]s IN (%[7]s)",
+				"AND %[1]s GLOBAL IN (%[7]s)",
 			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, notIP, "SELECT q FROM ("+rareDom+")")
 		parts = append(parts, fmt.Sprintf(
 			"SELECT 'dns' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, concat('dns:', l.q) AS object_id, "+
 				"any(l.q) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
 				"any(l.ts) AS peer_ts, any(l.fractal_id) AS peer_fractal, any(l.host) AS peer_host "+
-				"FROM (%[1]s) AS l INNER JOIN (%[2]s) AS ri ON l.q = ri.q GROUP BY peer_guid, object_id ORDER BY peer_guid LIMIT %[3]d",
+				"FROM (%[1]s) AS l GLOBAL INNER JOIN (%[2]s) AS ri ON l.q = ri.q GROUP BY peer_guid, object_id ORDER BY peer_guid LIMIT %[3]d",
 			peerScan, rareDom, maxReconnectPeers))
 	}
 
