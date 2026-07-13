@@ -73,7 +73,10 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		if rErr != nil {
 			log.Printf("[pgr] build reconnection query: %v", rErr)
 		} else if reconSQL != "" {
-			reconRows, qErr := h.db.QueryLowPriority(ctx, reconSQL)
+			// GlobalJoin: the reconnection lookup nests IN/JOIN subqueries over distributed tables
+			// (logs, proc_freq), which a cluster's default distributed_product_mode='deny' rejects
+			// (error 288). 'global' broadcasts the small subquery result so it runs correctly.
+			reconRows, qErr := h.db.QueryLowPriorityGlobalJoin(ctx, reconSQL)
 			if qErr != nil {
 				// Distinguish a cancelled/timed-out request (bail so the caller sees it) from a
 				// genuine reconnection-feature failure (fall back to the base tree).
@@ -132,7 +135,27 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		return fb, nil
 	}
 	survivors := diffuseProvenanceRows(rows, p.Threshold)
-	return emitLiteralEdgeSource(survivors, provenanceColumns, provenanceNumericColumns), nil
+	sql, dropped, overflow := emitLiteralEdgeSource(survivors, provenanceColumns, provenanceNumericColumns, diffuseMaxEmitBytes)
+	if overflow {
+		// The spawn backbone alone exceeds the inline-literal budget (a very large tree). Re-emitting
+		// it as literals would trip ClickHouse's max_query_size (error 62), so fall back to the
+		// streamed per-edge scoring SQL, which carries no literal payload and scales to any size.
+		// Diffusion (propagation) is lost for this one query, but pgr returns the full graph with
+		// per-edge anomaly instead of failing -- and flat/pgraph stay in parity (both use this SQL).
+		log.Printf("[pgr] diffusion payload too large to inline (%d edges); falling back to per-edge scoring for this query", len(survivors))
+		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, opts)
+		if ferr != nil {
+			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
+		}
+		if len(emitPeers) > 0 {
+			fb = parser.AppendReconnectionEdges(fb, emitPeers)
+		}
+		return fb, nil
+	}
+	if dropped > 0 {
+		log.Printf("[pgr] diffusion emitted a bounded subset: dropped %d low-signal leaf edges to fit the query-size limit", dropped)
+	}
+	return sql, nil
 }
 
 // diffuseMaxScanRows bounds the intermediate (pre-threshold) edge set pulled into Go for
@@ -250,13 +273,30 @@ func diffuseProvenanceRows(rows []map[string]interface{}, threshold float64) []m
 	return out
 }
 
-// emitLiteralEdgeSource renders (already bounded) edge rows as a UNION ALL of SELECT literals so
-// the propagated result can serve as a source subquery -- downstream BQL composes over it exactly
-// as it would over the scoring SQL. Numeric columns are emitted typed (toFloat64) so comparisons
-// stay numeric; string columns are escaped for ClickHouse literals. Empty set -> the zero-row stub.
-func emitLiteralEdgeSource(rows []map[string]interface{}, cols, numericCols []string) string {
+// diffuseMaxEmitBytes bounds the generated literal-source SQL. ClickHouse rejects any query whose
+// text exceeds max_query_size (default 262144 bytes) with error 62 before it even parses, so the
+// inline UNION-ALL-of-literals must stay under it -- with headroom for the downstream wrapper
+// (pgraph/table/sort) that composes over this source. See emitLiteralEdgeSource.
+const diffuseMaxEmitBytes = 230000
+
+// emitLiteralEdgeSource renders edge rows as a UNION ALL of SELECT literals so the propagated
+// result can serve as a source subquery -- downstream BQL composes over it exactly as it would
+// over the scoring SQL. Numeric columns are emitted typed (toFloat64) so comparisons stay numeric;
+// string columns are escaped for ClickHouse literals. Empty set -> the zero-row stub.
+//
+// The generated text is BOUNDED to maxBytes so it can never trip ClickHouse's max_query_size
+// (error 62) on a large tree. rows must be spawn-first (diffuseProvenanceRows guarantees this):
+// the spawn backbone (process structure) is always emitted, and low-signal leaf edges beyond the
+// budget are dropped (returned as droppedLeaves so the caller can log it). If the spawn backbone
+// alone exceeds the budget the tree is too large to inline as literals -- overflow=true signals
+// the caller to fall back to streamed per-edge scoring (which carries no literal payload).
+//
+// Column aliases (AS name) are written only on the first UNION member; ClickHouse takes the result
+// column names from the first SELECT and matches the rest positionally, which roughly halves the
+// per-row text so far more of the tree fits under the budget.
+func emitLiteralEdgeSource(rows []map[string]interface{}, cols, numericCols []string, maxBytes int) (sql string, droppedLeaves int, overflow bool) {
 	if len(rows) == 0 {
-		return provenanceEmptyScoreSQL
+		return provenanceEmptyScoreSQL, 0, false
 	}
 	numeric := map[string]bool{}
 	for _, c := range numericCols {
@@ -264,8 +304,9 @@ func emitLiteralEdgeSource(rows []map[string]interface{}, cols, numericCols []st
 	}
 	repl := strings.NewReplacer("\\", "\\\\", "'", "\\'", "\n", "\\n", "\r", "\\r", "\t", "\\t")
 	var sb strings.Builder
-	for i, r := range rows {
-		if i > 0 {
+	emitted := 0
+	emitRow := func(r map[string]interface{}) {
+		if emitted > 0 {
 			sb.WriteString(" UNION ALL ")
 		}
 		sb.WriteString("SELECT ")
@@ -276,17 +317,39 @@ func emitLiteralEdgeSource(rows []map[string]interface{}, cols, numericCols []st
 			if numeric[c] {
 				sb.WriteString("toFloat64(")
 				sb.WriteString(strconv.FormatFloat(reconFloat(r[c]), 'f', -1, 64))
-				sb.WriteString(") AS ")
-				sb.WriteString(c)
+				sb.WriteString(")")
 			} else {
 				sb.WriteString("'")
 				sb.WriteString(repl.Replace(reconString(r[c])))
-				sb.WriteString("' AS ")
+				sb.WriteString("'")
+			}
+			if emitted == 0 { // only the first UNION member names the columns
+				sb.WriteString(" AS ")
 				sb.WriteString(c)
 			}
 		}
+		emitted++
 	}
-	return sb.String()
+
+	spawnBytes := 0
+	for _, r := range rows {
+		if reconString(r["event_type"]) == "spawn" {
+			emitRow(r) // structure is never dropped
+			spawnBytes = sb.Len()
+			continue
+		}
+		// Leaf edge: keep only while under budget. Leaves are sorted most-anomalous-first, so the
+		// dropped tail is the lowest-signal noise.
+		if sb.Len() >= maxBytes {
+			droppedLeaves++
+			continue
+		}
+		emitRow(r)
+	}
+	if spawnBytes > maxBytes {
+		return "", 0, true // backbone alone won't fit; caller falls back to streamed scoring
+	}
+	return sb.String(), droppedLeaves, false
 }
 
 // Reconnection expansion caps (orchestration side; SQL-side caps live in pkg/parser).

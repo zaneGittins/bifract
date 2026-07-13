@@ -276,36 +276,12 @@ func runIngestServer() {
 	otlpHandler := ingest.NewOTLPHandler(ingestHandler)
 	internalIngestHandler := ingest.NewInternalIngestHandler(ingestQueue, config.MaxBodySize, fractalManager, normalizerManager)
 
-	// Cluster-health monitors (active in cluster mode); they write ch.* system events
-	// via the queue and fire notifications, same as the full server.
-	distMonitor := storage.NewDistributionMonitor(dbIngest, pg, func(event string, fields map[string]string) {
-		ingestQueue.WriteSystemEvent(event, fields)
-		switch event {
-		case "ch.distribution.broken_data":
-			go notifWriter.Write("ch.distribution.broken_data", "critical",
-				"ClickHouse Distribution: Broken Data Files",
-				fmt.Sprintf("%s broken file(s) detected", fields["broken_data_files"]))
-		case "ch.distribution.degraded":
-			go notifWriter.Write("ch.distribution.degraded", "warning",
-				"ClickHouse Distribution Queue Degraded",
-				fmt.Sprintf("Error count: %s", fields["error_count"]))
-		}
-	})
-	distMonitor.Start()
-
-	ddlMonitor := storage.NewDDLMonitor(dbIngest, pg, func(event string, fields map[string]string) {
-		switch event {
-		case "ch.ddl_queue.critical":
-			go notifWriter.Write("ch.ddl_queue.critical", "critical",
-				"ClickHouse DDL Queue Critical",
-				fmt.Sprintf("%s pending tasks", fields["pending"]))
-		case "ch.ddl_queue.warning":
-			go notifWriter.Write("ch.ddl_queue.warning", "warning",
-				"ClickHouse DDL Queue Building Up",
-				fmt.Sprintf("%s pending tasks", fields["pending"]))
-		}
-	})
-	ddlMonitor.Start()
+	// The distribution-queue and DDL-queue monitors are NOT run here. They observe
+	// cluster-global state (not an ingest input -- distinct from backpressure, which
+	// the ingest tier does consume via local per-shard system metrics), require the
+	// REMOTE privilege (clusterAllReplicas) that the least-privilege ingest user does
+	// not have, and are already run by the app/control-plane tier -- which keeps
+	// monitoring even when the ingest tier is scaled to 0. See cmd/bifract-server/main.go.
 
 	rateLimiter := ingest.NewRateLimiter(float64(config.IngestRateLimit), config.IngestRateBurst)
 	log.Printf("Ingest ready (workers: %d, queue: %d, rate limit: %d req/s, body limit: %d bytes)",
@@ -382,8 +358,6 @@ func runIngestServer() {
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("Ingest server forced to shutdown: %v", err)
 	}
-	distMonitor.Stop()
-	ddlMonitor.Stop()
 	ingestQueue.Shutdown() // drains pending inserts + the spool tee
 	quotaManager.Stop()
 	if metricsServer != nil {
