@@ -91,18 +91,15 @@ spec:
       merge_tree:
         max_bytes_to_merge_at_max_space_in_pool: {{.CHMaxBytesToMerge}}
 {{- end}}
+    # NOTE: the official ClickHouse operator (clickhouse.com/v1alpha1) defines the
+    # `default` user with a SQL `grants:` section (GRANT ALL ON *.* WITH GRANT OPTION).
+    # GRANT ALL already includes the ACCESS MANAGEMENT privileges, so `default` can
+    # provision the least-privilege ingest user (bifract_ingest) at startup with no
+    # extra config. Do NOT add `access_management` to the default user here: ClickHouse
+    # rejects mixing access-control settings with grants ("Any other access control
+    # settings can't be specified with grants", Code 36/347) and crashes on startup.
+    # (Docker has no SQL-grants default user, so it still uses CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1.)
     extraUsersConfig:
-      users:
-        # Allow the default (admin) user to run SQL access-control statements so the
-        # app can provision the least-privilege ingest user (bifract_ingest) at startup.
-        # Docker uses CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 for the same purpose.
-        # NOTE: this is the official ClickHouse operator (clickhouse.com/v1alpha1), which
-        # renders extraUsersConfig as literal nested YAML -- NOT Altinity's "user/key"
-        # slash paths. It must be nested (users.default.access_management), like profiles
-        # below; a "default/access_management" key becomes a bogus username with no auth
-        # and crashes ClickHouse on startup (Code 36/347).
-        default:
-          access_management: 1
       profiles:
         default:
           distributed_background_insert_batch: 1
