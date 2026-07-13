@@ -2829,13 +2829,18 @@ const QueryExecutor = {
         if (this.currentChart) { this.currentChart.destroy(); this.currentChart = null; }
 
         const limit = (this.chartConfig && this.chartConfig.limit) || 3000;
+        // The queried start node (pgr start guid): centered on first render and ring-highlighted.
+        // Must be set BEFORE the model/fanout are built -- both classify nodes relative to it
+        // (home vs external tree; focus is never collapsed into an aggregate).
+        this._pgFocus = (this.chartConfig && this.chartConfig.focus) || null;
         this._pgModel = this._pgBuildModel((results || []).slice(0, limit));
+        this._pgComputeSevScale();      // adaptive absolute/relative anomaly shading for this graph
+        this._pgExpandedAggs = new Set(); // fan-out aggregate nodes the user expanded
+        this._pgComputeFanout();        // collapse large same-image sibling fans into aggregate nodes
         this._pgCollapsed = new Set();  // process guids whose spawn subtree is folded (+/-)
         this._pgSearch = '';
         this._pgMinAnomaly = 0;
         this._pgVS = { s: 1, x: 0, y: 0 };  // pan/zoom (scale, translateX, translateY)
-        // The queried start node (pgr start guid): centered on first render and ring-highlighted.
-        this._pgFocus = (this.chartConfig && this.chartConfig.focus) || null;
         if (!['graph', 'table'].includes(this._pgView)) this._pgView = 'graph';
 
         // Stage (flex host shared with graph()/mesh()) + sibling graph & tree containers.
@@ -2870,10 +2875,137 @@ const QueryExecutor = {
     },
     _pgAnomalyColor(score) {
         const cv = ThemeManager.getCSSVar;
-        if (isNaN(score)) return cv('--graph-node-neutral') || '#6b7280';
-        if (score >= 0.9) return cv('--error') || '#e5484d';
-        if (score >= 0.7) return cv('--warning') || '#f5a623';
+        const sev = this._pgSev(score);
+        if (sev === 'high') return cv('--error') || '#e5484d';
+        if (sev === 'med') return cv('--warning') || '#f5a623';
         return cv('--graph-node-neutral') || '#6b7280';
+    },
+
+    // Severity bucket (high|med|low|none) for an anomaly score, driven by an ADAPTIVE scale.
+    // Absolute 0.9/0.7 thresholds are the right lens on a mature baseline (common OS activity
+    // sits near 0, only the attack chain lights up). But when diffusion propagates -- or the
+    // baseline is thin -- scores pile up near 1.0 and absolute thresholds paint the whole graph
+    // red, killing all contrast. In that (detected) case we switch to a RELATIVE scale spread
+    // across the graph's own [lo,hi] range so the hottest chain still stands out. The numeric
+    // anomaly_score is never changed (agents/pills still see the real value); only the COLOR
+    // adapts. See _pgComputeSevScale.
+    _pgSev(a) {
+        if (isNaN(a)) return 'none';
+        const s = this._pgSevScale;
+        if (s && s.rel) {
+            const t = (a - s.lo) / (s.span || 1);
+            return t >= 0.66 ? 'high' : t >= 0.33 ? 'med' : 'low';
+        }
+        return a >= 0.9 ? 'high' : a >= 0.7 ? 'med' : 'low';
+    },
+    _pgSevHot(a) { const s = this._pgSev(a); return s === 'high' || s === 'med'; },
+
+    // Decide absolute vs relative shading from the current graph's anomaly distribution. Relative
+    // kicks in only when the scores are genuinely saturated (most of the graph already clears the
+    // absolute 'med' line) AND there is enough spread to relativize -- otherwise absolute stays,
+    // so a normal graph is unaffected.
+    _pgComputeSevScale() {
+        const m = this._pgModel;
+        const xs = [];
+        if (m) {
+            if (m.anomalyByNode) m.anomalyByNode.forEach(v => { if (!isNaN(v)) xs.push(v); });
+            if (m.interactions) m.interactions.forEach(list => list.forEach(it => { if (!isNaN(it.anomaly)) xs.push(it.anomaly); }));
+        }
+        this._pgSevScale = { rel: false, saturated: false };
+        if (xs.length < 6) return;
+        xs.sort((a, b) => a - b);
+        const q = (p) => xs[Math.min(xs.length - 1, Math.max(0, Math.floor(p * (xs.length - 1))))];
+        const lo = xs[0], hi = xs[xs.length - 1], p15 = q(0.15);
+        this._pgSevScale.saturated = p15 >= 0.7; // most of the graph already clears the absolute 'med' line
+        // Engage relative shading when saturated (most of the graph clears the absolute 'med'
+        // line) and there is at least a sliver of spread to relativize. The floor is deliberately
+        // small: a saturated diffuse graph may only span 0.90-1.00, and that 0.02+ spread is
+        // exactly the signal we want to surface. A near-uniform graph (span below the floor) stays
+        // absolute -- everything really is equally anomalous, so painting it all red is honest.
+        if (this._pgSevScale.saturated && hi - lo >= 0.02) this._pgSevScale = { rel: true, saturated: true, lo, span: hi - lo };
+    },
+
+    // Fan-out collapse: when a process spawns many similar children (e.g. 30x conhost.exe), those
+    // benign siblings drown the tree. Collapse each large same-image group into ONE aggregate node
+    // ("image xN"), but NEVER collapse a child that is itself interesting -- anything with its own
+    // subtree, file/net/dns activity, an interaction/reconnection, elevated anomaly, or that is the
+    // focus/external/ghost is always promoted to an individual node. So the common noise folds while
+    // an outlier (the one conhost that spawned cmd.exe) still stands out. This is the CrowdStrike /
+    // Elastic Resolver pattern. Aggregates are expandable (this._pgExpandedAggs).
+    _pgComputeFanout() {
+        const m = this._pgModel;
+        this._pgAgg = new Map();      // parentGuid -> { groups: [meta] }
+        this._pgAggMeta = new Map();  // aggId -> { parent, image, members, count, anomaly, id }
+        if (!m) return;
+        const MIN = 5; // only collapse a genuinely large same-image fan (> MIN members)
+        // In a saturated-but-uniform graph (everything ~1.0, thin baseline) anomaly is not
+        // discriminating, so it must NOT gate promotion -- else nothing collapses. There we rely on
+        // structural signals only. With real spread (relative shading on) or a normal graph, a
+        // genuinely top-band child is kept individual so a hot outlier is never hidden in a fold.
+        const scale = this._pgSevScale || {};
+        const useAnom = !(scale.saturated && !scale.rel);
+        const interesting = (c) => {
+            if (c === this._pgFocus) return true;
+            if (m.ghostProcs && m.ghostProcs.has(c)) return true;
+            if (m.externalProcs && m.externalProcs.has(c)) return true;
+            if ((m.spawnKids.get(c) || []).length) return true;
+            const g = m.leafGroups.get(c);
+            if (g && (g.file.length || g.net.length || g.dns.length)) return true;
+            if ((m.interactions.get(c) || []).length) return true;
+            if ((m.linkInfo && m.linkInfo.get(c) || []).length) return true;
+            if (useAnom && this._pgSev(m.anomalyByNode.get(c)) === 'high') return true;
+            return false;
+        };
+        m.spawnKids.forEach((kids, parent) => {
+            if (kids.length <= MIN) return;
+            const byImage = new Map();
+            kids.forEach(c => {
+                if (interesting(c)) return;
+                const img = m.procLabel.get(c) || c;
+                if (!byImage.has(img)) byImage.set(img, []);
+                byImage.get(img).push(c);
+            });
+            const groups = [];
+            let gi = 0;
+            byImage.forEach((members, img) => {
+                if (members.length <= MIN) return;
+                const aggId = 'pgagg:' + parent + ':' + (gi++);
+                let anomaly = NaN;
+                members.forEach(mm => { const a = m.anomalyByNode.get(mm); if (!isNaN(a) && (isNaN(anomaly) || a > anomaly)) anomaly = a; });
+                const meta = { parent, image: img, members, count: members.length, anomaly, id: aggId };
+                groups.push(meta);
+                this._pgAggMeta.set(aggId, meta);
+            });
+            if (groups.length) this._pgAgg.set(parent, { groups });
+        });
+    },
+
+    // The display children of a process: promoted individual children + one entry per collapsed
+    // aggregate, in the original spawn order. Aggregates are returned as {kind:'agg'} entries
+    // regardless of expansion -- an EXPANDED aggregate keeps its node and reveals its members as
+    // that node's own children (kidsOf[aggId]), so both views stay consistent and re-collapsible.
+    _pgDisplayChildren(guid) {
+        const m = this._pgModel;
+        const kids = (m && m.spawnKids.get(guid)) || [];
+        const agg = this._pgAgg && this._pgAgg.get(guid);
+        if (!agg) return kids.map(id => ({ kind: 'proc', id }));
+        const childAgg = new Map();
+        agg.groups.forEach(g => g.members.forEach(mm => childAgg.set(mm, g.id)));
+        const out = [], emitted = new Set();
+        kids.forEach(id => {
+            const aggId = childAgg.get(id);
+            if (!aggId) { out.push({ kind: 'proc', id }); return; }
+            if (!emitted.has(aggId)) { emitted.add(aggId); out.push({ kind: 'agg', id: aggId }); }
+        });
+        return out;
+    },
+    // Expand/collapse a fan-out aggregate, re-rendering the active view in place.
+    _pgToggleAgg(aggId, container) {
+        if (!this._pgExpandedAggs) this._pgExpandedAggs = new Set();
+        if (this._pgExpandedAggs.has(aggId)) this._pgExpandedAggs.delete(aggId); else this._pgExpandedAggs.add(aggId);
+        if (this._pgView === 'table' && container) { this._pgRenderTree(container); return; }
+        this._pgKeepView = true;
+        if (this._pgGraphHost) this._pgRenderGraph(this._pgGraphHost);
     },
 
     _pgTypeOf(id) {
@@ -2902,6 +3034,7 @@ const QueryExecutor = {
         const procTime = new Map();      // guid -> epoch ms (process creation / first-seen time)
         const procHost = new Map();      // guid -> computer_name (for cross-host reconnection notation)
         const isChild = new Set();       // process guids seen as a spawn child
+        const hasCreation = new Set();   // process guids with their OWN process_creation row (spawn child side)
         const procSet = new Set();
         const ensureProc = (g, lbl) => { procSet.add(g); if (lbl != null && lbl !== '' && !procLabel.get(g)) procLabel.set(g, lbl); else if (!procLabel.has(g)) procLabel.set(g, procLabel.get(g) || null); };
         const push = (map, k, v) => { if (!map.has(k)) map.set(k, []); map.get(k).push(v); };
@@ -2910,18 +3043,23 @@ const QueryExecutor = {
         const bumpAnomaly = (id, a) => { if (isNaN(a)) return; const prev = anomalyByNode.get(id); anomalyByNode.set(id, (prev == null || isNaN(prev)) ? a : Math.max(prev, a)); };
 
         (rows || []).forEach(r => {
-            if (!r.parent || !r.child) return;
+            if (!r.child) return; // a spawn row for a TRUE root has an empty parent; keep it (see below)
             const et = r.event_type || '';
             const anomaly = parseFloat(r.anomaly_score);
             const info = r.log_id ? { log_id: r.log_id, timestamp: r.timestamp, fractal_id: r.fractal_id, _shard_num: r._shard_num } : null;
             const ctype = this._pgTypeOf(r.child);
             if (r.host) { // host rides each row: process rows carry the child's host, leaf rows the parent's
                 if (ctype === 'process') { if (!procHost.get(r.child)) procHost.set(r.child, r.host); }
-                else if (!procHost.get(r.parent)) procHost.set(r.parent, r.host);
+                else if (r.parent && !procHost.get(r.parent)) procHost.set(r.parent, r.host);
             }
             if (ctype === 'process') {
-                ensureProc(r.parent, null);
+                if (r.parent) ensureProc(r.parent, null);
                 ensureProc(r.child, r.label);
+                // A spawn row IS the child's process_creation event (it comes from proc_lineage),
+                // even when the parent_guid is empty. Recording this lets us tell a real root (has
+                // its own creation) from a "ghost" parent that only exists as some child's
+                // parent_guid (its creation event is missing / outside the time range).
+                if (et === 'spawn') hasCreation.add(r.child);
                 if (info) logInfoById.set(r.child, info);
                 bumpAnomaly(r.child, anomaly);
                 // command line + user ride on the child process row (pm-joined server-side).
@@ -2931,9 +3069,11 @@ const QueryExecutor = {
                 }
                 const t = this._pgParseTime(r.timestamp);
                 if (t != null && (et === 'spawn' || !procTime.has(r.child))) procTime.set(r.child, t);
-                if (et === 'spawn') { push(spawnKids, r.parent, r.child); isChild.add(r.child); }
-                else { push(interactions, r.parent, { target: r.child, type: et, anomaly, label: r.label, info, recon: et.indexOf('reconnect') === 0 }); }
+                // Empty parent => a true root: register its creation (above) but draw no spawn edge.
+                if (et === 'spawn') { if (r.parent) { push(spawnKids, r.parent, r.child); isChild.add(r.child); } }
+                else if (r.parent) { push(interactions, r.parent, { target: r.child, type: et, anomaly, label: r.label, info, recon: et.indexOf('reconnect') === 0 }); }
             } else {
+                if (!r.parent) return; // a leaf edge (file/net/dns) must have an owning process
                 ensureProc(r.parent, null);
                 if (!leafGroups.has(r.parent)) leafGroups.set(r.parent, { file: [], net: [], dns: [] });
                 // Dedup the same leaf under one parent: pass-2's leaf edge and a reconnect edge
@@ -2954,6 +3094,15 @@ const QueryExecutor = {
         });
         const roots = [];
         procSet.forEach(g => { if (!isChild.has(g)) roots.push(g); });
+
+        // Ghost processes: referenced only as some child's parent_guid, with no process_creation
+        // event of their own (missing / outside the time range). They are REAL ancestors -- the
+        // lineage link exists -- so we keep them placed as the connecting parent of their children,
+        // but render them distinctly (dashed, "missing creation") so a bare-GUID node is understood
+        // as a data gap, not a mystery. A true root (empty parent_guid) has its own creation and is
+        // NOT a ghost.
+        const ghostProcs = new Set();
+        procSet.forEach(g => { if (!hasCreation.has(g)) ghostProcs.add(g); });
 
         // Tree membership: which spawn root each process descends from. The tree containing the
         // queried start guid (_pgFocus) is "home"; everything under a different root arrived via
@@ -3021,7 +3170,7 @@ const QueryExecutor = {
         }));
 
         return { procLabel, spawnKids, interactions, leafGroups, leafOwners, leafMeta, sharedLeaves, linkInfo,
-            logInfoById, anomalyByNode, procMeta, procTime, procHost, procSet, roots, rootOf, homeRoot, externalProcs };
+            logInfoById, anomalyByNode, procMeta, procTime, procHost, procSet, roots, rootOf, homeRoot, externalProcs, ghostProcs };
     },
 
     // Parse pgr's "YYYY-MM-DD HH:MM:SS.mmm" (UTC, no tz) into epoch ms, or null.
@@ -3083,8 +3232,13 @@ const QueryExecutor = {
         const tally = (a) => { if (!isNaN(a)) { if (a >= 0.7) rareN++; if (a > maxAnom) maxAnom = a; } };
         if (m.leafMeta) m.leafMeta.forEach(v => tally(v.anomaly));
         m.interactions.forEach(list => list.forEach(it => tally(it.anomaly)));
-        const maxSev = maxAnom >= 0.9 ? 'high' : maxAnom >= 0.7 ? 'med' : 'low';
+        const maxSev = this._pgSev(maxAnom);
         const sep = '<span class="graph-stat-separator"></span>';
+        // When scores saturate near the top, shading switches to relative (spread across this
+        // graph's own range) so contrast survives -- flag it so a "grey" node isn't misread as low.
+        const relShade = this._pgSevScale && this._pgSevScale.rel
+            ? sep + `<span class="graph-stat-item pg-stat-rel" title="Anomaly scores are saturated (diffusion or a thin baseline), so node color is shaded RELATIVE to this graph's range to keep contrast. The number on each node is still the true anomaly score.">relative shading</span>`
+            : '';
         bar.innerHTML = `
             <div class="pg-view-toggle" role="tablist">
                 <button class="pg-view-btn${this._pgView === 'graph' ? ' active' : ''}" data-view="graph" title="Diagonal process map">
@@ -3100,6 +3254,7 @@ const QueryExecutor = {
                 `${hostN ? sep + `<span class="graph-stat-item"><span class="graph-stat-count">${hostN}</span> host${hostN === 1 ? '' : 's'}</span>` : ''}` +
                 `${reconN ? sep + `<span class="graph-stat-item pg-stat-recon" title="cross-tree reconnections"><span class="graph-stat-count">${reconN}</span> reconnect${reconN === 1 ? 'ion' : 'ions'}</span>` : ''}` +
                 `${rareN ? sep + `<span class="graph-stat-item pg-stat-rare" title="rare/anomalous events (>= 0.70)"><span class="graph-stat-count">${rareN}</span> rare</span><span class="pg-anom pg-anom-${maxSev}" title="peak anomaly score">${maxAnom.toFixed(2)}</span>` : ''}` +
+                relShade +
             `</div>
             <div class="pg-filters">
                 <div class="pg-search-wrap">
@@ -3118,6 +3273,8 @@ const QueryExecutor = {
                     <div class="pg-legend-title">Nodes</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-focus"></span>Start (queried)</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ext"></span>Reconnected peer (other tree)</div>
+                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-agg"></span>Collapsed similar processes (&times;N)</div>
+                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ghost"></span>Missing creation (parent not in time range)</div>
                     <div class="pg-legend-title">Edges</div>
                     <div class="pg-legend-row"><span class="pg-legend-line pg-ll-spawn"></span>Spawned</div>
                     <div class="pg-legend-row"><span class="pg-legend-line pg-ll-recon"></span>Reconnection (shared IP / domain / dropped file)</div>
@@ -3258,7 +3415,8 @@ const QueryExecutor = {
             inject: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h11m0 0-4-4m4 4-4 4"/><path d="M19 4v16"/></svg>',
             link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15 15 9"/><path d="M10.5 6.5 12 5a4 4 0 0 1 6 6l-1.5 1.5"/><path d="M13.5 17.5 12 19a4 4 0 0 1-6-6l1.5-1.5"/></svg>',
         };
-        const sevOf = (a) => isNaN(a) ? 'none' : (a >= 0.9 ? 'high' : (a >= 0.7 ? 'med' : 'low'));
+        const sevOf = (a) => this._pgSev(a);
+        const hotW = (a) => this._pgSevHot(a) ? 2.4 : 1.5;
 
         // 1) Layout = the spawn backbone as an indented outline: every process gets its OWN
         // row (y = preorder position) and x = depth. All leaves stay visible, labels never
@@ -3266,8 +3424,14 @@ const QueryExecutor = {
         // as an indented column. This is the CrowdStrike/Elastic process-tree construction.
         // Collapse-aware child map: a folded node reports no children, so its subtree is hidden.
         const collapsed = this._pgCollapsed;
+        const expandedAggs = this._pgExpandedAggs || new Set();
+        const aggMeta = this._pgAggMeta || new Map();
         const kidsOf = new Map();
-        m.spawnKids.forEach((kids, p) => kidsOf.set(p, collapsed.has(p) ? [] : kids));
+        // A process reports its DISPLAY children (promoted individuals + aggregate nodes); a folded
+        // node reports none. Each aggregate node in turn reports its members only when expanded, so
+        // a collapsed "conhost.exe x30" is one leaf and an expanded one fans its members beneath it.
+        m.spawnKids.forEach((kids, p) => kidsOf.set(p, collapsed.has(p) ? [] : this._pgDisplayChildren(p).map(c => c.id)));
+        aggMeta.forEach((ag, aggId) => kidsOf.set(aggId, expandedAggs.has(aggId) ? ag.members.slice() : []));
         const rootList = (m.roots.length ? m.roots : Array.from(m.procSet)).slice();
         const pos = this._pgOutlineLayout(rootList, kidsOf);
         if (!pos.size) { host.innerHTML = '<div class="pg-empty">No processes in this graph.</div>'; return; }
@@ -3301,10 +3465,20 @@ const QueryExecutor = {
         const edgeSegs = []; // {x1,y1,x2,y2,a,sev,w,dash}
         m.spawnKids.forEach((kids, parent) => {
             const pp = pos.get(parent); if (!pp) return;
-            kids.forEach(k => {
-                const cp = pos.get(k); if (!cp) return;
-                const a = m.anomalyByNode.get(k);
-                edgeSegs.push({ x1: pp.x, y1: pp.y, x2: cp.x, y2: cp.y, a, sev: sevOf(a), w: (!isNaN(a) && a >= 0.7) ? 2.4 : 1.5, dash: 0 });
+            this._pgDisplayChildren(parent).forEach(c => {
+                const cp = pos.get(c.id); if (!cp) return;
+                const a = c.kind === 'agg' ? (aggMeta.get(c.id) || {}).anomaly : m.anomalyByNode.get(c.id);
+                edgeSegs.push({ x1: pp.x, y1: pp.y, x2: cp.x, y2: cp.y, a, sev: sevOf(a), w: hotW(a), dash: 0 });
+            });
+        });
+        // Aggregate -> member edges, only while the aggregate is expanded.
+        aggMeta.forEach((ag, aggId) => {
+            if (!expandedAggs.has(aggId)) return;
+            const ap = pos.get(aggId); if (!ap) return;
+            ag.members.forEach(mm => {
+                const cp = pos.get(mm); if (!cp) return;
+                const a = m.anomalyByNode.get(mm);
+                edgeSegs.push({ x1: ap.x, y1: ap.y, x2: cp.x, y2: cp.y, a, sev: sevOf(a), w: hotW(a), dash: 0 });
             });
         });
         m.interactions.forEach((list, src) => {
@@ -3312,7 +3486,7 @@ const QueryExecutor = {
             // reconnect_file bridges are folded into the single link edge below (via linkPairs).
             list.filter(it => passT(it.anomaly) && !it.recon).forEach(it => {
                 const tp = pos.get(it.target); if (!tp) return;
-                edgeSegs.push({ x1: sp.x, y1: sp.y, x2: tp.x, y2: tp.y, a: it.anomaly, sev: sevOf(it.anomaly), w: (!isNaN(it.anomaly) && it.anomaly >= 0.7) ? 2.4 : 1.5, dash: 1 });
+                edgeSegs.push({ x1: sp.x, y1: sp.y, x2: tp.x, y2: tp.y, a: it.anomaly, sev: sevOf(it.anomaly), w: hotW(it.anomaly), dash: 1 });
             });
         });
         // One reconnection link per cross-tree pair, no arrow (it aggregates however many shared
@@ -3356,6 +3530,19 @@ const QueryExecutor = {
         const miniBadge = (t, n, guid) => n ? `<span class="pg-mb pg-mb-${t} pg-mb-click" data-chip="${esc(guid)}" data-ctype="${t}" title="${n} ${this._pgLeafNoun(t)} — click to inspect">${ICON[t]}${n}</span>` : '';
         let nodesHtml = '';
         pos.forEach((p, id) => {
+            // Aggregate (fan-out) node: a folded group of similar siblings. Its own +/- reveals or
+            // hides the members (which then lay out as its children).
+            if (aggMeta.has(id)) {
+                const ag = aggMeta.get(id);
+                const aa = ag.anomaly;
+                const exp = expandedAggs.has(id);
+                match.set(id, String(ag.image || '').toLowerCase());
+                const tog = `<button class="pg-toggle${exp ? '' : ' pg-toggle-plus'}" data-aggtoggle="${esc(id)}" title="${exp ? 'Collapse' : 'Expand'} ${ag.count} ${esc(this._pgShort(ag.image))} processes">${exp ? '−' : '+'}</button>`;
+                nodesHtml += `<div class="pg-node pg-node-agg pg-sev-${sevOf(aa)}" data-agg="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${ag.count} similar ${esc(String(ag.image))} processes collapsed${isNaN(aa) ? '' : ' — peak anomaly ' + aa.toFixed(2)}\nclick to ${exp ? 'collapse' : 'expand'}">` +
+                    `<span class="pg-hexwrap"><span class="pg-hex">${ICON.agg}</span>${tog}</span>` +
+                    `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(ag.image))}</span><span class="pg-node-sub"><span class="pg-agg-count" title="${ag.count} collapsed">×${ag.count}</span></span></span></div>`;
+                return;
+            }
             const name = m.procLabel.get(id) || id;
             const a = m.anomalyByNode.get(id);
             const grp = m.leafGroups.get(id) || { file: [], net: [], dns: [] };
@@ -3382,13 +3569,17 @@ const QueryExecutor = {
             const isCol = collapsed.has(id);
             const toggle = kidN ? `<button class="pg-toggle${isCol ? ' pg-toggle-plus' : ''}" data-toggle="${esc(id)}" title="${isCol ? 'Expand' : 'Collapse'} ${kidN} child process${kidN === 1 ? '' : 'es'}">${isCol ? '+' : '−'}</button>` : '';
             const ext = m.externalProcs && m.externalProcs.has(id);
+            const ghost = m.ghostProcs && m.ghostProcs.has(id);
             const host = m.procHost && m.procHost.get(id);
             // Reconnected peers on a different host get a small muted host tag so a cross-computer
             // hop reads at a glance; same-host reconnections stay unadorned.
             const homeHost = this._pgFocus && m.procHost ? m.procHost.get(this._pgFocus) : null;
             const hostLabel = (ext && host && (!homeHost || host !== homeHost)) ? `<span class="pg-node-host" title="host">${esc(host)}</span>` : '';
-            const cls = `pg-node pg-sev-${sevOf(a)}${id === this._pgFocus ? ' pg-focus' : ''}${isCol ? ' pg-collapsed' : ''}${ext ? ' pg-node-external' : ''}`;
-            nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${host ? '\nhost: ' + esc(String(host)) : ''}${ext ? '\nreconnected from another tree' : ''}${info ? '\nclick to view source log' : ''}">` +
+            // A ghost keeps its place as the connecting parent but reads as a data gap: a hollow
+            // (outlined, unfilled) hex and the raw guid (all we know). The "why" lives in the tooltip
+            // and the legend, not a per-node label (which was noisy on a big tree).
+            const cls = `pg-node pg-sev-${sevOf(a)}${id === this._pgFocus ? ' pg-focus' : ''}${isCol ? ' pg-collapsed' : ''}${ext ? ' pg-node-external' : ''}${ghost ? ' pg-node-ghost' : ''}`;
+            nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${ghost ? '\nmissing process creation (not in the selected time range)' : ''}${host ? '\nhost: ' + esc(String(host)) : ''}${ext ? '\nreconnected from another tree' : ''}${info ? '\nclick to view source log' : ''}">` +
                 `<span class="pg-hexwrap"><span class="pg-hex">${ICON.proc}</span>${toggle}</span>` +
                 `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(name))}</span>${hostLabel}${sub}</span></div>`;
         });
@@ -3488,6 +3679,7 @@ const QueryExecutor = {
         host.onclick = (e) => {
             const tog = e.target.closest('.pg-toggle');
             if (tog) { // toggles are point-clicks, never drags -- always honor them
+                if (tog.dataset.aggtoggle) { this._pgToggleAgg(tog.dataset.aggtoggle); return; }
                 const g = tog.dataset.toggle;
                 if (this._pgCollapsed.has(g)) this._pgCollapsed.delete(g); else this._pgCollapsed.add(g);
                 this._pgKeepView = true;
@@ -3498,8 +3690,9 @@ const QueryExecutor = {
             if (chip) { this._pgOpenDrawer(chip.dataset.chip, chip.dataset.ctype); return; }
             if (moved) return;
             const node = e.target.closest('.pg-node'); if (!node) return;
-            // In the graph, a node opens the in-graph detail drawer (keeps the busy canvas
-            // uncluttered). The Table view still uses the global LogDetail panel.
+            // An aggregate node expands/collapses its members; a process node opens the in-graph
+            // detail drawer (keeps the busy canvas uncluttered). Table view uses the global panel.
+            if (node.dataset.agg) { this._pgToggleAgg(node.dataset.agg); return; }
             if (node.dataset.id) this._pgOpenNodeDrawer(node.dataset.id);
         };
         this._pgBindMinimap(host);
@@ -3531,7 +3724,7 @@ const QueryExecutor = {
             items = (grp[type] || []).filter(x => passT(x.anomaly)).map(x => ({ label: x.label, anomaly: x.anomaly, info: x.info }));
             heading = type === 'file' ? 'File activity' : type === 'net' ? 'Network activity' : 'DNS activity';
         }
-        const sevOf = (a) => isNaN(a) ? 'none' : (a >= 0.9 ? 'high' : (a >= 0.7 ? 'med' : 'low'));
+        const sevOf = (a) => this._pgSev(a);
         items.sort((x, y) => (isNaN(y.anomaly) ? 0 : y.anomaly) - (isNaN(x.anomaly) ? 0 : x.anomaly));
         const rows = items.map(it => {
             const dl = it.info ? ` data-log='${esc(JSON.stringify(it.info))}'` : '';
@@ -3582,7 +3775,7 @@ const QueryExecutor = {
         const meta = m.procMeta.get(guid) || {};
         const info = m.logInfoById.get(guid) || null;
         const t = m.procTime.get(guid);
-        const sevOf = (x) => isNaN(x) ? 'none' : (x >= 0.9 ? 'high' : (x >= 0.7 ? 'med' : 'low'));
+        const sevOf = (x) => this._pgSev(x);
         const pill = isNaN(a) ? '' : `<span class="pg-anom pg-anom-${sevOf(a)}">${a.toFixed(2)}</span>`;
         const kv = (k, v) => `<div class="pg-drawer-kv"><span class="pg-kv-k">${esc(k)}</span><span class="pg-kv-v" title="${esc(String(v))}">${esc(String(v))}</span></div>`;
         const summary = [];
@@ -3650,8 +3843,21 @@ const QueryExecutor = {
         ctx.fillRect(0, 0, w, h);
         const scale = Math.min((w - 2 * pad) / b.w, (h - 2 * pad) / b.h);
         const offX = (w - b.w * scale) / 2, offY = (h - b.h * scale) / 2;
-        ctx.fillStyle = cv('--graph-node-neutral') || '#6b7280';
-        pos.forEach(p => { ctx.beginPath(); ctx.arc(offX + p.x * scale, offY + p.y * scale, 1.4, 0, Math.PI * 2); ctx.fill(); });
+        // Dots carry the same anomaly shading as the canvas (adaptive absolute/relative), so the
+        // minimap doubles as a heat overview -- hot clusters are findable at a glance. Cold dots
+        // are drawn first and hot ones last (a touch larger) so severity reads on top.
+        const m = this._pgModel;
+        const neutral = cv('--graph-node-neutral') || '#6b7280';
+        const sevColor = { high: cv('--error') || '#e5484d', med: cv('--warning') || '#f5a623', low: neutral, none: neutral };
+        const rank = { high: 2, med: 1, low: 0, none: 0 };
+        const dots = [];
+        pos.forEach((p, id) => dots.push({ p, sev: this._pgSev(m && m.anomalyByNode ? m.anomalyByNode.get(id) : NaN) }));
+        dots.sort((a, b) => rank[a.sev] - rank[b.sev]);
+        dots.forEach(d => {
+            ctx.fillStyle = sevColor[d.sev] || neutral;
+            const r = d.sev === 'high' ? 2.0 : d.sev === 'med' ? 1.7 : 1.4;
+            ctx.beginPath(); ctx.arc(offX + d.p.x * scale, offY + d.p.y * scale, r, 0, Math.PI * 2); ctx.fill();
+        });
         // Viewport rect: which canvas region is currently visible in the host.
         const vs = this._pgVS;
         const vx = -vs.x / vs.s, vy = -vs.y / vs.s;
@@ -3746,7 +3952,7 @@ const QueryExecutor = {
         };
         const anomalyPill = (a) => {
             if (isNaN(a)) return '<span class="pg-anom-spacer"></span>';
-            const cls = a >= 0.9 ? 'high' : a >= 0.7 ? 'med' : 'low';
+            const cls = this._pgSev(a);
             return `<span class="pg-anom pg-anom-${cls}" title="anomaly ${a.toFixed(2)}">${a.toFixed(2)}</span>`;
         };
         const hl = (text) => {
@@ -3808,7 +4014,11 @@ const QueryExecutor = {
                 const c = meta.cmd ? `<span class="pg-sub-cmd" title="${esc(meta.cmd)}">${esc(meta.cmd)}</span>` : '';
                 subline = `<span class="pg-subline">${u}${h}${c}</span>`;
             }
-            const nameCell = `<span class="pg-name-wrap"><span class="pg-name" title="${esc(m.procLabel.get(guid) || guid)}">${hl(m.procLabel.get(guid) || guid)}${cyc ? ' <em class="pg-muted">(cycle)</em>' : ''}${descHtml}</span>${subline}</span>`;
+            const ghost = m.ghostProcs && m.ghostProcs.has(guid);
+            // Ghost rows read as a data gap via the muted mono name + row style (see legend), not a
+            // per-row text tag. The tooltip still explains on hover.
+            const nameTitle = ghost ? 'missing process creation (not in the selected time range): ' + (m.procLabel.get(guid) || guid) : (m.procLabel.get(guid) || guid);
+            const nameCell = `<span class="pg-name-wrap"><span class="pg-name" title="${esc(nameTitle)}">${hl(m.procLabel.get(guid) || guid)}${cyc ? ' <em class="pg-muted">(cycle)</em>' : ''}${descHtml}</span>${subline}</span>`;
             // Time (absolute-aware) + gap since parent.
             const t = m.procTime.get(guid);
             const pt = parentGuid != null ? m.procTime.get(parentGuid) : null;
@@ -3819,9 +4029,10 @@ const QueryExecutor = {
                 timeCell = `<span class="pg-time-cell">${delta ? `<span class="pg-delta" title="time after parent">${delta}</span>` : ''}<span class="pg-time" title="${esc(full)}">${esc(this._pgFmtTime(t))}</span></span>`;
             }
             const a = m.anomalyByNode.get(guid);
-            const rowSev = !isNaN(a) && a >= 0.9 ? ' pg-row-crit' : (!isNaN(a) && a >= 0.7 ? ' pg-row-warn' : '');
+            // No per-row severity accent: the anomaly pill already carries severity, and a colored
+            // left border on every elevated row was visually noisy on a large tree.
             const focusCls = guid === this._pgFocus ? ' pg-focus-row' : '';
-            rows.push(`<div class="pg-row pg-proc${cyc ? ' pg-cycle' : ''}${rowSev}${focusCls}" data-guid="${esc(guid)}"${dl}>${guidesHtml(anc, isLast)}${chev}<span class="pg-icon pg-icon-proc">${ICON.gear}</span>${nameCell}${badges}${timeCell}${anomalyPill(a)}</div>`);
+            rows.push(`<div class="pg-row pg-proc${cyc ? ' pg-cycle' : ''}${ghost ? ' pg-proc-ghost' : ''}${focusCls}" data-guid="${esc(guid)}"${dl}>${guidesHtml(anc, isLast)}${chev}<span class="pg-icon pg-icon-proc">${ICON.gear}</span>${nameCell}${badges}${timeCell}${anomalyPill(a)}</div>`);
             if (cyc || collapsed) return;
             seen.add(guid);
             // rendered children: interactions, drilled/matching artifact leaves, child processes
@@ -3831,7 +4042,11 @@ const QueryExecutor = {
                 : ['file', 'net', 'dns'].filter(t => this._pgLeafOpen.has(guid + ':' + t) && groups[t].length);
             const leafItems = [];
             openTypes.forEach(t => (term ? groups[t].filter(mLeaf) : groups[t]).forEach(x => leafItems.push({ t, x })));
-            const kids = term ? kidsAll.filter(k => computeMatch(k, new Set())) : kidsAll;
+            // Fan-out: collapse large same-image sibling groups into aggregate rows. Search bypasses
+            // it (every match must be reachable), so in term mode we expand to individual children.
+            const childEntries = term
+                ? kidsAll.filter(k => computeMatch(k, new Set())).map(id => ({ kind: 'proc', id }))
+                : this._pgDisplayChildren(guid);
             // Reconnection links drill: shared cross-tree artifact -> the peer process.
             const linkList = (m.linkInfo && m.linkInfo.get(guid)) || [];
             const linkItems = (!term && this._pgLeafOpen.has(guid + ':link')) ? linkList : [];
@@ -3839,7 +4054,7 @@ const QueryExecutor = {
             // are surfaced through the link drill instead, so they aren't shown twice.
             const shownInter = interactions.filter(it => !it.recon);
             const childAnc = anc.slice(); if (childAnc.length) childAnc[childAnc.length - 1] = !isLast;
-            const total = shownInter.length + leafItems.length + linkItems.length + kids.length;
+            const total = shownInter.length + leafItems.length + linkItems.length + childEntries.length;
             let idx = 0;
             shownInter.forEach(it => {
                 const dl2 = it.info ? ` data-log='${esc(JSON.stringify(it.info))}'` : '';
@@ -3853,7 +4068,20 @@ const QueryExecutor = {
                 const hostChip = l.crossHost && l.peerHost ? `<span class="pg-host-chip" title="on another host">${esc(String(l.peerHost))}</span>` : '';
                 rows.push(`<div class="pg-row pg-leaf pg-link-item" data-peer="${esc(l.peerGuid)}" title="Reconnects to ${esc(String(peerName))}${l.crossHost ? ' on ' + esc(String(l.peerHost)) : ''} — click to jump">${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-link">${licon}</span><span class="pg-name">${hl(l.label)}</span><span class="pg-link-peer">${hl(peerName)}</span>${hostChip}<span class="pg-tag pg-tag-recon">${kindTxt}</span></div>`);
             });
-            kids.forEach(k => walk(k, childAnc.concat([false]), ++idx === total, guid));
+            childEntries.forEach(c => {
+                const isLastEntry = ++idx === total;
+                const cAnc = childAnc.concat([false]);
+                if (c.kind === 'proc') { walk(c.id, cAnc, isLastEntry, guid); return; }
+                // Aggregate row: collapsed fan of similar siblings, expandable in place.
+                const ag = this._pgAggMeta.get(c.id); if (!ag) return;
+                const exp = this._pgExpandedAggs && this._pgExpandedAggs.has(c.id);
+                const chevA = `<button class="pg-chev${exp ? '' : ' pg-collapsed'}" data-aggtoggle="${esc(c.id)}" title="${exp ? 'Collapse' : 'Expand'} ${ag.count} similar processes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>`;
+                rows.push(`<div class="pg-row pg-agg-row" data-agg="${esc(c.id)}" title="${ag.count} similar ${esc(String(ag.image))} processes — click to ${exp ? 'collapse' : 'expand'}">${guidesHtml(cAnc, isLastEntry)}${chevA}<span class="pg-icon pg-icon-agg">${ICON.gear}</span><span class="pg-name-wrap"><span class="pg-name">${hl(ag.image)} <span class="pg-agg-count">×${ag.count}</span></span></span>${anomalyPill(ag.anomaly)}</div>`);
+                if (exp) {
+                    const mAnc = cAnc.slice(); mAnc[mAnc.length - 1] = !isLastEntry;
+                    ag.members.forEach((mm, j) => walk(mm, mAnc.concat([false]), j === ag.members.length - 1, guid));
+                }
+            });
             seen.delete(guid);
         };
         const rootsAll = m.roots.length ? m.roots : Array.from(m.procSet);
@@ -3894,6 +4122,8 @@ const QueryExecutor = {
             if (open && row.dataset.log) { try { this._pgOpenLog(JSON.parse(row.dataset.log)); } catch (e) { /* ignore */ } }
         };
         container.querySelectorAll('.pg-row').forEach(row => row.addEventListener('click', () => {
+            // An aggregate row expands/collapses its collapsed similar-sibling members in place.
+            if (row.classList.contains('pg-agg-row')) { if (row.dataset.agg) this._pgToggleAgg(row.dataset.agg, container); return; }
             // A link drill item jumps to (and flashes) its peer process row.
             if (row.dataset.peer) {
                 const pr = rowByGuid(row.dataset.peer);

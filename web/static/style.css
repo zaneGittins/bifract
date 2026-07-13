@@ -10908,6 +10908,14 @@ input[type="number"]::-webkit-outer-spin-button {
 .pg-stat-recon { color: color-mix(in srgb, var(--pg-recon, #a855f7) 80%, var(--text-secondary)); }
 .pg-stat-rare .graph-stat-count { color: var(--warning); }
 .pg-stat-rare { color: color-mix(in srgb, var(--warning) 70%, var(--text-secondary)); }
+/* Relative-shading badge: subtle, dashed underline so it reads as an informational note. */
+.pg-stat-rel {
+    color: var(--text-muted);
+    font-size: 11px;
+    letter-spacing: .02em;
+    border-bottom: 1px dashed color-mix(in srgb, var(--text-muted) 55%, transparent);
+    cursor: help;
+}
 .graph-stats .pg-anom { margin-left: 4px; padding: 1px 6px; font-size: 10.5px; }
 
 /* Legend popover: anchored under the "?" button, dismissed on outside click. */
@@ -10928,6 +10936,8 @@ input[type="number"]::-webkit-outer-spin-button {
 .pg-sw-low { background: var(--pg-process); }
 .pg-sw-focus { background: var(--accent-primary); }
 .pg-sw-ext { background: var(--pg-process); box-shadow: 0 0 0 2px var(--pg-recon, #a855f7); }
+.pg-sw-agg { background: var(--pg-agg); box-shadow: 2px 2px 0 -0.5px color-mix(in srgb, var(--pg-agg) 50%, transparent); }
+.pg-sw-ghost { background: transparent; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--text-muted) 70%, transparent); }
 .pg-legend-line { flex: 0 0 20px; width: 20px; height: 0; border-top: 2px solid var(--graph-node-neutral, #6b7280); }
 .pg-ll-recon { border-top: 2px dashed var(--pg-recon, #a855f7); }
 .pg-legend-note { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border-color); color: var(--text-muted); font-size: 10.5px; }
@@ -16927,7 +16937,27 @@ div.vis-tooltip {
 .pg-sev-high .pg-hex { background: var(--error); }
 .pg-sev-med  .pg-hex { background: var(--warning); color: var(--bg-primary); }
 .pg-sev-low .pg-hex, .pg-sev-none .pg-hex { background: var(--pg-process); }
-.pg-node-agg .pg-hex { background: var(--pg-agg); }
+/* Aggregate (fan-out) node: keep the anomaly-driven hex colour (a hot group must still read),
+   but stack a shadow behind it to imply "many" and carry a count badge. */
+.pg-node-agg .pg-hexwrap { position: relative; }
+.pg-node-agg .pg-hex {
+    box-shadow: 3px 3px 0 -1px color-mix(in srgb, var(--pg-agg) 70%, transparent),
+                6px 6px 0 -2px color-mix(in srgb, var(--pg-agg) 45%, transparent),
+                0 2px 7px rgba(0,0,0,.4);
+}
+.pg-agg-count {
+    display: inline-flex; align-items: center;
+    font-size: 10.5px; font-weight: 800; font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    padding: 0 5px; border-radius: 6px;
+    background: color-mix(in srgb, var(--pg-agg) 22%, transparent);
+    border: 1px solid color-mix(in srgb, var(--pg-agg) 45%, transparent);
+}
+.pg-icon-agg { color: var(--pg-agg); }
+/* Aggregate row (table): slightly recessed so it reads as a grouped fold, not a real process. */
+.pg-row.pg-agg-row { cursor: pointer; }
+.pg-row.pg-agg-row .pg-name { color: var(--text-secondary); font-style: italic; }
+.pg-row.pg-agg-row:hover { background: color-mix(in srgb, var(--pg-agg) 10%, transparent); }
 
 .pg-node-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .pg-node-name {
@@ -16948,6 +16978,27 @@ div.vis-tooltip {
     padding: 1px 4px; border: 1px solid color-mix(in srgb, var(--pg-recon, #a855f7) 55%, transparent); border-radius: 4px;
 }
 .pg-recon-note { font-size: 11.5px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
+
+/* Ghost process: real ancestor whose process_creation event is missing (outside the window /
+   not ingested). Kept placed as the connecting parent, but rendered as a data gap: a HOLLOW
+   hex (grey outline, empty centre) vs a solid-filled normal node, so a bare-GUID node reads as
+   "unknown". The outline is a filled outer hex with an inner ::after cut to the page background
+   (a real border can't be used -- the hexagon clip-path would clip it away). */
+.pg-node-ghost .pg-hex {
+    background: color-mix(in srgb, var(--text-muted) 70%, transparent);
+    color: var(--text-muted);
+    box-shadow: none;
+    position: relative;
+}
+.pg-node-ghost .pg-hex::after {
+    content: ''; position: absolute; inset: 2.5px;
+    clip-path: polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0% 50%);
+    background: var(--bg-primary);
+}
+.pg-node-ghost .pg-hex svg { position: relative; z-index: 1; opacity: .85; }
+.pg-node-ghost .pg-node-name { color: var(--text-muted); font-weight: 500; font-family: var(--font-mono, monospace); font-size: 11px; }
+/* Table row for a ghost: muted mono name so it reads as inferred, not a captured process. */
+.pg-row.pg-proc-ghost .pg-name { color: var(--text-muted); font-family: var(--font-mono, monospace); font-size: 12px; }
 
 .pg-mb {
     display: inline-flex; align-items: center; gap: 2px;
