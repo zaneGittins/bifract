@@ -63,7 +63,17 @@ func mustConnectPostgres(config Config) *storage.PostgresClient {
 // clients and health-checks both (no schema init). Returns an error so the ingest tier
 // can retry through the startup window before its least-privilege user exists; the full
 // server uses mustConnectClickHouse (Fatalf).
-func connectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient, err error) {
+// connectClickHouse dials ClickHouse and returns the query pool (all shards) and the
+// ingest pool. createDB selects whether the cluster path bootstraps the database
+// (CREATE DATABASE IF NOT EXISTS): true for the app/control-plane tier (which owns
+// schema provisioning and connects with an admin identity), false for the ingest tier
+// (whose least-privilege user cannot create databases and connects to the already
+// provisioned one). Ignored in single-node mode, which never creates the database.
+func connectClickHouse(config Config, createDB bool) (db, dbIngest *storage.ClickHouseClient, err error) {
+	newCluster := storage.NewClickHouseClusterClient
+	if !createDB {
+		newCluster = storage.NewClickHouseClusterClientConnectOnly
+	}
 	queryPool := storage.DefaultQueryPoolConfig()
 	if config.CHQueryMaxConns > 0 {
 		queryPool.MaxOpenConns = config.CHQueryMaxConns
@@ -85,7 +95,7 @@ func connectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient, e
 	if config.ClickHouseCluster != "" && config.ClickHouseHosts != "" {
 		// Cluster mode: connect to multiple hosts.
 		hosts := strings.Split(config.ClickHouseHosts, ",")
-		db, err = storage.NewClickHouseClusterClient(
+		db, err = newCluster(
 			hosts, config.ClickHousePort,
 			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
 			config.ClickHouseCluster, queryPool,
@@ -100,7 +110,7 @@ func connectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient, e
 		if config.ClickHouseWriteHost != "" {
 			ingestHosts = []string{config.ClickHouseWriteHost}
 		}
-		dbIngest, err = storage.NewClickHouseClusterClient(
+		dbIngest, err = newCluster(
 			ingestHosts, config.ClickHousePort,
 			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
 			config.ClickHouseCluster, ingestPool,
@@ -149,7 +159,8 @@ func connectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient, e
 // mustConnectClickHouse is the full-server wrapper (Fatalf on failure).
 func mustConnectClickHouse(config Config) (db, dbIngest *storage.ClickHouseClient) {
 	log.Println("Connecting to ClickHouse...")
-	db, dbIngest, err := connectClickHouse(config)
+	// App/control-plane tier: owns schema provisioning, so it bootstraps the database.
+	db, dbIngest, err := connectClickHouse(config, true)
 	if err != nil {
 		log.Fatalf("Failed to connect to ClickHouse: %v", err)
 	}
@@ -167,7 +178,9 @@ func connectIngestDBsWithRetry(config Config) (*storage.PostgresClient, *storage
 	for {
 		pg, perr := connectPostgres(config)
 		if perr == nil {
-			db, dbIngest, cherr := connectClickHouse(config)
+			// Ingest tier: connect-only. Its least-privilege user cannot create the
+			// database, and the app tier has already provisioned it.
+			db, dbIngest, cherr := connectClickHouse(config, false)
 			if cherr == nil {
 				log.Println("Connected to PostgreSQL and ClickHouse (ingest identity)")
 				return pg, db, dbIngest

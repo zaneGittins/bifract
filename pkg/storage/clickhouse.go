@@ -979,7 +979,26 @@ var validClusterName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 // NewClickHouseClusterClient creates a cluster-aware client that connects to
 // multiple ClickHouse nodes. The driver handles failover across the provided
 // addresses but does not load-balance writes; use logs_distributed for that.
+//
+// It bootstraps the target database (CREATE DATABASE IF NOT EXISTS) because on a
+// fresh cluster the operator does not pre-create it. This is a schema-provisioning
+// concern and requires a privileged (admin) identity -- only the app/control-plane
+// tier should use this. The data-plane ingest tier, whose least-privilege user
+// cannot (and must not) create databases, uses NewClickHouseClusterClientConnectOnly.
 func NewClickHouseClusterClient(hosts []string, port int, database, user, password, cluster string, pool ClickHousePoolConfig) (*ClickHouseClient, error) {
+	return newClickHouseClusterClient(hosts, port, database, user, password, cluster, pool, true)
+}
+
+// NewClickHouseClusterClientConnectOnly is like NewClickHouseClusterClient but does
+// NOT create the database -- it connects to an already-provisioned one. Use it from
+// the ingest tier: its least-privilege ClickHouse user (INSERT-only, no CREATE
+// DATABASE) would otherwise fail the bootstrap with code 497, and by the time the
+// ingest tier connects the app tier has already created the database.
+func NewClickHouseClusterClientConnectOnly(hosts []string, port int, database, user, password, cluster string, pool ClickHousePoolConfig) (*ClickHouseClient, error) {
+	return newClickHouseClusterClient(hosts, port, database, user, password, cluster, pool, false)
+}
+
+func newClickHouseClusterClient(hosts []string, port int, database, user, password, cluster string, pool ClickHousePoolConfig, createDB bool) (*ClickHouseClient, error) {
 	if !validClusterName.MatchString(cluster) {
 		return nil, fmt.Errorf("invalid cluster name %q: must be alphanumeric, hyphens, or underscores only", cluster)
 	}
@@ -992,22 +1011,24 @@ func NewClickHouseClusterClient(hosts []string, port int, database, user, passwo
 			addrs[i] = fmt.Sprintf("%s:%d", h, port)
 		}
 	}
-	// In cluster mode the target database may not exist yet (the operator
-	// doesn't pre-create it). Connect to "default" first and ensure the
-	// database is created locally. ON CLUSTER is omitted to avoid timeout on
-	// slow/initializing clusters; table replication via ReplicatedMergeTree
-	// and Keeper/ZooKeeper handles cluster-wide synchronization.
-	bootstrap, err := openClickHouseConn(addrs, "default", user, password, pool)
-	if err != nil {
-		return nil, fmt.Errorf("bootstrap connection: %w", err)
-	}
-	createDB := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s",
-		EscCHStr(database))
-	if execErr := bootstrap.Exec(context.Background(), createDB); execErr != nil {
+	if createDB {
+		// In cluster mode the target database may not exist yet (the operator
+		// doesn't pre-create it). Connect to "default" first and ensure the
+		// database is created locally. ON CLUSTER is omitted to avoid timeout on
+		// slow/initializing clusters; table replication via ReplicatedMergeTree
+		// and Keeper/ZooKeeper handles cluster-wide synchronization.
+		bootstrap, err := openClickHouseConn(addrs, "default", user, password, pool)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap connection: %w", err)
+		}
+		createDBStmt := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s",
+			EscCHStr(database))
+		if execErr := bootstrap.Exec(context.Background(), createDBStmt); execErr != nil {
+			bootstrap.Close()
+			return nil, fmt.Errorf("create database %s: %w", database, execErr)
+		}
 		bootstrap.Close()
-		return nil, fmt.Errorf("create database %s: %w", database, execErr)
 	}
-	bootstrap.Close()
 
 	conn, err := openClickHouseConn(addrs, database, user, password, pool)
 	if err != nil {
