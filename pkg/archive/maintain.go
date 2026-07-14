@@ -55,6 +55,39 @@ const maintainScanConcurrency = 4
 // immediately re-collide with a writer on a regular commit cadence.
 const maintainCommitConflictBackoff = 2 * time.Second
 
+// MaintainOutcome records how a maintain invocation concluded, persisted
+// alongside its stats (see WriteMaintainStatus/WriteMaintainOutcome) so the
+// admin UI can distinguish a healthy pass from a crash or a skip, instead of
+// an invocation that wrote nothing looking identical to "ran, nothing to do".
+type MaintainOutcome string
+
+const (
+	MaintainOutcomeOK              MaintainOutcome = "ok"
+	MaintainOutcomeError           MaintainOutcome = "error"
+	MaintainOutcomeSkippedLocked   MaintainOutcome = "skipped_locked"
+	MaintainOutcomeSkippedDisabled MaintainOutcome = "skipped_disabled"
+)
+
+// MaintainStats summarizes one Maintain() pass, for logging and for
+// persisting to the archive_maintain_status row the admin UI's System ->
+// Archive panel reads (see WriteMaintainStatus). CandidateBytes is the total
+// backlog compaction.Analyze found across every table this pass reached --
+// it under-reports total system-wide backlog both when the pass-wide budget
+// runs out before every table gets a turn (Analyze is only run while there's
+// still budget to spend) and when a table's LoadTable or Analyze call itself
+// errors (that table's backlog silently isn't measured this pass either);
+// treat it as "backlog found among tables this pass could inspect," not a
+// precise system-wide total.
+type MaintainStats struct {
+	Tables         int
+	Compacted      int
+	GroupsFailed   int
+	Expired        int
+	CandidateBytes int64
+	CompactedBytes int64
+	Duration       time.Duration
+}
+
 // Maintain runs compaction + snapshot expiry across every fractal's Iceberg
 // table. It is intended to run as a SINGLETON (k8s CronJob with concurrencyPolicy
 // Forbid, or leader-elected via a Postgres advisory lock) so concurrent passes
@@ -63,7 +96,8 @@ const maintainCommitConflictBackoff = 2 * time.Second
 //
 // Orphan-file cleanup is not yet included (iceberg-go v0.6.0 exposes no stable
 // standalone entrypoint); roll-on-size + snapshot expiry keep growth bounded.
-func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) error {
+func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainStats, error) {
+	start := time.Now()
 	ns := catalog.ToIdentifier(Namespace)
 
 	var idents []icetable.Identifier
@@ -75,7 +109,7 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) error {
 		idents = append(idents, ident)
 	}
 
-	var compacted, failedGroups, expired int
+	stats := MaintainStats{Tables: len(idents)}
 	budget := opts.ByteBudget
 	for i, ident := range idents {
 		name := ident[len(ident)-1]
@@ -91,17 +125,19 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) error {
 			if err != nil {
 				log.Printf("[Maintain] load %s: %v", name, err)
 			} else {
-				did, n, failed, err := compactTable(ctx, c, ident, tbl, share, opts.CommitRetries)
+				res, err := compactTable(ctx, c, ident, tbl, share, opts.CommitRetries)
 				if err != nil {
 					log.Printf("[Maintain] compact %s: %v", name, err)
 				} else {
-					if did {
-						compacted++
-						budget -= n
+					stats.CandidateBytes += res.candidateBytes
+					if res.compactedBytes > 0 {
+						stats.Compacted++
+						budget -= res.compactedBytes
+						stats.CompactedBytes += res.compactedBytes
 					}
-					if failed > 0 {
-						failedGroups += failed
-						log.Printf("[Maintain] compact %s: %d group(s) failed after retries, skipped", name, failed)
+					if res.failedGroups > 0 {
+						stats.GroupsFailed += res.failedGroups
+						log.Printf("[Maintain] compact %s: %d group(s) failed after retries, skipped", name, res.failedGroups)
 					}
 				}
 			}
@@ -111,12 +147,26 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) error {
 			if err := expireSnapshots(ctx, c, ident, opts); err != nil {
 				log.Printf("[Maintain] expire %s: %v", name, err)
 			} else {
-				expired++
+				stats.Expired++
 			}
 		}
 	}
-	log.Printf("[Maintain] done: %d tables, %d compacted, %d groups failed, %d expired", len(idents), compacted, failedGroups, expired)
-	return nil
+	stats.Duration = time.Since(start)
+	log.Printf("[Maintain] done: %d tables, %d compacted, %d groups failed, %d expired, %d/%d backlog bytes compacted, took %s",
+		stats.Tables, stats.Compacted, stats.GroupsFailed, stats.Expired, stats.CompactedBytes, stats.CandidateBytes, stats.Duration)
+	return stats, nil
+}
+
+// compactResult summarizes one table's compaction attempt within a Maintain
+// pass: how much of its backlog Analyze found (candidateBytes, regardless of
+// budget), how much actually got compacted (compactedBytes > 0 doubles as
+// "something in this table was compacted" -- no separate bool, since nothing
+// ever sets one without the other), and how many selected groups exhausted
+// their retries and were skipped rather than committed.
+type compactResult struct {
+	compactedBytes int64
+	failedGroups   int
+	candidateBytes int64
 }
 
 // compactTable merges small data files within each partition into larger
@@ -129,18 +179,20 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) error {
 // even if it alone exceeds budget (a single oversized group -- e.g. one
 // flagged purely by delete-file count, independent of size -- must not stall
 // forever), which is logged so that safety valve is visible rather than
-// silent. Returns whether anything was compacted, how many bytes it covered
-// (so the caller can debit its own running budget), and how many selected
-// groups exhausted their retries and were skipped rather than committed. No-op
-// when the plan is empty (files already large enough - the common case given
-// roll-on-size at write time).
-func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, budget int64, retries int) (bool, int64, int, error) {
+// silent. No-op when the plan is empty (files already large enough - the
+// common case given roll-on-size at write time).
+func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, budget int64, retries int) (compactResult, error) {
 	plan, err := compaction.Analyze(ctx, tbl, compaction.DefaultConfig())
 	if err != nil {
-		return false, 0, 0, err
+		return compactResult{}, err
 	}
 	if len(plan.Groups) == 0 {
-		return false, 0, 0, nil
+		return compactResult{}, nil
+	}
+
+	var candidateBytes int64
+	for _, g := range plan.Groups {
+		candidateBytes += g.TotalSizeBytes
 	}
 
 	var selected []compaction.Group
@@ -157,9 +209,7 @@ func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 			ident[len(ident)-1], groupBytes, budget)
 	}
 
-	var compactedAny bool
-	var totalBytes int64
-	var failed int
+	res := compactResult{candidateBytes: candidateBytes}
 	for _, g := range selected {
 		group := icetable.CompactionTaskGroup{
 			PartitionKey:   g.PartitionKey,
@@ -170,13 +220,12 @@ func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 		tbl = updated
 		if err != nil {
 			log.Printf("[Maintain] compact %s: group %s: %v", ident[len(ident)-1], g.PartitionKey, err)
-			failed++
+			res.failedGroups++
 			continue
 		}
-		compactedAny = true
-		totalBytes += g.TotalSizeBytes
+		res.compactedBytes += g.TotalSizeBytes
 	}
-	return compactedAny, totalBytes, failed, nil
+	return res, nil
 }
 
 // compactGroup rewrites and commits a single compaction group, retrying

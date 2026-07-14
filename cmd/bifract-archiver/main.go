@@ -140,14 +140,11 @@ func maintainCmd() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	if !cfg.Enabled {
-		if v := archiveEnabledFromDB(cfg.PGDSN); !v {
-			log.Println("maintain: archiving disabled; nothing to do")
-			return
-		}
-	}
-	archive.ApplyBackendEnv(cfg.Obj)
 
+	// Opened before the disabled/lock checks (not just before cat.Maintain)
+	// so every exit path below -- including a skip, not only a successful
+	// pass -- can record its outcome; a run that never touches Postgres at
+	// all would otherwise be indistinguishable from one that's healthy.
 	db, err := sql.Open("postgres", cfg.PGDSN)
 	if err != nil {
 		log.Fatalf("open postgres: %v", err)
@@ -155,23 +152,41 @@ func maintainCmd() {
 	defer db.Close()
 
 	ctx := context.Background()
+
+	if !cfg.Enabled {
+		if v := archiveEnabledFromDB(cfg.PGDSN); !v {
+			log.Println("maintain: archiving disabled; nothing to do")
+			_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeSkippedDisabled, nil)
+			return
+		}
+	}
+	archive.ApplyBackendEnv(cfg.Obj)
+
 	var locked bool
 	if err := db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", int64(maintainAdvisoryLock)).Scan(&locked); err != nil {
+		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
 		log.Fatalf("advisory lock: %v", err)
 	}
 	if !locked {
 		log.Println("maintain: another maintenance pass is running; exiting")
+		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeSkippedLocked, nil)
 		return
 	}
 	defer db.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", int64(maintainAdvisoryLock))
 
 	cat, err := archive.NewCatalog(ctx, "bifract", cfg.PGDSN, cfg.Obj)
 	if err != nil {
+		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
 		log.Fatalf("open catalog: %v", err)
 	}
 	log.Println("maintain: compaction + snapshot expiry ...")
-	if err := cat.Maintain(ctx, archive.DefaultMaintainOptions()); err != nil {
+	stats, err := cat.Maintain(ctx, archive.DefaultMaintainOptions())
+	if err != nil {
+		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
 		log.Fatalf("maintain failed: %v", err)
+	}
+	if err := archive.WriteMaintainStatus(ctx, db, stats); err != nil {
+		log.Printf("maintain: failed to write status: %v", err)
 	}
 }
 

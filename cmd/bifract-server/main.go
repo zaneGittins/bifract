@@ -807,6 +807,85 @@ func main() {
 				_ = pg.QueryRow(r.Context(),
 					"SELECT updated_at, last_commit_at, fractal_count, total_bytes, total_records FROM archive_status WHERE id = 1").
 					Scan(&updatedAt, &lastCommit, &fractalCount, &totalBytes, &totalRecords)
+
+				// Maintenance (compaction + snapshot expiry) CronJob's last-run summary --
+				// a separate freshness signal from the archiver heartbeat above, since
+				// this is a periodic batch job rather than an always-on process. last_run_at
+				// is only set on a successful pass; last_attempt_at covers every invocation
+				// (crash or lock-contention/disabled skip included), which is what "is this
+				// still on schedule" should key off -- otherwise a crashed or skipped run
+				// looks identical to a healthy one that had nothing to do.
+				var maintainLastRun, maintainLastAttempt sql.NullTime
+				var maintainOutcome string
+				var maintainError sql.NullString
+				var maintainDurationMs int64
+				var maintainTables, maintainCompacted, maintainGroupsFailed, maintainExpired int
+				var maintainCandidateBytes, maintainCompactedBytes int64
+				_ = pg.QueryRow(r.Context(),
+					`SELECT last_run_at, last_attempt_at, last_outcome, last_error, duration_ms, tables_seen, compacted,
+					        groups_failed, expired, candidate_bytes, compacted_bytes
+					 FROM archive_maintain_status WHERE id = 1`).
+					Scan(&maintainLastRun, &maintainLastAttempt, &maintainOutcome, &maintainError, &maintainDurationMs,
+						&maintainTables, &maintainCompacted, &maintainGroupsFailed, &maintainExpired,
+						&maintainCandidateBytes, &maintainCompactedBytes)
+				maintainResp := map[string]interface{}{
+					"outcome":         maintainOutcome,
+					"duration_ms":     maintainDurationMs,
+					"tables_seen":     maintainTables,
+					"compacted":       maintainCompacted,
+					"groups_failed":   maintainGroupsFailed,
+					"expired":         maintainExpired,
+					"candidate_bytes": maintainCandidateBytes,
+					"compacted_bytes": maintainCompactedBytes,
+					// on_schedule mirrors archiver_alive's freshness check above, sized to
+					// the maintain CronJob's hourly schedule instead of the archiver's ~30s
+					// heartbeat interval. false with no prior attempt at all (maintainOutcome
+					// == "never") reads correctly as "not yet run" rather than "overdue".
+					"on_schedule": maintainLastAttempt.Valid && time.Since(maintainLastAttempt.Time) < maintainStaleAfter,
+				}
+				if maintainError.Valid {
+					maintainResp["error"] = maintainError.String
+				}
+				addTimeIfValid(maintainResp, "last_run_at", maintainLastRun)
+				addTimeIfValid(maintainResp, "last_attempt_at", maintainLastAttempt)
+
+				// Recent-run history so the panel can show a trend (backlog shrinking,
+				// growing, or runs being skipped) instead of only the latest data point.
+				var maintainHistory []map[string]interface{}
+				if rows, herr := pg.Query(r.Context(),
+					`SELECT ran_at, outcome, duration_ms, tables_seen, compacted, groups_failed, expired,
+					        candidate_bytes, compacted_bytes, error
+					 FROM archive_maintain_history ORDER BY ran_at DESC LIMIT 10`); herr == nil {
+					defer rows.Close()
+					for rows.Next() {
+						var ranAt sql.NullTime
+						var outcome string
+						var durationMs int64
+						var tables, compacted, groupsFailed, expired int
+						var candidateBytes, compactedBytes int64
+						var runErr sql.NullString
+						if err := rows.Scan(&ranAt, &outcome, &durationMs, &tables, &compacted, &groupsFailed,
+							&expired, &candidateBytes, &compactedBytes, &runErr); err != nil {
+							continue
+						}
+						entry := map[string]interface{}{
+							"outcome":         outcome,
+							"duration_ms":     durationMs,
+							"tables_seen":     tables,
+							"compacted":       compacted,
+							"groups_failed":   groupsFailed,
+							"expired":         expired,
+							"candidate_bytes": candidateBytes,
+							"compacted_bytes": compactedBytes,
+						}
+						if runErr.Valid {
+							entry["error"] = runErr.String
+						}
+						addTimeIfValid(entry, "ran_at", ranAt)
+						maintainHistory = append(maintainHistory, entry)
+					}
+				}
+				maintainResp["history"] = maintainHistory
 				// Prefer this process's own spool (single-container/full-server); in a
 				// split deployment the spool lives in the ingest tier, so fall back to the
 				// state it publishes to Postgres.
@@ -830,10 +909,9 @@ func main() {
 					"total_bytes":    totalBytes,
 					"total_records":  totalRecords,
 					"archiver_alive": updatedAt.Valid && time.Since(updatedAt.Time) < 90*time.Second,
+					"maintain":       maintainResp,
 				}
-				if lastCommit.Valid {
-					resp["last_commit_at"] = lastCommit.Time.UTC()
-				}
+				addTimeIfValid(resp, "last_commit_at", lastCommit)
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(resp)
 			})
@@ -2005,6 +2083,15 @@ func loadConfig() Config {
 	return config
 }
 
+// addTimeIfValid sets m[key] to t's UTC time if valid, omitting the key
+// entirely when NULL -- shared by the archive/maintain status blocks in the
+// system/archive handler so the omit-on-NULL convention lives in one place.
+func addTimeIfValid(m map[string]interface{}, key string, t sql.NullTime) {
+	if t.Valid {
+		m[key] = t.Time.UTC()
+	}
+}
+
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -2042,6 +2129,12 @@ func getEnvBool(key string, defaultValue bool) bool {
 // archiveEnabledSetting is the Postgres settings key that toggles archiving at
 // runtime. Shared by the server tee and the archiver sidecar so they agree.
 const archiveEnabledSetting = "archive_enabled"
+
+// maintainStaleAfter bounds how old the maintain CronJob's last attempt can be
+// before the admin UI flags it as overdue (system/archive's "on_schedule").
+// The job runs hourly; ~1.7x that schedule gives slack for a run that's
+// simply taking a while without flagging every normal pass as stale.
+const maintainStaleAfter = 100 * time.Minute
 
 // parseArchiveTime accepts the restore window bounds from the admin UI. It
 // prefers RFC3339 (what the client sends after converting to UTC) but tolerates

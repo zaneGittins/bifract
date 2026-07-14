@@ -332,6 +332,100 @@ const Performance = {
         this.setText('archiveRecords', d.total_records ? `${Number(d.total_records).toLocaleString()} records` : '');
         this.setText('archiveLastCommit', d.last_commit_at ? this.timeAgo(d.last_commit_at) : 'never');
 
+        // Maintenance (compaction + snapshot expiry) -- a periodic batch job's
+        // last-run summary, distinct from the archiver's always-on heartbeat above.
+        // outcome is 'never' until the CronJob has run at least once; on_schedule
+        // reflects last_attempt_at (every invocation, including crashes/skips)
+        // against the job's known hourly cadence, so a broken or skipped run is
+        // visibly distinct from a healthy one that simply had nothing to do.
+        const m = d.maintain || {};
+        const hasRunOnce = !!m.outcome && m.outcome !== 'never';
+
+        const mDot = document.getElementById('maintainStatusDot');
+        const mLabel = document.getElementById('maintainStatusLabel');
+        if (mDot && mLabel) {
+            if (!hasRunOnce) {
+                mDot.className = 'status-dot status-auto-disabled';
+                mLabel.textContent = 'Never run';
+            } else if (!m.on_schedule) {
+                mDot.className = 'status-dot status-auto-disabled';
+                mLabel.textContent = 'Overdue';
+            } else if (m.outcome === 'ok') {
+                mDot.className = 'status-dot status-enabled';
+                mLabel.textContent = 'Healthy';
+            } else if (m.outcome === 'error') {
+                mDot.className = 'status-dot status-disabled';
+                mLabel.textContent = 'Last attempt failed';
+            } else {
+                mDot.className = 'status-dot status-disabled';
+                mLabel.textContent = 'Last attempt skipped';
+            }
+        }
+
+        this.setText('maintainLastRun', m.last_run_at ? this.timeAgo(m.last_run_at) : 'never');
+        this.setText('maintainDuration', m.last_run_at ? `took ${this.formatDuration(m.duration_ms)}` : '');
+        this.setText('maintainTables', hasRunOnce ? `${m.compacted || 0} / ${m.tables_seen || 0} compacted` : '--');
+        this.setText('maintainExpired', m.expired ? `${m.expired} expired` : '');
+        this.setText('maintainGroupsFailed', String(m.groups_failed || 0));
+        const groupsFailedEl = document.getElementById('maintainGroupsFailed');
+        if (groupsFailedEl) {
+            groupsFailedEl.className = 'perf-metric-value' + (m.groups_failed ? ' perf-metric-warning' : '');
+        }
+        const candidateBytes = m.candidate_bytes || 0;
+        const compactedBytes = m.compacted_bytes || 0;
+        const hasBacklog = candidateBytes > 0;
+        this.setText('maintainBacklog', hasRunOnce
+            ? (hasBacklog ? `${this.formatBytes(compactedBytes)} / ${this.formatBytes(candidateBytes)}` : 'caught up')
+            : '--');
+        this.setText('maintainBacklogSub', hasBacklog
+            ? `${Math.round((compactedBytes / candidateBytes) * 100)}% of this pass's backlog`
+            : '');
+
+        const maintainHint = document.getElementById('maintainHint');
+        if (maintainHint) {
+            let msg = '';
+            if (!hasRunOnce) {
+                msg = 'Maintenance has not run yet.';
+            } else if (!m.on_schedule) {
+                msg = `Last attempt was ${this.timeAgo(m.last_attempt_at)} -- overdue for the hourly schedule. Check the CronJob.`;
+            } else if (m.outcome === 'error') {
+                msg = `Last attempt failed: ${m.error || 'unknown error'}`;
+            } else if (m.outcome === 'skipped_locked') {
+                msg = 'Last attempt was skipped -- another maintenance pass was still running.';
+            } else if (m.outcome === 'skipped_disabled') {
+                msg = 'Last attempt was skipped -- archiving is disabled.';
+            } else if (m.groups_failed > 0) {
+                msg = `${m.groups_failed} group(s) failed after retries on the last pass -- usually a table under heavy concurrent write load; should clear on a later run.`;
+            } else if (hasBacklog) {
+                msg = 'Backlog is larger than one pass\'s budget -- still catching up over multiple runs.';
+            }
+            maintainHint.textContent = msg;
+            maintainHint.style.display = msg ? '' : 'none';
+        }
+
+        const historyBody = document.getElementById('maintainHistoryBody');
+        if (historyBody) {
+            const history = m.history || [];
+            if (history.length === 0) {
+                historyBody.innerHTML = '<tr><td colspan="5" class="restore-empty-cell">No maintenance runs recorded yet.</td></tr>';
+            } else {
+                historyBody.innerHTML = history.map(h => {
+                    const hCandidate = h.candidate_bytes || 0;
+                    const hCompacted = h.compacted_bytes || 0;
+                    const backlogText = hCandidate > 0
+                        ? `${this.formatBytes(hCompacted)} / ${this.formatBytes(hCandidate)}`
+                        : (h.outcome === 'ok' ? 'caught up' : '--');
+                    return `<tr>
+                        <td>${this.timeAgo(h.ran_at)}</td>
+                        <td>${this.maintainChip(h.outcome)}</td>
+                        <td>${h.outcome === 'ok' ? `${h.compacted || 0} / ${h.tables_seen || 0}` : '--'}</td>
+                        <td>${backlogText}</td>
+                        <td>${h.outcome === 'ok' ? this.formatDuration(h.duration_ms) : '--'}</td>
+                    </tr>`;
+                }).join('');
+            }
+        }
+
         // Contextual hint.
         if (hint) {
             let msg = '';
@@ -638,6 +732,21 @@ const Performance = {
     statusChip(status) {
         const label = { pending: 'Queued', running: 'Running', succeeded: 'Done', failed: 'Failed', canceled: 'Canceled' }[status] || status;
         return `<span class="restore-chip restore-chip-${status}">${label}</span>`;
+    },
+
+    // Reuses the restore-jobs status chip styling (succeeded/failed/pending)
+    // for maintain-run outcomes, since there's no dedicated chip palette for
+    // this new, smaller set of states.
+    maintainChip(outcome) {
+        const map = {
+            ok: { cls: 'succeeded', label: 'OK' },
+            error: { cls: 'failed', label: 'Error' },
+            skipped_locked: { cls: 'pending', label: 'Skipped (busy)' },
+            skipped_disabled: { cls: 'pending', label: 'Skipped (disabled)' },
+            never: { cls: 'pending', label: 'Never run' },
+        };
+        const entry = map[outcome] || { cls: 'pending', label: outcome || 'Unknown' };
+        return `<span class="restore-chip restore-chip-${entry.cls}">${entry.label}</span>`;
     },
 
     onRestoreFilterChange() {

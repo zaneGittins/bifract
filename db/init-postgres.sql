@@ -1838,6 +1838,51 @@ CREATE TABLE IF NOT EXISTS archive_status (
 );
 INSERT INTO archive_status (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
+-- Archive maintenance status (single row): the bifract-archiver `maintain`
+-- CronJob updates this after each pass, so the admin UI can show whether
+-- compaction is running, keeping pace, or falling behind without requiring
+-- kubectl logs. Distinct from archive_status (the always-on archiver's
+-- liveness heartbeat): this is a periodic batch job's last-run summary, a
+-- different freshness signal. Server reads it; the maintain CronJob is the
+-- sole writer.
+-- last_run_at is set only on a successful pass; last_attempt_at covers every
+-- invocation (success, crash, or lock-contention skip) since that's what
+-- staleness/liveness checks should key off -- a crashed or skipped run must
+-- not look identical to "ran, nothing to do".
+CREATE TABLE IF NOT EXISTS archive_maintain_status (
+    id              SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    last_run_at     TIMESTAMPTZ,
+    last_attempt_at TIMESTAMPTZ,
+    last_outcome    TEXT    NOT NULL DEFAULT 'never',
+    last_error      TEXT,
+    duration_ms     BIGINT  NOT NULL DEFAULT 0,
+    tables_seen     INTEGER NOT NULL DEFAULT 0,
+    compacted       INTEGER NOT NULL DEFAULT 0,
+    groups_failed   INTEGER NOT NULL DEFAULT 0,
+    expired         INTEGER NOT NULL DEFAULT 0,
+    candidate_bytes BIGINT  NOT NULL DEFAULT 0,
+    compacted_bytes BIGINT  NOT NULL DEFAULT 0
+);
+INSERT INTO archive_maintain_status (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- Per-run history (bounded to the most recent rows by the writer, see
+-- appendMaintainHistory) so the admin UI can show a trend across multiple
+-- passes instead of only ever the single latest data point.
+CREATE TABLE IF NOT EXISTS archive_maintain_history (
+    id              BIGSERIAL PRIMARY KEY,
+    ran_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    outcome         TEXT    NOT NULL,
+    duration_ms     BIGINT  NOT NULL DEFAULT 0,
+    tables_seen     INTEGER NOT NULL DEFAULT 0,
+    compacted       INTEGER NOT NULL DEFAULT 0,
+    groups_failed   INTEGER NOT NULL DEFAULT 0,
+    expired         INTEGER NOT NULL DEFAULT 0,
+    candidate_bytes BIGINT  NOT NULL DEFAULT 0,
+    compacted_bytes BIGINT  NOT NULL DEFAULT 0,
+    error           TEXT
+);
+CREATE INDEX IF NOT EXISTS archive_maintain_history_ran_at_idx ON archive_maintain_history (ran_at DESC);
+
 -- Async restore jobs: the admin UI enqueues one row per (fractal, window); the
 -- bifract-archiver run process claims (FOR UPDATE SKIP LOCKED) and executes it,
 -- replaying Iceberg data back into the ClickHouse logs table and streaming

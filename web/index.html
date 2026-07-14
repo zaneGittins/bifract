@@ -405,6 +405,61 @@
                                 <p class="perf-section-hint" id="archiveHint" style="margin-top: 14px; display:none;"></p>
                             </div>
 
+                            <div class="perf-section">
+                                <div class="perf-section-header">
+                                    <h3>Maintenance</h3>
+                                    <span class="perf-section-hint">Compaction + snapshot expiry, run on a schedule (not always-on)</span>
+                                </div>
+
+                                <div class="archive-status-row">
+                                    <div class="archive-status-state">
+                                        <span class="status-dot" id="maintainStatusDot"></span>
+                                        <span class="archive-status-label" id="maintainStatusLabel">&mdash;</span>
+                                    </div>
+                                </div>
+
+                                <div class="perf-metrics-grid" style="margin-top: 16px;">
+                                    <div class="perf-metric-card">
+                                        <div class="perf-metric-label">Last Run</div>
+                                        <div class="perf-metric-value" id="maintainLastRun">&mdash;</div>
+                                        <div class="perf-metric-sub" id="maintainDuration"></div>
+                                    </div>
+                                    <div class="perf-metric-card">
+                                        <div class="perf-metric-label">Tables</div>
+                                        <div class="perf-metric-value" id="maintainTables">&mdash;</div>
+                                        <div class="perf-metric-sub" id="maintainExpired"></div>
+                                    </div>
+                                    <div class="perf-metric-card">
+                                        <div class="perf-metric-label">Groups Failed</div>
+                                        <div class="perf-metric-value" id="maintainGroupsFailed">&mdash;</div>
+                                    </div>
+                                    <div class="perf-metric-card">
+                                        <div class="perf-metric-label">Backlog Compacted</div>
+                                        <div class="perf-metric-value" id="maintainBacklog">&mdash;</div>
+                                        <div class="perf-metric-sub" id="maintainBacklogSub"></div>
+                                    </div>
+                                </div>
+
+                                <p class="perf-section-hint" id="maintainHint" style="margin-top: 14px; display:none;"></p>
+
+                                <div class="restore-table-wrap" style="margin-top: 16px;">
+                                    <table class="restore-table">
+                                        <thead>
+                                            <tr>
+                                                <th>When</th>
+                                                <th>Outcome</th>
+                                                <th>Compacted</th>
+                                                <th>Backlog</th>
+                                                <th>Duration</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="maintainHistoryBody">
+                                            <tr><td colspan="5" class="restore-empty-cell">No maintenance runs recorded yet.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
                             <div class="perf-section archive-restore-section">
                                 <div class="perf-section-header restore-header">
                                     <div class="restore-header-text">
