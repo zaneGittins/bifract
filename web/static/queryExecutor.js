@@ -795,7 +795,10 @@ const QueryExecutor = {
 
         if (window.FieldStats) FieldStats.onResults();
 
-        const shouldShowTimeline = !this.fieldOrder || this.fieldOrder.includes('timestamp');
+        // pgraph() is a full-canvas process map, not a time series -- suppress the time histogram
+        // (its output columns include timestamp, so it wouldn't be hidden by the field-order rule
+        // alone) to give the graph the full screen height, like piechart and other chart outputs.
+        const shouldShowTimeline = (!this.fieldOrder || this.fieldOrder.includes('timestamp')) && this.chartType !== 'pgraph';
         if (window.Timeline) {
             if (shouldShowTimeline && data.histogram) {
                 const histTimeRange = {
@@ -3405,6 +3408,7 @@ const QueryExecutor = {
     },
 
     _pgRenderGraph(host) {
+        this._pgCloseContextMenu();
         const m = this._pgModel;
         const esc = Utils.escapeHtml;
         const min = this._pgMinAnomaly || 0;
@@ -3585,7 +3589,7 @@ const QueryExecutor = {
             // (outlined, unfilled) hex and the raw guid (all we know). The "why" lives in the tooltip
             // and the legend, not a per-node label (which was noisy on a big tree).
             const cls = `pg-node pg-sev-${sevOf(a)}${id === this._pgFocus ? ' pg-focus' : ''}${isCol ? ' pg-collapsed' : ''}${ext ? ' pg-node-external' : ''}${ghost ? ' pg-node-ghost' : ''}`;
-            nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${ghost ? '\nmissing process creation (not in the selected time range)' : ''}${host ? '\nhost: ' + esc(String(host)) : ''}${ext ? '\nreconnected from another tree' : ''}${info ? '\nclick to view source log' : ''}">` +
+            nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${ghost ? '\nmissing process creation (not in the selected time range)' : ''}${host ? '\nhost: ' + esc(String(host)) : ''}${ext ? '\nreconnected from another tree' : ''}\nclick to inspect · right-click for actions">` +
                 `<span class="pg-hexwrap"><span class="pg-hex">${ICON.proc}</span>${toggle}</span>` +
                 `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(name))}</span>${hostLabel}${sub}</span></div>`;
         });
@@ -3650,6 +3654,8 @@ const QueryExecutor = {
     // desync zoom/pan.
     _pgBindGraphInput(host) {
         host.onwheel = (e) => {
+            // Let the drawer (and minimap) scroll natively instead of zooming the graph underneath.
+            if (e.target.closest('.pg-drawer') || e.target.closest('.pg-minimap')) return;
             e.preventDefault();
             const vs = this._pgVS;
             const rect = host.getBoundingClientRect();
@@ -3666,7 +3672,7 @@ const QueryExecutor = {
             moved = false; // reset here so a click after a pan is never mistaken for a drag
             // Don't pan/capture when the press starts on a node, the minimap, or the drawer --
             // capturing the pointer would swallow their own clicks (close button, rows).
-            if (e.target.closest('.pg-node') || e.target.closest('.pg-minimap') || e.target.closest('.pg-drawer')) return;
+            if (e.target.closest('.pg-node') || e.target.closest('.pg-minimap') || e.target.closest('.pg-drawer') || e.target.closest('.pg-ctxmenu')) return;
             dragging = true; sx = e.clientX; sy = e.clientY; ox = this._pgVS.x; oy = this._pgVS.y;
             host.classList.add('pg-panning');
             try { host.setPointerCapture(e.pointerId); } catch (_) { }
@@ -3701,7 +3707,61 @@ const QueryExecutor = {
             if (node.dataset.agg) { this._pgToggleAgg(node.dataset.agg); return; }
             if (node.dataset.id) this._pgOpenNodeDrawer(node.dataset.id);
         };
+        // Right-click a process node for actions (Analyze from here / details / copy guid). Left-click
+        // still inspects; right = act. On the background, let the native menu through.
+        host.oncontextmenu = (e) => {
+            const node = e.target.closest('.pg-node[data-id]');
+            if (!node) return;
+            e.preventDefault();
+            this._pgShowContextMenu(e.clientX, e.clientY, node.dataset.id);
+        };
         this._pgBindMinimap(host);
+    },
+
+    // Right-click context menu on a process node. Analyze from here now lives here (removed from the
+    // detail drawer) plus quick details/copy. Closes on outside click, Escape, wheel, or re-render.
+    _pgShowContextMenu(clientX, clientY, guid) {
+        const host = this._pgGraphHost; if (!host) return;
+        this._pgCloseContextMenu();
+        const esc = Utils.escapeHtml, m = this._pgModel;
+        const name = (m && m.procLabel.get(guid)) || guid;
+        const menu = document.createElement('div');
+        menu.className = 'pg-ctxmenu';
+        menu.innerHTML =
+            `<div class="pg-ctx-title" title="${esc(String(name))}">${esc(this._pgShort(name))}</div>` +
+            `<button class="pg-ctx-item" data-act="analyze"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19 19 5M9 5h10v10"/></svg>Analyze from here</button>` +
+            `<button class="pg-ctx-item" data-act="details"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>Open details</button>` +
+            `<button class="pg-ctx-item" data-act="copy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy process GUID</button>`;
+        host.appendChild(menu);
+        const hr = host.getBoundingClientRect();
+        let x = clientX - hr.left, y = clientY - hr.top;
+        if (x + menu.offsetWidth > host.clientWidth) x = host.clientWidth - menu.offsetWidth - 4;
+        if (y + menu.offsetHeight > host.clientHeight) y = host.clientHeight - menu.offsetHeight - 4;
+        menu.style.left = Math.max(4, x) + 'px'; menu.style.top = Math.max(4, y) + 'px';
+        this._pgCtxMenu = menu;
+        menu.querySelectorAll('.pg-ctx-item').forEach(b => b.addEventListener('click', () => {
+            const act = b.dataset.act;
+            this._pgCloseContextMenu();
+            if (act === 'analyze') this._pgAnalyzeFrom(guid);
+            else if (act === 'details') this._pgOpenNodeDrawer(guid);
+            else if (act === 'copy') {
+                const done = () => { if (window.Toast) Toast.show('GUID copied', 'info'); };
+                if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(guid).then(done).catch(() => this._pgCopyFallback(guid, done));
+                else this._pgCopyFallback(guid, done);
+            }
+        }));
+        this._pgCtxOutside = (ev) => { if (this._pgCtxMenu && !this._pgCtxMenu.contains(ev.target)) this._pgCloseContextMenu(); };
+        this._pgCtxKey = (ev) => { if (ev.key === 'Escape') this._pgCloseContextMenu(); };
+        setTimeout(() => {
+            document.addEventListener('mousedown', this._pgCtxOutside, true);
+            document.addEventListener('keydown', this._pgCtxKey);
+            host.addEventListener('wheel', this._pgCloseContextMenu.bind(this), { passive: true, once: true });
+        }, 0);
+    },
+    _pgCloseContextMenu() {
+        if (this._pgCtxMenu) { this._pgCtxMenu.remove(); this._pgCtxMenu = null; }
+        if (this._pgCtxOutside) { document.removeEventListener('mousedown', this._pgCtxOutside, true); this._pgCtxOutside = null; }
+        if (this._pgCtxKey) { document.removeEventListener('keydown', this._pgCtxKey); this._pgCtxKey = null; }
     },
 
     // Slide-out drawer: the file/network/dns (or interaction) values for one process, shown
@@ -3716,13 +3776,68 @@ const QueryExecutor = {
         const min = this._pgMinAnomaly || 0;
         const passT = (a) => isNaN(a) || a >= min;
         const proc = m.procLabel.get(guid) || guid;
-        let items, heading;
+        const openDrawer = (heading, count, body, bind) => {
+            drawer.innerHTML = `<div class="pg-drawer-head"><div class="pg-drawer-title"><span class="pg-drawer-heading">${esc(heading)}</span>` +
+                `<span class="pg-drawer-proc" title="${esc(String(proc))}">${esc(this._pgShort(proc))}</span></div>` +
+                `<button class="pg-drawer-close" title="Close">&times;</button></div>` +
+                `<div class="pg-drawer-count">${count}</div><div class="pg-drawer-body">${body}</div>`;
+            drawer.hidden = false;
+            requestAnimationFrame(() => drawer.classList.add('open'));
+            const mm = host.querySelector('.pg-minimap'); if (mm) mm.style.opacity = '0';
+            drawer.querySelector('.pg-drawer-close')?.addEventListener('click', () => this._pgCloseDrawer());
+            if (bind) bind(drawer);
+        };
+
+        // Reconnections: PEER-CENTRIC cards (EDR "related process" pattern). One card per linked
+        // process (the story = "you're connected to THIS process"), listing the shared IOCs as
+        // evidence. The whole card navigates to the peer in the graph; each IOC opens its own log.
+        // No stuck-on buttons -- the card is the action, so there's no "row vs button" ambiguity.
         if (type === 'link') {
-            const links = (m.linkInfo && m.linkInfo.get(guid)) || [];
+            const RICON = {
+                net: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11a4 4 0 0 1 0 8H9m0 0 3-3m-3 3 3 3"/></svg>',
+                dns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18"/></svg>',
+                file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
+            };
             const kind = (t) => t === 'file' ? 'dropped & ran' : t === 'net' ? 'shared IP' : t === 'dns' ? 'shared domain' : 'shared';
-            items = links.map(l => ({ label: l.label, anomaly: NaN, info: l.info || m.logInfoById.get(l.peerGuid), sub: kind(l.type) + ' · ' + this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid), host: l.crossHost ? l.peerHost : '', peerGuid: l.peerGuid, peerName: this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid) }));
-            heading = 'Reconnections';
-        } else if (type === 'inject') {
+            const byPeer = new Map();
+            ((m.linkInfo && m.linkInfo.get(guid)) || []).forEach(l => {
+                let pr = byPeer.get(l.peerGuid);
+                if (!pr) { pr = { peerGuid: l.peerGuid, name: this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid), host: l.peerHost, crossHost: !!l.crossHost, iocs: [] }; byPeer.set(l.peerGuid, pr); }
+                if (l.crossHost) pr.crossHost = true;
+                pr.iocs.push({ type: l.type, label: l.label, info: l.info });
+            });
+            const peers = Array.from(byPeer.values());
+            const cards = peers.map(pr => {
+                const hostChip = pr.crossHost && pr.host ? `<span class="pg-recon-host" title="on another computer">${esc(String(pr.host))}</span>` : '';
+                const iocs = pr.iocs.map(i => {
+                    const dl = i.info ? ` data-log='${esc(JSON.stringify(i.info))}'` : '';
+                    const v = esc(String(i.label || ''));
+                    return `<div class="pg-recon-ioc"${dl} title="${v}"><span class="pg-recon-ioc-ico pg-ico-${i.type}">${RICON[i.type] || RICON.net}</span>` +
+                        `<span class="pg-recon-ioc-val">${v}</span><span class="pg-recon-ioc-kind">${kind(i.type)}</span></div>`;
+                }).join('');
+                return `<div class="pg-recon-card" data-focus="${esc(pr.peerGuid)}" role="button" tabindex="0" title="Center the graph on ${esc(pr.name)}">` +
+                    `<div class="pg-recon-card-top"><span class="pg-recon-hex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg></span>` +
+                    `<span class="pg-recon-peer">${esc(pr.name)}</span>${hostChip}` +
+                    `<svg class="pg-recon-go" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></div>` +
+                    `<div class="pg-recon-ioclist">${iocs}</div></div>`;
+            }).join('') || '<div class="pg-drawer-empty">No reconnections.</div>';
+            openDrawer('Reconnections', `${peers.length} linked process${peers.length === 1 ? '' : 'es'}`, cards, (dr) => {
+                dr.querySelectorAll('.pg-recon-ioc[data-log]').forEach(el => el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    try { this._pgOpenLog(JSON.parse(el.dataset.log)); } catch (_) { }
+                }));
+                dr.querySelectorAll('.pg-recon-card[data-focus]').forEach(c => {
+                    const go = () => this._pgFocusNode(c.dataset.focus);
+                    c.addEventListener('click', go);
+                    c.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+                });
+            });
+            return;
+        }
+
+        // Activity drawers (process interactions / file / network / dns): a simple ranked list.
+        let items, heading;
+        if (type === 'inject') {
             items = (m.interactions.get(guid) || []).filter(it => passT(it.anomaly)).map(it => ({ label: it.label || it.target, anomaly: it.anomaly, info: it.info, tag: it.type }));
             heading = 'Process interactions';
         } else {
@@ -3735,42 +3850,19 @@ const QueryExecutor = {
         const rows = items.map(it => {
             const dl = it.info ? ` data-log='${esc(JSON.stringify(it.info))}'` : '';
             const pill = isNaN(it.anomaly) ? '' : `<span class="pg-anom pg-anom-${sevOf(it.anomaly)}">${it.anomaly.toFixed(2)}</span>`;
-            const hostChip = it.host ? `<span class="pg-host-chip" title="on another host">${esc(String(it.host))}</span>` : '';
             const val = esc(String(it.label || ''));
-            // Two-line layout when there's a descriptor (reconnections): the actual value gets the
-            // full width up top, the "shared IP / dropped & ran · peer" indicator sits muted below.
-            if (it.sub) {
-                // Reconnection rows get a "Dest" button that centers the graph on the peer process
-                // (the row's own log opens on the row body). The shared Source button is in the head.
-                const destBtn = it.peerGuid ? `<button class="pg-foci-btn" data-focus="${esc(it.peerGuid)}" title="Center the graph on ${esc(String(it.peerName || ''))}">Dest</button>` : '';
-                return `<div class="pg-drawer-row pg-drawer-row2"${dl} title="${val}"><div class="pg-drawer-vline"><span class="pg-drawer-val pg-drawer-val-full">${val}</span>${pill}</div>` +
-                    `<div class="pg-drawer-subline"><span class="pg-drawer-subtag">${esc(String(it.sub))}</span>${hostChip}${destBtn}</div></div>`;
-            }
             const tag = it.tag ? `<span class="pg-tag">${esc(it.tag)}</span>` : '';
-            return `<div class="pg-drawer-row"${dl} title="${val}"><span class="pg-drawer-val">${val}</span>${tag}${hostChip}${pill}</div>`;
+            return `<div class="pg-drawer-row"${dl} title="${val}"><span class="pg-drawer-val">${val}</span>${tag}${pill}</div>`;
         }).join('') || '<div class="pg-drawer-empty">No matching activity.</div>';
-        // For reconnections, a Source button on the head centers the graph on the process these
-        // links belong to (every row shares it), so it isn't repeated per row.
-        const srcBtn = (type === 'link') ? `<button class="pg-foci-btn pg-foci-src" data-focus="${esc(guid)}" title="Center the graph on ${esc(String(proc))}">Source</button>` : '';
-        drawer.innerHTML = `<div class="pg-drawer-head"><div class="pg-drawer-title"><span class="pg-drawer-heading">${esc(heading)}</span><span class="pg-drawer-proc" title="${esc(String(proc))}">${esc(this._pgShort(proc))}</span></div>` +
-            `${srcBtn}<button class="pg-drawer-close" title="Close">&times;</button></div>` +
-            `<div class="pg-drawer-count">${items.length} ${items.length === 1 ? 'entry' : 'entries'}</div>` +
-            `<div class="pg-drawer-body">${rows}</div>`;
-        drawer.hidden = false;
-        requestAnimationFrame(() => drawer.classList.add('open'));
-        const mm = host.querySelector('.pg-minimap'); if (mm) mm.style.opacity = '0';
-        drawer.querySelector('.pg-drawer-close')?.addEventListener('click', () => this._pgCloseDrawer());
-        drawer.querySelectorAll('[data-focus]').forEach(b => b.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this._pgFocusNode(b.dataset.focus);
-        }));
-        drawer.querySelectorAll('.pg-drawer-row[data-log]').forEach(r => r.addEventListener('click', () => {
-            try { this._pgOpenLog(JSON.parse(r.dataset.log)); } catch (_) { }
-        }));
+        openDrawer(heading, `${items.length} ${items.length === 1 ? 'entry' : 'entries'}`, rows, (dr) => {
+            dr.querySelectorAll('.pg-drawer-row[data-log]').forEach(r => r.addEventListener('click', () => {
+                try { this._pgOpenLog(JSON.parse(r.dataset.log)); } catch (_) { }
+            }));
+        });
     },
 
-    // Center the graph on a node and pulse it (from the reconnection drawer's Source/Dest buttons).
-    // Falls back to a toast when the target isn't in the current view (e.g. a peer left collapsed).
+    // Center the graph on a node and pulse it (from a reconnection peer card). Falls back to a
+    // toast when the target isn't in the current view (e.g. a peer left collapsed).
     _pgFocusNode(id) {
         if (!id) return;
         this._pgCloseDrawer();
@@ -3806,27 +3898,47 @@ const QueryExecutor = {
         const meta = m.procMeta.get(guid) || {};
         const info = m.logInfoById.get(guid) || null;
         const t = m.procTime.get(guid);
-        const sevOf = (x) => this._pgSev(x);
-        const pill = isNaN(a) ? '' : `<span class="pg-anom pg-anom-${sevOf(a)}">${a.toFixed(2)}</span>`;
-        const kv = (k, v) => `<div class="pg-drawer-kv"><span class="pg-kv-k">${esc(k)}</span><span class="pg-kv-v" title="${esc(String(v))}">${esc(String(v))}</span></div>`;
-        const summary = [];
-        if (meta.user) summary.push(['user', meta.user]);
-        if (meta.cmd) summary.push(['command line', meta.cmd]);
-        if (t != null) summary.push(['time', new Date(t).toISOString().replace('T', ' ').replace('Z', ' UTC')]);
+        const pill = isNaN(a) ? '' : `<span class="pg-anom pg-anom-${this._pgSev(a)}">${a.toFixed(2)}</span>`;
+        // A copyable key/value row (whole row copies its value on click). Empty values are dropped.
+        const kv = (k, v) => {
+            const val = String(v == null ? '' : v);
+            if (!val) return '';
+            return `<div class="pg-kv" data-copy="${esc(val)}" title="Click to copy"><span class="pg-kv-k">${esc(k)}</span>` +
+                `<span class="pg-kv-v">${esc(val)}</span>` +
+                `<span class="pg-kv-copy">` +
+                `<svg class="pg-ic-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>` +
+                `<svg class="pg-ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></span></div>`;
+        };
+        const timeStr = t != null ? new Date(t).toISOString().replace('T', ' ').replace('Z', ' UTC') : '';
+        // Instant process-centric summary straight from the model, so the drawer is never empty while
+        // the full field set loads.
+        const instant = kv('command line', meta.cmd) + kv('image', name) + kv('user', meta.user) +
+            kv('host', m.procHost && m.procHost.get(guid)) + kv('time', timeStr);
+        // The process guid rides in the header as a subtle id; clicking it opens the complete raw log
+        // (no more Full log button). Static (non-clickable) when there's no source log.
+        const idLink = guid ? (info
+            ? `<span class="pg-drawer-id" data-viewlog="1" title="${esc(String(guid))} — open full log"><span class="pg-drawer-id-txt">${esc(String(guid))}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg></span>`
+            : `<span class="pg-drawer-id pg-drawer-id-static" title="${esc(String(guid))}"><span class="pg-drawer-id-txt">${esc(String(guid))}</span></span>`) : '';
         drawer.innerHTML =
-            `<div class="pg-drawer-head"><div class="pg-drawer-title"><span class="pg-drawer-heading">Process</span><span class="pg-drawer-proc" title="${esc(String(name))}">${esc(this._pgShort(name))}</span></div>` +
+            `<div class="pg-drawer-head"><div class="pg-drawer-title"><span class="pg-drawer-heading">Process</span>` +
+            `<span class="pg-drawer-proc" title="${esc(String(name))}">${esc(this._pgShort(name))}</span>${idLink}</div>` +
             `<button class="pg-drawer-close" title="Close">&times;</button></div>` +
-            `<div class="pg-drawer-actions"><button class="pg-drawer-btn pg-drawer-btn-primary" data-analyze="1" title="Re-run pgr() rooted at this process">Analyze from here</button>` +
-            `${info ? '<button class="pg-drawer-btn" data-viewlog="1" title="Open the full log detail panel">Full log</button>' : ''}</div>` +
             `${pill ? `<div class="pg-drawer-count">anomaly ${pill}</div>` : ''}` +
-            `<div class="pg-drawer-body">${summary.length ? `<div class="pg-kv-group">${summary.map(([k, v]) => kv(k, v)).join('')}</div>` : ''}` +
-            `<div class="pg-drawer-fields">${info ? '<div class="pg-drawer-empty">Loading log details…</div>' : '<div class="pg-drawer-empty">No source log for this node.</div>'}</div></div>`;
+            `<div class="pg-drawer-body"><div class="pg-kv-group pg-drawer-fields">${instant || '<div class="pg-drawer-empty">No details for this process.</div>'}</div></div>`;
         drawer.hidden = false;
         requestAnimationFrame(() => drawer.classList.add('open'));
         const mm = host.querySelector('.pg-minimap'); if (mm) mm.style.opacity = '0';
         drawer.querySelector('.pg-drawer-close')?.addEventListener('click', () => this._pgCloseDrawer());
-        drawer.querySelector('[data-analyze]')?.addEventListener('click', () => this._pgAnalyzeFrom(guid));
         drawer.querySelector('[data-viewlog]')?.addEventListener('click', () => this._pgOpenLog(info));
+        // Click-to-copy on any field (delegated, so it covers the fields loaded async below). Feedback
+        // is a brief checkmark on the row's copy icon -- no toast (copying is frequent, keep it quiet).
+        drawer.querySelector('.pg-drawer-body')?.addEventListener('click', (e) => {
+            const el = e.target.closest('.pg-kv[data-copy]'); if (!el) return;
+            const v = el.dataset.copy;
+            const done = () => { el.classList.remove('pg-kv-copied'); void el.offsetWidth; el.classList.add('pg-kv-copied'); setTimeout(() => el.classList.remove('pg-kv-copied'), 1000); };
+            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(v).then(done).catch(() => this._pgCopyFallback(v, done));
+            else this._pgCopyFallback(v, done);
+        });
         if (info && info.log_id) {
             const fieldsEl = drawer.querySelector('.pg-drawer-fields');
             try {
@@ -3834,13 +3946,29 @@ const QueryExecutor = {
                 const resp = await fetch(`/api/v1/logs/fields?${params}`);
                 const data = await resp.json();
                 if (fieldsEl && data && data.success && data.fields) {
-                    const keys = Object.keys(data.fields).sort();
-                    fieldsEl.innerHTML = keys.map(k => kv(k, data.fields[k] == null ? '' : data.fields[k])).join('') || '<div class="pg-drawer-empty">No fields.</div>';
+                    const f = data.fields;
+                    const pick = (keys) => { for (const k of keys) { if (f[k] != null && String(f[k]) !== '') return f[k]; } return ''; };
+                    // Curated, process-centric order -- the triage essentials, not a raw field dump.
+                    // Everything else lives one click away behind the Full log link.
+                    const rows = [
+                        kv('command line', pick(['commandline', 'command_line']) || meta.cmd),
+                        kv('image', pick(['image']) || name),
+                        kv('original file name', pick(['original_file_name'])),
+                        kv('hash', pick(['hash', 'sha256', 'md5'])),
+                        kv('user', pick(['user']) || meta.user),
+                        kv('host', pick(['computer_name']) || (m.procHost && m.procHost.get(guid))),
+                        kv('time', timeStr),
+                        kv('parent image', pick(['parent_image'])),
+                        kv('parent guid', pick(['parent_process_guid'])),
+                        kv('process guid', pick(['process_guid']) || guid),
+                        kv('category', pick(['bifract_category'])),
+                    ].join('');
+                    fieldsEl.innerHTML = rows || '<div class="pg-drawer-empty">No fields.</div>';
                 } else if (fieldsEl) {
-                    fieldsEl.innerHTML = '<div class="pg-drawer-empty">No fields available.</div>';
+                    fieldsEl.innerHTML = fieldsEl.innerHTML || '<div class="pg-drawer-empty">No fields available.</div>';
                 }
             } catch (e) {
-                if (fieldsEl) fieldsEl.innerHTML = '<div class="pg-drawer-empty">Failed to load log details.</div>';
+                /* keep the instant model summary already shown */
             }
         }
     },
@@ -4037,13 +4165,21 @@ const QueryExecutor = {
             const descHtml = dc > 0 ? ` <span class="pg-desc" title="${dc} hidden descendant process${dc === 1 ? '' : 'es'}">+${dc}</span>` : '';
             const meta = m.procMeta.get(guid) || {};
             const rowHost = m.procHost && m.procHost.get(guid);
-            const showHost = multiHost && rowHost;
+            // Host only at a BOUNDARY -- a tree root, or a child whose host differs from its parent's
+            // (a cross-computer hop = lateral movement). Repeating the host on every same-host row is
+            // pure noise; showing it only when it CHANGES turns it into a signal. Single-host graphs
+            // never show it. A genuine hop (parent present, host differs) is emphasized.
+            const parentHost = parentGuid != null ? (m.procHost && m.procHost.get(parentGuid)) : null;
+            const showHost = multiHost && !!rowHost && rowHost !== parentHost;
+            const hostHop = showHost && parentHost && rowHost !== parentHost;
             let subline = '';
             if (meta.cmd || meta.user || showHost) {
                 const u = meta.user ? `<span class="pg-sub-user" title="user">${esc(meta.user)}</span>` : '';
-                const h = showHost ? `<span class="pg-sub-host${rowHost !== focusHost ? ' pg-sub-host-x' : ''}" title="host: ${esc(String(rowHost))}">${esc(String(rowHost))}</span>` : '';
+                const h = showHost ? `<span class="pg-sub-host${hostHop ? ' pg-sub-host-x' : ''}" title="${hostHop ? 'moved to host' : 'host'}: ${esc(String(rowHost))}">${esc(String(rowHost))}</span>` : '';
                 const c = meta.cmd ? `<span class="pg-sub-cmd" title="${esc(meta.cmd)}">${esc(meta.cmd)}</span>` : '';
-                subline = `<span class="pg-subline">${u}${h}${c}</span>`;
+                // Command line is the hero (the #1 triage artifact) -- lead with it; user/host trail as
+                // muted context.
+                subline = `<span class="pg-subline">${c}${u}${h}</span>`;
             }
             const ghost = m.ghostProcs && m.ghostProcs.has(guid);
             // Ghost rows read as a data gap via the muted mono name + row style (see legend), not a
@@ -4057,7 +4193,12 @@ const QueryExecutor = {
             if (t != null) {
                 const delta = pt != null ? this._pgFmtDelta(t - pt) : '';
                 const full = new Date(t).toISOString().replace('T', ' ').replace('Z', ' UTC');
-                timeCell = `<span class="pg-time-cell">${delta ? `<span class="pg-delta" title="time after parent">${delta}</span>` : ''}<span class="pg-time" title="${esc(full)}">${esc(this._pgFmtTime(t))}</span></span>`;
+                // Δt from parent is the triage signal (how fast the chain ran). The absolute date is
+                // noise on every row: show it only on a root (no parent to diff against), and keep the
+                // full timestamp in the tooltip everywhere.
+                timeCell = delta
+                    ? `<span class="pg-time-cell" title="${esc(full)}"><span class="pg-delta">${delta}</span></span>`
+                    : `<span class="pg-time-cell"><span class="pg-time" title="${esc(full)}">${esc(this._pgFmtTime(t))}</span></span>`;
             }
             const a = m.anomalyByNode.get(guid);
             // No per-row severity accent: the anomaly pill already carries severity, and a colored
@@ -4096,8 +4237,11 @@ const QueryExecutor = {
                 const peerName = m.procLabel.get(l.peerGuid) || l.peerGuid;
                 const licon = ICON[l.type] || ICON.link;
                 const kindTxt = l.type === 'file' ? 'dropped & ran' : l.type === 'net' ? 'shared IP' : l.type === 'dns' ? 'shared domain' : 'shared';
+                // Decluttered: the type icon conveys the relationship (globe=domain, arrow=IP, doc=file),
+                // so the "SHARED DOMAIN/IP" tag is dropped; the IOC value is the hero and the peer is a
+                // subtle "-> peer". Host chip only on a cross-host reconnection (lateral movement).
                 const hostChip = l.crossHost && l.peerHost ? `<span class="pg-host-chip" title="on another host">${esc(String(l.peerHost))}</span>` : '';
-                rows.push(`<div class="pg-row pg-leaf pg-link-item" data-peer="${esc(l.peerGuid)}" title="Reconnects to ${esc(String(peerName))}${l.crossHost ? ' on ' + esc(String(l.peerHost)) : ''} — click to jump">${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-link">${licon}</span><span class="pg-name">${hl(l.label)}</span><span class="pg-link-peer">${hl(peerName)}</span>${hostChip}<span class="pg-tag pg-tag-recon">${kindTxt}</span></div>`);
+                rows.push(`<div class="pg-row pg-leaf pg-link-item" data-peer="${esc(l.peerGuid)}" title="${esc(kindTxt)} with ${esc(String(peerName))}${l.crossHost ? ' on ' + esc(String(l.peerHost)) : ''} — click to jump">${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-${l.type}">${licon}</span><span class="pg-name">${hl(l.label)}</span><span class="pg-link-to"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13m-5-6 6 6-6 6"/></svg>${hl(peerName)}</span>${hostChip}</div>`);
             });
             childEntries.forEach(c => {
                 const isLastEntry = ++idx === total;
@@ -4119,7 +4263,9 @@ const QueryExecutor = {
         const roots = term ? rootsAll.filter(r => computeMatch(r, new Set())) : rootsAll;
         roots.forEach((r, i) => walk(r, [], i === roots.length - 1, null));
 
-        container.innerHTML = `<div class="pg-tree-scroll" role="tree" tabindex="0">${rows.join('') || '<div class="pg-empty">No processes in this graph.</div>'}</div>`;
+        // Sticky column header labelling the right-hand metadata columns (activity chips / Δt / score).
+        const treeHead = rows.length ? `<div class="pg-tree-head"><span class="pg-th-name">Process</span><span class="pg-th pg-th-act">Activity</span><span class="pg-th pg-th-dt">Time</span><span class="pg-th pg-th-score">Anomaly</span></div>` : '';
+        container.innerHTML = `<div class="pg-tree-scroll" role="tree" tabindex="0">${treeHead}${rows.join('') || '<div class="pg-empty">No processes in this graph.</div>'}</div>`;
         const scroll = container.querySelector('.pg-tree-scroll');
         container.querySelectorAll('.pg-chev[data-guid]').forEach(btn => btn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -4144,11 +4290,9 @@ const QueryExecutor = {
             if (!row) return;
             row.classList.add('pg-kbsel');
             this._pgTreeSelGuid = row.dataset.guid || null;
-            // Subtly highlight the rows this process reconnects to (click-to-see-what-links).
-            const g = row.dataset.guid;
-            if (g && m.linkInfo && m.linkInfo.has(g)) {
-                new Set(m.linkInfo.get(g).map(l => l.peerGuid)).forEach(pg => { const pr = rowByGuid(pg); if (pr) pr.classList.add('pg-link-hl'); });
-            }
+            // Reconnections are navigated intentionally -- open a process's link badge and click a
+            // peer to jump to (and flash) it. Selecting a row no longer ambiently highlights its
+            // peer rows (scattered, off-screen highlights were more noise than signal).
             row.scrollIntoView({ block: 'nearest' });
             if (open && row.dataset.log) { try { this._pgOpenLog(JSON.parse(row.dataset.log)); } catch (e) { /* ignore */ } }
         };

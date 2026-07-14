@@ -17100,19 +17100,63 @@ div.vis-tooltip {
     font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
     color: var(--pg-recon, #a855f7);
 }
-/* Reconnection focus buttons (Source in head, Dest per row): center the graph on that process. */
-.pg-foci-btn {
-    font-size: 9.5px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
-    color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 40%, transparent); border-radius: 5px;
-    padding: 1px 8px; cursor: pointer; white-space: nowrap; line-height: 1.5;
+/* Reconnection drawer: peer-centric cards (EDR "related process" pattern). One card per linked
+   process; the whole card navigates to that process, the shared IOCs list the evidence. */
+.pg-recon-card {
+    margin: 0 0 8px; padding: 9px 10px 8px; border-radius: 9px;
+    background: color-mix(in srgb, var(--pg-recon, #a855f7) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--pg-recon, #a855f7) 22%, transparent);
+    cursor: pointer; transition: background .12s, border-color .12s, transform .07s;
 }
-.pg-foci-btn:hover { background: color-mix(in srgb, var(--accent-primary) 24%, transparent); }
-.pg-drawer-subline .pg-foci-btn { margin-left: auto; }
-.pg-foci-src { margin-right: 8px; align-self: center; }
-/* Pulse a node when focused from the drawer. drop-shadow (not box-shadow) follows the hex clip-path. */
-@keyframes pgPulse { 0%, 100% { filter: none; } 45% { filter: drop-shadow(0 0 7px var(--accent-primary)) drop-shadow(0 0 3px var(--accent-primary)); } }
+.pg-recon-card:hover { background: color-mix(in srgb, var(--pg-recon, #a855f7) 14%, transparent); border-color: color-mix(in srgb, var(--pg-recon, #a855f7) 46%, transparent); }
+.pg-recon-card:active { transform: scale(.992); }
+.pg-recon-card:focus-visible { outline: 2px solid var(--pg-recon, #a855f7); outline-offset: 1px; }
+.pg-recon-card-top { display: flex; align-items: center; gap: 7px; }
+.pg-recon-hex { flex: 0 0 auto; width: 18px; height: 18px; color: var(--pg-recon, #a855f7); display: inline-flex; }
+.pg-recon-hex svg { width: 18px; height: 18px; }
+.pg-recon-peer { font-size: 13px; font-weight: 700; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pg-recon-host {
+    flex: 0 0 auto; font-size: 10px; font-weight: 700; letter-spacing: .3px;
+    color: var(--pg-recon, #a855f7); background: color-mix(in srgb, var(--pg-recon, #a855f7) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--pg-recon, #a855f7) 40%, transparent); border-radius: 4px; padding: 1px 6px;
+}
+.pg-recon-go { flex: 0 0 auto; margin-left: auto; width: 16px; height: 16px; color: var(--text-muted); transition: transform .12s, color .12s; }
+.pg-recon-card:hover .pg-recon-go { color: var(--pg-recon, #a855f7); transform: translateX(2px); }
+.pg-recon-ioclist { margin-top: 7px; display: flex; flex-direction: column; gap: 2px; }
+.pg-recon-ioc { display: flex; align-items: center; gap: 7px; padding: 3px 5px; border-radius: 6px; cursor: pointer; }
+.pg-recon-ioc:hover { background: color-mix(in srgb, var(--text-primary) 9%, transparent); }
+.pg-recon-ioc-ico { flex: 0 0 auto; width: 14px; height: 14px; display: inline-flex; }
+.pg-recon-ioc-ico svg { width: 14px; height: 14px; }
+.pg-ico-net { color: var(--pg-net); }
+.pg-ico-dns { color: var(--pg-dns); }
+.pg-ico-file { color: var(--pg-file); }
+.pg-recon-ioc-val { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono, monospace); font-size: 12px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-recon-ioc-kind { flex: 0 0 auto; font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); }
+/* Pulse a node when focused from a reconnection card. drop-shadow (not box-shadow) follows clip-path. */
+@keyframes pgPulse { 0%, 100% { filter: none; } 45% { filter: drop-shadow(0 0 7px var(--pg-recon, #a855f7)) drop-shadow(0 0 3px var(--pg-recon, #a855f7)); } }
 .pg-node.pg-pulse .pg-hex { animation: pgPulse 1.3s ease-in-out 2; }
+
+/* Right-click context menu on a process node (Analyze from here / details / copy guid). */
+.pg-ctxmenu {
+    position: absolute; z-index: 20; min-width: 176px; padding: 4px;
+    background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4); animation: pgCtxIn .1s ease;
+}
+@keyframes pgCtxIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+.pg-ctx-title {
+    padding: 4px 8px 6px; font-size: 11px; font-weight: 700; color: var(--accent-primary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid var(--border-color); margin-bottom: 3px;
+}
+.pg-ctx-item {
+    display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 8px;
+    background: none; border: none; border-radius: 5px; cursor: pointer; text-align: left;
+    font-size: 12.5px; color: var(--text-secondary);
+}
+.pg-ctx-item:hover { background: color-mix(in srgb, var(--accent-primary) 16%, transparent); color: var(--text-primary); }
+.pg-ctx-item svg { flex: 0 0 auto; width: 15px; height: 15px; color: var(--text-muted); }
+.pg-ctx-item:hover svg { color: var(--accent-primary); }
+.pg-ctx-item[data-act="analyze"] { color: var(--accent-primary); font-weight: 600; }
+.pg-ctx-item[data-act="analyze"] svg { color: var(--accent-primary); }
 
 /* Node-detail drawer: action buttons + key/value fields. */
 .pg-drawer-actions { display: flex; gap: 8px; padding: 10px 14px 4px; }
@@ -17129,6 +17173,28 @@ div.vis-tooltip {
 .pg-drawer-fields .pg-drawer-kv:hover { background: var(--bg-hover, rgba(255,255,255,.04)); border-radius: 4px; }
 .pg-kv-k { flex: 0 0 36%; min-width: 0; color: var(--text-muted); font-family: var(--font-mono, ui-monospace, monospace); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pg-kv-v { flex: 1 1 auto; min-width: 0; color: var(--text-secondary); word-break: break-word; font-family: var(--font-mono, ui-monospace, monospace); }
+/* Copyable process fields: the whole row copies its value on click (curated, process-centric set;
+   the full raw field list lives behind the Full log link). */
+.pg-kv { display: flex; gap: 10px; padding: 5px 8px; font-size: 11.5px; align-items: baseline; border-radius: 5px; cursor: pointer; }
+.pg-kv:hover { background: var(--bg-hover, rgba(255,255,255,.05)); }
+.pg-kv .pg-kv-copy { flex: 0 0 auto; align-self: center; color: var(--text-muted); opacity: 0; transition: opacity .12s; display: inline-flex; }
+.pg-kv .pg-kv-copy svg { width: 13px; height: 13px; }
+.pg-kv .pg-ic-check { display: none; }
+.pg-kv:hover .pg-kv-copy { opacity: .7; }
+/* Copy feedback: swap the copy glyph for a brief green checkmark -- no toast (copying is frequent). */
+.pg-kv-copied .pg-kv-copy { opacity: 1; color: var(--success, #2ec16a); }
+.pg-kv-copied .pg-ic-copy { display: none; }
+.pg-kv-copied .pg-ic-check { display: inline; }
+/* Subtle process-guid in the header; clicking opens the full raw log (replaces the Full log button). */
+.pg-drawer-id { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; font-family: var(--font-mono, monospace); font-size: 10px; color: var(--text-muted); cursor: pointer; }
+.pg-drawer-id-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pg-drawer-id svg { flex: 0 0 auto; width: 10px; height: 10px; opacity: .85; }
+.pg-drawer-id:hover { color: var(--accent-primary); }
+.pg-drawer-id-static { cursor: default; }
+.pg-drawer-id-static:hover { color: var(--text-muted); }
+/* Analyze from here: compact, not a loud full-width bar. Anomaly sits at the right of the row. */
+.pg-drawer-btn-sm { padding: 5px 12px; font-size: 12px; }
+.pg-drawer-anom { margin-left: auto; align-self: center; font-size: 11px; color: var(--text-muted); }
 
 /* --- Tree view --- */
 .pg-tree { flex: 1 1 auto; min-width: 0; display: block; background: var(--bg-primary); }
@@ -17232,10 +17298,13 @@ div.vis-tooltip {
 }
 .pg-sub-host::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: currentColor; opacity: .6; }
 .pg-sub-host-x { color: var(--pg-recon, #a855f7); } /* on a different host than the start node */
+/* Command line is the hero of the subline: readable (secondary, not muted), monospace, takes the
+   space and ellipsizes; user/host trail as muted context. Full value on hover (title). */
 .pg-sub-cmd {
-    min-width: 0; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    font-family: var(--font-mono, ui-monospace, monospace); font-size: 10.5px;
+    flex: 1 1 auto; min-width: 0; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px;
 }
+.pg-row[data-log]:hover .pg-sub-cmd { color: var(--text-primary); }
 /* hidden-descendant count on a collapsed node */
 .pg-desc {
     font-size: 10px; font-weight: 700; color: var(--text-muted);
@@ -17243,8 +17312,24 @@ div.vis-tooltip {
     border-radius: 4px; padding: 0 5px; vertical-align: middle;
 }
 
-/* time column + inter-node delta */
-.pg-time-cell { flex: 0 0 auto; display: inline-flex; align-items: baseline; gap: 7px; margin-left: 10px; justify-content: flex-end; }
+/* Sticky column header over the right-hand metadata (activity chips / Δt / anomaly). Fixed-width
+   right columns keep the header labels aligned over their rows. */
+.pg-tree-head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 14px 6px 0;
+    font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--text-muted); border-bottom: 1px solid var(--border-color);
+    position: sticky; top: 0; z-index: 3; background: var(--bg-primary);
+}
+.pg-th-name { flex: 1 1 auto; padding-left: 44px; }
+.pg-th-act { flex: 0 0 auto; margin-left: auto; text-align: right; }
+.pg-th-dt { flex: 0 0 54px; margin-left: 18px; text-align: right; }
+.pg-th-score { flex: 0 0 40px; margin-left: 12px; text-align: right; }
+
+/* time column + inter-node delta. Fixed width + a healthy left margin (mirrored by the Time header)
+   so the activity chips can't bleed into it and the header labels line up over their columns. */
+.pg-time-cell { flex: 0 0 54px; display: inline-flex; align-items: baseline; gap: 7px; margin-left: 18px; justify-content: flex-end; }
+/* Anomaly column: consistent left margin (mirrored by the Anomaly header) for a clean right rail. */
+.pg-row > .pg-anom, .pg-row > .pg-anom-spacer { margin-left: 12px; }
 .pg-delta {
     font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums;
     color: var(--pg-dns); background: color-mix(in srgb, var(--pg-dns) 14%, transparent);
@@ -17264,6 +17349,10 @@ div.vis-tooltip {
 .pg-icon-link { color: var(--pg-recon, #a855f7); }
 .pg-link-item { cursor: pointer; }
 .pg-link-peer { color: var(--pg-recon, #a855f7); font-weight: 600; font-size: 12px; margin-left: 2px; }
+/* Decluttered reconnection row: subtle "-> peer" (the IOC value is the hero; type icon = the kind). */
+.pg-link-to { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--text-muted); min-width: 0; overflow: hidden; }
+.pg-link-to svg { flex: 0 0 auto; width: 12px; height: 12px; opacity: .75; }
+.pg-row.pg-link-item:hover .pg-link-to { color: var(--text-secondary); }
 /* Cross-host notation: a small muted "computer" chip on reconnections that hop to another host. */
 .pg-host-chip {
     display: inline-flex; align-items: center; gap: 3px;
