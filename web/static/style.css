@@ -16912,6 +16912,10 @@ div.vis-tooltip {
 .pg-e-med  { stroke: var(--warning); }
 .pg-e-low, .pg-e-none { stroke: color-mix(in srgb, var(--graph-node-neutral) 72%, transparent); }
 .pg-e-dash { stroke-dasharray: 4 4; opacity: .8; }
+/* Fan-out trunk (pushFan, _pgRenderGraph): the parent's own column extended down to reach a
+   multi-child fan, not a scored edge -- de-emphasized further than a plain 'none' edge so the
+   elbow stubs into each child (which DO carry real anomaly color) still read as the signal. */
+.pg-e-trunk { opacity: .55; }
 .pg-arrow { stroke: none; }
 .pg-arrow.pg-e-high { fill: var(--error); }
 .pg-arrow.pg-e-med  { fill: var(--warning); }

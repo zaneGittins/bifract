@@ -3499,23 +3499,44 @@ const QueryExecutor = {
         // The anomaly score belongs to the EDGE (the parent->child transition), so it renders
         // as a small pill at each edge midpoint rather than on the node; low scores recede.
         const edgeSegs = []; // {x1,y1,x2,y2,a,sev,w,dash}
+        // Fan-out from one parent to 2+ children: a shared vertical trunk down the parent's own
+        // column, plus a short horizontal stub into each child -- instead of every child getting
+        // its own long diagonal line back to one point. All direct children share their parent's
+        // x + one INDENT, so the stub is always a clean horizontal tick, not an angled line.
+        // Earlier siblings' subtrees can push a later sibling's row far down the canvas; before
+        // this, that meant a starburst of long diagonals converging on the parent. A single child
+        // still gets the plain diagonal spine (the cleanest case for a linear chain, per the
+        // outline-layout comment above).
+        const pushFan = (px, py, kids) => {
+            if (kids.length === 0) return;
+            if (kids.length === 1) {
+                const { cp, a } = kids[0];
+                edgeSegs.push({ x1: px, y1: py, x2: cp.x, y2: cp.y, a, sev: sevOf(a), w: hotW(a), dash: 0 });
+                return;
+            }
+            const trunkBottom = Math.max(...kids.map(k => k.cp.y));
+            edgeSegs.push({ x1: px, y1: py, x2: px, y2: trunkBottom, a: NaN, sev: 'none', w: 1.5, dash: 0, trunk: true, noEndPullback: true });
+            kids.forEach(({ cp, a }) => {
+                edgeSegs.push({ x1: px, y1: cp.y, x2: cp.x, y2: cp.y, a, sev: sevOf(a), w: hotW(a), dash: 0, noStartPullback: true });
+            });
+        };
         m.spawnKids.forEach((kids, parent) => {
             const pp = pos.get(parent); if (!pp) return;
-            this._pgDisplayChildren(parent).forEach(c => {
-                const cp = pos.get(c.id); if (!cp) return;
-                const a = c.kind === 'agg' ? (aggMeta.get(c.id) || {}).anomaly : m.anomalyByNode.get(c.id);
-                edgeSegs.push({ x1: pp.x, y1: pp.y, x2: cp.x, y2: cp.y, a, sev: sevOf(a), w: hotW(a), dash: 0 });
-            });
+            const children = this._pgDisplayChildren(parent).map(c => {
+                const cp = pos.get(c.id); if (!cp) return null;
+                return { cp, a: c.kind === 'agg' ? (aggMeta.get(c.id) || {}).anomaly : m.anomalyByNode.get(c.id) };
+            }).filter(Boolean);
+            pushFan(pp.x, pp.y, children);
         });
         // Aggregate -> member edges, only while the aggregate is expanded.
         aggMeta.forEach((ag, aggId) => {
             if (!expandedAggs.has(aggId)) return;
             const ap = pos.get(aggId); if (!ap) return;
-            ag.members.forEach(mm => {
-                const cp = pos.get(mm); if (!cp) return;
-                const a = m.anomalyByNode.get(mm);
-                edgeSegs.push({ x1: ap.x, y1: ap.y, x2: cp.x, y2: cp.y, a, sev: sevOf(a), w: hotW(a), dash: 0 });
-            });
+            const members = ag.members.map(mm => {
+                const cp = pos.get(mm); if (!cp) return null;
+                return { cp, a: m.anomalyByNode.get(mm) };
+            }).filter(Boolean);
+            pushFan(ap.x, ap.y, members);
         });
         m.interactions.forEach((list, src) => {
             const sp = pos.get(src); if (!sp) return;
@@ -3537,7 +3558,13 @@ const QueryExecutor = {
         const pathFor = (e) => {
             const dx = e.x2 - e.x1, dy = e.y2 - e.y1, len = Math.hypot(dx, dy) || 1;
             const ux = dx / len, uy = dy / len;
-            const x1 = e.x1 + ux * 19, y1 = e.y1 + uy * 19, x2 = e.x2 - ux * 21, y2 = e.y2 - uy * 21;
+            // Trunk/elbow segments (see pushFan above) don't start or end AT a node -- the trunk's
+            // bottom end is just a bend point in space, and an elbow stub's start is a point on the
+            // trunk -- so skip the pull-back on whichever side has no hex to clear.
+            const x1 = e.noStartPullback ? e.x1 : e.x1 + ux * 19;
+            const y1 = e.noStartPullback ? e.y1 : e.y1 + uy * 19;
+            const x2 = e.noEndPullback ? e.x2 : e.x2 - ux * 21;
+            const y2 = e.noEndPullback ? e.y2 : e.y2 - uy * 21;
             if (e.recon) {
                 // Gently bow reconnection bridges so they read as distinct links without the
                 // heavy sweep that tangles a long cross-canvas curve.
@@ -3549,8 +3576,11 @@ const QueryExecutor = {
         const marker = (sev) => `<marker id="pgar-${sev}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="pg-arrow pg-e-${sev}"/></marker>`;
         let svg = `<svg class="pg-edge-layer" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><defs>${['high', 'med', 'low', 'none'].map(marker).join('')}</defs>`;
         edgeSegs.forEach(e => {
-            const cls = `pg-e pg-e-${e.sev}${e.dash ? ' pg-e-dash' : ''}${e.recon ? ' pg-e-recon' : ''}`;
-            const mk = (e.recon && e.toObj) ? '' : ` marker-end="url(#pgar-${e.sev})"`;
+            const cls = `pg-e pg-e-${e.sev}${e.dash ? ' pg-e-dash' : ''}${e.recon ? ' pg-e-recon' : ''}${e.trunk ? ' pg-e-trunk' : ''}`;
+            // Trunk points at nothing in particular (it's the parent's own column extended down,
+            // not one specific edge), so it gets no arrowhead -- only the elbow stub into each
+            // child does.
+            const mk = (e.trunk || (e.recon && e.toObj)) ? '' : ` marker-end="url(#pgar-${e.sev})"`;
             // Reconnection bridges stay invisible until the analyst is actually on one of the two
             // endpoints (see _pgSetReconHover) -- a persistent purple line across the whole canvas
             // for every cross-tree link was the #1 clutter complaint, and the relationship is
