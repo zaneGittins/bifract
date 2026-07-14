@@ -970,7 +970,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				Name:        "pgr",
 				Category:    "Traversal",
 				Description: "Anomaly-scored process provenance graph for triaging an alert. Give it a start process_guid and it builds the spawn tree, then attaches that tree's file, network, DNS, and injection activity, scoring each by how rare it is (anomaly_score 0-1: 1 = never-seen, 0 = ubiquitous). Rare/suspicious behavior surfaces; common noise is pruned. It also links in OTHER process trees that share a rare artifact -- a file this tree dropped and another ran, or the same rare C2 IP/domain touched elsewhere (reconnect=false to disable) -- so lateral spread shows up without hunting for it. Needs an EDR source with bifract_category. pgr() must come FIRST in the query (scoped only by start=, the time range, and the fractal). Pipe to pgraph() to visualize, or table()/count()/groupby() to work with the scored edges, e.g. `pgr(...) | anomaly_score >= 0.9 | count()`. Set the time range to cover the whole investigation window -- older lineage outside it is omitted.",
-				Syntax:      `| pgr(start="<process_guid>", depth=N, direction=forward|backward|both, threshold=0.0-1.0, reconnect=true|false, diffuse=true|false, exclude="file_write,net_connect")`,
+				Syntax:      `| pgr(start="<process_guid>", depth=N, direction=forward|backward|both, threshold=0.0-1.0, reconnect=true|false, diffuse=true|false, exclude="file_write,net_connect", limit=N)`,
 				Parameters: []Param{
 					{Name: "start", Type: "string", Required: true, Description: "process_guid of the seed node"},
 					{Name: "depth", Type: "number", Required: false, Description: "Maximum tree traversal depth (default: 10, max: 50)"},
@@ -980,6 +980,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 					{Name: "diffuse", Type: "boolean", Required: false, Description: "NoDoze network-diffusion (default: true): propagate anomaly along the tree so an edge under an anomalous chain is promoted and a chain of individually-common edges (LOLBins) compounds to anomalous. anomaly_score becomes the propagated score for EVERY consumer (table, count, pgraph), so an agent reading pgr() and an analyst viewing pgr()|pgraph() see identical values. diffuse=false restores pure per-edge scoring."},
 					{Name: "include", Type: "string", Required: false, Description: "Only generate these non-spawn edge types (comma-separated): file_write, net_connect (a.k.a network_connect), dns_query, remote_thread, process_access. The spawn tree is always included."},
 					{Name: "exclude", Type: "string", Required: false, Description: "Drop these edge types (comma-separated), e.g. exclude=\"file_write,net_connect\". Applied after include=. Skips scanning logs for the excluded types."},
+					{Name: "limit", Type: "number", Required: false, Description: "Max result rows returned (default: 500, max: 20000), overriding the deployment's generic query row cap for this query. Spawn/tree edges are always ordered before leaves, so if a tree exceeds this, low-signal leaves are dropped first, never process structure. Raise for very large trees, e.g. limit=5000."},
 				},
 				Examples: []string{
 					`pgr(start="{GUID}") | pgraph()`,

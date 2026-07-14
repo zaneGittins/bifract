@@ -17275,7 +17275,7 @@ div.vis-tooltip {
 .pg-icon-inject { color: var(--error); }
 
 /* names */
-.pg-name-wrap { display: flex; flex-direction: column; justify-content: center; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.pg-name-wrap { display: flex; flex-direction: column; justify-content: center; min-width: 0; flex: 1 1 auto; overflow: hidden; }
 .pg-name {
     font-weight: 500; color: var(--text-primary);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

@@ -10,6 +10,18 @@ import (
 // pathological tree can't produce an unbounded query.
 const maxProvenanceGuids = 10000
 
+// pgr()'s own result-row cap, applied as the OUTER query's LIMIT (see resolvePgrSource /
+// resolvedSource.Limit). This exists because the generic per-deployment MaxQueryRows default
+// can be set far lower than what a process tree needs (e.g. 250), and the generic pipeline's
+// default LIMIT re-sorts by timestamp first -- which would truncate actual spawn/tree edges,
+// not just low-signal leaves, once a tree's total edge count exceeds it. pgr() sets its own
+// default here instead, paired with a spawn-first OrderBy (provenanceOrderBy) so any truncation
+// that does occur drops leaves before structure. An explicit `| limit(N)` downstream still wins.
+const (
+	defaultPgrLimit = 500
+	maxPgrLimit     = 20000
+)
+
 // Reconnection (NoDoze object-mediated) caps. Every value bounds a step so cross-tree
 // reconnection stays per-subgraph and rarity-pruned -- never an all-pairs join over the
 // full table. See pkg/query/provenance.go for how the resolver orchestrates these.
@@ -72,7 +84,13 @@ type ProvenanceParams struct {
 	EdgeTypes map[string]bool // non-spawn event_types to include; nil/empty = all
 	Reconnect bool            // enable cross-tree reconnection via shared leaves (default true)
 	Diffuse   bool            // propagate anomaly along the tree (NoDoze diffusion); default true
+	Limit     int             // outer result-row cap (default defaultPgrLimit, max maxPgrLimit)
 }
+
+// ProvenanceOrderBy is the outer-query ORDER BY resolvePgrSource attaches alongside Limit: spawn
+// edges first, then by anomaly. Matches the ordering pass-2's own SQL already applies internally,
+// so if Limit ever truncates, it drops low-signal leaves before process structure.
+var ProvenanceOrderBy = []string{"(event_type = 'spawn') DESC", "anomaly_score DESC"}
 
 // provenanceLeafTypes are the non-spawn edge event_types pgr can emit. spawn is the tree
 // backbone and is always present, so it is not listed here.
@@ -114,12 +132,19 @@ func parseEdgeTypeList(v string) []string {
 // missing. pgr is a source command (see source_command.go): the query layer's source resolver
 // calls this, then orchestrates the two-pass query into a subquery source.
 func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
-	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7, Reconnect: true, Diffuse: true}
+	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7, Reconnect: true, Diffuse: true, Limit: defaultPgrLimit}
 	var includeTypes, excludeTypes []string
 	for _, arg := range cmd.Arguments {
 		switch {
 		case strings.HasPrefix(arg, "start="):
 			p.Start = strings.Trim(strings.TrimPrefix(arg, "start="), "\"'")
+		case strings.HasPrefix(arg, "limit="):
+			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && n > 0 {
+				if n > maxPgrLimit {
+					n = maxPgrLimit
+				}
+				p.Limit = n
+			}
 		case strings.HasPrefix(arg, "reconnect="):
 			v := strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "reconnect="), "\"'"))
 			p.Reconnect = v != "false" && v != "0" && v != "no"

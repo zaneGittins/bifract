@@ -502,6 +502,8 @@ type resolvedSource struct {
 	Columns        []string // exposed flat columns, in default projection order
 	NumericColumns []string // subset of Columns already numeric (no string-coercion on compare)
 	Focus          string   // optional node identifier the viz should center/highlight (pgr start)
+	Limit          int      // outer-query result-row cap this source prefers, overriding opts.MaxRows (0 = no preference)
+	OrderBy        []string // outer-query ORDER BY this source prefers, overriding the generic timestamp-DESC default
 }
 
 // sourceResolver produces a resolvedSource for a source command. Resolution runs in the query
@@ -537,5 +539,5 @@ func resolvePgrSource(h *QueryHandler, ctx context.Context, cmd parser.CommandNo
 	if err != nil {
 		return nil, err
 	}
-	return &resolvedSource{SQL: sql, Columns: provenanceColumns, NumericColumns: provenanceNumericColumns, Focus: p.Start}, nil
+	return &resolvedSource{SQL: sql, Columns: provenanceColumns, NumericColumns: provenanceNumericColumns, Focus: p.Start, Limit: p.Limit, OrderBy: parser.ProvenanceOrderBy}, nil
 }

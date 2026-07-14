@@ -44,6 +44,11 @@ type QueryOptions struct {
 	SourceSubquery       string
 	SourceColumns        []string // flat column names exposed by SourceSubquery (resolve bare, not fields.x)
 	SourceNumericColumns []string // subset of SourceColumns that are already numeric (no string-coercion on compare)
+	// SourceOrderBy overrides the implicit "timestamp DESC" default ORDER BY applied to a bare
+	// (no explicit sort()) query over SourceSubquery. Set by a source resolver (e.g. pgr(), via
+	// ProvenanceOrderBy) whose subquery rows are already meaningfully pre-ordered -- timestamp
+	// ordering would discard that and, combined with a LIMIT, truncate the wrong rows.
+	SourceOrderBy []string
 }
 
 // sourceColumnSelects renders a subquery source's flat columns as a default SELECT list.
@@ -665,7 +670,9 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 	// --- Set default ORDER BY and LIMIT ---
 	defaultTimeOrder := false
 	if len(activeStage.Layer.OrderBy) == 0 && len(activeStage.Layer.GroupBy) == 0 && !plan.IsAggregated {
-		if activeStage.IsSource {
+		if len(opts.SourceOrderBy) > 0 {
+			activeStage.Layer.OrderBy = opts.SourceOrderBy
+		} else if activeStage.IsSource {
 			activeStage.Layer.OrderBy = []string{"timestamp DESC"}
 			defaultTimeOrder = true
 		}

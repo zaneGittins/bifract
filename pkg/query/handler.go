@@ -656,6 +656,17 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		opts.SourceSubquery = rs.SQL
 		opts.SourceColumns = rs.Columns
 		opts.SourceNumericColumns = rs.NumericColumns
+		// A source resolver (e.g. pgr()) may prefer its own result-row cap and ordering over the
+		// deployment's generic MaxQueryRows/timestamp-DESC default -- its subquery rows are already
+		// meaningfully ordered (spawn structure before low-signal leaves), so re-sorting by
+		// timestamp and truncating at a generic cap can drop structure instead of noise. An
+		// explicit `| limit(N)` / `| sort(...)` downstream in the query still takes precedence.
+		if rs.Limit > 0 {
+			opts.MaxRows = rs.Limit
+		}
+		if len(rs.OrderBy) > 0 {
+			opts.SourceOrderBy = rs.OrderBy
+		}
 		sourceFocus = rs.Focus
 		pipeline = parser.StripCommand(pipeline, src.Name)
 	}

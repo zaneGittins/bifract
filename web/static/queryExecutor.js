@@ -4172,9 +4172,13 @@ const QueryExecutor = {
             const parentHost = parentGuid != null ? (m.procHost && m.procHost.get(parentGuid)) : null;
             const showHost = multiHost && !!rowHost && rowHost !== parentHost;
             const hostHop = showHost && parentHost && rowHost !== parentHost;
+            // User only at a BOUNDARY -- a tree root, or a child whose user differs from its
+            // parent's (a privilege change is a signal). Same pattern as host, above.
+            const parentUser = parentGuid != null ? (m.procMeta.get(parentGuid) || {}).user : null;
+            const showUser = !!meta.user && meta.user !== parentUser;
             let subline = '';
-            if (meta.cmd || meta.user || showHost) {
-                const u = meta.user ? `<span class="pg-sub-user" title="user">${esc(meta.user)}</span>` : '';
+            if (meta.cmd || showUser || showHost) {
+                const u = showUser ? `<span class="pg-sub-user" title="user">${esc(meta.user)}</span>` : '';
                 const h = showHost ? `<span class="pg-sub-host${hostHop ? ' pg-sub-host-x' : ''}" title="${hostHop ? 'moved to host' : 'host'}: ${esc(String(rowHost))}">${esc(String(rowHost))}</span>` : '';
                 const c = meta.cmd ? `<span class="pg-sub-cmd" title="${esc(meta.cmd)}">${esc(meta.cmd)}</span>` : '';
                 // Command line is the hero (the #1 triage artifact) -- lead with it; user/host trail as

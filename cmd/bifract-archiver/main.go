@@ -26,6 +26,7 @@ import (
 	"bifract/pkg/spool"
 	"bifract/pkg/storage"
 
+	_ "github.com/KimMachineGun/automemlimit"
 	_ "github.com/lib/pq"
 	_ "go.uber.org/automaxprocs"
 )

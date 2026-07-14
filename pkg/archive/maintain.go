@@ -16,12 +16,19 @@ type MaintainOptions struct {
 	ExpireOlderThan time.Duration
 	// RetainLast keeps at least this many recent snapshots regardless of age.
 	RetainLast int
+	// ByteBudget caps the total bytes compaction will rewrite in this single
+	// Maintain() pass, across all tables. Bounds the pass's memory footprint
+	// regardless of backlog size; leftover work carries over to the next
+	// scheduled run since compaction.Analyze always replans from the table's
+	// current file layout. 0 disables compaction entirely (snapshot expiry
+	// still runs).
+	ByteBudget int64
 }
 
 // DefaultMaintainOptions returns sensible defaults: keep ~7 days of snapshots,
-// never fewer than 10.
+// never fewer than 10, and compact at most ~2GiB per pass.
 func DefaultMaintainOptions() MaintainOptions {
-	return MaintainOptions{ExpireOlderThan: 7 * 24 * time.Hour, RetainLast: 10}
+	return MaintainOptions{ExpireOlderThan: 7 * 24 * time.Hour, RetainLast: 10, ByteBudget: 2 << 30}
 }
 
 // maintainScanConcurrency caps compaction's concurrent file-decode workers.
@@ -43,6 +50,7 @@ const maintainScanConcurrency = 4
 func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) error {
 	ns := catalog.ToIdentifier(Namespace)
 	var tables, compacted, expired int
+	budget := opts.ByteBudget
 	for ident, err := range c.cat.ListTables(ctx, ns) {
 		if err != nil {
 			log.Printf("[Maintain] list tables: %v", err)
@@ -57,10 +65,18 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) error {
 			continue
 		}
 
-		if did, err := compactTable(ctx, tbl); err != nil {
-			log.Printf("[Maintain] compact %s: %v", name, err)
-		} else if did {
-			compacted++
+		// Once the pass's byte budget is spent, skip compaction for the rest
+		// of this run (snapshot expiry still proceeds) -- the remaining
+		// backlog is picked up next run rather than risking an OOM trying to
+		// compact everything in one pass.
+		if budget > 0 {
+			did, n, err := compactTable(ctx, tbl, budget)
+			if err != nil {
+				log.Printf("[Maintain] compact %s: %v", name, err)
+			} else if did {
+				compacted++
+				budget -= n
+			}
 		}
 
 		if opts.ExpireOlderThan > 0 {
@@ -75,37 +91,48 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) error {
 	return nil
 }
 
-// compactTable merges small data files within each partition into larger ones.
-// Returns true if any group was rewritten. No-op when the plan is empty (files
-// already large enough - the common case given roll-on-size at write time).
-func compactTable(ctx context.Context, tbl *icetable.Table) (bool, error) {
+// compactTable merges small data files within each partition into larger
+// ones, stopping once budget bytes worth of groups have been selected (always
+// including at least one group, so a single oversized group doesn't stall
+// forever). Returns whether anything was rewritten and how many bytes it
+// covered, so the caller can debit its own running budget. No-op when the
+// plan is empty (files already large enough - the common case given
+// roll-on-size at write time).
+func compactTable(ctx context.Context, tbl *icetable.Table, budget int64) (bool, int64, error) {
 	plan, err := compaction.Analyze(ctx, tbl, compaction.DefaultConfig())
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if len(plan.Groups) == 0 {
-		return false, nil
+		return false, 0, nil
 	}
-	groups := make([]icetable.CompactionTaskGroup, len(plan.Groups))
-	for i, g := range plan.Groups {
-		groups[i] = icetable.CompactionTaskGroup{
+
+	var groups []icetable.CompactionTaskGroup
+	var groupBytes int64
+	for _, g := range plan.Groups {
+		if groupBytes > 0 && groupBytes+g.TotalSizeBytes > budget {
+			break
+		}
+		groups = append(groups, icetable.CompactionTaskGroup{
 			PartitionKey:   g.PartitionKey,
 			Tasks:          g.Tasks,
 			TotalSizeBytes: g.TotalSizeBytes,
-		}
+		})
+		groupBytes += g.TotalSizeBytes
 	}
+
 	tx := tbl.NewTransaction()
 	if _, err := tx.RewriteDataFiles(ctx, groups, icetable.RewriteDataFilesOptions{
 		GroupOptions: []icetable.CompactionGroupOption{
 			icetable.WithCompactionScanConcurrency(maintainScanConcurrency),
 		},
 	}); err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if _, err := tx.Commit(ctx); err != nil {
-		return false, err
+		return false, 0, err
 	}
-	return true, nil
+	return true, groupBytes, nil
 }
 
 // expireSnapshots drops snapshots older than the retention window (keeping at
