@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strings"
 	"time"
@@ -24,12 +25,21 @@ type MaintainOptions struct {
 	// current file layout. 0 disables compaction entirely (snapshot expiry
 	// still runs).
 	ByteBudget int64
+	// CommitRetries bounds how many times compactGroup reloads and retries a
+	// single group's commit after losing an optimistic-concurrency race.
+	CommitRetries int
 }
 
 // DefaultMaintainOptions returns sensible defaults: keep ~7 days of snapshots,
-// never fewer than 10, and compact at most ~2GiB per pass.
+// never fewer than 10, compact at most ~2GiB per pass, and retry a lost
+// commit race up to 3 times.
 func DefaultMaintainOptions() MaintainOptions {
-	return MaintainOptions{ExpireOlderThan: 7 * 24 * time.Hour, RetainLast: 10, ByteBudget: 2 << 30}
+	return MaintainOptions{
+		ExpireOlderThan: 7 * 24 * time.Hour,
+		RetainLast:      10,
+		ByteBudget:      2 << 30,
+		CommitRetries:   3,
+	}
 }
 
 // maintainScanConcurrency caps compaction's concurrent file-decode workers.
@@ -39,6 +49,11 @@ func DefaultMaintainOptions() MaintainOptions {
 // actually allowed, which is what caused repeated OOMKills on an abnormal
 // backlog. Matches the maintain CronJob's own CPU limit; bump alongside it.
 const maintainScanConcurrency = 4
+
+// maintainCommitConflictBackoff is the fixed delay before compactGroup
+// reloads and retries after losing a commit race, so the retry doesn't
+// immediately re-collide with a writer on a regular commit cadence.
+const maintainCommitConflictBackoff = 2 * time.Second
 
 // Maintain runs compaction + snapshot expiry across every fractal's Iceberg
 // table. It is intended to run as a SINGLETON (k8s CronJob with concurrencyPolicy
@@ -50,33 +65,45 @@ const maintainScanConcurrency = 4
 // standalone entrypoint); roll-on-size + snapshot expiry keep growth bounded.
 func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) error {
 	ns := catalog.ToIdentifier(Namespace)
-	var tables, compacted, expired int
-	budget := opts.ByteBudget
+
+	var idents []icetable.Identifier
 	for ident, err := range c.cat.ListTables(ctx, ns) {
 		if err != nil {
 			log.Printf("[Maintain] list tables: %v", err)
 			continue
 		}
-		tables++
+		idents = append(idents, ident)
+	}
+
+	var compacted, failedGroups, expired int
+	budget := opts.ByteBudget
+	for i, ident := range idents {
 		name := ident[len(ident)-1]
 
-		tbl, err := c.cat.LoadTable(ctx, ident)
-		if err != nil {
-			log.Printf("[Maintain] load %s: %v", name, err)
-			continue
-		}
-
-		// Once the pass's byte budget is spent, skip compaction for the rest
-		// of this run (snapshot expiry still proceeds) -- the remaining
-		// backlog is picked up next run rather than risking an OOM trying to
-		// compact everything in one pass.
+		// Split the remaining budget evenly across the tables not yet
+		// visited this pass, so one early, backlog-heavy table can't
+		// permanently starve tables later in iteration order. A table's
+		// unused share simply isn't debited (budget is only reduced by bytes
+		// actually compacted), so it grows later tables' shares in turn.
 		if budget > 0 {
-			did, n, err := compactTableWithRetry(ctx, c, ident, tbl, budget)
+			share := budget / int64(len(idents)-i)
+			tbl, err := c.cat.LoadTable(ctx, ident)
 			if err != nil {
-				log.Printf("[Maintain] compact %s: %v", name, err)
-			} else if did {
-				compacted++
-				budget -= n
+				log.Printf("[Maintain] load %s: %v", name, err)
+			} else {
+				did, n, failed, err := compactTable(ctx, c, ident, tbl, share, opts.CommitRetries)
+				if err != nil {
+					log.Printf("[Maintain] compact %s: %v", name, err)
+				} else {
+					if did {
+						compacted++
+						budget -= n
+					}
+					if failed > 0 {
+						failedGroups += failed
+						log.Printf("[Maintain] compact %s: %d group(s) failed after retries, skipped", name, failed)
+					}
+				}
 			}
 		}
 
@@ -88,91 +115,138 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) error {
 			}
 		}
 	}
-	log.Printf("[Maintain] done: %d tables, %d compacted, %d expired", tables, compacted, expired)
+	log.Printf("[Maintain] done: %d tables, %d compacted, %d groups failed, %d expired", len(idents), compacted, failedGroups, expired)
 	return nil
 }
 
 // compactTable merges small data files within each partition into larger
-// ones, stopping once budget bytes worth of groups have been selected (always
-// including at least one group, so a single oversized group doesn't stall
-// forever). Returns whether anything was rewritten and how many bytes it
-// covered, so the caller can debit its own running budget. No-op when the
-// plan is empty (files already large enough - the common case given
+// ones, committing one file group at a time (see compactGroup) so a lost
+// race with a concurrent append only costs a retry of that one group's
+// rewrite, not the whole pass's budget -- the "partial progress" pattern
+// Iceberg operators use for actively-written tables, since a single big
+// commit racing a busy writer can lose every attempt indefinitely. Groups are
+// selected up to budget bytes; the first selected group is always included
+// even if it alone exceeds budget (a single oversized group -- e.g. one
+// flagged purely by delete-file count, independent of size -- must not stall
+// forever), which is logged so that safety valve is visible rather than
+// silent. Returns whether anything was compacted, how many bytes it covered
+// (so the caller can debit its own running budget), and how many selected
+// groups exhausted their retries and were skipped rather than committed. No-op
+// when the plan is empty (files already large enough - the common case given
 // roll-on-size at write time).
-func compactTable(ctx context.Context, tbl *icetable.Table, budget int64) (bool, int64, error) {
+func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, budget int64, retries int) (bool, int64, int, error) {
 	plan, err := compaction.Analyze(ctx, tbl, compaction.DefaultConfig())
 	if err != nil {
-		return false, 0, err
+		return false, 0, 0, err
 	}
 	if len(plan.Groups) == 0 {
-		return false, 0, nil
+		return false, 0, 0, nil
 	}
 
-	var groups []icetable.CompactionTaskGroup
+	var selected []compaction.Group
 	var groupBytes int64
 	for _, g := range plan.Groups {
-		if groupBytes > 0 && groupBytes+g.TotalSizeBytes > budget {
+		if len(selected) > 0 && groupBytes+g.TotalSizeBytes > budget {
 			break
 		}
-		groups = append(groups, icetable.CompactionTaskGroup{
+		selected = append(selected, g)
+		groupBytes += g.TotalSizeBytes
+	}
+	if groupBytes > budget {
+		log.Printf("[Maintain] compact %s: lead group is %d bytes, over this pass's %d byte budget for the table; compacting it anyway rather than stalling on it forever",
+			ident[len(ident)-1], groupBytes, budget)
+	}
+
+	var compactedAny bool
+	var totalBytes int64
+	var failed int
+	for _, g := range selected {
+		group := icetable.CompactionTaskGroup{
 			PartitionKey:   g.PartitionKey,
 			Tasks:          g.Tasks,
 			TotalSizeBytes: g.TotalSizeBytes,
-		})
-		groupBytes += g.TotalSizeBytes
+		}
+		updated, err := compactGroup(ctx, c, ident, tbl, group, retries)
+		tbl = updated
+		if err != nil {
+			log.Printf("[Maintain] compact %s: group %s: %v", ident[len(ident)-1], g.PartitionKey, err)
+			failed++
+			continue
+		}
+		compactedAny = true
+		totalBytes += g.TotalSizeBytes
 	}
-
-	tx := tbl.NewTransaction()
-	if _, err := tx.RewriteDataFiles(ctx, groups, icetable.RewriteDataFilesOptions{
-		GroupOptions: []icetable.CompactionGroupOption{
-			icetable.WithCompactionScanConcurrency(maintainScanConcurrency),
-		},
-	}); err != nil {
-		return false, 0, err
-	}
-	if _, err := tx.Commit(ctx); err != nil {
-		return false, 0, err
-	}
-	return true, groupBytes, nil
+	return compactedAny, totalBytes, failed, nil
 }
 
-// maintainCommitRetries bounds how many times compactTableWithRetry reloads
-// and retries a table after losing an optimistic-concurrency race.
-const maintainCommitRetries = 3
-
-// compactTableWithRetry runs compactTable, retrying on a lost optimistic-
-// concurrency race against the live archiver (which appends to the same
-// tables continuously): if a new snapshot lands on "main" between this pass's
-// plan and its commit, iceberg-go rejects the commit rather than silently
-// clobbering it. That's expected under concurrent ingest + compaction, not a
-// real failure, so it's handled by reloading the table and retrying the plan
-// against current state. iceberg-go returns this as a plain error with no
-// sentinel type to match against, so detection is a substring check on its
-// fixed "requirement failed:" message prefix.
-func compactTableWithRetry(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, budget int64) (bool, int64, error) {
+// compactGroup rewrites and commits a single compaction group, retrying
+// against a freshly reloaded table if it loses a commit race against the
+// live archiver appending to the same table. iceberg-go's own Table.doCommit
+// has a built-in retry-with-backoff loop, but it is gated on
+// errors.Is(err, icetable.ErrCommitFailed) -- the requirement-validation
+// conflict this actually hits in production (a bare, unwrapped error from the
+// shared pre-commit Requirement.Validate() check, e.g. "requirement failed:
+// branch \"main\" has changed: ...") never satisfies that check, so
+// iceberg-go's internal retry never engages for it; hence the retry here.
+// RewriteDataFiles errors are treated the same as Commit errors (both
+// checked via isCommitConflict) since a concurrently-modified source file
+// can surface the same conflict shape from either call.
+//
+// Always returns the freshest table handle available -- even on final
+// failure -- so the caller carries forward whatever this call last reloaded
+// rather than starting the next group from an already-known-stale table.
+func compactGroup(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, group icetable.CompactionTaskGroup, retries int) (*icetable.Table, error) {
+	if retries < 1 {
+		retries = 1
+	}
 	var lastErr error
-	for attempt := 0; attempt < maintainCommitRetries; attempt++ {
-		did, n, err := compactTable(ctx, tbl, budget)
-		if err == nil {
-			return did, n, nil
+	for attempt := 0; attempt < retries; attempt++ {
+		tx := tbl.NewTransaction()
+		var err error
+		if _, err = tx.RewriteDataFiles(ctx, []icetable.CompactionTaskGroup{group}, icetable.RewriteDataFilesOptions{
+			GroupOptions: []icetable.CompactionGroupOption{
+				icetable.WithCompactionScanConcurrency(maintainScanConcurrency),
+			},
+		}); err == nil {
+			var updated *icetable.Table
+			if updated, err = tx.Commit(ctx); err == nil {
+				return updated, nil
+			}
 		}
+
 		if !isCommitConflict(err) {
-			return false, 0, err
+			return tbl, err
 		}
 		lastErr = err
+		if attempt == retries-1 {
+			break
+		}
 		log.Printf("[Maintain] compact %s: lost commit race with concurrent append, retrying (%d/%d)",
-			ident[len(ident)-1], attempt+1, maintainCommitRetries)
-		reloaded, rerr := c.cat.LoadTable(ctx, ident)
-		if rerr != nil {
-			return false, 0, rerr
+			ident[len(ident)-1], attempt+1, retries)
+		if !sleep(ctx, maintainCommitConflictBackoff) {
+			return tbl, ctx.Err()
+		}
+		reloaded, err2 := c.cat.LoadTable(ctx, ident)
+		if err2 != nil {
+			return tbl, err2
 		}
 		tbl = reloaded
 	}
-	return false, 0, lastErr
+	return tbl, lastErr
 }
 
+// isCommitConflict reports whether err is a retryable optimistic-concurrency
+// conflict rather than a permanent failure: either iceberg-go's sentinel for
+// a catalog-level compare-and-swap loss (ErrCommitFailed -- e.g. the SQL
+// catalog's "metadata-location moved underneath us"), or the bare
+// "requirement failed: ..." error the shared pre-commit Requirement.Validate()
+// check returns unwrapped when a branch/tag moved since this transaction's
+// table was loaded. iceberg-go's own commit-retry loop only covers the first
+// shape (it's gated on errors.Is(err, ErrCommitFailed)); the second is not a
+// stable/versioned API contract, just iceberg-go's current error text, so a
+// future upstream wording change could silently stop this matching.
 func isCommitConflict(err error) bool {
-	return strings.Contains(err.Error(), "requirement failed")
+	return errors.Is(err, icetable.ErrCommitFailed) || strings.Contains(err.Error(), "requirement failed")
 }
 
 // expireSnapshots drops snapshots older than the retention window (keeping at

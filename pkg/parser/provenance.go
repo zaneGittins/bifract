@@ -22,6 +22,14 @@ const (
 	maxPgrLimit     = 20000
 )
 
+// defaultDiffuseLambda is the decay rate for diffuse=true's anomaly propagation (see
+// diffuseProvenanceRows in pkg/query/provenance.go: S(v) = surp(edge) + lambda*S(parent)). Lower
+// = faster decay = a chain of only-modestly-anomalous edges needs to be more concentrated before
+// it reads as high; lambda=0 makes propagation a no-op (propagated score == raw score, i.e.
+// diffuse=true collapses toward diffuse=false's output). Exposed as lambda= so recalibrating
+// against real data doesn't require a code change each time.
+const defaultDiffuseLambda = 0.2
+
 // Reconnection (NoDoze object-mediated) caps. Every value bounds a step so cross-tree
 // reconnection stays per-subgraph and rarity-pruned -- never an all-pairs join over the
 // full table. See pkg/query/provenance.go for how the resolver orchestrates these.
@@ -84,6 +92,7 @@ type ProvenanceParams struct {
 	EdgeTypes map[string]bool // non-spawn event_types to include; nil/empty = all
 	Reconnect bool            // enable cross-tree reconnection via shared leaves (default true)
 	Diffuse   bool            // propagate anomaly along the tree (NoDoze diffusion); default true
+	Lambda    float64         // diffusion decay rate, 0.0-1.0 (default defaultDiffuseLambda); only used when Diffuse
 	Limit     int             // outer result-row cap (default defaultPgrLimit, max maxPgrLimit)
 }
 
@@ -132,7 +141,7 @@ func parseEdgeTypeList(v string) []string {
 // missing. pgr is a source command (see source_command.go): the query layer's source resolver
 // calls this, then orchestrates the two-pass query into a subquery source.
 func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
-	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7, Reconnect: true, Diffuse: true, Limit: defaultPgrLimit}
+	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7, Reconnect: true, Diffuse: true, Limit: defaultPgrLimit, Lambda: defaultDiffuseLambda}
 	var includeTypes, excludeTypes []string
 	for _, arg := range cmd.Arguments {
 		switch {
@@ -151,6 +160,10 @@ func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
 		case strings.HasPrefix(arg, "diffuse="):
 			v := strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "diffuse="), "\"'"))
 			p.Diffuse = v != "false" && v != "0" && v != "no"
+		case strings.HasPrefix(arg, "lambda="):
+			if l, err := strconv.ParseFloat(strings.TrimPrefix(arg, "lambda="), 64); err == nil && l >= 0 && l <= 1 {
+				p.Lambda = l
+			}
 		case strings.HasPrefix(arg, "depth="):
 			if d, err := strconv.Atoi(strings.TrimPrefix(arg, "depth=")); err == nil && d > 0 {
 				p.Depth = d

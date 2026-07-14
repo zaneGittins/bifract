@@ -134,7 +134,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		}
 		return fb, nil
 	}
-	survivors := diffuseProvenanceRows(rows, p.Threshold)
+	survivors := diffuseProvenanceRows(rows, p.Threshold, p.Lambda)
 	sql, dropped, overflow := emitLiteralEdgeSource(survivors, provenanceColumns, provenanceNumericColumns, diffuseMaxEmitBytes)
 	if overflow {
 		// The spawn backbone alone exceeds the inline-literal budget (a very large tree). Re-emitting
@@ -166,20 +166,23 @@ const diffuseMaxScanRows = 20000
 // diffuseProvenanceRows applies NoDoze network-diffusion to the scored edge rows IN GO. Anomaly is
 // propagated along the spawn spine in SURPRISAL space (s = -log(1 - anomaly)): a common edge
 // contributes ~0 so deep BENIGN chains stay cold (no length bias), while a chain of individually
-// -common edges (LOLBins) compounds. Per process: S(v) = s(spawn edge into v) + LAMBDA*S(parent);
+// -common edges (LOLBins) compounds. Per process: S(v) = s(spawn edge into v) + lambda*S(parent);
 // the geometric decay bounds S so infinite chains converge. Each row's anomaly_score is overwritten
 // with the propagated value 1 - exp(-S), then non-spawn edges below threshold are dropped (spawn is
 // always kept so the full process tree is never truncated). Returns the surviving rows (filtered in
 // place). Bounded O(V+E).
-func diffuseProvenanceRows(rows []map[string]interface{}, threshold float64) []map[string]interface{} {
-	// lambda was 0.7: a slow decay, so S(v)'s geometric series converges to a fairly high
-	// steady-state for ANY sufficiently deep chain of only-modestly-anomalous edges, not just a
-	// genuinely concentrated one -- on a thin baseline (this deployment's proc_freq has limited
-	// historical volume, so plenty of legitimately-benign relationships read as "somewhat rare"),
-	// that compounded into most of a deep tree painting red regardless of whether anything
-	// suspicious was actually happening. Lowered to 0.4 so accumulation decays faster and a
-	// genuinely concentrated signal is needed to read as high.
-	const lambda, floor = 0.4, 0.01
+//
+// lambda (caller-supplied -- see ProvenanceParams.Lambda / lambda=, default defaultDiffuseLambda)
+// governs decay: too slow (this was a hardcoded 0.7) makes S(v)'s geometric series converge to a
+// fairly high steady-state for ANY sufficiently deep chain of only-modestly-anomalous edges, not
+// just a genuinely concentrated one -- on a thin baseline (limited proc_freq historical volume
+// means plenty of legitimately-benign relationships read as "somewhat rare"), that compounds into
+// most of a deep tree painting red regardless of whether anything suspicious is actually
+// happening. lambda=0 makes propagation a no-op (propagated score == raw score, i.e. diffuse=true
+// collapses toward diffuse=false's output). Made tunable per-query rather than fixed, since the
+// right decay is a property of this deployment's baseline, not a universal constant.
+func diffuseProvenanceRows(rows []map[string]interface{}, threshold, lambda float64) []map[string]interface{} {
+	const floor = 0.01
 	surp := func(a float64) float64 {
 		m := 1 - a
 		if m < floor {
