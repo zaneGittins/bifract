@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/apache/iceberg-go/catalog"
@@ -70,7 +71,7 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) error {
 		// backlog is picked up next run rather than risking an OOM trying to
 		// compact everything in one pass.
 		if budget > 0 {
-			did, n, err := compactTable(ctx, tbl, budget)
+			did, n, err := compactTableWithRetry(ctx, c, ident, tbl, budget)
 			if err != nil {
 				log.Printf("[Maintain] compact %s: %v", name, err)
 			} else if did {
@@ -133,6 +134,45 @@ func compactTable(ctx context.Context, tbl *icetable.Table, budget int64) (bool,
 		return false, 0, err
 	}
 	return true, groupBytes, nil
+}
+
+// maintainCommitRetries bounds how many times compactTableWithRetry reloads
+// and retries a table after losing an optimistic-concurrency race.
+const maintainCommitRetries = 3
+
+// compactTableWithRetry runs compactTable, retrying on a lost optimistic-
+// concurrency race against the live archiver (which appends to the same
+// tables continuously): if a new snapshot lands on "main" between this pass's
+// plan and its commit, iceberg-go rejects the commit rather than silently
+// clobbering it. That's expected under concurrent ingest + compaction, not a
+// real failure, so it's handled by reloading the table and retrying the plan
+// against current state. iceberg-go returns this as a plain error with no
+// sentinel type to match against, so detection is a substring check on its
+// fixed "requirement failed:" message prefix.
+func compactTableWithRetry(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, budget int64) (bool, int64, error) {
+	var lastErr error
+	for attempt := 0; attempt < maintainCommitRetries; attempt++ {
+		did, n, err := compactTable(ctx, tbl, budget)
+		if err == nil {
+			return did, n, nil
+		}
+		if !isCommitConflict(err) {
+			return false, 0, err
+		}
+		lastErr = err
+		log.Printf("[Maintain] compact %s: lost commit race with concurrent append, retrying (%d/%d)",
+			ident[len(ident)-1], attempt+1, maintainCommitRetries)
+		reloaded, rerr := c.cat.LoadTable(ctx, ident)
+		if rerr != nil {
+			return false, 0, rerr
+		}
+		tbl = reloaded
+	}
+	return false, 0, lastErr
+}
+
+func isCommitConflict(err error) bool {
+	return strings.Contains(err.Error(), "requirement failed")
 }
 
 // expireSnapshots drops snapshots older than the retention window (keeping at

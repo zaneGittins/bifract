@@ -3286,7 +3286,7 @@ const QueryExecutor = {
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ghost"></span>Missing creation (parent not in time range)</div>
                     <div class="pg-legend-title">Edges</div>
                     <div class="pg-legend-row"><span class="pg-legend-line pg-ll-spawn"></span>Spawned</div>
-                    <div class="pg-legend-row"><span class="pg-legend-line pg-ll-recon"></span>Reconnection (shared IP / domain / dropped file)</div>
+                    <div class="pg-legend-row"><span class="pg-legend-line pg-ll-recon"></span>Reconnection (shared IP / domain / dropped file) &mdash; hover either end to reveal</div>
                     <div class="pg-legend-note">Chips on a node count its files / connections / DNS / links.</div>
                 </div>
             </div>
@@ -3318,6 +3318,28 @@ const QueryExecutor = {
         if (legendBtn && legend) {
             legendBtn.addEventListener('click', (e) => { e.stopPropagation(); legend.hidden = !legend.hidden; });
             document.addEventListener('click', (e) => { if (!legend.hidden && !legend.contains(e.target) && e.target !== legendBtn) legend.hidden = true; });
+        }
+        // "N reconnections" stat: always-visible count (zero extra chrome when there's nothing to
+        // show), opening the graph-wide overview drawer on click -- the standing "is there
+        // anything worth chasing" surface (see _pgOpenReconOverview), rather than a permanently
+        // open panel that costs canvas space on every graph.
+        const reconBtn = bar.querySelector('.pg-stat-recon');
+        if (reconBtn) {
+            reconBtn.classList.add('pg-stat-click');
+            reconBtn.setAttribute('role', 'button');
+            reconBtn.setAttribute('tabindex', '0');
+            reconBtn.title = 'Cross-tree reconnections — click to list them';
+            const openOverview = () => {
+                if (this._pgView !== 'graph') {
+                    this._pgView = 'graph';
+                    bar.querySelectorAll('.pg-view-btn').forEach(b => b.classList.toggle('active', b.dataset.view === 'graph'));
+                    const gc = bar.querySelector('.pg-graph-controls'); if (gc) gc.style.display = '';
+                    this._pgRender();
+                }
+                this._pgOpenReconOverview();
+            };
+            reconBtn.addEventListener('click', openOverview);
+            reconBtn.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openOverview(); } });
         }
     },
 
@@ -3409,6 +3431,10 @@ const QueryExecutor = {
 
     _pgRenderGraph(host) {
         this._pgCloseContextMenu();
+        // Rebuilding the DOM drops whatever reconnection path was mid-hover-reveal (a fresh path
+        // element never carries the old .pg-recon-active class) -- reset the tracked id so a
+        // stale match doesn't short-circuit _pgSetReconHover and leave the line stuck hidden.
+        this._pgHoverReconId = null;
         const m = this._pgModel;
         const esc = Utils.escapeHtml;
         const min = this._pgMinAnomaly || 0;
@@ -3503,7 +3529,7 @@ const QueryExecutor = {
         // artifacts/bridges the two processes have; the link chip reveals them).
         linkPairs.forEach(lp => {
             const sp = pos.get(lp.a), tp = pos.get(lp.b);
-            edgeSegs.push({ x1: sp.x, y1: sp.y, x2: tp.x, y2: tp.y, a: NaN, sev: 'none', w: 1.6, dash: 1, recon: true, toObj: true });
+            edgeSegs.push({ x1: sp.x, y1: sp.y, x2: tp.x, y2: tp.y, a: NaN, sev: 'none', w: 1.6, dash: 1, recon: true, toObj: true, reconA: lp.a, reconB: lp.b });
         });
         // Straight segments: a linear chain is colinear (row == depth), so consecutive edges
         // align into one clean diagonal spine, exactly like the CrowdStrike/Elastic rail.
@@ -3525,7 +3551,12 @@ const QueryExecutor = {
         edgeSegs.forEach(e => {
             const cls = `pg-e pg-e-${e.sev}${e.dash ? ' pg-e-dash' : ''}${e.recon ? ' pg-e-recon' : ''}`;
             const mk = (e.recon && e.toObj) ? '' : ` marker-end="url(#pgar-${e.sev})"`;
-            svg += `<path d="${pathFor(e)}" class="${cls}" style="stroke-width:${e.w}"${mk}/>`;
+            // Reconnection bridges stay invisible until the analyst is actually on one of the two
+            // endpoints (see _pgSetReconHover) -- a persistent purple line across the whole canvas
+            // for every cross-tree link was the #1 clutter complaint, and the relationship is
+            // still fully discoverable (link chip on the node, and now hover) without it.
+            const rd = e.recon ? ` data-a="${esc(e.reconA)}" data-b="${esc(e.reconB)}"` : '';
+            svg += `<path d="${pathFor(e)}" class="${cls}"${rd} style="stroke-width:${e.w}"${mk}/>`;
         });
         svg += '</svg>';
         let elabels = '';
@@ -3634,18 +3665,32 @@ const QueryExecutor = {
     // DFS where every node takes its OWN row (y) and x = depth. A linear chain therefore lands
     // on a diagonal (row == depth); a wide sibling group stacks as an indented column with its
     // parent-to-child edges fanning down the left gutter, so leaf labels never collide.
+    //
+    // Each ROOT gets its own lane (a fresh x=0/y=0 origin, offset right by the previous lanes'
+    // width), rather than one shared vertical stack. Separate roots only arise from cross-tree
+    // reconnection -- they share no ancestor, so there's no real depth to align between them;
+    // sharing an x-origin implied a kinship that isn't there. Lanes also bound total canvas
+    // height by the TALLEST tree instead of the SUM of all trees (reconnected peers are usually
+    // small next to the primary investigated tree), and read at a glance as "separate, merely
+    // linked" rather than "part of one forest."
     _pgOutlineLayout(roots, kidsOf) {
-        const ROW_H = 52, INDENT = 112;
-        let row = 0;
+        const ROW_H = 52, INDENT = 112, LANE_GUTTER = 260;
         const pos = new Map(), seen = new Set();
-        const visit = (id, depth) => {
-            if (seen.has(id)) return; seen.add(id);
-            pos.set(id, { x: depth * INDENT, y: row * ROW_H }); row++;
-            (kidsOf.get(id) || []).forEach(k => visit(k, depth + 1));
-        };
-        // roots = processes with no spawn parent, so this covers interaction-only orphans too;
-        // a collapsed node's kidsOf is empty, so its descendants stay hidden (not re-rooted).
-        roots.forEach(r => visit(r, 0));
+        let laneX = 0;
+        roots.forEach(r => {
+            if (seen.has(r)) return; // already placed via an earlier root's own subtree
+            let row = 0, maxDepth = 0;
+            const visit = (id, depth) => {
+                if (seen.has(id)) return; seen.add(id);
+                pos.set(id, { x: laneX + depth * INDENT, y: row * ROW_H }); row++;
+                if (depth > maxDepth) maxDepth = depth;
+                (kidsOf.get(id) || []).forEach(k => visit(k, depth + 1));
+            };
+            // roots = processes with no spawn parent, so this covers interaction-only orphans too;
+            // a collapsed node's kidsOf is empty, so its descendants stay hidden (not re-rooted).
+            visit(r, 0);
+            laneX += (maxDepth + 1) * INDENT + LANE_GUTTER;
+        });
         return pos;
     },
 
@@ -3715,7 +3760,34 @@ const QueryExecutor = {
             e.preventDefault();
             this._pgShowContextMenu(e.clientX, e.clientY, node.dataset.id);
         };
+        // Reconnection bridges are hidden until the analyst is on one of the two endpoint nodes.
+        // mouseover/mouseout (not mouseenter/mouseleave, which don't bubble) with a relatedTarget
+        // check so moving between elements WITHIN the same node never flickers the line off/on.
+        host.addEventListener('mouseover', (e) => {
+            const node = e.target.closest('.pg-node[data-id]');
+            this._pgSetReconHover(host, node ? node.dataset.id : null);
+        });
+        host.addEventListener('mouseout', (e) => {
+            const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.pg-node[data-id]') : null;
+            if (!to) this._pgSetReconHover(host, null);
+        });
         this._pgBindMinimap(host);
+    },
+
+    // Shows/hides the reconnection bridge(s) touching `id` (null = hide whatever's currently
+    // shown). Looks up matching paths by comparing dataset values in JS rather than a CSS
+    // attribute selector, since a process_guid can contain braces that aren't valid unescaped
+    // in a selector.
+    _pgSetReconHover(host, id) {
+        if (this._pgHoverReconId === id) return;
+        if (this._pgHoverReconId != null) {
+            host.querySelectorAll('.pg-e-recon.pg-recon-active').forEach(p => p.classList.remove('pg-recon-active'));
+        }
+        this._pgHoverReconId = id;
+        if (id == null) return;
+        host.querySelectorAll('.pg-e-recon').forEach(p => {
+            if (p.dataset.a === id || p.dataset.b === id) p.classList.add('pg-recon-active');
+        });
     },
 
     // Right-click context menu on a process node. Analyze from here now lives here (removed from the
@@ -3764,6 +3836,74 @@ const QueryExecutor = {
         if (this._pgCtxKey) { document.removeEventListener('keydown', this._pgCtxKey); this._pgCtxKey = null; }
     },
 
+    // Shared icon/label/row rendering for a shared-artifact (IOC) entry -- used by both the
+    // per-node reconnection drawer (_pgOpenDrawer, type 'link') and the graph-wide overview
+    // (_pgOpenReconOverview) so the two don't drift.
+    _pgIocIcon(t) {
+        const RICON = {
+            net: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11a4 4 0 0 1 0 8H9m0 0 3-3m-3 3 3 3"/></svg>',
+            dns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18"/></svg>',
+            file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
+        };
+        return RICON[t] || RICON.net;
+    },
+    _pgIocKind(t) { return t === 'file' ? 'dropped & ran' : t === 'net' ? 'shared IP' : t === 'dns' ? 'shared domain' : 'shared'; },
+    _pgIocRow(esc, i) {
+        const dl = i.info ? ` data-log='${esc(JSON.stringify(i.info))}'` : '';
+        const v = esc(String(i.label || ''));
+        return `<div class="pg-recon-ioc"${dl} title="${v}"><span class="pg-recon-ioc-ico pg-ico-${i.type}">${this._pgIocIcon(i.type)}</span>` +
+            `<span class="pg-recon-ioc-val">${v}</span><span class="pg-recon-ioc-kind">${this._pgIocKind(i.type)}</span></div>`;
+    },
+
+    // Graph-wide reconnection list: every cross-tree pair currently in the model (not scoped to
+    // one node), so an analyst can triage "is there anything worth chasing" before hunting for
+    // linked nodes one at a time. Opened from the toolbar's "N reconnections" stat.
+    _pgOpenReconOverview() {
+        const host = this._pgGraphHost, m = this._pgModel;
+        const drawer = host && host.querySelector('.pg-drawer');
+        if (!drawer || !m || !m.linkInfo) return;
+        const esc = Utils.escapeHtml;
+        const pairs = new Map();
+        m.linkInfo.forEach((links, g) => links.forEach(l => {
+            if (g >= l.peerGuid) return; // each pair rides on both sides' lists -- take it once
+            const key = g + '\x00' + l.peerGuid;
+            let pr = pairs.get(key);
+            if (!pr) {
+                pr = { a: g, b: l.peerGuid, nameA: this._pgShort(m.procLabel.get(g) || g), nameB: this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid), host: l.peerHost, crossHost: !!l.crossHost, iocs: [] };
+                pairs.set(key, pr);
+            }
+            if (l.crossHost) pr.crossHost = true;
+            pr.iocs.push({ type: l.type, label: l.label, info: l.info });
+        }));
+        const list = Array.from(pairs.values());
+        const cards = list.map(pr => {
+            const hostChip = pr.crossHost && pr.host ? `<span class="pg-recon-host" title="on another computer">${esc(String(pr.host))}</span>` : '';
+            const iocs = pr.iocs.map(i => this._pgIocRow(esc, i)).join('');
+            return `<div class="pg-recon-pair">` +
+                `<div class="pg-recon-pair-top">` +
+                `<span class="pg-recon-pair-end" data-focus="${esc(pr.a)}" role="button" tabindex="0" title="Center on ${esc(pr.nameA)}">${esc(pr.nameA)}</span>` +
+                `<svg class="pg-recon-pair-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>` +
+                `<span class="pg-recon-pair-end" data-focus="${esc(pr.b)}" role="button" tabindex="0" title="Center on ${esc(pr.nameB)}">${esc(pr.nameB)}</span>${hostChip}` +
+                `</div><div class="pg-recon-ioclist">${iocs}</div></div>`;
+        }).join('') || '<div class="pg-drawer-empty">No reconnections.</div>';
+        drawer.innerHTML = `<div class="pg-drawer-head"><div class="pg-drawer-title"><span class="pg-drawer-heading">Reconnections</span></div>` +
+            `<button class="pg-drawer-close" title="Close">&times;</button></div>` +
+            `<div class="pg-drawer-count">${list.length} linked pair${list.length === 1 ? '' : 's'}</div><div class="pg-drawer-body">${cards}</div>`;
+        drawer.hidden = false;
+        requestAnimationFrame(() => drawer.classList.add('open'));
+        const mm = host.querySelector('.pg-minimap'); if (mm) mm.style.opacity = '0';
+        drawer.querySelector('.pg-drawer-close')?.addEventListener('click', () => this._pgCloseDrawer());
+        drawer.querySelectorAll('.pg-recon-ioc[data-log]').forEach(el => el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            try { this._pgOpenLog(JSON.parse(el.dataset.log)); } catch (_) { }
+        }));
+        drawer.querySelectorAll('.pg-recon-pair-end[data-focus]').forEach(c => {
+            const go = () => this._pgFocusNode(c.dataset.focus);
+            c.addEventListener('click', go);
+            c.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+        });
+    },
+
     // Slide-out drawer: the file/network/dns (or interaction) values for one process, shown
     // in-graph so the artifacts stay visible without exploding them into nodes. Rows open the
     // source log. This is the interim view until NoDoze object-mediated reconnection promotes
@@ -3793,12 +3933,6 @@ const QueryExecutor = {
         // evidence. The whole card navigates to the peer in the graph; each IOC opens its own log.
         // No stuck-on buttons -- the card is the action, so there's no "row vs button" ambiguity.
         if (type === 'link') {
-            const RICON = {
-                net: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11a4 4 0 0 1 0 8H9m0 0 3-3m-3 3 3 3"/></svg>',
-                dns: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18"/></svg>',
-                file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
-            };
-            const kind = (t) => t === 'file' ? 'dropped & ran' : t === 'net' ? 'shared IP' : t === 'dns' ? 'shared domain' : 'shared';
             const byPeer = new Map();
             ((m.linkInfo && m.linkInfo.get(guid)) || []).forEach(l => {
                 let pr = byPeer.get(l.peerGuid);
@@ -3809,12 +3943,7 @@ const QueryExecutor = {
             const peers = Array.from(byPeer.values());
             const cards = peers.map(pr => {
                 const hostChip = pr.crossHost && pr.host ? `<span class="pg-recon-host" title="on another computer">${esc(String(pr.host))}</span>` : '';
-                const iocs = pr.iocs.map(i => {
-                    const dl = i.info ? ` data-log='${esc(JSON.stringify(i.info))}'` : '';
-                    const v = esc(String(i.label || ''));
-                    return `<div class="pg-recon-ioc"${dl} title="${v}"><span class="pg-recon-ioc-ico pg-ico-${i.type}">${RICON[i.type] || RICON.net}</span>` +
-                        `<span class="pg-recon-ioc-val">${v}</span><span class="pg-recon-ioc-kind">${kind(i.type)}</span></div>`;
-                }).join('');
+                const iocs = pr.iocs.map(i => this._pgIocRow(esc, i)).join('');
                 return `<div class="pg-recon-card" data-focus="${esc(pr.peerGuid)}" role="button" tabindex="0" title="Center the graph on ${esc(pr.name)}">` +
                     `<div class="pg-recon-card-top"><span class="pg-recon-hex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg></span>` +
                     `<span class="pg-recon-peer">${esc(pr.name)}</span>${hostChip}` +

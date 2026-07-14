@@ -16916,9 +16916,12 @@ div.vis-tooltip {
 .pg-arrow.pg-e-high { fill: var(--error); }
 .pg-arrow.pg-e-med  { fill: var(--warning); }
 .pg-arrow.pg-e-low, .pg-arrow.pg-e-none { fill: color-mix(in srgb, var(--graph-node-neutral) 72%, transparent); }
-/* Reconnection bridge (NoDoze object-mediated): distinct violet, dashed, always visible so a
-   cross-tree link never recedes like a low-anomaly spawn edge. */
-.pg-e-recon { stroke: var(--pg-recon, #a855f7); stroke-dasharray: 6 4; opacity: .95; }
+/* Reconnection bridge (NoDoze object-mediated): distinct violet, dashed. Hidden by default --
+   a persistent line across the whole canvas for every cross-tree link was pure clutter on a
+   busy graph -- and revealed (via .pg-recon-active, see _pgSetReconHover) only while the
+   analyst is on one of its two endpoint nodes. */
+.pg-e-recon { stroke: var(--pg-recon, #a855f7); stroke-dasharray: 6 4; opacity: 0; transition: opacity .15s ease; }
+.pg-e-recon.pg-recon-active { opacity: .95; }
 
 /* Nodes: hexagon chip (coloured by anomaly severity) + name + activity badges + pill. */
 .pg-node {
@@ -17132,6 +17135,26 @@ div.vis-tooltip {
 .pg-ico-file { color: var(--pg-file); }
 .pg-recon-ioc-val { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono, monospace); font-size: 12px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pg-recon-ioc-kind { flex: 0 0 auto; font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); }
+/* Graph-wide reconnection overview (_pgOpenReconOverview): one card per cross-tree PAIR, not
+   scoped to a node -- each end is independently clickable/focusable since there's no "you" side. */
+.pg-recon-pair {
+    margin: 0 0 8px; padding: 9px 10px 8px; border-radius: 9px;
+    background: color-mix(in srgb, var(--pg-recon, #a855f7) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--pg-recon, #a855f7) 22%, transparent);
+}
+.pg-recon-pair-top { display: flex; align-items: center; gap: 7px; }
+.pg-recon-pair-end {
+    font-size: 13px; font-weight: 700; color: var(--text-primary); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0; cursor: pointer; border-radius: 5px; padding: 1px 3px; margin: -1px -3px;
+    transition: background .12s, color .12s;
+}
+.pg-recon-pair-end:hover, .pg-recon-pair-end:focus-visible { background: color-mix(in srgb, var(--pg-recon, #a855f7) 16%, transparent); color: var(--pg-recon, #a855f7); outline: none; }
+.pg-recon-pair-arrow { flex: 0 0 auto; width: 14px; height: 14px; color: var(--text-muted); }
+.pg-recon-pair .pg-recon-ioclist { margin-top: 7px; }
+/* Toolbar stat chip that opens the overview -- affordance only appears once it's actionable
+   (reconN > 0, see _pgBuildToolbar), so it never invites a click that does nothing. */
+.pg-stat-click { cursor: pointer; border-radius: 5px; padding: 1px 5px; margin: -1px -5px; transition: background .12s; }
+.pg-stat-click:hover, .pg-stat-click:focus-visible { background: color-mix(in srgb, var(--pg-recon, #a855f7) 14%, transparent); outline: none; }
 /* Pulse a node when focused from a reconnection card. drop-shadow (not box-shadow) follows clip-path. */
 @keyframes pgPulse { 0%, 100% { filter: none; } 45% { filter: drop-shadow(0 0 7px var(--pg-recon, #a855f7)) drop-shadow(0 0 3px var(--pg-recon, #a855f7)); } }
 .pg-node.pg-pulse .pg-hex { animation: pgPulse 1.3s ease-in-out 2; }
