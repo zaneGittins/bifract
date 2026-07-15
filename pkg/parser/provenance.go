@@ -579,42 +579,18 @@ var reconnectEdgeType = map[string]string{
 	"process_access": "process_access",
 }
 
-// privateV4Re / privateAddrRe: a ClickHouse regex ALTERNATION (no anchors) for the leading form of
-// a PRIVATE/internal address. Covers RFC1918 + loopback + link-local IPv4, IPv6 loopback (::1),
-// link-local (fe80:), ULA (fc00::/7 as fcXX:/fdXX:), and IPv4-MAPPED IPv6 (::ffff:<private-v4>,
-// which plain prefix matching missed and would leak internal endpoints through as "external").
-// internalIPMatch anchors it. Shared by the net endpoint filter and the DNS internal-lookup gate so
-// the two never disagree on what "internal" means.
-const privateV4Re = `10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|127\\.|169\\.254\\.`
-const privateAddrRe = privateV4Re + `|::1$|fe80:|f[cd][0-9a-f]{2}:|::ffff:(` + privateV4Re + `)`
-
-// internalIPMatch returns a ClickHouse boolean expr: true when the address expr `col` is internal.
-func internalIPMatch(col string) string {
-	return "match(" + col + ", '^(" + privateAddrRe + ")')"
-}
-
-// ipv4Re is a quoted RE2 literal (for match()) that recognises a bare IPv4 address -- used to
-// pull IP-form endpoints out of dns_query query/query_results.
-const ipv4Re = `'^([0-9]{1,3}\\.){3}[0-9]{1,3}$'`
-
-// internalDNSExpr returns a ClickHouse boolean expr that is TRUE for a BENIGN INTERNAL name lookup
-// that must not form a reconnection bridge. Reconnection peer edges are hard-capped, so noisy
-// internal name resolution (NetBIOS, AD service discovery, internal hosts) would crowd out real
-// shared-IOC bridges. A name is treated as internal when ANY holds:
-//   - single-label name (no dot after trimming a trailing root dot) -- NetBIOS / LLMNR / mDNS
+// internalDomainExpr returns a ClickHouse boolean expr that is TRUE for a benign INTERNAL name
+// lookup that must not form a reconnection dns bridge. Reconnection peers are hard-capped, so noisy
+// internal name resolution (NetBIOS, AD service discovery) would crowd out real shared-IOC bridges.
+// It is applied to the ALREADY-ABSTRACTED domain (lowercased, trailing root dot stripped -- see
+// AbstractDomain), so only the structural checks are needed:
+//   - single-label name (no dot) -- NetBIOS / LLMNR / mDNS
 //   - AD service-discovery record -- starts with '_' (_ldap._tcp...) or contains '._msdcs.'
-//   - it resolves ONLY to internal addresses -- there is at least one IP-form result and none of the
-//     IP-form results are external (hostname/SRV-data results are ignored, so a mixed or non-IP
-//     result set never falsely excludes a real external lookup)
-// qCol/rCol are the query and query_results column expressions.
-func internalDNSExpr(qCol, rCol string) string {
-	resultsArr := "arrayFilter(x -> x != '', splitByChar(';', " + rCol + "))"
-	isIP := "(match(x, " + ipv4Re + ") OR position(x, ':') > 0)"
-	hasIP := "arrayExists(x -> " + isIP + ", " + resultsArr + ")"
-	hasExternalIP := "arrayExists(x -> " + isIP + " AND NOT " + internalIPMatch("x") + ", " + resultsArr + ")"
-	noTLD := "position(replaceRegexpOne(" + qCol + ", '\\\\.+$', ''), '.') = 0"
-	service := "startsWith(lower(" + qCol + "), '_') OR position(lower(" + qCol + "), '._msdcs.') > 0"
-	return "(" + noTLD + " OR " + service + " OR (" + hasIP + " AND NOT " + hasExternalIP + "))"
+// The former logs-based filter also excluded names resolving ONLY to internal IPs (via
+// query_results); that signal is not carried in the process_edges rollup, so it is not applied here
+// -- the proc_freq host/image rarity gate prunes widely-resolved internal names instead.
+func internalDomainExpr(col string) string {
+	return "(position(" + col + ", '.') = 0 OR startsWith(" + col + ", '_') OR position(" + col + ", '._msdcs.') > 0)"
 }
 
 // BuildReconnectionSQL is the cross-tree reverse lookup. Given the current subgraph's guids
@@ -688,14 +664,36 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, totalHosts, totalI
 	// recon_type, peer_guid, src_guid, object_id, label, anomaly, peer_image, peer_log_id, peer_ts, peer_fractal
 	var parts []string
 
-	// file: write -> execute. peer = process launched with image == a path this tree wrote;
-	// src = the tree writer of that path. Emitted later as a direct writer -> executor edge.
+	// net/dns now read the process_edges rollup (small, PK-scoped by process_guid) instead of
+	// scanning raw logs -- the same acceleration as pgr's pass-2 (measured 156s -> ms). The tree
+	// side is a PK lookup (process_guid IN tree); the peer side scans process_edges by artifact,
+	// cheap because the rollup is ~10,000x smaller than logs. fkey_tgt is the abstracted artifact
+	// (matches proc_freq.target_norm), dst_node is the 'net:'/'dns:' node id, fkey_src the actor
+	// image, label the raw artifact.
+	edgeTable := opts.ProcEdgesTable
+	if edgeTable == "" {
+		edgeTable = "process_edges"
+	}
+	edgeFrac := ""
+	if fractal != "" {
+		edgeFrac = fractal + " AND "
+	}
+	// rareGate is the proc_freq rarity subquery (host- + image-prevalence ceilings) an artifact must
+	// pass to bridge; et is the proc_freq event_type. Shared by net/dns.
+	rareGate := func(et string) string {
+		return fmt.Sprintf("SELECT target_norm FROM %s WHERE event_type = '%s'%s GROUP BY target_norm "+
+			"HAVING length(groupUniqArrayMerge(%d)(hosts)) <= %s AND uniqExact(src_image) <= %s",
+			procFreq, et, freqFrac, procFreqHostsCap, hostGate, imageGate)
+	}
+
+	// file: write -> execute. The tree's written paths come from the edge rollup (label = raw
+	// target_file); peer = a proc_lineage process launched with image == that path. The executor
+	// side stays on proc_lineage (the process skeleton carries image); it is far smaller than logs.
 	if want("file") {
 		writtenPaths := fmt.Sprintf(
-			"SELECT lower(fields.target_file::String) AS p, fields.process_guid::String AS writer FROM %[1]s WHERE %[2]s%[3]s "+
-				"AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'file_write' "+
-				"AND fields.target_file::String != '' GROUP BY p, writer LIMIT %[5]d",
-			logs, timeWin, fracAnd, inList, maxReconnectCandidateArtifacts)
+			"SELECT lower(label) AS p, any(process_guid) AS writer FROM %[1]s WHERE %[2]sevent_type = 'file_write' "+
+				"AND process_guid IN (%[3]s) AND label != '' GROUP BY p LIMIT %[4]d",
+			edgeTable, edgeFrac, inList, maxReconnectCandidateArtifacts)
 		plFrac := procLineageFractalCond(opts, "pl.")
 		plWhere := ""
 		if plFrac != "" {
@@ -710,76 +708,44 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, totalHosts, totalI
 			procLineage, writtenPaths, plWhere, inList, maxReconnectPeers))
 	}
 
-	// net (endpoint IP): two processes touch the same rare external IP, where "touch" means
-	// CONNECT to it (network_connect.dst_ip) OR RESOLVE it (dns_query: an IP-form query name,
-	// or any IP in the ';'-separated query_results). This bridges the DNS-resolve -> connect
-	// chain -- one process resolves a domain/IP, others connect to that IP -- which pure
-	// connect<->connect matching misses. src = a tree toucher of the IP, so the shared IP node
-	// converges (tree + peer) independent of pass-2 pruning.
+	// net: two processes connect to the same rare EXTERNAL IP. fkey_tgt is the abstracted IP
+	// (external kept raw, internal collapsed to '/24' or 'internal', which we exclude to keep the
+	// external-C2 focus of the original). NOTE: the previous logs branch also bridged dns-RESOLVED
+	// IPs (query_results); the rollup does not carry resolved IPs, so that cross-type
+	// resolve->connect bridge is not covered here (connect<->connect and dns domain<->domain remain).
 	if want("net") {
-		// endpointIPs(guidCond, ipFilter): (guid, ip, img, log_id, ts, fractal, host) for external
-		// IPv4/IPv6 endpoints a process connected to or resolved. When ipFilter (a subquery of
-		// candidate IPs) is set, it is pushed INTO the network_connect scan so the idx_dst_ip
-		// bloom can prune granules -- otherwise the peer side would scan the whole fleet's net/dns
-		// volume and only filter via the join. dns IPs are filtered on the outer ip.
-		endpointIPs := func(guidCond, ipFilter string) string {
-			netExtra, dnsOuter := "", ""
-			if ipFilter != "" {
-				// GLOBAL IN: ipFilter is a subquery over the DISTRIBUTED logs/proc_freq tables. On a
-				// cluster a plain IN(subquery-over-distributed) is denied (code 288); GLOBAL broadcasts
-				// the small candidate-IP set to every shard. (No-op on a single node.)
-				netExtra = " AND fields.dst_ip::String GLOBAL IN (" + ipFilter + ")"
-				dnsOuter = " AND ip GLOBAL IN (" + ipFilter + ")"
-			}
-			return fmt.Sprintf(
-				"SELECT guid, ip, img, log_id, ts, fractal, host FROM ("+
-					"SELECT fields.process_guid::String AS guid, fields.dst_ip::String AS ip, fields.image::String AS img, log_id, toString(timestamp) AS ts, fractal_id AS fractal, fields.computer_name::String AS host "+
-					"FROM %[1]s WHERE %[2]s%[3]s AND fields.bifract_category = 'network_connect' AND fields.process_guid::String %[4]s AND fields.dst_ip::String != ''%[7]s "+
-					"UNION ALL "+
-					"SELECT fields.process_guid::String AS guid, ip, fields.image::String AS img, log_id, toString(timestamp) AS ts, fractal_id AS fractal, fields.computer_name::String AS host "+
-					"FROM %[1]s ARRAY JOIN arrayFilter(x -> x != '', arrayConcat(splitByChar(';', fields.query_results::String), array(fields.query::String))) AS ip "+
-					"WHERE %[2]s%[3]s AND fields.bifract_category = 'dns_query' AND fields.process_guid::String %[4]s"+
-					") WHERE (match(ip, %[5]s) OR position(ip, ':') > 0) AND %[6]s%[8]s",
-				logs, timeWin, fracAnd, guidCond, ipv4Re, "NOT "+internalIPMatch("ip"), netExtra, dnsOuter)
-		}
+		extOnly := "fkey_tgt NOT LIKE '%/24' AND fkey_tgt != 'internal'"
 		rareIP := fmt.Sprintf(
-			"SELECT ip, any(guid) AS toucher FROM (SELECT DISTINCT ip, guid FROM (%[1]s) LIMIT %[2]d) AS c WHERE ip GLOBAL IN ("+
-				"SELECT target_norm FROM %[3]s WHERE event_type = 'net_connect'%[4]s GROUP BY target_norm "+
-				"HAVING length(groupUniqArrayMerge(%[5]d)(hosts)) <= %[6]s AND uniqExact(src_image) <= %[7]s) GROUP BY ip",
-			endpointIPs(fmt.Sprintf("IN (%s)", inList), ""), maxReconnectCandidateArtifacts,
-			procFreq, freqFrac, procFreqHostsCap, hostGate, imageGate)
+			"SELECT fkey_tgt AS ip, any(process_guid) AS toucher FROM %[1]s WHERE %[2]sevent_type = 'net_connect' "+
+				"AND process_guid IN (%[3]s) AND %[4]s AND fkey_tgt GLOBAL IN (%[5]s) GROUP BY ip LIMIT %[6]d",
+			edgeTable, edgeFrac, inList, extOnly, rareGate("net_connect"), maxReconnectCandidateArtifacts)
+		peerScan := fmt.Sprintf(
+			"SELECT process_guid AS peer_guid, fkey_tgt AS ip, dst_node, fkey_src AS img, log_id, "+
+				"toString(timestamp) AS ts, fractal_id, computer_name AS host FROM %[1]s WHERE %[2]sevent_type = 'net_connect' "+
+				"AND process_guid NOT IN (%[3]s) AND fkey_tgt GLOBAL IN (SELECT ip FROM (%[4]s))",
+			edgeTable, edgeFrac, inList, rareIP)
 		parts = append(parts, fmt.Sprintf(
-			"SELECT 'net' AS recon_type, l.guid AS peer_guid, any(ri.toucher) AS src_guid, concat('net:', %[1]s) AS object_id, "+
+			"SELECT 'net' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, l.dst_node AS object_id, "+
 				"any(l.ip) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
-				"any(l.ts) AS peer_ts, any(l.fractal) AS peer_fractal, any(l.host) AS peer_host "+
-				"FROM (%[2]s) AS l GLOBAL INNER JOIN (%[3]s) AS ri ON l.ip = ri.ip GROUP BY peer_guid, object_id ORDER BY peer_guid LIMIT %[4]d",
-			abstractExpr("l.ip", AbstractIP), endpointIPs(fmt.Sprintf("NOT IN (%s)", inList), "SELECT ip FROM ("+rareIP+")"), rareIP, maxReconnectPeers))
+				"any(l.ts) AS peer_ts, any(l.fractal_id) AS peer_fractal, any(l.host) AS peer_host "+
+				"FROM (%[1]s) AS l GLOBAL INNER JOIN (%[2]s) AS ri ON l.ip = ri.ip GROUP BY peer_guid, object_id ORDER BY peer_guid LIMIT %[3]d",
+			peerScan, rareIP, maxReconnectPeers))
 	}
 
-	// dns: two processes -> same rare DOMAIN (IP-form queries are excluded here -- they route
-	// through the net endpoint branch instead, so an IP isn't shown as both a dns: and net: node).
+	// dns: two processes -> same rare DOMAIN. The rollup's dns edges already exclude IP-form queries
+	// (the MV's NOT match(query, ipv4) filter), so an IP is never both a dns: and net: node.
 	if want("dns") {
-		aDom := func(col string) string { return abstractExpr(col, AbstractDomain) }
-		notIP := fmt.Sprintf(" AND NOT match(fields.query::String, %s)", ipv4Re)
-		// Drop benign internal name lookups (NetBIOS, AD service records, internal-only resolutions)
-		// so they don't consume the capped reconnection budget and crowd out real shared-IOC bridges.
-		notInternal := " AND NOT " + internalDNSExpr("fields.query::String", "fields.query_results::String")
 		rareDom := fmt.Sprintf(
-			"SELECT q, any(t) AS toucher FROM (SELECT DISTINCT %[1]s AS q, fields.process_guid::String AS t "+
-				"FROM %[2]s WHERE %[3]s%[4]s AND fields.process_guid::String IN (%[5]s) AND fields.bifract_category = 'dns_query' "+
-				"AND fields.query::String != ''%[11]s%[12]s LIMIT %[6]d) AS c WHERE q GLOBAL IN ("+
-				"SELECT target_norm FROM %[7]s WHERE event_type = 'dns_query'%[8]s GROUP BY target_norm "+
-				"HAVING length(groupUniqArrayMerge(%[9]d)(hosts)) <= %[10]s AND uniqExact(src_image) <= %[13]s) GROUP BY q",
-			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, maxReconnectCandidateArtifacts,
-			procFreq, freqFrac, procFreqHostsCap, hostGate, notIP, notInternal, imageGate)
+			"SELECT fkey_tgt AS q, any(process_guid) AS toucher FROM %[1]s WHERE %[2]sevent_type = 'dns_query' "+
+				"AND process_guid IN (%[3]s) AND NOT %[6]s AND fkey_tgt GLOBAL IN (%[4]s) GROUP BY q LIMIT %[5]d",
+			edgeTable, edgeFrac, inList, rareGate("dns_query"), maxReconnectCandidateArtifacts, internalDomainExpr("fkey_tgt"))
 		peerScan := fmt.Sprintf(
-			"SELECT fields.process_guid::String AS peer_guid, %[1]s AS q, fields.image::String AS img, "+
-				"log_id, toString(timestamp) AS ts, fractal_id, fields.computer_name::String AS host FROM %[2]s WHERE %[3]s%[4]s "+
-				"AND fields.bifract_category = 'dns_query' AND fields.process_guid::String NOT IN (%[5]s) AND fields.query::String != ''%[6]s%[8]s "+
-				"AND %[1]s GLOBAL IN (%[7]s)",
-			aDom("fields.query::String"), logs, timeWin, fracAnd, inList, notIP, "SELECT q FROM ("+rareDom+")", notInternal)
+			"SELECT process_guid AS peer_guid, fkey_tgt AS q, dst_node, fkey_src AS img, log_id, "+
+				"toString(timestamp) AS ts, fractal_id, computer_name AS host FROM %[1]s WHERE %[2]sevent_type = 'dns_query' "+
+				"AND process_guid NOT IN (%[3]s) AND fkey_tgt GLOBAL IN (SELECT q FROM (%[4]s))",
+			edgeTable, edgeFrac, inList, rareDom)
 		parts = append(parts, fmt.Sprintf(
-			"SELECT 'dns' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, concat('dns:', l.q) AS object_id, "+
+			"SELECT 'dns' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, l.dst_node AS object_id, "+
 				"any(l.q) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
 				"any(l.ts) AS peer_ts, any(l.fractal_id) AS peer_fractal, any(l.host) AS peer_host "+
 				"FROM (%[1]s) AS l GLOBAL INNER JOIN (%[2]s) AS ri ON l.q = ri.q GROUP BY peer_guid, object_id ORDER BY peer_guid LIMIT %[3]d",

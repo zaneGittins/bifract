@@ -188,25 +188,15 @@ func TestAppendReconnectionEdgesDedup(t *testing.T) {
 	}
 }
 
-// TestInternalDNSExpr_Emit prints the literal-substituted internal-lookup expressions for the
-// canonical examples so they can be evaluated against ClickHouse, and asserts the expression
-// carries all three signal branches (single-label, service record, resolves-internal-only).
-func TestInternalDNSExpr_Emit(t *testing.T) {
-	cases := []struct{ q, r string }{
-		{"'NAMTWS006'", "'10.0.101.75;'"},
-		{"'wpad'", "'fe80::d308:aced:fb97:fc02;::ffff:10.0.2.10;'"},
-		{"'_ldap._tcp.NAMTWS002.'", "''"},
-		{"'evil.com'", "'1.2.3.4;'"},
-		{"'cdn.example.com'", "'10.0.0.5;93.184.216.34;'"},
-		{"'host.corp.local'", "'10.0.0.9;'"},
-	}
-	for _, c := range cases {
-		t.Logf("CHECK|%s|%s|%s", c.q, c.r, internalDNSExpr(c.q, c.r))
-	}
-	e := internalDNSExpr("fields.query::String", "fields.query_results::String")
-	for _, sub := range []string{"replaceRegexpOne", "startsWith(lower", "._msdcs.", "arrayExists", "splitByChar", "::ffff:"} {
+// TestInternalDomainExpr asserts the reconnection dns internal-name filter carries both structural
+// signal branches (single-label / NetBIOS, and AD service-discovery records) over the abstracted
+// domain column. The resolves-only-internal branch is intentionally gone (not carried by the
+// process_edges rollup; the proc_freq rarity gate covers it) -- see internalDomainExpr.
+func TestInternalDomainExpr(t *testing.T) {
+	e := internalDomainExpr("fkey_tgt")
+	for _, sub := range []string{"position(fkey_tgt, '.') = 0", "startsWith(fkey_tgt, '_')", "._msdcs."} {
 		if !strings.Contains(e, sub) {
-			t.Errorf("internalDNSExpr missing expected fragment %q", sub)
+			t.Errorf("internalDomainExpr missing expected fragment %q\n  got: %s", sub, e)
 		}
 	}
 }
