@@ -815,19 +815,19 @@ func main() {
 				// (crash or lock-contention/disabled skip included), which is what "is this
 				// still on schedule" should key off -- otherwise a crashed or skipped run
 				// looks identical to a healthy one that had nothing to do.
-				var maintainLastRun, maintainLastAttempt sql.NullTime
+				var maintainLastRun, maintainLastAttempt, maintainRunRequestedAt sql.NullTime
 				var maintainOutcome string
-				var maintainError sql.NullString
+				var maintainError, maintainRunRequestedBy sql.NullString
 				var maintainDurationMs int64
 				var maintainTables, maintainCompacted, maintainGroupsFailed, maintainExpired int
 				var maintainCandidateBytes, maintainCompactedBytes int64
 				_ = pg.QueryRow(r.Context(),
 					`SELECT last_run_at, last_attempt_at, last_outcome, last_error, duration_ms, tables_seen, compacted,
-					        groups_failed, expired, candidate_bytes, compacted_bytes
+					        groups_failed, expired, candidate_bytes, compacted_bytes, run_requested_at, run_requested_by
 					 FROM archive_maintain_status WHERE id = 1`).
 					Scan(&maintainLastRun, &maintainLastAttempt, &maintainOutcome, &maintainError, &maintainDurationMs,
 						&maintainTables, &maintainCompacted, &maintainGroupsFailed, &maintainExpired,
-						&maintainCandidateBytes, &maintainCompactedBytes)
+						&maintainCandidateBytes, &maintainCompactedBytes, &maintainRunRequestedAt, &maintainRunRequestedBy)
 				maintainResp := map[string]interface{}{
 					"outcome":         maintainOutcome,
 					"duration_ms":     maintainDurationMs,
@@ -838,13 +838,20 @@ func main() {
 					"candidate_bytes": maintainCandidateBytes,
 					"compacted_bytes": maintainCompactedBytes,
 					// on_schedule mirrors archiver_alive's freshness check above, sized to
-					// the maintain CronJob's hourly schedule instead of the archiver's ~30s
+					// the maintainer's scheduled cadence instead of the archiver's ~30s
 					// heartbeat interval. false with no prior attempt at all (maintainOutcome
 					// == "never") reads correctly as "not yet run" rather than "overdue".
 					"on_schedule": maintainLastAttempt.Valid && time.Since(maintainLastAttempt.Time) < maintainStaleAfter,
+					// A pending or in-progress "Run now": run_requested is the queued state
+					// (claimed but not yet started, or waiting for the next poll); outcome
+					// == "running" is the live pass. Lets the UI show/disable the button.
+					"run_requested": maintainRunRequestedAt.Valid,
 				}
 				if maintainError.Valid {
 					maintainResp["error"] = maintainError.String
+				}
+				if maintainRunRequestedBy.Valid {
+					maintainResp["run_requested_by"] = maintainRunRequestedBy.String
 				}
 				addTimeIfValid(maintainResp, "last_run_at", maintainLastRun)
 				addTimeIfValid(maintainResp, "last_attempt_at", maintainLastAttempt)
@@ -947,6 +954,41 @@ func main() {
 				ingestQueue.SetArchiveEnabled(body.Enabled)
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "enabled": body.Enabled})
+			})
+			// "Run now": request an out-of-schedule maintenance pass. The server does
+			// not link the archiver's Iceberg stack, so it merely records the request
+			// on the shared archive_maintain_status row (raw SQL, like /clear above);
+			// the always-on maintain-loop claims it on its next poll and runs the pass.
+			// Platform-agnostic: the maintainer is a container (Docker) or a replicas:1
+			// Deployment (k8s), both polling this same Postgres row -- no k8s API access
+			// or RBAC for the app tier.
+			r.Post("/system/archive/maintain/run", func(w http.ResponseWriter, r *http.Request) {
+				u, ok := r.Context().Value("user").(*storage.User)
+				if !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				// Same provisioning guard as enabling: until the archive machinery is
+				// provisioned (--upgrade) there is no maintainer to service the request.
+				if !ingestQueue.SpoolProvisioned() && !pg.ReadSpoolStatus(r.Context()).Provisioned {
+					http.Error(w, "Archive not provisioned. Run bifract --upgrade to add the archiver, then retry.", http.StatusBadRequest)
+					return
+				}
+				// A run-now while archiving is disabled would be claimed and then
+				// skipped (skipped_disabled), a confusing no-op; reject up front so the
+				// button's outcome is predictable.
+				if v, _ := pg.GetSetting(r.Context(), archiveEnabledSetting); v != "true" {
+					http.Error(w, "Enable archiving before running maintenance.", http.StatusBadRequest)
+					return
+				}
+				if _, err := pg.Exec(r.Context(),
+					`UPDATE archive_maintain_status SET run_requested_at = NOW(), run_requested_by = $1 WHERE id = 1`,
+					u.Username); err != nil {
+					http.Error(w, "Failed to request maintenance run", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 			})
 			// Clear the Iceberg catalog (admin only): resets the archive to zero so a
 			// fractal can start fresh. The Iceberg catalog is Postgres-backed

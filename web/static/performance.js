@@ -278,6 +278,33 @@ const Performance = {
         this.loadRestoreJobs();
     },
 
+    // Request an out-of-schedule maintenance pass. The maintainer polls Postgres
+    // for the flag (~10s), so we optimistically show "Queued" and let the next
+    // archive refresh reflect the real running/done state.
+    async runMaintainNow() {
+        const btn = document.getElementById('maintainRunNowBtn');
+        if (btn && btn.disabled) return;
+        this._maintainRunPending = true;
+        if (btn) { btn.disabled = true; btn.textContent = 'Queued…'; }
+        try {
+            const res = await fetch('/api/v1/system/archive/maintain/run', { method: 'POST', credentials: 'include' });
+            if (!res.ok) {
+                this._maintainRunPending = false;
+                const msg = (await res.text()).trim() || 'Failed to request maintenance run';
+                if (window.Toast) Toast.error('Maintenance', msg);
+                if (btn) { btn.disabled = false; btn.textContent = 'Run now'; }
+                return;
+            }
+            if (window.Toast) Toast.success('Maintenance', 'Run requested; starting shortly.');
+            this.loadArchive();
+        } catch (err) {
+            this._maintainRunPending = false;
+            console.error('[Performance] run maintain error:', err);
+            if (window.Toast) Toast.error('Maintenance', 'Network error');
+            if (btn) { btn.disabled = false; btn.textContent = 'Run now'; }
+        }
+    },
+
     renderArchive(d) {
         const dot = document.getElementById('archiveStatusDot');
         const label = document.getElementById('archiveStatusLabel');
@@ -344,7 +371,14 @@ const Performance = {
         const mDot = document.getElementById('maintainStatusDot');
         const mLabel = document.getElementById('maintainStatusLabel');
         if (mDot && mLabel) {
-            if (!hasRunOnce) {
+            if (m.outcome === 'running') {
+                mDot.className = 'status-dot status-enabled';
+                mLabel.textContent = 'Running now';
+            } else if (m.run_requested) {
+                // Requested from the UI, not yet claimed by the maintainer's poll.
+                mDot.className = 'status-dot status-enabled';
+                mLabel.textContent = 'Queued';
+            } else if (!hasRunOnce) {
                 mDot.className = 'status-dot status-auto-disabled';
                 mLabel.textContent = 'Never run';
             } else if (!m.on_schedule) {
@@ -360,6 +394,23 @@ const Performance = {
                 mDot.className = 'status-dot status-disabled';
                 mLabel.textContent = 'Last attempt skipped';
             }
+        }
+
+        // "Run now" button: enabled only when archiving is on and provisioned and
+        // no pass is already queued/running. _maintainRunPending covers the brief
+        // window between clicking and the maintainer's poll reflecting the request,
+        // so the button doesn't flicker back to enabled before the server catches up.
+        const runBtn = document.getElementById('maintainRunNowBtn');
+        if (runBtn) {
+            const serverBusy = m.outcome === 'running' || !!m.run_requested;
+            if (serverBusy) this._maintainRunPending = false;
+            const busy = serverBusy || this._maintainRunPending;
+            runBtn.disabled = !d.enabled || !d.provisioned || busy;
+            runBtn.textContent = m.outcome === 'running' ? 'Running…' : (busy ? 'Queued…' : 'Run now');
+            runBtn.title = !d.provisioned ? 'Archive not provisioned (run bifract --upgrade)'
+                : !d.enabled ? 'Enable archiving to run maintenance'
+                : busy ? 'A maintenance pass is in progress'
+                : 'Run a compaction + snapshot-expiry pass now';
         }
 
         this.setText('maintainLastRun', m.last_run_at ? this.timeAgo(m.last_run_at) : 'never');

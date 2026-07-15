@@ -66,6 +66,10 @@ const (
 	MaintainOutcomeError           MaintainOutcome = "error"
 	MaintainOutcomeSkippedLocked   MaintainOutcome = "skipped_locked"
 	MaintainOutcomeSkippedDisabled MaintainOutcome = "skipped_disabled"
+	// MaintainOutcomeRunning is a transient marker written when a pass starts, so
+	// the admin UI can show a live in-progress state. It is never appended to the
+	// history table (that records only terminal outcomes).
+	MaintainOutcomeRunning MaintainOutcome = "running"
 )
 
 // MaintainStats summarizes one Maintain() pass, for logging and for

@@ -458,6 +458,35 @@ const Recall = {
         }
     },
 
+    // Completion chrome matching the main Query view: the same check/error glyph
+    // (output-type-check / output-type-error) and a parenthesized muted-mono
+    // duration, so a finished Recall reads identically to a finished search.
+    _checkGlyph() {
+        return '<svg class="output-type-check is-visible" width="14" height="14" viewBox="0 0 24 24">' +
+            '<circle cx="12" cy="12" r="12" fill="currentColor"/>' +
+            '<polyline points="6.5 12.5 10 16 17.5 8" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    },
+
+    _errorGlyph() {
+        return '<svg class="output-type-error is-visible" width="14" height="14" viewBox="0 0 24 24">' +
+            '<circle cx="12" cy="12" r="12" fill="currentColor"/>' +
+            '<line x1="8" y1="8" x2="16" y2="16" stroke="white" stroke-width="2.5" stroke-linecap="round"/>' +
+            '<line x1="16" y1="8" x2="8" y2="16" stroke="white" stroke-width="2.5" stroke-linecap="round"/></svg>';
+    },
+
+    // "How long the search took" = claim (started_at) -> finished_at, falling back
+    // to created_at when a job failed before it was claimed. ms under a second,
+    // seconds otherwise (archive scans routinely run for seconds).
+    _durationHtml(job) {
+        const end = job.finished_at ? new Date(job.finished_at).getTime() : NaN;
+        const start = job.started_at ? new Date(job.started_at).getTime()
+            : (job.created_at ? new Date(job.created_at).getTime() : NaN);
+        if (isNaN(end) || isNaN(start) || end < start) return '';
+        const ms = end - start;
+        const txt = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)}s`;
+        return `<span class="execution-time" style="display:inline-block">(${txt})</span>`;
+    },
+
     renderTerminal(job) {
         this.stopElapsed();
         const pane = document.getElementById('recallResults');
@@ -468,20 +497,21 @@ const Recall = {
         }
 
         if (job.status === 'failed') {
-            this.setStatus(`<span class="recall-chip recall-chip-failed">Failed</span><span>${this.esc(job.error || 'Search failed.')}</span>`, 'error');
+            this.setStatus(this._errorGlyph() + `<span>${this.esc(job.error || 'Search failed.')}</span>` + this._durationHtml(job), 'error');
             if (pane) pane.innerHTML = `<div class="no-results">${this.esc(job.error || 'Search failed.')}</div>`;
             return;
         }
         if (job.status === 'canceled') {
-            this.setStatus('<span class="recall-chip recall-chip-canceled">Canceled</span><span>Search was canceled.</span>', '');
+            this.setStatus('<span class="recall-chip recall-chip-canceled">Canceled</span><span>Search was canceled.</span>' + this._durationHtml(job), '');
             if (pane) pane.innerHTML = '<div class="no-results">Search canceled.</div>';
             return;
         }
         // succeeded
         if (job.results_expired) {
             this.setStatus(
-                '<span class="recall-chip recall-chip-succeeded">Done</span>' +
+                this._checkGlyph() +
                 '<span>Results have aged out.</span>' +
+                this._durationHtml(job) +
                 `<button class="recall-rerun-btn" onclick="Recall.rerun('${job.id}')">Re-run</button>`,
                 ''
             );
@@ -491,8 +521,9 @@ const Recall = {
 
         const results = Array.isArray(job.results) ? job.results : [];
         const count = job.row_count != null ? job.row_count : results.length;
-        let statusHtml = `<span class="recall-chip recall-chip-succeeded">Done</span>` +
-            `<span class="recall-status-count">${Number(count).toLocaleString()} rows</span>`;
+        let statusHtml = this._checkGlyph() +
+            `<span class="recall-status-count">${Number(count).toLocaleString()} rows</span>` +
+            this._durationHtml(job);
         if (job.limit_hit) {
             statusHtml += '<span class="recall-limit-note" title="More rows matched than were returned; narrow the range or query.">limit reached</span>';
         }

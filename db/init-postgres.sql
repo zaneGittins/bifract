@@ -1850,20 +1850,28 @@ INSERT INTO archive_status (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 -- staleness/liveness checks should key off -- a crashed or skipped run must
 -- not look identical to "ran, nothing to do".
 CREATE TABLE IF NOT EXISTS archive_maintain_status (
-    id              SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    last_run_at     TIMESTAMPTZ,
-    last_attempt_at TIMESTAMPTZ,
-    last_outcome    TEXT    NOT NULL DEFAULT 'never',
-    last_error      TEXT,
-    duration_ms     BIGINT  NOT NULL DEFAULT 0,
-    tables_seen     INTEGER NOT NULL DEFAULT 0,
-    compacted       INTEGER NOT NULL DEFAULT 0,
-    groups_failed   INTEGER NOT NULL DEFAULT 0,
-    expired         INTEGER NOT NULL DEFAULT 0,
-    candidate_bytes BIGINT  NOT NULL DEFAULT 0,
-    compacted_bytes BIGINT  NOT NULL DEFAULT 0
+    id               SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    last_run_at      TIMESTAMPTZ,
+    last_attempt_at  TIMESTAMPTZ,
+    last_outcome     TEXT    NOT NULL DEFAULT 'never',
+    last_error       TEXT,
+    duration_ms      BIGINT  NOT NULL DEFAULT 0,
+    tables_seen      INTEGER NOT NULL DEFAULT 0,
+    compacted        INTEGER NOT NULL DEFAULT 0,
+    groups_failed    INTEGER NOT NULL DEFAULT 0,
+    expired          INTEGER NOT NULL DEFAULT 0,
+    candidate_bytes  BIGINT  NOT NULL DEFAULT 0,
+    compacted_bytes  BIGINT  NOT NULL DEFAULT 0,
+    -- "Run now": the admin UI sets run_requested_at (and the requesting user);
+    -- the always-on maintain-loop atomically claims and clears it, then runs a
+    -- pass out of the normal schedule. NULL = no pending request.
+    run_requested_at TIMESTAMPTZ,
+    run_requested_by TEXT
 );
 INSERT INTO archive_maintain_status (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+-- Defensive: ensure the run-now columns exist even if the table predates them.
+ALTER TABLE archive_maintain_status ADD COLUMN IF NOT EXISTS run_requested_at TIMESTAMPTZ;
+ALTER TABLE archive_maintain_status ADD COLUMN IF NOT EXISTS run_requested_by TEXT;
 
 -- Per-run history (bounded to the most recent rows by the writer, see
 -- appendMaintainHistory) so the admin UI can show a trend across multiple

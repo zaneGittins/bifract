@@ -6,7 +6,7 @@ import (
 )
 
 // TestArchiveRendersK8s verifies the archive tee env, archiver sidecar, and the
-// maintain CronJob render into valid manifests with no unresolved fields.
+// always-on maintain Deployment render into valid manifests with no unresolved fields.
 func TestArchiveRendersK8s(t *testing.T) {
 	data := k8sTemplateData{
 		ImageTag:       "test",
@@ -59,20 +59,26 @@ func TestArchiveRendersK8s(t *testing.T) {
 		}
 	}
 
-	cron, err := renderK8sTemplate("templates/k8s/bifract-archive-maintain-cronjob.yaml.tmpl", data)
+	// Maintenance now runs as an always-on, singleton Deployment (was a CronJob):
+	// maintain-loop services scheduled passes plus admin "Run now" requests, with
+	// no Kubernetes API/RBAC needed (the trigger is a Postgres row).
+	maint, err := renderK8sTemplate("templates/k8s/bifract-archive-maintain-deployment.yaml.tmpl", data)
 	if err != nil {
-		t.Fatalf("cronjob render failed: %v", err)
+		t.Fatalf("maintain deployment render failed: %v", err)
 	}
-	if strings.Contains(cron, "<no value>") {
-		t.Fatalf("cronjob produced <no value> (missing field)")
+	if strings.Contains(maint, "<no value>") {
+		t.Fatalf("maintain deployment produced <no value> (missing field)")
 	}
 	for _, want := range []string{
-		"kind: CronJob",
-		"concurrencyPolicy: Forbid",
-		`command: ["/bifract-archiver", "maintain"]`,
+		"kind: Deployment",
+		"replicas: 1",
+		"type: Recreate",
+		`command: ["/bifract-archiver", "maintain-loop"]`,
+		"BIFRACT_ARCHIVE_MAINTAIN_INTERVAL",
+		"component: archive-maintain",
 	} {
-		if !strings.Contains(cron, want) {
-			t.Errorf("rendered cronjob missing %q", want)
+		if !strings.Contains(maint, want) {
+			t.Errorf("rendered maintain deployment missing %q", want)
 		}
 	}
 

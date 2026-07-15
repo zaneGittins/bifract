@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifract-archive-maintain
+  namespace: bifract
+  labels:
+    app: bifract
+    component: archive-maintain
+spec:
+  # SINGLETON: exactly one maintainer. Compaction, snapshot expiry, and cleanup
+  # for the Iceberg tables must never run concurrently or they fight over table
+  # metadata. replicas:1 + strategy Recreate (never two pods during a rollout)
+  # is the primary guard; a Postgres advisory lock in the binary is the backstop
+  # for the brief overlap a node failure/eviction can still produce.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: bifract
+      component: archive-maintain
+  template:
+    metadata:
+      labels:
+        app: bifract
+        component: archive-maintain
+    spec:
+      # maintain-loop is the always-on maintenance service: scheduled passes on
+      # BIFRACT_ARCHIVE_MAINTAIN_INTERVAL plus admin "Run now" requests it claims
+      # from Postgres. It runs as its own resource-capped workload (not a sidecar
+      # of the ingest pod) so a compaction memory spike OOMs only this pod and
+      # never disrupts ingestion. It needs no Kubernetes API access or RBAC: the
+      # trigger is a Postgres row, not a Job/CronJob object.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: bifract-archive-maintain
+          image: ghcr.io/zanegittins/bifract:{{.ImageTag}}
+          command: ["/bifract-archiver", "maintain-loop"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: POSTGRES_HOST
+              value: "postgres"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: "bifract"
+            - name: POSTGRES_USER
+              value: "bifract"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: POSTGRES_PASSWORD
+            # Scheduled cadence. Unset falls back to the binary default (1h);
+            # "Run now" from the admin UI is always immediate regardless.
+            - name: BIFRACT_ARCHIVE_MAINTAIN_INTERVAL
+              value: "1h"
+            - name: BIFRACT_ARCHIVE_DISK_PATH
+              value: /var/lib/bifract/archive
+            - name: BIFRACT_ARCHIVE_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_ENABLED
+                  optional: true
+            - name: BIFRACT_ARCHIVE_BACKEND
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_BACKEND
+                  optional: true
+            - name: BIFRACT_ARCHIVE_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_PREFIX
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_ENDPOINT
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_BUCKET
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_REGION
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_ACCESS_KEY
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_SECRET_KEY
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_ACCOUNT
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_KEY
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_CONTAINER
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_CONTAINER
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_ENDPOINT
+                  optional: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: {{.ArchiverRes.CPURequest}}
+              memory: {{.ArchiverRes.MemRequest}}
+            limits:
+              cpu: "{{.ArchiverRes.CPULimit}}"
+              memory: {{.ArchiverRes.MemLimit}}
+      volumes:
+        - name: tmp
+          emptyDir: {}

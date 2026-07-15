@@ -867,7 +867,7 @@ var k8sManifests = []k8sManifestFile{
 	{"templates/k8s/bifract-ingest-deployment.yaml.tmpl", "bifract/ingest-deployment.yaml"},
 	{"templates/k8s/bifract-configmap.yaml.tmpl", "bifract/configmap.yaml"},
 	{"templates/k8s/bifract-secrets.yaml.tmpl", "bifract/secrets.yaml"},
-	{"templates/k8s/bifract-archive-maintain-cronjob.yaml.tmpl", "bifract/archive-maintain-cronjob.yaml"},
+	{"templates/k8s/bifract-archive-maintain-deployment.yaml.tmpl", "bifract/archive-maintain-deployment.yaml"},
 	{"templates/k8s/caddy-deployment.yaml.tmpl", "caddy/deployment.yaml"},
 	{"templates/k8s/caddy-configmap.yaml.tmpl", "caddy/configmap.yaml"},
 	{"templates/k8s/caddy-log-shipper.yaml.tmpl", "caddy/log-shipper.yaml"},

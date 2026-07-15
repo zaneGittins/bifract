@@ -408,7 +408,7 @@
                             <div class="perf-section">
                                 <div class="perf-section-header">
                                     <h3>Maintenance</h3>
-                                    <span class="perf-section-hint">Compaction + snapshot expiry, run on a schedule (not always-on)</span>
+                                    <span class="perf-section-hint">Compaction + snapshot expiry, always-on with an hourly schedule and on-demand runs</span>
                                 </div>
 
                                 <div class="archive-status-row">
@@ -416,6 +416,7 @@
                                         <span class="status-dot" id="maintainStatusDot"></span>
                                         <span class="archive-status-label" id="maintainStatusLabel">&mdash;</span>
                                     </div>
+                                    <button type="button" class="btn-ghost btn-sm" id="maintainRunNowBtn" style="margin-left:auto;" onclick="Performance.runMaintainNow()">Run now</button>
                                 </div>
 
                                 <div class="perf-metrics-grid" style="margin-top: 16px;">

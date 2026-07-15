@@ -219,12 +219,13 @@ services:
     networks:
       - bifract-network
 
-  # Iceberg maintenance (compaction + snapshot expiry). Docker has no cron
-  # primitive, so this is a dedicated, resource-capped container running the
-  # maintain-loop on a timer, kept separate from the drain loop so a compaction
-  # memory spike OOMs only this (mostly idle) container. Singleton via a Postgres
-  # advisory lock. Cadence via BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL (default
-  # 1h); disable by scaling to 0. k8s uses the archive-maintain CronJob instead.
+  # Iceberg maintenance (compaction + snapshot expiry): the always-on maintenance
+  # service. A dedicated, resource-capped container running maintain-loop, kept
+  # separate from the drain loop so a compaction memory spike OOMs only this
+  # (mostly idle) container. Services scheduled passes
+  # (BIFRACT_ARCHIVE_MAINTAIN_INTERVAL, default 1h) plus admin "Run now" requests
+  # picked up from Postgres. Singleton via a Postgres advisory lock; disable by
+  # scaling to 0. k8s runs the same maintain-loop as a replicas:1 Deployment.
   bifract-archiver-maintain:
     image: bifract-dev
     container_name: bifract-archiver-maintain
@@ -244,7 +245,7 @@ services:
       CLICKHOUSE_DB: logs
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-      BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL: ${BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL:-1h}
+      BIFRACT_ARCHIVE_MAINTAIN_INTERVAL: ${BIFRACT_ARCHIVE_MAINTAIN_INTERVAL:-1h}
       BIFRACT_ARCHIVE_ENABLED: ${BIFRACT_ARCHIVE_ENABLED:-false}
       BIFRACT_ARCHIVE_BACKEND: ${BIFRACT_ARCHIVE_BACKEND:-disk}
       BIFRACT_ARCHIVE_DISK_PATH: /var/lib/bifract/archive

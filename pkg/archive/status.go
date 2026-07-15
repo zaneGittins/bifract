@@ -107,6 +107,56 @@ func WriteMaintainOutcome(ctx context.Context, db *sql.DB, outcome MaintainOutco
 	return appendMaintainHistory(ctx, db, outcome, MaintainStats{}, cause)
 }
 
+// MarkMaintainRunning stamps the status row as an in-progress pass so the admin
+// UI can show a live "running" state between the start of a pass and its
+// terminal WriteMaintainStatus/WriteMaintainOutcome. It intentionally does NOT
+// append to history (that records only terminal outcomes) and leaves the last
+// successful run's stats untouched. Best-effort, like the other writers.
+func MarkMaintainRunning(ctx context.Context, db *sql.DB) error {
+	return execStatusUpdate(ctx, db,
+		`UPDATE archive_maintain_status SET last_attempt_at = NOW(), last_outcome = $1, last_error = NULL WHERE id = 1`,
+		string(MaintainOutcomeRunning))
+}
+
+// RequestMaintainRun records an admin "Run now" request for the maintain-loop to
+// pick up on its next poll; requestedBy is stored for the audit trail and UI.
+// The server tier issues the equivalent UPDATE directly (it does not link the
+// archiver's Iceberg stack); this helper exists for archiver-side callers and
+// tests so the request/claim contract lives in one place next to the claim.
+func RequestMaintainRun(ctx context.Context, db *sql.DB, requestedBy string) error {
+	var by any
+	if requestedBy != "" {
+		by = requestedBy
+	}
+	return execStatusUpdate(ctx, db,
+		`UPDATE archive_maintain_status SET run_requested_at = NOW(), run_requested_by = $1 WHERE id = 1`, by)
+}
+
+// ClaimMaintainRunRequest atomically consumes a pending "Run now" request, if
+// any: it clears run_requested_at/by in the same statement that reads them, so
+// a request is claimed exactly once even if two maintainer pods briefly overlap
+// during a rolling update, and a request that arrives while a pass is already
+// running simply re-sets the flag and is serviced on the next poll. Returns the
+// requesting username (may be empty), whether a request was claimed, and any
+// error. A nil db (archive works without Postgres) reports "no request".
+func ClaimMaintainRunRequest(ctx context.Context, db *sql.DB) (requestedBy string, claimed bool, err error) {
+	if db == nil {
+		return "", false, nil
+	}
+	var by sql.NullString
+	err = db.QueryRowContext(ctx,
+		`UPDATE archive_maintain_status SET run_requested_at = NULL, run_requested_by = NULL
+		 WHERE id = 1 AND run_requested_at IS NOT NULL
+		 RETURNING run_requested_by`).Scan(&by)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return by.String, true, nil
+}
+
 // appendMaintainHistory inserts one row per maintain invocation (whatever the
 // outcome) and trims the table back down to maintainHistoryLimit rows, so the
 // admin UI can show a trend across recent passes -- including skipped/failed

@@ -6,10 +6,11 @@
 // Subcommands:
 //
 //	run           (default) tail the spool -> Iceberg append/commit loop
-//	maintain      one compaction + snapshot-expiry pass, then exit (k8s CronJob)
-//	maintain-loop periodic maintain on a timer, then keep running (Docker Compose,
-//	              which has no cron primitive; runs in its own resource-capped
-//	              container so a compaction spike can't OOM the drain loop)
+//	maintain      one compaction + snapshot-expiry pass, then exit (manual/ad-hoc)
+//	maintain-loop the always-on maintenance service: scheduled passes on a timer
+//	              plus admin "Run now" requests. Runs as its own resource-capped
+//	              workload on both platforms (Docker container, k8s replicas:1
+//	              Deployment) so a compaction spike can't OOM the drain loop.
 //	restore       replay an Iceberg window back into ClickHouse (Phase 8)
 //	reconcile     heal ClickHouse gaps from Iceberg (Phase 8)
 package main
@@ -134,20 +135,31 @@ func runCmd() {
 }
 
 // maintainAdvisoryLock is a fixed Postgres advisory-lock key ensuring only one
-// maintenance pass runs at a time (belt-and-suspenders alongside the k8s
-// CronJob's concurrencyPolicy: Forbid).
+// maintenance pass runs at a time. It is the authoritative singleton guard now
+// that maintenance runs as a perpetual maintain-loop on both platforms (Docker
+// container, k8s replicas:1 Deployment): a rolling update can briefly overlap
+// two pods, and the lock serializes them so they never fight over table
+// metadata.
 const maintainAdvisoryLock = 0x62696672616d6169 // "bifrmai"
 
-// defaultMaintainInterval is the maintain-loop cadence when
-// BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL is unset or invalid. Hourly matches
-// the k8s CronJob and is plenty given roll-on-size already keeps most files
-// large; compaction is a mop-up for small-file tails, not a constant grind.
+// defaultMaintainInterval is the maintain-loop scheduled cadence when
+// BIFRACT_ARCHIVE_MAINTAIN_INTERVAL is unset or invalid. Hourly is plenty given
+// roll-on-size already keeps most files large; compaction is a mop-up for
+// small-file tails, not a constant grind, and admins can trigger an immediate
+// pass from the UI ("Run now") without waiting for the next tick.
 const defaultMaintainInterval = time.Hour
 
-// maintainCmd runs a single compaction + snapshot-expiry pass, then exits. Used
-// by the k8s CronJob (singleton via concurrencyPolicy Forbid plus the advisory
-// lock in runMaintainOnce). Exits non-zero on a genuine failure so the CronJob
-// surfaces it; a disabled/locked skip exits zero after recording its outcome.
+// maintainPollInterval is how often maintain-loop wakes to check for an
+// admin-requested "Run now" pass or an elapsed scheduled interval. Small enough
+// that Run now feels responsive in the admin UI, large enough that the idle
+// poll is negligible load on Postgres.
+const maintainPollInterval = 10 * time.Second
+
+// maintainCmd runs a single compaction + snapshot-expiry pass, then exits. It
+// remains for manual/ad-hoc invocation (`bifract-archiver maintain`) and is a
+// singleton via the advisory lock in runMaintainOnce. Exits non-zero on a
+// genuine failure; a disabled/locked skip exits zero after recording its
+// outcome.
 func maintainCmd() {
 	cfg, err := archive.ConfigFromEnv()
 	if err != nil {
@@ -163,13 +175,19 @@ func maintainCmd() {
 	}
 }
 
-// maintainLoopCmd runs runMaintainOnce on a fixed interval, then keeps running.
-// It exists because Docker Compose has no cron primitive: the compose install
-// gives this its own resource-capped bifract-archiver-maintain container, so a
-// compaction memory spike OOMs only this (mostly idle) container and the drain
-// loop keeps ingesting. Enable/disable is the container's presence, not an env
-// flag; BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL only tunes the cadence. k8s
-// never runs this command -- there the CronJob owns maintenance.
+// maintainLoopCmd is the always-on maintenance service that runs on both
+// platforms: a dedicated bifract-archiver-maintain container (Docker) or a
+// replicas:1 Deployment (k8s). Keeping compaction in its own resource-capped
+// workload means a compaction memory spike OOMs only this (mostly idle) process
+// and never the drain loop. It services two triggers:
+//
+//   - scheduled: a pass every BIFRACT_ARCHIVE_MAINTAIN_INTERVAL (default 1h)
+//   - on demand: an admin "Run now" request, claimed from Postgres, serviced
+//     within maintainPollInterval
+//
+// A short poll ticker drives both so Run now does not have to wait a full
+// interval. The advisory lock in runMaintainOnce keeps it a singleton even if a
+// rolling update briefly runs two pods.
 func maintainLoopCmd() {
 	interval := maintainLoopInterval()
 	cfg, err := archive.ConfigFromEnv()
@@ -185,8 +203,15 @@ func maintainLoopCmd() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("maintain-loop: running every %s", interval)
-	t := time.NewTicker(interval)
+	log.Printf("maintain-loop: scheduled every %s, checking for run-now every %s", interval, maintainPollInterval)
+
+	// Scheduled cadence is tracked in-process, seeded to now: a fresh start (or a
+	// restart / rolling update) waits a full interval before the first scheduled
+	// pass rather than compacting on every boot. On-demand "Run now" is always
+	// available immediately regardless of this clock.
+	lastRun := time.Now()
+
+	t := time.NewTicker(maintainPollInterval)
 	defer t.Stop()
 	for {
 		select {
@@ -194,31 +219,52 @@ func maintainLoopCmd() {
 			log.Println("maintain-loop: shutting down")
 			return
 		case <-t.C:
-			// Log and continue: a transient failure (object-store blip, lost
-			// commit race, disabled toggle) must not kill the loop. The outcome
-			// is already persisted by runMaintainOnce for the admin panel.
+			reason := ""
+			// On-demand takes priority and is claimed atomically, so a request is
+			// serviced exactly once even if two maintainer pods briefly overlap.
+			if by, ok, err := archive.ClaimMaintainRunRequest(ctx, db); err != nil {
+				log.Printf("maintain-loop: check run request: %v", err)
+			} else if ok {
+				reason = "run-now"
+				if by != "" {
+					reason = "run-now (requested by " + by + ")"
+				}
+			} else if time.Since(lastRun) >= interval {
+				reason = "scheduled"
+			}
+			if reason == "" {
+				continue
+			}
+			log.Printf("maintain-loop: starting pass: %s", reason)
+			// Log and continue: a transient failure (object-store blip, lost commit
+			// race, disabled toggle) must not kill the loop. The outcome is already
+			// persisted by runMaintainOnce for the admin panel.
 			if err := runMaintainOnce(ctx, cfg, db); err != nil {
 				log.Printf("maintain-loop: pass failed: %v", err)
 			}
+			// Reset the scheduled clock after any pass (manual or scheduled) so a
+			// Run now also defers the next scheduled pass by a full interval.
+			lastRun = time.Now()
 		}
 	}
 }
 
-// maintainLoopInterval reads the docker-only cadence override. Unset, invalid,
-// or non-positive all fall back to defaultMaintainInterval -- disabling the
-// scheduler is done by not running the container, never by a magic value here.
+// maintainLoopInterval reads the scheduled-cadence override. Unset, invalid, or
+// non-positive all fall back to defaultMaintainInterval -- disabling scheduled
+// maintenance is done by not running the maintainer (scale the container/Deployment
+// to 0), never by a magic value here.
 func maintainLoopInterval() time.Duration {
-	raw := os.Getenv("BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL")
+	raw := os.Getenv("BIFRACT_ARCHIVE_MAINTAIN_INTERVAL")
 	if raw == "" {
 		return defaultMaintainInterval
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		log.Printf("maintain-loop: invalid BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL %q: %v; using %s", raw, err, defaultMaintainInterval)
+		log.Printf("maintain-loop: invalid BIFRACT_ARCHIVE_MAINTAIN_INTERVAL %q: %v; using %s", raw, err, defaultMaintainInterval)
 		return defaultMaintainInterval
 	}
 	if d <= 0 {
-		log.Printf("maintain-loop: non-positive BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL %q; using %s", raw, defaultMaintainInterval)
+		log.Printf("maintain-loop: non-positive BIFRACT_ARCHIVE_MAINTAIN_INTERVAL %q; using %s", raw, defaultMaintainInterval)
 		return defaultMaintainInterval
 	}
 	return d
@@ -253,6 +299,11 @@ func runMaintainOnce(ctx context.Context, cfg archive.Config, db *sql.DB) error 
 		return nil
 	}
 	defer db.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", int64(maintainAdvisoryLock))
+
+	// Stamp an in-progress marker so the admin UI can show a live "running" state
+	// for the duration of the pass (catalog open + compaction), between here and
+	// the terminal WriteMaintainStatus/WriteMaintainOutcome below.
+	_ = archive.MarkMaintainRunning(ctx, db)
 
 	cat, err := archive.NewCatalog(ctx, "bifract", cfg.PGDSN, cfg.Obj)
 	if err != nil {

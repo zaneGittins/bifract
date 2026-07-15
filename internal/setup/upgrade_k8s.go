@@ -185,6 +185,19 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 	os.RemoveAll(stagingDir)
 	printDone("Manifests updated")
 
+	// The archive maintainer changed from a CronJob to an always-on Deployment.
+	// `kubectl apply -k` does not prune removed objects, so drop the now-obsolete
+	// manifest from the tree here and, below, tell the operator to delete the live
+	// CronJob (otherwise both it and the new Deployment would run maintenance --
+	// harmless thanks to the advisory lock, but wasteful and confusing).
+	obsoleteCronJob := filepath.Join(dir, "bifract", "archive-maintain-cronjob.yaml")
+	removedCronJob := false
+	if _, statErr := os.Stat(obsoleteCronJob); statErr == nil {
+		if rmErr := os.Remove(obsoleteCronJob); rmErr == nil {
+			removedCronJob = true
+		}
+	}
+
 	// Summary
 	fmt.Println()
 	summary := lipgloss.NewStyle().
@@ -202,6 +215,12 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 	fmt.Println()
 	fmt.Println(DimStyle.Render("  Apply with:"))
 	fmt.Println(DimStyle.Render("    kubectl apply -k " + dir + " --server-side --force-conflicts"))
+	if removedCronJob {
+		fmt.Println()
+		fmt.Println(WarningStyle.Render("  Archive maintenance is now a Deployment (was a CronJob)."))
+		fmt.Println(DimStyle.Render("  After applying, remove the obsolete CronJob:"))
+		fmt.Println(DimStyle.Render("    kubectl delete cronjob bifract-archive-maintain -n bifract"))
+	}
 	fmt.Println()
 	printDone("Upgrade complete")
 	fmt.Println()
