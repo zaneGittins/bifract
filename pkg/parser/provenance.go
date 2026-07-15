@@ -105,9 +105,13 @@ type ProvenanceParams struct {
 // so if Limit ever truncates, it drops low-signal leaves before process structure.
 var ProvenanceOrderBy = []string{"(event_type = 'spawn') DESC", "anomaly_score DESC"}
 
-// provenanceLeafTypes are the non-spawn edge event_types pgr can emit. spawn is the tree
-// backbone and is always present, so it is not listed here.
-var provenanceLeafTypes = []string{"file_write", "net_connect", "dns_query", "remote_thread", "process_access"}
+// provenanceDefaultLeafTypes are the branches generated when the user gives NO explicit include=.
+// remote_thread/process_access are excluded by default: they key off source_process_guid, which is
+// absent in current data (so they emit no edges) AND has no skip index, so including them forces an
+// unindexed full-window scan of the entire logs volume per branch -- catastrophic on high-rate
+// fractals for zero output. They remain available on request via include="remote_thread"/etc.,
+// which is when the scan cost is knowingly opted into.
+var provenanceDefaultLeafTypes = []string{"file_write", "net_connect", "dns_query"}
 
 // normalizeEdgeType maps user-facing aliases (the raw bifract_category names) onto the pgr
 // output event_type values, so exclude="network_connect" and exclude="net_connect" both work.
@@ -184,12 +188,14 @@ func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
 			excludeTypes = parseEdgeTypeList(strings.TrimPrefix(arg, "exclude="))
 		}
 	}
-	// Resolve the non-spawn edge-type set: start from include= (or all leaf types), then drop
-	// any exclude=. spawn is the backbone and is never filtered out here.
+	// Resolve the non-spawn edge-type set: start from include= (or the default leaf types when no
+	// include= is given), then drop any exclude=. spawn is the backbone and is never filtered out
+	// here. The default omits remote_thread/process_access (see provenanceDefaultLeafTypes); an
+	// explicit include= can still request them.
 	p.EdgeTypes = map[string]bool{}
 	base := includeTypes
 	if len(base) == 0 {
-		base = provenanceLeafTypes
+		base = provenanceDefaultLeafTypes
 	}
 	for _, t := range base {
 		if t != "spawn" {
