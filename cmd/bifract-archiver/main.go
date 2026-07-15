@@ -311,7 +311,7 @@ func runMaintainOnce(ctx context.Context, cfg archive.Config, db *sql.DB) error 
 		return fmt.Errorf("open catalog: %w", err)
 	}
 	log.Println("maintain: compaction + snapshot expiry ...")
-	stats, err := cat.Maintain(ctx, archive.DefaultMaintainOptions())
+	stats, err := cat.Maintain(ctx, archive.MaintainOptionsFromEnv())
 	if err != nil {
 		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
 		return fmt.Errorf("maintain: %w", err)

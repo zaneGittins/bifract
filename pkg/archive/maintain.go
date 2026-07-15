@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
 	icetable "github.com/apache/iceberg-go/table"
 	"github.com/apache/iceberg-go/table/compaction"
@@ -31,15 +32,29 @@ type MaintainOptions struct {
 }
 
 // DefaultMaintainOptions returns sensible defaults: keep ~7 days of snapshots,
-// never fewer than 10, compact at most ~2GiB per pass, and retry a lost
-// commit race up to 3 times.
+// never fewer than 10, compact at most ~4GiB per pass, and retry a lost
+// commit race up to 3 times. The byte budget was raised from an earlier 2GiB
+// after observing the sealed-partition backlog outpacing compaction
+// throughput; see MaintainOptionsFromEnv to tune further without a redeploy.
 func DefaultMaintainOptions() MaintainOptions {
 	return MaintainOptions{
 		ExpireOlderThan: 7 * 24 * time.Hour,
 		RetainLast:      10,
-		ByteBudget:      2 << 30,
+		ByteBudget:      4 << 30,
 		CommitRetries:   3,
 	}
+}
+
+// MaintainOptionsFromEnv returns DefaultMaintainOptions with ByteBudget and
+// CommitRetries overridable via BIFRACT_ARCHIVE_MAINTAIN_BYTE_BUDGET (bytes)
+// and BIFRACT_ARCHIVE_MAINTAIN_COMMIT_RETRIES, so an operator can raise them
+// to keep pace with a growing backlog without a code change/redeploy --
+// mirrors the BIFRACT_ARCHIVE_MAINTAIN_INTERVAL pattern in cmd/bifract-archiver.
+func MaintainOptionsFromEnv() MaintainOptions {
+	opts := DefaultMaintainOptions()
+	opts.ByteBudget = getInt64("BIFRACT_ARCHIVE_MAINTAIN_BYTE_BUDGET", opts.ByteBudget)
+	opts.CommitRetries = getIntEnv("BIFRACT_ARCHIVE_MAINTAIN_COMMIT_RETRIES", opts.CommitRetries)
+	return opts
 }
 
 // maintainScanConcurrency caps compaction's concurrent file-decode workers.
@@ -76,12 +91,15 @@ const (
 // persisting to the archive_maintain_status row the admin UI's System ->
 // Archive panel reads (see WriteMaintainStatus). CandidateBytes is the total
 // backlog compaction.Analyze found across every table this pass reached --
-// it under-reports total system-wide backlog both when the pass-wide budget
-// runs out before every table gets a turn (Analyze is only run while there's
-// still budget to spend) and when a table's LoadTable or Analyze call itself
-// errors (that table's backlog silently isn't measured this pass either);
-// treat it as "backlog found among tables this pass could inspect," not a
-// precise system-wide total.
+// it under-reports total system-wide backlog when the pass-wide budget runs
+// out before every table gets a turn (Analyze is only run while there's still
+// budget to spend), when a table's LoadTable or Analyze call itself errors
+// (that table's backlog silently isn't measured this pass either), and
+// because today's still-open ingest_date partition is excluded from
+// candidacy entirely (see isOpenPartitionGroup) so it never contributes
+// bytes here regardless of how much small-file backlog it's accumulating;
+// treat it as "sealed backlog found among tables this pass could inspect,"
+// not a precise system-wide total.
 type MaintainStats struct {
 	Tables         int
 	Compacted      int
@@ -178,18 +196,34 @@ type compactResult struct {
 // race with a concurrent append only costs a retry of that one group's
 // rewrite, not the whole pass's budget -- the "partial progress" pattern
 // Iceberg operators use for actively-written tables, since a single big
-// commit racing a busy writer can lose every attempt indefinitely. Groups are
-// selected up to budget bytes; the first selected group is always included
-// even if it alone exceeds budget (a single oversized group -- e.g. one
-// flagged purely by delete-file count, independent of size -- must not stall
-// forever), which is logged so that safety valve is visible rather than
-// silent. No-op when the plan is empty (files already large enough - the
-// common case given roll-on-size at write time).
+// commit racing a busy writer can lose every attempt indefinitely. Today's
+// ingest_date partition is dropped from the plan before selection (see
+// isOpenPartitionGroup): it is the only partition the archiver still appends
+// to (schema.go's monotonic roll-on-ingest_date), so a compaction commit
+// racing it can never be won by retrying harder -- it becomes an ordinary,
+// uncontested compaction candidate once sealed at day rollover. Of what's
+// left, groups are selected up to budget bytes; the first selected group is
+// always included even if it alone exceeds budget (a single oversized group
+// -- e.g. one flagged purely by delete-file count, independent of size --
+// must not stall forever), which is logged so that safety valve is visible
+// rather than silent. No-op when the plan is empty (files already large
+// enough - the common case given roll-on-size at write time).
 func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, budget int64, retries int) (compactResult, error) {
 	plan, err := compaction.Analyze(ctx, tbl, compaction.DefaultConfig())
 	if err != nil {
 		return compactResult{}, err
 	}
+
+	open := iceberg.Date(epochDay(time.Now()))
+	sealed := plan.Groups[:0]
+	for _, g := range plan.Groups {
+		if isOpenPartitionGroup(g, open) {
+			continue
+		}
+		sealed = append(sealed, g)
+	}
+	plan.Groups = sealed
+
 	if len(plan.Groups) == 0 {
 		return compactResult{}, nil
 	}
@@ -230,6 +264,25 @@ func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 		res.compactedBytes += g.TotalSizeBytes
 	}
 	return res, nil
+}
+
+// isOpenPartitionGroup reports whether g belongs to today's (or, by clock
+// skew, a future) ingest_date partition -- the only partition the archiver
+// may still append to. Every task in a Group shares one partition (that's
+// the grouping contract), so the first task's value stands in for the whole
+// group. Returns false (i.e. treats as sealed/compactable) if the partition
+// value is missing or an unexpected type, so a scan/schema surprise degrades
+// to the old behavior rather than silently excluding everything.
+func isOpenPartitionGroup(g compaction.Group, today iceberg.Date) bool {
+	if len(g.Tasks) == 0 {
+		return false
+	}
+	v, ok := g.Tasks[0].File.Partition()[partitionFieldID]
+	if !ok {
+		return false
+	}
+	d, ok := v.(iceberg.Date)
+	return ok && d >= today
 }
 
 // compactGroup rewrites and commits a single compaction group, retrying

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"bifract/pkg/parser"
 )
@@ -37,26 +38,9 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	if opts.FractalID == "" && len(opts.FractalIDs) == 0 {
 		return "", fmt.Errorf("pgr: fractal scoping is required")
 	}
-	treeSQL, err := parser.BuildProcessTreeQuery(p, opts)
-	if err != nil {
-		return "", fmt.Errorf("pgr: build tree query: %w", err)
-	}
-	treeRows, err := h.db.QueryLowPriority(ctx, treeSQL)
+	guids, err := h.collectProvenanceTreeGuids(ctx, p, opts)
 	if err != nil {
 		return "", fmt.Errorf("pgr: tree pass: %w", err)
-	}
-	seen := make(map[string]struct{}, len(treeRows))
-	guids := make([]string, 0, len(treeRows))
-	for _, r := range treeRows {
-		g, _ := r["process_guid"].(string)
-		if g == "" {
-			continue
-		}
-		if _, dup := seen[g]; dup {
-			continue
-		}
-		seen[g] = struct{}{}
-		guids = append(guids, g)
 	}
 	if len(guids) == 0 {
 		return provenanceEmptyScoreSQL, nil
@@ -112,35 +96,6 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		}
 	}
 
-	// Scope fe/ft/gf's proc_freq lookup (see BuildProvenanceScoringSQL) to the join keys this
-	// tree's edges can actually match, instead of aggregating the whole fractal's behavioral
-	// history on every call. This preliminary pass is bounded the same way the edge scan itself
-	// is (guids + time window), so it's cheap; failure just forfeits the scoping (non-fatal).
-	var freqKeys []parser.FreqKey
-	if ctx.Err() == nil {
-		keysSQL, kErr := parser.BuildProvenanceFreqKeysSQL(combined, p.EdgeTypes, opts)
-		if kErr != nil {
-			log.Printf("[pgr] build freq-keys query: %v", kErr)
-		} else {
-			keyRows, qErr := h.db.QueryLowPriority(ctx, keysSQL)
-			if qErr != nil {
-				if ctx.Err() != nil {
-					return "", ctx.Err()
-				}
-				log.Printf("[pgr] freq-keys lookup failed, scoring proc_freq unscoped: %v", qErr)
-			} else {
-				freqKeys = make([]parser.FreqKey, 0, len(keyRows))
-				for _, r := range keyRows {
-					freqKeys = append(freqKeys, parser.FreqKey{
-						SrcImage:   reconString(r["fkey_src"]),
-						EventType:  reconString(r["event_type"]),
-						TargetNorm: reconString(r["fkey_tgt"]),
-					})
-				}
-			}
-		}
-	}
-
 	// Global-rarity denominator for every non-spawn edge scored (see BuildProvenanceScoringSQL's
 	// anomExpr). Fetched ONCE per call and passed as a literal so it is not silently re-scanned
 	// if the scoring SQL gets rebuilt within this same call (the diffuse-fallback path below
@@ -159,7 +114,27 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		}
 	}
 
-	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, p.Diffuse, freqKeys, totalHosts, opts)
+	// Tree-window probe: narrow the process_guid-matched leaf scans (file/net/dns + pm) from the
+	// full user window (12h/7d/30d) down to the tree's actual activity span -- a strict subset of
+	// the user window containing exactly the same rows, so results are identical. See
+	// parser.BuildProvenanceProbeSQL. Non-fatal: on failure or empty span, leaf scans keep the
+	// user window. Millisecond precision so a boundary event isn't truncated out.
+	var leafStart, leafEnd string
+	if ctx.Err() == nil {
+		if pr, pErr := h.db.QueryLowPriority(ctx, parser.BuildProvenanceProbeSQL(combined, opts)); pErr != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			log.Printf("[pgr] tree-window probe failed, using full query window: %v", pErr)
+		} else if len(pr) > 0 {
+			if mn, mx := reconTime(pr[0]["mn"]), reconTime(pr[0]["mx"]); !mn.IsZero() && !mx.IsZero() {
+				leafStart = mn.Format("2006-01-02 15:04:05.000")
+				leafEnd = mx.Format("2006-01-02 15:04:05.000")
+			}
+		}
+	}
+
+	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, p.Diffuse, totalHosts, leafStart, leafEnd, opts)
 	if err != nil {
 		return "", fmt.Errorf("pgr: build scoring query: %w", err)
 	}
@@ -189,7 +164,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 			return "", ctx.Err()
 		}
 		log.Printf("[pgr] diffusion score query failed, falling back to per-edge scoring: %v", qErr)
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, freqKeys, totalHosts, opts)
+		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, leafStart, leafEnd, opts)
 		if ferr != nil {
 			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
 		}
@@ -207,7 +182,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		// Diffusion (propagation) is lost for this one query, but pgr returns the full graph with
 		// per-edge anomaly instead of failing -- and flat/pgraph stay in parity (both use this SQL).
 		log.Printf("[pgr] diffusion payload too large to inline (%d edges); falling back to per-edge scoring for this query", len(survivors))
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, freqKeys, totalHosts, opts)
+		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, leafStart, leafEnd, opts)
 		if ferr != nil {
 			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
 		}
@@ -220,6 +195,100 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		log.Printf("[pgr] diffusion emitted a bounded subset: dropped %d low-signal leaf edges to fit the query-size limit", dropped)
 	}
 	return sql, nil
+}
+
+// collectProvenanceTreeGuids gathers pgr pass 1's process-tree guid set via iterative BFS over
+// proc_lineage -- one indexed hop per depth level (parser.BuildProcessTreeHopSQL) -- replacing the
+// single WITH RECURSIVE query whose per-level self-join forced a FINAL full scan of the ENTIRE
+// fractal at every depth (the pgr CPU/timeout culprit; EXPLAIN: recursive read ~all granules per
+// level, a hop reads ~5-9/142 via the primary key / idx_parent_guid bloom).
+//
+// The reachable guid set is IDENTICAL to the recursive traversal for any tree up to
+// maxProvenanceGuids: same parent/child edges walked to the same depth, and process_guid is
+// globally unique so FINAL (which the hops omit) changes only WHICH row per guid, not which guids
+// exist. Only when a tree exceeds the cap does the selected subset differ -- breadth-first
+// (shallowest-first) here, versus the recursive query's ORDER BY _path ASC LIMIT truncation. pgr
+// scoring consumes only the guid set (never _depth/_path), so that is the sole behavioral change,
+// and it affects only trees larger than the 10k cap.
+func (h *QueryHandler) collectProvenanceTreeGuids(ctx context.Context, p parser.ProvenanceParams, opts parser.QueryOptions) ([]string, error) {
+	// The seed must exist as a process in proc_lineage, matching the recursive base's
+	// WHERE process_guid = start. A guid that appears only in leaf logs (net/dns/file) but never
+	// as a process_creation is NOT a tree anchor -- returning empty here matches the old behavior
+	// (the recursive base would yield no rows), so scoring is not run on a phantom root.
+	seedRows, err := h.db.QueryLowPriority(ctx, parser.BuildProcessTreeHopSQL([]string{p.Start}, false, opts))
+	if err != nil {
+		return nil, err
+	}
+	seedExists := false
+	for _, r := range seedRows {
+		if reconString(r["process_guid"]) == p.Start {
+			seedExists = true
+			break
+		}
+	}
+	if !seedExists {
+		return nil, nil
+	}
+
+	seen := map[string]struct{}{p.Start: {}}
+	all := []string{p.Start}
+
+	// walk expands one direction breadth-first from the seed, up to p.Depth levels (matching the
+	// recursive t._depth < maxDepth bound), adding newly discovered guids and stopping at the
+	// maxProvenanceGuids cap. forward: children (row.process_guid where parent_guid ∈ frontier);
+	// backward: parents (row.parent_guid where process_guid ∈ frontier).
+	walk := func(forward bool) error {
+		frontier := []string{p.Start}
+		for level := 0; level < p.Depth && len(frontier) > 0 && len(all) < parser.MaxProvenanceGuids; level++ {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			rows, hErr := h.db.QueryLowPriority(ctx, parser.BuildProcessTreeHopSQL(frontier, forward, opts))
+			if hErr != nil {
+				return hErr
+			}
+			var next []string
+			for _, r := range rows {
+				g := reconString(r["parent_guid"]) // backward: next node is the parent
+				if forward {
+					g = reconString(r["process_guid"]) // forward: next node is the child
+				}
+				if g == "" {
+					continue
+				}
+				if _, dup := seen[g]; dup {
+					continue
+				}
+				seen[g] = struct{}{}
+				all = append(all, g)
+				next = append(next, g)
+				if len(all) >= parser.MaxProvenanceGuids {
+					break
+				}
+			}
+			frontier = next
+		}
+		return nil
+	}
+
+	switch p.Direction {
+	case "forward":
+		if err := walk(true); err != nil {
+			return nil, err
+		}
+	case "backward":
+		if err := walk(false); err != nil {
+			return nil, err
+		}
+	default: // both
+		if err := walk(true); err != nil {
+			return nil, err
+		}
+		if err := walk(false); err != nil {
+			return nil, err
+		}
+	}
+	return all, nil
 }
 
 // diffuseMaxScanRows bounds the intermediate (pre-threshold) edge set pulled into Go for
@@ -505,24 +574,22 @@ func (h *QueryHandler) expandReconnectionPeers(ctx context.Context, treeGuids []
 
 	// Traverse each peer's shallow subtree concurrently (h.db is a pooled client). Results are
 	// merged in toExpand order so the outcome stays deterministic regardless of finish order.
-	results := make([][]map[string]interface{}, len(toExpand))
+	// Uses the same iterative indexed walk as pass 1 (collectProvenanceTreeGuids) rather than the
+	// recursive CTE, so a peer expansion is a few granule reads instead of a FINAL full scan.
+	results := make([][]string, len(toExpand))
 	var wg sync.WaitGroup
 	for i, g := range toExpand {
 		pp := parser.ProvenanceParams{Start: g, Depth: reconnectExpandDepth, Direction: "forward"}
-		sql, err := parser.BuildProcessTreeQuery(pp, opts)
-		if err != nil {
-			continue
-		}
 		wg.Add(1)
-		go func(idx int, guid, q string) {
+		go func(idx int, guid string, params parser.ProvenanceParams) {
 			defer wg.Done()
-			rows, qErr := h.db.QueryLowPriority(ctx, q)
+			gs, qErr := h.collectProvenanceTreeGuids(ctx, params, opts)
 			if qErr != nil {
 				log.Printf("[pgr] expand peer %s: %v", guid, qErr)
 				return
 			}
-			results[idx] = rows
-		}(i, g, sql)
+			results[idx] = gs
+		}(i, g, pp)
 	}
 	wg.Wait()
 
@@ -530,9 +597,8 @@ func (h *QueryHandler) expandReconnectionPeers(ctx context.Context, treeGuids []
 	for _, g := range treeGuids {
 		seen[g] = true
 	}
-	for _, rows := range results {
-		for _, r := range rows {
-			sg := reconString(r["process_guid"])
+	for _, gs := range results {
+		for _, sg := range gs {
 			if sg == "" || seen[sg] {
 				continue
 			}
@@ -552,6 +618,16 @@ func reconString(v interface{}) string {
 		return s
 	}
 	return ""
+}
+
+// reconTime coerces a ClickHouse-driver value to time.Time. DateTime64 arrives as time.Time; a
+// nil (e.g. min/max over an empty set) yields the zero time, which the probe caller treats as
+// "no span" and falls back to the full user window.
+func reconTime(v interface{}) time.Time {
+	if t, ok := v.(time.Time); ok {
+		return t
+	}
+	return time.Time{}
 }
 
 // reconFloat coerces a ClickHouse-driver value to float64. anomaly is emitted via toFloat64(...)
