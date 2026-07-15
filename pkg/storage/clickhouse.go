@@ -1489,6 +1489,39 @@ func (c *ClickHouseClient) QueryLowPriority(ctx context.Context, query string) (
 	return c.Query(ctx, query)
 }
 
+// Provenance scan budget: bounds each pgr ClickHouse scan server-side so a pathological (giant or
+// firehose-host) process tree ABORTS at a hard limit instead of scanning the whole time window and
+// pegging every shard. pgr's resolver passes run on the raw request context (before the
+// request-level QueryTimeoutSeconds ctx is built), and even the downstream scoring scan's Go-ctx
+// timeout does not reliably stop a running ClickHouse scan -- so these server-enforced ceilings
+// (throw on overflow) are the real guard. ProvenanceQuerySettings mirrors them as a top-level
+// SETTINGS suffix for the downstream query (SETTINGS are illegal inside the pgr subquery).
+const (
+	ProvenanceMaxRowsToRead   = 3_000_000_000 // ~3B rows/scan
+	ProvenanceMaxExecutionSec = 30
+)
+
+// ProvenanceQuerySettings is the top-level SETTINGS clause (no leading space) the query layer
+// appends to the downstream query when its source is pgr, applying the same budget as
+// QueryProvenance to the scan the generic pipeline executes.
+var ProvenanceQuerySettings = fmt.Sprintf("max_rows_to_read=%d, max_execution_time=%d, read_overflow_mode='throw', timeout_overflow_mode='throw'",
+	ProvenanceMaxRowsToRead, ProvenanceMaxExecutionSec)
+
+// QueryProvenance executes a pgr resolver scan at low priority with the provenance scan budget
+// (see ProvenanceMaxRowsToRead). Used for pgr's tree hops, probe, reconnection, totals, and the
+// diffusion scan so none of them can run away on a pathological tree.
+func (c *ClickHouseClient) QueryProvenance(ctx context.Context, query string) ([]map[string]interface{}, error) {
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"priority":              5,
+		"max_query_size":        maxGeneratedQuerySize,
+		"max_rows_to_read":      ProvenanceMaxRowsToRead,
+		"max_execution_time":    ProvenanceMaxExecutionSec,
+		"read_overflow_mode":    "throw",
+		"timeout_overflow_mode": "throw",
+	}))
+	return c.Query(ctx, query)
+}
+
 func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[string]interface{}, error) {
 	rows, err := c.conn.Query(ctx, query)
 	if err != nil {

@@ -6,9 +6,12 @@ import (
 	"strings"
 )
 
-// maxProvenanceGuids caps the tree-guid set fed into the pass-2 leaf-fetch IN-list, so a
-// pathological tree can't produce an unbounded query.
-const maxProvenanceGuids = 10000
+// maxProvenanceGuids caps the tree-guid set. Beyond the graph being unreadable at that size, a
+// large guid set defeats the logs idx_process_guid bloom (too many values → every granule in the
+// window matches one), forcing the pass-2 edge scan to read the whole window. Capped low so the
+// IN-list stays bloom-prunable and the graph stays legible; the output edge limit (default 500)
+// is well under this anyway. BFS is breadth-first, so the cap keeps the processes nearest the seed.
+const maxProvenanceGuids = 1000
 
 // MaxProvenanceGuids exposes maxProvenanceGuids to the query layer's iterative tree walk
 // ((*QueryHandler).collectProvenanceTreeGuids), which bounds its BFS by the same cap.

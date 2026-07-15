@@ -639,6 +639,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	// including pgraph()) then translates over that source like any other query. Everything
 	// downstream keys off opts.SourceSubquery -- no per-command special-casing.
 	var sourceFocus string
+	var sourceQuerySettings string
 	if src, ok := parser.FirstSourceCommand(pipeline); ok {
 		if perr := parser.ValidateSourceCommandPlacement(pipeline); perr != nil {
 			respondJSON(w, http.StatusBadRequest, QueryResponse{
@@ -668,6 +669,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 			opts.SourceOrderBy = rs.OrderBy
 		}
 		sourceFocus = rs.Focus
+		sourceQuerySettings = rs.QuerySettings
 		pipeline = parser.StripCommand(pipeline, src.Name)
 	}
 
@@ -759,6 +761,13 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 			log.Printf("[QueryHandler] Failed to build histogram SQL: %v", err)
 			needsHistogram = false
 		}
+	}
+
+	// A source command (pgr) may request a top-level scan budget; SETTINGS must be last (illegal
+	// inside the subquery), so append after all LIMIT/cursor edits. Server-enforced, so a
+	// pathological tree aborts here instead of scanning the whole window across every shard.
+	if sourceQuerySettings != "" {
+		sql += " SETTINGS " + sourceQuerySettings
 	}
 
 	prep = &preparedQuery{

@@ -153,6 +153,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 	// source and drop the command; the rest of the pipeline (including pgraph()) translates
 	// over it like any other query. Guards below key off opts.SourceSubquery.
 	var sourceFocus string
+	var sourceQuerySettings string
 	if src, ok := parser.FirstSourceCommand(pipeline); ok {
 		if perr := parser.ValidateSourceCommandPlacement(pipeline); perr != nil {
 			return nil, perr
@@ -165,6 +166,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 		opts.SourceColumns = rs.Columns
 		opts.SourceNumericColumns = rs.NumericColumns
 		sourceFocus = rs.Focus
+		sourceQuerySettings = rs.QuerySettings
 		pipeline = parser.StripCommand(pipeline, src.Name)
 	}
 	hasSubquerySource := opts.SourceSubquery != ""
@@ -191,6 +193,12 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 			}
 			sql += fmt.Sprintf(" LIMIT %d", cursorPageSize)
 		}
+	}
+
+	// A source command (pgr) may request a top-level scan budget; SETTINGS are illegal inside the
+	// subquery, so they ride the final query. Server-enforced, so a pathological tree aborts here.
+	if sourceQuerySettings != "" {
+		sql += " SETTINGS " + sourceQuerySettings
 	}
 
 	queryStart := time.Now()

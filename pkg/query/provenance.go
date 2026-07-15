@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/storage"
 )
 
 // provenanceColumns are the flat columns the pgr() scored edge list exposes. pgr() is a source
@@ -61,7 +62,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	var emitPeers []parser.ReconnectPeer
 	if p.Reconnect && ctx.Err() == nil {
 		var reconTotalHosts, reconTotalImages int64
-		if totRows, tErr := h.db.QueryLowPriority(ctx, parser.BuildReconnectionTotalsSQL(opts)); tErr != nil {
+		if totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildReconnectionTotalsSQL(opts)); tErr != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
@@ -77,7 +78,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 			// The reconnection SQL uses explicit GLOBAL IN / GLOBAL JOIN on its cross-distributed-table
 			// subqueries (see BuildReconnectionSQL), so it runs on a cluster without the fragile
 			// distributed_product_mode='global' setting (which errors code 36 on this query's shape).
-			reconRows, qErr := h.db.QueryLowPriority(ctx, reconSQL)
+			reconRows, qErr := h.db.QueryProvenance(ctx, reconSQL)
 			if qErr != nil {
 				// Distinguish a cancelled/timed-out request (bail so the caller sees it) from a
 				// genuine reconnection-feature failure (fall back to the base tree).
@@ -104,7 +105,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	// treats as "no baseline" (global-rarity term forced to 0) -- a safe, pre-existing fallback.
 	var totalHosts int64
 	if ctx.Err() == nil {
-		if totRows, tErr := h.db.QueryLowPriority(ctx, parser.BuildProvenanceTotalHostsSQL(opts)); tErr != nil {
+		if totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildProvenanceTotalHostsSQL(opts)); tErr != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
@@ -121,7 +122,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	// user window. Millisecond precision so a boundary event isn't truncated out.
 	var leafStart, leafEnd string
 	if ctx.Err() == nil {
-		if pr, pErr := h.db.QueryLowPriority(ctx, parser.BuildProvenanceProbeSQL(combined, opts)); pErr != nil {
+		if pr, pErr := h.db.QueryProvenance(ctx, parser.BuildProvenanceProbeSQL(combined, opts)); pErr != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
@@ -158,7 +159,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	// alone -- a bare append would NOT bound the whole set. The outer ORDER BY keeps spawn first so
 	// the LIMIT only ever trims low-signal leaves, never process structure.
 	scanSQL := fmt.Sprintf("SELECT * FROM (%s) AS _d ORDER BY (event_type = 'spawn') DESC, anomaly_score DESC LIMIT %d", scoreSQL, diffuseMaxScanRows)
-	rows, qErr := h.db.QueryLowPriority(ctx, scanSQL)
+	rows, qErr := h.db.QueryProvenance(ctx, scanSQL)
 	if qErr != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -215,7 +216,7 @@ func (h *QueryHandler) collectProvenanceTreeGuids(ctx context.Context, p parser.
 	// WHERE process_guid = start. A guid that appears only in leaf logs (net/dns/file) but never
 	// as a process_creation is NOT a tree anchor -- returning empty here matches the old behavior
 	// (the recursive base would yield no rows), so scoring is not run on a phantom root.
-	seedRows, err := h.db.QueryLowPriority(ctx, parser.BuildProcessTreeHopSQL([]string{p.Start}, false, opts))
+	seedRows, err := h.db.QueryProvenance(ctx, parser.BuildProcessTreeHopSQL([]string{p.Start}, false, opts))
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +244,7 @@ func (h *QueryHandler) collectProvenanceTreeGuids(ctx context.Context, p parser.
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			rows, hErr := h.db.QueryLowPriority(ctx, parser.BuildProcessTreeHopSQL(frontier, forward, opts))
+			rows, hErr := h.db.QueryProvenance(ctx, parser.BuildProcessTreeHopSQL(frontier, forward, opts))
 			if hErr != nil {
 				return hErr
 			}
@@ -674,6 +675,7 @@ type resolvedSource struct {
 	Focus          string   // optional node identifier the viz should center/highlight (pgr start)
 	Limit          int      // outer-query result-row cap this source prefers, overriding opts.MaxRows (0 = no preference)
 	OrderBy        []string // outer-query ORDER BY this source prefers, overriding the generic timestamp-DESC default
+	QuerySettings  string   // optional top-level SETTINGS clause (no leading space) the executor appends to the final query -- e.g. pgr's scan budget
 }
 
 // sourceResolver produces a resolvedSource for a source command. Resolution runs in the query
@@ -709,5 +711,15 @@ func resolvePgrSource(h *QueryHandler, ctx context.Context, cmd parser.CommandNo
 	if err != nil {
 		return nil, err
 	}
-	return &resolvedSource{SQL: sql, Columns: provenanceColumns, NumericColumns: provenanceNumericColumns, Focus: p.Start, Limit: p.Limit, OrderBy: parser.ProvenanceOrderBy}, nil
+	return &resolvedSource{
+		SQL:            sql,
+		Columns:        provenanceColumns,
+		NumericColumns: provenanceNumericColumns,
+		Focus:          p.Start,
+		Limit:          p.Limit,
+		OrderBy:        parser.ProvenanceOrderBy,
+		// Budget the downstream scan (the diffuse=false scoring scan runs here, not in the
+		// resolver) so a pathological tree aborts server-side instead of pegging every shard.
+		QuerySettings: storage.ProvenanceQuerySettings,
+	}, nil
 }
