@@ -146,6 +146,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 		TableName:             h.queryTableName(),
 		ProcLineageTable:      h.procLineageTableName(),
 		ProcFreqTable:         h.procFreqTableName(),
+		ProcEdgesTable:        h.procEdgesTableName(),
 		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
 

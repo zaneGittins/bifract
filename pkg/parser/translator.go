@@ -34,6 +34,7 @@ type QueryOptions struct {
 	TableName             string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
 	ProcLineageTable      string                        // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
 	ProcFreqTable         string                        // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
+	ProcEdgesTable        string                        // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
 	IncludeShardNum       bool                          // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
 	SourceMode            SourceMode                    // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
 	// SourceSubquery makes the pipeline read FROM a pre-built SQL subquery instead of the

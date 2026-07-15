@@ -255,16 +255,10 @@ func BuildProcessTreeHopSQL(frontier []string, forward bool, opts QueryOptions) 
 }
 
 // buildProvenanceEdgeUnion returns the raw (non-aggregated) UNION ALL of every edge branch pgr's
-// tree can touch: spawn (proc_lineage) plus enabled leaf categories (file/net/dns/p2p), each
-// bounded by guids + a time window -- never by the full fractal history.
+// tree can touch: spawn (proc_lineage), the file/net/dns leaf edges (process_edges rollup), and
+// p2p (logs), each bounded by guids + the user's time window -- never by the full fractal history.
 // BuildProvenanceScoringSQL aggregates it into edgesAgg.
-//
-// leafStart/leafEnd (from BuildProvenanceProbeSQL, see provenanceScoreSQL) narrow the
-// process_guid-matched leaf branches (file/net/dns) to the tree's actual activity span -- a
-// strict subset of the user window with identical rows. They do NOT apply to the p2p branches,
-// which match on source_process_guid (not covered by the process_guid probe) and so stay on the
-// full user window. Empty leafStart/leafEnd fall back to the user window (probe unavailable).
-func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, leafStart, leafEnd string, opts QueryOptions) (string, error) {
+func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, opts QueryOptions) (string, error) {
 	if len(guids) == 0 {
 		return "", fmt.Errorf("pgr: no process guids to score")
 	}
@@ -286,14 +280,10 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, leafSta
 
 	tsStart := opts.StartTime.Format("2006-01-02 15:04:05")
 	tsEnd := opts.EndTime.Format("2006-01-02 15:04:05")
-	// userWin is the full user window (used by p2p, matched on source_process_guid). leafWin is
-	// the probe-narrowed span for the process_guid-matched file/net/dns branches; it falls back to
-	// userWin when the probe produced nothing.
+	// The user's query window, applied to the process_guid-matched edge reads (file/net/dns rollup
+	// + p2p logs scan). No probe is needed anymore: the edge/p2p reads scope by guid, so the window
+	// only trims which of the tree's edges are in range, not the scan cost.
 	userWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", tsStart, tsEnd)
-	leafWin := userWin
-	if leafStart != "" && leafEnd != "" {
-		leafWin = fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", leafStart, leafEnd)
-	}
 	fractal := procLineageFractalCond(opts, "")
 	frac := func() string {
 		if fractal == "" {
@@ -302,42 +292,53 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, leafSta
 		return " AND " + fractal
 	}
 
-	// Abstraction shortcuts (identical transform to the proc_freq MVs -> matching join keys).
+	// Abstraction shortcut (identical transform to the proc_freq MVs). Used by spawn/p2p, which
+	// still read proc_lineage/logs directly; the file/net/dns leaf edges now come pre-abstracted
+	// from the process_edges rollup below.
 	aPath := func(col string) string { return abstractExpr(col, AbstractPath) }
-	aIP := func(col string) string { return abstractExpr(col, AbstractIP) }
 
-	// Each edge SELECT yields: src_node, dst_node, label, event_type, fkey_src, fkey_tgt,
-	// log_id, timestamp, fractal_id. log_id + timestamp + fractal_id are exactly the columns
-	// the standard log-detail fetch (/logs/fields) needs, projected in the same shape a normal
-	// search row uses (toString(timestamp)) -- so clicking a pgr table row or a pgraph node
-	// goes through the identical, proven detail-load path instead of a bespoke lookup.
+	// Each edge SELECT yields: src_node, dst_node, label, event_type, fkey_src, fkey_tgt, log_id,
+	// timestamp, fractal_id, host -- log_id + timestamp + fractal_id are the columns the standard
+	// log-detail fetch (/logs/fields) needs, in a normal search row's shape.
 	spawnEdges := fmt.Sprintf(
 		"SELECT parent_guid AS src_node, process_guid AS dst_node, image AS label, 'spawn' AS event_type, "+
 			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, computer_name AS host FROM %s FINAL WHERE process_guid IN (%s)%s",
 		aPath("parent_image"), aPath("image"), procLineage, inList, frac())
 
-	fileEdges := fmt.Sprintf(
-		"SELECT fields.process_guid::String AS src_node, concat('file:', %[1]s) AS dst_node, "+
-			"fields.target_file::String AS label, 'file_write' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host "+
-			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
-			"AND fields.bifract_category = 'file_write' AND fields.image::String != '' AND fields.target_file::String != ''",
-		aPath("fields.target_file::String"), aPath("fields.image::String"), logs, leafWin, frac(), inList)
-
-	netEdges := fmt.Sprintf(
-		"SELECT fields.process_guid::String AS src_node, concat('net:', %[1]s) AS dst_node, "+
-			"fields.dst_ip::String AS label, 'net_connect' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host "+
-			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
-			"AND fields.bifract_category = 'network_connect' AND fields.image::String != '' AND fields.dst_ip::String != ''",
-		aIP("fields.dst_ip::String"), aPath("fields.image::String"), logs, leafWin, frac(), inList)
-
-	// DNS edges: process -> resolved domain node. src is the querying image; target is the
-	// abstracted (lowercased, root-dot-stripped) query name.
-	dnsEdges := fmt.Sprintf(
-		"SELECT fields.process_guid::String AS src_node, concat('dns:', %[1]s) AS dst_node, "+
-			"fields.query::String AS label, 'dns_query' AS event_type, %[2]s AS fkey_src, %[1]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host "+
-			"FROM %[3]s WHERE %[4]s%[5]s AND fields.process_guid::String IN (%[6]s) "+
-			"AND fields.bifract_category = 'dns_query' AND fields.image::String != '' AND fields.query::String != '' AND NOT match(fields.query::String, %[7]s)",
-		abstractExpr("fields.query::String", AbstractDomain), aPath("fields.image::String"), logs, leafWin, frac(), inList, ipv4Re)
+	// Leaf edges (file/net/dns) come from the process_edges rollup keyed by
+	// (fractal_id, process_guid, event_type, dst_node): a PRIMARY-KEY lookup on the tree's guids
+	// instead of a bloom-defeated raw-logs scan over the window (measured 156s -> ~76ms). dst_node
+	// and fkey_* are already abstracted by the MV (byte-identical to abstractExpr / proc_freq), so
+	// they join proc_freq exactly as before. event_type is filtered to the enabled leaf categories;
+	// userWin bounds by the edge's latest timestamp to the query window. p2p is NOT here (it keys on
+	// source_process_guid and is gated off by default). AggregatingMergeTree partials (across shards
+	// / unmerged parts) are merged downstream by edgesAgg's GROUP BY.
+	edgeTable := opts.ProcEdgesTable
+	if edgeTable == "" {
+		edgeTable = "process_edges"
+	}
+	var leafTypes []string
+	if want("file_write") {
+		leafTypes = append(leafTypes, "'file_write'")
+	}
+	if want("net_connect") {
+		leafTypes = append(leafTypes, "'net_connect'")
+	}
+	if want("dns_query") {
+		leafTypes = append(leafTypes, "'dns_query'")
+	}
+	leafEdges := ""
+	if len(leafTypes) > 0 {
+		edgeFrac := ""
+		if fractal != "" {
+			edgeFrac = fractal + " AND "
+		}
+		leafEdges = fmt.Sprintf(
+			"SELECT process_guid AS src_node, dst_node, label, event_type, fkey_src, fkey_tgt, log_id, "+
+				"toString(timestamp) AS timestamp, fractal_id, computer_name AS host "+
+				"FROM %s WHERE %s%s AND process_guid IN (%s) AND event_type IN (%s)",
+			edgeTable, edgeFrac, userWin, inList, strings.Join(leafTypes, ", "))
+	}
 
 	// Process->process edges (injection / handle-access): source_process_guid in the tree,
 	// real target_process_guid node. The actor's image is normalized to fields.image (same as
@@ -352,16 +353,11 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, leafSta
 			aPath("fields.image::String"), aPath("fields.target_image::String"), logs, userWin, frac(), inList, eventType, category)
 	}
 
-	// spawn is always present (the tree spine); leaf branches are included per edgeTypes.
+	// spawn is always present (the tree spine); file/net/dns ride the process_edges rollup in one
+	// read (leafEdges); p2p branches (if enabled via include=) still scan logs.
 	parts := []string{spawnEdges}
-	if want("file_write") {
-		parts = append(parts, fileEdges)
-	}
-	if want("net_connect") {
-		parts = append(parts, netEdges)
-	}
-	if want("dns_query") {
-		parts = append(parts, dnsEdges)
+	if leafEdges != "" {
+		parts = append(parts, leafEdges)
 	}
 	if want("remote_thread") {
 		parts = append(parts, p2pEdges("remote_thread", "remote_thread"))
@@ -408,46 +404,13 @@ func BuildReconnectionTotalsSQL(opts QueryOptions) string {
 		procFreqHostsCap, procFreq, where)
 }
 
-// BuildProvenanceProbeSQL is the pgr tree-window probe: the exact [min,max] timestamp span of the
-// tree's own process_guid-matched events (the same match the file/net/dns leaf branches and the
-// pm command-line subquery use), over the user's window. provenanceScoreSQL runs it once, then
-// narrows those leaf scans to the returned span via BuildProvenanceScoringSQL's leafStart/leafEnd.
-// Because [min,max] is a strict subset of the user window containing exactly the process_guid
-// events it bounds, the narrowed scans return identical rows -- they just read the tree's activity
-// slice instead of the whole 12h/7d/30d window. The idx_process_guid bloom skips granules holding
-// none of the tree's guids, so for a time-clustered tree the probe itself only reads that slice.
-func BuildProvenanceProbeSQL(guids []string, opts QueryOptions) string {
-	if len(guids) > maxProvenanceGuids {
-		guids = guids[:maxProvenanceGuids]
-	}
-	quoted := make([]string, len(guids))
-	for i, g := range guids {
-		quoted[i] = "'" + escapeString(g) + "'"
-	}
-	logs := opts.EffectiveTableName()
-	where := []string{
-		fmt.Sprintf("timestamp >= '%s'", opts.StartTime.Format("2006-01-02 15:04:05")),
-		fmt.Sprintf("timestamp <= '%s'", opts.EndTime.Format("2006-01-02 15:04:05")),
-		fmt.Sprintf("fields.process_guid::String IN (%s)", strings.Join(quoted, ", ")),
-	}
-	if fc := procLineageFractalCond(opts, ""); fc != "" {
-		where = append(where, fc)
-	}
-	return fmt.Sprintf("SELECT min(timestamp) AS mn, max(timestamp) AS mx FROM %s WHERE %s", logs, strings.Join(where, " AND "))
-}
-
 // BuildProvenanceScoringSQL is pass 2: given the tree's guids, assemble every edge
 // (spawn from proc_lineage; file/net/injection/handle-access leaf edges from logs, bounded
 // by time + guid + category), score each against proc_freq (anomaly = 1 - freq(edge)/freq(src,rel,*)),
 // and keep the full spawn spine plus any non-spawn edge at/above threshold. Output columns:
 // parent, child, label, event_type, anomaly_score -- an edge list graph() renders directly.
 // edgeTypes selects which non-spawn edge branches to generate (nil/empty = all); spawn is
-// always included as the tree backbone. Skipping a branch avoids scanning logs for that
-// bifract_category entirely -- a real cost saving at scale, not just a post-filter.
-//
-// leafStart/leafEnd (from BuildProvenanceProbeSQL) narrow the process_guid-matched scans
-// (file/net/dns leaf edges + the pm subquery) to the tree's activity span; empty = full user
-// window. p2p (source_process_guid) always stays on the user window (see buildProvenanceEdgeUnion).
+// always included as the tree backbone.
 //
 // totalHosts (from BuildProvenanceTotalHostsSQL, computed once per pgr() call -- see
 // provenanceScoreSQL) is the global-rarity denominator, substituted as a literal instead of a
@@ -455,7 +418,7 @@ func BuildProvenanceProbeSQL(guids []string, opts QueryOptions) string {
 // call (the diffuse-fallback path calls this twice). Always fresh per call; never cached across
 // separate pgr() calls, so this is byte-identical to what the inline subquery would have
 // returned at call time.
-func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[string]bool, diffuse bool, totalHosts int64, leafStart, leafEnd string, opts QueryOptions) (string, error) {
+func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[string]bool, diffuse bool, totalHosts int64, opts QueryOptions) (string, error) {
 	if len(guids) == 0 {
 		return "", fmt.Errorf("pgr: no process guids to score")
 	}
@@ -469,7 +432,7 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 		guids = guids[:maxProvenanceGuids]
 	}
 
-	edges, err := buildProvenanceEdgeUnion(guids, edgeTypes, leafStart, leafEnd, opts)
+	edges, err := buildProvenanceEdgeUnion(guids, edgeTypes, opts)
 	if err != nil {
 		return "", err
 	}
@@ -480,14 +443,9 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	}
 	logs := opts.EffectiveTableName()
 
-	// pm reads process_creation logs by process_guid, so it uses the same probe-narrowed window as
-	// the file/net/dns leaf branches (falling back to the user window when the probe is empty).
-	pmStart := opts.StartTime.Format("2006-01-02 15:04:05")
-	pmEnd := opts.EndTime.Format("2006-01-02 15:04:05")
-	if leafStart != "" && leafEnd != "" {
-		pmStart, pmEnd = leafStart, leafEnd
-	}
-	timeWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", pmStart, pmEnd)
+	// pm reads process_creation logs by process_guid over the user's query window.
+	timeWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'",
+		opts.StartTime.Format("2006-01-02 15:04:05"), opts.EndTime.Format("2006-01-02 15:04:05"))
 	fractal := procLineageFractalCond(opts, "")
 	frac := func() string {
 		if fractal == "" {

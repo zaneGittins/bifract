@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"bifract/pkg/parser"
 	"bifract/pkg/storage"
@@ -115,27 +114,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		}
 	}
 
-	// Tree-window probe: narrow the process_guid-matched leaf scans (file/net/dns + pm) from the
-	// full user window (12h/7d/30d) down to the tree's actual activity span -- a strict subset of
-	// the user window containing exactly the same rows, so results are identical. See
-	// parser.BuildProvenanceProbeSQL. Non-fatal: on failure or empty span, leaf scans keep the
-	// user window. Millisecond precision so a boundary event isn't truncated out.
-	var leafStart, leafEnd string
-	if ctx.Err() == nil {
-		if pr, pErr := h.db.QueryProvenance(ctx, parser.BuildProvenanceProbeSQL(combined, opts)); pErr != nil {
-			if ctx.Err() != nil {
-				return "", ctx.Err()
-			}
-			log.Printf("[pgr] tree-window probe failed, using full query window: %v", pErr)
-		} else if len(pr) > 0 {
-			if mn, mx := reconTime(pr[0]["mn"]), reconTime(pr[0]["mx"]); !mn.IsZero() && !mx.IsZero() {
-				leafStart = mn.Format("2006-01-02 15:04:05.000")
-				leafEnd = mx.Format("2006-01-02 15:04:05.000")
-			}
-		}
-	}
-
-	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, p.Diffuse, totalHosts, leafStart, leafEnd, opts)
+	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, p.Diffuse, totalHosts, opts)
 	if err != nil {
 		return "", fmt.Errorf("pgr: build scoring query: %w", err)
 	}
@@ -165,7 +144,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 			return "", ctx.Err()
 		}
 		log.Printf("[pgr] diffusion score query failed, falling back to per-edge scoring: %v", qErr)
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, leafStart, leafEnd, opts)
+		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, opts)
 		if ferr != nil {
 			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
 		}
@@ -183,7 +162,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		// Diffusion (propagation) is lost for this one query, but pgr returns the full graph with
 		// per-edge anomaly instead of failing -- and flat/pgraph stay in parity (both use this SQL).
 		log.Printf("[pgr] diffusion payload too large to inline (%d edges); falling back to per-edge scoring for this query", len(survivors))
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, leafStart, leafEnd, opts)
+		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, opts)
 		if ferr != nil {
 			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
 		}
@@ -621,15 +600,6 @@ func reconString(v interface{}) string {
 	return ""
 }
 
-// reconTime coerces a ClickHouse-driver value to time.Time. DateTime64 arrives as time.Time; a
-// nil (e.g. min/max over an empty set) yields the zero time, which the probe caller treats as
-// "no span" and falls back to the full user window.
-func reconTime(v interface{}) time.Time {
-	if t, ok := v.(time.Time); ok {
-		return t
-	}
-	return time.Time{}
-}
 
 // reconFloat coerces a ClickHouse-driver value to float64. anomaly is emitted via toFloat64(...)
 // so it arrives as float64 today; the string/float32 fallbacks keep ranking working if the

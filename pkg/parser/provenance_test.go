@@ -33,21 +33,35 @@ func TestAbstractExprMatchesMVs(t *testing.T) {
 		{"fields.target_image::String", AbstractPath},
 		{"fields.query::String", AbstractDomain},
 	}
+	// migration 011 (process_edges_mv) abstracts the file/net/dns leaf edges the same way, so pgr's
+	// edge-table fkey_tgt matches proc_freq.target_norm for the scoring join. No p2p/spawn here.
+	delta011 := []use{
+		{"fields.image::String", AbstractPath},       // edge src (fkey_src)
+		{"fields.target_file::String", AbstractPath},  // file target
+		{"fields.dst_ip::String", AbstractIP},         // net target
+		{"fields.query::String", AbstractDomain},      // dns target
+	}
 	checks := []struct {
 		file string
 		uses []use
 	}{
 		{"../../db/init-clickhouse.sql", all},
 		{"../../db/migrations/clickhouse/009_proc_freq_events.sql", delta009},
+		{"../../db/migrations/clickhouse/011_process_edges.sql", delta011},
 	}
+	// Compare whitespace-insensitively: ClickHouse ignores SQL whitespace, so the abstracted VALUE
+	// (what must match proc_freq) is identical regardless of spacing between args. The abstraction
+	// regex literals contain no internal spaces, so stripping spaces is safe and guards the logic
+	// (function nesting / patterns) without being brittle to formatting across the SQL files.
+	noSpace := func(s string) string { return strings.ReplaceAll(s, " ", "") }
 	for _, c := range checks {
 		b, err := os.ReadFile(c.file)
 		if err != nil {
 			t.Fatalf("read %s: %v", c.file, err)
 		}
-		sql := string(b)
+		sql := noSpace(string(b))
 		for _, u := range c.uses {
-			if want := abstractExpr(u.col, u.kind); !strings.Contains(sql, want) {
+			if want := abstractExpr(u.col, u.kind); !strings.Contains(sql, noSpace(want)) {
 				t.Errorf("%s missing/drifted abstraction for %s (%s):\n  want substring: %s", c.file, u.col, u.kind, want)
 			}
 		}

@@ -70,6 +70,14 @@ func (h *QueryHandler) procFreqTableName() string {
 	return "proc_freq"
 }
 
+// procEdgesTableName returns the edge-rollup read table for pgr()'s file/net/dns leaf edges.
+func (h *QueryHandler) procEdgesTableName() string {
+	if h.db != nil {
+		return h.db.ProcEdgesReadTable()
+	}
+	return "process_edges"
+}
+
 // SetRBACResolver injects the RBAC resolver for access filtering.
 func (h *QueryHandler) SetRBACResolver(resolver *rbac.Resolver) {
 	h.rbacResolver = resolver
@@ -630,6 +638,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		TableName:             h.queryTableName(),
 		ProcLineageTable:      h.procLineageTableName(),
 		ProcFreqTable:         h.procFreqTableName(),
+		ProcEdgesTable:        h.procEdgesTableName(),
 		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
 
@@ -947,6 +956,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		TableName:             h.queryTableName(),
 		ProcLineageTable:      h.procLineageTableName(),
 		ProcFreqTable:         h.procFreqTableName(),
+		ProcEdgesTable:        h.procEdgesTableName(),
 		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
 	}
 	if _, err := parser.TranslateToSQLWithOrder(pipeline, opts); err != nil {
