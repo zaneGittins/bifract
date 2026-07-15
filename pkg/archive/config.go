@@ -41,6 +41,11 @@ type Config struct {
 	// PollInterval is how often the run loop checks the spool when it has caught
 	// up (no data available).
 	PollInterval time.Duration
+
+	// RecallTimeout bounds a single Recall (archive search) query. On expiry the
+	// ClickHouse query is killed and the job is marked failed, freeing the user's
+	// in-flight slot. Configurable via BIFRACT_RECALL_TIMEOUT.
+	RecallTimeout time.Duration
 }
 
 // ConfigFromEnv assembles archiver config from the environment.
@@ -50,20 +55,21 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	c := Config{
-		Enabled:      getBool("BIFRACT_ARCHIVE_ENABLED", false),
-		Obj:          obj,
-		PGDSN:        pgDSN(),
-		CHHost:       getStr("CLICKHOUSE_HOST", "localhost"),
-		CHPort:       getIntEnv("CLICKHOUSE_PORT", 9000),
-		CHDatabase:   getStr("CLICKHOUSE_DB", "logs"),
-		CHUser:       getStr("CLICKHOUSE_USER", "default"),
-		CHPassword:   getStr("CLICKHOUSE_PASSWORD", "bifract"),
-		CHHosts:      getStr("CLICKHOUSE_HOSTS", ""),
-		CHCluster:    getStr("CLICKHOUSE_CLUSTER", ""),
-		SpoolPath:    getStr("BIFRACT_ARCHIVE_SPOOL_PATH", "/var/lib/bifract/spool"),
-		RollBytes:    getInt64("BIFRACT_ARCHIVE_ROLL_BYTES", 256<<20),
-		RollInterval: getDuration("BIFRACT_ARCHIVE_ROLL_INTERVAL", time.Hour),
-		PollInterval: getDuration("BIFRACT_ARCHIVE_POLL_INTERVAL", 2*time.Second),
+		Enabled:       getBool("BIFRACT_ARCHIVE_ENABLED", false),
+		Obj:           obj,
+		PGDSN:         pgDSN(),
+		CHHost:        getStr("CLICKHOUSE_HOST", "localhost"),
+		CHPort:        getIntEnv("CLICKHOUSE_PORT", 9000),
+		CHDatabase:    getStr("CLICKHOUSE_DB", "logs"),
+		CHUser:        getStr("CLICKHOUSE_USER", "default"),
+		CHPassword:    getStr("CLICKHOUSE_PASSWORD", "bifract"),
+		CHHosts:       getStr("CLICKHOUSE_HOSTS", ""),
+		CHCluster:     getStr("CLICKHOUSE_CLUSTER", ""),
+		SpoolPath:     getStr("BIFRACT_ARCHIVE_SPOOL_PATH", "/var/lib/bifract/spool"),
+		RollBytes:     getInt64("BIFRACT_ARCHIVE_ROLL_BYTES", 256<<20),
+		RollInterval:  getDuration("BIFRACT_ARCHIVE_ROLL_INTERVAL", time.Hour),
+		PollInterval:  getDuration("BIFRACT_ARCHIVE_POLL_INTERVAL", 2*time.Second),
+		RecallTimeout: getDuration("BIFRACT_RECALL_TIMEOUT", 5*time.Minute),
 	}
 	return c, nil
 }

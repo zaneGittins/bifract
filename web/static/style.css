@@ -3318,8 +3318,25 @@ body.recall-active {
     display: inline-block;
 }
 
-.recall-cancel-btn,
 .recall-rerun-btn {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.recall-rerun-btn:hover {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+/* Per-job Cancel in the palette rows (in-flight jobs). */
+.recall-cancel-btn {
+    flex-shrink: 0;
     background: transparent;
     border: 1px solid var(--border-color);
     border-radius: 4px;
@@ -3335,9 +3352,16 @@ body.recall-active {
     border-color: var(--error);
 }
 
-.recall-rerun-btn:hover {
-    color: var(--accent-primary);
-    border-color: var(--accent-primary);
+/* Small spinner shown inside a running/pending chip in the palette. */
+.recall-chip-spinner {
+    width: 8px;
+    height: 8px;
+    margin-right: 5px;
+    border: 1.5px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    display: inline-block;
 }
 
 /* Status chips (shared by the strip and status bar). */

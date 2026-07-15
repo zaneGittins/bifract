@@ -180,11 +180,12 @@ const RecallTimePicker = {
 
 const Recall = {
     POLL_MS: 1000,
-    MAX_ROWS: 5000,
+    MAX_ROWS: 250, // matches the query page; narrow the range/query rather than scroll
     RECENT_LIMIT: 10,
 
     isActive: false,
     _initDone: false,
+    _running: false,      // a job is in flight (Run button shows Cancel)
     _activeJobId: null,   // job currently shown in the results pane
     _pollTimer: null,
     _elapsedTimer: null,
@@ -218,14 +219,14 @@ const Recall = {
         }
 
         const runBtn = document.getElementById('recallRunBtn');
-        if (runBtn) runBtn.addEventListener('click', () => this.runSearch());
+        if (runBtn) runBtn.addEventListener('click', () => this.runOrCancel());
 
         const input = document.getElementById('recallQueryInput');
         if (input) {
             input.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    this.runSearch();
+                    if (!this._running) this.runSearch();
                 }
             });
             // Wire BQL syntax highlighting (the textarea text is transparent and
@@ -444,8 +445,7 @@ const Recall = {
             const secs = Math.max(0, Math.round((Date.now() - startMs) / 1000));
             this.setStatus(
                 `<span class="recall-spinner"></span><span>${label}</span>` +
-                `<span class="recall-status-elapsed">${secs}s</span>` +
-                `<button class="recall-cancel-btn" onclick="Recall.cancelJob('${job.id}', event)">Cancel</button>`,
+                `<span class="recall-status-elapsed">${secs}s</span>`,
                 'running'
             );
         };
@@ -607,14 +607,40 @@ const Recall = {
         if (pane) pane.innerHTML = '<div class="no-results">Search the archive for older, cold-tiered logs</div>';
     },
 
+    // Dispatch the single Run/Cancel button: cancel the in-flight job, else search.
+    runOrCancel() {
+        if (this._running && this._activeJobId) {
+            this.cancelJob(this._activeJobId);
+        } else {
+            this.runSearch();
+        }
+    },
+
     setRunning(on) {
+        this._running = !!on;
         const btn = document.getElementById('recallRunBtn');
         if (!btn) return;
-        btn.disabled = !!on;
+        // Flip the Run button into a Cancel affordance while a job is in flight
+        // (mirrors the Query page). It stays enabled so the click can cancel.
+        btn.disabled = false;
+        btn.classList.toggle('is-running', !!on);
         const text = btn.querySelector('.btn-text');
         const loader = btn.querySelector('.btn-loader');
-        if (text) text.style.display = on ? 'none' : '';
-        if (loader) loader.style.display = on ? '' : 'none';
+        if (text) { text.textContent = on ? 'Cancel' : 'Recall'; text.style.display = ''; }
+        if (loader) loader.style.display = 'none';
+    },
+
+    // Detach from the attached job and return to a fresh compose state so a new
+    // search can be launched (the Run button flips back from Cancel to Recall).
+    // Any previously running job keeps running and stays in the palette.
+    newSearch() {
+        this.resetPane();
+        this._activeJobId = null;
+        this.setRunning(false);
+        if (window.App && typeof App.pushSubPath === 'function') App.pushSubPath('');
+        const input = document.getElementById('recallQueryInput');
+        if (input) input.focus();
+        this.highlightRecent(null);
     },
 
     setStatus(html, kind) {
@@ -661,12 +687,14 @@ const Recall = {
 // tab is active) that merges the recent-recalls list with the admin-only Restore
 // action, modeled on the main Query palette but a fully separate instance.
 const RECALL_RESTORE_ICON = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M2.5 8a5.5 5.5 0 1 0 1.7-4M2.5 3v3.5H6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const RECALL_NEW_ICON = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 
 const RecallPalette = {
     isOpen: false,
     searchTerm: '',
     activeIndex: 0,
     filtered: [],   // recall jobs after the search filter
+    _refreshTimer: null, // live-refreshes the jobs list while the palette is open
 
     init() {
         const btn = document.getElementById('recallPaletteBtn');
@@ -706,8 +734,9 @@ const RecallPalette = {
         return !!(window.Auth && typeof Auth.hasFractalRole === 'function' && Auth.hasFractalRole('admin'));
     },
 
-    // Number of pinned (non-recall) rows preceding the recall rows.
-    pinnedCount() { return this.isAdmin() ? 1 : 0; },
+    // Pinned (non-recall) action rows preceding the recall rows: New search
+    // (always) plus Restore (admin only).
+    pinnedCount() { return 1 + (this.isAdmin() ? 1 : 0); },
 
     // Total selectable rows currently rendered.
     itemCount() { return this.pinnedCount() + this.filtered.length; },
@@ -728,8 +757,13 @@ const RecallPalette = {
         const btn = document.getElementById('recallPaletteBtn');
         if (btn) btn.classList.add('active');
         this.render();
-        // Refresh the jobs from the server, then re-render.
+        // Refresh the jobs from the server, then re-render. Poll while open so
+        // in-flight jobs update their status/spinner live without reopening.
         if (window.Recall) Recall.loadRecent();
+        if (this._refreshTimer) clearInterval(this._refreshTimer);
+        this._refreshTimer = setInterval(() => {
+            if (this.isOpen && window.Recall) Recall.loadRecent();
+        }, 2500);
     },
 
     close() {
@@ -738,6 +772,7 @@ const RecallPalette = {
         if (palette) palette.style.display = 'none';
         if (backdrop) backdrop.style.display = 'none';
         this.isOpen = false;
+        if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }
         const btn = document.getElementById('recallPaletteBtn');
         if (btn) btn.classList.remove('active');
     },
@@ -771,13 +806,17 @@ const RecallPalette = {
         });
     },
 
-    // Activate the palette row at global index i: the pinned Restore action, or a
-    // recall row (reattach). Always closes the palette afterwards.
+    // Activate the palette row at global index i: a pinned action (New search,
+    // then Restore) or a recall row (reattach). Always closes the palette after.
     activate(i) {
         const pinned = this.pinnedCount();
-        if (pinned && i === 0) {
+        if (i < pinned) {
             this.close();
-            if (window.Recall) Recall.restoreHandoff();
+            if (i === 0) {
+                if (window.Recall) Recall.newSearch();
+            } else if (window.Recall) {
+                Recall.restoreHandoff();
+            }
             return;
         }
         const job = this.filtered[i - pinned];
@@ -803,7 +842,17 @@ const RecallPalette = {
         let html = '';
         let idx = 0;
 
-        if (this.pinnedCount()) {
+        // New search: detach and return to a fresh compose state.
+        {
+            const active = idx === this.activeIndex ? ' is-active' : '';
+            html += `
+              <div class="palette-row recall-palette-action${active}" data-pidx="${idx}" onclick="RecallPalette.activate(${idx})">
+                <span class="recall-palette-action-icon">${RECALL_NEW_ICON}</span>
+                <div class="palette-row-main"><div class="palette-query">New search</div></div>
+              </div>`;
+            idx++;
+        }
+        if (this.isAdmin()) {
             const active = idx === this.activeIndex ? ' is-active' : '';
             html += `
               <div class="palette-row recall-palette-action${active}" data-pidx="${idx}" onclick="RecallPalette.activate(${idx})">
@@ -824,11 +873,17 @@ const RecallPalette = {
                 const status = esc(j.status);
                 const label = window.Recall ? Recall.statusLabel(j.status) : status;
                 const when = window.Recall ? Recall.timeAgo(j.created_at) : '';
+                const inFlight = j.status === 'running' || j.status === 'pending';
+                const spinner = inFlight ? '<span class="recall-chip-spinner"></span>' : '';
+                const cancel = inFlight
+                    ? `<button class="recall-cancel-btn" title="Cancel this search" onclick="Recall.cancelJob('${j.id}', event)">Cancel</button>`
+                    : '';
                 html += `
                   <div class="palette-row${active}${current}" data-pidx="${idx}" data-id="${j.id}" onclick="RecallPalette.activate(${idx})">
-                    <span class="recall-chip recall-chip-${status}">${label}</span>
+                    <span class="recall-chip recall-chip-${status}">${spinner}${label}</span>
                     <div class="palette-row-main"><div class="palette-query" title="${esc(q)}">${esc(q)}</div></div>
                     <span class="recall-recent-time">${when}</span>
+                    ${cancel}
                   </div>`;
                 idx++;
             });

@@ -5,10 +5,13 @@
 //
 // Subcommands:
 //
-//	run        (default) tail the spool -> Iceberg append/commit loop
-//	maintain   compaction, snapshot expiry, orphan cleanup (singleton)
-//	restore    replay an Iceberg window back into ClickHouse (Phase 8)
-//	reconcile  heal ClickHouse gaps from Iceberg (Phase 8)
+//	run           (default) tail the spool -> Iceberg append/commit loop
+//	maintain      one compaction + snapshot-expiry pass, then exit (k8s CronJob)
+//	maintain-loop periodic maintain on a timer, then keep running (Docker Compose,
+//	              which has no cron primitive; runs in its own resource-capped
+//	              container so a compaction spike can't OOM the drain loop)
+//	restore       replay an Iceberg window back into ClickHouse (Phase 8)
+//	reconcile     heal ClickHouse gaps from Iceberg (Phase 8)
 package main
 
 import (
@@ -52,6 +55,8 @@ func main() {
 		runCmd()
 	case "maintain":
 		maintainCmd()
+	case "maintain-loop":
+		maintainLoopCmd()
 	case "restore":
 		restoreCmd(os.Args[2:])
 	case "reconcile":
@@ -59,7 +64,7 @@ func main() {
 	case "version":
 		log.Printf("bifract-archiver %s", Version)
 	default:
-		log.Fatalf("unknown subcommand %q (want run|maintain|restore|reconcile|version)", cmd)
+		log.Fatalf("unknown subcommand %q (want run|maintain|maintain-loop|restore|reconcile|version)", cmd)
 	}
 }
 
@@ -133,61 +138,147 @@ func runCmd() {
 // CronJob's concurrencyPolicy: Forbid).
 const maintainAdvisoryLock = 0x62696672616d6169 // "bifrmai"
 
-// maintainCmd runs compaction + snapshot expiry across all fractal tables. A
-// singleton via a Postgres advisory lock: if another pass holds the lock, exit.
+// defaultMaintainInterval is the maintain-loop cadence when
+// BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL is unset or invalid. Hourly matches
+// the k8s CronJob and is plenty given roll-on-size already keeps most files
+// large; compaction is a mop-up for small-file tails, not a constant grind.
+const defaultMaintainInterval = time.Hour
+
+// maintainCmd runs a single compaction + snapshot-expiry pass, then exits. Used
+// by the k8s CronJob (singleton via concurrencyPolicy Forbid plus the advisory
+// lock in runMaintainOnce). Exits non-zero on a genuine failure so the CronJob
+// surfaces it; a disabled/locked skip exits zero after recording its outcome.
 func maintainCmd() {
 	cfg, err := archive.ConfigFromEnv()
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	db, err := sql.Open("postgres", cfg.PGDSN)
+	if err != nil {
+		log.Fatalf("open postgres: %v", err)
+	}
+	defer db.Close()
+	if err := runMaintainOnce(context.Background(), cfg, db); err != nil {
+		log.Fatalf("maintain failed: %v", err)
+	}
+}
 
-	// Opened before the disabled/lock checks (not just before cat.Maintain)
-	// so every exit path below -- including a skip, not only a successful
-	// pass -- can record its outcome; a run that never touches Postgres at
-	// all would otherwise be indistinguishable from one that's healthy.
+// maintainLoopCmd runs runMaintainOnce on a fixed interval, then keeps running.
+// It exists because Docker Compose has no cron primitive: the compose install
+// gives this its own resource-capped bifract-archiver-maintain container, so a
+// compaction memory spike OOMs only this (mostly idle) container and the drain
+// loop keeps ingesting. Enable/disable is the container's presence, not an env
+// flag; BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL only tunes the cadence. k8s
+// never runs this command -- there the CronJob owns maintenance.
+func maintainLoopCmd() {
+	interval := maintainLoopInterval()
+	cfg, err := archive.ConfigFromEnv()
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
 	db, err := sql.Open("postgres", cfg.PGDSN)
 	if err != nil {
 		log.Fatalf("open postgres: %v", err)
 	}
 	defer db.Close()
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	if !cfg.Enabled {
-		if v := archiveEnabledFromDB(cfg.PGDSN); !v {
-			log.Println("maintain: archiving disabled; nothing to do")
-			_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeSkippedDisabled, nil)
+	log.Printf("maintain-loop: running every %s", interval)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("maintain-loop: shutting down")
 			return
+		case <-t.C:
+			// Log and continue: a transient failure (object-store blip, lost
+			// commit race, disabled toggle) must not kill the loop. The outcome
+			// is already persisted by runMaintainOnce for the admin panel.
+			if err := runMaintainOnce(ctx, cfg, db); err != nil {
+				log.Printf("maintain-loop: pass failed: %v", err)
+			}
 		}
+	}
+}
+
+// maintainLoopInterval reads the docker-only cadence override. Unset, invalid,
+// or non-positive all fall back to defaultMaintainInterval -- disabling the
+// scheduler is done by not running the container, never by a magic value here.
+func maintainLoopInterval() time.Duration {
+	raw := os.Getenv("BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL")
+	if raw == "" {
+		return defaultMaintainInterval
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Printf("maintain-loop: invalid BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL %q: %v; using %s", raw, err, defaultMaintainInterval)
+		return defaultMaintainInterval
+	}
+	if d <= 0 {
+		log.Printf("maintain-loop: non-positive BIFRACT_DOCKER_ARCHIVE_MAINTAIN_INTERVAL %q; using %s", raw, defaultMaintainInterval)
+		return defaultMaintainInterval
+	}
+	return d
+}
+
+// runMaintainOnce executes the gated, singleton maintenance pass shared by the
+// one-shot `maintain` command and the `maintain-loop` scheduler: skip if
+// archiving is disabled, skip if another pass holds the advisory lock, else
+// compact + expire snapshots across every fractal table and record the outcome.
+//
+// db is opened by the caller before any of these checks so every exit path --
+// including a skip, not only a successful pass -- can record its outcome; a run
+// that never touched Postgres would be indistinguishable from a healthy one.
+// Returns an error only for a genuine pass failure (the caller decides whether
+// to exit or continue); a disabled/locked skip returns nil after writing status.
+func runMaintainOnce(ctx context.Context, cfg archive.Config, db *sql.DB) error {
+	if !maintainEnabled(cfg) {
+		log.Println("maintain: archiving disabled; nothing to do")
+		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeSkippedDisabled, nil)
+		return nil
 	}
 	archive.ApplyBackendEnv(cfg.Obj)
 
 	var locked bool
 	if err := db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", int64(maintainAdvisoryLock)).Scan(&locked); err != nil {
 		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
-		log.Fatalf("advisory lock: %v", err)
+		return fmt.Errorf("advisory lock: %w", err)
 	}
 	if !locked {
-		log.Println("maintain: another maintenance pass is running; exiting")
+		log.Println("maintain: another maintenance pass is running; skipping")
 		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeSkippedLocked, nil)
-		return
+		return nil
 	}
 	defer db.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", int64(maintainAdvisoryLock))
 
 	cat, err := archive.NewCatalog(ctx, "bifract", cfg.PGDSN, cfg.Obj)
 	if err != nil {
 		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
-		log.Fatalf("open catalog: %v", err)
+		return fmt.Errorf("open catalog: %w", err)
 	}
 	log.Println("maintain: compaction + snapshot expiry ...")
 	stats, err := cat.Maintain(ctx, archive.DefaultMaintainOptions())
 	if err != nil {
 		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
-		log.Fatalf("maintain failed: %v", err)
+		return fmt.Errorf("maintain: %w", err)
 	}
 	if err := archive.WriteMaintainStatus(ctx, db, stats); err != nil {
 		log.Printf("maintain: failed to write status: %v", err)
 	}
+	return nil
+}
+
+// maintainEnabled reports whether archiving is on: the env seed, or the runtime
+// archive_enabled setting in Postgres, so an admin toggle is honored between
+// loop passes without a redeploy.
+func maintainEnabled(cfg archive.Config) bool {
+	if cfg.Enabled {
+		return true
+	}
+	return archiveEnabledFromDB(cfg.PGDSN)
 }
 
 // archiveEnabledFromDB reads the runtime archive_enabled setting.

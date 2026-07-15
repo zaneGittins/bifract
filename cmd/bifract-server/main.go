@@ -1345,12 +1345,14 @@ func main() {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
+				// Recall mirrors the query page's search UX: you narrow the range or
+				// query rather than scroll. Default and hard-cap at 250 rows.
 				maxRows := body.MaxRows
 				if maxRows <= 0 {
-					maxRows = 1000
+					maxRows = 250
 				}
-				if maxRows > 10000 {
-					maxRows = 10000
+				if maxRows > 250 {
+					maxRows = 250
 				}
 				var inflight int
 				if err := pg.QueryRow(r.Context(),
@@ -1480,7 +1482,10 @@ func main() {
 				json.NewEncoder(w).Encode(resp)
 			})
 
-			// Cancel a still-pending Recall job.
+			// Cancel a Recall job. Works while pending (never claimed) or running:
+			// flipping the row out of 'running' is the signal the archiver worker's
+			// watcher polls for -- it then kills the ClickHouse query. Terminal jobs
+			// (succeeded/failed/canceled) return 409.
 			r.Post("/recall/{fractalID}/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
 				fractalID := chi.URLParam(r, "fractalID")
 				if _, ok := recallAnalystOK(w, r, fractalID); !ok {
@@ -1489,13 +1494,13 @@ func main() {
 				id := chi.URLParam(r, "id")
 				res, err := pg.Exec(r.Context(),
 					`UPDATE archive_search_jobs SET status = 'canceled', finished_at = NOW(), updated_at = NOW()
-					 WHERE id = $1 AND fractal_id = $2 AND status = 'pending'`, id, fractalID)
+					 WHERE id = $1 AND fractal_id = $2 AND status IN ('pending', 'running')`, id, fractalID)
 				if err != nil {
 					http.Error(w, "Failed to cancel", http.StatusInternalServerError)
 					return
 				}
 				if n, _ := res.RowsAffected(); n == 0 {
-					http.Error(w, "Job is no longer pending", http.StatusConflict)
+					http.Error(w, "Search already finished", http.StatusConflict)
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")

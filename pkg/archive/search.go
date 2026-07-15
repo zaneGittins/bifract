@@ -26,7 +26,9 @@ type SearchResult struct {
 // on ingest_timestamp -- the archive's partition axis -- so ClickHouse prunes
 // whole ingest-date partitions. Aggregation-free results are capped at maxRows
 // with LimitHit set when the cap is reached.
-func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj objstore.Config, fractalID, query string, from, to time.Time, maxRows int) (*SearchResult, error) {
+// queryID, when non-empty, is applied as the ClickHouse query_id so the run can
+// be interrupted with KILL QUERY (cancel/timeout) from another process.
+func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj objstore.Config, fractalID, query string, from, to time.Time, maxRows int, queryID string) (*SearchResult, error) {
 	loc, err := c.TableLocation(ctx, fractalID)
 	if err != nil {
 		return nil, fmt.Errorf("archive: no Iceberg table for fractal %s: %w", fractalID, err)
@@ -41,7 +43,7 @@ func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj 
 		return nil, fmt.Errorf("archive: parse query: %w", err)
 	}
 	if maxRows <= 0 {
-		maxRows = 1000
+		maxRows = 250
 	}
 
 	res, err := parser.TranslateToSQLWithOrder(pipeline, parser.QueryOptions{
@@ -61,7 +63,12 @@ func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj 
 	// the `_ice_` promoted columns and their Parquet bloom filters. norm_log is a
 	// plain String, so it sidesteps the ClickHouse Iceberg Map-decode bug (Code
 	// 117, upstream #91580) that broke field-dense fractals under a Map column.
-	rows, err := ch.Query(ctx, res.SQL)
+	var rows []map[string]interface{}
+	if queryID != "" {
+		rows, err = ch.QueryWithID(ctx, queryID, res.SQL)
+	} else {
+		rows, err = ch.Query(ctx, res.SQL)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("archive: search query failed: %w", err)
 	}
