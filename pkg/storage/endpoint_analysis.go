@@ -27,6 +27,7 @@ var endpointAnalysisMVNames = []string{
 	"proc_freq_dns_mv",
 	"proc_freq_rthread_mv",
 	"proc_freq_pacc_mv",
+	"process_edges_mv",
 }
 
 // endpointMVInList renders endpointAnalysisMVNames as a SQL IN-list literal, so the

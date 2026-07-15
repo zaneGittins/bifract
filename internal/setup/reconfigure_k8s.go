@@ -223,6 +223,14 @@ func fallbackInt(a, b int) int {
 	return b
 }
 
+// fallbackInt64 returns a if non-zero, otherwise b.
+func fallbackInt64(a, b int64) int64 {
+	if a > 0 {
+		return a
+	}
+	return b
+}
+
 // buildK8sConfigFromExisting constructs a K8sConfig from parsed secrets and settings.
 // Shared between upgrade and reconfigure flows.
 func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings *k8sSettings) *K8sConfig {
@@ -270,6 +278,9 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 		DashboardMinRefresh: settings.dashboardMinRefresh,
 		DashboardWorkers:    settings.dashboardWorkers,
 		IngestReplicas:      settings.ingestReplicas,
+
+		ArchiveMaintainByteBudget:    settings.archiveMaintainByteBudget,
+		ArchiveMaintainCommitRetries: settings.archiveMaintainCommitRetries,
 	}
 
 	// Core secrets

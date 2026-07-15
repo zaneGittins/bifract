@@ -63,6 +63,12 @@ spec:
             # "Run now" from the admin UI is always immediate regardless.
             - name: BIFRACT_ARCHIVE_MAINTAIN_INTERVAL
               value: "1h"
+            # Per-pass compaction byte budget and commit-conflict retry count.
+            # Unset falls back to the binary default (see DefaultMaintainOptions).
+            - name: BIFRACT_ARCHIVE_MAINTAIN_BYTE_BUDGET
+              value: "{{.ArchiveMaintainByteBudget}}"
+            - name: BIFRACT_ARCHIVE_MAINTAIN_COMMIT_RETRIES
+              value: "{{.ArchiveMaintainCommitRetries}}"
             - name: BIFRACT_ARCHIVE_DISK_PATH
               value: /var/lib/bifract/archive
             - name: BIFRACT_ARCHIVE_ENABLED

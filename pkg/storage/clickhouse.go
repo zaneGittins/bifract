@@ -155,6 +155,17 @@ func (c *ClickHouseClient) ProcLineageReadTable() string {
 	return "proc_lineage"
 }
 
+// ProcEdgesReadTable returns the table for pgr()'s file/net/dns edge fetch. Cluster mode fans out
+// to all shards via process_edges_distributed; a process's edges may be split across shards (each
+// shard's MV writes locally), so the reader must GROUP BY to merge the AggregatingMergeTree
+// partials across shards -- pgr's edgesAgg already does.
+func (c *ClickHouseClient) ProcEdgesReadTable() string {
+	if c.Cluster != "" {
+		return "process_edges_distributed"
+	}
+	return "process_edges"
+}
+
 // ReconcileProcLineageTTL applies a configured retention (in days) to proc_lineage via a
 // metadata-only ALTER ... MODIFY TTL. proc_lineage is decoupled from logs retention and
 // kept long for DFIR (year-old process trees are common), so operators tune it with
@@ -381,6 +392,10 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 			"CREATE TABLE IF NOT EXISTS proc_freq_distributed AS proc_freq ENGINE = Distributed('%s', currentDatabase(), 'proc_freq', rand())",
 			EscCHStr(c.Cluster),
 		)
+		edgeDistSQL := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS process_edges_distributed AS process_edges ENGINE = Distributed('%s', currentDatabase(), 'process_edges', rand())",
+			EscCHStr(c.Cluster),
+		)
 		go func() {
 			initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
 
@@ -410,7 +425,7 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 						log.Printf("Applied %d ClickHouse migration(s) to shard %s", n, addr)
 					}
 				}
-				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL, procDistSQL, freqDistSQL} {
+				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL, procDistSQL, freqDistSQL, edgeDistSQL} {
 					stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
 					hostConn.Exec(stmtCtx, stmt)
 					stmtCancel()
@@ -424,6 +439,7 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 					{"logs_hot_distributed", "logs_hot"},
 					{"proc_lineage_distributed", "proc_lineage"},
 					{"proc_freq_distributed", "proc_freq"},
+					{"process_edges_distributed", "process_edges"},
 				} {
 					syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
 					if err := syncDistributedColumns(syncCtx, hostConn, c.Database, pair[0], pair[1]); err != nil {

@@ -13,6 +13,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"bifract/pkg/archive"
 )
 
 // ResourceProfile defines CPU and memory requests/limits for a component.
@@ -165,6 +167,12 @@ type K8sConfig struct {
 	// IngestReplicas is the ingest tier's replica count. Zero means "use default"
 	// (1); preserved across upgrades so an operator-set value survives regeneration.
 	IngestReplicas int
+
+	// ArchiveMaintainByteBudget and ArchiveMaintainCommitRetries tune the
+	// archive-maintain compaction pass (see archive.DefaultMaintainOptions).
+	// Zero means "use the binary default"; preserved across upgrades.
+	ArchiveMaintainByteBudget    int64
+	ArchiveMaintainCommitRetries int
 }
 
 // Dashboard executor defaults (mirror the server's getEnvInt fallbacks).
@@ -832,6 +840,11 @@ type k8sTemplateData struct {
 	// IngestReplicas is the replica count for the independently-scalable ingest tier.
 	IngestReplicas int
 
+	// ArchiveMaintainByteBudget and ArchiveMaintainCommitRetries tune the
+	// archive-maintain compaction pass (resolved to binary defaults when unset).
+	ArchiveMaintainByteBudget    int64
+	ArchiveMaintainCommitRetries int
+
 	// Dashboard executor tuning (resolved to defaults when unset).
 	DashboardTick       int
 	DashboardMinRefresh int
@@ -889,42 +902,44 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		chMaxBytesToMerge = chMaxServerMemory * 4 / 10
 	}
 	data := k8sTemplateData{
-		ImageTag:                 cfg.ImageTag,
-		ImagePullSecrets:         cfg.ImagePullSecrets,
-		Domain:                   cfg.Domain,
-		CHShards:                 cfg.CHShards,
-		CHStorageGB:              cfg.CHStorageGB,
-		CHStorageStr:             formatStorageSize(cfg.CHStorageGB),
-		CHPasswordHash:           fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
-		CHHostsList:              buildCHHostsList(cfg.CHShards),
-		PostgresPassword:         cfg.PostgresPassword,
-		ClickHousePassword:       cfg.ClickHousePassword,
-		IngestClickHousePassword: cfg.IngestClickHousePassword,
-		IngestPostgresPassword:   cfg.IngestPostgresPassword,
-		PasswordPepper:           cfg.PasswordPepper,
-		AdminPasswordHash:        cfg.AdminPasswordHash,
-		FeedEncryptionKey:        cfg.FeedEncryptionKey,
-		BackupEncryptionKey:      cfg.BackupEncryptionKey,
-		LiteLLMMasterKey:         cfg.LiteLLMMasterKey,
-		UserSecrets:              cfg.UserSecrets,
-		IPBlock:                  buildIPBlock(cfg),
-		IPBlockIngest:            buildIPBlockIngest(cfg),
-		MTLSEnabled:              cfg.MTLSEnabled,
-		MTLSCACert:               indentPEM(cfg.MTLSCACert, "    "),
-		MTLSCAKey:                indentPEM(cfg.MTLSCAKey, "    "),
-		MaxmindPVCAccessMode:     cfg.MaxmindPVCAccessMode,
-		MaxmindPVCStorageClass:   cfg.MaxmindPVCStorageClass,
-		IngestQueueSize:          cfg.SizeProfile.IngestQueueSize,
-		IngestWorkers:            cfg.SizeProfile.IngestWorkers,
-		IngestReplicas:           fallbackInt(cfg.IngestReplicas, 1),
-		DashboardTick:            fallbackInt(cfg.DashboardTick, defaultDashboardTick),
-		DashboardMinRefresh:      fallbackInt(cfg.DashboardMinRefresh, defaultDashboardMinRefresh),
-		DashboardWorkers:         fallbackInt(cfg.DashboardWorkers, defaultDashboardWorkers),
-		CHMaxServerMemory:        chMaxServerMemory,
-		CHMaxBytesToMerge:        chMaxBytesToMerge,
-		CH:                       cfg.SizeProfile.ClickHouse,
-		CHKeeper:                 cfg.SizeProfile.CHKeeper,
-		BifractRes:               cfg.SizeProfile.Bifract,
+		ImageTag:                     cfg.ImageTag,
+		ImagePullSecrets:             cfg.ImagePullSecrets,
+		Domain:                       cfg.Domain,
+		CHShards:                     cfg.CHShards,
+		CHStorageGB:                  cfg.CHStorageGB,
+		CHStorageStr:                 formatStorageSize(cfg.CHStorageGB),
+		CHPasswordHash:               fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
+		CHHostsList:                  buildCHHostsList(cfg.CHShards),
+		PostgresPassword:             cfg.PostgresPassword,
+		ClickHousePassword:           cfg.ClickHousePassword,
+		IngestClickHousePassword:     cfg.IngestClickHousePassword,
+		IngestPostgresPassword:       cfg.IngestPostgresPassword,
+		PasswordPepper:               cfg.PasswordPepper,
+		AdminPasswordHash:            cfg.AdminPasswordHash,
+		FeedEncryptionKey:            cfg.FeedEncryptionKey,
+		BackupEncryptionKey:          cfg.BackupEncryptionKey,
+		LiteLLMMasterKey:             cfg.LiteLLMMasterKey,
+		UserSecrets:                  cfg.UserSecrets,
+		IPBlock:                      buildIPBlock(cfg),
+		IPBlockIngest:                buildIPBlockIngest(cfg),
+		MTLSEnabled:                  cfg.MTLSEnabled,
+		MTLSCACert:                   indentPEM(cfg.MTLSCACert, "    "),
+		MTLSCAKey:                    indentPEM(cfg.MTLSCAKey, "    "),
+		MaxmindPVCAccessMode:         cfg.MaxmindPVCAccessMode,
+		MaxmindPVCStorageClass:       cfg.MaxmindPVCStorageClass,
+		IngestQueueSize:              cfg.SizeProfile.IngestQueueSize,
+		IngestWorkers:                cfg.SizeProfile.IngestWorkers,
+		IngestReplicas:               fallbackInt(cfg.IngestReplicas, 1),
+		DashboardTick:                fallbackInt(cfg.DashboardTick, defaultDashboardTick),
+		DashboardMinRefresh:          fallbackInt(cfg.DashboardMinRefresh, defaultDashboardMinRefresh),
+		DashboardWorkers:             fallbackInt(cfg.DashboardWorkers, defaultDashboardWorkers),
+		ArchiveMaintainByteBudget:    fallbackInt64(cfg.ArchiveMaintainByteBudget, archive.DefaultMaintainOptions().ByteBudget),
+		ArchiveMaintainCommitRetries: fallbackInt(cfg.ArchiveMaintainCommitRetries, archive.DefaultMaintainOptions().CommitRetries),
+		CHMaxServerMemory:            chMaxServerMemory,
+		CHMaxBytesToMerge:            chMaxBytesToMerge,
+		CH:                           cfg.SizeProfile.ClickHouse,
+		CHKeeper:                     cfg.SizeProfile.CHKeeper,
+		BifractRes:                   cfg.SizeProfile.Bifract,
 		// The archive sidecar/maintenance mirrors the server's per-tier profile
 		// (comparable memory for Arrow/Iceberg roll buffers; adjust per deployment).
 		ArchiverRes:  cfg.SizeProfile.Bifract,
