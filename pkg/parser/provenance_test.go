@@ -108,7 +108,7 @@ func reconOpts() QueryOptions {
 
 func TestBuildReconnectionSQL(t *testing.T) {
 	p := ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{}}
-	sql, err := BuildReconnectionSQL([]string{"g1", "g2"}, p, reconOpts())
+	sql, err := BuildReconnectionSQL([]string{"g1", "g2"}, p, 100, 50, reconOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,12 +125,12 @@ func TestBuildReconnectionSQL(t *testing.T) {
 	}
 
 	// reconnect=false yields no SQL.
-	if s, _ := BuildReconnectionSQL([]string{"g1"}, ProvenanceParams{Reconnect: false}, reconOpts()); s != "" {
+	if s, _ := BuildReconnectionSQL([]string{"g1"}, ProvenanceParams{Reconnect: false}, 100, 50, reconOpts()); s != "" {
 		t.Error("reconnect=false should yield empty SQL")
 	}
 	// include= narrows the generated branches.
 	only := ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{"net_connect": true}}
-	s, _ := BuildReconnectionSQL([]string{"g1"}, only, reconOpts())
+	s, _ := BuildReconnectionSQL([]string{"g1"}, only, 100, 50, reconOpts())
 	if !strings.Contains(s, "'net' AS recon_type") || strings.Contains(s, "'dns' AS recon_type") {
 		t.Error("include=net_connect should generate only the net branch")
 	}

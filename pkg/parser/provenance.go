@@ -222,23 +222,14 @@ func BuildProcessTreeQuery(p ProvenanceParams, opts QueryOptions) (string, error
 	return res.SQL, nil
 }
 
-// BuildProvenanceScoringSQL is pass 2: given the tree's guids, assemble every edge
-// (spawn from proc_lineage; file/net/injection/handle-access leaf edges from logs, bounded
-// by time + guid + category), score each against proc_freq (anomaly = 1 - freq(edge)/freq(src,rel,*)),
-// and keep the full spawn spine plus any non-spawn edge at/above threshold. Output columns:
-// parent, child, label, event_type, anomaly_score -- an edge list graph() renders directly.
-// edgeTypes selects which non-spawn edge branches to generate (nil/empty = all); spawn is
-// always included as the tree backbone. Skipping a branch avoids scanning logs for that
-// bifract_category entirely -- a real cost saving at scale, not just a post-filter.
-func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[string]bool, diffuse bool, opts QueryOptions) (string, error) {
+// buildProvenanceEdgeUnion returns the raw (non-aggregated) UNION ALL of every edge branch pgr's
+// tree can touch: spawn (proc_lineage) plus enabled leaf categories (file/net/dns/p2p), each
+// bounded by guids + the query's time window -- never by the full fractal history. Shared by
+// BuildProvenanceScoringSQL (which aggregates it into edgesAgg) and BuildProvenanceFreqKeysSQL
+// (which only needs the distinct join-key triples it can produce, to scope the proc_freq lookup).
+func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, opts QueryOptions) (string, error) {
 	if len(guids) == 0 {
 		return "", fmt.Errorf("pgr: no process guids to score")
-	}
-	// Defensive: a NaN/out-of-range threshold would emit an invalid or degenerate WHERE clause.
-	if threshold != threshold || threshold < 0 { // NaN or negative
-		threshold = 0
-	} else if threshold > 1 {
-		threshold = 1
 	}
 	want := func(t string) bool { return len(edgeTypes) == 0 || edgeTypes[t] }
 	if len(guids) > maxProvenanceGuids {
@@ -253,10 +244,6 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	procLineage := opts.ProcLineageTable
 	if procLineage == "" {
 		procLineage = "proc_lineage"
-	}
-	procFreq := opts.ProcFreqTable
-	if procFreq == "" {
-		procFreq = "proc_freq"
 	}
 	logs := opts.EffectiveTableName()
 
@@ -338,11 +325,194 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	if want("process_access") {
 		parts = append(parts, p2pEdges("process_access", "process_access"))
 	}
-	edges := strings.Join(parts, " UNION ALL ")
+	return strings.Join(parts, " UNION ALL "), nil
+}
+
+// FreqKey is one (src_image, event_type, target_norm) join-key triple a tree's edges can match
+// in proc_freq. BuildProvenanceFreqKeysSQL resolves the set actually present; BuildProvenanceScoringSQL
+// uses it to scope fe/ft/gf so they aggregate only proc_freq rows that can possibly join, instead
+// of the entire fractal's behavioral history.
+type FreqKey struct {
+	SrcImage   string
+	EventType  string
+	TargetNorm string
+}
+
+// maxProvenanceFreqKeys caps the scoping key set BuildProvenanceScoringSQL will filter fe/ft/gf
+// by. Beyond this the IN-list itself would become the bottleneck, so scoping is skipped (falls
+// back to the unscoped full-fractal aggregation) rather than degrading into a huge WHERE IN(...).
+const maxProvenanceFreqKeys = 5000
+
+// BuildProvenanceFreqKeysSQL returns a query producing the distinct (src_image, event_type,
+// target_norm) triples this tree's edges will actually be joined against in proc_freq scoring.
+// provenanceScoreSQL runs this as a cheap preliminary pass -- bounded like the edge scan itself
+// (guids + time window), NOT the full fractal history -- and feeds the result into
+// BuildProvenanceScoringSQL as freqKeys.
+func BuildProvenanceFreqKeysSQL(guids []string, edgeTypes map[string]bool, opts QueryOptions) (string, error) {
+	edges, err := buildProvenanceEdgeUnion(guids, edgeTypes, opts)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("SELECT DISTINCT fkey_src, event_type, fkey_tgt FROM (%s)", edges), nil
+}
+
+// BuildProvenanceTotalHostsSQL returns a query for the single scalar BuildProvenanceScoringSQL's
+// anomExpr uses as the global-rarity denominator (UNCAPPED true fleet size, see the comment on
+// anomExpr). provenanceScoreSQL runs this ONCE per pgr() call and passes the result in as
+// totalHosts -- it is not re-embedded as a live scalar subquery inside SQL that may be rebuilt
+// more than once within a single call (the diffuse-fallback rebuild), so it is never scanned
+// twice for the same invocation, and it is never cached ACROSS separate pgr() calls (always
+// fresh per call, exactly matching what the inline subquery it replaces would have returned).
+func BuildProvenanceTotalHostsSQL(opts QueryOptions) string {
+	procLineage := opts.ProcLineageTable
+	if procLineage == "" {
+		procLineage = "proc_lineage"
+	}
+	where := ""
+	if fractal := procLineageFractalCond(opts, ""); fractal != "" {
+		where = " WHERE " + fractal
+	}
+	return fmt.Sprintf("SELECT uniqExact(computer_name) AS total_hosts FROM %s%s", procLineage, where)
+}
+
+// BuildReconnectionTotalsSQL returns a single query producing both proc_freq rarity-gate
+// ceilings BuildReconnectionSQL needs (see hostGate/imageGate): the capped host-prevalence count
+// and the distinct source-image count. Computed once per pgr() call (only when Reconnect is on)
+// in ONE scan instead of two separate scalar subqueries each re-scanning proc_freq.
+func BuildReconnectionTotalsSQL(opts QueryOptions) string {
+	procFreq := opts.ProcFreqTable
+	if procFreq == "" {
+		procFreq = "proc_freq"
+	}
+	where := ""
+	if fractal := procLineageFractalCond(opts, ""); fractal != "" {
+		where = " WHERE " + fractal
+	}
+	return fmt.Sprintf("SELECT length(groupUniqArrayMerge(%d)(hosts)) AS total_hosts, uniqExact(src_image) AS total_images FROM %s%s",
+		procFreqHostsCap, procFreq, where)
+}
+
+// freqKeyTuples renders the distinct (src_image, event_type, target_norm) triples as a ClickHouse
+// tuple-IN literal list, escaped. Used to scope fe's proc_freq lookup.
+func freqKeyTuples(keys []FreqKey) string {
+	seen := make(map[string]bool, len(keys))
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		s := fmt.Sprintf("('%s', '%s', '%s')", escapeString(k.SrcImage), escapeString(k.EventType), escapeString(k.TargetNorm))
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// freqKeyPairs renders a deduped, escaped ClickHouse tuple-IN literal list of a 2-column
+// projection of keys (e.g. (src_image, event_type) for ft, or (event_type, target_norm) for gf).
+func freqKeyPairs(keys []FreqKey, pick func(FreqKey) (string, string)) string {
+	seen := make(map[string]bool, len(keys))
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		a, b := pick(k)
+		s := fmt.Sprintf("('%s', '%s')", escapeString(a), escapeString(b))
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// appendFreqFilter combines the fractal WHERE clause with an optional scoping filter fragment
+// (a leading " AND ..."), promoting it to a WHERE if no fractal clause is present.
+func appendFreqFilter(where, filter string) string {
+	if filter == "" {
+		return where
+	}
+	if where == "" {
+		return " WHERE " + strings.TrimPrefix(filter, " AND ")
+	}
+	return where + filter
+}
+
+// BuildProvenanceScoringSQL is pass 2: given the tree's guids, assemble every edge
+// (spawn from proc_lineage; file/net/injection/handle-access leaf edges from logs, bounded
+// by time + guid + category), score each against proc_freq (anomaly = 1 - freq(edge)/freq(src,rel,*)),
+// and keep the full spawn spine plus any non-spawn edge at/above threshold. Output columns:
+// parent, child, label, event_type, anomaly_score -- an edge list graph() renders directly.
+// edgeTypes selects which non-spawn edge branches to generate (nil/empty = all); spawn is
+// always included as the tree backbone. Skipping a branch avoids scanning logs for that
+// bifract_category entirely -- a real cost saving at scale, not just a post-filter.
+//
+// freqKeys (from BuildProvenanceFreqKeysSQL) scopes the fe/ft/gf proc_freq CTEs to only the
+// join keys this tree's edges can possibly match. Without it those CTEs GROUP BY over the
+// ENTIRE fractal's behavioral history regardless of tree size -- wasted work, since a LEFT JOIN
+// discards every non-matching build-side row anyway. Scoping changes zero output (same rows
+// would join either way); it only removes rows that could never match. Empty/oversized
+// freqKeys (see maxProvenanceFreqKeys) falls back to the unscoped aggregation.
+//
+// totalHosts (from BuildProvenanceTotalHostsSQL, computed once per pgr() call -- see
+// provenanceScoreSQL) is the global-rarity denominator, substituted as a literal instead of a
+// live scalar subquery so it is not silently re-scanned if this SQL is rebuilt within the same
+// call (the diffuse-fallback path calls this twice). Always fresh per call; never cached across
+// separate pgr() calls, so this is byte-identical to what the inline subquery would have
+// returned at call time.
+func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[string]bool, diffuse bool, freqKeys []FreqKey, totalHosts int64, opts QueryOptions) (string, error) {
+	if len(guids) == 0 {
+		return "", fmt.Errorf("pgr: no process guids to score")
+	}
+	// Defensive: a NaN/out-of-range threshold would emit an invalid or degenerate WHERE clause.
+	if threshold != threshold || threshold < 0 { // NaN or negative
+		threshold = 0
+	} else if threshold > 1 {
+		threshold = 1
+	}
+	if len(guids) > maxProvenanceGuids {
+		guids = guids[:maxProvenanceGuids]
+	}
+
+	edges, err := buildProvenanceEdgeUnion(guids, edgeTypes, opts)
+	if err != nil {
+		return "", err
+	}
+
+	procFreq := opts.ProcFreqTable
+	if procFreq == "" {
+		procFreq = "proc_freq"
+	}
+	logs := opts.EffectiveTableName()
+
+	tsStart := opts.StartTime.Format("2006-01-02 15:04:05")
+	tsEnd := opts.EndTime.Format("2006-01-02 15:04:05")
+	timeWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", tsStart, tsEnd)
+	fractal := procLineageFractalCond(opts, "")
+	frac := func() string {
+		if fractal == "" {
+			return ""
+		}
+		return " AND " + fractal
+	}
+
+	// pm's process_guid IN-list needs the same quoted guids buildProvenanceEdgeUnion built.
+	quoted := make([]string, len(guids))
+	for i, g := range guids {
+		quoted[i] = "'" + escapeString(g) + "'"
+	}
+	inList := strings.Join(quoted, ", ")
 
 	freqWhere := ""
 	if fractal != "" {
 		freqWhere = " WHERE " + fractal
+	}
+
+	// Scope fe/ft/gf to only the join keys this tree's edges can match (see freqKeys doc above).
+	feWhere, ftWhere, gfWhere := freqWhere, freqWhere, freqWhere
+	if n := len(freqKeys); n > 0 && n <= maxProvenanceFreqKeys {
+		feWhere = appendFreqFilter(freqWhere, " AND (src_image, event_type, target_norm) IN ("+freqKeyTuples(freqKeys)+")")
+		ftWhere = appendFreqFilter(freqWhere, " AND (src_image, event_type) IN ("+freqKeyPairs(freqKeys, func(k FreqKey) (string, string) { return k.SrcImage, k.EventType })+")")
+		gfWhere = appendFreqFilter(freqWhere, " AND (event_type, target_norm) IN ("+freqKeyPairs(freqKeys, func(k FreqKey) (string, string) { return k.EventType, k.TargetNorm })+")")
 	}
 
 	// Aggregate raw per-event leaf edges to one row per (src,dst,event_type). Without this a
@@ -367,19 +537,18 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	// has no baseline (ft.tot=0) we fall back to global rarity alone rather than forcing 1.0,
 	// so a brand-new-but-benign process touching common targets is not all-max noise.
 	// Spawn keeps the pure source-relative score (structure is never pruned; only coloured).
-	totalHosts := fmt.Sprintf("(SELECT uniqExact(computer_name) FROM %s%s)", procLineage, freqWhere)
-	gr := fmt.Sprintf("if(coalesce(gf.hostct, 0) >= %[1]d, 0, if(%[2]s = 0, 0, 1 - coalesce(gf.hostct, 0) / %[2]s))", procFreqHostsCap, totalHosts)
+	gr := fmt.Sprintf("if(coalesce(gf.hostct, 0) >= %[1]d, 0, if(%[2]d = 0, 0, 1 - coalesce(gf.hostct, 0) / %[2]d))", procFreqHostsCap, totalHosts)
 	anomExpr := fmt.Sprintf("multiIf(e.event_type = 'spawn', if(coalesce(ft.tot, 0) = 0, 1.0, round(1 - coalesce(fe.cnt, 0) / ft.tot, 4)), "+
 		"coalesce(ft.tot, 0) = 0, round(%[1]s, 4), "+
 		"round(greatest(1 - coalesce(fe.cnt, 0) / ft.tot, %[1]s), 4)) AS anomaly_score ", gr)
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("WITH fe AS (SELECT src_image, event_type, target_norm, sum(event_count) AS cnt FROM %[1]s%[2]s GROUP BY src_image, event_type, target_norm), ",
-		procFreq, freqWhere))
+		procFreq, feWhere))
 	b.WriteString(fmt.Sprintf("ft AS (SELECT src_image, event_type, sum(event_count) AS tot FROM %[1]s%[2]s GROUP BY src_image, event_type), ",
-		procFreq, freqWhere))
+		procFreq, ftWhere))
 	b.WriteString(fmt.Sprintf("gf AS (SELECT event_type, target_norm, length(groupUniqArrayMerge(%[3]d)(hosts)) AS hostct FROM %[1]s%[2]s GROUP BY event_type, target_norm), ",
-		procFreq, freqWhere, procFreqHostsCap))
+		procFreq, gfWhere, procFreqHostsCap))
 	// pm = per-process command line + user, read query-only from the process_creation logs of
 	// the tree's guids (the same bounded keyhole: guid IN + time window + category). Command
 	// lines can be enormous, so truncate to 300 chars in SQL -- never pull the full string.
@@ -510,7 +679,11 @@ func internalDNSExpr(qCol, rCol string) string {
 //   - remote_thread/process_access: target guids this tree injected into / opened -- emitted
 //     already by pass-2, so returned only as expansion candidates (object_id empty).
 // Returns "" (no error) when reconnection is disabled or no edge type is selected.
-func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions) (string, error) {
+//
+// totalHosts/totalImages (from BuildReconnectionTotalsSQL, computed once per pgr() call -- see
+// provenanceScoreSQL) are the rarity-gate ceiling inputs, substituted as literals instead of
+// live scalar subqueries. Always fresh per call; never cached across separate pgr() calls.
+func BuildReconnectionSQL(guids []string, p ProvenanceParams, totalHosts, totalImages int64, opts QueryOptions) (string, error) {
 	if !p.Reconnect || len(guids) == 0 {
 		return "", nil
 	}
@@ -547,21 +720,18 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, opts QueryOptions)
 	}
 	// Leading-WHERE fractal fragment for proc_freq (event_type filter always present).
 	freqFrac := ""
-	freqWhereClause := ""
 	if fractal != "" {
 		freqFrac = " AND " + fractal
-		freqWhereClause = " WHERE " + fractal
 	}
 
 	// Rarity gate ceiling (net/dns): an artifact bridges while it is on <= max(absolute floor,
 	// fraction * total_hosts) hosts. Scales with the fleet so a rare C2 on many hosts still
-	// reconnects; only near-ubiquitous infrastructure is pruned.
-	totalHosts := fmt.Sprintf("(SELECT length(groupUniqArrayMerge(%d)(hosts)) FROM %s%s)", procFreqHostsCap, procFreq, freqWhereClause)
-	hostGate := fmt.Sprintf("greatest(toUInt64(%d), toUInt64(%s * %s))", reconnectHostPrevalenceMax, reconnectHostFraction, totalHosts)
+	// reconnects; only near-ubiquitous infrastructure is pruned. totalHosts/totalImages are the
+	// literal scalars the caller computed once for this call (see func doc above).
+	hostGate := fmt.Sprintf("greatest(toUInt64(%d), toUInt64(%s * %d))", reconnectHostPrevalenceMax, reconnectHostFraction, totalHosts)
 	// Process-diversity gate (see reconnectImagePrevalenceMax): prune artifacts touched by many
 	// distinct process images, so ubiquitous software infra is dropped even on single-host data.
-	totalImages := fmt.Sprintf("(SELECT uniqExact(src_image) FROM %s%s)", procFreq, freqWhereClause)
-	imageGate := fmt.Sprintf("greatest(toUInt64(%d), toUInt64(%s * %s))", reconnectImagePrevalenceMax, reconnectImageFraction, totalImages)
+	imageGate := fmt.Sprintf("greatest(toUInt64(%d), toUInt64(%s * %d))", reconnectImagePrevalenceMax, reconnectImageFraction, totalImages)
 
 	// Common column order for every UNION branch:
 	// recon_type, peer_guid, src_guid, object_id, label, anomaly, peer_image, peer_log_id, peer_ts, peer_fractal

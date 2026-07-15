@@ -66,10 +66,27 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	// that share a leaf with this subgraph, auto-expand the most anomalous ones into real
 	// subtrees, and emit bridge edges for the rest. Bounded and rarity-pruned; see
 	// parser.BuildReconnectionSQL. Failure is non-fatal -- pgr still returns the base tree.
+	//
+	// The rarity-gate ceilings (totalHosts/totalImages) are fetched ONCE here, in ONE scan, and
+	// passed in as literals rather than the two separate live scalar subqueries the SQL used to
+	// embed -- computed fresh for this call only, never cached across separate pgr() calls, so
+	// results stay identical to a fully live per-call computation. On failure both stay 0, which
+	// only tightens the gate to its absolute floor (reconnectHostPrevalenceMax/
+	// reconnectImagePrevalenceMax) -- fails toward under-reconnecting, never toward a wrong match.
 	combined := guids
 	var emitPeers []parser.ReconnectPeer
 	if p.Reconnect && ctx.Err() == nil {
-		reconSQL, rErr := parser.BuildReconnectionSQL(guids, p, opts)
+		var reconTotalHosts, reconTotalImages int64
+		if totRows, tErr := h.db.QueryLowPriority(ctx, parser.BuildReconnectionTotalsSQL(opts)); tErr != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			log.Printf("[pgr] reconnection totals lookup failed, using rarity-gate floor only: %v", tErr)
+		} else if len(totRows) > 0 {
+			reconTotalHosts = reconInt64(totRows[0]["total_hosts"])
+			reconTotalImages = reconInt64(totRows[0]["total_images"])
+		}
+		reconSQL, rErr := parser.BuildReconnectionSQL(guids, p, reconTotalHosts, reconTotalImages, opts)
 		if rErr != nil {
 			log.Printf("[pgr] build reconnection query: %v", rErr)
 		} else if reconSQL != "" {
@@ -95,7 +112,54 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		}
 	}
 
-	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, p.Diffuse, opts)
+	// Scope fe/ft/gf's proc_freq lookup (see BuildProvenanceScoringSQL) to the join keys this
+	// tree's edges can actually match, instead of aggregating the whole fractal's behavioral
+	// history on every call. This preliminary pass is bounded the same way the edge scan itself
+	// is (guids + time window), so it's cheap; failure just forfeits the scoping (non-fatal).
+	var freqKeys []parser.FreqKey
+	if ctx.Err() == nil {
+		keysSQL, kErr := parser.BuildProvenanceFreqKeysSQL(combined, p.EdgeTypes, opts)
+		if kErr != nil {
+			log.Printf("[pgr] build freq-keys query: %v", kErr)
+		} else {
+			keyRows, qErr := h.db.QueryLowPriority(ctx, keysSQL)
+			if qErr != nil {
+				if ctx.Err() != nil {
+					return "", ctx.Err()
+				}
+				log.Printf("[pgr] freq-keys lookup failed, scoring proc_freq unscoped: %v", qErr)
+			} else {
+				freqKeys = make([]parser.FreqKey, 0, len(keyRows))
+				for _, r := range keyRows {
+					freqKeys = append(freqKeys, parser.FreqKey{
+						SrcImage:   reconString(r["fkey_src"]),
+						EventType:  reconString(r["event_type"]),
+						TargetNorm: reconString(r["fkey_tgt"]),
+					})
+				}
+			}
+		}
+	}
+
+	// Global-rarity denominator for every non-spawn edge scored (see BuildProvenanceScoringSQL's
+	// anomExpr). Fetched ONCE per call and passed as a literal so it is not silently re-scanned
+	// if the scoring SQL gets rebuilt within this same call (the diffuse-fallback path below
+	// calls BuildProvenanceScoringSQL again). Never cached across separate pgr() calls -- always
+	// fresh per call. On failure, totalHosts stays 0, which the anomaly expression already
+	// treats as "no baseline" (global-rarity term forced to 0) -- a safe, pre-existing fallback.
+	var totalHosts int64
+	if ctx.Err() == nil {
+		if totRows, tErr := h.db.QueryLowPriority(ctx, parser.BuildProvenanceTotalHostsSQL(opts)); tErr != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			log.Printf("[pgr] total-hosts lookup failed, scoring with global-rarity term forced to 0: %v", tErr)
+		} else if len(totRows) > 0 {
+			totalHosts = reconInt64(totRows[0]["total_hosts"])
+		}
+	}
+
+	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, p.Diffuse, freqKeys, totalHosts, opts)
 	if err != nil {
 		return "", fmt.Errorf("pgr: build scoring query: %w", err)
 	}
@@ -125,7 +189,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 			return "", ctx.Err()
 		}
 		log.Printf("[pgr] diffusion score query failed, falling back to per-edge scoring: %v", qErr)
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, opts)
+		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, freqKeys, totalHosts, opts)
 		if ferr != nil {
 			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
 		}
@@ -143,7 +207,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		// Diffusion (propagation) is lost for this one query, but pgr returns the full graph with
 		// per-edge anomaly instead of failing -- and flat/pgraph stay in parity (both use this SQL).
 		log.Printf("[pgr] diffusion payload too large to inline (%d edges); falling back to per-edge scoring for this query", len(survivors))
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, opts)
+		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, freqKeys, totalHosts, opts)
 		if ferr != nil {
 			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
 		}
@@ -502,6 +566,26 @@ func reconFloat(v interface{}) float64 {
 	case string:
 		f, _ := strconv.ParseFloat(n, 64)
 		return f
+	}
+	return 0
+}
+
+// reconInt64 coerces a ClickHouse-driver value to int64. uniqExact/length(...) return UInt64
+// today; the int/string fallbacks keep the total-hosts/total-images lookups working if the
+// driver ever returns them differently (rather than silently zeroing the rarity-gate inputs).
+func reconInt64(v interface{}) int64 {
+	switch n := v.(type) {
+	case uint64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	case string:
+		i, _ := strconv.ParseInt(n, 10, 64)
+		return i
 	}
 	return 0
 }
