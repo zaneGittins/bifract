@@ -676,6 +676,7 @@ func (m k8sWizardModel) View() string {
 
 // RunInstallK8s runs the Kubernetes installation wizard and generates manifests.
 func RunInstallK8s() error {
+	defer abandonStep() // clean up any in-progress spinner on an early error return
 	model := newK8sWizardModel()
 	p := tea.NewProgram(model)
 	finalModel, err := p.Run()

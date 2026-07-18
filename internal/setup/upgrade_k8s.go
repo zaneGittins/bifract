@@ -25,6 +25,7 @@ type K8sUpgradeOpts struct {
 }
 
 func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
+	defer abandonStep() // clean up any in-progress spinner on an early error return
 	PrintBanner()
 
 	fmt.Println(TitleStyle.Render("  Upgrading Kubernetes Manifests"))
@@ -159,6 +160,7 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 		printStep(fmt.Sprintf("Applying size profile: %s", profile.Name))
 		cfg.SizeProfile = profile
 		cfg.CHShards = profile.CHShards
+		printDone("Size profile applied: " + profile.Name)
 	}
 
 	// Regenerate manifests with new version into a staging directory so that

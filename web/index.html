@@ -745,8 +745,8 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="archiveEnabledToggle" class="sp-row-label">Iceberg archive</label>
-                                        <p class="sp-row-desc">Writes every log to S3, Azure, MinIO, or disk as Apache Iceberg &mdash; the system of record for disaster recovery and long-term retention.</p>
-                                        <p class="sp-row-meta">Status and footprint live under <span class="sp-path">System &rarr; Archive</span>. <span id="archiveToggleHint" class="setting-inline-hint"></span></p>
+                                        <p class="sp-row-desc">Writes every log to S3, Azure, MinIO, or disk as Apache Iceberg tables backed by Parquet files. This is the system of record for disaster recovery and long-term retention.</p>
+                                        <p class="sp-row-blocked" id="archiveToggleHint" style="display:none;"></p>
                                     </div>
                                     <div class="sp-row-control">
                                         <label class="toggle-switch">
@@ -768,7 +768,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="endpointAnalysisToggle" class="sp-row-label">Endpoint behavioral analytics</label>
-                                        <p class="sp-row-desc">Builds process-lineage <code>ptg</code> and process-frequency <code>pgr</code> baselines for behavioral hunting.</p>
+                                        <p class="sp-row-desc">Builds the process tree graph <code>ptg</code> and provenance graph <code>pgr</code> baselines for behavioral hunting.</p>
                                         <p class="sp-row-meta sp-row-cost">Adds materialized views that run on every ingested log. Baselines resume from the moment it is re-enabled. <span id="endpointAnalysisHint" class="setting-inline-hint"></span></p>
                                     </div>
                                     <div class="sp-row-control">
@@ -806,7 +806,7 @@
                                     <div class="sp-row-info">
                                         <span class="sp-row-label">Clear Iceberg catalog</span>
                                         <p class="sp-row-desc">Drops every archived table and resets the footprint to zero so archiving starts fresh.</p>
-                                        <p class="sp-row-meta">Data files in object storage are not deleted &mdash; empty the bucket or container manually to reclaim space and avoid stale files shadowing new tables.</p>
+                                        <p class="sp-row-meta">Data files in object storage are not deleted. Empty the bucket or container manually to reclaim space and avoid stale files shadowing new tables.</p>
                                         <p class="sp-row-blocked" id="archiveClearCatalogBlocked" style="display:none;">Disable the Iceberg archive above before clearing the catalog.</p>
                                     </div>
                                     <div class="sp-row-control">

@@ -73,7 +73,7 @@ var (
 
 	// Pending step in progress bar
 	StepPendingStyle = lipgloss.NewStyle().
-			Foreground(Gray)
+				Foreground(Gray)
 
 	// Label for input fields
 	LabelStyle = lipgloss.NewStyle().

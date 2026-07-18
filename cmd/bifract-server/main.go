@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -57,6 +58,28 @@ import (
 
 // Version is set at build time via -ldflags
 var Version = "dev"
+
+// noDirFS wraps an http.FileSystem and refuses to open directories. This makes
+// http.FileServer return 404 for a directory path rather than rendering an
+// index listing that enumerates the contents of ./web.
+type noDirFS struct{ fs http.FileSystem }
+
+func (n noDirFS) Open(name string) (http.File, error) {
+	f, err := n.fs.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if st.IsDir() {
+		f.Close()
+		return nil, fs.ErrNotExist
+	}
+	return f, nil
+}
 
 // fractalAccessAdapter adapts *rbac.Resolver to the HasFractalAccess interface
 // used by chat and savedqueries handlers.
@@ -1912,8 +1935,9 @@ func main() {
 		metricsServer.Start()
 	}
 
-	// Serve static files and web UI
-	fs := http.FileServer(http.Dir("./web"))
+	// Serve static files and web UI. noDirFS suppresses directory index
+	// listings, so requests for a directory 404 instead of enumerating it.
+	fileServer := http.FileServer(noDirFS{http.Dir("./web")})
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			http.ServeFile(w, r, "./web/index.html")
@@ -1926,7 +1950,7 @@ func main() {
 			http.ServeFile(w, r, "./web/shared.html")
 			return
 		}
-		fs.ServeHTTP(w, r)
+		fileServer.ServeHTTP(w, r)
 	})
 
 	// HTTP server

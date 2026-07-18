@@ -11,7 +11,7 @@ import (
 )
 
 // endpointAnalysisMVNames are the materialized views gated by the "Advanced endpoint
-// analysis" toggle: the process-lineage (ptg) and process-frequency (pgr) MVs. Each
+// analysis" toggle: the process tree graph (ptg) and provenance graph (pgr) MVs. Each
 // fires synchronously on every insert into logs and runs heavy regex/aggregation work.
 //
 // Their definitions remain the source of truth in db/init-clickhouse.sql and the

@@ -10,6 +10,7 @@ import (
 )
 
 func RunInstall() error {
+	defer abandonStep() // clean up any in-progress spinner on an early error return
 	cfg := DefaultConfig()
 
 	cfg, err := RunWizard(cfg)
@@ -74,6 +75,7 @@ func RunInstall() error {
 	// Start services
 	printStep("Starting services...")
 	if out, err := docker.Up(); err != nil {
+		abandonStep() // stop the spinner before printing captured output
 		fmt.Println(DimStyle.Render(out))
 		return fmt.Errorf("docker compose up: %w", err)
 	}
@@ -169,6 +171,7 @@ func RunInstall() error {
 
 // RunGenClientCert generates a new client certificate signed by the existing CA.
 func RunGenClientCert(dir, name, password string) error {
+	defer abandonStep() // clean up any in-progress spinner on an early error return
 	PrintBanner()
 
 	// Look for CA in Docker layout (caddy/client-ca/) or K8s layout (client-ca/)
@@ -206,5 +209,3 @@ func RunGenClientCert(dir, name, password string) error {
 
 	return nil
 }
-
-

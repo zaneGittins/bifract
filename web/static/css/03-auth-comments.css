@@ -27,13 +27,7 @@
 }
 
 .modal-content {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
     padding: 2rem;
-    max-width: 400px;
-    width: 90%;
-    box-shadow: var(--shadow-lg);
 }
 
 .modal-header h2 {
@@ -89,16 +83,7 @@
     text-transform: none;
 }
 
-.form-group {
-    margin-bottom: 1rem;
-}
 
-.form-group label {
-    display: block;
-    font-size: 0.8125rem;
-    color: var(--text-secondary);
-    margin-bottom: 0.5rem;
-}
 
 .form-group input,
 .form-group textarea {
@@ -113,10 +98,6 @@
     box-sizing: border-box;
 }
 
-.form-group textarea {
-    resize: none;
-    min-height: 4rem;
-}
 
 .form-group input:focus,
 .form-group textarea:focus {
@@ -137,11 +118,6 @@
 }
 
 /* User Display in Header */
-.user-display {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-}
 
 .username {
     font-size: 0.875rem;
@@ -518,6 +494,9 @@
     font-size: 0.75rem;
     cursor: pointer;
     transition: var(--transition);
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
 }
 
 .btn-save-edit {
@@ -528,12 +507,6 @@
 
 .btn-save-edit:hover {
     background: var(--accent-secondary);
-}
-
-.btn-cancel-edit {
-    background: transparent;
-    border: 1px solid var(--border-color);
-    color: var(--text-secondary);
 }
 
 .btn-cancel-edit:hover {
@@ -658,11 +631,6 @@
 }
 
 .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 4rem 2rem;
     color: var(--text-muted);
 }
 

@@ -736,9 +736,6 @@
     border-radius: 6px;
     background: var(--bg-primary);
     padding: 12px;
-}
-
-.markdown-preview {
     line-height: 1.6;
 }
 
@@ -837,16 +834,13 @@
     border: 1px solid var(--border-color);
     padding: 8px 12px;
     text-align: left;
+    color: var(--text-secondary);
 }
 
 .markdown-preview th {
     background: var(--bg-tertiary);
     color: var(--text-primary);
     font-weight: 600;
-}
-
-.markdown-preview td {
-    color: var(--text-secondary);
 }
 
 .markdown-preview hr {

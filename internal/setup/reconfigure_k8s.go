@@ -34,6 +34,7 @@ type K8sReconfigureOpts struct {
 // Useful when changing IP access mode, domain, or picking up new template changes
 // without a version bump. All secrets and resource profiles are preserved.
 func RunReconfigureK8s(dir string, opts K8sReconfigureOpts) error {
+	defer abandonStep() // clean up any in-progress spinner on an early error return
 	PrintBanner()
 
 	fmt.Println(TitleStyle.Render("  Reconfiguring Kubernetes Manifests"))

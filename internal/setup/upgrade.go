@@ -10,6 +10,7 @@ import (
 )
 
 func RunUpgrade(dir string) error {
+	defer abandonStep() // clean up any in-progress spinner on an early error return
 	PrintBanner()
 
 	fmt.Println(TitleStyle.Render("  Upgrading Bifract"))
@@ -337,6 +338,7 @@ func RunUpgrade(dir string) error {
 		printWarn("docker compose down had issues, continuing...")
 	}
 	if out, err := docker.Up(); err != nil {
+		abandonStep() // stop the spinner before printing captured output
 		fmt.Println(DimStyle.Render(out))
 		return fmt.Errorf("docker compose up: %w", err)
 	}

@@ -10,6 +10,7 @@ import (
 // from the existing .env values without requiring a version change. Useful for applying
 // setting changes like IP access controls without a full upgrade cycle.
 func RunReconfigure(dir string) error {
+	defer abandonStep() // clean up any in-progress spinner on an early error return
 	PrintBanner()
 
 	fmt.Println(TitleStyle.Render("  Reconfiguring Bifract"))

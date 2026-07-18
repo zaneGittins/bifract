@@ -8,11 +8,7 @@
    ============================ */
 
 .section-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
     margin-bottom: 1rem;
-    gap: 0.5rem;
 }
 
 /* Fractal Management Pagination */
@@ -385,8 +381,6 @@
 }
 
 .form-hint {
-    font-size: 0.78rem;
-    color: var(--text-muted);
     margin-top: 4px;
     margin-bottom: 0;
 }
@@ -426,9 +420,6 @@
     display: none !important;
 }
 
-.text-muted {
-    color: var(--text-muted);
-}
 
 /* ============================
    Comments Panel Specific

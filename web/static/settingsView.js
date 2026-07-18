@@ -138,7 +138,8 @@ const SettingsView = {
             toggle.disabled = !d.provisioned;
             this.syncClearCatalogGuard(d.enabled);
             if (hint) {
-                hint.textContent = d.provisioned ? '' : 'Not provisioned — run bifract --upgrade to add the archiver.';
+                hint.textContent = d.provisioned ? '' : 'Not provisioned. Run bifract --upgrade to add the archiver.';
+                hint.style.display = d.provisioned ? 'none' : '';
             }
         } catch (err) {
             console.error('[Settings] archive status load error:', err);

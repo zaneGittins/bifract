@@ -356,21 +356,18 @@
     white-space: pre;
     overflow: hidden;
     box-sizing: border-box;
-}
-
-.widget-query-highlight {
-    color: transparent;
-    pointer-events: none;
-    z-index: 1;
-}
-
-.widget-query-input {
     background: transparent;
     border: none;
     outline: none;
     color: var(--text-muted);
     resize: none;
     z-index: 2;
+}
+
+.widget-query-highlight {
+    color: transparent;
+    pointer-events: none;
+    z-index: 1;
 }
 
 /* Widget Content */
@@ -769,13 +766,7 @@
     flex: 1;
 }
 
-.normalizer-ts-field-row .ts-field-name {
-    flex: 0.8;
-}
 
-.normalizer-ts-field-row .ts-field-format {
-    flex: 1.2;
-}
 
 .ts-drag-handle {
     cursor: grab;
