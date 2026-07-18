@@ -45,25 +45,17 @@ const SettingsView = {
         }
 
         // Set up system limits dropdowns
-        const alertTimeoutSelect = document.getElementById('alertTimeoutSettings');
-        if (alertTimeoutSelect) {
-            alertTimeoutSelect.addEventListener('change', () => this.saveSettings());
-        }
-        const queryTimeoutSelect = document.getElementById('queryTimeoutSettings');
-        if (queryTimeoutSelect) {
-            queryTimeoutSelect.addEventListener('change', () => this.saveSettings());
-        }
-        const alertEvalIntervalSelect = document.getElementById('alertEvalIntervalSettings');
-        if (alertEvalIntervalSelect) {
-            alertEvalIntervalSelect.addEventListener('change', () => this.saveSettings());
-        }
+        ['alertTimeoutSettings', 'queryTimeoutSettings', 'alertEvalIntervalSettings'].forEach(id => {
+            const select = document.getElementById(id);
+            if (select) select.addEventListener('change', () => this.saveSettings(select));
+        });
         const archiveToggle = document.getElementById('archiveEnabledToggle');
         if (archiveToggle) {
             archiveToggle.addEventListener('change', () => this.saveArchiveEnabled());
         }
         const clearCatalogBtn = document.getElementById('archiveClearCatalogBtn');
         if (clearCatalogBtn) {
-            clearCatalogBtn.addEventListener('click', () => this.clearCatalog());
+            clearCatalogBtn.addEventListener('click', () => this.openClearCatalogModal());
         }
         const endpointAnalysisToggle = document.getElementById('endpointAnalysisToggle');
         if (endpointAnalysisToggle) {
@@ -73,6 +65,63 @@ const SettingsView = {
         if (sharedLinksToggle) {
             sharedLinksToggle.addEventListener('change', () => this.saveSharedLinksEnabled());
         }
+
+        this.initSectionRail();
+    },
+
+    // Section rail for the Settings sub-tab: click to scroll, and highlight the
+    // section currently in view. Observed sections are static, so a single
+    // observer set up once is enough.
+    initSectionRail() {
+        const rail = document.getElementById('settingsSectionRail');
+        if (!rail) return;
+
+        const items = Array.from(rail.querySelectorAll('.sp-rail-item'));
+        const sections = items
+            .map(item => document.getElementById(item.dataset.section))
+            .filter(Boolean);
+
+        const activate = (id) => {
+            items.forEach(item => item.classList.toggle('active', item.dataset.section === id));
+        };
+
+        items.forEach(item => {
+            item.addEventListener('click', () => {
+                const target = document.getElementById(item.dataset.section);
+                if (!target) return;
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                activate(item.dataset.section);
+            });
+        });
+
+        if (!sections.length || !window.IntersectionObserver) return;
+
+        // Track visible sections and always highlight the topmost one, so the
+        // rail stays stable when several sections share the viewport.
+        const visible = new Set();
+        const observer = new IntersectionObserver(entries => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) visible.add(entry.target.id);
+                else visible.delete(entry.target.id);
+            });
+            const topmost = sections.find(s => visible.has(s.id));
+            if (topmost) activate(topmost.id);
+        }, { rootMargin: '-8% 0px -70% 0px', threshold: 0 });
+
+        sections.forEach(s => observer.observe(s));
+    },
+
+    // Clearing the catalog is rejected server-side while archiving is on. Reflect
+    // that in the UI so the action is visibly unavailable rather than failing
+    // after the user has already confirmed it.
+    syncClearCatalogGuard(archiveEnabled) {
+        const btn = document.getElementById('archiveClearCatalogBtn');
+        const blocked = document.getElementById('archiveClearCatalogBlocked');
+        if (btn) {
+            btn.disabled = !!archiveEnabled;
+            btn.title = archiveEnabled ? 'Disable the Iceberg archive first' : '';
+        }
+        if (blocked) blocked.style.display = archiveEnabled ? '' : 'none';
     },
 
     // Loads the Iceberg archive enable state. The toggle is disabled (with a
@@ -87,6 +136,7 @@ const SettingsView = {
             const d = await res.json();
             toggle.checked = !!d.enabled;
             toggle.disabled = !d.provisioned;
+            this.syncClearCatalogGuard(d.enabled);
             if (hint) {
                 hint.textContent = d.provisioned ? '' : 'Not provisioned — run bifract --upgrade to add the archiver.';
             }
@@ -99,6 +149,7 @@ const SettingsView = {
         const toggle = document.getElementById('archiveEnabledToggle');
         if (!toggle) return;
         const enabled = toggle.checked;
+        this.syncClearCatalogGuard(enabled);
         try {
             const res = await fetch('/api/v1/system/archive/enabled', {
                 method: 'PUT',
@@ -116,23 +167,49 @@ const SettingsView = {
             }
         } catch (err) {
             toggle.checked = !enabled; // revert on failure
+            this.syncClearCatalogGuard(!enabled);
             if (window.Toast) Toast.error('Archive Update Failed', err.message);
         }
     },
 
+    // Opens the typed-confirmation dialog. The destructive call itself lives in
+    // clearCatalog(), which the dialog invokes once the phrase matches.
+    openClearCatalogModal() {
+        const modal = document.getElementById('archiveClearCatalogModal');
+        const input = document.getElementById('archiveClearCatalogConfirmInput');
+        const confirmBtn = document.getElementById('archiveClearCatalogConfirmBtn');
+        if (!modal || !input || !confirmBtn) return;
+
+        input.value = '';
+        confirmBtn.disabled = true;
+        modal.style.display = 'flex';
+        setTimeout(() => input.focus(), 100);
+
+        const phrase = 'CLEAR CATALOG';
+        const validate = () => {
+            confirmBtn.disabled = input.value.trim().toUpperCase() !== phrase;
+        };
+        // Replace prior handlers so reopening the dialog never stacks listeners.
+        input.oninput = validate;
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter' && !confirmBtn.disabled) this.clearCatalog();
+            if (e.key === 'Escape') this.closeClearCatalogModal();
+        };
+        confirmBtn.onclick = () => this.clearCatalog();
+        document.getElementById('archiveClearCatalogCancelBtn').onclick = () => this.closeClearCatalogModal();
+    },
+
+    closeClearCatalogModal() {
+        const modal = document.getElementById('archiveClearCatalogModal');
+        if (modal) modal.style.display = 'none';
+    },
+
     // Clears the Iceberg catalog (all archived tables + namespace) via the
     // admin-only endpoint, resetting the archive footprint to zero. The server
-    // rejects this while archiving is enabled, so disable the toggle first.
+    // also rejects this while archiving is enabled; the UI guard mirrors that.
     async clearCatalog() {
+        this.closeClearCatalogModal();
         const btn = document.getElementById('archiveClearCatalogBtn');
-        const confirmed = confirm(
-            'Clear the Iceberg catalog?\n\n' +
-            'This drops every archived table and resets the archive footprint to zero. ' +
-            'Data files in object storage are NOT deleted — empty your bucket/container ' +
-            'manually to reclaim space.\n\n' +
-            'Archiving must be disabled first. This action cannot be undone.'
-        );
-        if (!confirmed) return;
         const original = btn ? btn.innerHTML : '';
         try {
             if (btn) {
@@ -156,8 +233,10 @@ const SettingsView = {
             if (window.Toast) Toast.error('Clear Catalog Failed', err.message.trim());
         } finally {
             if (btn) {
-                btn.disabled = false;
                 btn.innerHTML = original;
+                // Restore the guard rather than blindly re-enabling: the archive
+                // may have been switched back on while the request was in flight.
+                this.syncClearCatalogGuard(document.getElementById('archiveEnabledToggle')?.checked);
             }
         }
     },
@@ -251,6 +330,8 @@ const SettingsView = {
     },
 
     switchSubTab(tabName, skipPush = false) {
+        // The Limits tab was renamed to Settings; keep old deep links working.
+        if (tabName === 'limits') tabName = 'settings';
         if (!skipPush) window.App?.pushSubPath(tabName);
         const tabBar = document.getElementById('settingsSubTabs');
         if (tabBar) {
@@ -354,7 +435,21 @@ const SettingsView = {
         }
     },
 
-    async saveSettings() {
+    // Brief "Saved" confirmation next to the control that changed. Autosaving
+    // selects otherwise give no signal that the change took effect.
+    flashSaved(el) {
+        if (!el || !el.parentElement) return;
+        const control = el.parentElement;
+        control.querySelector('.sp-saved')?.remove();
+        const pill = document.createElement('span');
+        pill.className = 'sp-saved';
+        pill.textContent = 'Saved';
+        control.insertBefore(pill, el);
+        setTimeout(() => pill.classList.add('fade'), 1200);
+        setTimeout(() => pill.remove(), 1600);
+    },
+
+    async saveSettings(triggerEl) {
         try {
             const response = await fetch('/api/v1/settings', {
                 method: 'POST',
@@ -368,12 +463,13 @@ const SettingsView = {
             });
 
             const data = await response.json();
-            if (!data.success) {
-                alert('Failed to save settings');
-            }
+            if (!data.success) throw new Error(data.error || 'Failed to save settings');
+            this.flashSaved(triggerEl);
         } catch (error) {
             console.error('Failed to save settings:', error);
-            alert('Failed to save settings');
+            if (window.Toast) Toast.error('Save Failed', error.message);
+            // Re-read the server state so the control never shows an unsaved value.
+            this.loadSettings();
         }
     },
 

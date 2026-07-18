@@ -698,6 +698,8 @@ func RunInstallK8s() error {
 	fmt.Println(TitleStyle.Render("  Generating Kubernetes Manifests"))
 	fmt.Println()
 
+	resetSteps(3) // credentials, directories, manifests
+
 	printStep("Generating secure credentials...")
 	if err := cfg.GeneratePasswords(); err != nil {
 		return fmt.Errorf("generate passwords: %w", err)

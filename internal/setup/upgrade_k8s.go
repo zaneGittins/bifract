@@ -30,6 +30,18 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 	fmt.Println(TitleStyle.Render("  Upgrading Kubernetes Manifests"))
 	fmt.Println()
 
+	// Numbered step plan (happy path): read secrets, check live secrets, read
+	// settings, back up, write manifests, plus an image check on non-dev versions
+	// and a size-profile step when one is passed.
+	upgradeSteps := 5
+	if Version != "dev" {
+		upgradeSteps++
+	}
+	if opts.SizeProfile != "" {
+		upgradeSteps++
+	}
+	resetSteps(upgradeSteps)
+
 	// Validate existing installation
 	secretsPath := filepath.Join(dir, "bifract", "secrets.yaml")
 	deployPath := filepath.Join(dir, "bifract", "deployment.yaml")
@@ -534,6 +546,15 @@ func extractResources(content, imageName string) ResourceProfile {
 		// Standard deployments: image: ghcr.io/foo/bar:tag
 		// ClickHouse operator CRDs: repository: clickhouse/clickhouse-server
 		if (strings.Contains(trimmed, "image:") || strings.Contains(trimmed, "repository:")) && strings.Contains(trimmed, imageName) {
+			inContainer = true
+			continue
+		}
+		// Detect the container by its explicit name field. Some sidecars run on a
+		// generic base image (e.g. the log-shipper runs on alpine), so the image
+		// reference does not contain the component identifier; match the container
+		// name instead. Exact match avoids colliding with volume names or other
+		// resources that merely share the prefix (e.g. log-shipper-script).
+		if trimmed == "- name: "+imageName {
 			inContainer = true
 			continue
 		}

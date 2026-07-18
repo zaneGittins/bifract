@@ -69,7 +69,7 @@ The archiver ships in the same image as the server (run with a different command
 
 The machinery must be provisioned first (present after an install/upgrade on a version that includes it). Then enable it **either way**:
 
-- **Admin UI:** *Settings → Admin → Limits → Iceberg Archive* toggle. (Greyed out until provisioned.)
+- **Admin UI:** *Admin → Settings → Archive → Iceberg Archive* toggle. (Greyed out until provisioned.)
 - **Env / secret:** set `BIFRACT_ARCHIVE_ENABLED=true` (k8s: the `ARCHIVE_ENABLED` secret).
 
 Toggling takes effect within seconds — no redeploy.
@@ -120,7 +120,7 @@ Set on the `bifract-archiver` service (compose) or the `bifract-secrets` Secret 
 
 ### Clear catalog
 
-*Settings → Admin → Limits → Clear Catalog* resets the archive to zero so you can start fresh. Disable archiving first (the button is guarded otherwise).
+*Admin → Settings → Danger Zone → Clear Iceberg Catalog* resets the archive to zero so you can start fresh. Disable archiving first (the button is guarded otherwise).
 
 This drops the archived tables from the catalog but does **not** delete the data files in object storage. Empty the bucket/container yourself afterwards to reclaim space and to keep leftover files from interfering with new archiving.
 

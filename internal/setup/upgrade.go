@@ -57,6 +57,14 @@ func RunUpgrade(dir string) error {
 			PromptStyle.Render("Directory:"), DimStyle.Render(dir),
 		))
 	fmt.Println(versionInfo)
+
+	// Numbered step plan (happy path): backup, config, migrations, pull, restart,
+	// health, plus an image check on non-dev versions.
+	upgradeSteps := 6
+	if Version != "dev" {
+		upgradeSteps++
+	}
+	resetSteps(upgradeSteps)
 	fmt.Println()
 
 	if currentVersion != "unknown" && CompareVersions(currentVersion, Version) >= 0 {
@@ -316,8 +324,8 @@ func RunUpgrade(dir string) error {
 		printWarn("Containers not running, skipping migrations")
 	}
 
-	// Pull new images
-	printStep("Pulling updated images...")
+	// Pull new images (docker streams its own progress, so no spinner)
+	printStepStream("Pulling updated images...")
 	if err := docker.Pull(); err != nil {
 		return fmt.Errorf("docker compose pull: %w", err)
 	}

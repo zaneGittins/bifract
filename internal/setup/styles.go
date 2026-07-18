@@ -15,6 +15,7 @@ var (
 	White  = lipgloss.Color("#ffffff")
 	Red    = lipgloss.Color("#ff5555")
 	Yellow = lipgloss.Color("#f1fa8c")
+	Amber  = lipgloss.Color("#ffb86c")
 	Dim    = lipgloss.Color("#44475a")
 
 	TitleStyle = lipgloss.NewStyle().
@@ -30,8 +31,11 @@ var (
 	ErrorStyle = lipgloss.NewStyle().
 			Foreground(Red)
 
+	// WarningStyle marks advisory output (severity between success and error).
+	// Amber keeps warnings visually distinct from red errors so they do not read
+	// as failures.
 	WarningStyle = lipgloss.NewStyle().
-			Foreground(Yellow)
+			Foreground(Amber)
 
 	HighlightStyle = lipgloss.NewStyle().
 			Foreground(Cyan)

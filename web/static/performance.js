@@ -481,9 +481,9 @@ const Performance = {
         if (hint) {
             let msg = '';
             if (!d.provisioned) {
-                msg = 'The archiver sidecar is not provisioned. Run bifract --upgrade to add it, then enable archiving in Admin → Limits.';
+                msg = 'The archiver sidecar is not provisioned. Run bifract --upgrade to add it, then enable archiving in Admin → Settings.';
             } else if (!d.enabled) {
-                msg = 'Enable archiving in Admin → Limits to start writing a durable Iceberg copy of all logs.';
+                msg = 'Enable archiving in Admin → Settings to start writing a durable Iceberg copy of all logs.';
             }
             hint.textContent = msg;
             hint.style.display = msg ? '' : 'none';

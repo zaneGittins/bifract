@@ -1,0 +1,1169 @@
+/* Split from style.css. Part 11 of 12.
+   These files are a byte-exact partition of the original stylesheet and are
+   ORDER-DEPENDENT: several selectors are declared in more than one part and
+   rely on later parts overriding earlier ones. Do not reorder the <link>
+   tags and do not load a subset. */
+/* ===================== Fields rail (left, push layout) ===================== */
+.fields-rail {
+    position: relative;
+    flex: 0 0 auto;
+    width: 0;
+    margin-right: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-sm);
+    transition: width 0.25s ease, margin-right 0.25s ease;
+}
+
+.fields-rail.open {
+    width: var(--fields-rail-width, 300px);
+    margin-right: 0.625rem;
+}
+
+.fr-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.625rem;
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.fr-title {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.fr-count {
+    font-size: 0.6rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    padding: 0.0625rem 0.375rem;
+    border-radius: 8px;
+    text-align: center;
+}
+.fr-count:empty { display: none; }
+
+.fr-header-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 0.25rem;
+}
+
+.fr-icon-btn {
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+}
+
+.fr-icon-btn:hover {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+.fr-close {
+    font-size: 1rem;
+    font-family: var(--font-main);
+}
+
+.fr-close:hover {
+    color: var(--error);
+    border-color: var(--error);
+}
+
+.fr-sample-note {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    padding: 0.4rem 0.625rem;
+    border-bottom: 1px solid var(--border-color);
+    cursor: default;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+}
+
+.fr-sample-note::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-secondary);
+    flex-shrink: 0;
+}
+
+.fr-filter {
+    padding: 0.5rem 0.625rem;
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.fr-filter-input {
+    width: 100%;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 0.72rem;
+    padding: 0.3rem 0.5rem;
+    outline: none;
+    box-sizing: border-box;
+    font-family: var(--font-main);
+    transition: var(--transition);
+}
+
+.fr-filter-input:focus { border-color: var(--accent-primary); }
+.fr-filter-input::placeholder { color: var(--text-muted); }
+
+.fr-body {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0.25rem 0;
+    min-width: var(--fields-rail-width, 300px);
+}
+
+.fr-empty {
+    padding: 1.5rem 0.9rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    line-height: 1.5;
+}
+
+.fr-field {
+    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 45%, transparent);
+}
+
+.fr-field-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.625rem;
+    cursor: pointer;
+    user-select: none;
+    transition: background var(--transition);
+}
+
+.fr-field-head:hover { background: var(--bg-hover); }
+
+.fr-arrow {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    width: 9px;
+    flex-shrink: 0;
+    text-align: center;
+}
+
+.fr-field.expanded .fr-arrow { color: var(--accent-primary); }
+
+.fr-name {
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fr-card {
+    font-size: 0.6rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    padding: 0.0625rem 0.375rem;
+    border-radius: 8px;
+    flex-shrink: 0;
+}
+
+.fr-detail { padding: 0.125rem 0.5rem 0.5rem 0.625rem; }
+
+.fr-coverage {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.125rem 0 0.4rem;
+}
+
+.fr-coverage-bar {
+    flex: 1;
+    height: 3px;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.fr-coverage-bar span {
+    display: block;
+    height: 100%;
+    background: var(--accent-secondary);
+    border-radius: 2px;
+}
+
+.fr-coverage-pct {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.fr-val {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.22rem 0.375rem;
+    border-radius: 3px;
+    cursor: default;
+    overflow: hidden;
+}
+
+.fr-val:hover { background: var(--bg-hover); }
+
+.fr-val-bar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    background: var(--accent-primary);
+    opacity: 0.1;
+    border-radius: 3px;
+    pointer-events: none;
+}
+
+.fr-val-text {
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    position: relative;
+}
+
+.fr-val-text em { color: var(--text-muted); font-style: italic; }
+
+.fr-val-count {
+    font-size: 0.6rem;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    flex-shrink: 0;
+    position: relative;
+    white-space: nowrap;
+}
+
+.fr-val-actions {
+    display: flex;
+    gap: 2px;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.1s ease;
+    position: relative;
+}
+
+.fr-val:hover .fr-val-actions { opacity: 1; }
+
+.fr-val-btn {
+    width: 16px;
+    height: 16px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.65rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    line-height: 1;
+    transition: var(--transition);
+}
+
+.fr-in:hover { color: var(--success); border-color: var(--success); }
+.fr-out:hover { color: var(--error); border-color: var(--error); }
+
+.fr-more {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    padding: 0.3rem 0.375rem 0.125rem;
+    font-style: italic;
+}
+
+.fr-skel {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.625rem;
+}
+
+.fr-skel-name,
+.fr-skel-badge {
+    height: 8px;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 50%, var(--bg-tertiary) 75%);
+    background-size: 200% 100%;
+    animation: fr-shimmer 1.2s infinite;
+}
+
+.fr-skel-badge {
+    width: 20px;
+    margin-left: auto;
+    border-radius: 8px;
+}
+
+@keyframes fr-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+.fields-rail-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.fields-rail-toggle svg { flex-shrink: 0; }
+
+.fields-rail-toggle.active {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+}
+
+/* API Key Permissions - Create Form */
+.api-key-permissions-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.api-key-perm-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    transition: background 0.15s ease;
+}
+
+.api-key-perm-row:last-child {
+    border-bottom: none;
+}
+
+.api-key-perm-row:hover {
+    background: var(--bg-hover);
+}
+
+.api-key-perm-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.api-key-perm-name {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.api-key-perm-desc {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* API Key Permissions - Overview Table Badges */
+.perm-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.perm-badge {
+    font-size: 0.65rem;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+
+.perm-badge.perm-on {
+    background: rgba(74, 222, 128, 0.12);
+    color: var(--success);
+    border: 1px solid rgba(74, 222, 128, 0.25);
+}
+
+.perm-badge.perm-off {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    opacity: 0.6;
+}
+
+.perm-badge.perm-all {
+    background: rgba(156, 106, 222, 0.12);
+    color: var(--accent-primary);
+    border: 1px solid rgba(156, 106, 222, 0.3);
+}
+
+/* "All Permissions" row separator */
+.api-key-perm-all {
+    border-bottom: 2px solid var(--accent-primary);
+}
+
+.api-key-perm-all .api-key-perm-name {
+    color: var(--accent-primary);
+}
+
+.permissions-cell {
+    min-width: 140px;
+}
+
+
+/* ============================================================
+   Pivots (dashboard widget drilldowns)
+   ============================================================ */
+
+/* Pivot-enabled table rows: right-click opens the interactions menu (copy +
+   pivots). The context-menu cursor hints the affordance; left-click stays native
+   so cell text can still be selected and copied. */
+.result-row.pivotable { cursor: context-menu; }
+.result-row.pivotable:hover { background: var(--bg-hover, rgba(156, 106, 222, 0.08)); }
+
+/* Pivot chooser menu (shown when a widget has multiple pivots) */
+.pivot-menu {
+    position: fixed;
+    z-index: 4000;
+    min-width: 180px;
+    max-width: 280px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
+    overflow: hidden;
+    padding: 4px;
+}
+.pivot-menu-header {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    padding: 6px 10px 4px;
+}
+.pivot-menu-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+}
+.pivot-menu-item:hover { background: var(--accent-glow); color: var(--accent-secondary); }
+.pivot-menu-sep { height: 1px; background: var(--border-color); margin: 4px 6px; }
+
+/* Pivot config panel */
+.pivot-panel .pivot-intro {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 14px;
+    line-height: 1.45;
+}
+.pivot-card {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+    background: var(--bg-secondary);
+}
+.pivot-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.pivot-row { margin-bottom: 10px; }
+.pivot-row:last-child { margin-bottom: 0; }
+.pivot-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg-tertiary, var(--bg-primary));
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    padding: 7px 9px;
+    font-size: 0.85rem;
+    font-family: inherit;
+}
+.pivot-input:focus { outline: none; border-color: var(--accent-primary); }
+.pivot-label { font-weight: 500; }
+.pivot-query { resize: vertical; min-height: 38px; }
+.pivot-remove {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 4px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+.pivot-remove:hover { color: var(--accent-tertiary); background: var(--bg-hover, rgba(255, 255, 255, 0.05)); }
+.pivot-maps-head { display: flex; align-items: center; justify-content: space-between; }
+.pivot-maps { margin: 6px 0; }
+.pivot-maps-empty { font-size: 0.78rem; color: var(--text-muted); padding: 2px 0 6px; }
+.pivot-map-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.pivot-map-row .pivot-map-field { flex: 1 1 45%; min-width: 0; }
+.pivot-map-row .pivot-map-var { flex: 1 1 45%; min-width: 0; }
+.pivot-map-arrow { color: var(--text-muted); font-size: 0.85rem; flex-shrink: 0; }
+.pivot-toggles { display: flex; gap: 18px; flex-wrap: wrap; }
+.pivot-check { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--text-secondary); cursor: pointer; }
+.pivot-link-btn {
+    background: none;
+    border: none;
+    color: var(--accent-secondary);
+    cursor: pointer;
+    font-size: 0.78rem;
+    padding: 2px 0;
+}
+.pivot-link-btn:hover { text-decoration: underline; }
+.pivot-add { width: 100%; margin-top: 4px; }
+
+/* ===================== Provenance graph (pgraph) ===================== */
+/* Theme-aware node-type colors (graph nodes, tree icons, badges). process reuses
+   --graph-node-parent; the rest get dedicated vars so light/dark both read well. */
+:root {
+    --pg-process: #7c8699;
+    --pg-file: #8b7cc8;
+    --pg-net: #e0a458;
+    --pg-dns: #4bb3a5;
+    --pg-agg: #6e7491;
+    --pg-guide: #363b52;
+}
+[data-theme="light"] {
+    --pg-process: #5b6675;
+    --pg-file: #7c5fb8;
+    --pg-net: #b9640c;
+    --pg-dns: #2f8f82;
+    --pg-agg: #94a3b8;
+    --pg-guide: #cdd5e0;
+}
+
+/* --- Graph/Tree segmented toggle in the toolbar --- */
+.pg-view-toggle {
+    display: inline-flex;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 2px;
+    gap: 2px;
+}
+.pg-view-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+}
+.pg-view-btn:hover { color: var(--text-primary); }
+.pg-view-btn.active {
+    background: var(--accent-primary);
+    color: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,.25);
+}
+.pg-view-btn svg { width: 13px; height: 13px; }
+
+/* --- Filters (search + anomaly threshold) in the toolbar --- */
+.pg-filters { display: inline-flex; align-items: center; gap: 12px; }
+.pg-search-wrap { position: relative; display: inline-flex; align-items: center; }
+.pg-search-icon { position: absolute; left: 9px; color: var(--text-muted); pointer-events: none; }
+.pg-search {
+    width: 180px; padding: 5px 10px 5px 28px;
+    background: var(--bg-primary); border: 1px solid var(--border-color);
+    border-radius: 7px; color: var(--text-primary); font-size: 12px;
+    transition: border-color .15s, box-shadow .15s;
+}
+.pg-search:focus { outline: none; border-color: var(--accent-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 25%, transparent); }
+.pg-search::placeholder { color: var(--text-muted); }
+.pg-thresh { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--text-muted); user-select: none; }
+.pg-thresh-lbl { white-space: nowrap; }
+.pg-thresh-val { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-secondary, var(--text-primary)); min-width: 30px; }
+.pg-thresh-range {
+    -webkit-appearance: none; appearance: none; width: 96px; height: 4px;
+    border-radius: 3px; background: var(--border-color); cursor: pointer; outline: none;
+}
+.pg-thresh-range::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--accent-primary); border: 2px solid var(--bg-primary); box-shadow: 0 1px 3px rgba(0,0,0,.35);
+}
+.pg-thresh-range::-moz-range-thumb {
+    width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--bg-primary);
+    background: var(--accent-primary); box-shadow: 0 1px 3px rgba(0,0,0,.35);
+}
+
+/* --- Graph view: diagonal process map (CrowdStrike/Elastic style) --- */
+/* Dark canvas with a faint dot grid; a transformed inner canvas is panned/zoomed. */
+.pg-graph {
+    flex: 1 1 auto; min-width: 0; min-height: 400px; position: relative;
+    overflow: hidden; background: var(--bg-primary);
+    background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--text-muted) 13%, transparent) 1px, transparent 0);
+    background-size: 26px 26px;
+    cursor: grab; user-select: none; touch-action: none;
+}
+.pg-graph.pg-panning { cursor: grabbing; }
+.pg-canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
+
+/* Edges: straight anomaly-coloured segments; interactions dashed. Arrowheads via markers. */
+.pg-edge-layer { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+.pg-e { fill: none; stroke-linecap: round; opacity: .92; }
+.pg-e-high { stroke: var(--error); }
+.pg-e-med  { stroke: var(--warning); }
+.pg-e-low, .pg-e-none { stroke: color-mix(in srgb, var(--graph-node-neutral) 72%, transparent); }
+.pg-e-dash { stroke-dasharray: 4 4; opacity: .8; }
+/* Fan-out trunk (pushFan, _pgRenderGraph): the parent's own column extended down to reach a
+   multi-child fan, not a scored edge -- de-emphasized further than a plain 'none' edge so the
+   elbow stubs into each child (which DO carry real anomaly color) still read as the signal. */
+.pg-e-trunk { opacity: .55; }
+.pg-arrow { stroke: none; }
+.pg-arrow.pg-e-high { fill: var(--error); }
+.pg-arrow.pg-e-med  { fill: var(--warning); }
+.pg-arrow.pg-e-low, .pg-arrow.pg-e-none { fill: color-mix(in srgb, var(--graph-node-neutral) 72%, transparent); }
+/* Reconnection bridge (NoDoze object-mediated): distinct violet, dashed. Hidden by default --
+   a persistent line across the whole canvas for every cross-tree link was pure clutter on a
+   busy graph -- and revealed (via .pg-recon-active, see _pgSetReconHover) only while the
+   analyst is on one of its two endpoint nodes. */
+.pg-e-recon { stroke: var(--pg-recon, #a855f7); stroke-dasharray: 6 4; opacity: 0; transition: opacity .15s ease; }
+.pg-e-recon.pg-recon-active { opacity: .95; }
+
+/* Nodes: hexagon chip (coloured by anomaly severity) + name + activity badges + pill. */
+.pg-node {
+    position: absolute; display: flex; align-items: center; gap: 9px;
+    transform: translateY(-50%); cursor: pointer; max-width: 236px; transition: opacity .15s;
+}
+.pg-hex {
+    flex: 0 0 36px; width: 36px; height: 36px; color: #fff;
+    display: inline-flex; align-items: center; justify-content: center;
+    clip-path: polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0% 50%);
+    background: var(--pg-process); box-shadow: 0 2px 7px rgba(0,0,0,.4);
+    transition: transform .12s;
+}
+.pg-hex svg { width: 18px; height: 18px; }
+.pg-node:hover .pg-hex { transform: scale(1.09); }
+.pg-sev-high .pg-hex { background: var(--error); }
+.pg-sev-med  .pg-hex { background: var(--warning); color: var(--bg-primary); }
+.pg-sev-low .pg-hex, .pg-sev-none .pg-hex { background: var(--pg-process); }
+/* Aggregate (fan-out) node: keep the anomaly-driven hex colour (a hot group must still read),
+   but stack a shadow behind it to imply "many" and carry a count badge. */
+.pg-node-agg .pg-hexwrap { position: relative; }
+.pg-node-agg .pg-hex {
+    box-shadow: 3px 3px 0 -1px color-mix(in srgb, var(--pg-agg) 70%, transparent),
+                6px 6px 0 -2px color-mix(in srgb, var(--pg-agg) 45%, transparent),
+                0 2px 7px rgba(0,0,0,.4);
+}
+.pg-agg-count {
+    display: inline-flex; align-items: center;
+    font-size: 10.5px; font-weight: 800; font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    padding: 0 5px; border-radius: 6px;
+    background: color-mix(in srgb, var(--pg-agg) 22%, transparent);
+    border: 1px solid color-mix(in srgb, var(--pg-agg) 45%, transparent);
+}
+.pg-icon-agg { color: var(--pg-agg); }
+/* Aggregate row (table): slightly recessed so it reads as a grouped fold, not a real process. */
+.pg-row.pg-agg-row { cursor: pointer; }
+.pg-row.pg-agg-row .pg-name { color: var(--text-secondary); font-style: italic; }
+.pg-row.pg-agg-row:hover { background: color-mix(in srgb, var(--pg-agg) 10%, transparent); }
+
+.pg-node-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pg-node-name {
+    font-size: 12.5px; font-weight: 600; line-height: 1.15;
+    color: var(--graph-label, var(--text-primary));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px;
+    text-shadow: 0 1px 3px var(--graph-label-stroke, rgba(0,0,0,.6));
+}
+.pg-node-sub { display: flex; align-items: center; gap: 5px; }
+.pg-node-agg .pg-node-sub { font-size: 10.5px; }
+
+
+/* External (reconnected) process: violet ring + small "linked" tag so a peer tree is distinct. */
+.pg-node-external .pg-hex { box-shadow: 0 0 0 2px var(--pg-recon, #a855f7), 0 2px 7px rgba(0,0,0,.4); }
+.pg-ext-tag {
+    display: inline-block; align-self: flex-start; font-size: 9px; font-weight: 700; letter-spacing: .5px;
+    color: var(--pg-recon, #a855f7); text-transform: uppercase; line-height: 1;
+    padding: 1px 4px; border: 1px solid color-mix(in srgb, var(--pg-recon, #a855f7) 55%, transparent); border-radius: 4px;
+}
+.pg-recon-note { font-size: 11.5px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
+
+/* Ghost process: real ancestor whose process_creation event is missing (outside the window /
+   not ingested). Kept placed as the connecting parent, but rendered as a data gap: a HOLLOW
+   hex (grey outline, empty centre) vs a solid-filled normal node, so a bare-GUID node reads as
+   "unknown". The outline is a filled outer hex with an inner ::after cut to the page background
+   (a real border can't be used -- the hexagon clip-path would clip it away). */
+.pg-node-ghost .pg-hex {
+    background: color-mix(in srgb, var(--text-muted) 70%, transparent);
+    color: var(--text-muted);
+    box-shadow: none;
+    position: relative;
+}
+.pg-node-ghost .pg-hex::after {
+    content: ''; position: absolute; inset: 2.5px;
+    clip-path: polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0% 50%);
+    background: var(--bg-primary);
+}
+.pg-node-ghost .pg-hex svg { position: relative; z-index: 1; opacity: .85; }
+.pg-node-ghost .pg-node-name { color: var(--text-muted); font-weight: 500; font-family: var(--font-mono, monospace); font-size: 11px; }
+/* Table row for a ghost: muted mono name so it reads as inferred, not a captured process. */
+.pg-row.pg-proc-ghost .pg-name { color: var(--text-muted); font-family: var(--font-mono, monospace); font-size: 12px; }
+
+.pg-mb {
+    display: inline-flex; align-items: center; gap: 2px;
+    font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+    padding: 1px 5px 1px 4px; border-radius: 5px;
+    background: color-mix(in srgb, var(--bg-secondary) 82%, transparent);
+    border: 1px solid var(--border-color);
+}
+.pg-mb svg { width: 11px; height: 11px; }
+.pg-mb-file { color: var(--pg-file); }
+.pg-mb-net  { color: var(--pg-net); }
+.pg-mb-dns  { color: var(--pg-dns); }
+.pg-mb-inject { color: var(--error); }
+.pg-mb-link { color: var(--pg-recon, #a855f7); background: color-mix(in srgb, var(--pg-recon, #a855f7) 14%, transparent); border-radius: 5px; padding: 0 4px; }
+.pg-node .pg-anom { min-width: 0; margin-left: 2px; padding: 1px 6px; font-size: 10.5px; }
+
+.pg-node.pg-dim { opacity: .16; }
+.pg-node.pg-match .pg-hex { box-shadow: 0 0 0 2px var(--accent-primary), 0 2px 7px rgba(0,0,0,.4); }
+
+/* Queried start node: filled with the accent colour (distinct from the red/orange/gray
+   anomaly-severity palette) + a ring, so the eye lands on your anchor first regardless of
+   its own anomaly. Keeps the process icon -- it is still a process, just the one you chose. */
+.pg-hexwrap { position: relative; flex: 0 0 36px; width: 36px; height: 36px; }
+.pg-node.pg-focus .pg-hex {
+    background: var(--accent-primary); color: #fff;
+    box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 4px var(--accent-primary), 0 2px 8px rgba(0,0,0,.45);
+}
+.pg-node.pg-focus .pg-node-name { color: var(--accent-primary); font-weight: 700; }
+
+/* +/- fold toggle, tucked on the hex corner (CrowdStrike-style). */
+.pg-toggle {
+    position: absolute; bottom: -5px; right: -5px; width: 15px; height: 15px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border-color); border-radius: 50%;
+    background: var(--bg-secondary); color: var(--text-secondary);
+    font-size: 12px; font-weight: 700; line-height: 1; cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,.4); transition: background .12s, color .12s, transform .12s;
+}
+.pg-toggle:hover { background: var(--accent-primary); color: #fff; transform: scale(1.12); }
+.pg-toggle-plus { border-color: color-mix(in srgb, var(--accent-primary) 60%, var(--border-color)); color: var(--accent-primary); }
+.pg-node.pg-collapsed .pg-hex { opacity: .82; }
+
+.pg-minimap { width: 200px; height: 130px; bottom: 12px; right: 12px; }
+
+/* Edge anomaly pill at the segment midpoint. High/med are colored pills; low scores recede. */
+.pg-canvas .pg-elabel {
+    position: absolute; transform: translate(-50%, -50%); z-index: 2; pointer-events: none;
+    margin: 0; min-width: 0; padding: 1px 6px; font-size: 10px; white-space: nowrap;
+}
+.pg-canvas .pg-elabel.pg-anom-low {
+    background: transparent; color: var(--text-muted); opacity: .72; padding: 0 3px; font-weight: 600;
+}
+
+/* Clickable activity chip -> opens the slide-out drawer. */
+.pg-mb-click { cursor: pointer; }
+.pg-mb-click:hover { filter: brightness(1.18); box-shadow: inset 0 0 0 1px currentColor; }
+
+/* Slide-out chip drawer, docked on the right of the graph. */
+.pg-drawer {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 340px; max-width: 82%;
+    background: var(--bg-secondary); border-left: 1px solid var(--border-color);
+    box-shadow: -8px 0 22px rgba(0,0,0,.38); z-index: 8;
+    display: flex; flex-direction: column;
+    transform: translateX(100%); transition: transform .2s cubic-bezier(.4,0,.2,1);
+}
+.pg-drawer.open { transform: translateX(0); }
+.pg-drawer-head {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    padding: 12px 14px 9px; border-bottom: 1px solid var(--border-color);
+}
+.pg-drawer-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pg-drawer-heading { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+.pg-drawer-proc { font-size: 11.5px; color: var(--accent-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-drawer-close { background: none; border: none; color: var(--text-muted); font-size: 20px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.pg-drawer-close:hover { color: var(--text-primary); }
+.pg-drawer-count { padding: 7px 14px 4px; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.pg-drawer-body { flex: 1 1 auto; overflow-y: auto; padding: 2px 8px 10px; }
+.pg-drawer-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
+.pg-drawer-row[data-log] { cursor: pointer; }
+.pg-drawer-row[data-log]:hover { background: var(--bg-hover, rgba(255,255,255,.05)); }
+.pg-drawer-val {
+    flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: var(--font-mono, ui-monospace, monospace);
+}
+.pg-drawer-row[data-log]:hover .pg-drawer-val { color: var(--text-primary); text-decoration: underline; text-underline-offset: 2px; }
+.pg-drawer-empty { padding: 22px; text-align: center; color: var(--text-muted); font-size: 12px; }
+
+/* Two-line drawer row (reconnections): the actual value on top at full width, a muted
+   descriptor ("shared IP / dropped & ran · peer" + host) below, so the value never competes. */
+.pg-drawer-row2 { flex-direction: column; align-items: stretch; gap: 3px; }
+.pg-drawer-vline { display: flex; align-items: flex-start; gap: 8px; }
+.pg-drawer-val-full {
+    flex: 1 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+    color: var(--text-primary);
+}
+.pg-drawer-subline { display: flex; align-items: center; gap: 6px; padding-left: 1px; }
+.pg-drawer-subtag {
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--pg-recon, #a855f7);
+}
+/* Reconnection drawer: peer-centric cards (EDR "related process" pattern). One card per linked
+   process; the whole card navigates to that process, the shared IOCs list the evidence. */
+.pg-recon-card {
+    margin: 0 0 8px; padding: 9px 10px 8px; border-radius: 9px;
+    background: color-mix(in srgb, var(--pg-recon, #a855f7) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--pg-recon, #a855f7) 22%, transparent);
+    cursor: pointer; transition: background .12s, border-color .12s, transform .07s;
+}
+.pg-recon-card:hover { background: color-mix(in srgb, var(--pg-recon, #a855f7) 14%, transparent); border-color: color-mix(in srgb, var(--pg-recon, #a855f7) 46%, transparent); }
+.pg-recon-card:active { transform: scale(.992); }
+.pg-recon-card:focus-visible { outline: 2px solid var(--pg-recon, #a855f7); outline-offset: 1px; }
+.pg-recon-card-top { display: flex; align-items: center; gap: 7px; }
+.pg-recon-hex { flex: 0 0 auto; width: 18px; height: 18px; color: var(--pg-recon, #a855f7); display: inline-flex; }
+.pg-recon-hex svg { width: 18px; height: 18px; }
+.pg-recon-peer { font-size: 13px; font-weight: 700; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pg-recon-host {
+    flex: 0 0 auto; font-size: 10px; font-weight: 700; letter-spacing: .3px;
+    color: var(--pg-recon, #a855f7); background: color-mix(in srgb, var(--pg-recon, #a855f7) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--pg-recon, #a855f7) 40%, transparent); border-radius: 4px; padding: 1px 6px;
+}
+.pg-recon-go { flex: 0 0 auto; margin-left: auto; width: 16px; height: 16px; color: var(--text-muted); transition: transform .12s, color .12s; }
+.pg-recon-card:hover .pg-recon-go { color: var(--pg-recon, #a855f7); transform: translateX(2px); }
+.pg-recon-ioclist { margin-top: 7px; display: flex; flex-direction: column; gap: 2px; }
+.pg-recon-ioc { display: flex; align-items: center; gap: 7px; padding: 3px 5px; border-radius: 6px; cursor: pointer; }
+.pg-recon-ioc:hover { background: color-mix(in srgb, var(--text-primary) 9%, transparent); }
+.pg-recon-ioc-ico { flex: 0 0 auto; width: 14px; height: 14px; display: inline-flex; }
+.pg-recon-ioc-ico svg { width: 14px; height: 14px; }
+.pg-ico-net { color: var(--pg-net); }
+.pg-ico-dns { color: var(--pg-dns); }
+.pg-ico-file { color: var(--pg-file); }
+.pg-recon-ioc-val { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono, monospace); font-size: 12px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-recon-ioc-kind { flex: 0 0 auto; font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); }
+/* Graph-wide reconnection overview (_pgOpenReconOverview): one card per cross-tree PAIR, not
+   scoped to a node -- each end is independently clickable/focusable since there's no "you" side. */
+.pg-recon-pair {
+    margin: 0 0 8px; padding: 9px 10px 8px; border-radius: 9px;
+    background: color-mix(in srgb, var(--pg-recon, #a855f7) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--pg-recon, #a855f7) 22%, transparent);
+}
+.pg-recon-pair-top { display: flex; align-items: center; gap: 7px; }
+.pg-recon-pair-end {
+    font-size: 13px; font-weight: 700; color: var(--text-primary); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0; cursor: pointer; border-radius: 5px; padding: 1px 3px; margin: -1px -3px;
+    transition: background .12s, color .12s;
+}
+.pg-recon-pair-end:hover, .pg-recon-pair-end:focus-visible { background: color-mix(in srgb, var(--pg-recon, #a855f7) 16%, transparent); color: var(--pg-recon, #a855f7); outline: none; }
+.pg-recon-pair-arrow { flex: 0 0 auto; width: 14px; height: 14px; color: var(--text-muted); }
+.pg-recon-pair .pg-recon-ioclist { margin-top: 7px; }
+/* Toolbar stat chip that opens the overview -- affordance only appears once it's actionable
+   (reconN > 0, see _pgBuildToolbar), so it never invites a click that does nothing. */
+.pg-stat-click { cursor: pointer; border-radius: 5px; padding: 1px 5px; margin: -1px -5px; transition: background .12s; }
+.pg-stat-click:hover, .pg-stat-click:focus-visible { background: color-mix(in srgb, var(--pg-recon, #a855f7) 14%, transparent); outline: none; }
+/* Pulse a node when focused from a reconnection card. drop-shadow (not box-shadow) follows clip-path. */
+@keyframes pgPulse { 0%, 100% { filter: none; } 45% { filter: drop-shadow(0 0 7px var(--pg-recon, #a855f7)) drop-shadow(0 0 3px var(--pg-recon, #a855f7)); } }
+.pg-node.pg-pulse .pg-hex { animation: pgPulse 1.3s ease-in-out 2; }
+
+/* Right-click context menu on a process node (Analyze from here / details / copy guid). */
+.pg-ctxmenu {
+    position: absolute; z-index: 20; min-width: 176px; padding: 4px;
+    background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4); animation: pgCtxIn .1s ease;
+}
+@keyframes pgCtxIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+.pg-ctx-title {
+    padding: 4px 8px 6px; font-size: 11px; font-weight: 700; color: var(--accent-primary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid var(--border-color); margin-bottom: 3px;
+}
+.pg-ctx-item {
+    display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 8px;
+    background: none; border: none; border-radius: 5px; cursor: pointer; text-align: left;
+    font-size: 12.5px; color: var(--text-secondary);
+}
+.pg-ctx-item:hover { background: color-mix(in srgb, var(--accent-primary) 16%, transparent); color: var(--text-primary); }
+.pg-ctx-item svg { flex: 0 0 auto; width: 15px; height: 15px; color: var(--text-muted); }
+.pg-ctx-item:hover svg { color: var(--accent-primary); }
+.pg-ctx-item[data-act="analyze"] { color: var(--accent-primary); font-weight: 600; }
+.pg-ctx-item[data-act="analyze"] svg { color: var(--accent-primary); }
+
+/* Node-detail drawer: action buttons + key/value fields. */
+.pg-drawer-actions { display: flex; gap: 8px; padding: 10px 14px 4px; }
+.pg-drawer-btn {
+    flex: 1 1 auto; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--border-color);
+    background: var(--bg-primary); color: var(--text-secondary); font-size: 12px; font-weight: 600; cursor: pointer;
+    transition: color .12s, border-color .12s, filter .12s;
+}
+.pg-drawer-btn:hover { color: var(--text-primary); border-color: var(--accent-primary); }
+.pg-drawer-btn-primary { background: var(--accent-primary); color: #fff; border-color: var(--accent-primary); }
+.pg-drawer-btn-primary:hover { filter: brightness(1.08); color: #fff; }
+.pg-kv-group { padding: 2px 6px 8px; border-bottom: 1px solid var(--border-color); margin-bottom: 6px; }
+.pg-drawer-kv { display: flex; gap: 10px; padding: 4px 8px; font-size: 11.5px; align-items: baseline; }
+.pg-drawer-fields .pg-drawer-kv:hover { background: var(--bg-hover, rgba(255,255,255,.04)); border-radius: 4px; }
+.pg-kv-k { flex: 0 0 36%; min-width: 0; color: var(--text-muted); font-family: var(--font-mono, ui-monospace, monospace); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-kv-v { flex: 1 1 auto; min-width: 0; color: var(--text-secondary); word-break: break-word; font-family: var(--font-mono, ui-monospace, monospace); }
+/* Copyable process fields: the whole row copies its value on click (curated, process-centric set;
+   the full raw field list lives behind the Full log link). */
+.pg-kv { display: flex; gap: 10px; padding: 5px 8px; font-size: 11.5px; align-items: baseline; border-radius: 5px; cursor: pointer; }
+.pg-kv:hover { background: var(--bg-hover, rgba(255,255,255,.05)); }
+.pg-kv .pg-kv-copy { flex: 0 0 auto; align-self: center; color: var(--text-muted); opacity: 0; transition: opacity .12s; display: inline-flex; }
+.pg-kv .pg-kv-copy svg { width: 13px; height: 13px; }
+.pg-kv .pg-ic-check { display: none; }
+.pg-kv:hover .pg-kv-copy { opacity: .7; }
+/* Copy feedback: swap the copy glyph for a brief green checkmark -- no toast (copying is frequent). */
+.pg-kv-copied .pg-kv-copy { opacity: 1; color: var(--success, #2ec16a); }
+.pg-kv-copied .pg-ic-copy { display: none; }
+.pg-kv-copied .pg-ic-check { display: inline; }
+/* Subtle process-guid in the header; clicking opens the full raw log (replaces the Full log button). */
+.pg-drawer-id { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; font-family: var(--font-mono, monospace); font-size: 10px; color: var(--text-muted); cursor: pointer; }
+.pg-drawer-id-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pg-drawer-id svg { flex: 0 0 auto; width: 10px; height: 10px; opacity: .85; }
+.pg-drawer-id:hover { color: var(--accent-primary); }
+.pg-drawer-id-static { cursor: default; }
+.pg-drawer-id-static:hover { color: var(--text-muted); }
+/* Analyze from here: compact, not a loud full-width bar. Anomaly sits at the right of the row. */
+.pg-drawer-btn-sm { padding: 5px 12px; font-size: 12px; }
+.pg-drawer-anom { margin-left: auto; align-self: center; font-size: 11px; color: var(--text-muted); }
+
+/* --- Tree view --- */
+.pg-tree { flex: 1 1 auto; min-width: 0; display: block; background: var(--bg-primary); }
+.pg-tree-scroll {
+    min-height: 360px;
+    max-height: calc(100vh - 300px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 8px 0 14px;
+    font-size: 13px;
+}
+.pg-hl { background: color-mix(in srgb, var(--warning) 55%, transparent); color: inherit; border-radius: 2px; padding: 0 1px; }
+.pg-empty { padding: 40px; text-align: center; color: var(--text-muted); }
+
+.pg-row {
+    display: flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 3px 14px 3px 0;
+    gap: 8px;
+    cursor: default;
+    border-radius: 6px;
+    position: relative;
+}
+.pg-row[data-log] { cursor: pointer; }
+.pg-row[data-log]:hover { background: var(--bg-hover, rgba(255,255,255,.04)); }
+.pg-row.pg-selected,
+.pg-row.pg-kbsel {
+    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent-primary);
+}
+/* Anomaly-forward accents: a coloured left rail draws the eye to risky processes. */
+.pg-row.pg-row-crit { box-shadow: inset 3px 0 0 var(--error); }
+.pg-row.pg-row-warn { box-shadow: inset 3px 0 0 var(--warning); }
+.pg-row.pg-row-crit.pg-kbsel, .pg-row.pg-row-warn.pg-kbsel { background: color-mix(in srgb, var(--accent-primary) 14%, transparent); }
+/* Queried start node. */
+.pg-row.pg-focus-row .pg-name { color: var(--accent-primary); }
+.pg-row.pg-focus-row .pg-icon-proc { color: var(--accent-primary); }
+.pg-focus-row .pg-name::after {
+    content: 'start'; margin-left: 7px; font-size: 9px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--accent-primary);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 50%, transparent);
+    border-radius: 4px; padding: 0 4px; vertical-align: middle;
+}
+
+/* elbow guide connectors */
+.pg-g { position: relative; width: 22px; flex: 0 0 22px; align-self: stretch; }
+.pg-g-v::before,
+.pg-g-elbow::before {
+    content: ''; position: absolute; left: 11px; top: 0; bottom: 0; width: 1px;
+    background: var(--pg-guide);
+}
+.pg-g-elbow.pg-g-last::before { bottom: auto; height: 50%; }
+.pg-g-elbow::after {
+    content: ''; position: absolute; left: 11px; top: 50%; width: 11px; height: 1px;
+    background: var(--pg-guide);
+}
+
+/* chevron */
+.pg-chev {
+    flex: 0 0 18px; width: 18px; height: 18px; padding: 0; border: none;
+    background: transparent; color: var(--text-muted); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    transform: rotate(90deg); transition: transform .15s, color .15s;
+}
+.pg-chev svg { width: 14px; height: 14px; }
+.pg-chev.pg-collapsed { transform: rotate(0deg); }
+.pg-chev:hover { color: var(--text-primary); }
+.pg-chev-none { cursor: default; }
+
+/* type icons */
+.pg-icon { flex: 0 0 17px; width: 17px; height: 17px; display: inline-flex; align-items: center; justify-content: center; }
+.pg-icon svg { width: 15px; height: 15px; }
+.pg-icon-proc { color: var(--pg-process); }
+.pg-icon-file { color: var(--pg-file); }
+.pg-icon-net  { color: var(--pg-net); }
+.pg-icon-dns  { color: var(--pg-dns); }
+.pg-icon-inject { color: var(--error); }
+
+/* names */
+.pg-name-wrap { display: flex; flex-direction: column; justify-content: center; min-width: 0; flex: 1 1 auto; overflow: hidden; }
+.pg-name {
+    font-weight: 500; color: var(--text-primary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 460px;
+}
+.pg-proc .pg-name-wrap > .pg-name { color: var(--accent-primary); }
+.pg-row[data-log]:hover .pg-name { text-decoration: underline; text-underline-offset: 2px; }
+.pg-leaf .pg-name { color: var(--text-secondary, var(--text-primary)); font-weight: 400; }
+
+/* command-line + user subline (triage context) */
+.pg-subline {
+    display: flex; align-items: baseline; gap: 7px; min-width: 0;
+    font-size: 11px; line-height: 1.35; margin-top: 1px;
+}
+.pg-sub-user { flex: 0 0 auto; color: var(--pg-net); font-weight: 600; }
+/* per-process host in the subline (only shown when the tree spans >1 host). */
+.pg-sub-host {
+    flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
+    color: var(--text-secondary); font-weight: 600; font-size: 10.5px;
+}
+.pg-sub-host::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: currentColor; opacity: .6; }
+.pg-sub-host-x { color: var(--pg-recon, #a855f7); } /* on a different host than the start node */
+/* Command line is the hero of the subline: readable (secondary, not muted), monospace, takes the
+   space and ellipsizes; user/host trail as muted context. Full value on hover (title). */
+.pg-sub-cmd {
+    flex: 1 1 auto; min-width: 0; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px;
+}
+.pg-row[data-log]:hover .pg-sub-cmd { color: var(--text-primary); }
+/* hidden-descendant count on a collapsed node */
+.pg-desc {
+    font-size: 10px; font-weight: 700; color: var(--text-muted);
+    background: color-mix(in srgb, var(--text-muted) 16%, transparent);
+    border-radius: 4px; padding: 0 5px; vertical-align: middle;
+}
+
+/* Sticky column header over the right-hand metadata (activity chips / Δt / anomaly). Fixed-width
+   right columns keep the header labels aligned over their rows. */
+.pg-tree-head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 14px 6px 0;
+    font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--text-muted); border-bottom: 1px solid var(--border-color);
+    position: sticky; top: 0; z-index: 3; background: var(--bg-primary);
+}
+.pg-th-name { flex: 1 1 auto; padding-left: 44px; }
+.pg-th-act { flex: 0 0 auto; margin-left: auto; text-align: right; }
+.pg-th-dt { flex: 0 0 54px; margin-left: 18px; text-align: right; }
+.pg-th-score { flex: 0 0 40px; margin-left: 12px; text-align: right; }
+
+/* time column + inter-node delta. Fixed width + a healthy left margin (mirrored by the Time header)
+   so the activity chips can't bleed into it and the header labels line up over their columns. */
+.pg-time-cell { flex: 0 0 54px; display: inline-flex; align-items: baseline; gap: 7px; margin-left: 18px; justify-content: flex-end; }
+/* Anomaly column: consistent left margin (mirrored by the Anomaly header) for a clean right rail. */
+.pg-row > .pg-anom, .pg-row > .pg-anom-spacer { margin-left: 12px; }
+.pg-delta {
+    font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums;
+    color: var(--pg-dns); background: color-mix(in srgb, var(--pg-dns) 14%, transparent);
+    border-radius: 4px; padding: 0 5px;
+}
+.pg-time { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 62px; text-align: right; }
+.pg-muted { color: var(--text-muted); font-style: italic; font-weight: 400; }
+.pg-tag {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--text-muted); border: 1px solid var(--border-color);
+    border-radius: 4px; padding: 1px 5px;
+}
+/* Reconnection: link-count badge, drill rows, and click-to-highlight the linked row. */
+.pg-tag-recon { color: var(--pg-recon, #a855f7); border-color: color-mix(in srgb, var(--pg-recon, #a855f7) 55%, transparent); }
+.pg-badge-link { color: var(--pg-recon, #a855f7); background: color-mix(in srgb, var(--pg-recon, #a855f7) 14%, transparent); border-color: color-mix(in srgb, var(--pg-recon, #a855f7) 40%, transparent); }
+.pg-badge-link.pg-on { background: color-mix(in srgb, var(--pg-recon, #a855f7) 26%, transparent); }
+.pg-icon-link { color: var(--pg-recon, #a855f7); }
+.pg-link-item { cursor: pointer; }
+.pg-link-peer { color: var(--pg-recon, #a855f7); font-weight: 600; font-size: 12px; margin-left: 2px; }
+/* Decluttered reconnection row: subtle "-> peer" (the IOC value is the hero; type icon = the kind). */
+.pg-link-to { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--text-muted); min-width: 0; overflow: hidden; }
+.pg-link-to svg { flex: 0 0 auto; width: 12px; height: 12px; opacity: .75; }
+.pg-row.pg-link-item:hover .pg-link-to { color: var(--text-secondary); }
+/* Cross-host notation: a small muted "computer" chip on reconnections that hop to another host. */
+.pg-host-chip {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 10px; font-weight: 600; color: var(--text-secondary);
+    padding: 1px 6px; border-radius: 999px;
+    border: 1px solid var(--border-color); background: var(--bg-secondary, rgba(0,0,0,.12));
+    white-space: nowrap;
+}
+.pg-host-chip::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: var(--pg-recon, #a855f7); flex: 0 0 6px; }
+/* Graph: muted host under a reconnected peer node's name. */
+.pg-node-host { font-size: 9.5px; font-weight: 600; color: var(--text-secondary); letter-spacing: .2px; line-height: 1; }
+/* Subtle highlight of the linked counterpart row when a process is selected. */
+.pg-row.pg-link-hl {
+    background: color-mix(in srgb, var(--pg-recon, #a855f7) 13%, transparent);
+    box-shadow: inset 2px 0 0 var(--pg-recon, #a855f7);
+    transition: background .2s;
+}
+
+/* activity-count badges */
+.pg-badges { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
+.pg-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 7px 2px 6px; border-radius: 6px; font-size: 11.5px; font-weight: 600;
+    border: 1px solid transparent; user-select: none;
+}
+.pg-badge svg { width: 12px; height: 12px; }
+.pg-badge b { font-weight: 700; }
+.pg-badge-proc { color: var(--pg-process); background: color-mix(in srgb, var(--pg-process) 16%, transparent); }
+.pg-badge-file { color: var(--pg-file); background: color-mix(in srgb, var(--pg-file) 16%, transparent); }
+.pg-badge-net  { color: var(--pg-net);  background: color-mix(in srgb, var(--pg-net) 16%, transparent); }
+.pg-badge-dns  { color: var(--pg-dns);  background: color-mix(in srgb, var(--pg-dns) 16%, transparent); }
+.pg-badge[data-drill] { cursor: pointer; }
+.pg-badge[data-drill]:hover { filter: brightness(1.15); }
+.pg-badge.pg-on { box-shadow: inset 0 0 0 1px currentColor; }
+.pg-badge.pg-zero { color: var(--text-muted); background: transparent; border-color: var(--border-color); opacity: .55; }
+
+/* anomaly severity pill */
+.pg-anom {
+    flex: 0 0 auto; min-width: 40px; text-align: center;
+    font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+    padding: 2px 8px; border-radius: 999px; margin-left: 8px;
+}
+.pg-anom-high { color: #fff; background: var(--error); }
+.pg-anom-med  { color: var(--bg-primary); background: var(--warning); }
+.pg-anom-low  { color: var(--text-muted); background: transparent; font-weight: 600; }
+.pg-anom-spacer { flex: 0 0 auto; min-width: 40px; margin-left: 8px; }
+

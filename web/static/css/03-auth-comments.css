@@ -1,0 +1,885 @@
+/* Split from style.css. Part 3 of 12.
+   These files are a byte-exact partition of the original stylesheet and are
+   ORDER-DEPENDENT: several selectors are declared in more than one part and
+   rely on later parts overriding earlier ones. Do not reorder the <link>
+   tags and do not load a subset. */
+/* ============================
+   Authentication & User UI
+   ============================ */
+
+/* Login Modal */
+.modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+    z-index: 10000;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal.show {
+    display: flex;
+}
+
+.modal-content {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 2rem;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: var(--shadow-lg);
+}
+
+.modal-header h2 {
+    font-size: 1.25rem;
+    margin-bottom: 1.5rem;
+    color: var(--text-primary);
+}
+
+/* Login modal specific styles */
+#loginModal .modal-header {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    border-bottom: none;
+    padding: 2rem 1.25rem 1rem;
+}
+
+#loginModal .modal-header h2 {
+    font-size: 2rem;
+    font-weight: 600;
+    color: var(--accent-primary);
+    margin-bottom: 1rem;
+}
+
+.login-logo {
+    width: 80px;
+    height: 80px;
+    margin-bottom: 1.5rem;
+    filter: drop-shadow(0 0 10px var(--accent-glow));
+}
+
+/* New large login logo styles */
+.login-logo-large {
+    width: 200px;
+    height: 200px;
+    margin-bottom: 1rem;
+    filter: drop-shadow(0 0 25px var(--accent-glow));
+    transition: filter 0.3s ease;
+}
+
+.login-logo-large:hover {
+    filter: drop-shadow(0 0 30px var(--accent-glow));
+}
+
+.login-title {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.1rem;
+    font-weight: 400;
+    color: var(--text-muted);
+    margin-bottom: 0.2rem;
+    opacity: 0.5;
+    letter-spacing: 2px;
+    text-transform: none;
+}
+
+.form-group {
+    margin-bottom: 1rem;
+}
+
+.form-group label {
+    display: block;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+}
+
+.form-group input,
+.form-group textarea {
+    width: 100%;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0.625rem;
+    border-radius: 4px;
+    font-family: var(--font-main);
+    font-size: 0.875rem;
+    box-sizing: border-box;
+}
+
+.form-group textarea {
+    resize: none;
+    min-height: 4rem;
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.error-message {
+    color: var(--error);
+    font-size: 0.8125rem;
+    margin-top: 0.5rem;
+    min-height: 1.25rem;
+}
+
+.form-actions {
+    margin-top: 1.5rem;
+}
+
+/* User Display in Header */
+.user-display {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.username {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.btn-logout {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    padding: 0.375rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.8125rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.btn-logout:hover {
+    border-color: var(--error);
+    color: var(--error);
+}
+
+/* Gravatar */
+.gravatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: white;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    flex-shrink: 0;
+}
+
+.comments-panel .gravatar {
+    width: 24px;
+    height: 24px;
+    font-size: 0.7rem;
+}
+
+/* Auth Required Elements (hidden by default) */
+.auth-required {
+    display: none;
+}
+
+/* ============================
+   Navigation Tabs (inline header)
+   ============================ */
+
+.header-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.125rem;
+    flex-shrink: 0;
+}
+
+.nav-tab {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    padding: 0.5rem 0.625rem;
+    cursor: pointer;
+    font-size: 0.8125rem;
+    font-family: var(--font-main);
+    font-weight: 500;
+    transition: var(--transition);
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    border-radius: 4px;
+    white-space: nowrap;
+    letter-spacing: 0.01em;
+}
+
+.nav-tab:hover {
+    color: var(--text-primary);
+    background: var(--overlay-subtle);
+}
+
+.nav-tab.active {
+    color: var(--accent-secondary);
+    background: var(--accent-glow);
+}
+
+.badge {
+    background: var(--accent-tertiary);
+    color: white;
+    padding: 0.0625rem 0.375rem;
+    border-radius: 10px;
+    font-size: 0.625rem;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+/* ============================
+   Comments Section
+   ============================ */
+
+.comments-section {
+    margin-top: 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.comments-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.comments-header h4 {
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.comment-count {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+/* Comments List */
+.comments-list {
+    margin-bottom: 1rem;
+}
+
+.no-comments {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    padding: 1.5rem;
+}
+
+.comment-item {
+    background: var(--bg-tertiary);
+    padding: 0.5rem 0.625rem;
+    border-radius: 4px;
+    margin-bottom: 0.5rem;
+    border-left: 2px solid var(--accent-primary);
+}
+
+.comment-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin-bottom: 0.375rem;
+}
+
+.comment-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    flex: 1;
+}
+
+.comment-author {
+    font-weight: 600;
+    color: var(--accent-primary);
+}
+
+.comment-date {
+    color: var(--text-muted);
+}
+
+.comment-edited {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.comment-body {
+    margin-left: 2rem;
+}
+
+.comment-tags-display {
+    margin-bottom: 0.5rem;
+    display: flex;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+}
+
+.tag {
+    padding: 0.125rem 0.5rem;
+    border-radius: 3px;
+    font-size: 0.625rem;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+}
+
+.tag-important {
+    background: var(--accent-tertiary);
+    color: white;
+}
+
+.tag-todo {
+    background: #fbbf24;
+    color: #1a1a2e;
+}
+
+.tag-resolved {
+    background: #4ade80;
+    color: white;
+}
+
+.comment-text {
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    line-height: 1.4;
+    word-break: break-word;
+}
+
+.comment-text:not(.comment-markdown) {
+    white-space: pre-wrap;
+}
+
+.comment-markdown p {
+    margin: 0 0 0.25rem 0;
+}
+.comment-markdown p:last-child {
+    margin-bottom: 0;
+}
+.comment-markdown code {
+    background: var(--bg-tertiary);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+.comment-markdown pre {
+    background: var(--bg-tertiary);
+    padding: 0.5rem;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 0.25rem 0;
+}
+.comment-markdown pre code {
+    background: none;
+    padding: 0;
+}
+.comment-markdown ul, .comment-markdown ol {
+    margin: 0.25rem 0;
+    padding-left: 1.25rem;
+}
+.comment-markdown li {
+    margin-bottom: 0.1rem;
+}
+.comment-markdown blockquote {
+    border-left: 2px solid var(--border-color);
+    margin: 0.25rem 0;
+    padding-left: 0.5rem;
+    color: var(--text-secondary);
+}
+.comment-markdown a {
+    color: var(--accent-primary);
+    text-decoration: none;
+}
+.comment-markdown a:hover {
+    text-decoration: underline;
+}
+
+.comment-actions {
+    margin-top: 0.375rem;
+    margin-left: 2rem;
+    display: flex;
+    gap: 0.5rem;
+}
+
+.btn-edit-comment,
+.btn-delete-comment {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    padding: 0.25rem 0.5rem;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.btn-edit-comment:hover {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+}
+
+.btn-delete-comment:hover {
+    border-color: var(--error);
+    color: var(--error);
+}
+
+/* Comment Input Area */
+.comment-input-area {
+    margin-top: 1rem;
+}
+
+.comment-textarea {
+    width: 100%;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0.5rem;
+    border-radius: 4px;
+    font-family: var(--font-main);
+    font-size: 0.8rem;
+    resize: none;
+    margin-bottom: 0.375rem;
+    line-height: 1.4;
+}
+
+.comment-textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.comment-tags,
+.comment-tags-edit {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.75rem;
+}
+
+.comment-tags label,
+.comment-tags-edit label {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    cursor: pointer;
+    color: var(--text-secondary);
+}
+
+.comment-tags input[type="checkbox"],
+.comment-tags-edit input[type="checkbox"] {
+    cursor: pointer;
+}
+
+/* Comment Edit Mode */
+.comment-edit-input {
+    width: 100%;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0.5rem;
+    border-radius: 4px;
+    font-family: var(--font-main);
+    font-size: 0.8125rem;
+    resize: none;
+    margin-bottom: 0.5rem;
+    min-height: 80px;
+}
+
+.comment-edit-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+.comment-edit-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.btn-save-edit,
+.btn-cancel-edit {
+    padding: 0.375rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.btn-save-edit {
+    background: var(--accent-primary);
+    border: none;
+    color: white;
+}
+
+.btn-save-edit:hover {
+    background: var(--accent-secondary);
+}
+
+.btn-cancel-edit {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+
+.btn-cancel-edit:hover {
+    border-color: var(--text-primary);
+    color: var(--text-primary);
+}
+
+
+/* ============================
+   Commented Logs View
+   ============================ */
+
+#commentedView {
+    display: none;
+}
+
+.commented-header {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    margin-bottom: 1rem;
+}
+
+.commented-controls {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+#commentedResults {
+    margin-top: 1rem;
+}
+
+.comment-author-row {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+}
+
+.gravatar-sm {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: #fff;
+    flex-shrink: 0;
+}
+
+.comment-text-cell {
+    max-width: 300px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+}
+
+.comment-log-cell code {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.comment-date-cell {
+    white-space: nowrap;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.comment-tags-cell {
+    white-space: nowrap;
+}
+
+.commented-selected-count {
+    font-size: 0.8rem;
+    color: var(--accent-primary);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.alerts-table th input[type="checkbox"],
+.alerts-table td input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 15px;
+    height: 15px;
+    border: 1.5px solid var(--border-color);
+    border-radius: 3px;
+    background: var(--bg-primary);
+    cursor: pointer;
+    position: relative;
+    flex-shrink: 0;
+    vertical-align: middle;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.alerts-table th input[type="checkbox"]:hover,
+.alerts-table td input[type="checkbox"]:hover {
+    border-color: var(--accent-primary);
+}
+
+.alerts-table th input[type="checkbox"]:checked,
+.alerts-table td input[type="checkbox"]:checked {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+.alerts-table th input[type="checkbox"]:checked::after,
+.alerts-table td input[type="checkbox"]:checked::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 4px;
+    height: 8px;
+    border: solid #fff;
+    border-width: 0 1.5px 1.5px 0;
+    transform: rotate(45deg);
+}
+
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 4rem 2rem;
+    color: var(--text-muted);
+}
+
+.empty-icon {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+    opacity: 0.5;
+}
+
+.empty-message {
+    font-size: 0.875rem;
+    text-align: center;
+}
+
+/* ============================
+   Toast Notifications
+   ============================ */
+
+.toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 10001;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    pointer-events: none;
+}
+
+.toast {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1rem 1.5rem 1rem 1rem;
+    min-width: 300px;
+    max-width: 500px;
+    box-shadow: var(--shadow-lg);
+    pointer-events: auto;
+    transform: translateX(100%);
+    opacity: 0;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+}
+
+.toast.show {
+    transform: translateX(0);
+    opacity: 1;
+}
+
+.toast.hide {
+    transform: translateX(100%);
+    opacity: 0;
+}
+
+.toast-icon {
+    font-size: 1.25rem;
+    flex-shrink: 0;
+    margin-top: 0.125rem;
+}
+
+.toast-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.toast-title {
+    font-weight: 600;
+    font-size: 0.875rem;
+    margin-bottom: 0.25rem;
+    word-wrap: break-word;
+}
+
+.toast-message {
+    font-size: 0.8125rem;
+    color: var(--text-primary); /* Ensure good contrast */
+    opacity: 0.9;
+    word-wrap: break-word;
+    line-height: 1.4;
+}
+
+.toast-close {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.25rem;
+    cursor: pointer;
+    padding: 0;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    transition: var(--transition);
+    line-height: 1;
+}
+
+.toast-close:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+/* Toast Types */
+.toast-success {
+    border-left: 4px solid var(--success);
+    background: rgba(74, 222, 128, 0.1) !important;
+}
+
+.toast-success .toast-icon {
+    color: var(--success);
+}
+
+.toast-success .toast-title {
+    color: var(--success);
+    font-weight: 600; /* Ensure good visibility */
+}
+
+.toast-error {
+    border-left: 4px solid var(--error);
+}
+
+.toast-error .toast-icon {
+    color: var(--error);
+}
+
+.toast-error .toast-title {
+    color: var(--error);
+    font-weight: 600; /* Ensure good visibility */
+}
+
+.toast-warning {
+    border-left: 4px solid var(--warning);
+}
+
+.toast-warning .toast-icon {
+    color: var(--warning);
+}
+
+.toast-warning .toast-title {
+    color: var(--warning);
+    font-weight: 600; /* Ensure good visibility */
+}
+
+.toast-info {
+    border-left: 4px solid var(--info);
+}
+
+.toast-info .toast-icon {
+    color: var(--info);
+}
+
+.toast-info .toast-title {
+    color: var(--info);
+    font-weight: 600; /* Ensure good visibility */
+}
+
+/* Progress Bar */
+.toast-progress {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 3px;
+    background: currentColor;
+    opacity: 0.3;
+    transition: width linear;
+    border-radius: 0 0 8px 8px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .toast-container {
+        top: 10px;
+        right: 10px;
+        left: 10px;
+    }
+
+    .toast {
+        min-width: 0;
+        max-width: none;
+    }
+}
+
+/* ============================
+   Utility Classes
+   ============================ */
+
+.btn-primary {
+    background: var(--accent-primary);
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8125rem;
+    font-family: var(--font-main);
+    font-weight: 500;
+    transition: var(--transition);
+}
+
+.btn-primary:hover {
+    background: var(--accent-secondary);
+    box-shadow: var(--shadow-glow);
+}
+
+.btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.no-data {
+    color: var(--text-muted);
+    font-style: italic;
+}
+

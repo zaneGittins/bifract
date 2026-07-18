@@ -11,7 +11,20 @@
             document.documentElement.setAttribute('data-theme', 'light');
         }
     </script>
-    <link rel="stylesheet" href="/static/style.css">
+    <!-- style.css was split into ordered parts under /static/css/. They are a
+         byte-exact partition and must all be loaded, in this order. -->
+    <link rel="stylesheet" href="/static/css/01-base.css">
+    <link rel="stylesheet" href="/static/css/02-query.css">
+    <link rel="stylesheet" href="/static/css/03-auth-comments.css">
+    <link rel="stylesheet" href="/static/css/04-users.css">
+    <link rel="stylesheet" href="/static/css/05-performance.css">
+    <link rel="stylesheet" href="/static/css/06-settings-alerts.css">
+    <link rel="stylesheet" href="/static/css/07-fractals.css">
+    <link rel="stylesheet" href="/static/css/08-notebooks.css">
+    <link rel="stylesheet" href="/static/css/09-dashboards.css">
+    <link rel="stylesheet" href="/static/css/10-notifications-access.css">
+    <link rel="stylesheet" href="/static/css/11-fields-graph.css">
+    <link rel="stylesheet" href="/static/css/12-admin.css">
     <link rel="stylesheet" href="/static/apiKeys.css">
     <link rel="stylesheet" href="/static/dictionaries.css">
     <link rel="stylesheet" href="/static/models.css">
@@ -595,7 +608,7 @@
                 <div class="alerts-sub-tabs" id="settingsSubTabs">
                     <button class="alerts-sub-tab active" data-subtab="users" onclick="SettingsView.switchSubTab('users')">Users</button>
                     <button class="alerts-sub-tab" data-subtab="groups" onclick="SettingsView.switchSubTab('groups')">Groups</button>
-                    <button class="alerts-sub-tab" data-subtab="limits" onclick="SettingsView.switchSubTab('limits')">Limits</button>
+                    <button class="alerts-sub-tab" data-subtab="settings" onclick="SettingsView.switchSubTab('settings')">Settings</button>
                 </div>
 
                 <!-- Users Sub-Tab -->
@@ -654,97 +667,157 @@
 
                 </div><!-- end settingsSubTabGroups -->
 
-                <!-- Limits Sub-Tab -->
-                <div id="settingsSubTabLimits" class="settings-sub-panel" style="display:none;">
-                <div class="settings-card">
-                    <div class="setting-item">
-                        <div class="setting-info">
-                            <label for="alertTimeoutSettings" class="setting-label">Alert Query Timeout</label>
-                            <p class="setting-description">Maximum time an alert query can run. Alerts that exceed this are automatically disabled to protect system health.</p>
-                        </div>
-                        <select id="alertTimeoutSettings" class="setting-select">
-                            <option value="3">3 seconds</option>
-                            <option value="5">5 seconds</option>
-                            <option value="10">10 seconds</option>
-                            <option value="15">15 seconds</option>
-                            <option value="30">30 seconds</option>
-                        </select>
-                    </div>
+                <!-- Settings Sub-Tab -->
+                <div id="settingsSubTabSettings" class="settings-sub-panel" style="display:none;">
+                <div class="sp-layout">
+                    <!-- Section rail -->
+                    <nav class="sp-rail" id="settingsSectionRail" aria-label="Settings sections">
+                        <button class="sp-rail-item active" data-section="spSectionQuery">Query &amp; Alerting</button>
+                        <button class="sp-rail-item" data-section="spSectionArchive">Archive</button>
+                        <button class="sp-rail-item" data-section="spSectionFeatures">Features</button>
+                        <button class="sp-rail-item sp-rail-danger" data-section="spSectionDanger">Danger Zone</button>
+                    </nav>
 
-                    <div class="setting-item">
-                        <div class="setting-info">
-                            <label for="queryTimeoutSettings" class="setting-label">Search Query Timeout</label>
-                            <p class="setting-description">Maximum time a user search query can run before being cancelled.</p>
-                        </div>
-                        <select id="queryTimeoutSettings" class="setting-select">
-                            <option value="30">30 seconds</option>
-                            <option value="60">1 minute</option>
-                            <option value="300">5 minutes</option>
-                            <option value="0">Unlimited</option>
-                        </select>
-                    </div>
+                    <div class="sp-content">
+                        <!-- Query & Alerting -->
+                        <section class="sp-section" id="spSectionQuery">
+                            <header class="sp-section-head">
+                                <h3>Query &amp; Alerting</h3>
+                                <p>Execution limits that keep a single query or alert from degrading the cluster.</p>
+                            </header>
+                            <div class="sp-card">
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="queryTimeoutSettings" class="sp-row-label">Search query timeout</label>
+                                        <p class="sp-row-desc">Maximum runtime for a user search before it is cancelled.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="queryTimeoutSettings" class="setting-select">
+                                            <option value="30">30 seconds</option>
+                                            <option value="60">1 minute</option>
+                                            <option value="300">5 minutes</option>
+                                            <option value="0">Unlimited</option>
+                                        </select>
+                                    </div>
+                                </div>
 
-                    <div class="setting-item">
-                        <div class="setting-info">
-                            <label for="alertEvalIntervalSettings" class="setting-label">Alert Evaluation Interval</label>
-                            <p class="setting-description">How often the alert engine ticks and evaluates every enabled alert. Lower values detect matches sooner but issue more ClickHouse queries; raise this if you have a large number of enabled alerts.</p>
-                        </div>
-                        <select id="alertEvalIntervalSettings" class="setting-select">
-                            <option value="60">1 minute</option>
-                            <option value="120">2 minutes</option>
-                            <option value="180">3 minutes</option>
-                            <option value="300">5 minutes</option>
-                            <option value="600">10 minutes</option>
-                        </select>
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="alertTimeoutSettings" class="sp-row-label">Alert query timeout</label>
+                                        <p class="sp-row-desc">Maximum runtime for an alert query. Alerts that exceed it are disabled automatically.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="alertTimeoutSettings" class="setting-select">
+                                            <option value="3">3 seconds</option>
+                                            <option value="5">5 seconds</option>
+                                            <option value="10">10 seconds</option>
+                                            <option value="15">15 seconds</option>
+                                            <option value="30">30 seconds</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="alertEvalIntervalSettings" class="sp-row-label">Alert evaluation interval</label>
+                                        <p class="sp-row-desc">How often the alert engine evaluates every enabled alert. Lower detects sooner but issues more ClickHouse queries.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="alertEvalIntervalSettings" class="setting-select">
+                                            <option value="60">1 minute</option>
+                                            <option value="120">2 minutes</option>
+                                            <option value="180">3 minutes</option>
+                                            <option value="300">5 minutes</option>
+                                            <option value="600">10 minutes</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Archive -->
+                        <section class="sp-section" id="spSectionArchive">
+                            <header class="sp-section-head">
+                                <h3>Archive</h3>
+                                <p>Durable, engine-independent copy of your logs in object storage.</p>
+                            </header>
+                            <div class="sp-card">
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="archiveEnabledToggle" class="sp-row-label">Iceberg archive</label>
+                                        <p class="sp-row-desc">Writes every log to S3, Azure, MinIO, or disk as Apache Iceberg &mdash; the system of record for disaster recovery and long-term retention.</p>
+                                        <p class="sp-row-meta">Status and footprint live under <span class="sp-path">System &rarr; Archive</span>. <span id="archiveToggleHint" class="setting-inline-hint"></span></p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <label class="toggle-switch">
+                                            <input type="checkbox" id="archiveEnabledToggle">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Features -->
+                        <section class="sp-section" id="spSectionFeatures">
+                            <header class="sp-section-head">
+                                <h3>Features</h3>
+                                <p>Optional capabilities. Each one costs ingest or exposure, so enable only what you use.</p>
+                            </header>
+                            <div class="sp-card">
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="endpointAnalysisToggle" class="sp-row-label">Endpoint behavioral analytics</label>
+                                        <p class="sp-row-desc">Builds process-lineage <code>ptg</code> and process-frequency <code>pgr</code> baselines for behavioral hunting.</p>
+                                        <p class="sp-row-meta sp-row-cost">Adds materialized views that run on every ingested log. Baselines resume from the moment it is re-enabled. <span id="endpointAnalysisHint" class="setting-inline-hint"></span></p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <label class="toggle-switch">
+                                            <input type="checkbox" id="endpointAnalysisToggle">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="sharedLinksEnabledToggle" class="sp-row-label">Dashboard shared links</label>
+                                        <p class="sp-row-desc">Lets analysts publish read-only dashboard links that anyone can view without signing in, for lobby TVs and wallboards.</p>
+                                        <p class="sp-row-meta sp-row-cost">Links serve cached results only, never run queries, stay behind your network controls (mTLS/IP), and are individually revocable. <span id="sharedLinksHint" class="setting-inline-hint"></span></p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <label class="toggle-switch">
+                                            <input type="checkbox" id="sharedLinksEnabledToggle">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Danger Zone -->
+                        <section class="sp-section" id="spSectionDanger">
+                            <header class="sp-section-head">
+                                <h3>Danger Zone</h3>
+                                <p>Irreversible operations. Read the consequences before continuing.</p>
+                            </header>
+                            <div class="sp-card sp-card-danger">
+                                <div class="sp-row" id="archiveClearCatalogItem">
+                                    <div class="sp-row-info">
+                                        <span class="sp-row-label">Clear Iceberg catalog</span>
+                                        <p class="sp-row-desc">Drops every archived table and resets the footprint to zero so archiving starts fresh.</p>
+                                        <p class="sp-row-meta">Data files in object storage are not deleted &mdash; empty the bucket or container manually to reclaim space and avoid stale files shadowing new tables.</p>
+                                        <p class="sp-row-blocked" id="archiveClearCatalogBlocked" style="display:none;">Disable the Iceberg archive above before clearing the catalog.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <button id="archiveClearCatalogBtn" class="danger-btn">Clear Catalog</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
                     </div>
                 </div>
-
-                <div class="settings-card">
-                    <div class="setting-item">
-                        <div class="setting-info">
-                            <label for="archiveEnabledToggle" class="setting-label">Iceberg Archive</label>
-                            <p class="setting-description">Write a durable, engine-independent copy of all logs to object storage (S3, Azure, MinIO, or disk) as Apache Iceberg &mdash; the system of record for disaster recovery and long-term retention. View status under System &rarr; Archive. <span id="archiveToggleHint" class="setting-inline-hint"></span></p>
-                        </div>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="archiveEnabledToggle">
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </div>
-                    <div class="danger-action-item" id="archiveClearCatalogItem" style="margin-top:12px;">
-                        <div class="danger-action-info">
-                            <span class="danger-action-label">Clear Catalog</span>
-                            <span class="danger-action-desc">Drop every archived table from the Iceberg catalog and reset the footprint to zero, so archiving starts fresh. Disable archiving first. This does not delete the data files in object storage &mdash; empty your bucket/container manually to reclaim space and avoid stale files shadowing new tables.</span>
-                        </div>
-                        <button id="archiveClearCatalogBtn" class="danger-btn">Clear Catalog</button>
-                    </div>
-                </div>
-
-                <div class="settings-card">
-                    <div class="setting-item">
-                        <div class="setting-info">
-                            <label for="endpointAnalysisToggle" class="setting-label">Endpoint Behavioral Analytics</label>
-                            <p class="setting-description">Build process-lineage (ptg) and process-frequency (pgr) baselines from endpoint logs for behavioral hunting. This adds materialized views that run on every ingested log, so leave it off unless you use these features. When re-enabled, baselines resume from that point forward. <span id="endpointAnalysisHint" class="setting-inline-hint"></span></p>
-                        </div>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="endpointAnalysisToggle">
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </div>
-                </div>
-
-                <div class="settings-card">
-                    <div class="setting-item">
-                        <div class="setting-info">
-                            <label for="sharedLinksEnabledToggle" class="setting-label">Dashboard Shared Links</label>
-                            <p class="setting-description">Allow analysts to create public, read-only links to a dashboard that anyone can view without signing in &mdash; for lobby TVs and shared wallboards. Links serve only cached results (never run queries) and remain behind your network controls (mTLS/IP). Leave off unless you need it; each link is revocable. <span id="sharedLinksHint" class="setting-inline-hint"></span></p>
-                        </div>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="sharedLinksEnabledToggle">
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </div>
-                </div>
-                </div><!-- end settingsSubTabLimits -->
+                </div><!-- end settingsSubTabSettings -->
             </section>
         </div>
 
@@ -893,6 +966,27 @@
                     <div class="modal-footer">
                         <button id="schemaResetCancelBtn" class="btn-secondary">Cancel</button>
                         <button id="schemaResetDoBtn" class="btn-danger" disabled>Reset and Delete All Logs</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Clear Iceberg Catalog confirmation (typed confirm, mirrors schema reset) -->
+            <div id="archiveClearCatalogModal" class="modal" style="display:none;">
+                <div class="modal-content" style="max-width:480px;">
+                    <div class="modal-header">
+                        <h3 style="margin:0;color:var(--error,#f87171)">Clear Iceberg Catalog</h3>
+                    </div>
+                    <div class="modal-body">
+                        <p style="margin:0 0 10px 0">This drops <strong>every archived table</strong> from the Iceberg catalog and resets the archive footprint to zero.</p>
+                        <p style="margin:0 0 16px 0;font-size:0.875rem;color:var(--text-muted)">Data files in object storage are not deleted. Empty the bucket or container manually to reclaim space and avoid stale files shadowing new tables. Log data in ClickHouse is not affected.</p>
+                        <div class="form-group" style="margin:0">
+                            <label for="archiveClearCatalogConfirmInput">Type <strong>CLEAR CATALOG</strong> to confirm</label>
+                            <input type="text" id="archiveClearCatalogConfirmInput" placeholder="CLEAR CATALOG" autocomplete="off" spellcheck="false">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button id="archiveClearCatalogCancelBtn" class="btn-secondary">Cancel</button>
+                        <button id="archiveClearCatalogConfirmBtn" class="btn-danger" disabled>Clear Catalog</button>
                     </div>
                 </div>
             </div>

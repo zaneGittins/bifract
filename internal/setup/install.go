@@ -22,6 +22,17 @@ func RunInstall() error {
 	fmt.Println(TitleStyle.Render("  Installing Bifract"))
 	fmt.Println()
 
+	// Numbered step plan (happy path): dir, config, pull, up, health, baseline,
+	// migrations, plus image check (non-dev) and client cert (mTLS).
+	installSteps := 7
+	if cfg.ImageTag != "dev" {
+		installSteps++
+	}
+	if cfg.IPAccess == IPAccessMTLSApp {
+		installSteps++
+	}
+	resetSteps(installSteps)
+
 	// Create install directory
 	printStep("Creating install directory...")
 	if err := os.MkdirAll(cfg.InstallDir, 0755); err != nil {
@@ -53,8 +64,8 @@ func RunInstall() error {
 
 	docker := &DockerOps{Dir: cfg.InstallDir}
 
-	// Pull images
-	printStep("Pulling Docker images (this may take a moment)...")
+	// Pull images (docker streams its own progress, so no spinner)
+	printStepStream("Pulling Docker images (this may take a moment)...")
 	if err := docker.Pull(); err != nil {
 		return fmt.Errorf("docker compose pull: %w", err)
 	}
@@ -196,15 +207,4 @@ func RunGenClientCert(dir, name, password string) error {
 	return nil
 }
 
-func printStep(msg string) {
-	fmt.Printf("[%s] %s\n", DimStyle.Render("~"), msg)
-}
-
-func printDone(msg string) {
-	fmt.Printf("[%s] %s\n", SuccessStyle.Render("+"), msg)
-}
-
-func printWarn(msg string) {
-	fmt.Printf("[%s] %s\n", ErrorStyle.Render("-"), msg)
-}
 

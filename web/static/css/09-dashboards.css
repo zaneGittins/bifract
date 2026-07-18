@@ -1,0 +1,814 @@
+/* Split from style.css. Part 9 of 12.
+   These files are a byte-exact partition of the original stylesheet and are
+   ORDER-DEPENDENT: several selectors are declared in more than one part and
+   rely on later parts overriding earlier ones. Do not reorder the <link>
+   tags and do not load a subset. */
+/* ============================
+   Dashboards
+   ============================ */
+
+.dashboards-view-section {
+    padding: 0;
+    max-width: 100%;
+    margin: 0;
+}
+
+.dashboards-header {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    margin-bottom: 1rem;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+.dashboards-header h2 {
+    color: var(--text-primary);
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.dashboards-filters {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.dashboards-search {
+    flex: 1;
+    max-width: 300px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    transition: var(--transition);
+}
+
+.dashboards-search:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.dashboards-table-container {
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+    margin-bottom: 20px;
+}
+
+.dashboards-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.dashboards-table th {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-weight: 500;
+    font-size: 0.9rem;
+    padding: 12px 15px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.dashboards-table td {
+    padding: 12px 15px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.dashboards-table tbody tr {
+    transition: var(--transition);
+}
+
+.dashboards-table tbody tr:hover {
+    background: var(--bg-hover);
+}
+
+.dashboards-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+
+.dash-link {
+    color: var(--accent-secondary);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.dash-link:hover {
+    color: var(--accent-primary);
+}
+
+.dashboards-pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 15px;
+    margin-top: 20px;
+}
+
+.dashboards-pagination span {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+/* Dashboard Editor */
+.dashboard-editor {
+    padding: 0;
+}
+
+.dashboard-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.dashboard-title-area {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.dashboard-title-area h2 {
+    color: var(--text-primary);
+    font-size: 1.3rem;
+    font-weight: 600;
+}
+
+.dashboard-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.dashboard-refresh-select {
+    padding: 0.45rem 0.65rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.dashboard-refresh-select:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
+}
+
+.dashboard-refresh-select:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+/* Dashboard Grid */
+.dashboard-grid {
+    position: relative;
+    min-height: 600px;
+    margin: 16px;
+    background:
+        linear-gradient(var(--overlay-subtle) 1px, transparent 1px),
+        linear-gradient(90deg, var(--overlay-subtle) 1px, transparent 1px);
+    background-size: calc(100% / 12) 130px;
+    border-radius: 8px;
+    overflow: visible;
+}
+
+/* Dashboard Widget */
+.dashboard-widget {
+    position: absolute;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+    transition: box-shadow 0.15s ease;
+    box-sizing: border-box;
+}
+
+.dashboard-widget:hover {
+    box-shadow: var(--shadow-md);
+}
+
+.dashboard-widget.dragging {
+    opacity: 0.85;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    z-index: 100;
+    cursor: grabbing;
+}
+
+.dashboard-widget.resizing {
+    opacity: 0.9;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    z-index: 100;
+}
+
+/* Widget Header */
+.widget-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 10px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
+    cursor: grab;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.widget-header:active {
+    cursor: grabbing;
+}
+
+.widget-title {
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.widget-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.dashboard-widget:hover .widget-actions {
+    opacity: 1;
+}
+
+.widget-btn {
+    padding: 3px 6px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: var(--transition);
+    line-height: 1;
+}
+
+.widget-btn:hover {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.widget-delete-btn:hover {
+    color: var(--error);
+}
+
+/* Widget kebab menu */
+.widget-kebab-wrapper {
+    position: relative;
+}
+
+.widget-kebab-btn {
+    font-size: 0.9rem;
+    letter-spacing: 1px;
+}
+
+.widget-kebab-menu {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    box-shadow: var(--shadow-lg);
+    min-width: 160px;
+    z-index: 1000;
+    overflow: hidden;
+}
+
+.widget-kebab-menu.open {
+    display: block;
+}
+
+.widget-kebab-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.widget-kebab-menu button:hover {
+    background: var(--bg-tertiary);
+}
+
+.widget-kebab-menu button.kebab-danger {
+    color: var(--error-color, #e74c3c);
+}
+
+.widget-kebab-menu button.kebab-danger:hover {
+    background: rgba(231, 76, 60, 0.1);
+}
+
+/* Widget query preview (collapsed, readonly) */
+.widget-query-preview {
+    position: relative;
+    height: 36px;
+    flex-shrink: 0;
+    overflow: hidden;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.widget-query-highlight,
+.widget-query-input {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    padding: 8px 10px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.4;
+    white-space: pre;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+.widget-query-highlight {
+    color: transparent;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.widget-query-input {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-muted);
+    resize: none;
+    z-index: 2;
+}
+
+/* Widget Content */
+.widget-content {
+    flex: 1;
+    overflow: auto;
+    padding: 8px;
+    min-height: 0;
+}
+
+/* A sticky table header sticks at the scroll container's content edge, so any
+   top padding leaves a strip above it through which rows bleed while scrolling.
+   When the widget body holds a results table, drop the top padding so the
+   header sits flush at the top (charts keep their padding). */
+.widget-content:has(> table.results-table) {
+    padding-top: 0;
+}
+
+.widget-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.widget-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--error);
+    font-size: 0.85rem;
+    padding: 10px;
+    text-align: center;
+}
+
+/* Resize Handle */
+.widget-resize-handle {
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 16px;
+    height: 16px;
+    cursor: nwse-resize;
+    background: linear-gradient(135deg, transparent 50%, var(--border-color) 50%);
+    border-bottom-right-radius: 8px;
+    flex-shrink: 0;
+    z-index: 5;
+}
+
+.widget-resize-handle:hover {
+    background: linear-gradient(135deg, transparent 50%, var(--accent-tertiary) 50%);
+}
+
+/* ============================
+   Context Links
+   ============================ */
+
+/* Admin management table */
+.context-links-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.context-links-table th {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-color);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.context-links-table td {
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-primary);
+    vertical-align: middle;
+}
+
+.context-links-table tr:hover td {
+    background: var(--bg-hover);
+}
+
+.context-link-fields {
+    max-width: 250px;
+    word-break: break-word;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.context-link-regex code {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--accent-secondary);
+    background: var(--bg-tertiary);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+}
+
+.context-link-actions {
+    white-space: nowrap;
+    display: flex;
+    gap: 0.4rem;
+}
+
+.context-link-badge {
+    font-size: 0.65rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    margin-left: 0.4rem;
+    vertical-align: middle;
+}
+
+.section-description {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    margin-bottom: 1rem;
+}
+
+/* Context link icons in log detail panel */
+.context-links-icons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.35rem;
+}
+
+.context-link-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 20px;
+    padding: 0 0.4rem;
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: var(--transition);
+    font-size: 0.65rem;
+    font-family: var(--font-main);
+    gap: 0.25rem;
+}
+
+.context-link-icon:hover {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+    background: var(--accent-glow);
+}
+
+/* Modal form helpers */
+.form-row {
+    display: flex;
+    gap: 1.5rem;
+    align-items: center;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.checkbox-label input[type="checkbox"] {
+    accent-color: var(--accent-primary);
+}
+
+.modal-sm {
+    max-width: 520px;
+    width: 90%;
+}
+
+/* ================================================
+   Normalizer Editor Styles
+   ================================================ */
+
+.normalizer-editor-container {
+    padding: 20px;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.normalizer-editor-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.normalizer-editor-header .header-left,
+.normalizer-editor-header .header-center,
+.normalizer-editor-header .header-right {
+    display: flex;
+    align-items: center;
+}
+
+.normalizer-editor-header .header-center {
+    flex: 1;
+    justify-content: center;
+}
+
+.normalizer-editor-header .header-center h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.normalizer-editor-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+}
+
+.normalizer-editor-left,
+.normalizer-editor-right {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.normalizer-editor-right .form-group {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.normalizer-editor-right #normalizerMappings {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 60vh;
+}
+
+.normalizer-transforms-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-height: 2rem;
+}
+
+.normalizer-transforms-list:empty::after {
+    content: 'No transforms added.';
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-style: italic;
+    padding: 0.5rem 0;
+}
+
+.transform-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    font-size: 0.875rem;
+    color: var(--text-primary);
+}
+
+.transform-item-order {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.transform-item-order button {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    font-size: 0.7rem;
+}
+
+.transform-item-order button:hover {
+    color: var(--text-primary);
+}
+
+.transform-item-order button:disabled {
+    opacity: 0.2;
+    cursor: default;
+}
+
+.transform-item-label {
+    flex: 1;
+}
+
+.transform-item-label code {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    background: var(--bg-tertiary);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+}
+
+.transform-item-desc {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-left: 0.25rem;
+}
+
+.transform-item .btn-sm {
+    flex-shrink: 0;
+}
+
+.transform-add-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    align-items: center;
+}
+
+.transform-add-row select {
+    flex: 1;
+}
+
+.normalizer-mapping-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.normalizer-mapping-row input {
+    flex: 1;
+}
+
+.normalizer-mapping-row .mapping-arrow {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    white-space: nowrap;
+}
+
+.normalizer-mapping-row .mapping-sources {
+    cursor: pointer;
+}
+
+.normalizer-mapping-row .mapping-remove {
+    flex-shrink: 0;
+}
+
+.normalizer-derived-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.normalizer-derived-row .derived-from,
+.normalizer-derived-row .derived-to {
+    flex: 1;
+}
+
+.normalizer-derived-row .derived-default {
+    flex: 0.7;
+}
+
+.normalizer-derived-row .mapping-arrow {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    white-space: nowrap;
+}
+
+.normalizer-derived-row .derived-values-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.normalizer-derived-row .mapping-remove {
+    flex-shrink: 0;
+}
+
+.normalizer-ts-field-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    border-radius: 4px;
+    transition: opacity 0.15s;
+}
+
+.normalizer-ts-field-row input {
+    flex: 1;
+}
+
+.normalizer-ts-field-row .ts-field-name {
+    flex: 0.8;
+}
+
+.normalizer-ts-field-row .ts-field-format {
+    flex: 1.2;
+}
+
+.ts-drag-handle {
+    cursor: grab;
+    color: var(--text-muted);
+    padding: 0 2px;
+    user-select: none;
+    font-size: 0.9rem;
+    flex-shrink: 0;
+}
+
+.ts-drag-handle:hover {
+    color: var(--accent-primary);
+}
+
+.ts-drag-handle:active {
+    cursor: grabbing;
+}
+
+.normalizer-ts-field-row.ts-row-dragging {
+    opacity: 0.45;
+}
+
+.normalizer-ts-field-row.ts-row-drag-over {
+    border-top: 2px solid var(--accent-primary);
+}
+
+.mapping-sources-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+

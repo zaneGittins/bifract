@@ -4,7 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign In - Bifract</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <!-- style.css was split into ordered parts under /static/css/. They are a
+         byte-exact partition and must all be loaded, in this order. -->
+    <link rel="stylesheet" href="/static/css/01-base.css">
+    <link rel="stylesheet" href="/static/css/02-query.css">
+    <link rel="stylesheet" href="/static/css/03-auth-comments.css">
+    <link rel="stylesheet" href="/static/css/04-users.css">
+    <link rel="stylesheet" href="/static/css/05-performance.css">
+    <link rel="stylesheet" href="/static/css/06-settings-alerts.css">
+    <link rel="stylesheet" href="/static/css/07-fractals.css">
+    <link rel="stylesheet" href="/static/css/08-notebooks.css">
+    <link rel="stylesheet" href="/static/css/09-dashboards.css">
+    <link rel="stylesheet" href="/static/css/10-notifications-access.css">
+    <link rel="stylesheet" href="/static/css/11-fields-graph.css">
+    <link rel="stylesheet" href="/static/css/12-admin.css">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <script>
         if (localStorage.getItem('bifract-theme') === 'light') {
