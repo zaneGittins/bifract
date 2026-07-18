@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,10 +22,31 @@ const (
 	//   max queue memory ~ bufSize * maxEnqueueBatch * avgLogSize
 	maxEnqueueBatch = 5000
 
-	// Workers coalesce multiple queue items into a single ClickHouse insert
-	// to reduce the number of data parts created.
-	defaultMaxBatchSize  = 10000
-	defaultFlushInterval = 500 * time.Millisecond
+	// Partition-aware batching. ClickHouse splits an insert block by partition
+	// and writes one part per partition, so a batch spanning many
+	// (fractal_id, day) pairs creates many small parts and multiplies merge
+	// work. The accumulator groups entries by partition key and hands whole
+	// keys to workers, so each insert maps to exactly one partition and
+	// therefore one part.
+	//
+	// A key flushes on whichever comes first: batchRows, batchBytes, or
+	// flushInterval since its first entry. Busy fractals hit a size bound
+	// almost immediately, so the interval only governs quiet keys and
+	// backfill. Returns diminish sharply as it grows: most of the coalescing
+	// win is in leaving sub-second flushing at all, so it is kept short
+	// enough that a single test log stays visible promptly.
+	defaultBatchRows     = 20000
+	defaultBatchBytes    = 16 << 20 // 16MB
+	defaultFlushInterval = 30 * time.Second
+
+	// Accumulator memory bounds. Exceeding either force-flushes keys
+	// (largest first for bytes, oldest first for key count) so buffering
+	// can never grow without limit.
+	defaultBufferBytes = 256 << 20 // 256MB
+	defaultMaxKeys     = 2048
+
+	// accumTick is how often the accumulator evaluates age and cap triggers.
+	accumTick = time.Second
 
 	// Retry settings for failed batch inserts.
 	maxInsertRetries  = 3
@@ -104,6 +127,28 @@ type IngestQueue struct {
 	wg           sync.WaitGroup
 	Metrics      QueueMetrics
 
+	// flushCh carries ready partition buckets from the accumulator to the
+	// workers. Grouping is centralized in a single accumulator goroutine so
+	// one partition key produces one part; per-worker maps would let the same
+	// key accumulate in every worker and emit one part each.
+	flushCh chan *partBucket
+
+	// Accumulator tuning, resolved from env in NewIngestQueue.
+	batchRows     int
+	batchBytes    int64
+	flushInterval time.Duration
+	bufferBytes   int64
+	maxKeys       int
+
+	// accumRows/accumBytes track logs held in the accumulator, which have left
+	// q.ch but are not yet handed to a worker. Without these, queue-depth
+	// backpressure and alert deferral would read a near-empty q.ch while
+	// hundreds of MB sit buffered.
+	accumRows  atomic.Int64
+	accumBytes atomic.Int64
+	// accumFlushes counts partition buckets flushed, one per part written.
+	accumFlushes atomic.Int64
+
 	// consecutiveFailures tracks how many sequential flush attempts have
 	// failed across all workers. Used for adaptive backpressure: when this
 	// is high, handlers reject new batches early instead of buffering logs
@@ -161,6 +206,131 @@ type notifWriterIface interface {
 	Write(notifType, severity, title, message string) error
 }
 
+// partKey identifies a ClickHouse partition of the logs table, whose
+// partition expression is (fractal_id, toDate(timestamp)). day is unix
+// seconds at UTC midnight; the ClickHouse server runs UTC, so this matches
+// toDate() exactly and a bucket never straddles two partitions.
+type partKey struct {
+	fractalID string
+	day       int64
+}
+
+// partBucket accumulates entries destined for a single partition.
+type partBucket struct {
+	key       partKey
+	entries   []storage.LogEntry
+	bytes     int64
+	firstSeen time.Time
+}
+
+// partKeyOf maps a log entry to its destination partition.
+func partKeyOf(e *storage.LogEntry) partKey {
+	return partKey{
+		fractalID: e.FractalID,
+		day:       e.Timestamp.UTC().Truncate(24 * time.Hour).Unix(),
+	}
+}
+
+// entrySize estimates an entry's heap cost for the memory cap. RawLog
+// dominates; the constant covers the fixed struct plus normalized fields.
+func entrySize(e *storage.LogEntry) int64 {
+	return int64(len(e.RawLog)) + 512
+}
+
+// accumulator drains the ingest channel, groups entries by partition, and
+// emits whole buckets to the workers. It is the only goroutine that touches
+// the bucket map, so no locking is needed.
+func (q *IngestQueue) accumulator() {
+	defer q.wg.Done()
+	// Closing flushCh lets workers finish their current insert and exit.
+	defer close(q.flushCh)
+
+	buckets := make(map[partKey]*partBucket)
+	ticker := time.NewTicker(accumTick)
+	defer ticker.Stop()
+
+	// emit hands a bucket to a worker and drops it from the map. It blocks if
+	// every worker is busy, which is the intended backpressure path: the
+	// accumulator stops draining q.ch, depth rises, and Enqueue starts
+	// rejecting.
+	emit := func(b *partBucket) {
+		delete(buckets, b.key)
+		q.accumRows.Add(-int64(len(b.entries)))
+		q.accumBytes.Add(-b.bytes)
+		q.accumFlushes.Add(1)
+		q.flushCh <- b
+	}
+
+	// emitReady flushes keys that have reached a size or age bound, then
+	// enforces the global caps.
+	emitReady := func(now time.Time) {
+		for _, b := range buckets {
+			if len(b.entries) >= q.batchRows || b.bytes >= q.batchBytes ||
+				now.Sub(b.firstSeen) >= q.flushInterval {
+				emit(b)
+			}
+		}
+
+		// Byte cap: flush the largest keys first, since they yield the most
+		// headroom per part written.
+		for q.accumBytes.Load() > q.bufferBytes && len(buckets) > 0 {
+			var biggest *partBucket
+			for _, b := range buckets {
+				if biggest == nil || b.bytes > biggest.bytes {
+					biggest = b
+				}
+			}
+			emit(biggest)
+		}
+
+		// Key cap: flush the oldest keys first, bounding worst-case latency.
+		for len(buckets) > q.maxKeys {
+			var oldest *partBucket
+			for _, b := range buckets {
+				if oldest == nil || b.firstSeen.Before(oldest.firstSeen) {
+					oldest = b
+				}
+			}
+			emit(oldest)
+		}
+	}
+
+	for {
+		select {
+		case batch, ok := <-q.ch:
+			if !ok {
+				// Shutdown: drain every buffered key before workers exit.
+				for _, b := range buckets {
+					emit(b)
+				}
+				return
+			}
+			now := time.Now()
+			for i := range batch {
+				k := partKeyOf(&batch[i])
+				b := buckets[k]
+				if b == nil {
+					b = &partBucket{
+						key:       k,
+						entries:   make([]storage.LogEntry, 0, 256),
+						firstSeen: now,
+					}
+					buckets[k] = b
+				}
+				sz := entrySize(&batch[i])
+				b.entries = append(b.entries, batch[i])
+				b.bytes += sz
+				q.accumRows.Add(1)
+				q.accumBytes.Add(sz)
+			}
+			emitReady(now)
+
+		case now := <-ticker.C:
+			emitReady(now)
+		}
+	}
+}
+
 // SetNotificationWriter wires in the health notification writer (called from
 // main.go after both are constructed).
 func (q *IngestQueue) SetNotificationWriter(w notifWriterIface) { q.notifWriter = w }
@@ -190,15 +360,26 @@ func NewIngestQueue(db *storage.ClickHouseClient, bufferSize, workers int) *Inge
 		bufSize:      bufferSize,
 		stop:         make(chan struct{}),
 		lastIngested: make(map[string]time.Time),
+		// Buffered by worker count so a ready bucket does not block the
+		// accumulator while every worker happens to be mid-insert.
+		flushCh:       make(chan *partBucket, workers),
+		batchRows:     envInt("BIFRACT_INGEST_BATCH_ROWS", defaultBatchRows),
+		batchBytes:    int64(envInt("BIFRACT_INGEST_BATCH_BYTES", defaultBatchBytes)),
+		flushInterval: time.Duration(envInt("BIFRACT_INGEST_FLUSH_SECONDS", int(defaultFlushInterval/time.Second))) * time.Second,
+		bufferBytes:   int64(envInt("BIFRACT_INGEST_BUFFER_BYTES", defaultBufferBytes)),
+		maxKeys:       envInt("BIFRACT_INGEST_MAX_KEYS", defaultMaxKeys),
 	}
 	for i := 0; i < workers; i++ {
 		q.wg.Add(1)
 		go q.worker(i)
 	}
 	q.wg.Add(1)
+	go q.accumulator()
+	q.wg.Add(1)
 	go q.monitorCPU()
-	log.Printf("[Ingest Queue] Started %d workers, buffer size %d, max enqueue batch %d, batch coalesce %d/%v, CPU backpressure %.0f%%/%.0f%%, memory backpressure %.0f%%/%.0f%%, disk backpressure %.0f%%/%.0f%%",
-		workers, bufferSize, maxEnqueueBatch, defaultMaxBatchSize, defaultFlushInterval, cpuPressureTrigger, cpuPressureRelease, memPressureTrigger, memPressureRelease, diskPressureTrigger, diskPressureRelease)
+	log.Printf("[Ingest Queue] Started %d workers, buffer size %d, max enqueue batch %d, partition batching %d rows/%dMB/%v, buffer cap %dMB/%d keys, CPU backpressure %.0f%%/%.0f%%, memory backpressure %.0f%%/%.0f%%, disk backpressure %.0f%%/%.0f%%",
+		workers, bufferSize, maxEnqueueBatch, q.batchRows, q.batchBytes>>20, q.flushInterval, q.bufferBytes>>20, q.maxKeys,
+		cpuPressureTrigger, cpuPressureRelease, memPressureTrigger, memPressureRelease, diskPressureTrigger, diskPressureRelease)
 	return q
 }
 
@@ -264,13 +445,25 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 		return false
 	}
 
+	// Accumulator memory backpressure: reject once buffered bytes exceed the
+	// cap. The accumulator force-flushes above this too, but rejecting here
+	// stops us accepting faster than ClickHouse can drain.
+	if q.accumBytes.Load() > q.bufferBytes {
+		n := int64(len(logs))
+		q.Metrics.QueueDrops.Add(n)
+		q.pendingDropsQueue.Add(n)
+		return false
+	}
+
 	// Calculate how many queue slots this batch needs after splitting.
 	slotsNeeded := (len(logs) + maxEnqueueBatch - 1) / maxEnqueueBatch
 
 	// Depth-based backpressure: reject when accepting this batch would push
-	// the queue past 50% capacity. Check against slotsNeeded so we never
-	// partially enqueue (which would cause duplicates on client retry).
-	if q.bufSize > 0 && len(q.ch)+slotsNeeded > q.bufSize/2 {
+	// the queue past 50% capacity. Depth() includes accumulator-held rows so
+	// this still trips when the channel is drained but buffering is deep.
+	// Check against slotsNeeded so we never partially enqueue (which would
+	// cause duplicates on client retry).
+	if q.bufSize > 0 && q.Depth()+slotsNeeded > q.bufSize/2 {
 		n := int64(len(logs))
 		q.Metrics.QueueDrops.Add(n)
 		q.pendingDropsQueue.Add(n)
@@ -749,9 +942,27 @@ func (q *IngestQueue) Shutdown() {
 		q.Metrics.QueueDrops.Load(), q.Metrics.Retries.Load())
 }
 
-// Depth returns the current number of pending batches in the queue.
+// Depth returns pending work in queue-slot units. It counts both the channel
+// and the accumulator, because the accumulator drains q.ch quickly and would
+// otherwise make a deeply buffered queue look empty to depth-based
+// backpressure, the Prometheus gauge, and alert deferral.
 func (q *IngestQueue) Depth() int {
-	return len(q.ch)
+	return len(q.ch) + int(q.accumRows.Load())/maxEnqueueBatch
+}
+
+// BufferedBytes returns the bytes currently held in the accumulator.
+func (q *IngestQueue) BufferedBytes() int64 { return q.accumBytes.Load() }
+
+// envInt reads a positive integer env var, falling back to def when unset,
+// unparseable, or non-positive.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+		log.Printf("[Ingest Queue] invalid %s=%q, using default %d", key, v, def)
+	}
+	return def
 }
 
 // LastIngested returns the most recent successful insert time for a fractal.
@@ -775,20 +986,17 @@ func (q *IngestQueue) DiskPressure() bool         { return q.diskPressure.Load()
 func (q *IngestQueue) SpoolPressure() bool        { return q.spoolPressure.Load() == 1 }
 func (q *IngestQueue) ConsecutiveFailures() int64 { return q.consecutiveFailures.Load() }
 
-// worker drains the channel and coalesces multiple small batches into larger
-// ClickHouse inserts. It flushes when the coalesced batch reaches
-// defaultMaxBatchSize or after defaultFlushInterval, whichever comes first.
+// worker inserts ready partition buckets produced by the accumulator. Each
+// bucket holds entries for exactly one (fractal_id, day) partition, so each
+// insert lands in one partition and creates one part.
 // Failed inserts are retried with exponential backoff before being dropped.
 func (q *IngestQueue) worker(id int) {
 	defer q.wg.Done()
 
-	buf := make([]storage.LogEntry, 0, defaultMaxBatchSize)
-	timer := time.NewTimer(defaultFlushInterval)
-	defer timer.Stop()
-
-	flush := func() {
+	for bucket := range q.flushCh {
+		buf := bucket.entries
 		if len(buf) == 0 {
-			return
+			continue
 		}
 
 		inserted := false
@@ -815,29 +1023,20 @@ func (q *IngestQueue) worker(id int) {
 				q.consecutiveFailures.Store(0)
 				inserted = true
 
-				// Collect per-fractal stats for quota tracking and ingestion timestamps.
-				fractalIDs := make(map[string]bool, 4)
-				for i := range buf {
-					fractalIDs[buf[i].FractalID] = true
-				}
+				// A bucket is single-fractal by construction, so quota and
+				// last-ingested bookkeeping need no per-entry grouping.
+				fid := bucket.key.fractalID
 				if q.quotaManager != nil {
-					fractalBytes := make(map[string]int64, 4)
-					fractalCounts := make(map[string]int64, 4)
+					var rawBytes int64
 					for i := range buf {
-						fractalBytes[buf[i].FractalID] += int64(len(buf[i].RawLog))
-						fractalCounts[buf[i].FractalID]++
+						rawBytes += int64(len(buf[i].RawLog))
 					}
-					for fid, b := range fractalBytes {
-						q.quotaManager.RecordInsert(fid, b, fractalCounts[fid])
-					}
+					q.quotaManager.RecordInsert(fid, rawBytes, int64(len(buf)))
 				}
 
 				// Record per-fractal insert time for alert skip optimization.
-				now := time.Now()
 				q.lastIngestedMu.Lock()
-				for fid := range fractalIDs {
-					q.lastIngested[fid] = now
-				}
+				q.lastIngested[fid] = time.Now()
 				q.lastIngestedMu.Unlock()
 
 				break
@@ -862,40 +1061,7 @@ func (q *IngestQueue) worker(id int) {
 			}
 		}
 
-		// Shrink backing array if it grew beyond 2x the target to avoid
-		// holding memory from transient spikes indefinitely.
-		if cap(buf) > defaultMaxBatchSize*2 {
-			buf = make([]storage.LogEntry, 0, defaultMaxBatchSize)
-		} else {
-			buf = buf[:0]
-		}
-	}
-
-	resetTimer := func() {
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timer.Reset(defaultFlushInterval)
-	}
-
-	for {
-		select {
-		case batch, ok := <-q.ch:
-			if !ok {
-				flush()
-				return
-			}
-			buf = append(buf, batch...)
-			if len(buf) >= defaultMaxBatchSize {
-				flush()
-				resetTimer()
-			}
-		case <-timer.C:
-			flush()
-			timer.Reset(defaultFlushInterval)
-		}
+		// Release the bucket's backing array before waiting on the next one.
+		bucket.entries = nil
 	}
 }
