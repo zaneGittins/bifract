@@ -178,7 +178,6 @@ const FractalListing = {
                         </td>
                         <td><span class="fractal-size">--</span></td>
                         <td><span class="fractal-size">--</span></td>
-                        <td><span class="fractal-size">--</span></td>
                         <td><span class="fractal-latest">--</span></td>
                     </tr>
                 `;
