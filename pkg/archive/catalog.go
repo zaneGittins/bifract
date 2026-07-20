@@ -170,6 +170,38 @@ func (c *Catalog) ensureIceColumns(ctx context.Context, ident icetable.Identifie
 	return updated, nil
 }
 
+// TablePromotedFields returns a fractal table's storage location together with
+// the set of field names whose `_ice_` promoted column actually exists in that
+// table's current Iceberg schema.
+//
+// The set is read from the table rather than taken from parser.IcePromotedFields()
+// because the two legitimately diverge. The build's promoted set grows whenever a
+// field is added to the default type-hint list, but an existing table only gains
+// the new columns when an archiver next commits to it (see ensureIceColumns), so
+// a fractal that has stopped ingesting keeps its older, narrower schema
+// indefinitely. Referencing a column that table lacks is not a missed
+// optimization: ClickHouse fails the entire search with UNKNOWN_IDENTIFIER. The
+// reader therefore has to ask the table rather than assume the build's set.
+func (c *Catalog) TablePromotedFields(ctx context.Context, fractalID string) (string, map[string]bool, error) {
+	ident := catalog.ToIdentifier(Namespace, tableName(fractalID))
+	tbl, err := c.cat.LoadTable(ctx, ident)
+	if err != nil {
+		return "", nil, err
+	}
+	sc := tbl.Schema()
+	promoted := make(map[string]bool, len(parser.IcePromotedFields()))
+	for _, f := range parser.IcePromotedFields() {
+		col, ok := parser.IcePromotedColumn(f)
+		if !ok {
+			continue
+		}
+		if _, exists := sc.FindFieldByName(col); exists {
+			promoted[f] = true
+		}
+	}
+	return tbl.Location(), promoted, nil
+}
+
 // TableLocation returns the storage base location of a fractal's table (used to
 // build the ClickHouse iceberg*() restore function). Empty if the table does
 // not exist yet.

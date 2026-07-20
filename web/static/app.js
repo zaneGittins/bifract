@@ -200,7 +200,7 @@ const App = {
     },
 
     // Tab name sets for hash-based open-in-new-tab support.
-    _mainTabs: new Set(['fractalListing', 'performance', 'settings', 'context', 'normalizers', 'schema']),
+    _mainTabs: new Set(['fractalListing', 'performance', 'settings', 'normalizers', 'schema']),
     _fractalTabs: new Set(['search', 'comments', 'notebooks', 'dashboards', 'dictionaries', 'models', 'chat', 'library', 'alerts', 'ingest', 'recall', 'manage']),
 
     // Build the target URL for a given hash (used for open-in-new-tab).
@@ -327,6 +327,13 @@ const App = {
         // Main-view tab (possibly with sub-path)
         const mainTab = prefix;
         const subPath = segments.slice(1).join('/');
+
+        // Context Links moved under Admin; keep old #context deep links working.
+        if (mainTab === 'context') {
+            this.showMainView('settings', subPath ? 'context/' + subPath : 'context');
+            return;
+        }
+
         if (this._mainTabs.has(mainTab)) {
             this.showMainView(mainTab, subPath);
             return;
@@ -384,7 +391,6 @@ const App = {
         this._bindTab(document.getElementById('fractalListingTabBtn'), () => this.showMainViewTab('fractalListing'), 'fractalListing');
         this._bindTab(document.getElementById('mainPerformanceTabBtn'), () => this.showMainViewTab('performance'), 'performance');
         this._bindTab(document.getElementById('mainSettingsTabBtn'), () => this.showMainViewTab('settings'), 'settings');
-        this._bindTab(document.getElementById('mainContextTabBtn'), () => this.showMainViewTab('context'), 'context');
         this._bindTab(document.getElementById('mainNormalizersTabBtn'), () => this.showMainViewTab('normalizers'), 'normalizers');
         this._bindTab(document.getElementById('mainSchemaTabBtn'), () => this.showMainViewTab('schema'), 'schema');
 
@@ -870,21 +876,19 @@ const App = {
         const fractalListingContent = document.getElementById('fractalListingTabContent');
         const mainPerformanceContent = document.getElementById('mainPerformanceTabContent');
         const mainSettingsContent = document.getElementById('mainSettingsTabContent');
-        const mainContextContent = document.getElementById('mainContextTabContent');
         const mainNormalizersContent = document.getElementById('mainNormalizersTabContent');
         const mainSchemaContent = document.getElementById('mainSchemaTabContent');
 
-        [fractalListingContent, mainPerformanceContent, mainSettingsContent, mainContextContent, mainNormalizersContent, mainSchemaContent].forEach(content => {
+        [fractalListingContent, mainPerformanceContent, mainSettingsContent, mainNormalizersContent, mainSchemaContent].forEach(content => {
             if (content) content.style.display = 'none';
         });
 
         // Also hide inner view divs
         const settingsView = document.getElementById('settingsView');
         const performanceView = document.getElementById('performanceView');
-        const contextLinksView = document.getElementById('contextLinksView');
         const normalizersView = document.getElementById('normalizersView');
         const schemaFieldsView = document.getElementById('schemaFieldsView');
-        [settingsView, performanceView, contextLinksView, normalizersView, schemaFieldsView].forEach(view => {
+        [settingsView, performanceView, normalizersView, schemaFieldsView].forEach(view => {
             if (view) view.style.display = 'none';
         });
 
@@ -892,11 +896,10 @@ const App = {
         const fractalListingTab = document.getElementById('fractalListingTabBtn');
         const mainPerformanceTab = document.getElementById('mainPerformanceTabBtn');
         const mainSettingsTab = document.getElementById('mainSettingsTabBtn');
-        const mainContextTab = document.getElementById('mainContextTabBtn');
         const mainNormalizersTab = document.getElementById('mainNormalizersTabBtn');
         const mainSchemaTab = document.getElementById('mainSchemaTabBtn');
 
-        [fractalListingTab, mainPerformanceTab, mainSettingsTab, mainContextTab, mainNormalizersTab, mainSchemaTab].forEach(tabBtn => {
+        [fractalListingTab, mainPerformanceTab, mainSettingsTab, mainNormalizersTab, mainSchemaTab].forEach(tabBtn => {
             if (tabBtn) tabBtn.classList.remove('active');
         });
 
@@ -920,12 +923,6 @@ const App = {
                 if (settingsView) settingsView.style.display = 'block';
                 if (mainSettingsTab) mainSettingsTab.classList.add('active');
                 if (window.SettingsView) SettingsView.show(subPath);
-                break;
-            case 'context':
-                if (mainContextContent) mainContextContent.style.display = 'block';
-                if (contextLinksView) contextLinksView.style.display = 'block';
-                if (mainContextTab) mainContextTab.classList.add('active');
-                if (window.ContextLinks) ContextLinks.show(subPath);
                 break;
             case 'normalizers':
                 if (mainNormalizersContent) mainNormalizersContent.style.display = 'block';

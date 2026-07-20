@@ -59,16 +59,21 @@ type FieldRegistry struct {
 	fields     map[string]*FieldEntry
 	order      []string
 	sourceMode SourceMode // Hot vs Iceberg; controls field-ref/content-column codegen
+	// icePromoted is the set of field names whose `_ice_` column exists on the
+	// specific Iceberg table this query targets. Nil in hot mode, and nil-safe in
+	// iceberg mode (no `_ice_` pruning). See icebergEqualityPredicate.
+	icePromoted map[string]bool
 }
 
 // NewFieldRegistry creates a registry pre-populated with base fields for the
 // given source mode. The norm_log base column resolves to the norm_log column in
 // both modes (materialized + indexed in the hot store; a plain JSON String in
 // the archive).
-func NewFieldRegistry(mode SourceMode) *FieldRegistry {
+func NewFieldRegistry(mode SourceMode, icePromoted map[string]bool) *FieldRegistry {
 	r := &FieldRegistry{
-		fields:     make(map[string]*FieldEntry),
-		sourceMode: mode,
+		fields:      make(map[string]*FieldEntry),
+		sourceMode:  mode,
+		icePromoted: icePromoted,
 	}
 	// Register base columns
 	for _, name := range []string{"timestamp", normLogColumn, "log_id", "fractal_id", "ingest_timestamp", "normalizer"} {

@@ -76,6 +76,55 @@ func (m *Manager) UpdateSyncStatus(ctx context.Context, fieldName, status, errMs
 	return nil
 }
 
+// ListIgnored returns the set of field names an admin has dismissed from the
+// suggestions list, for O(1) lookup while ranking.
+func (m *Manager) ListIgnored(ctx context.Context) (map[string]bool, error) {
+	rows, err := m.pg.Query(ctx, `SELECT field_name FROM schema_field_ignored`)
+	if err != nil {
+		return nil, fmt.Errorf("query ignored fields: %w", err)
+	}
+	defer rows.Close()
+
+	ignored := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan ignored field: %w", err)
+		}
+		ignored[name] = true
+	}
+	return ignored, rows.Err()
+}
+
+// Ignore dismisses a field from suggestions. Idempotent so a double-click or a
+// retry cannot fail.
+func (m *Manager) Ignore(ctx context.Context, fieldName, by string) error {
+	fieldName = strings.TrimSpace(fieldName)
+	if fieldName == "" {
+		return fmt.Errorf("field_name is required")
+	}
+	if !validFieldName.MatchString(fieldName) {
+		return fmt.Errorf("field_name %q is invalid", fieldName)
+	}
+	_, err := m.pg.Exec(ctx,
+		`INSERT INTO schema_field_ignored (field_name, ignored_by) VALUES ($1, $2)
+		 ON CONFLICT (field_name) DO NOTHING`, fieldName, by)
+	if err != nil {
+		return fmt.Errorf("ignore field %q: %w", fieldName, err)
+	}
+	return nil
+}
+
+// Unignore restores a field to the suggestions list.
+func (m *Manager) Unignore(ctx context.Context, fieldName string) error {
+	_, err := m.pg.Exec(ctx,
+		`DELETE FROM schema_field_ignored WHERE field_name = $1`, fieldName)
+	if err != nil {
+		return fmt.Errorf("unignore field %q: %w", fieldName, err)
+	}
+	return nil
+}
+
 // validateCreate validates and normalizes a single field request without writing.
 func validateCreate(req *CreateRequest) error {
 	req.FieldName = strings.TrimSpace(req.FieldName)

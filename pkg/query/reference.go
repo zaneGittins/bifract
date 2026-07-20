@@ -132,8 +132,8 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				},
 				Examples: []string{
 					"| sort(timestamp)",
-					"| sort(count, desc)",
-					"| groupby(host) | count() | sort(count, desc)",
+					"| sort(timestamp, order=desc)",
+					"| groupby(host, function=count()) | sort(_count, order=desc)",
 				},
 			},
 			{
@@ -147,7 +147,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				Examples: []string{
 					"| limit(100)",
 					"level=error | sort(timestamp, desc) | limit(10)",
-					"| groupby(user) | count() | sort(count, desc) | limit(5)",
+					"| groupby(user, function=count()) | sort(_count, order=desc) | limit(5)",
 				},
 			},
 			{

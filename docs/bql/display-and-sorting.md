@@ -6,8 +6,12 @@ Select specific columns to display:
 
 ```
 * | table(timestamp, image, user)
-* | table(image, count)
+* | groupBy(image, function=count()) | table(image, _count)
 ```
+
+Aggregations are projected under their generated alias, not the function name: `count()` produces `_count`, `sum(bytes)` produces `sum_bytes`. Reference that alias in `table()`, `sort()`, and post-aggregation filters.
+
+To keep the grouped field available downstream, put the aggregation inside `groupBy(...)` as `function=`. A trailing `| count()` instead reduces the grouped result to a single total, leaving the grouped field out of scope.
 
 Aggregation functions can be used inline in `table()`:
 

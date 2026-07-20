@@ -37,6 +37,13 @@ type QueryOptions struct {
 	ProcEdgesTable        string                        // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
 	IncludeShardNum       bool                          // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
 	SourceMode            SourceMode                    // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
+	// IcePromoted lists the field names whose `_ice_` promoted column exists on
+	// the Iceberg table this query targets. Iceberg mode only. Leave nil when the
+	// target table's schema is unknown: pruning is skipped, results stay correct.
+	// Supplying names absent from the table makes ClickHouse fail the query with
+	// UNKNOWN_IDENTIFIER, so this must reflect the table, not the current build's
+	// default promoted set. See icebergEqualityPredicate.
+	IcePromoted map[string]bool
 	// SourceSubquery makes the pipeline read FROM a pre-built SQL subquery instead of the
 	// logs table. Used to compose downstream BQL (filter/aggregate/sort/table) on top of a
 	// pgr() scored edge list: the two-pass pgr SQL becomes the source and its flat output
@@ -98,7 +105,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 			return nil, err
 		}
 	}
-	registry := NewFieldRegistry(opts.SourceMode)
+	registry := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
 	// A subquery source (a resolved source command) exposes flat columns; register them so
 	// bare references resolve to the column name (not fields.`x` JSON access). Numeric columns
 	// register as Assignment (already numeric -> no toFloat64OrZero coercion, which errors on a
@@ -496,7 +503,7 @@ LIMIT %d`,
 //
 // Returns "" on any error so the histogram degrades gracefully.
 func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) string {
-	registry := NewFieldRegistry(opts.SourceMode)
+	registry := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
 	helperPlan := NewQueryPlan()
 	ctx := &CommandContext{
 		Registry: registry,

@@ -735,7 +735,7 @@ func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string,
 		// Comma-separated equality list -> IN / NOT IN.
 		negate := cond.Operator == "!="
 		if registry != nil && registry.sourceMode == SourceIceberg && isJSONField {
-			sql = buildIcebergEqualityListSQL(cond.Field, cond.Values, negate)
+			sql = buildIcebergEqualityListSQL(cond.Field, cond.Values, negate, registry.icePromoted)
 		} else {
 			sql = buildEqualityListSQL(fieldRef, cond.Values, negate, isJSONField)
 		}
@@ -752,7 +752,7 @@ func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string,
 			// such a pre-filter can drop real matches. raw_log is for unqualified search only.
 			if registry != nil && registry.sourceMode == SourceIceberg && isJSONField {
 				// MAP correctness + promoted `_ice_` column pruning (icebergEqualityPredicate).
-				sql = icebergEqualityPredicate(cond.Field, cond.Value)
+				sql = icebergEqualityPredicate(cond.Field, cond.Value, registry.icePromoted)
 			} else if resolvedComputed && validateNumeric(cond.Value) == nil {
 				sql = fmt.Sprintf("%s = %s", numericRef(), cond.Value)
 			} else {
@@ -985,6 +985,8 @@ var jsonDefaultTypeHintedFields = map[string]bool{
 	"bifract_category":   true,
 	"process_guid":        true,
 	"parent_process_guid": true,
+	"target_image":        true,
+	"target_file":         true,
 }
 
 // SetCustomTypeHintedFields is retained as a no-op for API stability (called at
@@ -1183,10 +1185,10 @@ func buildEqualityListSQL(fieldRef string, values []string, negate, isJSONField 
 // buildIcebergEqualityListSQL renders a comma-separated equality list against an
 // Iceberg source, reusing icebergEqualityPredicate per value so MAP correctness
 // and promoted `_ice_` column pruning are preserved.
-func buildIcebergEqualityListSQL(field string, values []string, negate bool) string {
+func buildIcebergEqualityListSQL(field string, values []string, negate bool, promoted map[string]bool) string {
 	parts := make([]string, len(values))
 	for i, v := range values {
-		parts[i] = icebergEqualityPredicate(field, v)
+		parts[i] = icebergEqualityPredicate(field, v, promoted)
 	}
 	inner := strings.Join(parts, " OR ")
 	if negate {

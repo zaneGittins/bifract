@@ -7,6 +7,13 @@ import (
 )
 
 func icebergOpts() QueryOptions {
+	// Models a fully-evolved table: every field the current build promotes has its
+	// `_ice_` column present. Real callers read this set from the table's own
+	// schema (Catalog.TablePromotedFields), since an older table may carry fewer.
+	promoted := make(map[string]bool)
+	for _, f := range IcePromotedFields() {
+		promoted[f] = true
+	}
 	return QueryOptions{
 		StartTime:          time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		EndTime:            time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
@@ -14,6 +21,7 @@ func icebergOpts() QueryOptions {
 		SourceMode:         SourceIceberg,
 		UseIngestTimestamp: true,
 		TableName:          "icebergS3('http://x/t')",
+		IcePromoted:        promoted,
 	}
 }
 
@@ -128,6 +136,58 @@ func TestIcebergRejectsUnsupported(t *testing.T) {
 			t.Errorf("expected iceberg rejection for %q, got nil", q)
 		}
 	}
+}
+
+// TestIcebergPromotedSetIsPerTable covers the dormant-archive case: a table whose
+// schema predates a growth of the promoted set must never have the newer `_ice_`
+// columns referenced. ClickHouse fails such a query outright with
+// UNKNOWN_IDENTIFIER, so this is a correctness guard, not a performance one.
+func TestIcebergPromotedSetIsPerTable(t *testing.T) {
+	translate := func(t *testing.T, query string, promoted map[string]bool) string {
+		t.Helper()
+		pipeline, err := ParseQuery(query)
+		if err != nil {
+			t.Fatalf("parse %q: %v", query, err)
+		}
+		opts := icebergOpts()
+		opts.IcePromoted = promoted
+		res, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("translate %q: %v", query, err)
+		}
+		return res.SQL
+	}
+
+	t.Run("field absent from this table emits no _ice_ reference", func(t *testing.T) {
+		// src_ip is promoted by the build, but this table does not carry the column.
+		for _, q := range []string{`src_ip="1.2.3.4"`, `src_ip="1.2.3.4","5.6.7.8"`} {
+			sql := translate(t, q, map[string]bool{"dst_ip": true})
+			if strings.Contains(sql, "_ice_src_ip") {
+				t.Errorf("referenced a column absent from the table: %s", sql)
+			}
+			if !strings.Contains(sql, "JSONExtractString(norm_log, 'src_ip')") {
+				t.Errorf("lost the always-correct norm_log predicate: %s", sql)
+			}
+		}
+	})
+
+	t.Run("nil set is safe and prunes nothing", func(t *testing.T) {
+		sql := translate(t, `src_ip="1.2.3.4"`, nil)
+		if strings.Contains(sql, "_ice_") {
+			t.Errorf("nil promoted set must not emit _ice_ refs: %s", sql)
+		}
+		if !strings.Contains(sql, "JSONExtractString(norm_log, 'src_ip')") {
+			t.Errorf("lost the always-correct norm_log predicate: %s", sql)
+		}
+	})
+
+	t.Run("field present on this table still prunes", func(t *testing.T) {
+		sql := translate(t, `src_ip="1.2.3.4"`, map[string]bool{"src_ip": true})
+		if !strings.Contains(sql, "_ice_src_ip = '1.2.3.4'") ||
+			!strings.Contains(sql, "_ice_src_ip IS NULL") {
+			t.Errorf("dropped pruning for a column the table has: %s", sql)
+		}
+	})
 }
 
 func TestHotModeUnchangedForPromotedField(t *testing.T) {

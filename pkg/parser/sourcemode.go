@@ -144,9 +144,7 @@ func icebergSupportedFeatures(pipeline *PipelineNode) error {
 // generated queries. ENABLED: the dual predicate prunes via Parquet min/max and
 // bloom filters on ClickHouse >= 26.6 (the pinned version). Earlier CH (26.2)
 // mis-read Map/`_ice_`/bloom on iceberg; those bugs are fixed as of 26.6, so no
-// query work-arounds are needed. Freshly-created tables (all of them, since the
-// promoted set is static and no pre-iceberg archives exist) carry the columns
-// uniformly; a schema-*evolved* table (mixed old/new files) is a legacy-only edge.
+// query work-arounds are needed.
 const icebergPromotionQueryEnabled = true
 
 // icebergEqualityPredicate builds the field-equality predicate for iceberg mode.
@@ -155,14 +153,27 @@ const icebergPromotionQueryEnabled = true
 // norm_log clause is always correct; `_ice_x` prunes post-promotion files; IS
 // NULL keeps pre-promotion files). With promotion disabled it emits the plain
 // norm_log-extraction equality.
-func icebergEqualityPredicate(field, value string) string {
+//
+// promoted is the set of field names whose `_ice_` column actually exists on the
+// table being queried, and it is per-table rather than global on purpose. The
+// promoted set grows whenever a field is added to jsonDefaultTypeHintedFields,
+// but an existing archive table only gains the new columns when an archiver next
+// commits to it (ensureIceColumns). A dormant fractal that stopped ingesting
+// therefore keeps an older, narrower schema forever. Referencing a column absent
+// from that table's Iceberg metadata is not a lost optimization: ClickHouse fails
+// the whole query with UNKNOWN_IDENTIFIER.
+//
+// A nil/empty set is the safe default: emit no `_ice_` reference at all. The
+// norm_log clause alone is always correct, so a caller that does not supply the
+// set loses pruning but never returns a wrong answer or an error.
+func icebergEqualityPredicate(field, value string, promoted map[string]bool) string {
 	mapRef := mapFieldRef(field)
 	esc := escapeString(value)
-	if !icebergPromotionQueryEnabled {
+	if !icebergPromotionQueryEnabled || !promoted[field] {
 		return fmt.Sprintf("%s = '%s'", mapRef, esc)
 	}
-	col, promoted := IcePromotedColumn(field)
-	if !promoted {
+	col, isPromoted := IcePromotedColumn(field)
+	if !isPromoted {
 		return fmt.Sprintf("%s = '%s'", mapRef, esc)
 	}
 	return fmt.Sprintf("%s = '%s' AND (%s = '%s' OR %s IS NULL)", mapRef, esc, col, esc, col)

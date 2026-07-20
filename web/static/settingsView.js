@@ -345,6 +345,7 @@ const SettingsView = {
         if (panel) panel.style.display = '';
         // Entering the Groups tab always lands on the list; detail is restored separately.
         if (tabName === 'groups' && window.GroupsView) GroupsView.closeDetail();
+        if (tabName === 'context' && window.ContextLinks) ContextLinks.show();
     },
 
     async show(subPath = '') {
@@ -395,6 +396,9 @@ const SettingsView = {
             const subTab = slash === -1 ? subPath : subPath.slice(0, slash);
             const detailId = slash === -1 ? '' : subPath.slice(slash + 1);
             this.switchSubTab(subTab, true);
+            if (subTab === 'context' && detailId && window.ContextLinks) {
+                ContextLinks.show(detailId);
+            }
             if (subTab === 'groups' && detailId && window.GroupsView) {
                 if (groupsLoad) await groupsLoad;
                 GroupsView.openDetail(detailId, true);

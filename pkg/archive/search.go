@@ -29,11 +29,14 @@ type SearchResult struct {
 // queryID, when non-empty, is applied as the ClickHouse query_id so the run can
 // be interrupted with KILL QUERY (cancel/timeout) from another process.
 func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj objstore.Config, fractalID, query string, from, to time.Time, maxRows int, queryID string) (*SearchResult, error) {
-	loc, err := c.TableLocation(ctx, fractalID)
+	// Read the promoted-column set from this table's own schema: a dormant fractal
+	// may predate the current build's set, and querying a column it lacks is a hard
+	// failure rather than a lost optimization.
+	loc, promoted, err := c.TablePromotedFields(ctx, fractalID)
 	if err != nil {
 		return nil, fmt.Errorf("archive: no Iceberg table for fractal %s: %w", fractalID, err)
 	}
-	tf, err := chIcebergTableFunc(obj, loc)
+	tf, err := chIcebergTableFunc(obj, loc, ch.Cluster)
 	if err != nil {
 		return nil, err
 	}
@@ -54,6 +57,7 @@ func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj 
 		SourceMode:         parser.SourceIceberg,
 		UseIngestTimestamp: true, // archive is partitioned by ingest_date; prune on it
 		TableName:          tf,
+		IcePromoted:        promoted,
 	})
 	if err != nil {
 		return nil, err

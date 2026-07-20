@@ -1730,6 +1730,28 @@ CREATE TABLE IF NOT EXISTS clickhouse_schema_fields (
 ALTER TABLE clickhouse_schema_fields ADD COLUMN IF NOT EXISTS sync_status VARCHAR(16) NOT NULL DEFAULT 'active';
 ALTER TABLE clickhouse_schema_fields ADD COLUMN IF NOT EXISTS sync_error  TEXT         NOT NULL DEFAULT '';
 
+-- Fields an admin has explicitly dismissed from the schema suggestions list.
+-- This is deliberately a durable per-field decision rather than a per-user snooze:
+-- a suggestion that keeps returning is either worth acting on or worth silencing
+-- for everyone, and a shared, inspectable, reversible record beats a timer that
+-- expires and re-nags. Also suppresses the field from the capacity warning.
+CREATE TABLE IF NOT EXISTS schema_field_ignored (
+    field_name VARCHAR(255) PRIMARY KEY,
+    ignored_by VARCHAR(255) NOT NULL DEFAULT '',
+    ignored_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- Fields that have spilled past max_dynamic_paths and lost their own column, so
+-- queries on them scan every row. Detecting this needs the JSON column itself
+-- (~10x the cost of the flat norm_log sample and scaling with path count), so a
+-- background monitor writes findings here and every replica reads them cheaply
+-- instead of each recomputing on page load.
+CREATE TABLE IF NOT EXISTS schema_field_overflow (
+    field_name  VARCHAR(255) PRIMARY KEY,
+    rows_seen   BIGINT       NOT NULL DEFAULT 0,
+    detected_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
 -- ============================
 -- Analytics models
 -- ============================
@@ -1895,6 +1917,12 @@ CREATE INDEX IF NOT EXISTS archive_maintain_history_ran_at_idx ON archive_mainta
 -- bifract-archiver run process claims (FOR UPDATE SKIP LOCKED) and executes it,
 -- replaying Iceberg data back into the ClickHouse logs table and streaming
 -- progress back. Empty until an operator requests a restore.
+--
+-- from_ts/to_ts are an INGEST-time window (they match the archive's ingest_date
+-- partition axis, so a restore reads exactly the partitions it needs), not an
+-- event-time window. The job executes as one chunk per ingest day; cursor_ts is
+-- the next unprocessed chunk boundary so a restore resumes after a crash or
+-- cancel instead of replaying from the start.
 CREATE TABLE IF NOT EXISTS archive_restore_jobs (
     id            BIGSERIAL PRIMARY KEY,
     batch_id      UUID NOT NULL,
@@ -1906,6 +1934,9 @@ CREATE TABLE IF NOT EXISTS archive_restore_jobs (
     status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'canceled')),
     target_rows   BIGINT NOT NULL DEFAULT 0,
     rows_restored BIGINT NOT NULL DEFAULT 0,
+    cursor_ts     TIMESTAMPTZ,
+    chunks_total  INTEGER NOT NULL DEFAULT 0,
+    chunks_done   INTEGER NOT NULL DEFAULT 0,
     error         TEXT,
     requested_by  TEXT,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1913,6 +1944,9 @@ CREATE TABLE IF NOT EXISTS archive_restore_jobs (
     finished_at   TIMESTAMPTZ,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE archive_restore_jobs ADD COLUMN IF NOT EXISTS cursor_ts    TIMESTAMPTZ;
+ALTER TABLE archive_restore_jobs ADD COLUMN IF NOT EXISTS chunks_total INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE archive_restore_jobs ADD COLUMN IF NOT EXISTS chunks_done  INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_archive_restore_jobs_pending
     ON archive_restore_jobs (created_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_archive_restore_jobs_created

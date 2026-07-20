@@ -37,7 +37,14 @@ CREATE TABLE IF NOT EXISTS logs (
         `resp_bytes`         String,
         `bifract_category`   String,
         `process_guid`        String,
-        `parent_process_guid` String
+        `parent_process_guid` String,
+        -- Cross-tree reconnection fields read by pgr(). Hint only, no skip index
+        -- (see ProjectDefaultFields in pkg/schemafields/defaults.go). Existing
+        -- installs receive these via ReconcileSchemaFields, never a migration: a
+        -- migration rewriting this list from a fixed set would strip user-added
+        -- hints and break dependent skip indexes.
+        `target_image`        String,
+        `target_file`         String
     ),
     fractal_id LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3),
@@ -180,7 +187,14 @@ CREATE TABLE IF NOT EXISTS logs_hot (
         `resp_bytes`         String,
         `bifract_category`   String,
         `process_guid`        String,
-        `parent_process_guid` String
+        `parent_process_guid` String,
+        -- Cross-tree reconnection fields read by pgr(). Hint only, no skip index
+        -- (see ProjectDefaultFields in pkg/schemafields/defaults.go). Existing
+        -- installs receive these via ReconcileSchemaFields, never a migration: a
+        -- migration rewriting this list from a fixed set would strip user-added
+        -- hints and break dependent skip indexes.
+        `target_image`        String,
+        `target_file`         String
     ),
     fractal_id       LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3) DEFAULT now64(3)

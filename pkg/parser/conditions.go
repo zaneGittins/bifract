@@ -404,7 +404,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 		// the operator by negateHavingCondition (= <-> !=), matching single value.
 		negate := cond.Operator == "!="
 		if registry.sourceMode == SourceIceberg && isJSONField {
-			return buildIcebergEqualityListSQL(cond.Field, cond.Values, negate)
+			return buildIcebergEqualityListSQL(cond.Field, cond.Values, negate, registry.icePromoted)
 		}
 		return buildEqualityListSQL(fieldRef, cond.Values, negate, isJSONField)
 	}
@@ -415,7 +415,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 		// pre-filter (the value may be normalized and absent from raw_log -> false negatives).
 		if registry.sourceMode == SourceIceberg && isJSONField {
 			// MAP correctness + promoted `_ice_` column pruning (icebergEqualityPredicate).
-			return icebergEqualityPredicate(cond.Field, cond.Value)
+			return icebergEqualityPredicate(cond.Field, cond.Value, registry.icePromoted)
 		}
 		return fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
 	case "!=":

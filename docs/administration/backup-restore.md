@@ -126,31 +126,38 @@ This drops the archived tables from the catalog but does **not** delete the data
 
 ### Restore & Reconcile
 
-Two modes replay archived data back into ClickHouse for an event-time window:
+Two modes replay archived data back into ClickHouse for an **ingest-time** window:
 
 - **Restore** inserts archived rows for the window, skipping any `log_id` already present (idempotent).
 - **Reconcile** compares the hot-store and archive counts first and restores only the rows ClickHouse is missing (heals a gap).
+
+!!! note "The window is ingest time, not event time"
+    The archive is partitioned by ingest date, so an ingest-time window lets ClickHouse read only the partitions you asked for instead of scanning the whole table. This matches how Recall queries the archive. In practice ingest time and event time differ only by your pipeline's lag.
+
+Each job runs as **one chunk per ingest day**, and records a cursor after every chunk. That means a restore is resumable: if it fails, is cancelled, or its worker restarts, the completed days are not replayed. Use **Resume** on the job to continue from the first unfinished day. It also keeps each insert bounded rather than issuing one unbounded statement across the whole window.
 
 Restored rows land in the normal `logs` table with the same typed JSON fields, so BQL queries and skip indexes work exactly as on freshly-ingested data. Restore requires an object-storage backend so ClickHouse can read the Iceberg tables directly (the `disk` backend is pod-local and unreadable).
 
 #### From the admin UI (recommended)
 
-*System → Archive → Restore from Archive*: pick one or more fractals, a time range, and the mode, then start it. Each fractal becomes an **async job** that a `bifract-archiver` process claims and runs, with a live progress bar and row count. Jobs survive restarts and are claimed by exactly one archiver even when several are running. Pending jobs can be cancelled; a job that has already started runs to completion.
+*System → Archive → Restore from Archive*: pick one or more fractals, a time range, and the mode, then start it. Each fractal becomes an **async job** that a `bifract-archiver` process claims and runs, with a live progress bar and row count. Jobs are claimed by exactly one archiver even when several are running. Pending **and running** jobs can be cancelled: the owning worker interrupts the in-flight insert within a few seconds. Rows already written stay put, so re-running the same window in restore (dedup) mode picks up where it left off. If a worker dies mid-restore, its job is failed automatically once it stops heartbeating rather than sitting at "running" forever.
 
 !!! warning "Restore is heavy"
-    Replaying a large window re-inserts potentially billions of rows, which drives ClickHouse CPU up and can trigger ingest backpressure. Restore the narrowest window you need.
+    Replaying a large window re-inserts potentially billions of rows, which drives ClickHouse CPU up and can trigger ingest backpressure. Throughput is bounded by MergeTree merge cost, so a restore takes roughly as long as ingesting the same data did. Restore the narrowest window you need, and see [Recovery time](#recovery-time) before planning a multi-month replay.
 
 #### From the CLI
 
 Equivalent one-off operations (a container or k8s Job) for scripting or when the archiver is not running:
 
 ```bash
-# Replay an event-time window from Iceberg back into ClickHouse (idempotent; dedups on log_id)
+# Replay an ingest-time window from Iceberg back into ClickHouse (idempotent; dedups on log_id)
 bifract-archiver restore --fractal <fractal-id> --from 2026-01-01 --to 2026-02-01
 
 # Heal a gap: restore only what ClickHouse is missing for the window
 bifract-archiver reconcile --fractal <fractal-id> --from 2026-01-01 --to 2026-02-01
 ```
+
+Both log a resume point as each ingest day completes. If a run is interrupted, re-run it with `--from` set to the last reported resume point to continue instead of starting over.
 
 ### Maintenance
 
@@ -160,5 +167,24 @@ Compaction, snapshot expiry, and cleanup run as a singleton `maintain` pass (a k
 
 Decide your DR posture explicitly. The two systems cover different things:
 
-- **Log data (ClickHouse):** the **Iceberg archive** is your durable, engine-independent copy — a full ClickHouse loss is recoverable by restoring from Iceberg (`bifract-archiver restore`). For protection against logical deletion or ransomware, enable object-storage **versioning + object lock (WORM)** and, if needed, **cross-region replication** on the archive bucket/container. This is configured on the bucket, not in Bifract.
+- **Log data (ClickHouse):** the **Iceberg archive** is your durable, engine-independent copy. A full ClickHouse loss does not lose data, but see [recovery time](#recovery-time) below before assuming the whole hot store can be rebuilt on an incident timeline. To protect the archive against accidental or malicious deletion, enable object-storage **versioning + object lock (WORM)** and, if needed, **cross-region replication** on the archive bucket/container. This is configured on the bucket, not in Bifract.
 - **Configuration/metadata (Postgres):** covered by the `bifract` Postgres backup above — and it also holds the Iceberg catalog. Run it on a schedule and store it off-box (S3).
+
+### Recovery time
+
+Durability and recovery speed are different guarantees. Your data is safe in the archive; getting it back into ClickHouse is the slow part, and the limit is not object-storage bandwidth.
+
+Replaying archived rows means re-inserting them into a MergeTree, which pays the same background merge cost the original ingest paid. Restore skips log parsing and normalization, but it re-runs every materialized view and every merge. **Restoring N days costs roughly what ingesting N days cost.** Adding shards raises read and insert throughput but does not remove the merge floor.
+
+Practical consequences at **Large** (500 GB–2 TB/day) and **X-Large**:
+
+- Restoring 90 days is a **days-to-weeks** operation, not an overnight one.
+- The hot store may not physically hold it. Shard disks are usually sized for the retention window, not full history.
+- Rows older than 7 days arrive without `raw_log` (it carries a 7-day column TTL), so deep restores return normalized fields only.
+
+Plan DR around the window you actually need online:
+
+1. **Restore the recent operational window** (days, not months) to get search, alerting, and dashboards working again. This is what restore is designed for and it completes in a practical timeframe.
+2. **Query the deep history in place with Recall** (*Search → Recall*), which reads Iceberg directly and never writes to ClickHouse, so it has no merge cost and no retention ceiling.
+
+Restore the narrowest window that meets the need. If you are reaching for a multi-month restore to answer an investigative question, Recall is almost certainly the better tool.

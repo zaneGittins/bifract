@@ -82,7 +82,7 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 	}
 
 	plan := NewQueryPlan()
-	reg := NewFieldRegistry(opts.SourceMode)
+	reg := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
 	ctx := &CommandContext{Registry: reg, Plan: plan, Opts: opts, Pipeline: pl}
 
 	if pl.Filter != nil {

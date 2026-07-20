@@ -361,12 +361,19 @@ func restoreCmd(args []string) {
 	cfg, cat, ch := restoreDeps()
 	defer ch.Close()
 
-	log.Printf("restoring fractal %s [%s, %s) dedup=%v ...", *fractal, chFmt(from), chFmt(to), !*noDedup)
-	n, err := cat.Restore(context.Background(), ch, cfg.Obj, *fractal, from, to, !*noDedup)
+	log.Printf("restoring fractal %s ingested [%s, %s) dedup=%v ...", *fractal, chFmt(from), chFmt(to), !*noDedup)
+	n, err := cat.Restore(context.Background(), ch, cfg.Obj, *fractal, from, to, !*noDedup, "", logRestoreChunk)
 	if err != nil {
 		log.Fatalf("restore failed: %v", err)
 	}
 	log.Printf("restore complete: %d rows inserted into logs", n)
+}
+
+// logRestoreChunk reports per-chunk progress for the one-shot CLI commands. The
+// timestamp it prints is the resume point: re-running with --from set to it
+// continues where an interrupted run stopped.
+func logRestoreChunk(next time.Time, chunksDone int, rowsSoFar int64) {
+	log.Printf("  chunk %d done, %d row(s) so far; resume point %s", chunksDone, rowsSoFar, chFmt(next))
 }
 
 // reconcileCmd heals a ClickHouse gap from Iceberg (restores when Iceberg holds
@@ -385,7 +392,7 @@ func reconcileCmd(args []string) {
 	defer ch.Close()
 
 	log.Printf("reconciling fractal %s [%s, %s) ...", *fractal, chFmt(from), chFmt(to))
-	n, err := cat.Reconcile(context.Background(), ch, cfg.Obj, *fractal, from, to)
+	n, err := cat.Reconcile(context.Background(), ch, cfg.Obj, *fractal, from, to, "", logRestoreChunk)
 	if err != nil {
 		log.Fatalf("reconcile failed: %v", err)
 	}

@@ -48,7 +48,6 @@
                     <button id="fractalListingTabBtn" class="nav-tab active">Fractals</button>
                     <button id="mainNormalizersTabBtn" class="nav-tab admin-only" style="display: none;">Normalizers</button>
                     <button id="mainSchemaTabBtn" class="nav-tab admin-only" style="display: none;">Schema</button>
-                    <button id="mainContextTabBtn" class="nav-tab admin-only" style="display: none;">Context</button>
                     <button id="mainPerformanceTabBtn" class="nav-tab admin-only" style="display: none;">System</button>
                     <button id="mainSettingsTabBtn" class="nav-tab admin-only" style="display: none;">Admin</button>
                 </nav>
@@ -537,7 +536,7 @@
                                         </div>
                                     </div>
                                     <div class="restore-field">
-                                        <label class="restore-label">Time range <span class="restore-sublabel">event time, UTC</span></label>
+                                        <label class="restore-label">Ingested between <span class="restore-sublabel">ingest time, UTC &mdash; matches the archive's partitioning, so only the days you select are read</span></label>
                                         <div class="restore-range-row">
                                             <input type="datetime-local" id="restoreFrom" class="restore-input" step="1">
                                             <span class="restore-range-sep">to</span>
@@ -608,6 +607,7 @@
                 <div class="alerts-sub-tabs" id="settingsSubTabs">
                     <button class="alerts-sub-tab active" data-subtab="users" onclick="SettingsView.switchSubTab('users')">Users</button>
                     <button class="alerts-sub-tab" data-subtab="groups" onclick="SettingsView.switchSubTab('groups')">Groups</button>
+                    <button class="alerts-sub-tab" data-subtab="context" onclick="SettingsView.switchSubTab('context')">Context Links</button>
                     <button class="alerts-sub-tab" data-subtab="settings" onclick="SettingsView.switchSubTab('settings')">Settings</button>
                 </div>
 
@@ -818,97 +818,82 @@
                     </div>
                 </div>
                 </div><!-- end settingsSubTabSettings -->
+
+                <!-- Context Links Sub-Tab -->
+                <div id="settingsSubTabContext" class="settings-sub-panel" style="display:none;">
+                    <div class="section-header" style="justify-content:flex-end;">
+                        <button id="contextLinkCreateBtn" class="btn-primary btn-sm">+ Add Context Link</button>
+                    </div>
+                    <div id="contextLinksListContainer">
+                        <div class="loading">Loading context links...</div>
+                    </div>
+
+                    <!-- Context Link Modal -->
+                    <div id="contextLinkModal" class="modal" style="display: none;">
+                        <div class="modal-content modal-sm">
+                            <div class="modal-header">
+                                <h3 id="contextLinkModalTitle">Create Context Link</h3>
+                                <button class="close-panel-btn" onclick="ContextLinks.closeModal()">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="form-group">
+                                    <label for="contextLinkName">Name</label>
+                                    <input type="text" id="contextLinkName" placeholder="e.g. VirusTotal Hash Lookup">
+                                </div>
+                                <div class="form-group">
+                                    <label for="contextLinkFields">Match Fields</label>
+                                    <input type="text" id="contextLinkFields" placeholder="e.g. md5, sha1, sha256, hash">
+                                    <p class="help-text">Comma-separated field names (case-insensitive)</p>
+                                </div>
+                                <div class="form-group">
+                                    <label for="contextLinkRegex">Validation Regex (optional)</label>
+                                    <input type="text" id="contextLinkRegex" placeholder="e.g. ^[a-fA-F0-9]{32,64}$">
+                                    <p class="help-text">Only show the link when the field value matches this pattern</p>
+                                </div>
+                                <div class="form-group">
+                                    <label for="contextLinkURL">URL Template</label>
+                                    <input type="text" id="contextLinkURL" placeholder="https://example.com/search?q=<ATTR_VALUE>">
+                                    <p class="help-text">Use &lt;ATTR_VALUE&gt; as placeholder for the field value</p>
+                                </div>
+                                <div class="form-group form-row">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="contextLinkRedirectWarning" checked>
+                                        Show redirect warning
+                                    </label>
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="contextLinkEnabled" checked>
+                                        Enabled
+                                    </label>
+                                </div>
+                                <div class="form-actions">
+                                    <button class="btn-primary" onclick="ContextLinks.saveLink()">Save</button>
+                                    <button class="btn-secondary" onclick="ContextLinks.closeModal()">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div><!-- end settingsSubTabContext -->
             </section>
         </div>
 
-            </div>
-
-            <!-- Context Links Tab Content (Admin Only) -->
-            <div id="mainContextTabContent" style="display: none;">
-                <div id="contextLinksView" class="admin-only" style="display: none;">
-                    <section class="settings-view-section">
-                        <div class="section-header" style="justify-content:flex-end;">
-                            <button id="contextLinkCreateBtn" class="btn-primary btn-sm">+ Add Context Link</button>
-                        </div>
-                        <div id="contextLinksListContainer">
-                            <div class="loading">Loading context links...</div>
-                        </div>
-                    </section>
-                </div>
-            </div>
-
-            <!-- Context Link Modal -->
-            <div id="contextLinkModal" class="modal" style="display: none;">
-                <div class="modal-content modal-sm">
-                    <div class="modal-header">
-                        <h3 id="contextLinkModalTitle">Create Context Link</h3>
-                        <button class="close-panel-btn" onclick="ContextLinks.closeModal()">&times;</button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="form-group">
-                            <label for="contextLinkName">Name</label>
-                            <input type="text" id="contextLinkName" placeholder="e.g. VirusTotal Hash Lookup">
-                        </div>
-                        <div class="form-group">
-                            <label for="contextLinkFields">Match Fields</label>
-                            <input type="text" id="contextLinkFields" placeholder="e.g. md5, sha1, sha256, hash">
-                            <p class="help-text">Comma-separated field names (case-insensitive)</p>
-                        </div>
-                        <div class="form-group">
-                            <label for="contextLinkRegex">Validation Regex (optional)</label>
-                            <input type="text" id="contextLinkRegex" placeholder="e.g. ^[a-fA-F0-9]{32,64}$">
-                            <p class="help-text">Only show the link when the field value matches this pattern</p>
-                        </div>
-                        <div class="form-group">
-                            <label for="contextLinkURL">URL Template</label>
-                            <input type="text" id="contextLinkURL" placeholder="https://example.com/search?q=<ATTR_VALUE>">
-                            <p class="help-text">Use &lt;ATTR_VALUE&gt; as placeholder for the field value</p>
-                        </div>
-                        <div class="form-group form-row">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="contextLinkRedirectWarning" checked>
-                                Show redirect warning
-                            </label>
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="contextLinkEnabled" checked>
-                                Enabled
-                            </label>
-                        </div>
-                        <div class="form-actions">
-                            <button class="btn-primary" onclick="ContextLinks.saveLink()">Save</button>
-                            <button class="btn-secondary" onclick="ContextLinks.closeModal()">Cancel</button>
-                        </div>
-                    </div>
-                </div>
             </div>
 
             <!-- Schema Fields Tab Content (Admin Only) -->
             <div id="mainSchemaTabContent" style="display: none;">
                 <div id="schemaFieldsView" class="admin-only" style="display: none;">
                     <section class="settings-view-section">
-                        <div class="section-header">
-                            <div class="schema-title-row">
-                                <h3 style="margin:0">Schema Fields</h3>
-                                <span class="schema-info" tabindex="0" role="img" aria-label="About schema fields">
-                                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                        <circle cx="8" cy="8" r="6.5"></circle>
-                                        <line x1="8" y1="7.2" x2="8" y2="11.5"></line>
-                                        <circle cx="8" cy="4.8" r="0.4" fill="currentColor"></circle>
-                                    </svg>
-                                    <span class="schema-info-tip" role="tooltip">
-                                        Project default fields are built into every deployment and are read-only.
-                                        Custom fields add type hints and skip indexes to ClickHouse so queries on
-                                        those fields use index acceleration. A new field applies to newly ingested
-                                        logs right away; existing logs stay fully searchable but are not
-                                        index-accelerated retroactively.
-                                    </span>
-                                </span>
+                        <div class="schema-head">
+                            <div class="schema-head-text">
+                                <h3>Schema Fields</h3>
+                                <p>Adding a field gives it its own column and reserves capacity. That is free
+                                   and applies to logs you already have. A skip index is the separate,
+                                   optional choice, and it only speeds up logs ingested from then on.</p>
                             </div>
-                            <div class="section-header-actions">
+                            <div class="schema-head-actions">
                                 <input type="file" id="schemaImportInput" accept=".yaml,.yml,text/yaml" style="display:none">
                                 <button id="schemaExportBtn" class="btn-secondary btn-sm">Export</button>
                                 <button id="schemaImportBtn" class="btn-secondary btn-sm">Import</button>
-                                <button id="schemaFieldAddBtn" class="btn-primary btn-sm">+ Add Custom Field</button>
+                                <button id="schemaFieldAddBtn" class="btn-primary btn-sm">Add field</button>
                             </div>
                         </div>
 
@@ -916,35 +901,81 @@
                         <div id="schemaFieldAddForm" style="display:none;">
                             <div class="form-row">
                                 <div class="form-group flex-grow">
-                                    <label for="schemaFieldName">Field Name</label>
+                                    <label for="schemaFieldName">Field name</label>
                                     <input type="text" id="schemaFieldName" placeholder="e.g. tenant_id" autocomplete="off" spellcheck="false">
-                                    <div class="schema-field-hint">Use letters, digits, and underscores. Must start with a letter or underscore.</div>
+                                    <div class="schema-field-hint">Letters, digits, and underscores. Must start with a letter or underscore.</div>
                                 </div>
                                 <div class="form-group index-type-group">
-                                    <label for="schemaFieldIndexType">Index Type</label>
+                                    <label for="schemaFieldIndexType">Skip index</label>
                                     <select id="schemaFieldIndexType">
-                                        <option value="none">None: type hint only, no skip index (default)</option>
-                                        <option value="bloom_filter">Bloom Filter: high-cardinality (IPs, hashes, paths)</option>
-                                        <option value="set">Set: low-cardinality (status codes, event types)</option>
+                                        <option value="none">No index</option>
+                                        <option value="set">Set: under a few hundred distinct values</option>
+                                        <option value="bloom_filter">Bloom filter: many distinct values</option>
                                     </select>
                                 </div>
                                 <div class="form-actions">
-                                    <button id="schemaFieldSaveBtn" class="btn-primary btn-sm">Add Field</button>
+                                    <button id="schemaFieldSaveBtn" class="btn-primary btn-sm">Add field</button>
                                     <button id="schemaFieldCancelBtn" class="btn-secondary btn-sm">Cancel</button>
                                 </div>
                             </div>
                         </div>
 
-                        <div id="schemaFieldsListContainer">
+                        <!-- Capacity: the scarce resource this page manages -->
+                        <div class="schema-cap" id="schemaCapacity" hidden>
+                            <div class="schema-cap-top">
+                                <span class="schema-cap-label">Field capacity</span>
+                                <span class="schema-cap-fig" id="schemaCapFig"></span>
+                            </div>
+                            <div class="schema-bar">
+                                <i class="schema-seg-hint" id="schemaSegHint"></i>
+                                <i class="schema-seg-dyn" id="schemaSegDyn"></i>
+                            </div>
+                            <p class="schema-cap-note" id="schemaCapNote"></p>
+                        </div>
+
+                        <!-- Suggestions derived from real data and real queries -->
+                        <div id="schemaSuggestZone" hidden>
+                            <div class="schema-sec">
+                                <h2>Suggested from your data</h2>
+                                <span class="schema-count" id="schemaSuggestCount">0</span>
+                            </div>
+                            <div class="schema-list" id="schemaSuggestList"></div>
+                        </div>
+
+                        <div class="schema-empty" id="schemaSuggestEmpty" hidden>
+                            <h3>No suggestions right now</h3>
+                            <p id="schemaSuggestEmptyText">Bifract reads your ingested logs to find fields worth
+                               reserving. Suggestions appear once enough data has arrived.</p>
+                        </div>
+
+                        <div class="schema-sec">
+                            <h2>Configured fields</h2>
+                            <span class="schema-count" id="schemaConfiguredCount">0</span>
+                        </div>
+                        <div class="schema-list" id="schemaConfiguredList">
                             <div class="loading">Loading schema fields...</div>
                         </div>
 
-                        <!-- Danger zone -->
-                        <div class="schema-danger-zone">
-                            <h4>Schema Reset</h4>
-                            <p>Deletes all ingested log data and rebuilds the ClickHouse schema from the current field configuration. Fractal configs, normalizers, and all other settings are not affected. Use this after adding or removing custom fields on large datasets where background mutations are impractical.</p>
-                            <button id="schemaFieldResetBtn" class="btn-danger btn-sm">Reset Schema and Delete All Logs</button>
-                        </div>
+                        <!-- Ignored suggestions, restorable -->
+                        <details class="schema-ignored" id="schemaIgnoredZone" hidden>
+                            <summary>Ignored fields <span id="schemaIgnoredCount"></span></summary>
+                            <div class="schema-ignored-body" id="schemaIgnoredList"></div>
+                        </details>
+
+                        <!-- Rebuild: demoted. Adding and removing fields no longer needs it. -->
+                        <details class="schema-danger">
+                            <summary>Advanced: rebuild schema from scratch</summary>
+                            <div class="schema-danger-body">
+                                <p>Deletes all ingested log data and rebuilds the ClickHouse schema from the
+                                   current field configuration. Fractal configs, normalizers, and other
+                                   settings are unaffected.</p>
+                                <p><strong>You almost certainly do not need this.</strong> Adding and removing
+                                   fields is instant and reversible, and neither rewrites existing data. This
+                                   exists only to reclaim capacity from a schema that has accumulated fields
+                                   you no longer want.</p>
+                                <button id="schemaFieldResetBtn" class="btn-danger btn-sm">Delete all logs and rebuild</button>
+                            </div>
+                        </details>
                     </section>
                 </div>
             </div>

@@ -25,6 +25,7 @@ type Handler struct {
 	ch            *storage.ClickHouseClient
 	onFieldChange func(map[string]bool) // called after create/reset so the parser can reload
 	reconcileMu   sync.Mutex            // serializes background ClickHouse DDL
+	insights      insightsCache         // short-lived cache for the sampled field distribution
 }
 
 type apiResponse struct {
@@ -118,8 +119,53 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		h.notifyFieldChange(custom)
 	}
 	h.reconcileAsync([]string{f.FieldName})
+	h.invalidateInsights()
 
 	h.respondSuccess(w, f)
+}
+
+// HandleInsights returns the sampled field distribution, capacity, and ranked
+// suggestions in one payload so the schema tab renders from a single request.
+func (h *Handler) HandleInsights(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	ins, err := h.BuildInsights(r.Context())
+	if err != nil {
+		log.Printf("[SchemaFields] insights: %v", err)
+		h.respondError(w, http.StatusInternalServerError,
+			"Could not read field statistics from ClickHouse")
+		return
+	}
+	h.respondSuccess(w, ins)
+}
+
+// HandleIgnore dismisses a suggested field.
+func (h *Handler) HandleIgnore(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	if err := h.manager.Ignore(r.Context(), name, h.getCurrentUser(r)); err != nil {
+		h.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.invalidateInsights()
+	h.respondSuccess(w, map[string]string{"message": fmt.Sprintf("Field %q ignored", name)})
+}
+
+// HandleUnignore restores a dismissed field to the suggestions list.
+func (h *Handler) HandleUnignore(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	if err := h.manager.Unignore(r.Context(), name); err != nil {
+		h.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.invalidateInsights()
+	h.respondSuccess(w, map[string]string{"message": fmt.Sprintf("Field %q restored", name)})
 }
 
 // reconcileAsync applies the current full field set to ClickHouse in the
@@ -140,12 +186,22 @@ func (h *Handler) reconcileAsync(fieldNames []string) {
 			return
 		}
 		all := append(append([]SchemaField{}, ProjectDefaultFields...), custom...)
-		if err := h.ch.ReconcileSchemaFields(ctx, ToSpecs(all)); err != nil {
+		res, err := h.ch.ReconcileSchemaFields(ctx, ToSpecs(all))
+		if err != nil {
 			log.Printf("[SchemaFields] reconcile %v: %v", fieldNames, err)
 			h.markFields(ctx, fieldNames, SyncStatusError, err.Error())
 			return
 		}
-		h.markFields(ctx, fieldNames, SyncStatusActive, "")
+		// A field whose skip index failed is not fully applied: the type hint is
+		// live and the field is queryable, but it will not prune. Report that
+		// rather than a blanket active.
+		for _, name := range fieldNames {
+			if e, bad := res.IndexErrors[name]; bad {
+				h.markFields(ctx, []string{name}, SyncStatusError, e)
+				continue
+			}
+			h.markFields(ctx, []string{name}, SyncStatusActive, "")
+		}
 	}()
 }
 
@@ -199,6 +255,7 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	// index type applies cleanly (the reconcile is additive and would otherwise keep
 	// the stale index). Serialized with reconciles so it can't race a concurrent add.
 	h.dropFieldIndexAsync(name)
+	h.invalidateInsights()
 	h.respondSuccess(w, map[string]string{"message": fmt.Sprintf("Field %q removed", name)})
 }
 
@@ -241,7 +298,6 @@ func (h *Handler) HandleReset(w http.ResponseWriter, r *http.Request) {
 	h.notifyFieldChange(custom)
 	h.respondSuccess(w, map[string]string{"message": "Schema reset complete. All log data has been deleted."})
 }
-
 
 // HandleExportYAML returns the custom schema fields as a YAML document.
 // Project defaults are built into the binary and are intentionally excluded.

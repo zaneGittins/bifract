@@ -1486,6 +1486,15 @@ func (c *ClickHouseClient) QueryWithID(ctx context.Context, queryID, query strin
 	return c.Query(ctx, query)
 }
 
+// ExecWithID runs a statement with a fixed query_id so a long-running write (a
+// restore's INSERT ... SELECT, for instance) can be interrupted from another
+// process with KILL QUERY WHERE query_id = ..., and correlated with
+// system.query_log afterwards.
+func (c *ClickHouseClient) ExecWithID(ctx context.Context, queryID, query string) error {
+	ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(queryID))
+	return c.Exec(ctx, query)
+}
+
 // maxGeneratedQuerySize raises ClickHouse's max_query_size (default 256KB) for the query paths
 // that carry machine-generated SQL. pgr()'s scoring/reconnection SQL repeats the (bounded) process
 // guid IN-list across its edge branches and inlines reconnection edges as literals, so a midsize
@@ -2534,85 +2543,6 @@ func (c *ClickHouseClient) awaitIndexMutation(ctx context.Context, idx string) {
 	}
 }
 
-// SyncJSONTypeHints merges extraFields into the type hints declared on the
-// fields JSON column and adds bloom_filter skip indexes for any newly added
-// fields. It is a no-op when all requested fields are already hinted.
-//
-// The operation schedules a background mutation on existing parts; new parts
-// receive the updated schema immediately. On large tables, callers should run
-// MATERIALIZE INDEX for each new index during off-peak hours.
-func (c *ClickHouseClient) SyncJSONTypeHints(ctx context.Context, extraFields []string) error {
-	// Read the current column type string from system.columns.
-	rows, err := c.conn.Query(ctx,
-		"SELECT type FROM system.columns WHERE database = 'logs' AND table = 'logs' AND name = 'fields'")
-	if err != nil {
-		return fmt.Errorf("read fields column type: %w", err)
-	}
-	var currentType string
-	if rows.Next() {
-		_ = rows.Scan(&currentType)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("read fields column type: %w", err)
-	}
-	rows.Close()
-
-	// Parse existing type-hinted field names. The type string looks like:
-	// JSON(max_dynamic_paths=1024, `src_ip` String, `user` String, ...)
-	existing := parseJSONTypeHints(currentType)
-
-	// Compute the union of existing and requested fields.
-	merged := make(map[string]struct{}, len(existing))
-	for _, f := range existing {
-		merged[f] = struct{}{}
-	}
-	var newFields []string
-	for _, f := range extraFields {
-		if f == "" {
-			continue
-		}
-		if _, ok := merged[f]; !ok {
-			merged[f] = struct{}{}
-			newFields = append(newFields, f)
-		}
-	}
-	if len(newFields) == 0 {
-		return nil
-	}
-
-	// Build MODIFY COLUMN with the full merged set.
-	var sb strings.Builder
-	sb.WriteString("ALTER TABLE logs MODIFY COLUMN fields JSON(\n    max_dynamic_paths=1024")
-	for f := range merged {
-		escaped := strings.ReplaceAll(f, "`", "``")
-		sb.WriteString(",\n    `")
-		sb.WriteString(escaped)
-		sb.WriteString("` String")
-	}
-	sb.WriteString("\n)")
-
-	modifySQL := c.InjectOnCluster(sb.String())
-	if err := c.conn.Exec(ctx, modifySQL); err != nil {
-		return fmt.Errorf("modify fields column: %w", err)
-	}
-
-	// Add a bloom_filter index for each newly added field.
-	for _, f := range newFields {
-		escaped := strings.ReplaceAll(f, "`", "``")
-		idxName := "idx_" + strings.ReplaceAll(f, " ", "_")
-		idxSQL := fmt.Sprintf(
-			"ALTER TABLE logs ADD INDEX IF NOT EXISTS %s fields.`%s` TYPE bloom_filter(0.001) GRANULARITY 1",
-			idxName, escaped,
-		)
-		idxSQL = c.InjectOnCluster(idxSQL)
-		if err := c.conn.Exec(ctx, idxSQL); err != nil {
-			log.Printf("Warning: add index %s: %v", idxName, err)
-		}
-	}
-	return nil
-}
-
 // parseJSONTypeHints extracts field names from a ClickHouse JSON column type
 // string of the form: JSON(max_dynamic_paths=N, `field` String, ...).
 func parseJSONTypeHints(typeStr string) []string {
@@ -2635,16 +2565,84 @@ type SchemaFieldSpec struct {
 	IndexType string // "none" (type hint only), "bloom_filter", or "set"
 }
 
+// jsonLazyTypeHintSettings must be appended to EVERY "MODIFY COLUMN fields JSON(...)"
+// statement. It is the difference between a metadata-only change and a mutation
+// that rewrites every part in the table.
+//
+// Without allow_experimental_json_lazy_type_hints, adding a type hint queues a
+// background mutation across all existing parts: on a cluster holding billions of
+// rows that saturates CPU for hours. With it, the ALTER completes instantly and
+// touches no existing part. Old parts stay correct because the hinted path is cast
+// from Dynamic at read time; new parts materialize the hint on INSERT, and old
+// parts converge for free as normal background merges rewrite them anyway.
+//
+// The setting is written into the SQL text rather than sent as a connection-level
+// setting for two reasons. First, the Go driver pools connections, so a session
+// SET would not reliably apply to the statement that needs it. Second, and more
+// importantly, ON CLUSTER replicates the query text verbatim through the DDL queue
+// to every replica: inlining it guarantees remote replicas run the lazy form too,
+// which a client-side setting may not.
+//
+// This makes the safety structural rather than procedural. On a ClickHouse that
+// does not support the setting, the statement fails with UNKNOWN_SETTING (code 115)
+// and does nothing, instead of silently falling back to the mutating form. There is
+// therefore no reachable code path in which reconciliation rewrites history, even
+// if the calling logic is wrong.
+const jsonLazyTypeHintSettings = " SETTINGS allow_experimental_json_lazy_type_hints=1, alter_sync=0, mutations_sync=0"
+
+// buildFieldsTypeHintSQL renders the MODIFY COLUMN statement that declares the
+// full merged type-hint set on a table's `fields` JSON column. Kept pure so the
+// two properties that make reconciliation safe are testable without a live
+// ClickHouse: the hint list is sorted (byte-stable across restarts, where Go map
+// order would churn the DDL on every boot) and the statement always carries
+// jsonLazyTypeHintSettings (metadata-only instead of a full-table mutation).
+func buildFieldsTypeHintSQL(table string, fields []string) string {
+	sorted := append([]string(nil), fields...)
+	sort.Strings(sorted)
+
+	var sb strings.Builder
+	sb.WriteString("ALTER TABLE ")
+	sb.WriteString(table)
+	sb.WriteString(" MODIFY COLUMN fields JSON(\n    max_dynamic_paths=1024")
+	for _, f := range sorted {
+		escaped := strings.ReplaceAll(f, "`", "``")
+		sb.WriteString(",\n    `")
+		sb.WriteString(escaped)
+		sb.WriteString("` String")
+	}
+	sb.WriteString("\n)")
+	sb.WriteString(jsonLazyTypeHintSettings)
+	return sb.String()
+}
+
+// ReconcileResult reports the per-field outcome of a schema reconcile so callers
+// can record an accurate sync status. A field listed in IndexErrors did get its
+// type hint (the MODIFY COLUMN is all-or-nothing and succeeded); only its skip
+// index is missing, so queries on it are correct but unpruned.
+type ReconcileResult struct {
+	IndexErrors map[string]string
+}
+
 // ReconcileSchemaFields ensures ClickHouse has type hints and skip indexes for
 // all requested fields. It is additive: existing type hints and indexes are
 // never removed. New fields are added via MODIFY COLUMN and ADD INDEX IF NOT EXISTS.
 // All DDL is wrapped with InjectOnCluster for multi-node deployments.
-func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []SchemaFieldSpec) error {
+//
+// Every statement here is metadata-only and completes without rewriting a single
+// existing part, which is what makes it safe to run unattended at startup against
+// a cluster holding billions of rows. See jsonLazyTypeHintSettings for why the
+// MODIFY COLUMN does not mutate, and note that ADD INDEX is inherently
+// forward-only (it is computed for parts written or merged after the ADD; there
+// is deliberately no MATERIALIZE INDEX here, as that is the one operation in this
+// area that would rewrite history).
+func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []SchemaFieldSpec) (ReconcileResult, error) {
+	result := ReconcileResult{IndexErrors: map[string]string{}}
+
 	// Read current type hints from ClickHouse.
 	rows, err := c.conn.Query(ctx,
 		"SELECT type FROM system.columns WHERE database = 'logs' AND table = 'logs' AND name = 'fields'")
 	if err != nil {
-		return fmt.Errorf("read fields column type: %w", err)
+		return result, fmt.Errorf("read fields column type: %w", err)
 	}
 	var currentType string
 	if rows.Next() {
@@ -2652,7 +2650,7 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return fmt.Errorf("read fields column type: %w", err)
+		return result, fmt.Errorf("read fields column type: %w", err)
 	}
 	rows.Close()
 
@@ -2677,25 +2675,20 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 
 	// Run MODIFY COLUMN only when there are new fields to add.
 	if len(newFields) > 0 {
-		var sb strings.Builder
-		sb.WriteString("ALTER TABLE logs MODIFY COLUMN fields JSON(\n    max_dynamic_paths=1024")
+		mergedList := make([]string, 0, len(merged))
 		for f := range merged {
-			escaped := strings.ReplaceAll(f, "`", "``")
-			sb.WriteString(",\n    `")
-			sb.WriteString(escaped)
-			sb.WriteString("` String")
+			mergedList = append(mergedList, f)
 		}
-		sb.WriteString("\n)")
-		colDef := sb.String()
+		colDef := buildFieldsTypeHintSQL("logs", mergedList)
 		if err := c.conn.Exec(ctx, c.InjectOnCluster(colDef)); err != nil {
-			return fmt.Errorf("modify fields column: %w", err)
+			return result, fmt.Errorf("modify fields column: %w", err)
 		}
 		// Mirror to logs_hot so the parser's type-hint registry stays in sync with
 		// both tables. Without this, newly-registered fields generate bare subcolumn
 		// references (no ::String cast) that return NULL on logs_hot because the
 		// typed subcolumn only exists in logs.
 		// No skip indexes needed on logs_hot — its ORDER BY covers alert query patterns.
-		hotColDef := strings.Replace(colDef, "ALTER TABLE logs ", "ALTER TABLE logs_hot ", 1)
+		hotColDef := buildFieldsTypeHintSQL("logs_hot", mergedList)
 		if err := c.conn.Exec(ctx, c.InjectOnCluster(hotColDef)); err != nil {
 			log.Printf("Warning: mirror type hints to logs_hot: %v", err)
 		}
@@ -2722,13 +2715,17 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 			idxName, escaped, idxExpr,
 		)
 		if err := c.conn.Exec(ctx, c.InjectOnCluster(idxSQL)); err != nil {
+			// Not fatal: the type hint applied, so the field is queryable and correct,
+			// it just will not prune. Recorded per-field so the caller can surface a
+			// real status instead of reporting the field fully active.
 			log.Printf("Warning: add index %s: %v", idxName, err)
+			result.IndexErrors[f.FieldName] = fmt.Sprintf("skip index not created: %v", err)
 		}
 	}
 	// Type hints may have changed (MODIFY COLUMN above); drop the cached set so the
 	// log-detail empty-field filter picks up new/removed hints.
 	c.invalidateTypeHintCache()
-	return nil
+	return result, nil
 }
 
 // TruncateAndReschema deletes all log data by truncating the logs tables, drops
@@ -2752,7 +2749,8 @@ func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []Sch
 		}
 	}
 
-	return c.ReconcileSchemaFields(ctx, fields)
+	_, err := c.ReconcileSchemaFields(ctx, fields)
+	return err
 }
 
 // schemaFieldIndexSanitizeRe replaces any character that is not alphanumeric or

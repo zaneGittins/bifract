@@ -506,6 +506,24 @@
     border-color: var(--error);
 }
 
+/* Resume shares the cancel button's shape but reads as a forward action, so it
+   picks up the accent on hover rather than the error colour. */
+.restore-resume {
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.restore-resume:hover {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
 /* ---- Restore: header, table, pager -------------------------------------- */
 .restore-header {
     display: flex;
@@ -749,6 +767,22 @@
 .restore-row-cancel:hover {
     color: var(--error);
     border-color: var(--error);
+}
+
+.restore-row-resume {
+    padding: 3px 10px;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.restore-row-resume:hover {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
 }
 
 #restoreSubmitBtn.armed {

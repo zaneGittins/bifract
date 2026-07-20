@@ -690,19 +690,30 @@ const Performance = {
         if (!el) return;
         const name = (this._restoreFractals && this._restoreFractals[j.fractal_id]) || j.fractal_id;
         const target = Number(j.target_rows || 0), done = Number(j.rows_restored || 0);
-        const pct = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : (j.status === 'succeeded' ? 100 : 0);
+        const chunksTotal = Number(j.chunks_total || 0), chunksDone = Number(j.chunks_done || 0);
+        // Chunk completion is the exact progress signal (each ingest-day chunk
+        // commits before it is counted); the row target is an estimate, so it is
+        // only a fallback when the chunk plan is not yet recorded.
+        const pct = chunksTotal > 0
+            ? Math.min(100, Math.round((chunksDone / chunksTotal) * 100))
+            : (target > 0 ? Math.min(100, Math.round((done / target) * 100)) : (j.status === 'succeeded' ? 100 : 0));
         const row = (k, v) => `<div class="restore-detail-row"><span class="restore-detail-k">${k}</span><span class="restore-detail-v">${v}</span></div>`;
 
         let html = `<div class="restore-detail-top">${this.statusChip(j.status)}<span class="restore-detail-fractal">${this.escapeHtml(name)}</span></div>`;
         if (j.status === 'running' || j.status === 'succeeded') {
+            const detail = chunksTotal > 0 ? `${chunksDone} / ${chunksTotal} days · ` : '';
             html += `<div class="restore-progress"><div class="restore-progress-bar${j.status === 'succeeded' ? ' full' : ''}" style="width:${pct}%"></div></div>
-                <div class="restore-detail-stat">${done.toLocaleString()}${target > 0 ? ' / ' + target.toLocaleString() : ''} rows${target > 0 && j.status === 'running' ? ' · ' + pct + '%' : ''}</div>`;
+                <div class="restore-detail-stat">${detail}${done.toLocaleString()}${target > 0 ? ' / ~' + target.toLocaleString() : ''} rows${j.status === 'running' ? ' · ' + pct + '%' : ''}</div>`;
         }
         if (j.error) html += `<div class="restore-job-error">${this.escapeHtml(j.error)}</div>`;
         html += '<div class="restore-detail-grid">';
         html += row('Mode', this.escapeHtml(j.mode));
-        html += row('Window', `${this.fmtWindow(j.from)} &rarr; ${this.fmtWindow(j.to)} UTC`);
+        html += row('Ingested between', `${this.fmtWindow(j.from)} &rarr; ${this.fmtWindow(j.to)} UTC`);
         html += row('Duplicate check', j.dedup ? 'on' : 'off');
+        if (chunksTotal > 0) html += row('Chunks', `${chunksDone} of ${chunksTotal} ingest days`);
+        if (j.cursor_ts && (j.status === 'failed' || j.status === 'canceled')) {
+            html += row('Resumes from', this.fmtStamp(j.cursor_ts));
+        }
         html += row('Rows restored', done.toLocaleString() + (target > 0 ? ' of ~' + target.toLocaleString() : ''));
         html += row('Requested by', this.escapeHtml(j.requested_by || '—'));
         html += row('Created', this.fmtStamp(j.created_at));
@@ -711,8 +722,13 @@ const Performance = {
         html += row('Job ID', j.id);
         html += row('Batch', `<span class="restore-mono">${this.escapeHtml(j.batch_id || '')}</span>`);
         html += '</div>';
-        if (j.status === 'pending') {
+        // Running jobs are cancellable too: the worker kills the in-flight insert
+        // on its next heartbeat. Rows already restored stay put, and the cursor
+        // means a resume continues from the first unfinished day.
+        if (j.status === 'pending' || j.status === 'running') {
             html += `<div class="restore-detail-actions"><button class="restore-cancel" onclick="Performance.cancelRestoreJob(${j.id})">Cancel job</button></div>`;
+        } else if (j.status === 'failed' || j.status === 'canceled') {
+            html += `<div class="restore-detail-actions"><button class="restore-resume" onclick="Performance.resumeRestoreJob(${j.id})">Resume job</button></div>`;
         }
         el.innerHTML = html;
     },
@@ -757,18 +773,27 @@ const Performance = {
     restoreRow(j) {
         const name = (this._restoreFractals && this._restoreFractals[j.fractal_id]) || j.fractal_id;
         const target = Number(j.target_rows || 0), done = Number(j.rows_restored || 0);
-        const pct = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : (j.status === 'succeeded' ? 100 : 0);
+        const chunksTotal = Number(j.chunks_total || 0), chunksDone = Number(j.chunks_done || 0);
+        const pct = chunksTotal > 0
+            ? Math.min(100, Math.round((chunksDone / chunksTotal) * 100))
+            : (target > 0 ? Math.min(100, Math.round((done / target) * 100)) : (j.status === 'succeeded' ? 100 : 0));
         let prog;
         if (j.status === 'running' || j.status === 'succeeded') {
             prog = `<div class="restore-row-progress"><div class="restore-row-bar${j.status === 'succeeded' ? ' full' : ''}" style="width:${pct}%"></div></div>` +
                 `<span class="restore-row-progress-txt">${done.toLocaleString()}${target > 0 ? ' / ' + target.toLocaleString() : ''}</span>`;
         } else if (j.status === 'pending') {
             prog = '<span class="restore-muted">queued</span>';
+        } else if ((j.status === 'failed' || j.status === 'canceled') && chunksDone > 0) {
+            // Partial work survives on the row; show it so the operator can see a
+            // resume would not start over.
+            prog = `<span class="restore-muted">${chunksDone}${chunksTotal > 0 ? ' / ' + chunksTotal : ''} days done</span>`;
         } else {
             prog = '<span class="restore-muted">&mdash;</span>';
         }
-        const cancel = j.status === 'pending'
-            ? `<button class="restore-row-cancel" onclick="event.stopPropagation();Performance.cancelRestoreJob(${j.id})">Cancel</button>` : '';
+        const action = (j.status === 'pending' || j.status === 'running')
+            ? `<button class="restore-row-cancel" onclick="event.stopPropagation();Performance.cancelRestoreJob(${j.id})">Cancel</button>`
+            : (j.status === 'failed' || j.status === 'canceled')
+                ? `<button class="restore-row-resume" onclick="event.stopPropagation();Performance.resumeRestoreJob(${j.id})">Resume</button>` : '';
         return `<tr class="restore-row" onclick="Performance.openRestoreDetail(${j.id})">
             <td class="restore-td-fractal">${this.escapeHtml(name)}</td>
             <td class="restore-td-mode">${this.escapeHtml(j.mode)}</td>
@@ -776,7 +801,7 @@ const Performance = {
             <td>${this.statusChip(j.status)}</td>
             <td class="restore-col-progress">${prog}</td>
             <td class="restore-td-by">${this.escapeHtml(j.requested_by || '')}<span class="restore-row-ago">${this.timeAgo(j.created_at)}</span></td>
-            <td class="restore-td-action">${cancel}</td>
+            <td class="restore-td-action">${action}</td>
         </tr>`;
     },
 
@@ -846,6 +871,17 @@ const Performance = {
             await fetch(`/api/v1/system/archive/restore/${id}/cancel`, { method: 'POST', credentials: 'include' });
         } catch (err) {
             console.error('[Performance] cancel restore error:', err);
+        }
+        this.loadRestoreJobs();
+    },
+
+    // Requeue a failed/canceled job. The stored cursor means it continues from the
+    // first unfinished ingest day rather than replaying the whole window.
+    async resumeRestoreJob(id) {
+        try {
+            await fetch(`/api/v1/system/archive/restore/${id}/resume`, { method: 'POST', credentials: 'include' });
+        } catch (err) {
+            console.error('[Performance] resume restore error:', err);
         }
         this.loadRestoreJobs();
     },

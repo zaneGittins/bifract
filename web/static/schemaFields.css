@@ -1,239 +1,450 @@
 /* ========================================================
    Schema Fields
-   ======================================================== */
+   ========================================================
+   The suggestions list and the configured list share one grid so the two read
+   as a single system rather than two unrelated tables. */
 
-/* Table */
-.schema-fields-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.875rem;
+/* ---- Header ---- */
+.schema-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin-bottom: 22px;
 }
 
-.schema-fields-table thead th {
-    text-align: left;
-    padding: 6px 12px;
+.schema-head-text h3 {
+    margin: 0;
+    font-size: 1.125rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.schema-head-text p {
+    margin: 5px 0 0;
     color: var(--text-muted);
-    font-weight: 500;
-    border-bottom: 1px solid var(--border-color);
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    white-space: nowrap;
-}
-
-.schema-fields-table tbody tr {
-    border-bottom: 1px solid var(--border-color);
-    transition: background 0.1s;
-}
-
-.schema-fields-table tbody tr:last-child {
-    border-bottom: none;
-}
-
-.schema-fields-table tbody tr:hover {
-    background: var(--bg-hover, rgba(255,255,255,0.04));
-}
-
-.schema-fields-table td {
-    padding: 9px 12px;
-    vertical-align: middle;
-}
-
-.schema-fields-table td:first-child {
-    font-family: var(--font-mono, monospace);
     font-size: 0.8125rem;
-    color: var(--text-primary);
+    max-width: 62ch;
+    line-height: 1.55;
 }
 
-/* Index type badges */
-.index-badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    white-space: nowrap;
-}
-
-.index-badge-bloom {
-    background: rgba(156, 106, 222, 0.15);
-    color: #c4a0f5;
-    border: 1px solid rgba(156, 106, 222, 0.3);
-}
-
-.index-badge-set {
-    background: rgba(74, 222, 128, 0.12);
-    color: #5ed994;
-    border: 1px solid rgba(74, 222, 128, 0.22);
-}
-
-.index-badge-none {
-    background: rgba(148, 163, 184, 0.12);
-    color: #94a3b8;
-    border: 1px solid rgba(148, 163, 184, 0.22);
-}
-
-[data-theme="light"] .index-badge-none {
-    background: rgba(100, 116, 139, 0.1);
-    color: #64748b;
-    border-color: rgba(100, 116, 139, 0.22);
-}
-
-[data-theme="light"] .index-badge-bloom {
-    background: rgba(99, 60, 180, 0.1);
-    color: #5b3fad;
-    border-color: rgba(99, 60, 180, 0.25);
-}
-
-[data-theme="light"] .index-badge-set {
-    background: rgba(22, 163, 74, 0.1);
-    color: #15803d;
-    border-color: rgba(22, 163, 74, 0.22);
-}
-
-/* Default / readonly badge */
-.badge-default {
-    display: inline-block;
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 0.68rem;
-    font-weight: 600;
-    background: transparent;
-    color: var(--text-muted);
-    border: 1px solid var(--border-color);
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-}
-
-/* Section sub-headings */
-.schema-section-heading {
+.schema-head-actions {
     display: flex;
-    align-items: center;
     gap: 8px;
-    margin: 0 0 12px 0;
+    flex-shrink: 0;
+}
+
+.schema-field-hint {
+    margin-top: 4px;
     font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
     color: var(--text-muted);
 }
 
-.schema-section-heading + .schema-fields-table {
-    margin-bottom: 0;
+/* ---- Capacity meter ---- */
+.schema-cap {
+    margin-bottom: 30px;
 }
 
-.schema-section-count {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 20px;
-    height: 18px;
-    padding: 0 6px;
-    border-radius: 9px;
-    background: var(--bg-tertiary, rgba(255,255,255,0.08));
-    color: var(--text-muted);
-    font-size: 0.68rem;
-    font-weight: 700;
-}
-
-/* Divider between sections */
-.schema-section-divider {
-    height: 1px;
-    background: var(--border-color);
-    margin: 24px 0;
-}
-
-/* Empty state for custom fields */
-.schema-empty-state {
-    padding: 28px 16px;
-    text-align: center;
-    color: var(--text-muted);
-    font-size: 0.875rem;
-    background: var(--bg-secondary);
-    border-radius: 6px;
-    border: 1px dashed var(--border-color);
-}
-
-.schema-empty-state strong {
-    display: block;
-    margin-bottom: 6px;
-    color: var(--text-primary);
-    font-size: 0.9375rem;
-}
-
-/* Inline add form */
-#schemaFieldAddForm {
-    border: 1px solid var(--border-color);
-    background: var(--bg-secondary);
-    border-radius: 6px;
-    padding: 14px 16px;
-    margin-bottom: 20px;
-}
-
-#schemaFieldAddForm .form-row {
+.schema-cap-top {
     display: flex;
-    gap: 10px;
-    align-items: flex-end;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.schema-cap-label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.schema-cap-fig {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.schema-cap-fig b {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.schema-bar {
+    display: flex;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--bg-tertiary);
+    gap: 1px;
+}
+
+.schema-bar i {
+    display: block;
+    transition: width 0.4s ease;
+}
+
+.schema-seg-hint {
+    background: var(--accent-primary);
+}
+
+.schema-seg-dyn {
+    background: var(--text-muted);
+    opacity: 0.4;
+}
+
+.schema-cap-note {
+    margin: 9px 0 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+}
+
+.schema-cap-note.warn {
+    color: var(--warning);
+}
+
+.schema-cap-note .mono {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}
+
+.schema-cap-note button {
+    margin-left: 8px;
+    vertical-align: baseline;
+}
+
+/* ---- Section headings ---- */
+.schema-sec {
+    margin: 0 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
     flex-wrap: wrap;
 }
 
-#schemaFieldAddForm .form-group {
+.schema-sec h2 {
     margin: 0;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--text-muted);
+    font-weight: 600;
 }
 
-#schemaFieldAddForm .form-group.flex-grow {
-    flex: 1;
-    min-width: 160px;
-}
-
-#schemaFieldAddForm .form-group.index-type-group {
-    min-width: 210px;
-}
-
-#schemaFieldAddForm .form-actions {
-    display: flex;
-    gap: 6px;
-    padding-bottom: 1px;
-}
-
-/* Field name validation hint */
-.schema-field-hint {
+.schema-count {
+    font-family: var(--font-mono);
     font-size: 0.72rem;
     color: var(--text-muted);
-    margin-top: 4px;
-    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---- Shared list + row grid ---- */
+.schema-list {
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    margin-bottom: 32px;
+    overflow: hidden;
+}
+
+.schema-thead,
+.schema-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1.1fr) minmax(190px, 1.5fr) auto auto;
+    gap: 16px;
+    align-items: center;
+}
+
+.schema-thead {
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.schema-thead span:nth-child(3),
+.schema-thead span:nth-child(4) {
+    justify-self: end;
+}
+
+.schema-row {
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border-color);
+    transition: background 0.15s ease;
+}
+
+.schema-row:last-child {
+    border-bottom: none;
+}
+
+.schema-row:hover {
+    background: var(--bg-tertiary);
+}
+
+/* Already degrading: earns a stripe so severity reads before any number does. */
+.schema-row.urgent {
+    box-shadow: inset 3px 0 0 var(--warning);
+}
+
+.schema-fname {
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    font-weight: 500;
+    overflow-wrap: anywhere;
+}
+
+.schema-why {
+    font-size: 0.78125rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.schema-why b {
+    color: var(--text-secondary);
+    font-weight: 500;
+    font-family: var(--font-mono);
+}
+
+.schema-flag {
+    color: var(--warning);
+    font-weight: 600;
+}
+
+.schema-unused {
+    opacity: 0.65;
+    font-style: italic;
+}
+
+.schema-row-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    justify-self: end;
+}
+
+/* Origin collapsed onto the name: only defaults are marked, since that is what
+   explains the disabled index select and the missing Remove button. */
+.schema-builtin {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    font-weight: 600;
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    padding: 0 4px;
+    margin-left: 7px;
+    vertical-align: 1px;
+    font-family: var(--font-main);
+}
+
+/* ---- Index select ----
+   appearance:none because native selects render inconsistently between the dark
+   and light themes; this keeps one control that reads correctly in both. */
+.schema-sel {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.schema-sel::after {
+    content: "";
+    position: absolute;
+    right: 9px;
+    pointer-events: none;
+    width: 5px;
+    height: 5px;
+    border-right: 1.5px solid var(--text-muted);
+    border-bottom: 1.5px solid var(--text-muted);
+    transform: translateY(-2px) rotate(45deg);
+}
+
+.schema-sel select {
+    appearance: none;
+    -webkit-appearance: none;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.3rem 1.6rem 0.3rem 0.55rem;
+    font-size: 0.78125rem;
+    font-family: var(--font-main);
+    cursor: pointer;
+    transition: var(--transition);
+    min-width: 150px;
+}
+
+.schema-sel select:hover:not(:disabled) {
+    border-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.schema-sel select:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.schema-sel select option {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+/* Carries state: an indexed field reads as set at a glance down the column. */
+.schema-sel.on select {
+    color: var(--text-primary);
+    border-color: color-mix(in srgb, var(--accent-primary) 45%, transparent);
+}
+
+/* ---- Status pills ---- */
+.schema-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 1px 8px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.schema-pill::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.schema-pill.p-ok {
+    color: var(--success);
+}
+
+.schema-pill.p-err {
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 13%, transparent);
+}
+
+.schema-pill.p-wait {
+    color: var(--info);
+    background: color-mix(in srgb, var(--info) 13%, transparent);
+}
+
+/* ---- Empty state ---- */
+.schema-empty {
+    border: 1px dashed var(--border-color);
+    border-radius: 6px;
+    padding: 30px 24px;
+    text-align: center;
+    background: var(--bg-secondary);
+    margin-bottom: 32px;
+}
+
+.schema-empty h3 {
+    font-size: 0.9375rem;
+    margin: 0 0 5px;
+    font-weight: 600;
+}
+
+.schema-empty p {
+    margin: 0 auto;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    max-width: 50ch;
+    line-height: 1.6;
+}
+
+/* ---- Disclosures: ignored fields and rebuild ---- */
+.schema-ignored,
+.schema-danger {
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    overflow: hidden;
+    margin-bottom: 14px;
+}
+
+.schema-ignored summary,
+.schema-danger summary {
+    padding: 10px 14px;
+    cursor: pointer;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: color 0.15s ease;
+}
+
+.schema-ignored summary::-webkit-details-marker,
+.schema-danger summary::-webkit-details-marker {
     display: none;
 }
 
-#schemaFieldName:focus + .schema-field-hint {
-    display: block;
+.schema-ignored summary::after,
+.schema-danger summary::after {
+    content: "";
+    margin-left: auto;
+    width: 5px;
+    height: 5px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+    transition: transform 0.15s ease;
 }
 
-/* Danger zone */
-.schema-danger-zone {
-    margin-top: 32px;
-    padding: 16px 20px;
-    background: rgba(248, 113, 113, 0.05);
-    border: 1px solid rgba(248, 113, 113, 0.2);
-    border-radius: 6px;
+.schema-ignored[open] summary::after,
+.schema-danger[open] summary::after {
+    transform: rotate(-135deg);
 }
 
-.schema-danger-zone h4 {
-    margin: 0 0 8px 0;
-    color: var(--error, #f87171);
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    font-weight: 700;
+.schema-ignored summary:hover,
+.schema-danger summary:hover {
+    color: var(--text-secondary);
 }
 
-.schema-danger-zone p {
-    margin: 0 0 14px 0;
+.schema-ignored-body {
+    border-top: 1px solid var(--border-color);
+}
+
+.schema-ignored-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.schema-ignored-row:last-child {
+    border-bottom: none;
+}
+
+.schema-danger-body {
+    padding: 14px;
+    border-top: 1px solid var(--border-color);
+}
+
+.schema-danger-body p {
+    margin: 0 0 10px;
     font-size: 0.8125rem;
     color: var(--text-muted);
+    max-width: 74ch;
     line-height: 1.6;
+}
+
+.schema-danger-body strong {
+    color: var(--text-secondary);
 }
 
 /* Reset modal confirm input */
@@ -242,99 +453,30 @@
     box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.15);
 }
 
-/* Title row: heading + info icon */
-.schema-title-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+/* ---- Narrow viewports: the four-column grid collapses to stacked rows ---- */
+@media (max-width: 760px) {
+    .schema-thead {
+        display: none;
+    }
+
+    .schema-row {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .schema-row-actions {
+        justify-self: start;
+    }
+
+    .schema-sel select {
+        width: 100%;
+    }
 }
 
-/* Info icon + tooltip */
-.schema-info {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-muted);
-    cursor: help;
-    border-radius: 50%;
-    outline: none;
-    transition: color 0.15s ease;
-}
-
-.schema-info:hover,
-.schema-info:focus-visible {
-    color: var(--accent-primary);
-}
-
-.schema-info-tip {
-    position: absolute;
-    top: calc(100% + 8px);
-    left: 0;
-    z-index: 50;
-    width: 320px;
-    padding: 10px 12px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-    color: var(--text-muted);
-    font-size: 0.78rem;
-    line-height: 1.55;
-    font-weight: 400;
-    text-transform: none;
-    letter-spacing: normal;
-    opacity: 0;
-    visibility: hidden;
-    transform: translateY(-3px);
-    transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
-    pointer-events: none;
-}
-
-.schema-info:hover .schema-info-tip,
-.schema-info:focus-visible .schema-info-tip {
-    opacity: 1;
-    visibility: visible;
-    transform: translateY(0);
-}
-
-/* Per-field sync status */
-.schema-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    padding: 2px 8px;
-    border-radius: 10px;
-    white-space: nowrap;
-}
-
-.schema-status-active {
-    color: var(--success, #4ade80);
-    background: rgba(74, 222, 128, 0.1);
-}
-
-.schema-status-pending {
-    color: var(--warning, #fbbf24);
-    background: rgba(251, 191, 36, 0.1);
-}
-
-.schema-status-error {
-    color: var(--error, #f87171);
-    background: rgba(248, 113, 113, 0.1);
-    cursor: help;
-}
-
-.schema-status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: currentColor;
-    animation: schema-pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes schema-pulse {
-    0%, 100% { opacity: 0.35; }
-    50% { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+    .schema-bar i,
+    .schema-row,
+    .schema-sel select {
+        transition: none;
+    }
 }

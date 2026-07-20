@@ -186,14 +186,31 @@ func main() {
 		parser.SetCustomTypeHintedFields(customMap)
 		allFields := append(append([]schemafields.SchemaField{}, schemafields.ProjectDefaultFields...), customFields...)
 		go func() {
-			if err := db.ReconcileSchemaFields(context.Background(), schemafields.ToSpecs(allFields)); err != nil {
+			// Wait for Initialize's migrations and cluster column sync to finish.
+			// Reconciling concurrently with them raced the DDL that creates and
+			// aligns the logs tables, so the MODIFY COLUMN could read a half-built
+			// schema. The reconcile itself is metadata-only, so the wait costs
+			// nothing but ordering.
+			ctx := context.Background()
+			db.WaitForSchemaReady(ctx)
+
+			res, err := db.ReconcileSchemaFields(ctx, schemafields.ToSpecs(allFields))
+			if err != nil {
 				log.Printf("Warning: Schema field reconciliation failed: %v", err)
+				// Leave sync_status alone: it is the UI's only signal that these
+				// fields are not live, and overwriting it here would claim success.
 				return
 			}
 			log.Println("Schema fields reconciled")
-			// Clear any sync status left pending/error by a crash mid-reconcile.
+			// Record the real per-field outcome. Previously every custom field was
+			// stamped active unconditionally, which reported success even for fields
+			// whose skip index had failed to create.
 			for _, f := range customFields {
-				if err := schemaFieldsManager.UpdateSyncStatus(context.Background(), f.FieldName, schemafields.SyncStatusActive, ""); err != nil {
+				status, errMsg := schemafields.SyncStatusActive, ""
+				if e, bad := res.IndexErrors[f.FieldName]; bad {
+					status, errMsg = schemafields.SyncStatusError, e
+				}
+				if err := schemaFieldsManager.UpdateSyncStatus(ctx, f.FieldName, status, errMsg); err != nil {
 					log.Printf("Warning: update schema field status %q: %v", f.FieldName, err)
 				}
 			}
@@ -370,6 +387,12 @@ func main() {
 	schemaFieldsHandler := schemafields.NewHandler(schemaFieldsManager, db, func(custom map[string]bool) {
 		parser.SetCustomTypeHintedFields(custom)
 	})
+
+	// Watches for JSON paths that have spilled past max_dynamic_paths and lost
+	// their own column. Advisory-locked to one replica and deliberately off the
+	// request path: this is the one schema query that reads the JSON column, so
+	// it is far more expensive than the sampled stats the tab renders from.
+	schemafields.NewOverflowMonitor(db, pg, notifWriter).Start(context.Background())
 
 	alertEngine := alerts.NewEngineWithDicts(pg, db, dictionaryManager, alertBaseURL)
 	alertEngine.SetModelManager(modelManager)
@@ -1264,7 +1287,8 @@ func main() {
 				offset := (page - 1) * pageSize
 				rows, err := pg.Query(r.Context(),
 					`SELECT id, batch_id, fractal_id, mode, from_ts, to_ts, dedup, status,
-					        target_rows, rows_restored, COALESCE(error, ''), COALESCE(requested_by, ''),
+					        target_rows, rows_restored, chunks_total, chunks_done, cursor_ts,
+					        COALESCE(error, ''), COALESCE(requested_by, ''),
 					        created_at, started_at, finished_at
 					 FROM archive_restore_jobs `+where+
 						fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d OFFSET %d", pageSize, offset), args...)
@@ -1280,19 +1304,25 @@ func main() {
 						batchID, fid, mode, status string
 						errMsg, reqBy              string
 						from, to, created          time.Time
-						started, finished          sql.NullTime
+						started, finished, cursor  sql.NullTime
 						target, restored           int64
+						chunksTotal, chunksDone    int
 						dedup                      bool
 					)
 					if err := rows.Scan(&id, &batchID, &fid, &mode, &from, &to, &dedup, &status,
-						&target, &restored, &errMsg, &reqBy, &created, &started, &finished); err != nil {
+						&target, &restored, &chunksTotal, &chunksDone, &cursor,
+						&errMsg, &reqBy, &created, &started, &finished); err != nil {
 						continue
 					}
 					j := map[string]interface{}{
 						"id": id, "batch_id": batchID, "fractal_id": fid, "mode": mode,
 						"from": from.UTC(), "to": to.UTC(), "dedup": dedup, "status": status,
 						"target_rows": target, "rows_restored": restored,
+						"chunks_total": chunksTotal, "chunks_done": chunksDone,
 						"requested_by": reqBy, "created_at": created.UTC(),
+					}
+					if cursor.Valid {
+						j["cursor_ts"] = cursor.Time.UTC()
 					}
 					if errMsg != "" {
 						j["error"] = errMsg
@@ -1311,8 +1341,10 @@ func main() {
 				})
 			})
 
-			// Cancel a still-pending restore job. Running jobs cannot be cancelled
-			// (the insert is already in flight); they run to completion.
+			// Cancel a pending or running restore job. Moving the row out of
+			// 'running' is the cancel signal: the owning worker notices on its next
+			// heartbeat, issues KILL QUERY against the insert's query_id, and stops.
+			// Rows already inserted stay put; re-running in dedup mode resumes safely.
 			r.Post("/system/archive/restore/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
 				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
 					http.Error(w, "Admin access required", http.StatusForbidden)
@@ -1321,13 +1353,39 @@ func main() {
 				id := chi.URLParam(r, "id")
 				res, err := pg.Exec(r.Context(),
 					`UPDATE archive_restore_jobs SET status = 'canceled', finished_at = NOW(), updated_at = NOW()
-					 WHERE id = $1 AND status = 'pending'`, id)
+					 WHERE id = $1 AND status IN ('pending', 'running')`, id)
 				if err != nil {
 					http.Error(w, "Failed to cancel", http.StatusInternalServerError)
 					return
 				}
 				if n, _ := res.RowsAffected(); n == 0 {
-					http.Error(w, "Job is no longer pending", http.StatusConflict)
+					http.Error(w, "Job has already finished", http.StatusConflict)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+			})
+
+			// Resume a failed or cancelled restore. cursor_ts survives on the row, so
+			// requeueing picks up at the first unfinished ingest-day chunk instead of
+			// replaying the whole window. Safe to use even if the cursor is stale:
+			// restores run in dedup mode by default and are idempotent.
+			r.Post("/system/archive/restore/{id}/resume", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				id := chi.URLParam(r, "id")
+				res, err := pg.Exec(r.Context(),
+					`UPDATE archive_restore_jobs
+					 SET status = 'pending', error = NULL, finished_at = NULL, started_at = NULL, updated_at = NOW()
+					 WHERE id = $1 AND status IN ('failed', 'canceled')`, id)
+				if err != nil {
+					http.Error(w, "Failed to resume", http.StatusInternalServerError)
+					return
+				}
+				if n, _ := res.RowsAffected(); n == 0 {
+					http.Error(w, "Only a failed or canceled job can be resumed", http.StatusConflict)
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -1890,6 +1948,11 @@ func main() {
 			r.Post("/admin/schema-fields/reset", schemaFieldsHandler.HandleReset)
 			r.Get("/admin/schema-fields/export", schemaFieldsHandler.HandleExportYAML)
 			r.Post("/admin/schema-fields/import", schemaFieldsHandler.HandleImportYAML)
+			// Sampled field distribution, capacity, and ranked suggestions. One
+			// request renders the whole schema tab.
+			r.Get("/admin/schema-fields/insights", schemaFieldsHandler.HandleInsights)
+			r.Post("/admin/schema-fields/ignore/{name}", schemaFieldsHandler.HandleIgnore)
+			r.Delete("/admin/schema-fields/ignore/{name}", schemaFieldsHandler.HandleUnignore)
 
 			// Admin-only routes (checked in handler)
 			r.Post("/auth/register", authHandler.HandleRegister)
