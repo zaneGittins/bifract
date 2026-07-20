@@ -1,7 +1,6 @@
 package schemafields
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -160,40 +159,85 @@ func TestRecommendIndexMatchesDefaultsReasoning(t *testing.T) {
 	}
 }
 
-// TestBuildSuggestionsExcludesAndRanks covers the two things that make the list
-// trustworthy: it never proposes something already configured or explicitly
-// dismissed, and query usage outranks mere prevalence.
-func TestBuildSuggestionsExcludesAndRanks(t *testing.T) {
+// TestBuildFieldsUnifiesAndRanks covers what makes the single table work:
+// configured and unconfigured fields share one list, every row carries a
+// verdict, and the worklist sorts to the top.
+func TestBuildFieldsUnifiesAndRanks(t *testing.T) {
 	stats := map[string]FieldInsight{
-		"src_ip":    {Name: "src_ip", Coverage: 0.99, Cardinality: 1000},
-		"noise":     {Name: "noise", Coverage: 0.99, Cardinality: 90000},
-		"tenant_id": {Name: "tenant_id", Coverage: 0.40, Cardinality: 47000},
-		"prevalent": {Name: "prevalent", Coverage: 0.95, Cardinality: 12},
+		"src_ip":    {Name: "src_ip", Present: 990, Coverage: 0.99, Cardinality: 1000},
+		"noise":     {Name: "noise", Present: 990, Coverage: 0.99, Cardinality: 90000},
+		"tenant_id": {Name: "tenant_id", Present: 400, Coverage: 0.40, Cardinality: 47000},
+		"prevalent": {Name: "prevalent", Present: 950, Coverage: 0.95, Cardinality: 12},
+		"spilled":   {Name: "spilled", Present: 700, Coverage: 0.70, Cardinality: 400000},
+		"queried":   {Name: "queried", Present: 800, Coverage: 0.80, Cardinality: 5000},
 	}
-	configured := map[string]bool{"src_ip": true}
+	configured := map[string]IndexType{
+		"src_ip":  IndexTypeBloomFilter,
+		"gone":    IndexTypeNone, // reserved but absent from the data
+		"queried": IndexTypeNone, // reserved, queried, unindexed
+	}
+	custom := map[string]SchemaField{}
 	ignored := map[string]bool{"noise": true}
-	usage := map[string]int{"tenant_id": 12}
+	overflowed := map[string]bool{"spilled": true}
+	usage := map[string]*fieldUsage{
+		"tenant_id": {Weight: 40, Refs: []FieldRef{{Kind: "alert", Title: "Tenant errors"}}},
+		"queried":   {Weight: 40},
+	}
 
-	got := buildSuggestions(stats, usage, configured, ignored, nil)
+	got := buildFields(stats, nil, usage, configured, custom, ignored, overflowed)
 
-	for _, s := range got {
-		if s.Name == "src_ip" {
-			t.Error("suggested an already-configured field")
+	by := map[string]Field{}
+	for _, f := range got {
+		by[f.Name] = f
+		if f.Verdict == "" {
+			t.Errorf("%q has no verdict; every row must carry one", f.Name)
 		}
-		if s.Name == "noise" {
-			t.Error("suggested an ignored field")
+	}
+
+	// Configured and unconfigured share one list.
+	if _, ok := by["src_ip"]; !ok {
+		t.Error("configured field missing from the unified list")
+	}
+	if _, ok := by["tenant_id"]; !ok {
+		t.Error("unconfigured field missing from the unified list")
+	}
+
+	checks := map[string]string{
+		"spilled":   VerdictUrgent,  // degrading now, outranks everything
+		"tenant_id": VerdictReserve, // queried, not reserved
+		"queried":   VerdictIndex,   // reserved + queried + unindexed
+		"gone":      VerdictUnused,  // reserved but never seen
+		"src_ip":    VerdictKeep,    // configured appropriately
+		"noise":     VerdictNone,    // ignored
+	}
+	for name, want := range checks {
+		if by[name].Verdict != want {
+			t.Errorf("%q: got verdict %q, want %q", name, by[name].Verdict, want)
 		}
 	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 suggestions, got %d: %+v", len(got), got)
+	if by["noise"].Status != StatusIgnored {
+		t.Errorf("ignored field lost its status: %q", by["noise"].Status)
 	}
-	// tenant_id is in far fewer logs than prevalent, but 12 saved queries
-	// reference it, so it must rank first.
-	if got[0].Name != "tenant_id" {
-		t.Errorf("expected query-referenced field first, got %q", got[0].Name)
+	if got[0].Name != "spilled" {
+		t.Errorf("urgent field must sort first, got %q", got[0].Name)
 	}
-	if !strings.Contains(strings.Join(got[0].Reasons, " "), "12 saved queries") {
-		t.Errorf("reasons should explain the rank, got %v", got[0].Reasons)
+	// Reference identity drives the drawer, so it must survive.
+	if len(by["tenant_id"].Refs) != 1 || by["tenant_id"].Refs[0].Kind != "alert" {
+		t.Errorf("lost reference identity: %+v", by["tenant_id"].Refs)
+	}
+	// Prevalent-but-unqueried still earns a reserve at >= 50%% coverage.
+	if by["prevalent"].Verdict != VerdictReserve {
+		t.Errorf("prevalent field: got %q", by["prevalent"].Verdict)
+	}
+}
+
+func TestQueriedBucket(t *testing.T) {
+	for _, tc := range []struct {
+		weight, want int
+	}{{0, 0}, {1, 1}, {4, 1}, {5, 2}, {24, 2}, {25, 3}, {500, 3}} {
+		if got := queriedBucket(tc.weight); got != tc.want {
+			t.Errorf("weight %d: got bucket %d, want %d", tc.weight, got, tc.want)
+		}
 	}
 }
 

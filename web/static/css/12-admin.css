@@ -271,3 +271,107 @@
 .sp-saved.fade {
     opacity: 0;
 }
+
+/* ============================
+   Admin panel chrome (Users / Groups / Context Links / Normalizers)
+   Replaces the bare .section-header, whose winning definition is the
+   notebook cell-header bar and does not belong in admin.
+   ============================ */
+
+/* No width cap here on purpose. Settings caps .sp-content because a form needs
+   a readable measure, but these panels are data tables and the surrounding
+   chrome (nav, sub-tab bar, footer) is full width: a capped table reads as
+   truncated against it. Tables take the width they are given.
+
+   They did inherit a bordered .settings-card that is also stretched to full
+   viewport height, which framed a single row in a huge empty box. Drop the box,
+   keeping the class so descendant rules still apply. */
+#settingsSubTabUsers > .settings-card,
+#settingsSubTabGroups > .settings-card {
+    background: none;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+}
+
+/* The toolbar already provides the gap above the table. */
+#settingsSubTabUsers .users-list {
+    margin-top: 0;
+}
+
+.admin-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.admin-toolbar-spacer {
+    flex: 1;
+    min-width: 0;
+}
+
+.admin-search {
+    flex: 0 1 260px;
+    min-width: 0;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-main);
+    font-size: 0.8125rem;
+    transition: var(--transition);
+}
+
+.admin-search::placeholder {
+    color: var(--text-muted);
+}
+
+.admin-search:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.admin-panel-desc {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    max-width: 80ch;
+    margin: 0 0 1rem;
+}
+
+.admin-empty {
+    padding: 1.5rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+}
+
+/* Clickable row identity: the primary way into a record from a list table. */
+.table-name-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+    font-size: inherit;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.table-name-link:hover {
+    color: var(--accent-primary);
+}
+
+.table-name-link:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+    border-radius: 3px;
+}
+
+.group-desc {
+    font-size: 0.75rem;
+}

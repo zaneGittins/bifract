@@ -64,3 +64,11 @@ site/
 
 # Staged during docs CI build, not committed
 docs/install.sh
+
+# Development-only browser tests (Playwright). Never shipped: the runtime image
+# is FROM scratch and copies only compiled binaries plus web/.
+node_modules/
+test-results/
+playwright-report/
+blob-report/
+.playwright/

@@ -158,16 +158,12 @@ func (f *FractalActionClient) transformLogsForFractal(action FractalAction, aler
 			Fields:    make(map[string]string),
 		}
 
-		// Handle timestamp preservation
+		// Handle timestamp preservation. Query rows carry timestamps as formatted
+		// strings, not time.Time, so this must go through RowTime; asserting
+		// time.Time here silently left every forwarded log stamped time.Now().
 		if action.PreserveTimestamp {
-			if ts, exists := result["timestamp"]; exists {
-				if timestamp, ok := ts.(time.Time); ok {
-					logEntry.Timestamp = timestamp
-				} else if timestampStr, ok := ts.(string); ok {
-					if parsedTime, err := time.Parse(time.RFC3339, timestampStr); err == nil {
-						logEntry.Timestamp = parsedTime
-					}
-				}
+			if ts, ok := storage.RowTime(result, "timestamp"); ok {
+				logEntry.Timestamp = ts
 			}
 		}
 

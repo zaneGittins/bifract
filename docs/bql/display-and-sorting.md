@@ -11,7 +11,14 @@ Select specific columns to display:
 
 Aggregations are projected under their generated alias, not the function name: `count()` produces `_count`, `sum(bytes)` produces `sum_bytes`. Reference that alias in `table()`, `sort()`, and post-aggregation filters.
 
-To keep the grouped field available downstream, put the aggregation inside `groupBy(...)` as `function=`. A trailing `| count()` instead reduces the grouped result to a single total, leaving the grouped field out of scope.
+Note the difference between the two ways to combine `groupBy` with `count()`:
+
+```
+* | groupBy(image, function=count())   # one row per image, with its _count
+* | groupBy(image) | count()           # a single row: how many distinct images
+```
+
+Use `function=` when you want a value per group and need the grouped field downstream in `table()` or `sort()`. A trailing `| count()` counts the rows the groupBy produced, so the result is a single total and the grouped field is no longer in scope.
 
 Aggregation functions can be used inline in `table()`:
 

@@ -36,3 +36,13 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/
+
+# Development-only browser tests. Excluded from the build context so they can
+# never enter any image layer, even the builder stage.
+node_modules/
+test/e2e/
+playwright.config.js
+package.json
+package-lock.json
+test-results/
+playwright-report/

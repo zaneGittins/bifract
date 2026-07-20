@@ -32,6 +32,14 @@ const SettingsView = {
             addUserBtn.addEventListener('click', () => this.showAddUserForm());
         }
 
+        const usersSearch = document.getElementById('usersSearch');
+        if (usersSearch) {
+            usersSearch.addEventListener('input', (e) => {
+                this._userFilter = e.target.value;
+                this._paintUsers();
+            });
+        }
+
         if (createUserBtn) {
             createUserBtn.addEventListener('click', () => this.createUser());
         }
@@ -542,15 +550,29 @@ const SettingsView = {
     },
 
     renderUsers(users) {
+        // Keep the full set so the Edit modal can resolve display name/role by
+        // username instead of threading them (unescaped) through inline onclick handlers.
+        this._users = users;
+        this._paintUsers();
+    },
+
+    _paintUsers() {
         const container = document.getElementById('usersListSettings');
         if (!container) return;
 
-        // Keep the rendered set so the Edit modal can resolve display name/role by
-        // username instead of threading them (unescaped) through inline onclick handlers.
-        this._users = users;
+        const all = this._users || [];
+        if (all.length === 0) {
+            container.innerHTML = '<div class="admin-empty">Only the default admin user exists</div>';
+            return;
+        }
+
+        const q = (this._userFilter || '').trim().toLowerCase();
+        const users = q
+            ? all.filter(u => `${u.display_name || ''} ${u.username || ''}`.toLowerCase().includes(q))
+            : all;
 
         if (users.length === 0) {
-            container.innerHTML = '<div class="no-data">Only the default admin user exists</div>';
+            container.innerHTML = '<div class="admin-empty">No users match this search</div>';
             return;
         }
 

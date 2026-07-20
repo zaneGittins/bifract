@@ -3,10 +3,19 @@
 const GroupsView = {
     groups: [],
     selectedGroup: null,
+    filter: '',
 
     init() {
         const addBtn = document.getElementById('addGroupBtn');
         if (addBtn) addBtn.addEventListener('click', () => this.showCreateForm());
+
+        const search = document.getElementById('groupsSearch');
+        if (search) {
+            search.addEventListener('input', (e) => {
+                this.filter = e.target.value;
+                this.renderGroups();
+            });
+        }
 
         const submitBtn = document.getElementById('submitCreateGroupBtn');
         if (submitBtn) submitBtn.addEventListener('click', () => this.createGroup());
@@ -74,7 +83,17 @@ const GroupsView = {
         if (!container) return;
 
         if (this.groups.length === 0) {
-            container.innerHTML = '<div class="no-data" style="padding: 1rem; text-align: center; color: var(--text-muted);">No groups created yet.</div>';
+            container.innerHTML = '<div class="admin-empty">No groups created yet.</div>';
+            return;
+        }
+
+        const q = (this.filter || '').trim().toLowerCase();
+        const groups = q
+            ? this.groups.filter(g => `${g.name || ''} ${g.description || ''}`.toLowerCase().includes(q))
+            : this.groups;
+
+        if (groups.length === 0) {
+            container.innerHTML = '<div class="admin-empty">No groups match this search</div>';
             return;
         }
 
@@ -82,12 +101,12 @@ const GroupsView = {
         html += '<th>Group</th><th>Members</th><th>Created</th><th></th>';
         html += '</tr></thead><tbody>';
 
-        this.groups.forEach(g => {
+        groups.forEach(g => {
             html += `<tr class="group-row" data-group-id="${Utils.escapeHtml(g.id)}" onclick="GroupsView.openDetail('${Utils.escapeJs(g.id)}')">
                 <td>
                     <div class="group-cell">
                         <div class="group-name">${Utils.escapeHtml(g.name)}</div>
-                        ${g.description ? `<div class="text-muted" style="font-size:0.75rem;">${Utils.escapeHtml(g.description)}</div>` : ''}
+                        ${g.description ? `<div class="text-muted group-desc">${Utils.escapeHtml(g.description)}</div>` : ''}
                     </div>
                 </td>
                 <td><span class="role-badge">${g.member_count || 0}</span></td>

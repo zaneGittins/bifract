@@ -23,6 +23,30 @@ func (c *CompiledNormalizer) ApplyFieldName(field string) string {
 	return result
 }
 
+// applyNameTransforms runs the structural flatten and per-key name transforms in
+// order, stopping before field mappings. Shared by the ingest hot path and the
+// editor's Trace so the preview can never disagree with what ingestion does.
+func applyNameTransforms(fields map[string]string, nestedKeys map[string]bool, transforms []Transform) map[string]string {
+	result := fields
+	for _, t := range transforms {
+		switch t {
+		case TransformFlattenLeaf:
+			result = FlattenFields(result, FlattenLeaf, nestedKeys)
+			nestedKeys = nil // after first flatten, nested tracking no longer applies
+		case TransformFlattenFull:
+			result = FlattenFields(result, FlattenFull, nestedKeys)
+			nestedKeys = nil
+		default:
+			renamed := make(map[string]string, len(result))
+			for k, v := range result {
+				renamed[applyFieldNameTransform(k, t)] = v
+			}
+			result = renamed
+		}
+	}
+	return result
+}
+
 // ApplyTransforms applies all transforms in order to the full field map.
 // Flatten transforms expand JSON-string values; other transforms rename keys.
 // Field mappings are applied last.
@@ -35,25 +59,7 @@ func (c *CompiledNormalizer) ApplyTransforms(fields map[string]string) map[strin
 // expanded by flatten transforms, preventing string values that happen to
 // contain valid JSON from being incorrectly flattened.
 func (c *CompiledNormalizer) ApplyTransformsWithNested(fields map[string]string, nestedKeys map[string]bool) map[string]string {
-	result := fields
-	for _, t := range c.Transforms {
-		switch t {
-		case TransformFlattenLeaf:
-			result = FlattenFields(result, FlattenLeaf, nestedKeys)
-			nestedKeys = nil // after first flatten, nested tracking no longer applies
-		case TransformFlattenFull:
-			result = FlattenFields(result, FlattenFull, nestedKeys)
-			nestedKeys = nil
-		default:
-			// Per-key name transform: build a new map with renamed keys.
-			renamed := make(map[string]string, len(result))
-			for k, v := range result {
-				newKey := applyFieldNameTransform(k, t)
-				renamed[newKey] = v
-			}
-			result = renamed
-		}
-	}
+	result := applyNameTransforms(fields, nestedKeys, c.Transforms)
 
 	// Apply field mappings last.
 	if len(c.FieldMappingMap) > 0 {

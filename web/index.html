@@ -614,7 +614,9 @@
                 <!-- Users Sub-Tab -->
                 <div id="settingsSubTabUsers" class="settings-sub-panel">
                 <div class="settings-card">
-                    <div class="section-header">
+                    <div class="admin-toolbar">
+                        <input type="text" id="usersSearch" class="admin-search" placeholder="Search users..." autocomplete="off">
+                        <span class="admin-toolbar-spacer"></span>
                         <button id="addUserBtnSettings" class="btn-primary btn-sm">+ Add User</button>
                     </div>
                     <div id="usersListSettings" class="users-list">
@@ -629,10 +631,12 @@
                 <div class="settings-card">
                     <!-- Groups List View -->
                     <div id="groupsListView">
-                        <div class="section-header">
+                        <p class="admin-panel-desc">Groups let you assign fractal permissions to multiple users at once.</p>
+                        <div class="admin-toolbar">
+                            <input type="text" id="groupsSearch" class="admin-search" placeholder="Search groups..." autocomplete="off">
+                            <span class="admin-toolbar-spacer"></span>
                             <button id="addGroupBtn" class="btn-primary btn-sm">+ Create Group</button>
                         </div>
-                        <p class="help-text" style="margin-bottom: 1rem;">Groups let you assign fractal permissions to multiple users at once.</p>
                         <div id="groupsList" class="groups-list">
                             <div class="loading">Loading groups...</div>
                         </div>
@@ -813,6 +817,16 @@
                                         <button id="archiveClearCatalogBtn" class="danger-btn">Clear Catalog</button>
                                     </div>
                                 </div>
+                                <div class="sp-row" id="schemaResetItem">
+                                    <div class="sp-row-info">
+                                        <span class="sp-row-label">Reset field schema</span>
+                                        <p class="sp-row-desc">Deletes every ingested log and rebuilds the field schema from the project defaults plus your current custom fields.</p>
+                                        <p class="sp-row-meta">Reserving and removing fields is instant and reversible on its own, so this is rarely needed. Its one unique effect is discarding type hints that have accumulated over time: reconciliation only ever adds them. Fractal configs, normalizers, and other settings are unaffected.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <button id="schemaFieldResetBtn" class="danger-btn">Reset Schema</button>
+                                    </div>
+                                </div>
                             </div>
                         </section>
                     </div>
@@ -821,7 +835,8 @@
 
                 <!-- Context Links Sub-Tab -->
                 <div id="settingsSubTabContext" class="settings-sub-panel" style="display:none;">
-                    <div class="section-header" style="justify-content:flex-end;">
+                    <div class="admin-toolbar">
+                        <span class="admin-toolbar-spacer"></span>
                         <button id="contextLinkCreateBtn" class="btn-primary btn-sm">+ Add Context Link</button>
                     </div>
                     <div id="contextLinksListContainer">
@@ -883,12 +898,6 @@
                 <div id="schemaFieldsView" class="admin-only" style="display: none;">
                     <section class="settings-view-section">
                         <div class="schema-head">
-                            <div class="schema-head-text">
-                                <h3>Schema Fields</h3>
-                                <p>Adding a field gives it its own column and reserves capacity. That is free
-                                   and applies to logs you already have. A skip index is the separate,
-                                   optional choice, and it only speeds up logs ingested from then on.</p>
-                            </div>
                             <div class="schema-head-actions">
                                 <input type="file" id="schemaImportInput" accept=".yaml,.yml,text/yaml" style="display:none">
                                 <button id="schemaExportBtn" class="btn-secondary btn-sm">Export</button>
@@ -897,89 +906,84 @@
                             </div>
                         </div>
 
-                        <!-- Inline add form -->
-                        <div id="schemaFieldAddForm" style="display:none;">
-                            <div class="form-row">
-                                <div class="form-group flex-grow">
-                                    <label for="schemaFieldName">Field name</label>
-                                    <input type="text" id="schemaFieldName" placeholder="e.g. tenant_id" autocomplete="off" spellcheck="false">
-                                    <div class="schema-field-hint">Letters, digits, and underscores. Must start with a letter or underscore.</div>
-                                </div>
-                                <div class="form-group index-type-group">
-                                    <label for="schemaFieldIndexType">Skip index</label>
-                                    <select id="schemaFieldIndexType">
-                                        <option value="none">No index</option>
-                                        <option value="set">Set: under a few hundred distinct values</option>
-                                        <option value="bloom_filter">Bloom filter: many distinct values</option>
-                                    </select>
-                                </div>
-                                <div class="form-actions">
-                                    <button id="schemaFieldSaveBtn" class="btn-primary btn-sm">Add field</button>
-                                    <button id="schemaFieldCancelBtn" class="btn-secondary btn-sm">Cancel</button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Capacity: the scarce resource this page manages -->
+                        <!-- Capacity: slim strip, with a projected delta while rows are selected -->
                         <div class="schema-cap" id="schemaCapacity" hidden>
-                            <div class="schema-cap-top">
-                                <span class="schema-cap-label">Field capacity</span>
-                                <span class="schema-cap-fig" id="schemaCapFig"></span>
-                            </div>
-                            <div class="schema-bar">
-                                <i class="schema-seg-hint" id="schemaSegHint"></i>
+                            <span class="schema-cap-fig"><b id="schemaCapUsed">0</b> / <span id="schemaCapLimit">1,024</span> columns</span>
+                            <span class="schema-cap-bar">
+                                <i class="schema-seg-res" id="schemaSegRes"></i>
                                 <i class="schema-seg-dyn" id="schemaSegDyn"></i>
-                            </div>
-                            <p class="schema-cap-note" id="schemaCapNote"></p>
+                                <i class="schema-seg-proj" id="schemaSegProj"></i>
+                            </span>
+                            <span class="schema-cap-fig" id="schemaCapProj"></span>
+                            <span class="schema-cap-warn" id="schemaCapWarn" hidden></span>
                         </div>
 
-                        <!-- Suggestions derived from real data and real queries -->
-                        <div id="schemaSuggestZone" hidden>
-                            <div class="schema-sec">
-                                <h2>Suggested from your data</h2>
-                                <span class="schema-count" id="schemaSuggestCount">0</span>
-                            </div>
-                            <div class="schema-list" id="schemaSuggestList"></div>
+                        <div class="schema-filters" id="schemaFilters">
+                            <label class="schema-search">
+                                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                                    <circle cx="7" cy="7" r="4.5"></circle><path d="M10.5 10.5L14 14" stroke-linecap="round"></path>
+                                </svg>
+                                <input type="search" id="schemaQ" placeholder="Search fields" aria-label="Search fields">
+                            </label>
+                            <span class="schema-sel" id="schemaWrapVerdict"><select id="schemaFVerdict" aria-label="Filter by recommendation">
+                                <option value="">All recommendations</option>
+                                <option value="reserve">Reserve</option>
+                                <option value="index">Add index</option>
+                                <option value="keep">Keep</option>
+                                <option value="unused">Unused</option>
+                                <option value="none">No recommendation</option>
+                            </select></span>
+                            <span class="schema-sel" id="schemaWrapStatus"><select id="schemaFStatus" aria-label="Filter by status">
+                                <option value="">All fields</option>
+                                <option value="reserved">Reserved</option>
+                                <option value="unreserved">Not reserved</option>
+                                <option value="ignored">Ignored</option>
+                            </select></span>
+                            <span class="schema-spacer"></span>
+                            <span class="schema-result-count" id="schemaResultCount"></span>
                         </div>
 
-                        <div class="schema-empty" id="schemaSuggestEmpty" hidden>
-                            <h3>No suggestions right now</h3>
-                            <p id="schemaSuggestEmptyText">Bifract reads your ingested logs to find fields worth
-                               reserving. Suggestions appear once enough data has arrived.</p>
+                        <div class="schema-bulkbar" id="schemaBulkBar" hidden>
+                            <span class="schema-bulk-n" id="schemaBulkN"></span>
+                            <span class="schema-bulk-impact" id="schemaBulkImpact"></span>
+                            <span class="schema-spacer"></span>
+                            <button class="btn-secondary btn-sm" id="schemaBulkClear">Clear</button>
+                            <button class="btn-primary btn-sm" id="schemaBulkApply">Reserve selected</button>
                         </div>
 
-                        <div class="schema-sec">
-                            <h2>Configured fields</h2>
-                            <span class="schema-count" id="schemaConfiguredCount">0</span>
-                        </div>
-                        <div class="schema-list" id="schemaConfiguredList">
-                            <div class="loading">Loading schema fields...</div>
+                        <div class="schema-tablewrap">
+                            <table class="schema-table">
+                                <thead>
+                                    <tr>
+                                        <th class="schema-chk"><label class="schema-box"><input type="checkbox" id="schemaChkAll" aria-label="Select all shown"><span></span></label></th>
+                                        <th class="schema-sortable" data-sort="name">Field<span class="schema-arr">&#8597;</span></th>
+                                        <th class="schema-sortable" data-sort="coverage">In your logs<span class="schema-arr">&#8597;</span></th>
+                                        <th class="schema-sortable" data-sort="cardinality">Uniques<span class="schema-arr">&#8597;</span></th>
+                                        <th class="schema-sortable" data-sort="queried">Queried<span class="schema-arr">&#8597;</span></th>
+                                        <th>Status</th>
+                                        <th>Index</th>
+                                        <th class="schema-sortable" data-sort="verdict">Recommendation<span class="schema-arr">&#8597;</span></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="schemaTbody">
+                                    <tr><td colspan="8"><div class="loading">Loading schema fields...</div></td></tr>
+                                </tbody>
+                            </table>
                         </div>
 
-                        <!-- Ignored suggestions, restorable -->
-                        <details class="schema-ignored" id="schemaIgnoredZone" hidden>
-                            <summary>Ignored fields <span id="schemaIgnoredCount"></span></summary>
-                            <div class="schema-ignored-body" id="schemaIgnoredList"></div>
-                        </details>
+                        <div class="schema-pager">
+                            <span class="schema-pg" id="schemaPgInfo"></span>
+                            <button class="btn-secondary btn-sm" id="schemaPgPrev">Previous</button>
+                            <button class="btn-secondary btn-sm" id="schemaPgNext">Next</button>
+                        </div>
 
-                        <!-- Rebuild: demoted. Adding and removing fields no longer needs it. -->
-                        <details class="schema-danger">
-                            <summary>Advanced: rebuild schema from scratch</summary>
-                            <div class="schema-danger-body">
-                                <p>Deletes all ingested log data and rebuilds the ClickHouse schema from the
-                                   current field configuration. Fractal configs, normalizers, and other
-                                   settings are unaffected.</p>
-                                <p><strong>You almost certainly do not need this.</strong> Adding and removing
-                                   fields is instant and reversible, and neither rewrites existing data. This
-                                   exists only to reclaim capacity from a schema that has accumulated fields
-                                   you no longer want.</p>
-                                <button id="schemaFieldResetBtn" class="btn-danger btn-sm">Delete all logs and rebuild</button>
-                            </div>
-                        </details>
                     </section>
                 </div>
             </div>
 
+            <!-- Field detail drawer: preserves table context, unlike a modal -->
+            <div class="schema-scrim" id="schemaScrim"></div>
+            <aside class="schema-drawer" id="schemaDrawer" role="dialog" aria-labelledby="schemaDrawerName" aria-hidden="true"></aside>
             <!-- Schema Reset Confirmation Modal -->
             <div id="schemaResetModal" class="modal" style="display:none;">
                 <div class="modal-content" style="max-width:480px;">
@@ -987,7 +991,8 @@
                         <h3 style="margin:0;color:var(--error,#f87171)">Reset Schema and Delete All Logs</h3>
                     </div>
                     <div class="modal-body">
-                        <p style="margin:0 0 10px 0">This will permanently delete <strong>all ingested log data</strong> and rebuild the ClickHouse schema from the current field configuration.</p>
+                        <p style="margin:0 0 10px 0">This will permanently delete <strong>all ingested log data</strong> and rebuild the field schema from the project defaults plus your current custom fields.</p>
+                        <p style="margin:0 0 10px 0;font-size:0.875rem;color:var(--text-muted)">Any type hint outside that set is discarded, freeing its column. This is the only operation that removes one.</p>
                         <p style="margin:0 0 16px 0;font-size:0.875rem;color:var(--text-muted)">Fractal configs, normalizers, and all other settings are not affected.</p>
                         <div class="form-group" style="margin:0">
                             <label for="schemaResetConfirmInput">Type <strong>DELETE ALL LOG DATA</strong> to confirm</label>
@@ -1026,11 +1031,10 @@
             <div id="mainNormalizersTabContent" style="display: none;">
                 <div id="normalizersView" class="admin-only" style="display: none;">
                     <section class="settings-view-section">
-                        <div class="section-header" style="justify-content:flex-end;">
-                            <div class="section-header-actions">
-                                <button class="btn-secondary btn-sm" onclick="Normalizers.importNormalizer()">Import YAML</button>
-                                <button id="normalizerCreateBtn" class="btn-primary btn-sm">+ Create Normalizer</button>
-                            </div>
+                        <div class="admin-toolbar">
+                            <span class="admin-toolbar-spacer"></span>
+                            <button class="btn-secondary btn-sm" onclick="Normalizers.importNormalizer()">Import YAML</button>
+                            <button id="normalizerCreateBtn" class="btn-primary btn-sm">+ Create Normalizer</button>
                         </div>
                         <div id="normalizersListContainer">
                             <div class="loading">Loading normalizers...</div>
@@ -1040,73 +1044,155 @@
 
                 <!-- Normalizer Editor View (full-page, replaces modal) -->
                 <div id="normalizerEditorView" class="admin-only" style="display: none;">
-                    <div class="normalizer-editor-container">
-                        <div class="normalizer-editor-header">
-                            <div class="header-left">
-                                <button class="btn-secondary" onclick="Normalizers.backToList()">← Back to Normalizers</button>
-                            </div>
-                            <div class="header-center">
-                                <h2 id="normalizerEditorTitle">Create Normalizer</h2>
-                            </div>
-                            <div class="header-right">
-                                <button class="btn-secondary" onclick="Normalizers.togglePreview()">Preview</button>
-                                <button class="btn-primary" onclick="Normalizers.saveNormalizer()">Save</button>
-                            </div>
+                    <div class="nz-topbar" id="normalizerTopbar">
+                        <button class="nz-back" onclick="Normalizers.backToList()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                            Normalizers
+                        </button>
+                        <div class="nz-title-group">
+                            <h2 id="normalizerEditorTitle">Create Normalizer</h2>
+                            <span class="nz-dirty-dot"></span>
+                            <span class="nz-dirty-label">Unsaved changes</span>
                         </div>
-                        <div class="normalizer-editor-body">
-                            <div class="normalizer-editor-left">
-                                <div class="form-group">
-                                    <label for="normalizerName">Name</label>
-                                    <input type="text" id="normalizerName" placeholder="e.g. My Custom Normalizer">
+                        <span class="nz-usage-chip" id="normalizerUsageChip" style="display: none;">
+                            <span class="nz-live-dot"></span>
+                            <span id="normalizerUsageText"></span>
+                        </span>
+                        <button class="nz-btn" id="normalizerDiscardBtn" onclick="Normalizers.discardChanges()">Discard</button>
+                        <button class="nz-btn nz-btn-primary" id="normalizerSaveBtn" onclick="Normalizers.saveNormalizer()" disabled>Save</button>
+                    </div>
+
+                    <div class="nz-workbench" id="normalizerWorkbench">
+                        <div class="nz-pipeline">
+                            <section class="nz-stage">
+                                <div class="nz-stage-head">
+                                    <span class="nz-stage-num">1</span>
+                                    <span class="nz-stage-title">Identity</span>
+                                    <span class="nz-stage-hint">Name and purpose</span>
                                 </div>
-                                <div class="form-group">
-                                    <label for="normalizerDescription">Description</label>
-                                    <textarea id="normalizerDescription" rows="3" placeholder="Optional description"></textarea>
+                                <div class="nz-stage-body">
+                                    <div>
+                                        <label class="nz-label" for="normalizerName">Name</label>
+                                        <input type="text" id="normalizerName" placeholder="e.g. My Custom Normalizer">
+                                    </div>
+                                    <div>
+                                        <label class="nz-label" for="normalizerDescription">Description</label>
+                                        <textarea id="normalizerDescription" rows="2" placeholder="Optional description"></textarea>
+                                    </div>
                                 </div>
-                                <div class="form-group" id="normalizerTransforms">
-                                    <label>Transforms <span class="form-help-inline">(applied in order, top to bottom)</span></label>
+                            </section>
+
+                            <section class="nz-stage">
+                                <div class="nz-stage-head">
+                                    <span class="nz-stage-num">2</span>
+                                    <span class="nz-stage-title">Transforms</span>
+                                    <span class="nz-stage-hint">Reshape field names, in order</span>
+                                    <span class="nz-stage-count" id="normalizerTransformCount">0 active</span>
+                                </div>
+                                <div class="nz-stage-body">
                                     <div id="normalizerTransformsList" class="normalizer-transforms-list"></div>
-                                    <div class="transform-add-row">
+                                    <div class="nz-add-row">
                                         <select id="normalizerTransformSelect">
                                             <option value="">Add a transform...</option>
                                         </select>
-                                        <button class="btn-sm btn-secondary" onclick="Normalizers.addTransformFromSelect()">+ Add</button>
+                                        <button class="nz-btn" onclick="Normalizers.addTransformFromSelect()">Add</button>
                                     </div>
                                 </div>
-                            </div>
-                            <div class="normalizer-editor-right">
-                                <div class="form-group">
-                                    <label>Field Mappings</label>
-                                    <p class="help-text">Map source field names to a target name. Sources are matched after transforms are applied.</p>
-                                    <div id="normalizerMappings"></div>
-                                    <button class="btn-secondary btn-sm" onclick="Normalizers.addMappingRow()" style="margin-top: 0.5rem;">+ Add Mapping</button>
+                            </section>
+
+                            <section class="nz-stage">
+                                <div class="nz-stage-head">
+                                    <span class="nz-stage-num">3</span>
+                                    <span class="nz-stage-title">Field Mappings</span>
+                                    <span class="nz-stage-hint">Rename sources to a common name</span>
+                                    <span class="nz-stage-count" id="normalizerMappingCount">0 mappings</span>
                                 </div>
-                                <div class="form-group" style="margin-top: 1.5rem;">
-                                    <label>Derived Fields <span class="form-help-inline">(applied after field mappings)</span></label>
-                                    <p class="help-text">Derive a new field from an existing field's value without removing the source (e.g. event_id 1 -> bifract_category process_creation). Enter the value map as key=value lines.</p>
+                                <div class="nz-stage-body">
+                                    <div class="nz-map-search">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                                        <input type="text" id="normalizerMappingFilter" placeholder="Filter mappings by source or target..." autocomplete="off" spellcheck="false">
+                                    </div>
+                                    <div id="normalizerMappings" class="nz-map-scroll"></div>
+                                    <button class="nz-add-full" onclick="Normalizers.addMappingRow()">+ Add mapping</button>
+                                </div>
+                            </section>
+
+                            <section class="nz-stage">
+                                <div class="nz-stage-head">
+                                    <span class="nz-stage-num">4</span>
+                                    <span class="nz-stage-title">Derived Fields</span>
+                                    <span class="nz-stage-hint">Add a field without removing the source</span>
+                                </div>
+                                <div class="nz-stage-body">
+                                    <p class="nz-help">Derive a new field from an existing field's value (e.g. event_id 1 -> bifract_category process_creation).</p>
                                     <div id="normalizerDerivedFields"></div>
-                                    <button class="btn-secondary btn-sm" onclick="Normalizers.addDerivedFieldRow()" style="margin-top: 0.5rem;">+ Add Derived Field</button>
+                                    <button class="nz-add-full" onclick="Normalizers.addDerivedFieldRow()">+ Add derived field</button>
                                 </div>
-                                <div class="form-group" style="margin-top: 1.5rem;">
-                                    <label>Timestamp Fields <span class="form-help-inline">(checked in order during ingestion)</span></label>
-                                    <p class="help-text">Configure which fields to check for timestamps and their Go time format. If no match is found, ingest time is used.</p>
+                            </section>
+
+                            <section class="nz-stage">
+                                <div class="nz-stage-head">
+                                    <span class="nz-stage-num">5</span>
+                                    <span class="nz-stage-title">Timestamp Fields</span>
+                                    <span class="nz-stage-hint">Checked in order during ingestion</span>
+                                </div>
+                                <div class="nz-stage-body">
+                                    <p class="nz-help">Which fields to read a timestamp from, and their Go time format. If none match, ingest time is used.</p>
                                     <div id="normalizerTimestampFields"></div>
-                                    <button class="btn-secondary btn-sm" onclick="Normalizers.addTimestampFieldRow()" style="margin-top: 0.5rem;">+ Add Timestamp Field</button>
+                                    <button class="nz-add-full" onclick="Normalizers.addTimestampFieldRow()">+ Add timestamp field</button>
+                                </div>
+                            </section>
+                        </div>
+
+                        <aside class="nz-rail" id="normalizerRail">
+                            <div class="nz-rail-strip">
+                                <button class="nz-rail-toggle" onclick="Normalizers.toggleRail()" title="Expand preview" aria-label="Expand preview">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+                                </button>
+                                <span class="nz-strip-badge" id="normalizerStripBadge">0</span>
+                                <span class="nz-strip-label">Preview</span>
+                                <span class="nz-strip-count" id="normalizerStripCount"></span>
+                                <span class="nz-strip-spacer"></span>
+                            </div>
+
+                            <div class="nz-rail-head">
+                                <div class="nz-rail-title-row">
+                                    <span class="nz-rail-title">Preview</span>
+                                    <span class="nz-live-badge">Live</span>
+                                    <span class="nz-recalc" id="normalizerRecalc"></span>
+                                    <button class="nz-rail-toggle" onclick="Normalizers.toggleRail()" title="Collapse preview" aria-label="Collapse preview">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+                                    </button>
+                                </div>
+
+                                <div class="nz-sample-bar" id="normalizerSampleBar"></div>
+
+                                <div class="nz-capture-row">
+                                    <select id="normalizerCaptureFractal" class="nz-capture-select" title="Fractal to capture samples from"></select>
+                                    <button class="nz-capture-btn" id="normalizerCaptureBtn" onclick="Normalizers.captureSamples()">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+                                        Capture
+                                    </button>
+                                </div>
+                                <div class="nz-capture-note" id="normalizerCaptureNote"></div>
+
+                                <div class="nz-stats" id="normalizerStats"></div>
+                            </div>
+
+                            <div class="nz-io">
+                                <div class="nz-io-label">Input <span class="nz-rule"></span> <span id="normalizerInputMeta">paste or capture</span></div>
+                                <textarea id="normalizerPreviewInput" class="nz-raw-pane" spellcheck="false" placeholder='{"Computer": "WS01", "data": {"win": {"eventdata": {"QueryName": "example.com"}}}}'></textarea>
+
+                                <div class="nz-io-label">Output <span class="nz-rule"></span> <span id="normalizerOutputMeta"></span></div>
+                                <div id="normalizerPreviewWarning"></div>
+                                <div class="nz-out-wrap">
+                                    <table class="nz-out-table">
+                                        <thead><tr><th>Field</th><th>Value</th><th>From</th></tr></thead>
+                                        <tbody id="normalizerPreviewResults"></tbody>
+                                    </table>
                                 </div>
                             </div>
-                        </div>
-                        <!-- Preview Panel -->
-                        <div id="normalizerPreviewContainer" class="normalizer-preview-container" style="display: none;">
-                            <div class="normalizer-preview-header">
-                                <h3>Dry-Run Preview</h3>
-                                <p class="help-text">Paste sample JSON to see how fields will be normalized with the current configuration.</p>
-                            </div>
-                            <div class="normalizer-preview-input-row">
-                                <textarea id="normalizerPreviewInput" rows="6" placeholder='{"Computer": "WS01", "data": {"win": {"eventdata": {"QueryName": "example.com"}}}}'></textarea>
-                                <button class="btn-primary btn-sm" onclick="Normalizers.runPreview()">Run Preview</button>
-                            </div>
-                            <div id="normalizerPreviewResults"></div>
-                        </div>
+                        </aside>
                     </div>
                 </div>
             </div>

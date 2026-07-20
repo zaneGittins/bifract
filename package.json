@@ -1,0 +1,14 @@
+{
+  "name": "bifract-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Development-only browser tests. Not part of the shipped product: the Go binary serves web/ directly and the runtime image is built FROM scratch, so nothing here is ever packaged or deployed.",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
+}

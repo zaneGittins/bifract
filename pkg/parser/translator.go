@@ -1026,9 +1026,10 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		return
 	}
 
-	// Both hot and iceberg archives carry a norm_log column (materialized +
-	// indexed in the hot store; a plain JSON String in the archive), so the
-	// projection is identical and the result shape matches hot Query.
+	// Both hot and iceberg archives carry a norm_log column (DEFAULT
+	// toString(fields) in the hot store, no n-gram index there; a plain JSON
+	// String in the archive), so the projection is identical and the result
+	// shape matches hot Query.
 	normLogSel := "norm_log"
 
 	// No commands and no assignments: use default field set

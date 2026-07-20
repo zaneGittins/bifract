@@ -197,7 +197,13 @@ CREATE TABLE IF NOT EXISTS logs_hot (
         `target_file`         String
     ),
     fractal_id       LowCardinality(String) DEFAULT '',
-    ingest_timestamp DateTime64(3) DEFAULT now64(3)
+    ingest_timestamp DateTime64(3) DEFAULT now64(3),
+    -- Mirrors logs.norm_log: the canonical BQL text column. Required, not optional --
+    -- any alert query with a pipeline command projects norm_log, and those route here
+    -- whenever the cursor is under 110 min old. No n-gram index (see note above on skip
+    -- indexes); a 2h window is small enough to scan without one.
+    norm_log         String DEFAULT toString(fields) CODEC(ZSTD(3)),
+    normalizer       LowCardinality(String) DEFAULT ''
 ) ENGINE = MergeTree()
 PARTITION BY toStartOfFiveMinutes(ingest_timestamp)
 ORDER BY (fractal_id, ingest_timestamp, log_id)
@@ -214,8 +220,18 @@ SELECT
     log_id,
     fields,
     fractal_id,
-    ingest_timestamp
+    ingest_timestamp,
+    norm_log,
+    normalizer
 FROM logs;
+
+-- Defensive columns for installs created before these existed on logs_hot. logs_hot must
+-- carry every base column BQL can reference (see ParserBaseColumns in pkg/parser/registry.go):
+-- alert queries route here on a recent cursor, and a missing column fails with code 47
+-- (unknown identifier), which the engine treats as unrecoverable and auto-disables the alert.
+-- Migration 012 carries the same changes plus the matching MODIFY QUERY for the MV.
+ALTER TABLE logs_hot ADD COLUMN IF NOT EXISTS norm_log String DEFAULT toString(fields) CODEC(ZSTD(3));
+ALTER TABLE logs_hot ADD COLUMN IF NOT EXISTS normalizer LowCardinality(String) DEFAULT '';
 
 -- Process-lineage skeleton: one row per process-create event, ordered by
 -- (fractal_id, process_guid) so ptg() traversal hops are primary-key point lookups

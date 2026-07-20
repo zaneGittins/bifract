@@ -382,7 +382,7 @@ func main() {
 	}
 	// Initialize normalizer system (before alerts, since alert manager uses it for Sigma translation)
 	normalizerManager := normalizers.NewManager(pg)
-	normalizerHandler := normalizers.NewHandler(normalizerManager)
+	normalizerHandler := normalizers.NewHandler(normalizerManager, db)
 
 	schemaFieldsHandler := schemafields.NewHandler(schemaFieldsManager, db, func(custom map[string]bool) {
 		parser.SetCustomTypeHintedFields(custom)
@@ -493,10 +493,6 @@ func main() {
 	alertEngine.SetIngestPressureFunc(func() bool {
 		return ingestQueue.Depth() > alertDeferThreshold
 	})
-	alertEngine.SetLastIngestedFunc(func(fractalID string) time.Time {
-		return ingestQueue.LastIngested(fractalID)
-	})
-
 	// The scorer yields to ingest pressure the same way the alert engine does, so a
 	// scoring pass never competes with heavy ingestion for ClickHouse resources.
 	scorerEngine.SetIngestPressureFunc(func() bool {
@@ -1932,6 +1928,7 @@ func main() {
 			r.Get("/normalizers", normalizerHandler.HandleList)
 			r.Post("/normalizers", normalizerHandler.HandleCreate)
 			r.Post("/normalizers/preview", normalizerHandler.HandlePreview)
+			r.Get("/normalizers/samples", normalizerHandler.HandleSamples)
 			r.Post("/normalizers/import", normalizerHandler.HandleImportYAML)
 			r.Get("/normalizers/{id}", normalizerHandler.HandleGet)
 			r.Put("/normalizers/{id}", normalizerHandler.HandleUpdate)

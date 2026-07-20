@@ -2,7 +2,17 @@ const Normalizers = {
     normalizers: [],
     editingId: null,
     currentTransforms: [],
+    currentMappings: [],
+    currentSamples: [],
     _draggedTsRow: null,
+    _draggedTransformIndex: null,
+    _activeSampleIndex: -1,
+    _dirty: false,
+    _liveWired: false,
+    _previewTimer: null,
+    _previewAbort: null,
+    _previewHits: {},
+    _previewCollisions: {},
 
     TRANSFORMS: {
         flatten_leaf: { label: 'flatten_leaf', desc: 'Flatten nested keys to leaf name only (user.profile.name -> name)', conflicts: ['flatten_full', 'dedot'] },
@@ -99,7 +109,7 @@ const Normalizers = {
             const mappingCount = (n.field_mappings || []).length;
             const defaultBadge = n.is_default ? ' <span class="context-link-badge">default</span>' : '';
             html += `<tr>
-                <td>${Utils.escapeHtml(n.name)}${defaultBadge}</td>
+                <td><button class="table-name-link" onclick="Normalizers.openEditForm('${Utils.escapeJs(n.id)}')" title="Edit normalizer">${Utils.escapeHtml(n.name)}</button>${defaultBadge}</td>
                 <td class="context-link-fields">${Utils.escapeHtml(transforms)}</td>
                 <td>${mappingCount} mapping${mappingCount !== 1 ? 's' : ''}</td>
                 <td><span class="normalizer-usage-cell" id="normalizer-usage-${n.id}">--</span></td>
@@ -164,12 +174,20 @@ const Normalizers = {
     },
 
     backToList() {
+        if (this._dirty && !confirm('You have unsaved changes. Leave without saving?')) return;
+
+        clearTimeout(this._previewTimer);
+        this._previewAbort?.abort();
+        this._previewAbort = null;
+
         window.App?.pushSubPath('');
         const listView = document.getElementById('normalizersView');
         const editorView = document.getElementById('normalizerEditorView');
         if (editorView) editorView.style.display = 'none';
         if (listView) listView.style.display = 'block';
         this.editingId = null;
+        this._dirty = false;
+        this._syncDirtyUI();
         this.loadNormalizers();
     },
 
@@ -185,18 +203,59 @@ const Normalizers = {
             if (!t) return;
             const row = document.createElement('div');
             row.className = 'transform-item';
+            row.draggable = true;
+            row.dataset.index = String(i);
             row.innerHTML = `
-                <div class="transform-item-order">
-                    <button onclick="Normalizers.moveTransform(${i}, -1)" title="Move up" ${i === 0 ? 'disabled' : ''}>&#9650;</button>
-                    <button onclick="Normalizers.moveTransform(${i}, 1)" title="Move down" ${i === this.currentTransforms.length - 1 ? 'disabled' : ''}>&#9660;</button>
-                </div>
-                <span class="transform-item-label"><code>${Utils.escapeHtml(t.label)}</code> <span class="transform-item-desc">- ${Utils.escapeHtml(t.desc)}</span></span>
-                <button class="btn-sm btn-danger" onclick="Normalizers.removeTransform(${i})" title="Remove">&times;</button>
+                <span class="nz-grip" title="Drag to reorder">
+                    <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true"><circle cx="2" cy="2" r="1.2"/><circle cx="8" cy="2" r="1.2"/><circle cx="2" cy="7" r="1.2"/><circle cx="8" cy="7" r="1.2"/><circle cx="2" cy="12" r="1.2"/><circle cx="8" cy="12" r="1.2"/></svg>
+                </span>
+                <code class="transform-item-label">${Utils.escapeHtml(t.label)}</code>
+                <span class="transform-item-desc">${Utils.escapeHtml(t.desc)}</span>
+                <span class="transform-item-step">step ${i + 1}</span>
+                <button class="nz-x" onclick="Normalizers.removeTransform(${i})" title="Remove transform">&times;</button>
             `;
+            this._wireTransformDrag(row, container, i);
             container.appendChild(row);
         });
 
+        const count = document.getElementById('normalizerTransformCount');
+        if (count) count.textContent = `${this.currentTransforms.length} active`;
+
         this._updateTransformSelect();
+    },
+
+    // Drag-to-reorder. Reordering changes output (flatten before snake_case is not
+    // the same as after), so the preview re-runs on drop.
+    _wireTransformDrag(row, container, index) {
+        row.addEventListener('dragstart', (e) => {
+            this._draggedTransformIndex = index;
+            row.classList.add('transform-item-dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            try { e.dataTransfer.setData('text/plain', String(index)); } catch { /* Safari */ }
+        });
+        row.addEventListener('dragend', () => {
+            this._draggedTransformIndex = null;
+            row.classList.remove('transform-item-dragging');
+            container.querySelectorAll('.transform-item').forEach(r => r.classList.remove('transform-item-drop'));
+        });
+        row.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            if (this._draggedTransformIndex === null || this._draggedTransformIndex === index) return;
+            container.querySelectorAll('.transform-item').forEach(r => r.classList.remove('transform-item-drop'));
+            row.classList.add('transform-item-drop');
+        });
+        row.addEventListener('dragleave', () => row.classList.remove('transform-item-drop'));
+        row.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const from = this._draggedTransformIndex;
+            this._draggedTransformIndex = null;
+            if (from === null || from === index) return;
+            const [moved] = this.currentTransforms.splice(from, 1);
+            this.currentTransforms.splice(index, 0, moved);
+            this._markDirty();
+            this._renderTransformsList();
+            this._schedulePreview();
+        });
     },
 
     _updateTransformSelect() {
@@ -227,12 +286,16 @@ const Normalizers = {
         const select = document.getElementById('normalizerTransformSelect');
         if (!select || !select.value) return;
         this.currentTransforms.push(select.value);
+        this._markDirty();
         this._renderTransformsList();
+        this._schedulePreview();
     },
 
     removeTransform(index) {
         this.currentTransforms.splice(index, 1);
+        this._markDirty();
         this._renderTransformsList();
+        this._schedulePreview();
     },
 
     moveTransform(index, direction) {
@@ -240,7 +303,9 @@ const Normalizers = {
         if (newIndex < 0 || newIndex >= this.currentTransforms.length) return;
         const item = this.currentTransforms.splice(index, 1)[0];
         this.currentTransforms.splice(newIndex, 0, item);
+        this._markDirty();
         this._renderTransformsList();
+        this._schedulePreview();
     },
 
     // --- Form open/close ---
@@ -253,19 +318,15 @@ const Normalizers = {
         document.getElementById('normalizerDescription').value = '';
 
         this.currentTransforms = [];
+        this.currentMappings = [{ sources: [], target: '' }];
         this._renderTransformsList();
-
-        document.getElementById('normalizerMappings').innerHTML = '';
-        this.addMappingRow();
+        this._renderMappings();
 
         document.getElementById('normalizerDerivedFields').innerHTML = '';
-
         document.getElementById('normalizerTimestampFields').innerHTML = '';
 
-        const previewContainer = document.getElementById('normalizerPreviewContainer');
-        if (previewContainer) previewContainer.style.display = 'none';
-
-        this.showEditor('Create Normalizer');
+        this._setUsageChip(null);
+        this._initEditorSession('Create Normalizer');
         document.getElementById('normalizerName')?.focus();
     },
 
@@ -280,60 +341,247 @@ const Normalizers = {
             document.getElementById('normalizerDescription').value = n.description || '';
 
             this.currentTransforms = (n.transforms || []).filter(t => t in this.TRANSFORMS);
-            this._renderTransformsList();
-
-            const container = document.getElementById('normalizerMappings');
-            container.innerHTML = '';
-            const mappings = n.field_mappings || [];
-            if (mappings.length === 0) {
-                this.addMappingRow();
-            } else {
-                mappings.forEach(m => {
-                    this.addMappingRow((m.sources || []).join(', '), m.target);
-                });
+            this.currentMappings = (n.field_mappings || []).map(m => ({
+                sources: (m.sources || []).slice(),
+                target: m.target || ''
+            }));
+            if (this.currentMappings.length === 0) {
+                this.currentMappings.push({ sources: [], target: '' });
             }
+            this._renderTransformsList();
+            this._renderMappings();
 
             const derivedContainer = document.getElementById('normalizerDerivedFields');
             derivedContainer.innerHTML = '';
-            const valueMappings = n.value_mappings || [];
-            valueMappings.forEach(vm => {
+            (n.value_mappings || []).forEach(vm => {
                 this.addDerivedFieldRow(vm.from_field, vm.to_field, vm.map, vm.default);
             });
 
             const tsContainer = document.getElementById('normalizerTimestampFields');
             tsContainer.innerHTML = '';
-            const tsFields = n.timestamp_fields || [];
-            tsFields.forEach(tf => {
+            (n.timestamp_fields || []).forEach(tf => {
                 this.addTimestampFieldRow(tf.field, tf.format);
             });
 
-            const previewContainer = document.getElementById('normalizerPreviewContainer');
-            if (previewContainer) previewContainer.style.display = 'none';
-
-            this.showEditor('Edit Normalizer');
+            this._initEditorSession('Edit Normalizer');
+            this._loadEditorUsage(id);
         } catch (err) {
             Utils.showNotification('Failed to load normalizer', 'error');
         }
     },
 
-    _editingSourcesInput: null,
+    // Shared setup for both entry points: clean dirty state, restore the rail,
+    // wire live-preview inputs, and get a sample in front of the user.
+    _initEditorSession(title) {
+        this._dirty = false;
+        this._syncDirtyUI();
+        this._previewHits = {};
+        this._previewCollisions = {};
+        this._wireLiveInputs();
+        this._restoreRailState();
+        this.showEditor(title);
+        this._loadCaptureFractals();
+        this._schedulePreview(0);
+    },
+
+    _wireLiveInputs() {
+        if (this._liveWired) return;
+        this._liveWired = true;
+
+        const dirtyOnly = ['normalizerName', 'normalizerDescription'];
+        dirtyOnly.forEach(id => {
+            document.getElementById(id)?.addEventListener('input', () => this._markDirty());
+        });
+
+        document.getElementById('normalizerMappingFilter')?.addEventListener('input', () => this._renderMappings());
+
+        const input = document.getElementById('normalizerPreviewInput');
+        input?.addEventListener('input', () => {
+            this._activeSampleIndex = -1; // hand-edited, no longer a captured sample
+            this._renderSampleBar();
+            this._schedulePreview();
+        });
+
+        // Derived and timestamp rows are plain DOM; a delegated listener keeps the
+        // preview live without rewriting those editors.
+        document.getElementById('normalizerDerivedFields')?.addEventListener('input', () => {
+            this._markDirty();
+            this._schedulePreview();
+        });
+        document.getElementById('normalizerTimestampFields')?.addEventListener('input', () => this._markDirty());
+
+        document.addEventListener('keydown', (e) => {
+            if (!this._editorVisible()) return;
+            if ((e.ctrlKey || e.metaKey) && e.key === '\\') {
+                e.preventDefault();
+                this.toggleRail();
+            }
+        });
+    },
+
+    _editorVisible() {
+        const el = document.getElementById('normalizerEditorView');
+        return !!el && el.style.display !== 'none';
+    },
+
+    async _loadEditorUsage(id) {
+        try {
+            const data = await HttpUtils.safeFetch(`/api/v1/normalizers/${id}/tokens`);
+            this._setUsageChip(data.data.tokens || []);
+        } catch {
+            this._setUsageChip(null);
+        }
+    },
+
+    // Editing a normalizer that live tokens depend on is worth knowing before you
+    // hit Save, not only from the list view.
+    _setUsageChip(tokens) {
+        const chip = document.getElementById('normalizerUsageChip');
+        const text = document.getElementById('normalizerUsageText');
+        if (!chip || !text) return;
+        if (!tokens || tokens.length === 0) {
+            chip.style.display = 'none';
+            return;
+        }
+        const fractals = new Set(tokens.map(t => t.fractal_name));
+        text.textContent = `Live on ${tokens.length} token${tokens.length !== 1 ? 's' : ''} / ${fractals.size} fractal${fractals.size !== 1 ? 's' : ''}`;
+        chip.title = tokens.map(t => `${t.token_name} (${t.fractal_name})`).join(', ');
+        chip.style.display = 'inline-flex';
+    },
+
+    _markDirty() {
+        if (this._dirty) return;
+        this._dirty = true;
+        this._syncDirtyUI();
+    },
+
+    _syncDirtyUI() {
+        document.getElementById('normalizerTopbar')?.classList.toggle('nz-is-dirty', !!this._dirty);
+        const save = document.getElementById('normalizerSaveBtn');
+        if (save) save.disabled = !this._dirty;
+    },
+
+    discardChanges() {
+        if (this._dirty && !confirm('Discard unsaved changes?')) return;
+        if (this.editingId) {
+            this.openEditForm(this.editingId);
+        } else {
+            this.openCreateForm();
+        }
+    },
+
+    _editingMappingIndex: null,
 
     addMappingRow(sources, target) {
+        const list = Array.isArray(sources)
+            ? sources.slice()
+            : (sources ? String(sources).split(',').map(s => s.trim()).filter(Boolean) : []);
+        this.currentMappings.push({ sources: list, target: target || '' });
+        this._markDirty();
+        this._renderMappings();
+        const scroll = document.getElementById('normalizerMappings');
+        if (scroll) scroll.scrollTop = scroll.scrollHeight;
+    },
+
+    // Renders mappings from state. The preview result, when present, marks which
+    // aliases actually matched the current sample and which targets collide, so
+    // the row itself carries the diagnosis instead of only the output table.
+    _renderMappings() {
         const container = document.getElementById('normalizerMappings');
         if (!container) return;
 
-        const row = document.createElement('div');
-        row.className = 'normalizer-mapping-row';
-        row.innerHTML = `
-            <input type="text" class="mapping-sources" placeholder="source1, source2, ..." value="${Utils.escapeHtml(sources || '')}" readonly>
-            <span class="mapping-arrow">-></span>
-            <input type="text" class="mapping-target" placeholder="target_field" value="${Utils.escapeHtml(target || '')}">
-            <button class="btn-sm btn-danger mapping-remove" onclick="this.parentElement.remove()" title="Remove">&times;</button>
-        `;
-        const sourcesInput = row.querySelector('.mapping-sources');
-        sourcesInput.addEventListener('dblclick', () => this.openMappingSourcesModal(sourcesInput));
-        sourcesInput.addEventListener('click', () => this.openMappingSourcesModal(sourcesInput));
-        container.appendChild(row);
+        const filter = (document.getElementById('normalizerMappingFilter')?.value || '').trim().toLowerCase();
+        const hits = this._previewHits || {};
+        const collisions = this._previewCollisions || {};
+
+        container.innerHTML = '';
+        let shown = 0;
+
+        this.currentMappings.forEach((m, mi) => {
+            const target = (m.target || '').trim();
+            if (filter && !target.toLowerCase().includes(filter) &&
+                !m.sources.some(s => s.toLowerCase().includes(filter))) {
+                return;
+            }
+            shown++;
+
+            const dupTarget = target && this.currentMappings.some((o, oi) => oi !== mi && (o.target || '').trim() === target);
+            const collides = target && Object.prototype.hasOwnProperty.call(collisions, target);
+            const matchedAliases = hits[mi] || [];
+
+            const row = document.createElement('div');
+            row.className = 'normalizer-mapping-row';
+            if (dupTarget || collides) row.classList.add('mapping-row-collision');
+            else if (matchedAliases.length) row.classList.add('mapping-row-hit');
+
+            // Chips are addressed by index, never by value: alias names can contain
+            // quotes or backslashes that would break an inline handler argument.
+            const chips = m.sources.map((s, si) => {
+                const matched = matchedAliases.includes(s);
+                return `<span class="nz-chip${matched ? ' nz-chip-matched' : ''}" title="${matched ? 'Matched in the current sample' : 'No match in the current sample'}">${Utils.escapeHtml(s)}<button class="nz-chip-x" onclick="Normalizers.removeMappingSource(${mi}, ${si})" title="Remove alias">&times;</button></span>`;
+            }).join('');
+
+            let alert = '';
+            if (collides) {
+                const competing = (collisions[target] || []).map(s => Utils.escapeHtml(s)).join(', ');
+                alert = `<div class="nz-row-alert">Two fields resolve to <code>${Utils.escapeHtml(target)}</code> in this sample (${competing}). Ingestion keeps only one of them, and which one is not deterministic.</div>`;
+            } else if (dupTarget) {
+                alert = `<div class="nz-row-alert">Another mapping already targets <code>${Utils.escapeHtml(target)}</code>.</div>`;
+            }
+
+            row.innerHTML = `
+                <div class="nz-chips">${chips}<button class="nz-chip-add" onclick="Normalizers.openMappingSourcesModal(${mi})" title="Edit aliases">+ alias</button></div>
+                <span class="mapping-arrow">-&gt;</span>
+                <input type="text" class="mapping-target" placeholder="target_field" value="${Utils.escapeHtml(m.target || '')}" aria-label="Target field name" oninput="Normalizers.updateMappingTarget(${mi}, this.value)">
+                <button class="nz-x" onclick="Normalizers.removeMapping(${mi})" title="Remove mapping">&times;</button>
+                ${alert}
+            `;
+            container.appendChild(row);
+        });
+
+        if (this.currentMappings.length === 0) {
+            container.innerHTML = '<p class="nz-empty">No field mappings.</p>';
+        } else if (shown === 0) {
+            container.innerHTML = '<p class="nz-empty">No mappings match the filter.</p>';
+        }
+
+        const count = document.getElementById('normalizerMappingCount');
+        if (count) {
+            const n = this.currentMappings.length;
+            count.textContent = filter ? `${shown} of ${n} mappings` : `${n} mapping${n !== 1 ? 's' : ''}`;
+        }
+    },
+
+    updateMappingTarget(index, value) {
+        const m = this.currentMappings[index];
+        if (!m) return;
+        m.target = value;
+        this._markDirty();
+        this._schedulePreview();
+        // Duplicate-target detection is local, so refresh rows without waiting
+        // for the preview round-trip.
+        clearTimeout(this._mapRerenderTimer);
+        this._mapRerenderTimer = setTimeout(() => this._renderMappings(), 400);
+    },
+
+    removeMappingSource(index, sourceIndex) {
+        const m = this.currentMappings[index];
+        if (!m || sourceIndex < 0 || sourceIndex >= m.sources.length) return;
+        m.sources.splice(sourceIndex, 1);
+        this._markDirty();
+        this._renderMappings();
+        this._schedulePreview();
+    },
+
+    removeMapping(index) {
+        this.currentMappings.splice(index, 1);
+        this._markDirty();
+        this._renderMappings();
+        this._schedulePreview();
+    },
+
+    filterMappings() {
+        this._renderMappings();
     },
 
     addTimestampFieldRow(field, format) {
@@ -417,12 +665,14 @@ const Normalizers = {
         container.appendChild(row);
     },
 
-    openMappingSourcesModal(inputEl) {
-        this._editingSourcesInput = inputEl;
-        const csv = inputEl.value;
-        const lines = csv ? csv.split(',').map(s => s.trim()).filter(s => s).join('\n') : '';
+    // Bulk alias editing. Chips handle one-off edits; pasting a block of 200
+    // aliases is still far quicker in a textarea.
+    openMappingSourcesModal(index) {
+        const m = this.currentMappings[index];
+        if (!m) return;
+        this._editingMappingIndex = index;
         const textarea = document.getElementById('mappingSourcesTextarea');
-        textarea.value = lines;
+        textarea.value = m.sources.join('\n');
         document.getElementById('mappingSourcesModal').style.display = 'flex';
         textarea.focus();
     },
@@ -430,15 +680,19 @@ const Normalizers = {
     saveMappingSourcesModal() {
         const textarea = document.getElementById('mappingSourcesTextarea');
         const sources = textarea.value.split('\n').map(s => s.trim()).filter(s => s);
-        if (this._editingSourcesInput) {
-            this._editingSourcesInput.value = sources.join(', ');
+        const m = this.currentMappings[this._editingMappingIndex];
+        if (m) {
+            m.sources = sources;
+            this._markDirty();
+            this._renderMappings();
+            this._schedulePreview();
         }
         this.closeMappingSourcesModal();
     },
 
     closeMappingSourcesModal() {
         document.getElementById('mappingSourcesModal').style.display = 'none';
-        this._editingSourcesInput = null;
+        this._editingMappingIndex = null;
     },
 
     // --- Derived fields (value mappings) ---
@@ -463,7 +717,12 @@ const Normalizers = {
             <button class="btn-sm btn-danger mapping-remove" onclick="this.parentElement.remove()" title="Remove">&times;</button>
         `;
         row.querySelector('.derived-values-btn').addEventListener('click', () => this.openDerivedValuesModal(row));
+        row.querySelector('.mapping-remove').addEventListener('click', () => {
+            this._markDirty();
+            this._schedulePreview();
+        });
         container.appendChild(row);
+        this._markDirty();
     },
 
     _renderDerivedValuesCount(row) {
@@ -497,6 +756,8 @@ const Normalizers = {
         if (this._editingDerivedRow) {
             this._editingDerivedRow._valueMap = map;
             this._renderDerivedValuesCount(this._editingDerivedRow);
+            this._markDirty();
+            this._schedulePreview();
         }
         this.closeDerivedValuesModal();
     },
@@ -512,16 +773,14 @@ const Normalizers = {
 
         const transforms = [...this.currentTransforms];
 
+        // Read from state, not the DOM: the mapping list is filtered for display,
+        // so hidden rows would otherwise be dropped on save.
         const fieldMappings = [];
-        const rows = document.querySelectorAll('#normalizerMappings .normalizer-mapping-row');
-        rows.forEach(row => {
-            const sourcesInput = row.querySelector('.mapping-sources').value.trim();
-            const targetInput = row.querySelector('.mapping-target').value.trim();
-            if (sourcesInput && targetInput) {
-                const sources = sourcesInput.split(',').map(s => s.trim()).filter(s => s);
-                if (sources.length > 0) {
-                    fieldMappings.push({ sources, target: targetInput });
-                }
+        this.currentMappings.forEach(m => {
+            const target = (m.target || '').trim();
+            const sources = (m.sources || []).map(s => s.trim()).filter(Boolean);
+            if (target && sources.length > 0) {
+                fieldMappings.push({ sources, target });
             }
         });
 
@@ -574,6 +833,8 @@ const Normalizers = {
                 });
                 Utils.showNotification('Normalizer created', 'success');
             }
+            this._dirty = false;
+            this._syncDirtyUI();
             this.backToList();
         } catch (err) {
             Utils.showNotification(`Failed to save: ${err.message}`, 'error');
@@ -673,33 +934,47 @@ const Normalizers = {
         input.click();
     },
 
-    // --- Dry-Run Preview ---
+    // --- Live preview ---
+
+    // Coalesces bursts of edits into one request and cancels any in-flight call,
+    // so a fast typist produces one preview rather than a queue of them.
+    _schedulePreview(delay = 250) {
+        clearTimeout(this._previewTimer);
+        this._previewTimer = setTimeout(() => this.runPreview(), delay);
+    },
 
     async runPreview() {
         const textarea = document.getElementById('normalizerPreviewInput');
-        const resultsContainer = document.getElementById('normalizerPreviewResults');
-        if (!textarea || !resultsContainer) return;
+        const body = document.getElementById('normalizerPreviewResults');
+        if (!textarea || !body) return;
 
         const sampleJSON = textarea.value.trim();
         if (!sampleJSON) {
-            Utils.showNotification('Paste sample JSON to preview', 'error');
+            this._renderPreviewMessage('Paste a log or capture one from a fractal to see the output.');
             return;
         }
-
-        // Validate JSON client-side first
         try {
             JSON.parse(sampleJSON);
-        } catch {
-            Utils.showNotification('Invalid JSON', 'error');
+        } catch (err) {
+            this._renderPreviewMessage(`Not valid JSON: ${err.message}`, true);
             return;
         }
 
+        // Direct fetch rather than HttpUtils.safeFetch: superseded previews are
+        // aborted on every keystroke, and safeFetch logs each abort as an error.
+        this._previewAbort?.abort();
+        const controller = new AbortController();
+        this._previewAbort = controller;
+
         const formData = this._getFormData();
+        const started = performance.now();
 
         try {
-            const data = await HttpUtils.safeFetch('/api/v1/normalizers/preview', {
+            const resp = await fetch('/api/v1/normalizers/preview', {
                 method: 'POST',
+                credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
+                signal: controller.signal,
                 body: JSON.stringify({
                     transforms: formData.transforms,
                     field_mappings: formData.field_mappings,
@@ -707,60 +982,224 @@ const Normalizers = {
                     sample_json: sampleJSON
                 })
             });
-
-            const fields = data.data.fields || [];
-            const collisions = data.data.collisions || {};
-            const hasCollisions = Object.keys(collisions).length > 0;
-
-            let html = '';
-
-            if (hasCollisions) {
-                html += '<div class="preview-collision-warning">Field name collisions detected. Colliding fields will fall back to their full dot-notation path during ingestion.</div>';
+            const data = await resp.json();
+            if (controller.signal.aborted) return;
+            if (!resp.ok || !data.success) {
+                this._renderPreviewMessage(data.error || `Preview failed (HTTP ${resp.status})`, true);
+                return;
             }
-
-            html += `<table class="context-links-table preview-table">
-                <thead>
-                    <tr>
-                        <th>Original Field</th>
-                        <th>Normalized</th>
-                        <th>Sample Value</th>
-                    </tr>
-                </thead>
-                <tbody>`;
-
-            fields.forEach(f => {
-                const classes = [];
-                if (f.collision) classes.push('preview-collision-row');
-                if (f.derived) classes.push('preview-derived-row');
-                if (f.override) classes.push('preview-override-row');
-                const rowClass = classes.length ? ` class="${classes.join(' ')}"` : '';
-                let badges = '';
-                if (f.collision) badges += ' <span class="preview-collision-badge">collision</span>';
-                if (f.derived) badges += ' <span class="preview-derived-badge">derived</span>';
-                if (f.override) badges += ' <span class="preview-override-badge">override</span>';
-                const value = f.value.length > 80 ? Utils.escapeHtml(f.value.substring(0, 80)) + '...' : Utils.escapeHtml(f.value);
-                html += `<tr${rowClass}>
-                    <td><code>${Utils.escapeHtml(f.original)}</code></td>
-                    <td><code>${Utils.escapeHtml(f.normalized)}</code>${badges}</td>
-                    <td class="preview-value">${value}</td>
-                </tr>`;
-            });
-
-            html += '</tbody></table>';
-            resultsContainer.innerHTML = html;
+            this._renderPreview(data.data, performance.now() - started);
         } catch (err) {
-            resultsContainer.innerHTML = `<div class="preview-error">${Utils.escapeHtml(err.message)}</div>`;
+            if (err.name === 'AbortError') return;
+            this._renderPreviewMessage(err.message, true);
         }
     },
 
-    togglePreview() {
-        const container = document.getElementById('normalizerPreviewContainer');
-        if (!container) return;
-        const isVisible = container.style.display !== 'none';
-        container.style.display = isVisible ? 'none' : 'block';
-        if (!isVisible) {
-            document.getElementById('normalizerPreviewInput')?.focus();
+    _renderPreviewMessage(msg, isError) {
+        const body = document.getElementById('normalizerPreviewResults');
+        if (body) {
+            body.innerHTML = `<tr><td colspan="3" class="nz-preview-msg${isError ? ' nz-preview-error' : ''}">${Utils.escapeHtml(msg)}</td></tr>`;
         }
+        this._previewHits = {};
+        this._previewCollisions = {};
+        this._renderStats(null);
+        document.getElementById('normalizerPreviewWarning').innerHTML = '';
+        document.getElementById('normalizerRecalc').textContent = '';
+    },
+
+    _renderPreview(result, elapsedMs) {
+        const fields = result.fields || [];
+        const collisions = result.collisions || {};
+
+        // Alias match info drives the chip highlighting in stage 3.
+        const hits = {};
+        fields.forEach(f => {
+            if (f.mapping_index >= 0 && f.matched_alias) {
+                (hits[f.mapping_index] = hits[f.mapping_index] || []).push(f.matched_alias);
+            }
+        });
+        this._previewHits = hits;
+        this._previewCollisions = collisions;
+
+        const mapped = fields.filter(f => f.mapping_index >= 0).length;
+        const derived = fields.filter(f => f.derived).length;
+        const collisionCount = Object.keys(collisions).length;
+        const passthrough = fields.length - mapped - derived;
+
+        this._renderStats({ total: fields.length, mapped, derived, collisions: collisionCount });
+
+        const outMeta = document.getElementById('normalizerOutputMeta');
+        if (outMeta) outMeta.textContent = `${passthrough} passthrough`;
+
+        const warn = document.getElementById('normalizerPreviewWarning');
+        warn.innerHTML = collisionCount === 0 ? '' :
+            `<div class="nz-warn"><strong>${collisionCount} name collision${collisionCount !== 1 ? 's' : ''}:</strong> ` +
+            Object.keys(collisions).map(c => `<code>${Utils.escapeHtml(c)}</code>`).join(', ') +
+            '. Ingestion keeps only one value per colliding name, and which one is not deterministic.</div>';
+
+        const body = document.getElementById('normalizerPreviewResults');
+        if (fields.length === 0) {
+            body.innerHTML = '<tr><td colspan="3" class="nz-preview-msg">This sample produced no fields.</td></tr>';
+        } else {
+            body.innerHTML = fields.map(f => {
+                let cls = 'nz-row-passthrough';
+                let badge = '<span class="nz-badge nz-badge-passthrough">passthrough</span>';
+                if (f.collision) {
+                    cls = 'nz-row-collision';
+                    badge = '<span class="nz-badge nz-badge-collision">collision</span>';
+                } else if (f.derived) {
+                    cls = 'nz-row-derived';
+                    badge = `<span class="nz-badge nz-badge-derived">${f.override ? 'override' : 'derived'}</span>`;
+                } else if (f.mapping_index >= 0) {
+                    cls = 'nz-row-mapped';
+                    badge = '<span class="nz-badge nz-badge-mapped">mapped</span>';
+                }
+                return `<tr class="${cls}">
+                    <td class="nz-f-name">${Utils.escapeHtml(f.name)} ${badge}</td>
+                    <td class="nz-f-val">${Utils.escapeHtml(f.value)}</td>
+                    <td class="nz-f-from">${Utils.escapeHtml(f.source)}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        const recalc = document.getElementById('normalizerRecalc');
+        if (recalc) recalc.textContent = `${Math.round(elapsedMs)} ms`;
+
+        // Collapsed rail must keep showing the collision signal.
+        const stripCount = document.getElementById('normalizerStripCount');
+        if (stripCount) stripCount.textContent = `${fields.length} fields`;
+        const stripBadge = document.getElementById('normalizerStripBadge');
+        if (stripBadge) {
+            stripBadge.textContent = String(collisionCount);
+            stripBadge.classList.toggle('nz-strip-badge-show', collisionCount > 0);
+            stripBadge.title = `${collisionCount} name collision${collisionCount !== 1 ? 's' : ''} in the current sample`;
+        }
+
+        this._renderMappings();
+    },
+
+    _renderStats(s) {
+        const el = document.getElementById('normalizerStats');
+        if (!el) return;
+        if (!s) {
+            el.innerHTML = '';
+            return;
+        }
+        const stat = (n, label, tone) =>
+            `<div class="nz-stat ${n ? tone : 'nz-stat-zero'}"><div class="nz-stat-n">${n}</div><div class="nz-stat-l">${label}</div></div>`;
+        el.innerHTML =
+            stat(s.total, 'Fields out', '') +
+            stat(s.mapped, 'Mapped', 'nz-stat-info') +
+            stat(s.derived, 'Derived', 'nz-stat-ok') +
+            stat(s.collisions, 'Collisions', 'nz-stat-warn');
+    },
+
+    // --- Sample capture ---
+
+    async _loadCaptureFractals() {
+        const select = document.getElementById('normalizerCaptureFractal');
+        if (!select || select.dataset.loaded === '1') return;
+        try {
+            const resp = await fetch('/api/v1/fractals', { credentials: 'include' });
+            const data = await resp.json();
+            const fractals = (data.data?.fractals || data.fractals || []).filter(f => f && f.id);
+            if (fractals.length === 0) return;
+
+            const current = window.FractalContext?.currentFractal?.id;
+            select.innerHTML = fractals
+                .map(f => `<option value="${Utils.escapeHtml(f.id)}"${f.id === current ? ' selected' : ''}>${Utils.escapeHtml(f.name || f.id)}</option>`)
+                .join('');
+            select.dataset.loaded = '1';
+        } catch {
+            select.innerHTML = '<option value="">No fractals</option>';
+        }
+    },
+
+    async captureSamples() {
+        const btn = document.getElementById('normalizerCaptureBtn');
+        const select = document.getElementById('normalizerCaptureFractal');
+        const note = document.getElementById('normalizerCaptureNote');
+        const fractalId = select?.value;
+        if (!fractalId) {
+            Utils.showNotification('Select a fractal to capture from', 'error');
+            return;
+        }
+
+        const original = btn.innerHTML;
+        btn.disabled = true;
+        btn.textContent = 'Capturing...';
+        try {
+            const data = await HttpUtils.safeFetch(`/api/v1/normalizers/samples?fractal_id=${encodeURIComponent(fractalId)}&limit=5`);
+            this.currentSamples = data.data.samples || [];
+            if (this.currentSamples.length === 0) {
+                note.textContent = 'No JSON logs found in this fractal in the last 7 days.';
+                this._renderSampleBar();
+                return;
+            }
+            const name = select.options[select.selectedIndex]?.text || 'fractal';
+            note.textContent = `${this.currentSamples.length} distinct shape${this.currentSamples.length !== 1 ? 's' : ''} from ${name}`;
+            this.selectSample(0);
+        } catch (err) {
+            note.textContent = `Capture failed: ${err.message}`;
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    },
+
+    selectSample(index) {
+        const sample = this.currentSamples[index];
+        if (!sample) return;
+        this._activeSampleIndex = index;
+        const input = document.getElementById('normalizerPreviewInput');
+        if (input) {
+            try {
+                input.value = JSON.stringify(JSON.parse(sample.raw_log), null, 2);
+            } catch {
+                input.value = sample.raw_log;
+            }
+        }
+        this._renderSampleBar();
+        this._schedulePreview(0);
+    },
+
+    _renderSampleBar() {
+        const bar = document.getElementById('normalizerSampleBar');
+        if (!bar) return;
+        const samples = this.currentSamples || [];
+        if (samples.length === 0) {
+            bar.innerHTML = '';
+            return;
+        }
+        bar.innerHTML = samples.map((s, i) => {
+            const when = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : '';
+            return `<button class="nz-sample-tab${i === this._activeSampleIndex ? ' nz-sample-active' : ''}" onclick="Normalizers.selectSample(${i})" title="${s.fields_num} top-level fields, captured ${Utils.escapeHtml(when)}">${s.fields_num} fields</button>`;
+        }).join('');
+        const meta = document.getElementById('normalizerInputMeta');
+        if (meta) {
+            meta.textContent = this._activeSampleIndex >= 0
+                ? `captured sample ${this._activeSampleIndex + 1} of ${samples.length}`
+                : 'edited';
+        }
+    },
+
+    // --- Preview rail ---
+
+    toggleRail() {
+        const rail = document.getElementById('normalizerRail');
+        const wb = document.getElementById('normalizerWorkbench');
+        if (!rail || !wb) return;
+        const collapsed = !rail.classList.contains('nz-rail-collapsed');
+        rail.classList.toggle('nz-rail-collapsed', collapsed);
+        wb.classList.toggle('nz-workbench-collapsed', collapsed);
+        try { localStorage.setItem('bifract.normalizer.railCollapsed', collapsed ? '1' : '0'); } catch { /* private mode */ }
+    },
+
+    _restoreRailState() {
+        let collapsed = false;
+        try { collapsed = localStorage.getItem('bifract.normalizer.railCollapsed') === '1'; } catch { /* private mode */ }
+        document.getElementById('normalizerRail')?.classList.toggle('nz-rail-collapsed', collapsed);
+        document.getElementById('normalizerWorkbench')?.classList.toggle('nz-workbench-collapsed', collapsed);
     },
 
 };

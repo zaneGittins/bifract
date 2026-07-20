@@ -352,19 +352,17 @@ func (s *Storage) ComputeAllFractalStats(ctx context.Context, fractals []*Fracta
 
 		countByFID[targetID] += int64(count)
 
-		var oldest, newest time.Time
-		if t, ok := row["oldest"].(time.Time); ok {
-			oldest = t
+		// Only fold in values that actually parsed: a zero time would always win
+		// the Before() comparison and blank out a good earliest_log.
+		if oldest, ok := storage.RowTime(row, "oldest"); ok {
+			if prev, exists := oldestByFID[targetID]; !exists || oldest.Before(prev) {
+				oldestByFID[targetID] = oldest
+			}
 		}
-		if t, ok := row["newest"].(time.Time); ok {
-			newest = t
-		}
-
-		if prev, exists := oldestByFID[targetID]; !exists || oldest.Before(prev) {
-			oldestByFID[targetID] = oldest
-		}
-		if prev, exists := newestByFID[targetID]; !exists || newest.After(prev) {
-			newestByFID[targetID] = newest
+		if newest, ok := storage.RowTime(row, "newest"); ok {
+			if prev, exists := newestByFID[targetID]; !exists || newest.After(prev) {
+				newestByFID[targetID] = newest
+			}
 		}
 	}
 

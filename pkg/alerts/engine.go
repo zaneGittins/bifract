@@ -67,12 +67,15 @@ type Engine struct {
 	// Evaluation is fully deferred during active ingestion.
 	ingestActive func() bool
 
-	// lastIngested returns the most recent insert time for a fractal.
-	// Used to skip evaluation when no new data has arrived.
-	lastIngested func(fractalID string) time.Time
+	// recentIngest holds the newest ingest_timestamp per fractal, refreshed
+	// once per cycle from logs_hot. Read from shared storage rather than a
+	// process-local counter so the signal is correct when ingestion runs in a
+	// separate tier (bifract-server ingest) or across replicas.
+	recentIngestMu    sync.RWMutex
+	recentIngest      map[string]time.Time
+	recentIngestFresh bool
 
-	// startedAt records when the engine started so shouldSkipAlert can
-	// distinguish "no data since startup" from "never tracked."
+	// startedAt records when the engine started.
 	startedAt time.Time
 
 	notifWriter engineNotifWriter
@@ -200,20 +203,82 @@ func (e *Engine) SetIngestPressureFunc(f func() bool) {
 	e.ingestActive = f
 }
 
-// SetLastIngestedFunc registers a callback that returns the most recent
-// insert time for a fractal. Used to skip alert evaluation when no new
-// data has arrived since the alert's cursor position.
-func (e *Engine) SetLastIngestedFunc(f func(fractalID string) time.Time) {
-	e.lastIngested = f
+// refreshRecentIngest reloads the newest ingest_timestamp per fractal from
+// logs_hot. One grouped primary-key aggregate over a ~2h table serves every
+// alert in the cycle. On any error the map is marked stale so shouldSkipAlert
+// fails open: a missing signal must cost a redundant query, never a missed alert.
+func (e *Engine) refreshRecentIngest(ctx context.Context, since time.Time) {
+	e.recentIngestMu.Lock()
+	defer e.recentIngestMu.Unlock()
+	e.recentIngestFresh = false
+
+	if e.ch == nil || since.IsZero() {
+		return
+	}
+	// Bounded by the oldest cursor in play: an alert only cares whether data
+	// arrived after its own cursor, so anything older is dead weight. Without
+	// this the aggregate scans the whole hot table every cycle, which at high
+	// ingest is gigabytes a minute.
+	sql := fmt.Sprintf(
+		"SELECT fractal_id, max(ingest_timestamp) AS last_ingest FROM %s WHERE ingest_timestamp > toDateTime64('%s', 3) GROUP BY fractal_id",
+		e.ch.HotReadTable(), since.UTC().Format("2006-01-02 15:04:05.000"))
+	// Scanned with typed destinations rather than the map-based Query helper,
+	// which formats DateTime64 into a display string.
+	rows, err := e.ch.QueryRows(ctx, sql)
+	if err != nil {
+		log.Printf("[Alert Engine] recent-ingest refresh failed, evaluating all alerts: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	m := make(map[string]time.Time)
+	for rows.Next() {
+		var fid string
+		var last time.Time
+		if err := rows.Scan(&fid, &last); err != nil {
+			log.Printf("[Alert Engine] recent-ingest scan failed, evaluating all alerts: %v", err)
+			return
+		}
+		if fid != "" {
+			m[fid] = last
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[Alert Engine] recent-ingest refresh failed, evaluating all alerts: %v", err)
+		return
+	}
+	e.recentIngest = m
+	e.recentIngestFresh = true
+}
+
+// skipFloor returns the oldest cursor among alerts that shouldSkipAlert can
+// actually skip, which bounds how far back the recent-ingest aggregate reads.
+// Alerts it never skips (scheduled, prism, unscoped, zero cursor, or a cursor
+// older than the hot window) are excluded: they evaluate regardless, so their
+// cursors must not widen the scan. Returns zero when nothing is skippable,
+// which suppresses the query entirely.
+func skipFloor(alerts []*Alert) time.Time {
+	horizon := time.Now().Add(-hotTableLookbackThreshold)
+	var floor time.Time
+	for _, a := range alerts {
+		if a.AlertType == "scheduled" || a.PrismID != "" || a.FractalID == "" {
+			continue
+		}
+		if a.LastEvaluatedAt.IsZero() || a.LastEvaluatedAt.Before(horizon) {
+			continue
+		}
+		if floor.IsZero() || a.LastEvaluatedAt.Before(floor) {
+			floor = a.LastEvaluatedAt
+		}
+	}
+	return floor
 }
 
 // shouldSkipAlert returns true if no new data has been ingested for the
 // alert's fractal since its cursor position. The cursor is never advanced
-// when skipped, so no logs can be missed.
+// when skipped, so no logs can be missed. This is purely an optimization to
+// avoid pointless queries; correctness comes from the cursor alone.
 func (e *Engine) shouldSkipAlert(alert *Alert) bool {
-	if e.lastIngested == nil {
-		return false
-	}
 	// Scheduled alerts run on a cron schedule regardless of ingest
 	// activity. They may check for the absence of data or aggregate
 	// over fixed windows, so skipping them defeats their purpose.
@@ -228,14 +293,20 @@ func (e *Engine) shouldSkipAlert(alert *Alert) bool {
 	if alert.LastEvaluatedAt.IsZero() {
 		return false // never evaluated, must run
 	}
-	lastData := e.lastIngested(alert.FractalID)
-	if lastData.IsZero() {
-		// No ingestion tracked for this fractal since process start.
-		// If the alert has been evaluated since we started, there is
-		// nothing new to find -- safe to skip.
-		return alert.LastEvaluatedAt.After(e.startedAt)
+	// A cursor older than the hot window predates the data logs_hot retains,
+	// so absence there says nothing about whether the alert has work to do.
+	if time.Since(alert.LastEvaluatedAt) >= hotTableLookbackThreshold {
+		return false
 	}
-	return lastData.Before(alert.LastEvaluatedAt)
+
+	e.recentIngestMu.RLock()
+	defer e.recentIngestMu.RUnlock()
+	if !e.recentIngestFresh {
+		return false
+	}
+	// Cursor is inside the hot window and the map is fresh, so a fractal with
+	// no row genuinely has no recent data.
+	return !e.recentIngest[alert.FractalID].After(alert.LastEvaluatedAt)
 }
 
 // Start launches the background alert evaluation loop. The tick interval is
@@ -336,6 +407,7 @@ func (e *Engine) evaluateAllAlerts() {
 	if len(alerts) == 0 {
 		return
 	}
+	e.refreshRecentIngest(context.Background(), skipFloor(alerts))
 	log.Printf("[Alert Engine] Evaluating %d alert(s)", len(alerts))
 
 	// Scale timeout with alert count so large deployments don't hit the

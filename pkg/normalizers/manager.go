@@ -315,7 +315,9 @@ func (m *Manager) GetTokenCount(ctx context.Context, normalizerID string) (int, 
 // GetTokenUsage returns tokens using a normalizer along with their fractal names.
 func (m *Manager) GetTokenUsage(ctx context.Context, normalizerID string) ([]TokenUsageInfo, error) {
 	rows, err := m.pg.Query(ctx,
-		`SELECT t.id, t.name, t.fractal_id, COALESCE(f.name, t.fractal_id) as fractal_name
+		// fractal_id is uuid and fractals.name is varchar, so the fallback needs an
+		// explicit cast for COALESCE to resolve a common type.
+		`SELECT t.id, t.name, t.fractal_id, COALESCE(f.name, t.fractal_id::text) as fractal_name
 		 FROM ingest_tokens t
 		 LEFT JOIN fractals f ON f.id = t.fractal_id
 		 WHERE t.normalizer_id = $1

@@ -1,12 +1,16 @@
 package normalizers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
@@ -16,6 +20,7 @@ import (
 
 type Handler struct {
 	manager *Manager
+	ch      *storage.ClickHouseClient // sample capture only; nil disables it
 }
 
 type APIResponse struct {
@@ -24,8 +29,10 @@ type APIResponse struct {
 	Error   string      `json:"error,omitempty"`
 }
 
-func NewHandler(manager *Manager) *Handler {
-	return &Handler{manager: manager}
+// NewHandler builds the normalizer API handler. ch may be nil, which disables
+// sample capture but leaves every other endpoint working.
+func NewHandler(manager *Manager, ch *storage.ClickHouseClient) *Handler {
+	return &Handler{manager: manager, ch: ch}
 }
 
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
@@ -122,16 +129,25 @@ func (h *Handler) HandleSetDefault(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, map[string]string{"message": "Default normalizer updated"})
 }
 
-// HandlePreview applies the normalizer config from the request body to sample JSON
-// and returns the normalized field names. No DB interaction needed.
+// maxPreviewValueLen caps preview values. Logs legitimately carry multi-KB
+// fields; the editor only needs enough to recognise the value.
+const maxPreviewValueLen = 512
+
+// HandlePreview applies the normalizer config from the request body to sample
+// JSON and returns the resulting fields with provenance. Runs the same pipeline
+// as ingestion (see Normalizer.Trace), so what the editor shows is what the
+// ingest path will do. No DB interaction needed.
 func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Transforms    []Transform    `json:"transforms"`
 		FieldMappings []FieldMapping `json:"field_mappings"`
 		ValueMappings []ValueMapping `json:"value_mappings"`
 		SampleJSON    string         `json:"sample_json"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
@@ -140,81 +156,153 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build a temporary normalizer and compile it
-	n := &Normalizer{
-		Transforms:    req.Transforms,
-		FieldMappings: req.FieldMappings,
-		ValueMappings: req.ValueMappings,
-	}
-	compiled := n.Compile()
-
-	// Parse the sample JSON
 	var obj map[string]interface{}
 	if err := json.Unmarshal([]byte(req.SampleJSON), &obj); err != nil {
 		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Invalid sample JSON: %v", err))
 		return
 	}
 
-	// Build raw fields and apply transforms through the normalizer pipeline.
-	built := BuildFieldsWithNested(obj)
-	normalizedFields := compiled.ApplyTransformsWithNested(built.Fields, built.NestedKeys)
+	n := &Normalizer{
+		Transforms:    req.Transforms,
+		FieldMappings: req.FieldMappings,
+		ValueMappings: req.ValueMappings,
+	}
+	trace := n.Trace(obj)
 
-	// Identify derived-field targets and, for override detection, the field set
-	// produced WITHOUT value mappings. A target present in baseFields means the
-	// derived field overwrote an existing normalized field.
-	derivedTargets := make(map[string]bool, len(req.ValueMappings))
-	for _, vm := range req.ValueMappings {
-		if vm.ToField != "" {
-			derivedTargets[vm.ToField] = true
+	for i := range trace.Fields {
+		if len(trace.Fields[i].Value) > maxPreviewValueLen {
+			trace.Fields[i].Value = trace.Fields[i].Value[:maxPreviewValueLen] + "..."
 		}
 	}
-	baseFields := map[string]string{}
-	if len(derivedTargets) > 0 {
-		b := BuildFieldsWithNested(obj)
-		base := (&Normalizer{Transforms: req.Transforms, FieldMappings: req.FieldMappings}).Compile()
-		baseFields = base.ApplyTransformsWithNested(b.Fields, b.NestedKeys)
-	}
-
-	var results []previewFieldResult
-	for normKey, normVal := range normalizedFields {
-		// Only badge a field when the value map actually produced or changed it:
-		// a new key (absent from baseFields), or an existing key whose value the map
-		// overwrote. An unchanged value means the map did not fire (unmatched, no
-		// default), so it stays unbadged.
-		derived := false
-		override := false
-		if derivedTargets[normKey] {
-			baseVal, inBase := baseFields[normKey]
-			if !inBase {
-				derived = true
-			} else if baseVal != normVal {
-				derived = true
-				override = true
-			}
-		}
-		results = append(results, previewFieldResult{
-			Original:   normKey,
-			Normalized: normKey,
-			Value:      normVal,
-			Derived:    derived,
-			Override:   override,
-		})
+	if trace.Fields == nil {
+		trace.Fields = []TracedField{}
 	}
 
 	h.respondSuccess(w, map[string]interface{}{
-		"fields":     results,
-		"collisions": map[string][]string{},
+		"fields":     trace.Fields,
+		"collisions": trace.Collisions,
 	})
 }
 
-// previewFieldResult is a single field in the preview output.
-type previewFieldResult struct {
-	Original   string `json:"original"`
-	Normalized string `json:"normalized"`
-	Value      string `json:"value"`
-	Collision  bool   `json:"collision,omitempty"`
-	Derived    bool   `json:"derived,omitempty"`
-	Override   bool   `json:"override,omitempty"`
+// HandleSamples returns recent raw logs from a fractal so the editor can preview
+// against real data instead of hand-pasted JSON.
+//
+// Reads logs_hot, the 2-hour rolling table ordered by (fractal_id,
+// ingest_timestamp, log_id): a per-fractal recency scan there is a primary-key
+// range read that never touches the main logs table. Quiet fractals fall back to
+// logs, where the (fractal_id, toDate(timestamp)) partition key plus a bounded
+// day window keeps the read pruned.
+func (h *Handler) HandleSamples(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	if h.ch == nil {
+		h.respondError(w, http.StatusServiceUnavailable, "Log storage unavailable")
+		return
+	}
+
+	fractalID := strings.TrimSpace(r.URL.Query().Get("fractal_id"))
+	if fractalID == "" {
+		h.respondError(w, http.StatusBadRequest, "fractal_id is required")
+		return
+	}
+
+	limit := 5
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 20 {
+			limit = parsed
+		}
+	}
+
+	// Scan a bounded number of recent rows and keep one per distinct field shape,
+	// so the tabs show genuinely different log formats rather than 5 near-copies.
+	const scanRows = 300
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	samples, err := h.collectSamples(ctx, h.ch.HotReadTable(), "ingest_timestamp", "", fractalID, scanRows, limit)
+	if err != nil {
+		log.Printf("[Normalizers] Sample capture from hot table failed: %v", err)
+	}
+	if len(samples) == 0 {
+		// raw_log carries a 7-day TTL, so a wider window would return empty rows.
+		samples, err = h.collectSamples(ctx, h.ch.ReadTable(), "timestamp",
+			"AND timestamp >= now() - INTERVAL 7 DAY", fractalID, scanRows, limit)
+		if err != nil {
+			log.Printf("[Normalizers] Sample capture failed: %v", err)
+			h.respondError(w, http.StatusInternalServerError, "Failed to capture samples")
+			return
+		}
+	}
+
+	if samples == nil {
+		samples = []LogSample{}
+	}
+	h.respondSuccess(w, map[string]interface{}{"samples": samples, "count": len(samples)})
+}
+
+// LogSample is one captured raw log offered as preview input.
+type LogSample struct {
+	RawLog    string    `json:"raw_log"`
+	Timestamp time.Time `json:"timestamp"`
+	Shape     string    `json:"shape"`       // sorted top-level key signature
+	FieldsNum int       `json:"fields_num"`  // top-level key count
+}
+
+// collectSamples reads recent raw logs from table and returns up to limit of
+// them, deduplicated by top-level key shape.
+func (h *Handler) collectSamples(ctx context.Context, table, tsColumn, extraWhere, fractalID string, scanRows, limit int) ([]LogSample, error) {
+	query := fmt.Sprintf(`
+		SELECT raw_log, %s AS ts
+		FROM %s
+		WHERE fractal_id = ? AND raw_log != '' %s
+		ORDER BY %s DESC
+		LIMIT %d`, tsColumn, table, extraWhere, tsColumn, scanRows)
+
+	rows, err := h.ch.QueryRows(ctx, query, fractalID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []LogSample
+	seen := make(map[string]bool, limit)
+
+	for rows.Next() {
+		if len(out) >= limit {
+			break
+		}
+		var raw string
+		var ts time.Time
+		if err := rows.Scan(&raw, &ts); err != nil {
+			return nil, err
+		}
+
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+			continue // non-JSON lines cannot drive a field-mapping preview
+		}
+
+		keys := make([]string, 0, len(obj))
+		for k := range obj {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		shape := strings.Join(keys, ",")
+		if seen[shape] {
+			continue
+		}
+		seen[shape] = true
+
+		out = append(out, LogSample{
+			RawLog:    raw,
+			Timestamp: ts,
+			Shape:     shape,
+			FieldsNum: len(keys),
+		})
+	}
+	return out, rows.Err()
 }
 
 // HandleTokenUsage returns tokens using a given normalizer, with fractal names.

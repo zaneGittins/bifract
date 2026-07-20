@@ -183,11 +183,6 @@ type IngestQueue struct {
 	spoolPressure  atomic.Int64
 	spoolMaxBytes  int64
 
-	// lastIngested tracks the most recent successful insert time per fractal.
-	// Used by the alert engine to skip evaluation when no new data has arrived.
-	lastIngestedMu sync.RWMutex
-	lastIngested   map[string]time.Time
-
 	// systemFractalID is set after startup to enable internal monitoring events.
 	systemFractalID atomic.Value // stores string
 
@@ -359,7 +354,6 @@ func NewIngestQueue(db *storage.ClickHouseClient, bufferSize, workers int) *Inge
 		workers:      workers,
 		bufSize:      bufferSize,
 		stop:         make(chan struct{}),
-		lastIngested: make(map[string]time.Time),
 		// Buffered by worker count so a ready bucket does not block the
 		// accumulator while every worker happens to be mid-insert.
 		flushCh:       make(chan *partBucket, workers),
@@ -965,14 +959,6 @@ func envInt(key string, def int) int {
 	return def
 }
 
-// LastIngested returns the most recent successful insert time for a fractal.
-// Returns zero time if no data has been ingested for this fractal since startup.
-func (q *IngestQueue) LastIngested(fractalID string) time.Time {
-	q.lastIngestedMu.RLock()
-	defer q.lastIngestedMu.RUnlock()
-	return q.lastIngested[fractalID]
-}
-
 // Metrics source methods (satisfy metrics.IngestSource interface).
 
 func (q *IngestQueue) AcceptedTotal() int64       { return q.Metrics.Accepted.Load() }
@@ -1033,11 +1019,6 @@ func (q *IngestQueue) worker(id int) {
 					}
 					q.quotaManager.RecordInsert(fid, rawBytes, int64(len(buf)))
 				}
-
-				// Record per-fractal insert time for alert skip optimization.
-				q.lastIngestedMu.Lock()
-				q.lastIngested[fid] = time.Now()
-				q.lastIngestedMu.Unlock()
 
 				break
 			}

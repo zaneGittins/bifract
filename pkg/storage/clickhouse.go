@@ -1572,15 +1572,51 @@ func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[strin
 	return results, nil
 }
 
+// unwrapSimpleAggregateFunction returns the underlying value type of a
+// SimpleAggregateFunction(fn, T) column, or typeName unchanged. Aggregating over
+// such a column (min/max on AggregatingMergeTree state) keeps the wrapper in the
+// reported type, which would otherwise fall through to the default string scan.
+func unwrapSimpleAggregateFunction(typeName string) string {
+	const prefix = "SimpleAggregateFunction("
+	if !strings.HasPrefix(typeName, prefix) || !strings.HasSuffix(typeName, ")") {
+		return typeName
+	}
+	inner := typeName[len(prefix) : len(typeName)-1]
+	// Split on the first top-level comma; the inner type itself may contain
+	// commas, e.g. SimpleAggregateFunction(max, DateTime64(3, 'UTC')).
+	depth := 0
+	for i, r := range inner {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				return strings.TrimSpace(inner[i+1:])
+			}
+		}
+	}
+	return typeName
+}
+
 // scanRowMap scans the current row of rows into a map[string]interface{} using
 // the supplied column types. It is shared by the buffered Query path and the
 // streaming StreamQuery path so the two never diverge in type handling. The
 // caller must have already positioned the cursor via rows.Next().
+//
+// Datetime columns land in the map as STRINGS, not time.Time: they are scanned
+// into a time.Time and then formatted with chRowTimeLayout, because these maps
+// are encoded straight to JSON and that shape is the API contract. So
+// `row[col].(time.Time)` always fails, and with the usual `v, _ :=` idiom it
+// silently yields the zero time. Read timestamps with RowTime instead.
+// (Array-of-date columns are not in the type switch below and reach the map as
+// real time.Time values via the interface path -- RowTime is only for scalars.)
 func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]interface{}, error) {
 	// Create typed destination variables based on column types
 	values := make([]interface{}, len(columnTypes))
 	for i, col := range columnTypes {
-		typeName := col.DatabaseTypeName()
+		typeName := unwrapSimpleAggregateFunction(col.DatabaseTypeName())
 		switch {
 		case typeName == "String" || typeName == "Nullable(String)":
 			values[i] = new(string)
@@ -1806,7 +1842,7 @@ func (c *ClickHouseClient) scanLogRow(ctx context.Context, query string, args []
 
 	values := make([]interface{}, len(columnTypes))
 	for i, col := range columnTypes {
-		typeName := col.DatabaseTypeName()
+		typeName := unwrapSimpleAggregateFunction(col.DatabaseTypeName())
 		switch {
 		case typeName == "String" || typeName == "Nullable(String)":
 			values[i] = new(string)
@@ -2543,16 +2579,60 @@ func (c *ClickHouseClient) awaitIndexMutation(ctx context.Context, idx string) {
 	}
 }
 
-// parseJSONTypeHints extracts field names from a ClickHouse JSON column type
-// string of the form: JSON(max_dynamic_paths=N, `field` String, ...).
+// jsonTypeHintRe matches one declared path inside a JSON column type.
+//
+// It must accept BOTH spellings. Type hints are written with backticks, but
+// ClickHouse normalises them away when reporting the column type back through
+// system.columns, so what goes in as "`src_ip` String" comes back as
+// "src_ip String". A backtick-only pattern therefore matched nothing in
+// practice, which silently broke the additive contract below.
+var jsonTypeHintRe = regexp.MustCompile("(?:`([^`]+)`|([A-Za-z_][A-Za-z0-9_.]*))\\s+([A-Za-z][A-Za-z0-9_]*)")
+
+// parseJSONTypeHints extracts the declared path names from a ClickHouse JSON
+// column type, in either the backticked form used when writing DDL or the bare
+// form system.columns reports:
+//
+//	JSON(max_dynamic_paths=1024, `src_ip` String, ...)
+//	JSON(src_ip String, user String, ...)
+//
+// Getting this wrong is not a cosmetic failure. ReconcileSchemaFields merges
+// what it parses here with the requested set, so returning nothing makes the
+// reconcile authoritative instead of additive: it drops every hint outside the
+// current defaults-plus-custom list, and it re-issues MODIFY COLUMN on every
+// startup because every field looks new.
 func parseJSONTypeHints(typeStr string) []string {
-	var fields []string
-	// Find each backtick-quoted identifier followed by a type keyword.
-	re := regexp.MustCompile("`([^`]+)`\\s+\\w+")
-	for _, match := range re.FindAllStringSubmatch(typeStr, -1) {
-		if len(match) >= 2 {
-			fields = append(fields, match[1])
+	// Trim the JSON(...) wrapper so the settings prefix cannot be misread as a
+	// path, then consider each comma-separated declaration on its own.
+	if open := strings.IndexByte(typeStr, '('); open >= 0 {
+		if close := strings.LastIndexByte(typeStr, ')'); close > open {
+			typeStr = typeStr[open+1 : close]
 		}
+	}
+
+	var fields []string
+	seen := make(map[string]struct{})
+	for _, part := range strings.Split(typeStr, ",") {
+		part = strings.TrimSpace(part)
+		// Settings ("max_dynamic_paths=1024") and SKIP clauses declare no path.
+		if part == "" || strings.ContainsRune(part, '=') || strings.HasPrefix(part, "SKIP") {
+			continue
+		}
+		m := jsonTypeHintRe.FindStringSubmatch(part)
+		if m == nil {
+			continue
+		}
+		name := m[1] // backticked
+		if name == "" {
+			name = m[2] // bare
+		}
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		fields = append(fields, name)
 	}
 	return fields
 }
@@ -2694,14 +2774,24 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 		}
 	}
 
-	// Ensure each desired field has the correct skip index.
-	// ADD INDEX IF NOT EXISTS is a no-op when the index already exists.
+	c.applySchemaFieldIndexes(ctx, fields, result.IndexErrors)
+	// Type hints may have changed (MODIFY COLUMN above); drop the cached set so the
+	// log-detail empty-field filter picks up new/removed hints.
+	c.invalidateTypeHintCache()
+	return result, nil
+}
+
+// applySchemaFieldIndexes creates the skip index each field asks for. Shared by
+// the additive reconcile and the authoritative reset so the two cannot drift.
+// Failures are recorded per field rather than aborting: the type hint has
+// already applied, so the field is queryable and correct, it just will not prune.
+func (c *ClickHouseClient) applySchemaFieldIndexes(ctx context.Context, fields []SchemaFieldSpec, errs map[string]string) {
 	for _, f := range fields {
 		var idxExpr string
 		switch f.IndexType {
 		case "none":
-			// Type hint only (dedicated sub-column already applied via MODIFY COLUMN
-			// above); no skip index. Skip writes/merges pay for nothing otherwise.
+			// Type hint only; no skip index. Writes and merges would otherwise pay
+			// for something no query uses.
 			continue
 		case "set":
 			idxExpr = "TYPE set(256)"
@@ -2715,23 +2805,36 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 			idxName, escaped, idxExpr,
 		)
 		if err := c.conn.Exec(ctx, c.InjectOnCluster(idxSQL)); err != nil {
-			// Not fatal: the type hint applied, so the field is queryable and correct,
-			// it just will not prune. Recorded per-field so the caller can surface a
-			// real status instead of reporting the field fully active.
 			log.Printf("Warning: add index %s: %v", idxName, err)
-			result.IndexErrors[f.FieldName] = fmt.Sprintf("skip index not created: %v", err)
+			if errs != nil {
+				errs[f.FieldName] = fmt.Sprintf("skip index not created: %v", err)
+			}
 		}
 	}
-	// Type hints may have changed (MODIFY COLUMN above); drop the cached set so the
-	// log-detail empty-field filter picks up new/removed hints.
-	c.invalidateTypeHintCache()
-	return result, nil
 }
 
-// TruncateAndReschema deletes all log data by truncating the logs tables, drops
-// all managed skip indexes, then calls ReconcileSchemaFields to apply the desired
-// schema fresh. TRUNCATE does not require the force_drop_table filesystem flag.
+// TruncateAndReschema deletes all log data and rebuilds the field schema from
+// the supplied set, discarding any type hint not in it.
+//
+// Unlike ReconcileSchemaFields this is AUTHORITATIVE, not additive, and that is
+// the whole point of the operation. Reconciliation deliberately never removes a
+// hint, so hints accumulate for the life of an install and are the one thing a
+// user cannot reclaim by any other means. Routing the reset through the additive
+// path (as this once did) left every accumulated hint in place, so the operation
+// destroyed all log data and reclaimed nothing.
+//
+// Issuing a narrowing MODIFY COLUMN from a fixed list is normally forbidden
+// because it strips user-added hints and rewrites every part. Here both are
+// intended and neither is costly: dropping unwanted hints IS the request, and
+// the TRUNCATE above leaves zero parts, so the rewrite has nothing to rewrite.
 func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []SchemaFieldSpec) error {
+	// Read the hints that exist now, before truncating: their skip indexes must
+	// be dropped too, and they are not necessarily in the desired set.
+	existing, err := c.currentFieldHints(ctx)
+	if err != nil {
+		return fmt.Errorf("read current type hints: %w", err)
+	}
+
 	for _, tbl := range []string{"logs.logs_histogram", "logs.logs"} {
 		sql := fmt.Sprintf("TRUNCATE TABLE %s", tbl)
 		if err := c.conn.Exec(ctx, c.InjectOnCluster(sql)); err != nil {
@@ -2739,18 +2842,61 @@ func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []Sch
 		}
 	}
 
-	// Drop all managed skip indexes so ReconcileSchemaFields can recreate them
-	// with the correct expressions from scratch.
+	// Drop indexes for the union of current and desired fields. Dropping only the
+	// desired ones would orphan the indexes of hints being discarded.
+	toDrop := make(map[string]struct{}, len(existing)+len(fields))
+	for _, f := range existing {
+		toDrop[f] = struct{}{}
+	}
 	for _, f := range fields {
-		idxName := schemaFieldIndexName(f.FieldName)
+		toDrop[f.FieldName] = struct{}{}
+	}
+	dropNames := make([]string, 0, len(toDrop))
+	for f := range toDrop {
+		dropNames = append(dropNames, f)
+	}
+	sort.Strings(dropNames) // deterministic order for reproducible logs
+	for _, f := range dropNames {
+		idxName := schemaFieldIndexName(f)
 		dropSQL := fmt.Sprintf("ALTER TABLE logs DROP INDEX IF EXISTS %s", idxName)
 		if err := c.conn.Exec(ctx, c.InjectOnCluster(dropSQL)); err != nil {
 			log.Printf("Warning: drop index %s: %v", idxName, err)
 		}
 	}
 
-	_, err := c.ReconcileSchemaFields(ctx, fields)
-	return err
+	// Authoritative: exactly the requested fields, nothing carried over.
+	desired := make([]string, 0, len(fields))
+	for _, f := range fields {
+		desired = append(desired, f.FieldName)
+	}
+	if err := c.conn.Exec(ctx, c.InjectOnCluster(buildFieldsTypeHintSQL("logs", desired))); err != nil {
+		return fmt.Errorf("reset fields column: %w", err)
+	}
+	if err := c.conn.Exec(ctx, c.InjectOnCluster(buildFieldsTypeHintSQL("logs_hot", desired))); err != nil {
+		log.Printf("Warning: reset type hints on logs_hot: %v", err)
+	}
+
+	c.applySchemaFieldIndexes(ctx, fields, nil)
+	c.invalidateTypeHintCache()
+	return nil
+}
+
+// currentFieldHints returns the type-hinted field names declared on logs.fields.
+func (c *ClickHouseClient) currentFieldHints(ctx context.Context) ([]string, error) {
+	rows, err := c.conn.Query(ctx,
+		"SELECT type FROM system.columns WHERE database = 'logs' AND table = 'logs' AND name = 'fields'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var currentType string
+	if rows.Next() {
+		_ = rows.Scan(&currentType)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return parseJSONTypeHints(currentType), nil
 }
 
 // schemaFieldIndexSanitizeRe replaces any character that is not alphanumeric or
