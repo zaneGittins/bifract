@@ -37,7 +37,8 @@ func TestTraceMatchesHotPath(t *testing.T) {
 		"User": {"Name": "CORP\\jdoe", "Domain": "CORP"},
 		"SourceIp": "10.0.0.5",
 		"CommandLine": "powershell.exe -enc AAA",
-		"Nested": {"Deep": {"QueryName": "example.com"}}
+		"Nested": {"Deep": {"QueryName": "example.com"}},
+		"Kprobe": {"args": [{"sock_arg": {"daddr": "1.1.1.1", "dport": 80}}]}
 	}`)
 
 	cases := []struct {
@@ -45,6 +46,7 @@ func TestTraceMatchesHotPath(t *testing.T) {
 		n    Normalizer
 	}{
 		{"no transforms", Normalizer{}},
+		{"array of objects", Normalizer{Transforms: []Transform{TransformFlattenLeaf, TransformLowercase}}},
 		{"flatten leaf only", Normalizer{Transforms: []Transform{TransformFlattenLeaf}}},
 		{"flatten full only", Normalizer{Transforms: []Transform{TransformFlattenFull}}},
 		{"leaf snake lower", Normalizer{Transforms: []Transform{TransformFlattenLeaf, TransformSnakeCase, TransformLowercase}}},

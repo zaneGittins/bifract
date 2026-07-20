@@ -12,7 +12,31 @@ import (
 const (
 	MaxFlattenDepth  = 64
 	MaxFlattenFields = 1000
+	// MaxArrayExpand bounds how many elements of an array-of-objects are expanded
+	// into indexed keys. The element index enters the field path, so an unbounded
+	// expansion of variable-length arrays would accumulate distinct JSON paths
+	// (foo_0, foo_1, ...) across logs and overflow max_dynamic_paths. Beyond this
+	// count the whole array is kept as a JSON string (the pre-expansion behavior),
+	// still queryable via JSON functions.
+	MaxArrayExpand = 16
 )
+
+// arrayOfObjects reports whether arr is non-empty and every element is a JSON
+// object. Only such arrays are expanded: their elements are records whose fields
+// deserve columns (Tetragon args, k8s container lists). Arrays of scalars or
+// mixed/nested arrays are kept whole, where indexed keys would add path
+// cardinality without a queryable payload.
+func arrayOfObjects(arr []interface{}) bool {
+	if len(arr) == 0 {
+		return false
+	}
+	for _, el := range arr {
+		if _, ok := el.(map[string]interface{}); !ok {
+			return false
+		}
+	}
+	return true
+}
 
 // FlattenFields expands any JSON-object string values in fields into individual
 // keys according to the given mode. Only keys present in expandable are expanded;
@@ -166,20 +190,29 @@ func flattenObject(obj map[string]interface{}, prefix string, expanded map[strin
 			fullPath = prefix + "_" + safeKey
 		}
 
-		switch v := value.(type) {
-		case map[string]interface{}:
+		if v, ok := value.(map[string]interface{}); ok {
 			flattenObject(v, fullPath, expanded, mode, depth+1, truncated, truncReason)
-		default:
-			outKey := fullPath
-			if mode == FlattenLeaf {
-				outKey = safeKey
-			}
-			// On leaf collision within a single object expansion, fall back to full path.
-			if _, exists := expanded[outKey]; exists && mode == FlattenLeaf {
-				outKey = fullPath
-			}
-			expanded[outKey] = stringifyValue(v)
+			continue
 		}
+		// Expand arrays of objects element-wise so nested record fields become leaf
+		// keys; the element index sits in the prefix and surfaces only on leaf
+		// collision. Other arrays fall through to scalar (whole-value) handling.
+		if arr, ok := value.([]interface{}); ok && len(arr) <= MaxArrayExpand && arrayOfObjects(arr) {
+			for i, el := range arr {
+				flattenObject(el.(map[string]interface{}), fullPath+"_"+strconv.Itoa(i), expanded, mode, depth+1, truncated, truncReason)
+			}
+			continue
+		}
+
+		outKey := fullPath
+		if mode == FlattenLeaf {
+			outKey = safeKey
+		}
+		// On leaf collision within a single object expansion, fall back to full path.
+		if _, exists := expanded[outKey]; exists && mode == FlattenLeaf {
+			outKey = fullPath
+		}
+		expanded[outKey] = stringifyValue(value)
 	}
 }
 
@@ -195,16 +228,31 @@ func flattenObjectWithCollisions(obj map[string]interface{}, prefix string, out 
 		if prefix != "" {
 			fullPath = prefix + "_" + safeKey
 		}
-		switch v := value.(type) {
-		case map[string]interface{}:
+		if v, ok := value.(map[string]interface{}); ok {
 			flattenObjectWithCollisions(v, fullPath, out, colliding, depth+1)
-		default:
-			outKey := safeKey
-			if colliding[safeKey] {
-				outKey = fullPath
-			}
-			out[outKey] = stringifyValue(v)
+			continue
 		}
+		// Mirror flattenObject's array handling so the collision re-expansion
+		// produces the same leaf keys the first pass counted.
+		if arr, ok := value.([]interface{}); ok && len(arr) <= MaxArrayExpand && arrayOfObjects(arr) {
+			for i, el := range arr {
+				flattenObjectWithCollisions(el.(map[string]interface{}), fullPath+"_"+strconv.Itoa(i), out, colliding, depth+1)
+			}
+			continue
+		}
+		outKey := safeKey
+		if colliding[safeKey] {
+			outKey = fullPath
+		}
+		// Disambiguate intra-expansion duplicates too (repeated leaf keys across
+		// array elements or sibling objects under one top-level key). The first
+		// pass dedups these via expanded-map existence; without the same check
+		// here, a second occurrence would overwrite the first and lose data. The
+		// index/path in fullPath makes the fallback unique.
+		if _, exists := out[outKey]; exists {
+			outKey = fullPath
+		}
+		out[outKey] = stringifyValue(value)
 	}
 }
 

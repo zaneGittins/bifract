@@ -1,6 +1,8 @@
 package normalizers
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -238,6 +240,132 @@ func TestFlattenLeaf_ArraysNotExpanded(t *testing.T) {
 
 	if result["tags"] != `["admin","editor"]` {
 		t.Errorf("expected array to be preserved, got %q", result["tags"])
+	}
+}
+
+// Arrays of objects carry record fields (Tetragon args, k8s containers). A
+// single-element array is the common shape and must yield clean leaf keys.
+func TestFlattenLeaf_ArrayOfObjectsExpanded(t *testing.T) {
+	fields := map[string]string{
+		"kprobe": `{"args":[{"sock_arg":{"daddr":"1.1.1.1","dport":80}}],"fn":"tcp_connect"}`,
+	}
+	nested := map[string]bool{"kprobe": true}
+	result := FlattenFields(fields, FlattenLeaf, nested)
+
+	if result["daddr"] != "1.1.1.1" {
+		t.Errorf("expected 'daddr'='1.1.1.1', got %v", result)
+	}
+	if result["dport"] != "80" {
+		t.Errorf("expected 'dport'='80', got %v", result)
+	}
+	if result["fn"] != "tcp_connect" {
+		t.Errorf("expected sibling 'fn'='tcp_connect', got %v", result)
+	}
+	for k, v := range result {
+		if len(v) > 0 && v[0] == '[' {
+			t.Errorf("array was not expanded: %s=%s", k, v)
+		}
+	}
+}
+
+// A multi-element array must never lose data. Leaf naming across elements is
+// order-dependent (the same intra-expansion collision rule objects follow), so
+// this asserts every value survives rather than a specific key layout.
+func TestFlattenLeaf_MultiElementArrayLossless(t *testing.T) {
+	fields := map[string]string{
+		"c": `{"list":[{"ip":"1.1.1.1"},{"ip":"2.2.2.2"}]}`,
+	}
+	nested := map[string]bool{"c": true}
+	result := FlattenFields(fields, FlattenLeaf, nested)
+
+	values := make(map[string]bool)
+	for _, v := range result {
+		values[v] = true
+	}
+	for _, want := range []string{"1.1.1.1", "2.2.2.2"} {
+		if !values[want] {
+			t.Errorf("value %q lost during multi-element expansion: %v", want, result)
+		}
+	}
+}
+
+// Regression: a multi-element array must stay lossless even when another key
+// triggers the leaf-collision re-expansion path. Sibling elements repeat the
+// same leaf ("ip"), which is not globally colliding, so the re-expansion has to
+// disambiguate them intra-subtree or the second value overwrites the first.
+func TestFlattenLeaf_MultiElementArrayLosslessUnderCollision(t *testing.T) {
+	fields := map[string]string{
+		"p": `{"name":"P"}`, // p.name / q.name collide -> forces re-expansion
+		"q": `{"name":"Q"}`,
+		"c": `{"list":[{"ip":"A"},{"ip":"B"}]}`,
+	}
+	nested := map[string]bool{"p": true, "q": true, "c": true}
+	result := FlattenFields(fields, FlattenLeaf, nested)
+
+	values := make(map[string]bool)
+	for _, v := range result {
+		values[v] = true
+	}
+	for _, want := range []string{"A", "B", "P", "Q"} {
+		if !values[want] {
+			t.Errorf("value %q lost under collision re-expansion: %v", want, result)
+		}
+	}
+}
+
+// Full mode keeps the element index in the path, so every element is addressable.
+func TestFlattenFull_ArrayOfObjectsIndexed(t *testing.T) {
+	fields := map[string]string{
+		"c": `{"list":[{"ip":"1.1.1.1"},{"ip":"2.2.2.2"}]}`,
+	}
+	nested := map[string]bool{"c": true}
+	result := FlattenFields(fields, FlattenFull, nested)
+
+	if result["c_list_0_ip"] != "1.1.1.1" {
+		t.Errorf("expected 'c_list_0_ip'='1.1.1.1', got %v", result)
+	}
+	if result["c_list_1_ip"] != "2.2.2.2" {
+		t.Errorf("expected 'c_list_1_ip'='2.2.2.2', got %v", result)
+	}
+}
+
+// Beyond MaxArrayExpand the whole array is kept as JSON to bound path cardinality.
+func TestFlatten_ArrayOverCapKeptWhole(t *testing.T) {
+	var elems []string
+	for i := 0; i <= MaxArrayExpand; i++ {
+		elems = append(elems, `{"n":`+strconv.Itoa(i)+`}`)
+	}
+	fields := map[string]string{
+		"c": `{"big":[` + strings.Join(elems, ",") + `]}`,
+	}
+	nested := map[string]bool{"c": true}
+	result := FlattenFields(fields, FlattenLeaf, nested)
+
+	if _, expanded := result["n"]; expanded {
+		t.Errorf("array over cap should not be expanded, got %v", result)
+	}
+	if v := result["big"]; len(v) == 0 || v[0] != '[' {
+		t.Errorf("expected over-cap array kept as JSON string, got %q", v)
+	}
+}
+
+// Scalar, empty, and nested arrays add path cardinality without a queryable
+// record payload, so they stay whole.
+func TestFlatten_NonObjectArraysKeptWhole(t *testing.T) {
+	fields := map[string]string{
+		"c": `{"tags":["a","b"],"empty":[],"matrix":[[1,2],[3,4]]}`,
+	}
+	nested := map[string]bool{"c": true}
+	result := FlattenFields(fields, FlattenLeaf, nested)
+
+	if result["tags"] != `["a","b"]` {
+		t.Errorf("scalar array should be preserved, got %q", result["tags"])
+	}
+	if result["empty"] != `[]` {
+		t.Errorf("empty array should be preserved, got %q", result["empty"])
+	}
+	if result["matrix"] != `[[1,2],[3,4]]` {
+		t.Errorf("nested array should be preserved, got %q", result["matrix"])
 	}
 }
 
