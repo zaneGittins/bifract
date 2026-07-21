@@ -554,10 +554,8 @@ func syncDistributedColumns(ctx context.Context, conn driver.Conn, database, dis
 
 	var changed int
 	for _, name := range localOrder {
-		// Never ALTER the fields JSON column on the Distributed table: a MODIFY
-		// would risk stripping type hints and breaking dependent skip indexes
-		// (see CLAUDE.md). It is always present from creation, so it needs no
-		// reconciliation here.
+		// Skip fields here: it needs the same type-hint list as logs, not just
+		// column presence, so it's reconciled by ReconcileSchemaFields instead.
 		if name == "fields" {
 			continue
 		}
@@ -2703,6 +2701,16 @@ type ReconcileResult struct {
 	IndexErrors map[string]string
 }
 
+// mirrorFieldsTypeHint applies the fields JSON type-hint declaration to a
+// secondary table (logs_hot, logs_distributed) that must stay in sync with logs.
+// Failure is only logged: the authoritative MODIFY COLUMN on logs already succeeded.
+func (c *ClickHouseClient) mirrorFieldsTypeHint(ctx context.Context, table string, fields []string) {
+	stmt := c.InjectOnCluster(buildFieldsTypeHintSQL(table, fields))
+	if err := c.conn.Exec(ctx, stmt); err != nil {
+		log.Printf("Warning: mirror type hints to %s: %v", table, err)
+	}
+}
+
 // ReconcileSchemaFields ensures ClickHouse has type hints and skip indexes for
 // all requested fields. It is additive: existing type hints and indexes are
 // never removed. New fields are added via MODIFY COLUMN and ADD INDEX IF NOT EXISTS.
@@ -2753,25 +2761,31 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 		merged[f.FieldName] = struct{}{}
 	}
 
-	// Run MODIFY COLUMN only when there are new fields to add.
+	mergedList := make([]string, 0, len(merged))
+	for f := range merged {
+		mergedList = append(mergedList, f)
+	}
+
+	// Run MODIFY COLUMN on logs only when there are new fields to add.
 	if len(newFields) > 0 {
-		mergedList := make([]string, 0, len(merged))
-		for f := range merged {
-			mergedList = append(mergedList, f)
-		}
 		colDef := buildFieldsTypeHintSQL("logs", mergedList)
 		if err := c.conn.Exec(ctx, c.InjectOnCluster(colDef)); err != nil {
 			return result, fmt.Errorf("modify fields column: %w", err)
 		}
-		// Mirror to logs_hot so the parser's type-hint registry stays in sync with
-		// both tables. Without this, newly-registered fields generate bare subcolumn
-		// references (no ::String cast) that return NULL on logs_hot because the
-		// typed subcolumn only exists in logs.
-		// No skip indexes needed on logs_hot — its ORDER BY covers alert query patterns.
-		hotColDef := buildFieldsTypeHintSQL("logs_hot", mergedList)
-		if err := c.conn.Exec(ctx, c.InjectOnCluster(hotColDef)); err != nil {
-			log.Printf("Warning: mirror type hints to logs_hot: %v", err)
-		}
+	}
+	// Mirror unconditionally (not gated on newFields above): logs_hot/logs_distributed
+	// can still be behind logs even when logs itself needed no change this call, e.g.
+	// right after this mirroring was added, or if a prior mirror attempt failed on one
+	// table. Metadata-only, so reissuing with an unchanged list costs nothing.
+	// No skip indexes needed on logs_hot — its ORDER BY covers alert query patterns.
+	c.mirrorFieldsTypeHint(ctx, "logs_hot", mergedList)
+	// logs_distributed and logs_hot_distributed are each created "AS <local>" once
+	// at bootstrap and never inherit later MODIFY COLUMN on logs/logs_hot; mirror
+	// here so neither drifts. logs_hot_distributed is what HotReadTable() actually
+	// queries in cluster mode, so this is the table the alert engine reads.
+	if c.IsCluster() {
+		c.mirrorFieldsTypeHint(ctx, "logs_distributed", mergedList)
+		c.mirrorFieldsTypeHint(ctx, "logs_hot_distributed", mergedList)
 	}
 
 	c.applySchemaFieldIndexes(ctx, fields, result.IndexErrors)
@@ -2835,7 +2849,7 @@ func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []Sch
 		return fmt.Errorf("read current type hints: %w", err)
 	}
 
-	for _, tbl := range []string{"logs.logs_histogram", "logs.logs"} {
+	for _, tbl := range []string{"logs.logs_histogram", "logs.logs", "logs.logs_hot"} {
 		sql := fmt.Sprintf("TRUNCATE TABLE %s", tbl)
 		if err := c.conn.Exec(ctx, c.InjectOnCluster(sql)); err != nil {
 			return fmt.Errorf("truncate %s: %w", tbl, err)
@@ -2872,8 +2886,10 @@ func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []Sch
 	if err := c.conn.Exec(ctx, c.InjectOnCluster(buildFieldsTypeHintSQL("logs", desired))); err != nil {
 		return fmt.Errorf("reset fields column: %w", err)
 	}
-	if err := c.conn.Exec(ctx, c.InjectOnCluster(buildFieldsTypeHintSQL("logs_hot", desired))); err != nil {
-		log.Printf("Warning: reset type hints on logs_hot: %v", err)
+	c.mirrorFieldsTypeHint(ctx, "logs_hot", desired)
+	if c.IsCluster() {
+		c.mirrorFieldsTypeHint(ctx, "logs_distributed", desired)
+		c.mirrorFieldsTypeHint(ctx, "logs_hot_distributed", desired)
 	}
 
 	c.applySchemaFieldIndexes(ctx, fields, nil)
