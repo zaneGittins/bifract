@@ -30,9 +30,12 @@ var ValidTransforms = map[Transform]bool{
 	TransformDedot:       true,
 }
 
+// Explicit yaml tags on these types: yaml.v3 lowercases Go field names by
+// default, so multi-word fields like FromField would bind to "fromfield" and
+// silently drop a hand-written or round-tripped "from_field".
 type FieldMapping struct {
-	Sources []string `json:"sources"`
-	Target  string   `json:"target"`
+	Sources []string `json:"sources" yaml:"sources"`
+	Target  string   `json:"target" yaml:"target"`
 }
 
 // ValueMapping is an additive derive transform: it reads FromField's value and,
@@ -42,16 +45,16 @@ type FieldMapping struct {
 // for any value not found in Map; when Default is empty an unmatched value
 // leaves ToField untouched.
 type ValueMapping struct {
-	FromField string            `json:"from_field"`
-	ToField   string            `json:"to_field"`
-	Map       map[string]string `json:"map"`
-	Default   string            `json:"default,omitempty"`
+	FromField string            `json:"from_field" yaml:"from_field"`
+	ToField   string            `json:"to_field" yaml:"to_field"`
+	Map       map[string]string `json:"map" yaml:"map"`
+	Default   string            `json:"default,omitempty" yaml:"default,omitempty"`
 }
 
 // TimestampField defines a field name and format to check for timestamps during ingestion.
 type TimestampField struct {
-	Field  string `json:"field"`
-	Format string `json:"format"`
+	Field  string `json:"field" yaml:"field"`
+	Format string `json:"format" yaml:"format"`
 }
 
 type Normalizer struct {
