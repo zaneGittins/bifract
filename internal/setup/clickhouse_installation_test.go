@@ -22,12 +22,13 @@ import (
 // must stay valid YAML and free of both footguns.
 func TestClickHouseInstallationUsersConfig(t *testing.T) {
 	out, err := renderK8sTemplate("templates/k8s/clickhouse-installation.yaml.tmpl", k8sTemplateData{
-		CHShards:          2,
-		CHStorageStr:      "100Gi",
-		CHMaxServerMemory: 1 << 30,
-		CHMaxBytesToMerge: 1 << 30,
-		CH:                ResourceProfile{CPURequest: "1", MemRequest: "2Gi", CPULimit: "2", MemLimit: "4Gi"},
-		CHKeeper:          ResourceProfile{CPURequest: "1", MemRequest: "1Gi", CPULimit: "1", MemLimit: "1Gi"},
+		CHShards:                     2,
+		CHStorageStr:                 "100Gi",
+		CHMaxServerMemory:            1 << 30,
+		CHMaxBytesToMerge:            1 << 30,
+		CHMergesMutationsMemoryLimit: 1 << 30,
+		CH:                           ResourceProfile{CPURequest: "1", MemRequest: "2Gi", CPULimit: "2", MemLimit: "4Gi"},
+		CHKeeper:                     ResourceProfile{CPURequest: "1", MemRequest: "1Gi", CPULimit: "1", MemLimit: "1Gi"},
 	})
 	if err != nil {
 		t.Fatalf("render CHI template: %v", err)

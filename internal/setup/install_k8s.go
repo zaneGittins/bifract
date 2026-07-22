@@ -880,10 +880,20 @@ type k8sTemplateData struct {
 	// avoids that. CHMaxBytesToMerge caps merge output well below the memory budget
 	// so the O(N)-memory vertical merge of the wide fields JSON column can never
 	// schedule a merge too large to complete (the 150GB default can exceed RAM).
-	// Both are 0 when MemLimit can't be parsed, in which case the template omits
-	// the block and ClickHouse defaults apply.
-	CHMaxServerMemory int64
-	CHMaxBytesToMerge int64
+	// CHMergesMutationsMemoryLimit caps how much memory ALL concurrent background
+	// merges/mutations may use at once. ClickHouse's own default for this
+	// (merges_mutations_memory_usage_to_ram_ratio=0.5) is computed against
+	// getMemoryAmount()/OSMemoryTotal, which under Kubernetes reflects the node's
+	// full memory rather than the pod's cgroup limit -- so the default leaves the
+	// throttle far too loose to protect the pod's real ceiling, and background
+	// tasks keep starting until they collide with max_server_memory_usage and get
+	// killed (MEMORY_LIMIT_EXCEEDED), retrying forever. Anchoring the same 0.5
+	// ratio to the correctly-scoped CHMaxServerMemory instead fixes this.
+	// All three are 0 when MemLimit can't be parsed, in which case the template
+	// omits the block and ClickHouse defaults apply.
+	CHMaxServerMemory            int64
+	CHMaxBytesToMerge            int64
+	CHMergesMutationsMemoryLimit int64
 }
 
 // k8sManifestFile maps an embedded template to its output path.
@@ -917,10 +927,14 @@ func writeK8sManifests(cfg *K8sConfig) error {
 	// Derive ClickHouse memory settings from the CH pod memory limit. 80% of the
 	// limit leaves ~20% headroom for the OS and (reclaimable) page cache; the merge
 	// cap is ~40% of that budget so a single large merge stays well within memory.
-	var chMaxServerMemory, chMaxBytesToMerge int64
+	// The merges/mutations concurrency budget is ~50% of chMaxServerMemory --
+	// mirrors ClickHouse's own default ratio, but anchored to the pod-scoped value
+	// instead of ClickHouse's node-wide getMemoryAmount() (see field doc comment).
+	var chMaxServerMemory, chMaxBytesToMerge, chMergesMutationsMemoryLimit int64
 	if chMemBytes := parseK8sMemToBytes(cfg.SizeProfile.ClickHouse.MemLimit); chMemBytes > 0 {
 		chMaxServerMemory = chMemBytes * 8 / 10
 		chMaxBytesToMerge = chMaxServerMemory * 4 / 10
+		chMergesMutationsMemoryLimit = chMaxServerMemory / 2
 	}
 	data := k8sTemplateData{
 		ImageTag:                     cfg.ImageTag,
@@ -963,6 +977,7 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		ArchiveMaintainCommitRetries: fallbackInt(cfg.ArchiveMaintainCommitRetries, archive.DefaultMaintainOptions().CommitRetries),
 		CHMaxServerMemory:            chMaxServerMemory,
 		CHMaxBytesToMerge:            chMaxBytesToMerge,
+		CHMergesMutationsMemoryLimit: chMergesMutationsMemoryLimit,
 		CH:                           cfg.SizeProfile.ClickHouse,
 		CHKeeper:                     cfg.SizeProfile.CHKeeper,
 		BifractRes:                   cfg.SizeProfile.Bifract,

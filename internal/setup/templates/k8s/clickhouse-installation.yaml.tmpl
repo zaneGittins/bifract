@@ -84,10 +84,19 @@ spec:
     # avoids that. max_bytes_to_merge_at_max_space_in_pool is capped well below the
     # memory budget because vertical merges of the wide fields JSON column cost O(N)
     # memory; the 150GB default can select a merge too large to complete in RAM.
+    # merges_mutations_memory_usage_soft_limit caps how much memory ALL concurrent
+    # background merges/mutations may use at once -- ClickHouse's own default for
+    # this ratio (0.5) is computed against node-wide memory under Kubernetes, not
+    # the pod's cgroup limit, so left at its default it doesn't actually throttle
+    # concurrency to what the pod can survive: tasks keep starting until they
+    # collide with max_server_memory_usage and get killed (MEMORY_LIMIT_EXCEEDED),
+    # retrying forever. Anchoring the same 0.5 ratio to max_server_memory_usage
+    # instead (rather than leaving it at 0/auto) fixes this.
     # Values are derived from the CH memory limit (see writeK8sManifests).
     extraConfig:
       max_server_memory_usage: {{.CHMaxServerMemory}}
       memory_worker_use_cgroup: 0
+      merges_mutations_memory_usage_soft_limit: {{.CHMergesMutationsMemoryLimit}}
       merge_tree:
         max_bytes_to_merge_at_max_space_in_pool: {{.CHMaxBytesToMerge}}
 {{- end}}
