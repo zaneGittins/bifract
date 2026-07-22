@@ -877,9 +877,24 @@ type k8sTemplateData struct {
 	// counts toward cgroup usage, and the observer clamps ClickHouse's effective
 	// limit down as cache fills -- which starves merges/inserts and can stall the
 	// cluster. An explicit cap at 80% of the pod limit (20% headroom for OS/cache)
-	// avoids that. CHMaxBytesToMerge caps merge output well below the memory budget
-	// so the O(N)-memory vertical merge of the wide fields JSON column can never
-	// schedule a merge too large to complete (the 150GB default can exceed RAM).
+	// avoids that.
+	//
+	// CHMaxBytesToMerge caps a single merge's input size. This is NOT scaled to
+	// leave a fraction of the pod's memory budget -- the per-byte memory cost of
+	// merging this schema (a wide `fields` JSON column plus a dozen-plus skip
+	// indexes rebuilt every merge) is a property of the table, not of how much RAM
+	// the pod happens to have. Measured on 2026-07-22 against real merge history
+	// (system.part_log.peak_memory_usage): merges from ~2GB up to ~19.5GB never
+	// peaked above ~5.4GB of actual memory, so 25% of CHMaxServerMemory (~8.8GiB on
+	// a 44Gi pod) keeps meaningful headroom above every observed case while
+	// recovering most of the query-performance cost of an aggressive cap (fewer,
+	// smaller final parts per partition). The incident that motivated this (merges
+	// crash-looping under MEMORY_LIMIT_EXCEEDED) was actually driven by concurrency
+	// -- background task count spiking to background_pool_size x
+	// background_merges_mutations_concurrency_ratio -- compounded by an unrelated
+	// unbounded background query (see storage.QueryLowPriorityBounded), not by any
+	// single merge's size.
+	//
 	// CHMergesMutationsMemoryLimit caps how much memory ALL concurrent background
 	// merges/mutations may use at once. ClickHouse's own default for this
 	// (merges_mutations_memory_usage_to_ram_ratio=0.5) is computed against
@@ -889,6 +904,7 @@ type k8sTemplateData struct {
 	// tasks keep starting until they collide with max_server_memory_usage and get
 	// killed (MEMORY_LIMIT_EXCEEDED), retrying forever. Anchoring the same 0.5
 	// ratio to the correctly-scoped CHMaxServerMemory instead fixes this.
+	//
 	// All three are 0 when MemLimit can't be parsed, in which case the template
 	// omits the block and ClickHouse defaults apply.
 	CHMaxServerMemory            int64
@@ -925,15 +941,16 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		cfg.UserSecrets = make(map[string]string)
 	}
 	// Derive ClickHouse memory settings from the CH pod memory limit. 80% of the
-	// limit leaves ~20% headroom for the OS and (reclaimable) page cache; the merge
-	// cap is ~40% of that budget so a single large merge stays well within memory.
-	// The merges/mutations concurrency budget is ~50% of chMaxServerMemory --
-	// mirrors ClickHouse's own default ratio, but anchored to the pod-scoped value
-	// instead of ClickHouse's node-wide getMemoryAmount() (see field doc comment).
+	// limit leaves ~20% headroom for the OS and (reclaimable) page cache. The merge
+	// cap (25%) is schema-driven, not pod-size-driven -- see the CHMaxBytesToMerge
+	// field doc comment for the 2026-07-22 measurement behind it. The
+	// merges/mutations concurrency budget is ~50% of chMaxServerMemory -- mirrors
+	// ClickHouse's own default ratio, but anchored to the pod-scoped value instead
+	// of ClickHouse's node-wide getMemoryAmount().
 	var chMaxServerMemory, chMaxBytesToMerge, chMergesMutationsMemoryLimit int64
 	if chMemBytes := parseK8sMemToBytes(cfg.SizeProfile.ClickHouse.MemLimit); chMemBytes > 0 {
 		chMaxServerMemory = chMemBytes * 8 / 10
-		chMaxBytesToMerge = chMaxServerMemory * 4 / 10
+		chMaxBytesToMerge = chMaxServerMemory / 4
 		chMergesMutationsMemoryLimit = chMaxServerMemory / 2
 	}
 	data := k8sTemplateData{

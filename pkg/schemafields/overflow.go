@@ -26,14 +26,29 @@ const overflowCheckedAtKey = "schema_overflow_checked_at"
 // overflowSampleSize bounds the scan. Unlike the norm_log sample, cost here is
 // dominated by opening one file per JSON path per part rather than by rows, so a
 // smaller sample buys much less than it does elsewhere. It stays modest because
-// detecting *which* paths have spilled needs presence, not distribution.
+// detecting *which* paths have spilled needs presence, not distribution -- a
+// systemically overflowing field shows up just as reliably in a few thousand
+// recent rows as in twenty thousand, so the sample stays small deliberately.
 func overflowSampleSize() int {
 	if v := os.Getenv("BIFRACT_SCHEMA_OVERFLOW_SAMPLE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
 		}
 	}
-	return 20000
+	return 2000
+}
+
+// overflowMaxMemoryBytes bounds the detect query to a small, explicit budget (see
+// storage.QueryLowPriorityBounded) so it can only ever fail itself cleanly -- it must never be
+// able to grow large enough to threaten unrelated background work (merges, mutations) under the
+// server's global memory ceiling.
+func overflowMaxMemoryBytes() int64 {
+	if v := os.Getenv("BIFRACT_SCHEMA_OVERFLOW_MAX_MEMORY_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 536870912 // 512MB
 }
 
 func overflowInterval() time.Duration {
@@ -135,7 +150,7 @@ ARRAY JOIN JSONSharedDataPaths(fields) AS p
 GROUP BY p ORDER BY rows_seen DESC LIMIT 200`,
 		m.ch.ReadTable(), overflowSampleSize())
 
-	rows, err := m.ch.QueryLowPriority(ctx, sql)
+	rows, err := m.ch.QueryLowPriorityBounded(ctx, sql, overflowMaxMemoryBytes())
 	if err != nil {
 		return nil, fmt.Errorf("shared-data path query: %w", err)
 	}

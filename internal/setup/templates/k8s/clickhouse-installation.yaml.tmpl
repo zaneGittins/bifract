@@ -81,9 +81,17 @@ spec:
     # clamps its own effective memory limit down as cache fills -- starving merges
     # and inserts and, under load, stalling the cluster. An explicit cap (80% of the
     # pod limit, 20% headroom for OS/reclaimable cache) plus memory_worker_use_cgroup=0
-    # avoids that. max_bytes_to_merge_at_max_space_in_pool is capped well below the
-    # memory budget because vertical merges of the wide fields JSON column cost O(N)
-    # memory; the 150GB default can select a merge too large to complete in RAM.
+    # avoids that.
+    #
+    # max_bytes_to_merge_at_max_space_in_pool is a fixed, schema-driven value (25%
+    # of max_server_memory_usage), not a pod-size ratio: the per-byte memory cost
+    # of merging this table (a wide `fields` JSON column plus a dozen-plus skip
+    # indexes rebuilt every merge) is a property of the schema, not of how much RAM
+    # the pod has. Measured 2026-07-22 against real merge history: merges from ~2GB
+    # to ~19.5GB never peaked above ~5.4GB of actual memory, so this cap keeps real
+    # headroom while avoiding the query-performance cost of a much smaller cap
+    # (more, smaller final parts per partition).
+    #
     # merges_mutations_memory_usage_soft_limit caps how much memory ALL concurrent
     # background merges/mutations may use at once -- ClickHouse's own default for
     # this ratio (0.5) is computed against node-wide memory under Kubernetes, not
@@ -92,6 +100,7 @@ spec:
     # collide with max_server_memory_usage and get killed (MEMORY_LIMIT_EXCEEDED),
     # retrying forever. Anchoring the same 0.5 ratio to max_server_memory_usage
     # instead (rather than leaving it at 0/auto) fixes this.
+    #
     # Values are derived from the CH memory limit (see writeK8sManifests).
     extraConfig:
       max_server_memory_usage: {{.CHMaxServerMemory}}

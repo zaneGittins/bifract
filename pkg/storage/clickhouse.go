@@ -1512,6 +1512,24 @@ func (c *ClickHouseClient) QueryLowPriority(ctx context.Context, query string) (
 	return c.Query(ctx, query)
 }
 
+// QueryLowPriorityBounded is QueryLowPriority plus an explicit, isolated memory budget:
+// max_memory_usage caps what this one query may ever allocate, and
+// memory_overcommit_ratio_denominator=0 opts it out of the global overcommit killer (the
+// mechanism that otherwise picks a "victim" query/task to kill under memory pressure). Together
+// these mean the query can only ever fail itself cleanly on its own cap -- it can never be the
+// thing that grows large enough to threaten, or get selected to be sacrificed for, unrelated
+// background work like merges or mutations. Use for periodic introspection sweeps (schema
+// overflow detection) that must be safe to run under any server memory condition.
+func (c *ClickHouseClient) QueryLowPriorityBounded(ctx context.Context, query string, maxMemoryBytes int64) ([]map[string]interface{}, error) {
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"priority":                            5,
+		"max_query_size":                      maxGeneratedQuerySize,
+		"max_memory_usage":                    maxMemoryBytes,
+		"memory_overcommit_ratio_denominator": 0,
+	}))
+	return c.Query(ctx, query)
+}
+
 // Provenance scan budget: bounds each pgr ClickHouse scan server-side so a pathological (giant or
 // firehose-host) process tree ABORTS at a hard limit instead of scanning the whole time window and
 // pegging every shard. pgr's resolver passes run on the raw request context (before the
