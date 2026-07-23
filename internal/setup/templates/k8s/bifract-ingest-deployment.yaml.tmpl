@@ -226,6 +226,16 @@ spec:
                   name: bifract-secrets
                   key: ARCHIVE_ROLL_INTERVAL
                   optional: true
+            # Total in-memory buffer cap across all fractals. ARCHIVE_ROLL_BYTES
+            # is per-fractal, so this is what bounds the sidecar's heap when many
+            # fractals ingest at once. Raise it (with the memory limit below) to
+            # get larger Parquet files on a many-fractal deployment.
+            - name: BIFRACT_ARCHIVE_MAX_PENDING_BYTES
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_MAX_PENDING_BYTES
+                  optional: true
             - name: BIFRACT_ARCHIVE_S3_ENDPOINT
               valueFrom:
                 secretKeyRef:

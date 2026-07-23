@@ -2289,6 +2289,13 @@ input[type="number"]::-webkit-outer-spin-button {
     box-shadow: 0 0 4px rgba(245, 158, 11, 0.4);
 }
 
+/* Red dot for a state that is wrong rather than merely off or degraded, e.g.
+   the archive missing data the hot store holds. */
+.status-dot.status-error {
+    background: var(--error);
+    box-shadow: 0 0 4px rgba(248, 113, 113, 0.4);
+}
+
 .alert-row.auto-disabled {
     opacity: 0.75;
 }

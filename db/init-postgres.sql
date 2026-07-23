@@ -1975,7 +1975,28 @@ CREATE TABLE IF NOT EXISTS archive_search_jobs (
     finished_at   TIMESTAMPTZ,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Scan cost, so a Recall that times out can say how much it read before it did.
+ALTER TABLE archive_search_jobs ADD COLUMN IF NOT EXISTS read_rows  BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE archive_search_jobs ADD COLUMN IF NOT EXISTS read_bytes BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_archive_search_jobs_pending
     ON archive_search_jobs (created_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_archive_search_jobs_fractal
     ON archive_search_jobs (fractal_id, created_at DESC);
+
+-- Archive completeness: hot-store vs archive row counts per (fractal, ingest
+-- day). The archive spool is pod-local, so an ingest pod replaced while holding
+-- un-archived data leaves a hole that reconcile cannot heal (it only restores
+-- ClickHouse FROM Iceberg). ch_count > ice_count on a sealed day is that hole.
+-- Written by the maintain pass; read by the admin UI.
+CREATE TABLE IF NOT EXISTS archive_completeness (
+    fractal_id  TEXT NOT NULL,
+    ingest_day  DATE NOT NULL,
+    ch_count    BIGINT NOT NULL DEFAULT 0,
+    ice_count   BIGINT NOT NULL DEFAULT 0,
+    checked_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (fractal_id, ingest_day)
+);
+CREATE INDEX IF NOT EXISTS idx_archive_completeness_day
+    ON archive_completeness (ingest_day DESC);
+CREATE INDEX IF NOT EXISTS idx_archive_completeness_gaps
+    ON archive_completeness (ingest_day DESC) WHERE ch_count > ice_count;

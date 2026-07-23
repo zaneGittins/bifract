@@ -155,6 +155,15 @@
     align-items: center;
 }
 
+/* Age of the results on screen. One per dashboard: the executor refreshes all
+   widgets in a single pass, so a per-widget stamp would just repeat this. */
+.dashboard-updated-at {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+    margin-right: -2px;
+}
+
 .dashboard-refresh-select {
     padding: 0.45rem 0.65rem;
     background: var(--bg-secondary);
@@ -231,6 +240,28 @@
     cursor: grab;
     user-select: none;
     flex-shrink: 0;
+    /* Anchors the refresh sweep below. No overflow clip here: the kebab menu is
+       absolutely positioned below the header and would be cut off. The sweep is
+       already bounded by .dashboard-widget's own overflow. */
+    position: relative;
+}
+
+/* Background refresh over already-visible results: a sweep on the header rather
+   than wiping the widget back to a loading state. */
+.dashboard-widget.refreshing .widget-header::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent-primary), transparent);
+    animation: widget-refresh-sweep 1.2s ease-in-out infinite;
+}
+
+@keyframes widget-refresh-sweep {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(100%); }
 }
 
 .widget-header:active {
@@ -404,6 +435,19 @@
     font-size: 0.85rem;
     padding: 10px;
     text-align: center;
+}
+
+/* Refresh failed but saved results are still on screen: say which is which. */
+.widget-stale-note {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+    font-size: 0.7rem;
+    padding: 4px 8px;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Resize Handle */
@@ -1311,6 +1355,12 @@
     .nz-workbench,
     .nz-rail-toggle svg {
         transition: none;
+    }
+
+    .dashboard-widget.refreshing .widget-header::after {
+        animation: none;
+        background: var(--accent-primary);
+        opacity: 0.5;
     }
 }
 

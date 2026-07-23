@@ -276,6 +276,71 @@ const Performance = {
             this.setRestoreMode('restore');
         }
         this.loadRestoreJobs();
+        this.loadCompleteness();
+    },
+
+    // Archive completeness. The archive spool is pod-local, so an ingest pod
+    // replaced mid-flight leaves data in ClickHouse that never reached the
+    // archive -- and reconcile cannot heal it, because it only restores the hot
+    // store FROM the archive. This table is how that becomes visible.
+    async loadCompleteness() {
+        const gapsOnly = !!(document.getElementById('completenessGapsOnly') || {}).checked;
+        try {
+            const res = await fetch('/api/v1/system/archive/completeness?gaps_only=' + gapsOnly, { credentials: 'include' });
+            if (!res.ok) return;
+            this.renderCompleteness(await res.json());
+        } catch (err) {
+            console.error('[Performance] completeness load error:', err);
+        }
+    },
+
+    renderCompleteness(d) {
+        const dot = document.getElementById('completenessStatusDot');
+        const label = document.getElementById('completenessStatusLabel');
+        const body = document.getElementById('completenessBody');
+        const hint = document.getElementById('completenessHint');
+        if (!body) return;
+
+        const days = d.days || [];
+        const gapDays = days.filter(r => Number(r.gap) > 0);
+        const totalGap = Number(d.total_gap || 0);
+
+        if (dot && label) {
+            if (!days.length) {
+                dot.className = 'status-dot status-disabled';
+                label.textContent = 'No checks yet';
+            } else if (totalGap > 0) {
+                dot.className = 'status-dot status-error';
+                label.textContent = `${totalGap.toLocaleString()} row(s) missing across ${gapDays.length} day(s)`;
+            } else {
+                dot.className = 'status-dot status-enabled';
+                label.textContent = 'Archive complete for every checked day';
+            }
+        }
+        if (hint) {
+            if (totalGap > 0) {
+                hint.textContent = 'Rows present in ClickHouse but absent from the archive. Restore cannot recover these; widen hot-store retention for the affected fractals before those rows age out.';
+                hint.style.display = '';
+            } else {
+                hint.style.display = 'none';
+            }
+        }
+
+        if (!days.length) {
+            body.innerHTML = '<tr><td colspan="6" class="restore-empty-cell">No completeness checks recorded yet.</td></tr>';
+            return;
+        }
+        body.innerHTML = days.map(r => {
+            const gap = Number(r.gap) || 0;
+            return `<tr class="${gap > 0 ? 'completeness-gap-row' : ''}">
+                <td>${this.escapeHtml(r.ingest_day)}</td>
+                <td>${this.escapeHtml(r.fractal_name || r.fractal_id)}</td>
+                <td>${Number(r.ch_count).toLocaleString()}</td>
+                <td>${Number(r.ice_count).toLocaleString()}</td>
+                <td>${gap > 0 ? `<span class="completeness-gap">${gap.toLocaleString()}</span>` : '&mdash;'}</td>
+                <td>${this.timeAgo(r.checked_at)}</td>
+            </tr>`;
+        }).join('');
     },
 
     // Request an out-of-schedule maintenance pass. The maintainer polls Postgres
@@ -588,6 +653,27 @@ const Performance = {
         }
     },
 
+    // The server refused because the window predates these fractals' retention.
+    // Name them and what they keep, then re-arm so the next confirm carries the
+    // acknowledgement. The flag is cleared whenever the form changes, so an
+    // override never silently carries over to a different request.
+    armRetentionOverride(conflicts) {
+        this._restoreAckRetention = true;
+        const detail = conflicts.map(c =>
+            `${c.fractal_name || c.fractal_id} keeps ${c.retention_days}d`).join(', ');
+        this.setRestoreMsg(
+            `Retention will delete this data again within the hour (${detail}). ` +
+            `Raise retention first, or click Restore anyway.`, 'warn');
+        const btn = document.getElementById('restoreSubmitBtn');
+        if (btn) { btn.textContent = 'Restore anyway'; btn.classList.add('armed'); }
+        this._restoreArmed = true;
+        clearTimeout(this._restoreArmTimer);
+        this._restoreArmTimer = setTimeout(() => {
+            this._restoreAckRetention = false;
+            this.disarmRestore();
+        }, 12000);
+    },
+
     async submitRestore() {
         const fractals = Array.from(this._restoreSelected || []);
         if (!fractals.length) { this.setRestoreMsg('Select at least one fractal.', 'error'); return; }
@@ -602,6 +688,9 @@ const Performance = {
 
         // Two-step arm to guard a heavy, hard-to-undo operation without a modal.
         if (!this._restoreArmed) {
+            // Fresh confirmation sequence: any previous retention override is
+            // void, so a changed window or fractal set is re-checked.
+            this._restoreAckRetention = false;
             const n = fractals.length;
             this.setRestoreMsg(`Click again to confirm ${mode} of ${n} fractal${n > 1 ? 's' : ''} into the hot store.`, 'warn');
             const btn = document.getElementById('restoreSubmitBtn');
@@ -620,13 +709,28 @@ const Performance = {
             const res = await fetch('/api/v1/system/archive/restore', {
                 method: 'POST', credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ fractal_ids: fractals, from: fromISO, to: toISO, mode, dedup })
+                body: JSON.stringify({
+                    fractal_ids: fractals, from: fromISO, to: toISO, mode, dedup,
+                    acknowledge_retention: !!this._restoreAckRetention,
+                })
             });
+            // The window starts before these fractals' retention horizon, so the
+            // hourly retention pass would delete the restored rows again. Surface
+            // it and require a second, informed confirmation rather than doing
+            // hours of work that gets thrown away.
+            if (res.status === 409) {
+                const data = await res.json().catch(() => null);
+                if (data && data.error === 'retention_conflict') {
+                    this.armRetentionOverride(data.conflicts || []);
+                    return;
+                }
+            }
             if (!res.ok) {
                 const t = (await res.text()).trim();
                 this.setRestoreMsg(t || 'Failed to start restore.', 'error');
                 return;
             }
+            this._restoreAckRetention = false;
             const data = await res.json();
             const n = (data.job_ids || []).length;
             this.setRestoreMsg(`Queued ${n} job${n > 1 ? 's' : ''}.`, 'ok');

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"bifract/pkg/archive"
+	"bifract/pkg/objstore"
 	"bifract/pkg/spool"
 	"bifract/pkg/storage"
 
@@ -319,7 +320,47 @@ func runMaintainOnce(ctx context.Context, cfg archive.Config, db *sql.DB) error 
 	if err := archive.WriteMaintainStatus(ctx, db, stats); err != nil {
 		log.Printf("maintain: failed to write status: %v", err)
 	}
+	// The pass just loaded every table, so this is the cheapest place in the
+	// system to learn the archive's size. The drain loop no longer computes it.
+	if err := archive.WriteFootprint(ctx, db, stats.Tables, stats.FootprintBytes, stats.FootprintRecords); err != nil {
+		log.Printf("maintain: failed to write footprint: %v", err)
+	}
+	// Completeness sweep rides the same singleton so the ClickHouse counts run
+	// once per interval, not once per replica. Failures are logged, not fatal:
+	// compaction already succeeded and must not be reported as a failed pass.
+	runCompletenessSweep(ctx, cfg, cat)
 	return nil
+}
+
+// runCompletenessSweep compares hot-store and archive row counts for recent
+// sealed ingest days and records any gap. Needs ClickHouse (the counts run
+// there) and object storage, so it is skipped on the pod-local disk backend,
+// which ClickHouse cannot read.
+func runCompletenessSweep(ctx context.Context, cfg archive.Config, cat *archive.Catalog) {
+	opts := archive.CompletenessOptionsFromEnv()
+	if opts.Days <= 0 {
+		return
+	}
+	if cfg.Obj.Backend == objstore.BackendDisk {
+		return
+	}
+	// Its own Postgres handle and short-lived ClickHouse client: the sweep is
+	// incidental to maintenance and must not hold connections across passes.
+	db, err := sql.Open("postgres", cfg.PGDSN)
+	if err != nil {
+		log.Printf("completeness: open postgres: %v", err)
+		return
+	}
+	defer db.Close()
+	ch, err := archive.NewCHClient(cfg)
+	if err != nil {
+		log.Printf("completeness: connect clickhouse: %v", err)
+		return
+	}
+	defer ch.Close()
+	if _, err := archive.CheckCompleteness(ctx, db, cat, ch, cfg.Obj, opts); err != nil {
+		log.Printf("completeness: sweep failed: %v", err)
+	}
 }
 
 // maintainEnabled reports whether archiving is on: the env seed, or the runtime

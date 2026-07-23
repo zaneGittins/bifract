@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/apache/iceberg-go"
@@ -83,8 +84,7 @@ func (c *Catalog) EnsureTable(ctx context.Context, fractalID string) (*icetable.
 		if err != nil {
 			return nil, err
 		}
-		// Evolve pre-promotion tables (add `_ice_` columns + pruning properties).
-		return c.ensureIceColumns(ctx, ident, tbl)
+		return c.ensureTableCurrent(ctx, ident, tbl)
 	}
 
 	sc, err := icebergSchema()
@@ -108,17 +108,38 @@ func (c *Catalog) EnsureTable(ctx context.Context, fractalID string) (*icetable.
 	return tbl, nil
 }
 
-// iceTableProperties returns the Parquet write properties for a fractal table:
-// zstd compression plus a bloom filter on each promoted column for fast equality
-// pruning. (Parquet min/max stats, written by default, additionally prune range
-// and time predicates.)
+// metadataPreviousVersionsMax bounds the metadata log. iceberg-go's default is
+// 100 and, with delete-after-commit off, none of them are ever removed from
+// object storage. metadata.json is rewritten in full on every commit and re-read
+// by ClickHouse on every iceberg*() scan, so a long log is paid for on both the
+// write and the read path.
+const metadataPreviousVersionsMax = 10
+
+// targetFileSizeBytes matches Iceberg's own default write target. Set
+// explicitly so compaction rewrites toward large files rather than whatever the
+// library default happens to be in a future version.
+const targetFileSizeBytes = 512 << 20
+
+// iceTableProperties returns the write properties for a fractal table: zstd
+// compression, a bloom filter on each promoted column for fast equality pruning
+// (Parquet min/max stats, written by default, additionally prune range and time
+// predicates), a bounded metadata log, and an explicit target file size.
 //
 // Requires ClickHouse >= 26.6 to read the arrow-go bloom filters correctly: CH
 // 26.2 mis-read them and false-negative pruned (dropped real matches). The
 // bundled ClickHouse image is pinned to 26.6, and --upgrade/--upgrade-k8s carry
 // that to existing installs, so bloom read is safe.
 func iceTableProperties() iceberg.Properties {
-	props := iceberg.Properties{"write.parquet.compression-codec": "zstd"}
+	props := iceberg.Properties{
+		"write.parquet.compression-codec": "zstd",
+		// Without both of these every vN.metadata.json ever written stays in
+		// object storage forever, and the log inside the live one grows without
+		// bound. This is the difference between metadata that stays kilobytes and
+		// metadata that reaches hundreds of megabytes on a busy table.
+		"write.metadata.delete-after-commit.enabled": "true",
+		"write.metadata.previous-versions-max":       strconv.Itoa(metadataPreviousVersionsMax),
+		"write.target-file-size-bytes":               strconv.Itoa(targetFileSizeBytes),
+	}
 	for _, f := range parser.IcePromotedFields() {
 		col, _ := parser.IcePromotedColumn(f)
 		props["write.parquet.bloom-filter-enabled.column."+col] = "true"
@@ -126,12 +147,25 @@ func iceTableProperties() iceberg.Properties {
 	return props
 }
 
-// ensureIceColumns evolves a pre-promotion table by adding any missing `_ice_`
-// promoted columns (nullable) and setting the pruning write properties, so new
-// data files carry the typed columns + bloom filters. It is a no-op once the
-// table has been evolved. Restore is unaffected: it never references `_ice_*`.
-func (c *Catalog) ensureIceColumns(ctx context.Context, ident icetable.Identifier, tbl *icetable.Table) (*icetable.Table, error) {
-	sc := tbl.Schema()
+// stalePropertyDiff returns the desired properties whose current value differs
+// (or is absent), so a table is only re-committed when something actually needs
+// changing. Returns nil when the table is already current.
+func stalePropertyDiff(current, desired iceberg.Properties) iceberg.Properties {
+	var diff iceberg.Properties
+	for k, want := range desired {
+		if got, ok := current[k]; ok && got == want {
+			continue
+		}
+		if diff == nil {
+			diff = iceberg.Properties{}
+		}
+		diff[k] = want
+	}
+	return diff
+}
+
+// missingIceColumns returns the `_ice_` promoted columns absent from a schema.
+func missingIceColumns(sc *iceberg.Schema) []string {
 	var missing []string
 	for _, f := range parser.IcePromotedFields() {
 		col, _ := parser.IcePromotedColumn(f)
@@ -139,33 +173,54 @@ func (c *Catalog) ensureIceColumns(ctx context.Context, ident icetable.Identifie
 			missing = append(missing, col)
 		}
 	}
-	if len(missing) == 0 {
+	return missing
+}
+
+// ensureTableCurrent brings an existing table up to what this build expects:
+// any missing `_ice_` promoted columns (nullable, so old data files read NULL)
+// and any write property whose value has drifted. Both are checked because they
+// drift independently - a table created before promotion is missing columns, and
+// one created before the metadata-retention properties were added has the right
+// columns but an unbounded metadata log. Neither is fixed by a later append, so
+// the reconcile has to happen here.
+//
+// The common path (table already current) makes no commit at all. Restore is
+// unaffected either way: it never references `_ice_*`.
+func (c *Catalog) ensureTableCurrent(ctx context.Context, ident icetable.Identifier, tbl *icetable.Table) (*icetable.Table, error) {
+	missing := missingIceColumns(tbl.Schema())
+	staleProps := stalePropertyDiff(tbl.Properties(), iceTableProperties())
+	if len(missing) == 0 && len(staleProps) == 0 {
 		return tbl, nil
 	}
 
 	txn := tbl.NewTransaction()
-	us := txn.UpdateSchema(false, false)
-	for _, col := range missing {
-		us = us.AddColumn([]string{col}, iceberg.PrimitiveTypes.String,
-			"bifract promoted column for query pruning", false, nil)
+	if len(missing) > 0 {
+		us := txn.UpdateSchema(false, false)
+		for _, col := range missing {
+			us = us.AddColumn([]string{col}, iceberg.PrimitiveTypes.String,
+				"bifract promoted column for query pruning", false, nil)
+		}
+		if err := us.Commit(); err != nil {
+			return nil, fmt.Errorf("archive: add promoted columns: %w", err)
+		}
 	}
-	if err := us.Commit(); err != nil {
-		return nil, fmt.Errorf("archive: add promoted columns: %w", err)
-	}
-	if err := txn.SetProperties(iceTableProperties()); err != nil {
-		return nil, fmt.Errorf("archive: set pruning properties: %w", err)
+	if len(staleProps) > 0 {
+		if err := txn.SetProperties(staleProps); err != nil {
+			return nil, fmt.Errorf("archive: set write properties: %w", err)
+		}
 	}
 	updated, err := txn.Commit(ctx)
 	if err != nil {
-		// Lost the optimistic-concurrency race with another archiver evolving the
-		// same table. The set of columns is deterministic, so reload the winner's
-		// table and use it if it already carries the promoted columns.
+		// Lost the optimistic-concurrency race with another archiver reconciling
+		// the same table. The target state is deterministic, so reload the
+		// winner's table and take it if it already satisfies both checks.
 		if reloaded, e2 := c.cat.LoadTable(ctx, ident); e2 == nil {
-			if _, ok := reloaded.Schema().FindFieldByName(missing[0]); ok {
+			if len(missingIceColumns(reloaded.Schema())) == 0 &&
+				len(stalePropertyDiff(reloaded.Properties(), iceTableProperties())) == 0 {
 				return reloaded, nil
 			}
 		}
-		return nil, fmt.Errorf("archive: evolve table schema: %w", err)
+		return nil, fmt.Errorf("archive: reconcile table: %w", err)
 	}
 	return updated, nil
 }

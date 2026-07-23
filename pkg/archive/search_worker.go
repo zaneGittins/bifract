@@ -124,7 +124,8 @@ func (w *SearchWorker) execute(ctx context.Context, j searchJob) {
 	log.Printf("[Recall] job %d: fractal %s [%s, %s) rows<=%d", j.ID, j.FractalID, chTime(j.From), chTime(j.To), j.MaxRows)
 
 	if err := w.ensureDeps(ctx); err != nil {
-		w.finishFailed(j.ID, err.Error())
+		// Failed before any query ran, so there is no scan cost to report.
+		w.finishFailed(j.ID, err.Error(), storage.QueryStats{})
 		return
 	}
 
@@ -148,9 +149,15 @@ func (w *SearchWorker) execute(ctx context.Context, j searchJob) {
 	close(done)
 
 	if err != nil {
+		// Search reports the scan cost even when it fails, so a timeout can tell
+		// the user how far it got. Absent for failures raised before the query ran.
+		var stats storage.QueryStats
+		if res != nil {
+			stats = res.Stats
+		}
 		if errors.Is(jctx.Err(), context.DeadlineExceeded) {
 			w.killQuery(queryID)
-			w.finishFailed(j.ID, fmt.Sprintf("search timed out after %s", w.cfg.RecallTimeout))
+			w.finishFailed(j.ID, fmt.Sprintf("search timed out after %s", w.cfg.RecallTimeout), stats)
 			return
 		}
 		// Watcher-driven cancel: the row is already 'canceled' and the guarded
@@ -159,13 +166,13 @@ func (w *SearchWorker) execute(ctx context.Context, j searchJob) {
 			log.Printf("[Recall] job %d canceled", j.ID)
 			return
 		}
-		w.finishFailed(j.ID, err.Error())
+		w.finishFailed(j.ID, err.Error(), stats)
 		return
 	}
 
 	resultsJSON, err := json.Marshal(res.Rows)
 	if err != nil {
-		w.finishFailed(j.ID, fmt.Sprintf("encode results: %v", err))
+		w.finishFailed(j.ID, fmt.Sprintf("encode results: %v", err), res.Stats)
 		return
 	}
 	fieldOrderJSON, _ := json.Marshal(res.FieldOrder)
@@ -178,9 +185,11 @@ func (w *SearchWorker) execute(ctx context.Context, j searchJob) {
 	r, err := w.db.ExecContext(cctx, `
 		UPDATE archive_search_jobs
 		SET status = 'succeeded', row_count = $1, is_aggregated = $2, limit_hit = $3,
-		    field_order = $4, results = $5, error = NULL, finished_at = NOW(), updated_at = NOW()
-		WHERE id = $6 AND status = 'running'`,
-		len(res.Rows), res.IsAggregated, res.LimitHit, string(fieldOrderJSON), string(resultsJSON), j.ID)
+		    field_order = $4, results = $5, read_rows = $6, read_bytes = $7,
+		    error = NULL, finished_at = NOW(), updated_at = NOW()
+		WHERE id = $8 AND status = 'running'`,
+		len(res.Rows), res.IsAggregated, res.LimitHit, string(fieldOrderJSON), string(resultsJSON),
+		int64(res.Stats.ReadRows), int64(res.Stats.ReadBytes), j.ID)
 	if err != nil {
 		log.Printf("[Recall] job %d: persist results failed: %v", j.ID, err)
 		return
@@ -189,7 +198,8 @@ func (w *SearchWorker) execute(ctx context.Context, j searchJob) {
 		log.Printf("[Recall] job %d: no longer running (canceled); results discarded", j.ID)
 		return
 	}
-	log.Printf("[Recall] job %d complete: %d rows (aggregated=%v limitHit=%v)", j.ID, len(res.Rows), res.IsAggregated, res.LimitHit)
+	log.Printf("[Recall] job %d complete: %d rows (aggregated=%v limitHit=%v), scanned %d rows / %d bytes",
+		j.ID, len(res.Rows), res.IsAggregated, res.LimitHit, res.Stats.ReadRows, res.Stats.ReadBytes)
 }
 
 // watch heartbeats a running job and detects an external cancel (the row leaving
@@ -280,8 +290,9 @@ func (w *SearchWorker) ensureDeps(ctx context.Context) error {
 	return nil
 }
 
-// finishFailed records a terminal failure with a bounded error message.
-func (w *SearchWorker) finishFailed(id int64, msg string) {
+// finishFailed records a terminal failure with a bounded error message, keeping
+// whatever scan cost the query incurred before it failed.
+func (w *SearchWorker) finishFailed(id int64, msg string, stats storage.QueryStats) {
 	if len(msg) > 2000 {
 		msg = msg[:2000]
 	}
@@ -289,7 +300,9 @@ func (w *SearchWorker) finishFailed(id int64, msg string) {
 	defer cancel()
 	_, _ = w.db.ExecContext(cctx, `
 		UPDATE archive_search_jobs
-		SET status = 'failed', error = $1, finished_at = NOW(), updated_at = NOW()
-		WHERE id = $2 AND status = 'running'`, msg, id)
-	log.Printf("[Recall] job %d failed: %s", id, msg)
+		SET status = 'failed', error = $1, read_rows = $2, read_bytes = $3,
+		    finished_at = NOW(), updated_at = NOW()
+		WHERE id = $4 AND status = 'running'`,
+		msg, int64(stats.ReadRows), int64(stats.ReadBytes), id)
+	log.Printf("[Recall] job %d failed after scanning %d rows / %d bytes: %s", id, stats.ReadRows, stats.ReadBytes, msg)
 }

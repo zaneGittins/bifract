@@ -487,6 +487,32 @@ const Recall = {
         return `<span class="execution-time" style="display:inline-block">(${txt})</span>`;
     },
 
+    // Scan cost: what ClickHouse actually read from object storage. The archive
+    // has no index beyond Parquet min/max and bloom filters on promoted fields,
+    // so this is the only way to tell a query that pruned well from one that read
+    // the whole window. Shown on failures too, since that is when it matters most.
+    _scannedHtml(job) {
+        const rows = Number(job.read_rows || 0);
+        const bytes = Number(job.read_bytes || 0);
+        if (!rows && !bytes) return '';
+        const title = `Scanned ${rows.toLocaleString()} rows / ${bytes.toLocaleString()} bytes from the archive`;
+        return `<span class="recall-scanned" title="${title}">scanned ${this._compact(rows)} rows &middot; ${this._bytes(bytes)}</span>`;
+    },
+
+    _compact(n) {
+        if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+        return String(n);
+    },
+
+    _bytes(n) {
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0;
+        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+        return `${i === 0 ? n : n.toFixed(1)} ${units[i]}`;
+    },
+
     renderTerminal(job) {
         this.stopElapsed();
         const pane = document.getElementById('recallResults');
@@ -497,7 +523,7 @@ const Recall = {
         }
 
         if (job.status === 'failed') {
-            this.setStatus(this._errorGlyph() + `<span>${this.esc(job.error || 'Search failed.')}</span>` + this._durationHtml(job), 'error');
+            this.setStatus(this._errorGlyph() + `<span>${this.esc(job.error || 'Search failed.')}</span>` + this._durationHtml(job) + this._scannedHtml(job), 'error');
             if (pane) pane.innerHTML = `<div class="no-results">${this.esc(job.error || 'Search failed.')}</div>`;
             return;
         }
@@ -527,6 +553,7 @@ const Recall = {
         if (job.limit_hit) {
             statusHtml += '<span class="recall-limit-note" title="More rows matched than were returned; narrow the range or query.">limit reached</span>';
         }
+        statusHtml += this._scannedHtml(job);
         this.setStatus(statusHtml, '');
 
         this._fieldOrder = job.field_order || null;

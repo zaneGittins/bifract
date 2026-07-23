@@ -94,7 +94,7 @@ const SharedRender = {
         const live = document.getElementById('sharedLive');
         const updated = document.getElementById('sharedUpdated');
         if (live) live.style.display = '';
-        if (updated) updated.textContent = latest ? `Updated ${this.timeAgo(latest)}` : 'Live';
+        if (updated) updated.textContent = latest ? `Updated ${Utils.timeAgo(latest)}` : 'Live';
     },
 
     buildGrid(widgets) {
@@ -283,16 +283,6 @@ const SharedRender = {
             const inst = Chart.getChart(c);
             if (inst) inst.destroy();
         });
-    },
-
-    timeAgo(iso) {
-        try {
-            const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-            if (s < 60) return 'just now';
-            if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-            if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-            return new Date(iso).toLocaleString();
-        } catch { return ''; }
     },
 
     showState(title, msg) {

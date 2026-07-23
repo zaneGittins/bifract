@@ -853,6 +853,15 @@ body.recall-active {
     padding: 1px 5px;
 }
 
+/* Archive scan cost. Muted: informational context next to the row count, not a
+   warning -- a large scan is normal for a broad window. */
+.recall-scanned {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
 .recall-spinner {
     width: 13px;
     height: 13px;

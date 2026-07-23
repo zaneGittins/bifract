@@ -38,9 +38,9 @@ type Writer struct {
 	segStart time.Time
 	writeOff int64 // total bytes written to the active file (may exceed synced)
 
-	syncMu     sync.Mutex // serializes fsync; guards syncedOff
-	syncedFile *os.File    // file the syncedOff refers to
-	syncedOff  int64
+	syncMu    sync.Mutex // serializes fsync; guards syncedSeq/syncedOff
+	syncedSeq uint64     // segment the syncedOff refers to
+	syncedOff int64
 }
 
 // NewWriter opens (or creates) a spool in dir and positions itself to append to
@@ -120,38 +120,52 @@ func (w *Writer) Append(logs []storage.LogEntry) error {
 	w.segSize += int64(len(frame))
 	w.writeOff += int64(len(frame))
 	file := w.file
+	seq := w.seq
 	off := w.writeOff
 	w.mu.Unlock()
 
 	// Group commit: coalesce concurrent fsyncs. Any writer whose bytes are
 	// already covered by a completed fsync returns without syncing again.
-	return w.syncTo(file, off)
+	return w.syncTo(seq, file, off)
 }
 
-// syncTo ensures the given file has been fsync'd at least up to off.
-func (w *Writer) syncTo(file *os.File, off int64) error {
+// syncTo ensures segment seq has been fsync'd at least up to off.
+//
+// The write frontier is sampled BEFORE the fsync, not after: bytes appended by a
+// concurrent Append while the fsync is in flight are not covered by it, and
+// recording them as synced would let that caller's Append return without ever
+// syncing - acking data that is not on disk. The frontier is therefore a lower
+// bound on what the sync covers, which is the only safe direction.
+func (w *Writer) syncTo(seq uint64, file *os.File, off int64) error {
 	w.syncMu.Lock()
 	defer w.syncMu.Unlock()
-	if w.syncedFile == file && w.syncedOff >= off {
+	if w.syncedSeq == seq && w.syncedOff >= off {
 		return nil
 	}
+
+	w.mu.Lock()
+	frontier, current := w.writeOff, w.seq == seq
+	w.mu.Unlock()
+
+	// Our segment already rotated. rotateLocked fsyncs before closing, so these
+	// bytes are durable and the handle is likely closed; syncing it here would
+	// fail and reject a batch that is safely on disk.
+	if !current {
+		return nil
+	}
+
 	if err := file.Sync(); err != nil {
+		// A rotation may have closed the handle between the check above and here.
+		// Same reasoning: rotation already made these bytes durable.
+		w.mu.Lock()
+		stillCurrent := w.seq == seq
+		w.mu.Unlock()
+		if !stillCurrent {
+			return nil
+		}
 		return fmt.Errorf("spool: fsync: %w", err)
 	}
-	// After a successful sync, everything written to this file so far is durable.
-	w.mu.Lock()
-	synced := w.writeOff
-	curFile := w.file
-	w.mu.Unlock()
-	if file == curFile {
-		w.syncedFile = file
-		w.syncedOff = synced
-	} else {
-		// The active segment rotated concurrently; the synced file is fully
-		// durable but no longer the target for future coalescing.
-		w.syncedFile = file
-		w.syncedOff = off
-	}
+	w.syncedSeq, w.syncedOff = seq, frontier
 	return nil
 }
 

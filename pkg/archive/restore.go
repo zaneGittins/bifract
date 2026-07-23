@@ -35,6 +35,13 @@ func NewCHClient(cfg Config) (*storage.ClickHouseClient, error) {
 // and recall) across every node instead of funnelling them through the single
 // initiator node. Per the ClickHouse docs the cluster name is always the first
 // argument and the remaining arguments are identical to the single-node form.
+//
+// The credentials below are interpolated into the query text, which is safe:
+// ClickHouse redacts the secret argument to '[HIDDEN]' before the query reaches
+// system.query_log or any exception message. Verified on 26.6 for icebergS3,
+// icebergAzure, and both *Cluster variants (the masker tracks the argument shift
+// from the leading cluster name). The redaction is positional, so keep these
+// argument orders as the docs specify; reordering them would silently defeat it.
 func chIcebergTableFunc(obj objstore.Config, tableLocation, cluster string) (string, error) {
 	loc := strings.TrimRight(tableLocation, "/") + "/"
 

@@ -1038,6 +1038,10 @@ const App = {
         }
         if (tab !== 'dashboards' && window.Dashboards) {
             Dashboards.disconnectSSE();
+            // Not folded into disconnectSSE: connectSSE calls that when moving
+            // between dashboards, which would stop the ticker on a board still
+            // on screen.
+            Dashboards.stopUpdatedAtTicker();
         }
 
         // Close alert details panel when switching away from alerts tab

@@ -131,8 +131,12 @@ const BifractWorldMap = {
             map.fitBounds(bounds, { padding: [30, 30], maxZoom: 10 });
         }
 
-        // Ensure map renders correctly after DOM insertion
-        setTimeout(() => map.invalidateSize(), 100);
+        // Ensure map renders correctly after DOM insertion. The container can be
+        // gone by now (widget re-rendered), and the map torn down with it.
+        setTimeout(() => {
+            const c = map.getContainer && map.getContainer();
+            if (c && c.isConnected) map.invalidateSize();
+        }, 100);
 
         BifractWorldMap._lastMap = map;
         return map;

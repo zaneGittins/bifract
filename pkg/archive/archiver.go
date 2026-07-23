@@ -15,11 +15,14 @@ import (
 	"bifract/pkg/storage"
 )
 
-// Archiver drains the durable spool into per-fractal Iceberg tables. It buffers
-// records per fractal and flushes them all on a size or time boundary, advancing
-// the spool checkpoint only after every fractal in the batch commits. A crash
-// re-processes from the last checkpoint; log_id dedup on restore makes the
-// re-processing idempotent.
+// Archiver drains the durable spool into per-fractal Iceberg tables.
+//
+// Each fractal buffers independently and is committed on its own once it reaches
+// RollBytes, so Parquet file size tracks RollBytes no matter how many fractals
+// are active. The spool checkpoint is a separate concern: it may only advance
+// past data that is committed, so it moves during a full flush (RollInterval or
+// shutdown), never on an individual fractal's roll. A crash re-processes from the
+// last checkpoint; log_id dedup on restore makes the re-processing idempotent.
 type Archiver struct {
 	cfg     Config
 	reader  *spool.Reader
@@ -28,9 +31,12 @@ type Archiver struct {
 	enabled func() bool
 	db      *sql.DB // for the archive_status heartbeat (may be nil)
 
-	pending       map[string][]storage.LogEntry
-	pendingBytes  int64
+	pending      map[string][]storage.LogEntry
+	pendingBytes map[string]int64 // per-fractal buffered size, keyed like pending
+	totalBytes   int64            // sum of pendingBytes, for the memory backstop
+
 	lastReadCP    spool.Checkpoint
+	committedCP   spool.Checkpoint // last checkpoint persisted to the spool
 	lastFlush     time.Time
 	lastHeartbeat time.Time
 }
@@ -45,14 +51,15 @@ func NewArchiver(cfg Config, reader *spool.Reader, cat *Catalog, enabled func() 
 		enabled = func() bool { return true }
 	}
 	return &Archiver{
-		cfg:       cfg,
-		reader:    reader,
-		cat:       cat,
-		mem:       memory.DefaultAllocator,
-		enabled:   enabled,
-		db:        db,
-		pending:   make(map[string][]storage.LogEntry),
-		lastFlush: time.Now(),
+		cfg:          cfg,
+		reader:       reader,
+		cat:          cat,
+		mem:          memory.DefaultAllocator,
+		enabled:      enabled,
+		db:           db,
+		pending:      make(map[string][]storage.LogEntry),
+		pendingBytes: make(map[string]int64),
+		lastFlush:    time.Now(),
 	}
 }
 
@@ -86,8 +93,10 @@ func (a *Archiver) Run(ctx context.Context) error {
 		batch, err := a.reader.Next()
 		switch {
 		case err == spool.ErrNoData:
-			// Caught up. Flush if the roll interval elapsed, then wait.
-			if len(a.pending) > 0 && time.Since(a.lastFlush) >= a.cfg.RollInterval {
+			// Caught up. Flush if the roll interval elapsed, then wait. This also
+			// advances the checkpoint after a quiet period in which every fractal
+			// happened to roll individually.
+			if time.Since(a.lastFlush) >= a.cfg.RollInterval {
 				if ferr := a.flush(ctx); ferr != nil {
 					log.Printf("[Archiver] time-roll flush failed: %v", ferr)
 				}
@@ -107,65 +116,128 @@ func (a *Archiver) Run(ctx context.Context) error {
 		for i := range batch.Logs {
 			e := batch.Logs[i]
 			a.pending[e.FractalID] = append(a.pending[e.FractalID], e)
-			a.pendingBytes += approxSize(&e)
+			n := approxSize(&e)
+			a.pendingBytes[e.FractalID] += n
+			a.totalBytes += n
 		}
 		a.lastReadCP = batch.Next
 
-		if a.pendingBytes >= a.cfg.RollBytes {
-			if err := a.flush(ctx); err != nil {
-				log.Printf("[Archiver] size-roll flush failed: %v", err)
-				// Keep pending; retry next cycle. Back off to avoid a hot loop.
-				if !sleep(ctx, a.cfg.PollInterval) {
-					return ctx.Err()
-				}
+		if err := a.roll(ctx); err != nil {
+			log.Printf("[Archiver] roll failed: %v", err)
+			// Whatever did not commit stays buffered; retry next cycle. Back off
+			// to avoid a hot loop against a failing object store.
+			if !sleep(ctx, a.cfg.PollInterval) {
+				return ctx.Err()
 			}
 		}
 	}
 }
 
-// flush appends every buffered fractal's records to its Iceberg table and, only
-// if all commits succeed, advances and truncates the spool. On any failure it
-// leaves the buffer intact for a later retry (idempotent via log_id on restore).
-func (a *Archiver) flush(ctx context.Context) error {
-	if len(a.pending) == 0 {
-		return nil
-	}
-	for fractalID, logs := range a.pending {
-		if len(logs) == 0 {
-			continue
+// roll commits whatever is ready: any fractal that has reached RollBytes, then,
+// if the buffer is still over MaxPendingBytes, the largest remaining fractals
+// until it is not. A full flush (which is also what advances the spool
+// checkpoint) happens once RollInterval has elapsed.
+func (a *Archiver) roll(ctx context.Context) error {
+	for fractalID, n := range a.pendingBytes {
+		if n >= a.cfg.RollBytes {
+			if err := a.commitAndDrop(ctx, fractalID); err != nil {
+				return err
+			}
 		}
+	}
+
+	for a.totalBytes >= a.cfg.MaxPendingBytes {
+		fractalID, n := a.largestPending()
+		if fractalID == "" {
+			break
+		}
+		// Not silent: this is the backstop producing a smaller-than-target file,
+		// and it is the signal to raise BIFRACT_ARCHIVE_MAX_PENDING_BYTES.
+		log.Printf("[Archiver] pending buffer at %d bytes (cap %d): committing fractal %s early at %d bytes, below the %d roll target",
+			a.totalBytes, a.cfg.MaxPendingBytes, fractalID, n, a.cfg.RollBytes)
+		if err := a.commitAndDrop(ctx, fractalID); err != nil {
+			return err
+		}
+	}
+
+	if time.Since(a.lastFlush) >= a.cfg.RollInterval {
+		return a.flush(ctx)
+	}
+	return nil
+}
+
+// largestPending returns the buffered fractal holding the most bytes.
+func (a *Archiver) largestPending() (string, int64) {
+	var best string
+	var bestN int64
+	for fractalID, n := range a.pendingBytes {
+		if n > bestN {
+			best, bestN = fractalID, n
+		}
+	}
+	return best, bestN
+}
+
+// commitAndDrop appends one fractal's buffer to its Iceberg table and removes it
+// from the pending set. Dropping on success is what keeps a partially-failed
+// flush from re-committing (and so duplicating) the fractals that already
+// succeeded: a retry resumes with only what is left.
+func (a *Archiver) commitAndDrop(ctx context.Context, fractalID string) error {
+	logs := a.pending[fractalID]
+	if len(logs) > 0 {
 		if err := a.commitFractal(ctx, fractalID, logs); err != nil {
 			return fmt.Errorf("commit fractal %s: %w", fractalID, err)
 		}
 	}
-	// All fractals committed: advance the durable checkpoint, then drop consumed
-	// segments.
+	a.totalBytes -= a.pendingBytes[fractalID]
+	delete(a.pending, fractalID)
+	delete(a.pendingBytes, fractalID)
+	return nil
+}
+
+// flush commits every buffered fractal and then advances and truncates the
+// spool. The checkpoint moves only once the buffer is empty, so it never runs
+// ahead of what is durably in Iceberg. On a mid-way failure the committed
+// fractals are already dropped from the buffer and the checkpoint is left
+// alone, so the retry re-commits nothing and re-reads nothing.
+func (a *Archiver) flush(ctx context.Context) error {
+	for fractalID := range a.pending {
+		if err := a.commitAndDrop(ctx, fractalID); err != nil {
+			return err
+		}
+	}
+	a.lastFlush = time.Now()
+
+	// Everything read so far is committed. Advance the durable checkpoint, then
+	// drop consumed segments. Skipped when nothing new has been read since the
+	// last advance, so an idle archiver does no Postgres or filesystem work.
+	if a.lastReadCP == a.committedCP {
+		return nil
+	}
 	if err := a.reader.Commit(a.lastReadCP); err != nil {
 		return fmt.Errorf("commit checkpoint: %w", err)
 	}
 	if err := a.reader.Truncate(a.lastReadCP); err != nil {
 		log.Printf("[Archiver] truncate warning: %v", err)
 	}
-	a.pending = make(map[string][]storage.LogEntry)
-	a.pendingBytes = 0
-	a.lastFlush = time.Now()
+	a.committedCP = a.lastReadCP
 	markCommit(ctx, a.db)
 	return nil
 }
 
-// maybeHeartbeat refreshes archive_status at most every heartbeatInterval so the
-// admin UI shows liveness + footprint. Best-effort; failures are logged, not fatal.
+// maybeHeartbeat refreshes archive_status liveness at most every
+// heartbeatInterval. Deliberately a bare Postgres UPDATE: it must not touch
+// object storage. The footprint columns are written by the maintain pass
+// instead, which already loads every table (see Catalog.Maintain) - collecting
+// them here meant one metadata.json GET per fractal per sidecar every 30s, which
+// scales with fractals x ingest replicas and grows as those files grow.
+// Best-effort; failures are logged, not fatal.
 func (a *Archiver) maybeHeartbeat(ctx context.Context) {
 	if a.db == nil || time.Since(a.lastHeartbeat) < heartbeatInterval {
 		return
 	}
 	a.lastHeartbeat = time.Now()
-	fractals, bytes, records, err := a.cat.Stats(ctx)
-	if err != nil {
-		log.Printf("[Archiver] heartbeat stats failed: %v", err)
-		return
-	}
-	if err := writeHeartbeat(ctx, a.db, fractals, bytes, records); err != nil {
+	if err := writeLiveness(ctx, a.db); err != nil {
 		log.Printf("[Archiver] heartbeat write failed: %v", err)
 	}
 }
@@ -197,10 +269,20 @@ func (a *Archiver) commitFractal(ctx context.Context, fractalID string, logs []s
 	return nil
 }
 
+// approxSize estimates an entry's live heap footprint. It deliberately counts
+// the Go overhead raw byte lengths miss - the LogEntry struct, per-string
+// headers, and per-map-entry bucket cost - because this number drives the
+// MaxPendingBytes memory backstop, not just a file-size target. A field-dense
+// entry is mostly overhead, and undercounting it is what turns a generous-looking
+// buffer cap into an OOM. Generous by design rather than exact.
 func approxSize(e *storage.LogEntry) int64 {
-	s := len(e.RawLog) + len(e.LogID) + len(e.FractalID) + 40
+	const (
+		entryOverhead = 200 // LogEntry struct + string headers + map header
+		fieldOverhead = 80  // per map entry: bucket slot + key/value headers
+	)
+	s := entryOverhead + len(e.RawLog) + len(e.LogID) + len(e.FractalID) + len(e.Normalizer)
 	for k, v := range e.Fields {
-		s += len(k) + len(v)
+		s += fieldOverhead + len(k) + len(v)
 	}
 	return int64(s)
 }

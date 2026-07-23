@@ -1186,6 +1186,10 @@ func main() {
 					To         string   `json:"to"`
 					Mode       string   `json:"mode"`
 					Dedup      *bool    `json:"dedup"`
+					// AcknowledgeRetention confirms the operator has been shown that
+					// the restored window falls outside the fractal's retention and
+					// will be deleted again. See retentionConflicts.
+					AcknowledgeRetention bool `json:"acknowledge_retention"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -1225,6 +1229,30 @@ func main() {
 				if body.Dedup != nil {
 					dedup = *body.Dedup
 				}
+
+				// Restoring past a fractal's retention horizon puts rows back that
+				// the hourly retention pass deletes again, typically within the
+				// hour. Block it unless the operator has been told and said yes;
+				// silently doing the work and throwing it away is the worst outcome.
+				if !body.AcknowledgeRetention {
+					conflicts, err := retentionConflicts(r.Context(), pg, body.FractalIDs, from)
+					if err != nil {
+						http.Error(w, "Failed to check fractal retention", http.StatusInternalServerError)
+						return
+					}
+					if len(conflicts) > 0 {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusConflict)
+						json.NewEncoder(w).Encode(map[string]interface{}{
+							"error":                 "retention_conflict",
+							"message":               "This window starts before the retention horizon of the fractal(s) below. Restored logs will be deleted again by the next retention pass. Raise retention first, or confirm to restore anyway.",
+							"conflicts":             conflicts,
+							"acknowledge_parameter": "acknowledge_retention",
+						})
+						return
+					}
+				}
+
 				batchID := uuid.NewString()
 				ids := make([]int64, 0, len(body.FractalIDs))
 				for _, fid := range body.FractalIDs {
@@ -1249,6 +1277,60 @@ func main() {
 			})
 
 			// List recent restore jobs for the admin UI (newest first).
+			// Archive completeness: recent (fractal, ingest day) comparisons of
+			// hot-store vs archive row counts, gaps first. A gap means the hot store
+			// holds rows the archive never received (see pkg/archive/completeness.go);
+			// the reverse just means retention has aged those rows out of ClickHouse.
+			r.Get("/system/archive/completeness", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				gapsOnly := r.URL.Query().Get("gaps_only") == "true"
+				where := ""
+				if gapsOnly {
+					where = "WHERE c.ch_count > c.ice_count"
+				}
+				rows, err := pg.Query(r.Context(), `
+					SELECT c.fractal_id, COALESCE(f.name, ''), c.ingest_day, c.ch_count, c.ice_count, c.checked_at
+					FROM archive_completeness c
+					LEFT JOIN fractals f ON f.id::text = c.fractal_id `+where+`
+					ORDER BY (c.ch_count > c.ice_count) DESC, c.ingest_day DESC, f.name
+					LIMIT 200`)
+				if err != nil {
+					http.Error(w, "Failed to load completeness", http.StatusInternalServerError)
+					return
+				}
+				defer rows.Close()
+				days := make([]map[string]interface{}, 0, 64)
+				var totalGap int64
+				for rows.Next() {
+					var (
+						fid, fname      string
+						day, checkedAt  time.Time
+						chCount, iceCnt int64
+					)
+					if err := rows.Scan(&fid, &fname, &day, &chCount, &iceCnt, &checkedAt); err != nil {
+						continue
+					}
+					gap := int64(0)
+					if chCount > iceCnt {
+						gap = chCount - iceCnt
+						totalGap += gap
+					}
+					days = append(days, map[string]interface{}{
+						"fractal_id": fid, "fractal_name": fname,
+						"ingest_day": day.UTC().Format("2006-01-02"),
+						"ch_count":   chCount, "ice_count": iceCnt, "gap": gap,
+						"checked_at": checkedAt.UTC(),
+					})
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"success": true, "days": days, "total_gap": totalGap,
+				})
+			})
+
 			r.Get("/system/archive/restore", func(w http.ResponseWriter, r *http.Request) {
 				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
 					http.Error(w, "Admin access required", http.StatusForbidden)
@@ -1504,7 +1586,7 @@ func main() {
 				}
 				rows, err := pg.Query(r.Context(),
 					`SELECT id, query, from_ts, to_ts, status, row_count, is_aggregated, limit_hit,
-					        COALESCE(error, ''), created_at, started_at, finished_at
+					        read_rows, read_bytes, COALESCE(error, ''), created_at, started_at, finished_at
 					 FROM archive_search_jobs WHERE fractal_id = $1 ORDER BY created_at DESC LIMIT $2`,
 					fractalID, limit)
 				if err != nil {
@@ -1520,16 +1602,18 @@ func main() {
 						from, to, created     time.Time
 						started, finished     sql.NullTime
 						rowCount              int64
+						readRows, readBytes   int64
 						isAgg, limitHit       bool
 					)
 					if err := rows.Scan(&id, &query, &from, &to, &status, &rowCount, &isAgg, &limitHit,
-						&errMsg, &created, &started, &finished); err != nil {
+						&readRows, &readBytes, &errMsg, &created, &started, &finished); err != nil {
 						continue
 					}
 					j := map[string]interface{}{
 						"id": id, "query": query, "from": from.UTC(), "to": to.UTC(),
 						"status": status, "row_count": rowCount, "is_aggregated": isAgg,
 						"limit_hit": limitHit, "created_at": created.UTC(),
+						"read_rows": readRows, "read_bytes": readBytes,
 					}
 					if errMsg != "" {
 						j["error"] = errMsg
@@ -1556,6 +1640,7 @@ func main() {
 				var (
 					status, query, errMsg string
 					rowCount              int64
+					readRows, readBytes   int64
 					isAgg, limitHit       bool
 					fieldOrder, results   sql.NullString
 					from, to, created     time.Time
@@ -1563,9 +1648,11 @@ func main() {
 				)
 				err := pg.QueryRow(r.Context(),
 					`SELECT query, from_ts, to_ts, status, row_count, is_aggregated, limit_hit,
+					        read_rows, read_bytes,
 					        field_order, results, COALESCE(error, ''), created_at, started_at, finished_at
 					 FROM archive_search_jobs WHERE id = $1 AND fractal_id = $2`,
 					id, fractalID).Scan(&query, &from, &to, &status, &rowCount, &isAgg, &limitHit,
+					&readRows, &readBytes,
 					&fieldOrder, &results, &errMsg, &created, &started, &finished)
 				if err == sql.ErrNoRows {
 					http.Error(w, "Search not found", http.StatusNotFound)
@@ -1579,6 +1666,7 @@ func main() {
 					"success": true, "id": id, "query": query, "from": from.UTC(), "to": to.UTC(),
 					"status": status, "row_count": rowCount, "is_aggregated": isAgg, "limit_hit": limitHit,
 					"created_at": created.UTC(),
+					"read_rows":  readRows, "read_bytes": readBytes,
 				}
 				if errMsg != "" {
 					resp["error"] = errMsg
@@ -2287,6 +2375,51 @@ func parseArchiveTime(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unrecognized time %q", s)
+}
+
+// retentionConflict describes a fractal whose retention window ends after the
+// requested restore window begins.
+type retentionConflict struct {
+	FractalID     string `json:"fractal_id"`
+	FractalName   string `json:"fractal_name"`
+	RetentionDays int    `json:"retention_days"`
+	// HorizonTS is the oldest event the fractal keeps. Anything restored before
+	// it is deleted by the next retention pass.
+	HorizonTS string `json:"horizon"`
+}
+
+// retentionConflicts returns the fractals for which restoring from `from` would
+// replay data the retention pass then deletes.
+//
+// Retention deletes on EVENT time while a restore window is INGEST time. Logs
+// are ingested at or after the event they describe, so an ingest window starting
+// before the horizon necessarily contains events before it too - the check is
+// exact in that direction. It can still miss backfilled data (old events ingested
+// recently), which is why it gates rather than silently rewrites the request.
+//
+// Fractals with unlimited retention (retention_days NULL) never conflict.
+func retentionConflicts(ctx context.Context, pg *storage.PostgresClient, fractalIDs []string, from time.Time) ([]retentionConflict, error) {
+	rows, err := pg.Query(ctx,
+		`SELECT id::text, name, retention_days FROM fractals WHERE id::text = ANY($1) AND retention_days IS NOT NULL`,
+		fractalIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []retentionConflict
+	for rows.Next() {
+		var c retentionConflict
+		if err := rows.Scan(&c.FractalID, &c.FractalName, &c.RetentionDays); err != nil {
+			return nil, err
+		}
+		horizon := time.Now().UTC().AddDate(0, 0, -c.RetentionDays)
+		if from.Before(horizon) {
+			c.HorizonTS = horizon.Format(time.RFC3339)
+			out = append(out, c)
+		}
+	}
+	return out, rows.Err()
 }
 
 // validateRecallQuery parses a BQL query and translates it in iceberg source

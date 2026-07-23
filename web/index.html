@@ -473,6 +473,44 @@
                                 </div>
                             </div>
 
+                            <div class="perf-section">
+                                <div class="perf-section-header">
+                                    <h3>Completeness</h3>
+                                    <span class="perf-section-hint">Hot-store vs archive row counts per ingest day. A gap means logs reached ClickHouse but never reached the archive</span>
+                                </div>
+
+                                <div class="archive-status-row">
+                                    <div class="archive-status-state">
+                                        <span class="status-dot" id="completenessStatusDot"></span>
+                                        <span class="archive-status-label" id="completenessStatusLabel">&mdash;</span>
+                                    </div>
+                                    <label class="completeness-filter" style="margin-left:auto;">
+                                        <input type="checkbox" id="completenessGapsOnly" onchange="Performance.loadCompleteness()">
+                                        <span>Gaps only</span>
+                                    </label>
+                                </div>
+
+                                <div class="restore-table-wrap" style="margin-top: 16px;">
+                                    <table class="restore-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Ingest Day</th>
+                                                <th>Fractal</th>
+                                                <th>Hot Store</th>
+                                                <th>Archive</th>
+                                                <th>Gap</th>
+                                                <th>Checked</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="completenessBody">
+                                            <tr><td colspan="6" class="restore-empty-cell">No completeness checks recorded yet.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <p class="perf-section-hint" id="completenessHint" style="margin-top: 14px; display:none;"></p>
+                            </div>
+
                             <div class="perf-section archive-restore-section">
                                 <div class="perf-section-header restore-header">
                                     <div class="restore-header-text">
@@ -1728,6 +1766,7 @@
                                 </div>
                                 <div class="dashboard-controls">
                                     <div id="dashboardPresence" class="notebook-presence"></div>
+                                    <span id="dashboardUpdatedAt" class="dashboard-updated-at"></span>
                                     <select id="dashboardRefreshSelect" class="dashboard-refresh-select" title="Server-side auto-refresh">
                                         <option value="0">Auto-refresh: Off</option>
                                         <option value="-1">Auto</option>

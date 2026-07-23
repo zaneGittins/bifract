@@ -686,6 +686,33 @@
     color: var(--text-muted);
 }
 
+/* Archive completeness. A gap is data the archive never received, so the row
+   carries a left accent rather than a full-row tint: legible at a glance in a
+   long table without shouting over the healthy rows next to it. */
+.completeness-gap-row {
+    box-shadow: inset 2px 0 0 var(--error);
+}
+
+.completeness-gap {
+    font-family: var(--font-mono);
+    color: var(--error);
+}
+
+.completeness-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.completeness-filter input {
+    accent-color: var(--accent-primary);
+    cursor: pointer;
+}
+
 .restore-row-progress {
     display: inline-block;
     vertical-align: middle;

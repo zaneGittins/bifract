@@ -108,6 +108,14 @@ type MaintainStats struct {
 	CandidateBytes int64
 	CompactedBytes int64
 	Duration       time.Duration
+
+	// FootprintBytes/FootprintRecords are the archive's total size, summed from
+	// each table's current-snapshot summary. Collected here because the pass
+	// already holds every table loaded, which makes it free; the drain loop used
+	// to gather it on a 30s heartbeat at the cost of a metadata.json read per
+	// fractal per replica.
+	FootprintBytes   int64
+	FootprintRecords int64
 }
 
 // Maintain runs compaction + snapshot expiry across every fractal's Iceberg
@@ -136,17 +144,19 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 	for i, ident := range idents {
 		name := ident[len(ident)-1]
 
-		// Split the remaining budget evenly across the tables not yet
-		// visited this pass, so one early, backlog-heavy table can't
-		// permanently starve tables later in iteration order. A table's
-		// unused share simply isn't debited (budget is only reduced by bytes
-		// actually compacted), so it grows later tables' shares in turn.
-		if budget > 0 {
-			share := budget / int64(len(idents)-i)
-			tbl, err := c.cat.LoadTable(ctx, ident)
-			if err != nil {
-				log.Printf("[Maintain] load %s: %v", name, err)
-			} else {
+		tbl, err := c.cat.LoadTable(ctx, ident)
+		if err != nil {
+			log.Printf("[Maintain] load %s: %v", name, err)
+		} else {
+			addFootprint(&stats, tbl)
+
+			// Split the remaining budget evenly across the tables not yet
+			// visited this pass, so one early, backlog-heavy table can't
+			// permanently starve tables later in iteration order. A table's
+			// unused share simply isn't debited (budget is only reduced by bytes
+			// actually compacted), so it grows later tables' shares in turn.
+			if budget > 0 {
+				share := budget / int64(len(idents)-i)
 				res, err := compactTable(ctx, c, ident, tbl, share, opts.CommitRetries)
 				if err != nil {
 					log.Printf("[Maintain] compact %s: %v", name, err)
@@ -174,9 +184,21 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 		}
 	}
 	stats.Duration = time.Since(start)
-	log.Printf("[Maintain] done: %d tables, %d compacted, %d groups failed, %d expired, %d/%d backlog bytes compacted, took %s",
-		stats.Tables, stats.Compacted, stats.GroupsFailed, stats.Expired, stats.CompactedBytes, stats.CandidateBytes, stats.Duration)
+	log.Printf("[Maintain] done: %d tables, %d compacted, %d groups failed, %d expired, %d/%d backlog bytes compacted, footprint %d bytes / %d records, took %s",
+		stats.Tables, stats.Compacted, stats.GroupsFailed, stats.Expired, stats.CompactedBytes, stats.CandidateBytes,
+		stats.FootprintBytes, stats.FootprintRecords, stats.Duration)
 	return stats, nil
+}
+
+// addFootprint accumulates a table's size from its current-snapshot summary. A
+// table with no snapshot yet (created, never appended to) contributes nothing.
+func addFootprint(stats *MaintainStats, tbl *icetable.Table) {
+	snap := tbl.CurrentSnapshot()
+	if snap == nil || snap.Summary == nil || snap.Summary.Properties == nil {
+		return
+	}
+	stats.FootprintBytes += int64(snap.Summary.Properties.GetInt("total-files-size", 0))
+	stats.FootprintRecords += int64(snap.Summary.Properties.GetInt("total-records", 0))
 }
 
 // compactResult summarizes one table's compaction attempt within a Maintain

@@ -33,10 +33,22 @@ type Config struct {
 
 	SpoolPath string
 
-	// RollBytes / RollInterval flush accumulated per-fractal data to Iceberg on
-	// whichever comes first, bounding file size and staleness.
-	RollBytes    int64
+	// RollBytes is the PER-FRACTAL roll threshold: a fractal is committed on its
+	// own once its buffered data reaches this, so Parquet file size tracks
+	// RollBytes regardless of how many fractals are ingesting concurrently. (A
+	// shared threshold across all fractals divides into one small file per
+	// fractal per roll, which is what buries compaction.)
+	RollBytes int64
+	// RollInterval bounds staleness: every interval the whole buffer is flushed
+	// and the spool checkpoint advances, however little each fractal has.
 	RollInterval time.Duration
+
+	// MaxPendingBytes bounds the archiver's total in-memory buffer. RollBytes is
+	// per-fractal, so without this cap a deployment with many active fractals
+	// would hold RollBytes x fractals of un-flushed data. Over the cap the
+	// largest fractal is committed early (a smaller file, logged so the trade is
+	// visible), which keeps memory bounded while still favouring big files.
+	MaxPendingBytes int64
 
 	// PollInterval is how often the run loop checks the spool when it has caught
 	// up (no data available).
@@ -70,6 +82,13 @@ func ConfigFromEnv() (Config, error) {
 		RollInterval:  getDuration("BIFRACT_ARCHIVE_ROLL_INTERVAL", time.Hour),
 		PollInterval:  getDuration("BIFRACT_ARCHIVE_POLL_INTERVAL", 2*time.Second),
 		RecallTimeout: getDuration("BIFRACT_RECALL_TIMEOUT", 5*time.Minute),
+
+		MaxPendingBytes: getInt64("BIFRACT_ARCHIVE_MAX_PENDING_BYTES", 1<<30),
+	}
+	// A cap below the per-fractal threshold would make the memory backstop, not
+	// RollBytes, decide every commit. Keep at least one full roll of headroom.
+	if c.MaxPendingBytes < c.RollBytes {
+		c.MaxPendingBytes = c.RollBytes
 	}
 	return c, nil
 }

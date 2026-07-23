@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -1482,6 +1483,36 @@ func (c *ClickHouseClient) RevertTieredStoragePolicy(ctx context.Context) error 
 func (c *ClickHouseClient) QueryWithID(ctx context.Context, queryID, query string) ([]map[string]interface{}, error) {
 	ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(queryID))
 	return c.Query(ctx, query)
+}
+
+// QueryStats is what a query actually cost server-side, accumulated from the
+// ClickHouse progress packets rather than read back from system.query_log
+// (which flushes asynchronously and so is not reliably readable the moment a
+// query finishes).
+type QueryStats struct {
+	ReadRows  uint64
+	ReadBytes uint64
+}
+
+// QueryWithStats runs a query under a fixed query_id and reports how much data
+// ClickHouse read to answer it. Used by Recall, where the scan is over object
+// storage and the cost is both large and invisible: without this a search that
+// times out is indistinguishable from one that was simply too broad.
+//
+// Progress packets carry deltas, so they accumulate.
+func (c *ClickHouseClient) QueryWithStats(ctx context.Context, queryID, query string) ([]map[string]interface{}, QueryStats, error) {
+	var readRows, readBytes atomic.Uint64
+	ctx = clickhouse.Context(ctx,
+		clickhouse.WithQueryID(queryID),
+		clickhouse.WithProgress(func(p *clickhouse.Progress) {
+			readRows.Add(p.Rows)
+			readBytes.Add(p.Bytes)
+		}),
+	)
+	rows, err := c.Query(ctx, query)
+	// Report the stats even on failure: a timed-out or killed query still read
+	// whatever it read, and that is exactly the number the user needs to see.
+	return rows, QueryStats{ReadRows: readRows.Load(), ReadBytes: readBytes.Load()}, err
 }
 
 // ExecWithID runs a statement with a fixed query_id so a long-running write (a

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -2620,18 +2621,28 @@ func (c *PostgresClient) UpdateDashboardWidget(ctx context.Context, widgetID str
 	return nil
 }
 
-func (c *PostgresClient) UpdateDashboardWidgetResults(ctx context.Context, widgetID, lastResults string, chartType *string) error {
-	_, err := c.db.ExecContext(ctx, `
+// UpdateDashboardWidgetResults caches a widget's results and returns the stored
+// execution time, so viewers are told the persisted value rather than guessing
+// from an app-side clock. A widget deleted mid-execution matches no row: that
+// returns a zero time and no error, since losing a race with a delete is not a
+// query failure.
+func (c *PostgresClient) UpdateDashboardWidgetResults(ctx context.Context, widgetID, lastResults string, chartType *string) (time.Time, error) {
+	var executedAt time.Time
+	err := c.db.QueryRowContext(ctx, `
 		UPDATE dashboard_widgets SET
 			last_results = $1::jsonb,
 			last_executed_at = NOW(),
 			chart_type = COALESCE($2, chart_type)
 		WHERE id = $3
-	`, lastResults, chartType, widgetID)
-	if err != nil {
-		return fmt.Errorf("failed to update dashboard widget results: %w", err)
+		RETURNING last_executed_at
+	`, lastResults, chartType, widgetID).Scan(&executedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, nil
 	}
-	return nil
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to update dashboard widget results: %w", err)
+	}
+	return executedAt, nil
 }
 
 func (c *PostgresClient) UpdateDashboardWidgetLayout(ctx context.Context, widgetID string, posX, posY, width, height int) error {

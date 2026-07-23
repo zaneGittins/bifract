@@ -19,27 +19,24 @@ const Utils = {
         }
     },
 
-    getRelativeTime(timestamp) {
-        if (!timestamp) return '';
+    // Compact relative age: "just now", "45s ago", "3m ago", "2d ago".
+    // Accepts an ISO string, a Date, or epoch milliseconds. Returns '' for a
+    // missing or unparseable value so callers choose their own fallback.
+    timeAgo(when) {
+        if (when === null || when === undefined || when === '') return '';
+        const t = when instanceof Date ? when.getTime()
+            : typeof when === 'number' ? when
+            : new Date(when).getTime();
+        if (!Number.isFinite(t)) return '';
 
-        const now = new Date();
-        const past = new Date(timestamp);
-        let remaining = Math.floor((now - past) / 1000);
-        if (remaining < 0) remaining = 0;
-
-        const days = Math.floor(remaining / 86400);
-        remaining %= 86400;
-        const hours = Math.floor(remaining / 3600);
-        remaining %= 3600;
-        const minutes = Math.floor(remaining / 60);
-
-        const parts = [];
-        if (days > 0) parts.push(`${days} day${days > 1 ? 's' : ''}`);
-        if (hours > 0) parts.push(`${hours} hour${hours > 1 ? 's' : ''}`);
-        if (minutes > 0) parts.push(`${minutes} minute${minutes > 1 ? 's' : ''}`);
-
-        if (parts.length === 0) return 'just now';
-        return parts.join(', ') + ' ago';
+        const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+        if (s < 10) return 'just now';
+        if (s < 60) return `${s}s ago`;
+        const m = Math.floor(s / 60);
+        if (m < 60) return `${m}m ago`;
+        const h = Math.floor(m / 60);
+        if (h < 24) return `${h}h ago`;
+        return `${Math.floor(h / 24)}d ago`;
     },
 
     getCurrentUTC() {

@@ -16,6 +16,11 @@ type SearchResult struct {
 	FieldOrder   []string
 	IsAggregated bool
 	LimitHit     bool
+	// Stats is what ClickHouse read from object storage to answer the query.
+	// Recorded on the job so a user can tell a query that pruned well from one
+	// that scanned the whole window, which is the difference between narrowing
+	// the time range and narrowing the predicate.
+	Stats storage.QueryStats
 }
 
 // Search runs a BQL query against a single fractal's Iceberg archive for an
@@ -68,13 +73,16 @@ func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj 
 	// plain String, so it sidesteps the ClickHouse Iceberg Map-decode bug (Code
 	// 117, upstream #91580) that broke field-dense fractals under a Map column.
 	var rows []map[string]interface{}
+	var stats storage.QueryStats
 	if queryID != "" {
-		rows, err = ch.QueryWithID(ctx, queryID, res.SQL)
+		rows, stats, err = ch.QueryWithStats(ctx, queryID, res.SQL)
 	} else {
 		rows, err = ch.Query(ctx, res.SQL)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("archive: search query failed: %w", err)
+		// Carry the partial scan cost out with the error: a search that times out
+		// is the case where "how much did it read" matters most.
+		return &SearchResult{Stats: stats}, fmt.Errorf("archive: search query failed: %w", err)
 	}
 	limitHit := !res.IsAggregated && len(rows) >= maxRows
 	if limitHit && len(rows) > maxRows {
@@ -85,5 +93,6 @@ func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj 
 		FieldOrder:   res.FieldOrder,
 		IsAggregated: res.IsAggregated,
 		LimitHit:     limitHit,
+		Stats:        stats,
 	}, nil
 }

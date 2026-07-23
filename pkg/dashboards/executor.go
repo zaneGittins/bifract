@@ -330,17 +330,21 @@ func (e *Executor) executeWidget(ctx context.Context, d *storage.Dashboard, w *s
 		chartType = "table"
 	}
 
-	if err := e.pg.UpdateDashboardWidgetResults(ctx, w.ID, string(resultJSON), &chartType); err != nil {
+	executedAt, err := e.pg.UpdateDashboardWidgetResults(ctx, w.ID, string(resultJSON), &chartType)
+	if err != nil {
 		return nil, "", err
 	}
 
-	if e.hub != nil {
+	// A zero time means the widget was deleted while its query ran: there is
+	// nothing left to update on any viewer's screen, so skip the broadcast.
+	if e.hub != nil && !executedAt.IsZero() {
 		e.hub.Broadcast("dashboard:"+d.ID, sse.Event{
 			Type: sse.WidgetResultsUpdated,
 			Data: map[string]interface{}{
-				"id":           w.ID,
-				"last_results": string(resultJSON),
-				"chart_type":   chartType,
+				"id":               w.ID,
+				"last_results":     string(resultJSON),
+				"chart_type":       chartType,
+				"last_executed_at": executedAt.UTC(),
 			},
 		}, excludeClientID)
 	}

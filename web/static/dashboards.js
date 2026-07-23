@@ -1,7 +1,8 @@
 /**
  * Dashboards Frontend Module
  * Grid-based dashboards with draggable, resizable query widgets.
- * All widget queries auto-execute when a dashboard is opened.
+ * Opening a dashboard paints the last saved results immediately, then refreshes
+ * any widget whose cache has aged past the dashboard's refresh cadence.
  */
 
 const Dashboards = {
@@ -24,6 +25,10 @@ const Dashboards = {
     ROW_HEIGHT: 130,
     MIN_WIDTH: 2,
     MIN_HEIGHT: 2,
+
+    // Cache age below which an opened widget is not re-executed when the
+    // dashboard has auto-refresh off. Matches the executor's MinInterval floor.
+    MIN_CACHE_FRESH_MS: 10000,
 
     init() {
         this.currentDashboard = null;
@@ -48,6 +53,7 @@ const Dashboards = {
         this.currentDashboard = null;
         this._drilldown = null;
         this.stopDragResize();
+        this.stopUpdatedAtTicker();
         this.currentPage = 0;
         this.searchQuery = '';
         const tbody = document.getElementById('dashboardsTableBody');
@@ -151,6 +157,7 @@ const Dashboards = {
 
     showDashboardListing() {
         this.stopPresenceTracking();
+        this.stopUpdatedAtTicker();
         this._clearStoredDrilldown(this.currentDashboard && this.currentDashboard.id);
         this._drilldown = null;
         const listing = document.getElementById('dashboardListing');
@@ -281,7 +288,9 @@ const Dashboards = {
             this.renderVariablesBar();
             this.renderDashboardGrid();
             this._resolveDrilldown();
-            this.autoExecuteAllWidgets();
+            this.paintCachedWidgets();
+            this.autoExecuteAllWidgets(true);
+            this.startUpdatedAtTicker();
             this.startPresenceTracking();
         } catch (err) {
             console.error('[Dashboards] Failed to open dashboard:', err);
@@ -420,7 +429,7 @@ const Dashboards = {
         const widgetId = data.id;
         this.currentDashboard.widgets = this.currentDashboard.widgets.filter(w => w.id !== widgetId);
         const el = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
-        if (el) el.remove();
+        if (el) { this.destroyWidgetVisuals(el); el.remove(); }
         this.syncDashboardVariables(false);
     },
 
@@ -468,11 +477,13 @@ const Dashboards = {
 
         if (data.last_results) widget.last_results = data.last_results;
         if (data.chart_type) widget.chart_type = data.chart_type;
+        if (data.last_executed_at) widget.last_executed_at = data.last_executed_at;
 
         // Re-render results
         try {
             const resultData = JSON.parse(widget.last_results);
             this.renderWidgetResults(data.id, resultData);
+            this.renderUpdatedAt();
         } catch (_) {}
     },
 
@@ -542,6 +553,7 @@ const Dashboards = {
         const grid = document.getElementById('dashboardGrid');
         if (!grid) return;
 
+        this.destroyWidgetVisuals(grid);
         grid.innerHTML = '';
 
         if (!this.currentDashboard || !this.currentDashboard.widgets) return;
@@ -615,11 +627,77 @@ const Dashboards = {
     // Auto-execute on open
     // =====================
 
-    autoExecuteAllWidgets() {
+    autoExecuteAllWidgets(skipFresh = false) {
         if (!this.currentDashboard || !this.currentDashboard.widgets) return;
         this.currentDashboard.widgets.forEach(widget => {
+            if (skipFresh && this.isCacheFresh(widget)) return;
             this.executeWidget(widget.id);
         });
+    },
+
+    // Age of the results on screen, shown once for the whole dashboard: the
+    // executor refreshes every widget in a single pass, so the newest stamp
+    // represents the board. A widget that diverges (its own refresh failed)
+    // reports that on the widget itself. Blank during a drilldown, whose
+    // transient private results are not the shared cache.
+    renderUpdatedAt() {
+        const el = document.getElementById('dashboardUpdatedAt');
+        if (!el) return;
+        const clear = () => { el.textContent = ''; el.removeAttribute('title'); };
+        if (!this.currentDashboard || !this.currentDashboard.widgets || this.activeDrilldown()) return clear();
+
+        let newest = 0;
+        this.currentDashboard.widgets.forEach(w => {
+            if (!w.last_executed_at) return;
+            const t = new Date(w.last_executed_at).getTime();
+            if (Number.isFinite(t) && t > newest) newest = t;
+        });
+        if (!newest) return clear();
+
+        const age = Utils.timeAgo(newest);
+        if (!age) return clear();
+        el.textContent = `Updated ${age}`;
+        el.title = new Date(newest).toLocaleString();
+    },
+
+    startUpdatedAtTicker() {
+        this.stopUpdatedAtTicker();
+        this.renderUpdatedAt();
+        this._updatedAtTimer = setInterval(() => {
+            if (!this.currentDashboard) return this.stopUpdatedAtTicker();
+            this.renderUpdatedAt();
+        }, 15000);
+    },
+
+    stopUpdatedAtTicker() {
+        if (this._updatedAtTimer) {
+            clearInterval(this._updatedAtTimer);
+            this._updatedAtTimer = null;
+        }
+        const el = document.getElementById('dashboardUpdatedAt');
+        if (el) { el.textContent = ''; el.removeAttribute('title'); }
+    },
+
+    // Re-running a widget on open is wasted ClickHouse work when its saved
+    // results are still inside the dashboard's own refresh cadence: the
+    // background executor keeps viewed dashboards warm and pushes newer results
+    // over SSE. With auto-refresh off, a short floor still absorbs reopens.
+    isCacheFresh(widget) {
+        if (!widget || !widget.last_results || !widget.last_executed_at) return false;
+        if (this.activeDrilldown()) return false;
+        const age = Date.now() - new Date(widget.last_executed_at).getTime();
+        if (!Number.isFinite(age) || age < 0) return false;
+        const interval = this.currentDashboard?.refresh_interval || 0;
+        return age < (interval > 0 ? interval * 1000 : this.MIN_CACHE_FRESH_MS);
+    },
+
+    // Paint the server-persisted results of every widget so an opened dashboard
+    // shows data instantly while the live refresh runs underneath. Skipped in a
+    // drilldown: the cache holds unfiltered results that would misrepresent it.
+    paintCachedWidgets() {
+        if (!this.currentDashboard || !this.currentDashboard.widgets) return;
+        if (this.activeDrilldown()) return;
+        this.currentDashboard.widgets.forEach(w => this.renderWidgetFromCache(w.id));
     },
 
     async executeWidget(widgetId) {
@@ -630,7 +708,16 @@ const Dashboards = {
 
         const contentEl = document.getElementById(`wc-${widgetId}`);
         if (contentEl && contentEl._editingWidget) return;
-        if (contentEl) contentEl.innerHTML = '<div class="widget-loading">Executing...</div>';
+
+        // Results already on screen (cached or from a prior run) stay visible and
+        // are refreshed in place; only an empty widget shows a loading state.
+        const widgetEl = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
+        const hasRendered = !!(contentEl && contentEl.dataset.rendered === '1');
+        if (contentEl && !hasRendered) {
+            this.destroyWidgetVisuals(contentEl);
+            contentEl.innerHTML = '<div class="widget-loading">Executing...</div>';
+        }
+        if (widgetEl && hasRendered) widgetEl.classList.add('refreshing');
 
         const execBtn = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"] .widget-execute-btn`);
         if (execBtn) { execBtn.innerHTML = '<span class="spinner"></span>'; execBtn.disabled = true; }
@@ -672,14 +759,33 @@ const Dashboards = {
             if (resultData.chart_type) widget.chart_type = resultData.chart_type;
 
             this.renderWidgetResults(widgetId, resultData);
+            this.renderUpdatedAt();
         } catch (err) {
             console.error('[Dashboards] Widget execution failed:', err);
             if (contentEl && !contentEl._editingWidget) {
-                contentEl.innerHTML = `<div class="widget-error">Error: ${Utils.escapeHtml(err.message)}</div>`;
+                if (contentEl.dataset.rendered === '1') {
+                    // Keep the stale results visible, but say so: silently showing
+                    // old data as if it were fresh is worse than a blank widget.
+                    this.showStaleNote(contentEl, err.message);
+                } else {
+                    delete contentEl.dataset.rendered;
+                    this.destroyWidgetVisuals(contentEl);
+                    contentEl.innerHTML = `<div class="widget-error">Error: ${Utils.escapeHtml(err.message)}</div>`;
+                }
             }
         } finally {
+            if (widgetEl) widgetEl.classList.remove('refreshing');
             if (execBtn) { execBtn.innerHTML = '&#9654;'; execBtn.disabled = false; }
         }
+    },
+
+    showStaleNote(contentEl, message) {
+        const existing = contentEl.querySelector(':scope > .widget-stale-note');
+        if (existing) existing.remove();
+        const note = document.createElement('div');
+        note.className = 'widget-stale-note';
+        note.textContent = `Showing last saved results - refresh failed: ${message}`;
+        contentEl.insertBefore(note, contentEl.firstChild);
     },
 
     renderWidgetResults(widgetId, resultData) {
@@ -694,12 +800,41 @@ const Dashboards = {
             ? this.currentDashboard.widgets.find(w => w.id === widgetId) : null;
         const widgetConfig = widget ? this.parseChartConfig(widget.chart_config) : {};
 
+        this.destroyWidgetVisuals(contentEl);
+
         if (chartType !== 'table' && results.length > 0) {
             const chartHtml = this.renderQueryChart(resultData, widgetConfig, widgetId);
             contentEl.innerHTML = chartHtml || this.renderResultsTable(results, resultData, widgetConfig, widgetId);
         } else {
             contentEl.innerHTML = this.renderResultsTable(results, resultData, widgetConfig, widgetId);
         }
+
+        // Marks the widget as holding real results: a later refresh then updates
+        // it in place instead of wiping it back to a loading state.
+        contentEl.dataset.rendered = '1';
+    },
+
+    // Chart.js, vis-network and Leaflet each keep their instances alive in an
+    // internal registry or a window listener, so dropping the DOM alone leaks
+    // them: a dashboard left open refreshing accumulates one per widget per
+    // refresh. Tear them down before any content wipe. sharedRender does the
+    // same for the wallboard.
+    destroyWidgetVisuals(root) {
+        if (!root || typeof root.querySelectorAll !== 'function') return;
+
+        if (window.Chart && Chart.getChart) {
+            root.querySelectorAll('canvas').forEach(c => {
+                const inst = Chart.getChart(c);
+                if (inst) inst.destroy();
+            });
+        }
+
+        root.querySelectorAll('.widget-visual-host').forEach(el => {
+            if (el._visNetwork && typeof el._visNetwork.destroy === 'function') el._visNetwork.destroy();
+            if (el._leafletMap && typeof el._leafletMap.remove === 'function') el._leafletMap.remove();
+            el._visNetwork = null;
+            el._leafletMap = null;
+        });
     },
 
     parseChartConfig(config) {
@@ -726,12 +861,12 @@ const Dashboards = {
             const graphId = `dgraph-${chartId}`;
             const graphHtml = `
                 <div class="chart-container" style="margin:0;padding:6px;background:var(--bg-secondary);border-radius:4px;height:calc(100% - 12px);box-sizing:border-box;position:relative;">
-                    <div id="${graphId}" style="width:100%;height:100%;"></div>
+                    <div id="${graphId}" class="widget-visual-host" style="width:100%;height:100%;"></div>
                 </div>
             `;
             setTimeout(() => {
                 const el = document.getElementById(graphId);
-                if (el) BifractCharts.renderGraphSimple(el, {
+                if (el) el._visNetwork = BifractCharts.renderGraphSimple(el, {
                     data: results.results || [],
                     fields: results.field_order,
                     config: results.chart_config || {}
@@ -744,12 +879,12 @@ const Dashboards = {
             const meshId = `dmesh-${chartId}`;
             const meshHtml = `
                 <div class="chart-container" style="margin:0;padding:6px;background:var(--bg-secondary);border-radius:4px;height:calc(100% - 12px);box-sizing:border-box;position:relative;">
-                    <div id="${meshId}" style="width:100%;height:100%;"></div>
+                    <div id="${meshId}" class="widget-visual-host" style="width:100%;height:100%;"></div>
                 </div>
             `;
             setTimeout(() => {
                 const el = document.getElementById(meshId);
-                if (el) BifractCharts.renderMeshSimple(el, {
+                if (el) el._visNetwork = BifractCharts.renderMeshSimple(el, {
                     data: results.results || [],
                     fields: results.field_order,
                     config: results.chart_config || {},
@@ -780,14 +915,14 @@ const Dashboards = {
             const mapId = `dmap-${chartId}`;
             const mapHtml = `
                 <div class="chart-container" style="margin:0;padding:6px;background:var(--bg-secondary);border-radius:4px;height:calc(100% - 12px);box-sizing:border-box;position:relative;">
-                    <div id="${mapId}" class="worldmap-container" style="height:100%;"></div>
+                    <div id="${mapId}" class="worldmap-container widget-visual-host" style="height:100%;"></div>
                 </div>
             `;
             setTimeout(() => {
                 const el = document.getElementById(mapId);
                 if (el && window.BifractWorldMap) {
                     const cfg = results.chart_config || {};
-                    BifractWorldMap.render(el, results.results || [], {
+                    el._leafletMap = BifractWorldMap.render(el, results.results || [], {
                         latField: cfg.latField || 'latitude',
                         lonField: cfg.lonField || 'longitude',
                         labelField: cfg.labelField || null
@@ -1289,8 +1424,11 @@ const Dashboards = {
         if (contentEl._editingWidget) return;
         contentEl._editingWidget = true;
 
-        // Save current content to restore on cancel
+        // Save the query text to restore on cancel. The rendered visuals are torn
+        // down rather than stashed: a chart's pixels do not survive an innerHTML
+        // round-trip, so cancel re-renders from the cache instead.
         contentEl._savedContent = contentEl.innerHTML;
+        this.destroyWidgetVisuals(contentEl);
 
         const hid = `wie-h-${widgetId}`;
         const tid = `wie-q-${widgetId}`;
@@ -1336,9 +1474,17 @@ const Dashboards = {
     cancelInlineWidgetEdit(widgetId) {
         const contentEl = document.getElementById(`wc-${widgetId}`);
         if (!contentEl) return;
-        contentEl.innerHTML = contentEl._savedContent || '<div class="widget-loading">No results</div>';
+        const saved = contentEl._savedContent;
         delete contentEl._savedContent;
         delete contentEl._editingWidget;
+
+        // Re-render from the cache rather than restoring the saved markup: a
+        // chart's canvas comes back blank, since its instance was destroyed when
+        // the editor opened. The markup is only a fallback for a widget that has
+        // never produced results.
+        if (this.renderWidgetFromCache(widgetId)) return;
+        delete contentEl.dataset.rendered;
+        contentEl.innerHTML = saved || '<div class="widget-loading">No results</div>';
     },
 
     async saveInlineWidgetEdit(widgetId) {
@@ -1382,6 +1528,8 @@ const Dashboards = {
             if (contentEl) {
                 delete contentEl._savedContent;
                 delete contentEl._editingWidget;
+                delete contentEl.dataset.rendered;
+                this.destroyWidgetVisuals(contentEl);
                 contentEl.innerHTML = '<div class="widget-loading">Executing...</div>';
             }
 
@@ -1410,7 +1558,7 @@ const Dashboards = {
             this.syncDashboardVariables();
 
             const widgetEl = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
-            if (widgetEl) widgetEl.remove();
+            if (widgetEl) { this.destroyWidgetVisuals(widgetEl); widgetEl.remove(); }
         } catch (err) {
             console.error('[Dashboards] Failed to delete widget:', err);
             this.showError('Failed to delete widget');
@@ -1881,15 +2029,18 @@ const Dashboards = {
         });
     },
 
+    // Returns true when cached results were rendered, so callers can fall back.
     renderWidgetFromCache(widgetId) {
         const widget = this.currentDashboard && this.currentDashboard.widgets
             ? this.currentDashboard.widgets.find(w => w.id === widgetId) : null;
-        if (!widget || !widget.last_results) return;
+        if (!widget || !widget.last_results) return false;
         let resultData;
         try {
             resultData = typeof widget.last_results === 'string' ? JSON.parse(widget.last_results) : widget.last_results;
-        } catch (e) { return; }
+        } catch (e) { return false; }
+        if (!resultData || typeof resultData !== 'object') return false;
         this.renderWidgetResults(widgetId, resultData);
+        return true;
     },
 
     async saveWidgetFormat(widgetId, cfg) {
