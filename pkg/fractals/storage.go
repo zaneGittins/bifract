@@ -3,6 +3,7 @@ package fractals
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"bifract/pkg/storage"
@@ -281,21 +282,55 @@ func (s *Storage) SetDiskQuota(ctx context.Context, fractalID string, quotaBytes
 	return nil
 }
 
-// DeleteOldLogs removes logs older than retentionDays for the given fractal
+// DeleteOldLogs drops logs partitions older than retentionDays for the given
+// fractal via metadata-only DROP PARTITION (like quota rollover), instead of
+// the old ALTER TABLE ... DELETE mutation. Enforced at day granularity, so
+// the boundary day can lag up to ~24h behind the exact cutoff.
 func (s *Storage) DeleteOldLogs(ctx context.Context, fractalID string, retentionDays int, isDefault bool) error {
-	var query string
-	if isDefault {
-		query = fmt.Sprintf(
-			"ALTER TABLE logs DELETE WHERE fractal_id IN ('%s', '') AND timestamp < subtractDays(now(), %d)",
-			storage.EscCHStr(fractalID), retentionDays,
-		)
-	} else {
-		query = fmt.Sprintf(
-			"ALTER TABLE logs DELETE WHERE fractal_id = '%s' AND timestamp < subtractDays(now(), %d)",
-			storage.EscCHStr(fractalID), retentionDays,
-		)
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+	cutoffDay := time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, time.UTC)
+
+	partitions, err := s.ch.FractalPartitionUsage(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list partitions for retention on fractal %s: %w", fractalID, err)
 	}
-	return s.ch.Exec(ctx, query)
+
+	ids := map[string]bool{fractalID: true}
+	if isDefault {
+		ids[""] = true
+	}
+
+	for _, p := range partitions {
+		if !ids[p.FractalID] {
+			continue
+		}
+		day, ok := partitionDay(p.Partition)
+		if !ok || !day.Before(cutoffDay) {
+			continue
+		}
+		if err := s.ch.DropLogPartition(ctx, p.Partition); err != nil {
+			return fmt.Errorf("failed to drop expired partition %s for fractal %s: %w", p.Partition, fractalID, err)
+		}
+	}
+	return nil
+}
+
+// partitionDay extracts the day from a logs partition string, e.g.
+// ('my-fractal','2026-07-01') -> 2026-07-01. Parsed from the partition key
+// itself (ClickHouse's canonical rendering of toDate(timestamp)) rather than
+// from data-derived columns like system.parts.min_time, so the retention
+// cutoff can't drift from timezone or driver interpretation differences.
+func partitionDay(partition string) (time.Time, bool) {
+	idx := strings.LastIndex(partition, "','")
+	if idx < 0 {
+		return time.Time{}, false
+	}
+	dateStr := strings.TrimSuffix(partition[idx+3:], "')")
+	d, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return d, true
 }
 
 // DeleteFractal deletes an index and all associated data

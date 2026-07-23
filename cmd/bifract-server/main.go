@@ -1123,6 +1123,50 @@ func main() {
 				})
 			})
 
+			// Distribution queue per-shard diagnostics + reset (admin only, cluster
+			// mode only). See ClickHouseClient.DistributionQueueByShard/
+			// ResetDistributedQueue: reset drops and recreates logs_distributed on one
+			// shard, discarding that shard's queued (not-yet-forwarded) batches. Pure
+			// local DDL -- no filesystem/pod access, no ON CLUSTER/Keeper coordination.
+			r.Get("/system/distribution-queue/shards", func(w http.ResponseWriter, r *http.Request) {
+				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				stats, err := dbIngest.DistributionQueueByShard(r.Context())
+				if err != nil {
+					http.Error(w, "Failed to query distribution queue", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(stats)
+			})
+			r.Post("/system/distribution-queue/reset", func(w http.ResponseWriter, r *http.Request) {
+				u, ok := r.Context().Value("user").(*storage.User)
+				if !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				var body struct {
+					ShardNum uint64 `json:"shard_num"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, "Invalid JSON", http.StatusBadRequest)
+					return
+				}
+				if err := dbIngest.ResetDistributedQueue(r.Context(), body.ShardNum); err != nil {
+					log.Printf("[Admin] distribution queue reset failed (shard %d, requested by %s): %v", body.ShardNum, u.Username, err)
+					// The error itself carries actionable guidance (e.g. "retry
+					// immediately" when the table was dropped but not yet recreated),
+					// which matters more here than a generic message.
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				log.Printf("[Admin] distribution queue reset on shard %d by %s", body.ShardNum, u.Username)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "shard_num": body.ShardNum})
+			})
+
 			// Advanced endpoint analysis toggle (admin only): gates the process
 			// lineage/frequency materialized views (heavy per-insert triggers).
 			r.Get("/system/endpoint-analysis", func(w http.ResponseWriter, r *http.Request) {

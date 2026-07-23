@@ -873,6 +873,16 @@
                                         <button id="archiveClearSpoolBtn" class="danger-btn">Clear Spool</button>
                                     </div>
                                 </div>
+                                <div class="sp-row" id="distQueueResetItem" style="display:none;">
+                                    <div class="sp-row-info">
+                                        <span class="sp-row-label">Reset distribution queue</span>
+                                        <p class="sp-row-desc">Drops and recreates <code>logs_distributed</code> on one shard, discarding that shard's queue of not-yet-forwarded log batches. Use when a shard's distribution queue is stuck or growing because of broken or permanently unsendable batches.</p>
+                                        <p class="sp-row-meta">Local operation on that shard only, not a cluster-wide DDL: other shards and this shard's own stored logs are untouched. Only shards with a non-empty queue are listed below.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <div id="distQueueShardList" class="dist-queue-shard-list"></div>
+                                    </div>
+                                </div>
                                 <div class="sp-row" id="schemaResetItem">
                                     <div class="sp-row-info">
                                         <span class="sp-row-label">Reset field schema</span>

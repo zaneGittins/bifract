@@ -226,6 +226,28 @@
     cursor: not-allowed;
 }
 
+/* Per-shard rows for the distribution queue reset action: one label + button
+   pair per affected shard, since the shard count and which ones are affected
+   is only known at runtime. */
+.dist-queue-shard-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: flex-end;
+}
+
+.dist-queue-shard-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.dist-queue-shard-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
 @media (max-width: 900px) {
     .sp-layout {
         grid-template-columns: minmax(0, 1fr);

@@ -37,6 +37,11 @@ type ClickHouseClient struct {
 	shardConnsMu sync.Mutex
 	shardConns   map[uint64]driver.Conn
 
+	// resetMu serializes ResetDistributedQueue per shard (lazily created *sync.Mutex
+	// values), so two concurrent admin requests for the same shard cannot interleave
+	// its DROP and CREATE.
+	resetMu sync.Map
+
 	// typeHintFields caches the declared typed sub-paths of the fields JSON column
 	// (schema type hints). Those materialize as "" even when a log did not contain
 	// them, so they are stripped from log-detail output while genuinely-empty dynamic
@@ -2195,17 +2200,15 @@ func (c *ClickHouseClient) fetchRawLog(ctx context.Context, logID string, ts tim
 	return raw
 }
 
-// shardHostForNum returns the host:port for a given shard number by querying
-// system.clusters. Results are cached for the lifetime of the client.
-func (c *ClickHouseClient) shardHostForNum(ctx context.Context, shardNum uint64) (string, error) {
+// loadShardHosts populates (once) and returns the shard_num -> host:port map
+// from system.clusters, replica_num = 1. Safe to call concurrently; the result
+// is cached for the lifetime of the client.
+func (c *ClickHouseClient) loadShardHosts(ctx context.Context) (map[uint64]string, error) {
 	c.shardHostsMu.RLock()
 	if c.shardHosts != nil {
-		host, ok := c.shardHosts[shardNum]
+		hosts := c.shardHosts
 		c.shardHostsMu.RUnlock()
-		if ok {
-			return host, nil
-		}
-		return "", fmt.Errorf("shard %d not found in cluster topology", shardNum)
+		return hosts, nil
 	}
 	c.shardHostsMu.RUnlock()
 
@@ -2213,10 +2216,7 @@ func (c *ClickHouseClient) shardHostForNum(ctx context.Context, shardNum uint64)
 	defer c.shardHostsMu.Unlock()
 	// Double-check after acquiring write lock.
 	if c.shardHosts != nil {
-		if host, ok := c.shardHosts[shardNum]; ok {
-			return host, nil
-		}
-		return "", fmt.Errorf("shard %d not found in cluster topology", shardNum)
+		return c.shardHosts, nil
 	}
 
 	rows, err := c.conn.Query(ctx, fmt.Sprintf(
@@ -2224,7 +2224,7 @@ func (c *ClickHouseClient) shardHostForNum(ctx context.Context, shardNum uint64)
 		EscCHStr(c.Cluster),
 	))
 	if err != nil {
-		return "", fmt.Errorf("query system.clusters: %w", err)
+		return nil, fmt.Errorf("query system.clusters: %w", err)
 	}
 	defer rows.Close()
 
@@ -2239,14 +2239,41 @@ func (c *ClickHouseClient) shardHostForNum(ctx context.Context, shardNum uint64)
 		hosts[uint64(sn)] = fmt.Sprintf("%s:%d", hostName, port)
 	}
 	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("iterate system.clusters: %w", err)
+		return nil, fmt.Errorf("iterate system.clusters: %w", err)
 	}
 	c.shardHosts = hosts
+	return hosts, nil
+}
 
+// shardHostForNum returns the host:port for a given shard number by querying
+// system.clusters. Results are cached for the lifetime of the client.
+func (c *ClickHouseClient) shardHostForNum(ctx context.Context, shardNum uint64) (string, error) {
+	hosts, err := c.loadShardHosts(ctx)
+	if err != nil {
+		return "", err
+	}
 	if host, ok := hosts[shardNum]; ok {
 		return host, nil
 	}
 	return "", fmt.Errorf("shard %d not found in cluster topology", shardNum)
+}
+
+// ShardNums returns every shard number in the cluster, sorted ascending. Empty
+// for single-node deployments (IsCluster false).
+func (c *ClickHouseClient) ShardNums(ctx context.Context) ([]uint64, error) {
+	if !c.IsCluster() {
+		return nil, nil
+	}
+	hosts, err := c.loadShardHosts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nums := make([]uint64, 0, len(hosts))
+	for sn := range hosts {
+		nums = append(nums, sn)
+	}
+	sort.Slice(nums, func(i, j int) bool { return nums[i] < nums[j] })
+	return nums, nil
 }
 
 // shardConnForNum returns (or lazily opens) a direct connection to the shard
@@ -2282,6 +2309,156 @@ func (c *ClickHouseClient) shardConnForNum(ctx context.Context, shardNum uint64)
 	}
 	c.shardConns[shardNum] = conn
 	return conn, nil
+}
+
+// ShardDistQueueStat is one shard's own local view of system.distribution_queue
+// for logs_distributed, queried directly against that shard rather than
+// aggregated via clusterAllReplicas, so a single poisoned shard's numbers are
+// visible instead of being averaged away by healthy ones.
+type ShardDistQueueStat struct {
+	ShardNum        uint64 `json:"shard_num"`
+	Host            string `json:"host"`
+	DataFiles       int64  `json:"data_files"`
+	BrokenDataFiles int64  `json:"broken_data_files"`
+	ErrorCount      int64  `json:"error_count"`
+	LastException   string `json:"last_exception"`
+	// Unreachable means this shard's own connection or query failed -- its
+	// stats above are zero-valued placeholders, not a report of health.
+	// Surfaced instead of failing the whole call so one bad shard does not
+	// hide every other shard's real numbers, which matters most exactly when
+	// a shard is already in a degraded state.
+	Unreachable bool `json:"unreachable,omitempty"`
+}
+
+// DistributionQueueByShard reports logs_distributed's queue depth on every
+// shard individually, via a direct connection per shard (see shardConnForNum).
+// Returns nil for single-node deployments. A per-shard connection or query
+// failure marks that shard Unreachable rather than failing the whole call.
+func (c *ClickHouseClient) DistributionQueueByShard(ctx context.Context) ([]ShardDistQueueStat, error) {
+	if !c.IsCluster() {
+		return nil, nil
+	}
+	shardNums, err := c.ShardNums(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ShardDistQueueStat, 0, len(shardNums))
+	for _, sn := range shardNums {
+		host, _ := c.shardHostForNum(ctx, sn)
+		stat := ShardDistQueueStat{ShardNum: sn, Host: host}
+
+		conn, err := c.shardConnForNum(ctx, sn)
+		if err != nil {
+			stat.Unreachable = true
+			out = append(out, stat)
+			continue
+		}
+
+		rows, err := conn.Query(ctx, fmt.Sprintf(`
+			SELECT
+				COALESCE(sum(data_files), 0)        AS data_files,
+				COALESCE(sum(broken_data_files), 0) AS broken_data_files,
+				COALESCE(max(error_count), 0)       AS error_count,
+				anyLast(last_exception)             AS last_exception
+			FROM system.distribution_queue
+			WHERE table = '%s'`, EscCHStr(logsDistributedTable)))
+		if err != nil {
+			stat.Unreachable = true
+			out = append(out, stat)
+			continue
+		}
+		if rows.Next() {
+			var lastExc string
+			if err := rows.Scan(&stat.DataFiles, &stat.BrokenDataFiles, &stat.ErrorCount, &lastExc); err != nil {
+				stat.Unreachable = true
+				rows.Close()
+				out = append(out, stat)
+				continue
+			}
+			stat.LastException = lastExc
+		}
+		rows.Close()
+		out = append(out, stat)
+	}
+	return out, nil
+}
+
+// logsDistributedTable is the one Distributed table ResetDistributedQueue and
+// DistributionQueueByShard operate on -- the only one that has ever been the
+// subject of a poisoned/stuck queue in practice (the highest-volume writes).
+const logsDistributedTable = "logs_distributed"
+
+// ResetDistributedQueue drops and recreates logs_distributed on exactly one
+// shard, discarding that shard's local queue of not-yet-forwarded batches. The
+// Distributed engine holds no data of its own, only a local on-disk queue
+// directory tied to the table's path, so DROP+CREATE clears a queue poisoned
+// by broken or permanently unsendable batches (e.g. a schema change landing
+// before the writer that depends on it) without needing filesystem or pod
+// access. It runs as local DDL against the shard's own direct connection, not
+// ON CLUSTER, so it never touches distributed DDL/Keeper coordination -- it
+// cannot get stuck the way a cluster-wide DDL task can.
+//
+// Deliberately not DROP ... SYNC: under the Atomic database engine (the
+// default), a bare DROP delists the table and gives CREATE a fresh UUID
+// immediately, with the old data reaped later in the background -- no wait
+// required. SYNC would instead block until any in-use query against the old
+// table finishes, which risks reproducing the exact "SYSTEM FLUSH DISTRIBUTED
+// hangs forever" failure this action exists to route around, if the queue is
+// stuck because of an in-flight send.
+func (c *ClickHouseClient) ResetDistributedQueue(ctx context.Context, shardNum uint64) error {
+	if !c.IsCluster() {
+		return fmt.Errorf("distribution queue reset only applies to cluster deployments")
+	}
+
+	// Serialize per shard: two concurrent requests for the same shard must not
+	// interleave DROP/CREATE against it.
+	muAny, _ := c.resetMu.LoadOrStore(shardNum, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	conn, err := c.shardConnForNum(ctx, shardNum)
+	if err != nil {
+		return fmt.Errorf("shard %d: %w", shardNum, err)
+	}
+
+	// Detached from the inbound request's cancellation and bounded on its own:
+	// an admin closing the browser tab mid-request must not cut this sequence
+	// off between DROP and CREATE, which would leave the shard with no
+	// logs_distributed at all.
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+
+	if err := conn.Exec(opCtx, "DROP TABLE IF EXISTS "+logsDistributedTable); err != nil {
+		return fmt.Errorf("shard %d: drop %s: %w", shardNum, logsDistributedTable, err)
+	}
+
+	createSQL := fmt.Sprintf(
+		"CREATE TABLE IF NOT EXISTS %s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
+		logsDistributedTable, EscCHStr(c.Cluster),
+	)
+	// The table is now gone on this shard until CREATE succeeds. A single
+	// transient failure here (a network blip, a momentary server hiccup) would
+	// otherwise leave the shard unable to serve logs_distributed at all --
+	// worse than the degraded queue this call is meant to fix -- until the
+	// next pod restart self-heals it via Initialize. Retry a few times before
+	// surfacing that state to the caller.
+	var createErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-opCtx.Done():
+				return fmt.Errorf("shard %d: %s dropped but recreate timed out, retry this action immediately (self-heals on next pod restart otherwise): %w",
+					shardNum, logsDistributedTable, opCtx.Err())
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+		}
+		if createErr = conn.Exec(opCtx, createSQL); createErr == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("shard %d: %s dropped but recreate failed after retries, retry this action immediately (self-heals on next pod restart otherwise): %w",
+		shardNum, logsDistributedTable, createErr)
 }
 
 // GetLogFieldsByIDDirect fetches log fields by routing directly to the shard

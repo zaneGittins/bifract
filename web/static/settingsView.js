@@ -78,7 +78,93 @@ const SettingsView = {
             sharedLinksToggle.addEventListener('change', () => this.saveSharedLinksEnabled());
         }
 
+        this.loadDistQueueShards();
         this.initSectionRail();
+    },
+
+    // Loads per-shard distribution queue stats and renders one row + Reset
+    // button per shard that actually has something queued. Single-node
+    // deployments and healthy clusters get an empty (hidden) list back.
+    async loadDistQueueShards() {
+        const item = document.getElementById('distQueueResetItem');
+        const container = document.getElementById('distQueueShardList');
+        if (!item || !container) return;
+        try {
+            const res = await fetch('/api/v1/system/distribution-queue/shards', { credentials: 'include' });
+            if (!res.ok) { item.style.display = 'none'; return; }
+            const shards = await res.json();
+            const affected = (shards || []).filter(s => s.unreachable || s.data_files > 0 || s.broken_data_files > 0 || s.error_count > 0);
+            item.style.display = affected.length ? '' : 'none';
+            container.innerHTML = '';
+            affected.forEach(s => {
+                const row = document.createElement('div');
+                row.className = 'dist-queue-shard-row';
+                const label = document.createElement('span');
+                label.className = 'dist-queue-shard-label';
+                if (s.unreachable) {
+                    label.textContent = `Shard ${s.shard_num} (${s.host}): unreachable, cannot report or reset right now`;
+                    row.appendChild(label);
+                    container.appendChild(row);
+                    return; // no Reset button: the same connection failure would just repeat
+                }
+                const parts = [`${s.data_files} file(s) queued`];
+                if (s.broken_data_files) parts.push(`${s.broken_data_files} broken`);
+                if (s.error_count) parts.push(`${s.error_count} error(s)`);
+                label.textContent = `Shard ${s.shard_num} (${s.host}): ${parts.join(', ')}`;
+                const btn = document.createElement('button');
+                btn.className = 'danger-btn';
+                btn.textContent = 'Reset Queue';
+                btn.dataset.shard = String(s.shard_num);
+                btn.addEventListener('click', () => this.resetDistQueueShard(btn));
+                row.appendChild(label);
+                row.appendChild(btn);
+                container.appendChild(row);
+            });
+        } catch (err) {
+            console.error('[Settings] distribution queue shard load error:', err);
+        }
+    },
+
+    // Two-step arm-then-confirm, matching clearSpool(): this discards a
+    // shard's queued-but-unsendable batches, which is real but bounded data
+    // loss (the same category as clearSpool), not the whole-catalog severity
+    // that warrants a typed-phrase modal.
+    async resetDistQueueShard(btn) {
+        const shardNum = btn.dataset.shard;
+        if (btn.dataset.armed !== '1') {
+            btn.dataset.armed = '1';
+            btn.dataset.label = btn.textContent;
+            btn.textContent = 'Click again to confirm';
+            clearTimeout(btn._armTimer);
+            btn._armTimer = setTimeout(() => {
+                btn.dataset.armed = '0';
+                btn.textContent = btn.dataset.label || 'Reset Queue';
+            }, 5000);
+            return;
+        }
+        btn.dataset.armed = '0';
+        clearTimeout(btn._armTimer);
+        const original = btn.dataset.label || 'Reset Queue';
+        try {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Resetting...';
+            const res = await fetch('/api/v1/system/distribution-queue/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ shard_num: Number(shardNum) })
+            });
+            if (!res.ok) {
+                const msg = await res.text();
+                throw new Error(msg || 'Failed to reset distribution queue');
+            }
+            if (window.Toast) Toast.success('Distribution Queue Reset', `Shard ${shardNum}'s queue was cleared.`);
+            this.loadDistQueueShards();
+        } catch (err) {
+            if (window.Toast) Toast.error('Reset Failed', (err.message || '').trim());
+            btn.innerHTML = original;
+            btn.disabled = false;
+        }
     },
 
     // Section rail for the Settings sub-tab: click to scroll, and highlight the
