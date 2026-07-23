@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"bifract/pkg/models"
 	"bifract/pkg/parser"
 	"bifract/pkg/settings"
 )
@@ -93,10 +94,19 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 		}
 	}
 
-	// Analytics model infos for model_lookup() resolution.
+	// Analytics model infos for model_lookup() resolution. In prism context the
+	// model lives in a member fractal (models have no prism_id), so resolve
+	// across every member fractal instead of the single querying fractal.
 	var modelInfos map[string]parser.AnalyticsModelInfo
-	if h.modelManager != nil && fractalID != "" {
-		if infos, derr := h.modelManager.ListModelInfos(ctx, fractalID); derr == nil {
+	if h.modelManager != nil {
+		var infos map[string]models.ModelInfo
+		var derr error
+		if isPrismContext {
+			infos, derr = h.modelManager.ListModelInfosForFractals(ctx, prismFractalIDs)
+		} else if fractalID != "" {
+			infos, derr = h.modelManager.ListModelInfos(ctx, fractalID)
+		}
+		if derr == nil {
 			modelInfos = make(map[string]parser.AnalyticsModelInfo, len(infos))
 			for name, mi := range infos {
 				modelInfos[name] = parser.AnalyticsModelInfo{

@@ -15,6 +15,7 @@ import (
 
 	"bifract/pkg/storage"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
+	"github.com/lib/pq"
 )
 
 // Manager handles analytics model CRUD and the ClickHouse table+MV lifecycle.
@@ -186,6 +187,50 @@ func (m *Manager) ListModelInfos(ctx context.Context, fractalID string) (map[str
 			MinSample:  def.MinSample,
 			TimeBucket: def.TimeBucket,
 			FractalID:  fractalID,
+		}
+	}
+	return result, rows.Err()
+}
+
+// ListModelInfosForFractals returns a name→ModelInfo map for all active models
+// owned by any of the given fractals. Used for model_lookup() resolution in a
+// prism query, where the model being referenced lives in one specific member
+// fractal rather than the prism itself (models have no prism_id of their own).
+// On a name collision across member fractals, one arbitrarily wins (map order).
+func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []string) (map[string]ModelInfo, error) {
+	result := make(map[string]ModelInfo)
+	if len(fractalIDs) == 0 {
+		return result, nil
+	}
+	rows, err := m.pg.Query(ctx,
+		`SELECT id, name, model_type, definition, fractal_id FROM analytics_models
+		 WHERE fractal_id = ANY($1) AND status = 'active'`, pq.Array(fractalIDs))
+	if err != nil {
+		return nil, fmt.Errorf("list model infos for fractals: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, name, modelType, ownerFractalID string
+		var defRaw []byte
+		if err := rows.Scan(&id, &name, &modelType, &defRaw, &ownerFractalID); err != nil {
+			return nil, fmt.Errorf("scan model info: %w", err)
+		}
+		var def ModelDefinition
+		_ = json.Unmarshal(defRaw, &def)
+
+		tableName := chModelTableName(id)
+		if m.ch.IsCluster() {
+			tableName = chModelDistName(id)
+		}
+
+		result[name] = ModelInfo{
+			ID:         id,
+			TableName:  tableName,
+			ModelType:  ModelType(modelType),
+			MinSample:  def.MinSample,
+			TimeBucket: def.TimeBucket,
+			FractalID:  ownerFractalID,
 		}
 	}
 	return result, rows.Err()

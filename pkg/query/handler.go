@@ -575,10 +575,19 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		}
 	}
 
-	// Load analytics model infos for model_lookup() resolution
+	// Load analytics model infos for model_lookup() resolution. In prism context
+	// the model lives in a member fractal (models have no prism_id), so resolve
+	// across every member fractal instead of the single querying fractal.
 	var modelInfos map[string]parser.AnalyticsModelInfo
-	if h.modelManager != nil && selectedIndex != "" {
-		if infos, err := h.modelManager.ListModelInfos(r.Context(), selectedIndex); err == nil {
+	if h.modelManager != nil {
+		var infos map[string]models.ModelInfo
+		var err error
+		if isPrismContext {
+			infos, err = h.modelManager.ListModelInfosForFractals(r.Context(), prismFractalIDs)
+		} else if selectedIndex != "" {
+			infos, err = h.modelManager.ListModelInfos(r.Context(), selectedIndex)
+		}
+		if err == nil {
 			modelInfos = make(map[string]parser.AnalyticsModelInfo, len(infos))
 			for name, mi := range infos {
 				modelInfos[name] = parser.AnalyticsModelInfo{
@@ -913,8 +922,15 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var modelInfos map[string]parser.AnalyticsModelInfo
-	if h.modelManager != nil && selectedIndex != "" {
-		if infos, err := h.modelManager.ListModelInfos(r.Context(), selectedIndex); err == nil {
+	if h.modelManager != nil {
+		var infos map[string]models.ModelInfo
+		var err error
+		if isPrismContext {
+			infos, err = h.modelManager.ListModelInfosForFractals(r.Context(), prismFractalIDs)
+		} else if selectedIndex != "" {
+			infos, err = h.modelManager.ListModelInfos(r.Context(), selectedIndex)
+		}
+		if err == nil {
 			modelInfos = make(map[string]parser.AnalyticsModelInfo, len(infos))
 			for name, mi := range infos {
 				modelInfos[name] = parser.AnalyticsModelInfo{

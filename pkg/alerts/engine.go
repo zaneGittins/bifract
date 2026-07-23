@@ -559,9 +559,18 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 	// auto-projection includes them even if they aren't in the WHERE clause.
 	opts.AlertExtraFields = collectAlertExtraFields(alert)
 
-	// Load analytics model infos for model_lookup() BQL support.
-	if e.modelManager != nil && alert.FractalID != "" {
-		if infos, err := e.modelManager.ListModelInfos(ctx, alert.FractalID); err == nil {
+	// Load analytics model infos for model_lookup() BQL support. A prism-scoped
+	// alert has no owning fractal of its own, so resolve models across every
+	// member fractal instead (mirrors the query handler's prism handling).
+	if e.modelManager != nil {
+		var infos map[string]models.ModelInfo
+		var merr error
+		if alert.PrismID != "" {
+			infos, merr = e.modelManager.ListModelInfosForFractals(ctx, opts.FractalIDs)
+		} else if alert.FractalID != "" {
+			infos, merr = e.modelManager.ListModelInfos(ctx, alert.FractalID)
+		}
+		if merr == nil {
 			parserModels := make(map[string]parser.AnalyticsModelInfo, len(infos))
 			for name, mi := range infos {
 				parserModels[name] = parser.AnalyticsModelInfo{

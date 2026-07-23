@@ -94,9 +94,13 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		return fmt.Errorf("model %q not found — create it in the Models UI first", modelName)
 	}
 
-	fractalID := ctx.Opts.FractalID
-	if len(ctx.Opts.FractalIDs) > 0 {
-		fractalID = ctx.Opts.FractalIDs[0]
+	// In prism context FractalIDs holds every member fractal: a model's table can
+	// hold rows sourced from any member's logs (the model's MV scans all fractals
+	// matching its filter), so scoring must scan every member, not just the one
+	// the model happens to be registered under.
+	fractalIDs := ctx.Opts.FractalIDs
+	if len(fractalIDs) == 0 {
+		fractalIDs = []string{ctx.Opts.FractalID}
 	}
 
 	switch info.ModelType {
@@ -104,17 +108,17 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		if len(keyFields) != 2 {
 			return fmt.Errorf("model_lookup() for rarity models requires exactly 2 key fields: [partition_key, value_key]")
 		}
-		ctx.Plan.ModelLookupSQL = buildRarityScoringSQL(info.TableName, fractalID, info.MinSample)
+		ctx.Plan.ModelLookupSQL = buildRarityScoringSQL(info.TableName, fractalIDs, info.MinSample)
 		setModelLookupJoin(ctx, keyFields, []string{"partition_val", "value_val"})
 		ctx.Plan.ModelLookupFields = []string{"model_count", "model_total", "percent", "confidence"}
 
 	case "first_seen":
-		ctx.Plan.ModelLookupSQL = buildFirstSeenScoringSQL(info.TableName, fractalID)
+		ctx.Plan.ModelLookupSQL = buildFirstSeenScoringSQL(info.TableName, fractalIDs)
 		setModelLookupJoin(ctx, keyFields, []string{"entity_key"})
 		ctx.Plan.ModelLookupFields = []string{"first_seen", "last_seen", "event_count", "is_new"}
 
 	case "volume_baseline":
-		ctx.Plan.ModelLookupSQL = buildVolumeBaselineScoringSQL(info.TableName, fractalID, info.MinSample, info.TimeBucket)
+		ctx.Plan.ModelLookupSQL = buildVolumeBaselineScoringSQL(info.TableName, fractalIDs, info.MinSample, info.TimeBucket)
 		setModelLookupJoin(ctx, keyFields, []string{"entity_val"})
 		ctx.Plan.ModelLookupFields = []string{"latest_count", "baseline_median", "mad", "n_buckets", "z_score"}
 
@@ -123,10 +127,10 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 			return fmt.Errorf("model_lookup() for %s models requires exactly 3 key fields: [src_ip, dst_ip, dst_port]", info.ModelType)
 		}
 		if info.ModelType == "beacon" {
-			ctx.Plan.ModelLookupSQL = buildBeaconScoringSQL(info.TableName, fractalID)
+			ctx.Plan.ModelLookupSQL = buildBeaconScoringSQL(info.TableName, fractalIDs)
 			ctx.Plan.ModelLookupFields = []string{"beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "conn_count"}
 		} else {
-			ctx.Plan.ModelLookupSQL = buildLongConnScoringSQL(info.TableName, fractalID)
+			ctx.Plan.ModelLookupSQL = buildLongConnScoringSQL(info.TableName, fractalIDs)
 			ctx.Plan.ModelLookupFields = []string{"longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score"}
 		}
 		// Positional key mapping: key[0]->src_ip, key[1]->dst_ip, key[2]->dst_port.
@@ -168,36 +172,46 @@ func concatModelKeys(parts []string) string {
 	return "concat(" + strings.Join(parts, ", char(30), ") + ")"
 }
 
+// fractalIDInClause renders a `fractal_id IN (...)` predicate over one or more
+// fractal IDs, each individually escaped.
+func fractalIDInClause(fractalIDs []string) string {
+	quoted := make([]string, len(fractalIDs))
+	for i, id := range fractalIDs {
+		quoted[i] = "'" + escapeString(id) + "'"
+	}
+	return "fractal_id IN (" + strings.Join(quoted, ", ") + ")"
+}
+
 // buildBeaconScoringSQL returns the latest scored row per pair from a beacon model's
 // results table. FINAL collapses the ReplacingMergeTree to the newest scored_at.
 // beacon_score is the final (modifier-adjusted) verdict; the subscores explain it.
-func buildBeaconScoringSQL(tableName, fractalID string) string {
+func buildBeaconScoringSQL(tableName string, fractalIDs []string) string {
 	return fmt.Sprintf(`SELECT src_ip, dst_ip, dst_port,
     final_score AS beacon_score,
     regularity_score, ts_score, ds_score, dur_score, hist_score,
     prevalence, prevalence_score, conn_count
 FROM %s FINAL
-WHERE fractal_id = '%s'`,
+WHERE %s`,
 		"`"+tableName+"`",
-		escapeString(fractalID),
+		fractalIDInClause(fractalIDs),
 	)
 }
 
 // buildLongConnScoringSQL returns the latest scored row per pair from a
 // long_connection model's results table.
-func buildLongConnScoringSQL(tableName, fractalID string) string {
+func buildLongConnScoringSQL(tableName string, fractalIDs []string) string {
 	return fmt.Sprintf(`SELECT src_ip, dst_ip, dst_port,
     final_score AS longconn_score,
     total_duration, conn_count, prevalence, prevalence_score
 FROM %s FINAL
-WHERE fractal_id = '%s'`,
+WHERE %s`,
 		"`"+tableName+"`",
-		escapeString(fractalID),
+		fractalIDInClause(fractalIDs),
 	)
 }
 
 // buildRarityScoringSQL returns the triple-nested scoring subquery for a rarity model.
-func buildRarityScoringSQL(tableName, fractalID string, minSample int) string {
+func buildRarityScoringSQL(tableName string, fractalIDs []string, minSample int) string {
 	if minSample < 1 {
 		minSample = 1
 	}
@@ -213,13 +227,13 @@ FROM (
     FROM (
         SELECT partition_val, value_val, sum(event_count) AS event_count
         FROM %s FINAL
-        WHERE fractal_id = '%s'
+        WHERE %s
         GROUP BY partition_val, value_val
     )
 )
 WHERE event_count >= %d`,
 		"`"+tableName+"`",
-		escapeString(fractalID),
+		fractalIDInClause(fractalIDs),
 		minSample,
 	)
 }
@@ -229,7 +243,7 @@ WHERE event_count >= %d`,
 // computing is_new as if(min(first_seen) >= ...) in the SAME level as
 // min(first_seen) AS first_seen makes the analyzer resolve the inner first_seen to
 // the alias, yielding min(min(first_seen)) (nested aggregate, ClickHouse code 184).
-func buildFirstSeenScoringSQL(tableName, fractalID string) string {
+func buildFirstSeenScoringSQL(tableName string, fractalIDs []string) string {
 	// Two levels with NON-shadowing inner aliases (fs/ls/ec): shadowing the input
 	// column names would make min(first_seen) AS first_seen + if(min(first_seen)...)
 	// nest aggregates (code 184). The outer level derives is_new from the raw
@@ -246,11 +260,11 @@ FROM (
         max(last_seen) AS ls,
         sum(event_count) AS ec
     FROM %s FINAL
-    WHERE fractal_id = '%s'
+    WHERE %s
     GROUP BY entity_key
 )`,
 		"`"+tableName+"`",
-		escapeString(fractalID),
+		fractalIDInClause(fractalIDs),
 	)
 }
 
@@ -269,7 +283,7 @@ func volumeScoreBounds(timeBucket string) (lower, upper string) {
 // It mirrors models.buildVolumeBaselineScoringSQL: baseline = median of complete
 // daily counts, MAD = median absolute deviation, z = 0.6745*(latest-median)/MAD
 // with the mad=0 -> z=0 guard.
-func buildVolumeBaselineScoringSQL(tableName, fractalID string, minBuckets int, timeBucket string) string {
+func buildVolumeBaselineScoringSQL(tableName string, fractalIDs []string, minBuckets int, timeBucket string) string {
 	if minBuckets < 1 {
 		minBuckets = 7
 	}
@@ -289,7 +303,7 @@ FROM (
         FROM (
             SELECT entity_val, bucket, sum(event_count) AS daily_count
             FROM %s FINAL
-            WHERE fractal_id = '%s' AND bucket >= %s AND bucket < %s
+            WHERE %s AND bucket >= %s AND bucket < %s
             GROUP BY entity_val, bucket
         )
         GROUP BY entity_val
@@ -297,7 +311,7 @@ FROM (
 )
 WHERE n_buckets >= %d`,
 		"`"+tableName+"`",
-		escapeString(fractalID),
+		fractalIDInClause(fractalIDs),
 		lower, upper, minBuckets,
 	)
 }
