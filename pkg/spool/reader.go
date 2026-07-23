@@ -252,6 +252,34 @@ func (r *Reader) Truncate(cp Checkpoint) error {
 	return nil
 }
 
+// Reload drops the open segment handle and re-reads the persisted checkpoint from
+// disk, so a Reader picks up an out-of-band spool reset (segments + checkpoint
+// removed by Writer.Reset in the peer ingest process). Dropping the handle is the
+// point: without it, a Reader holding an open handle to a now-deleted segment
+// would keep reading the unlinked inode and drain data the operator cleared. With
+// the checkpoint gone it resumes from the earliest surviving segment, or reports
+// ErrNoData until the writer produces one.
+func (r *Reader) Reload() error {
+	r.closeFile()
+	cp, ok, err := loadCheckpoint(r.dir)
+	if err != nil {
+		return err
+	}
+	if ok {
+		r.cur = cp
+		return nil
+	}
+	r.cur = Checkpoint{}
+	seqs, err := listSegments(r.dir)
+	if err != nil {
+		return err
+	}
+	if len(seqs) > 0 {
+		r.cur = Checkpoint{Segment: seqs[0], Offset: 0}
+	}
+	return nil
+}
+
 // Close releases the open segment handle.
 func (r *Reader) Close() error {
 	r.closeFile()

@@ -79,6 +79,11 @@ func scoreTimestampRegularity(ts []int64) float64 {
 	return dispersionScore(deltas)
 }
 
+// skewSpreadFloor is the relative-IQR (IQR/median) at which Bowley skewness is
+// trusted at full weight. Below it, the spread is within quantization noise and the
+// skew term is damped so a tight-but-quantized beacon is not falsely penalized.
+const skewSpreadFloor = 0.1
+
 // dispersionScore returns a [0,1] consistency score for a set of values: high when
 // the values are tightly and symmetrically clustered (a hallmark of automation).
 // It combines a skewness score and a MAD score. Needs at least 3 values.
@@ -98,7 +103,15 @@ func dispersionScore(values []float64) float64 {
 	skewScore := 1.0
 	if q3-q1 != 0 {
 		skew := (q3 + q1 - 2*q2) / (q3 - q1)
-		skewScore = clamp01(1 - math.Abs(skew))
+		// Weight the penalty by relative IQR. Integer-second quantization of a
+		// tight beacon collapses the quartiles onto adjacent ticks, saturating
+		// |skew| to 1 even when the series is highly regular; only treat skew as
+		// real once the spread is a meaningful fraction of the median.
+		weight := 1.0
+		if q2 >= 1 {
+			weight = clamp01((q3 - q1) / q2 / skewSpreadFloor)
+		}
+		skewScore = clamp01(1 - math.Abs(skew)*weight)
 	}
 
 	// Median absolute deviation, normalized by the median. Low relative spread

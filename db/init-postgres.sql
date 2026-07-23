@@ -260,7 +260,12 @@ CREATE TABLE IF NOT EXISTS fractals (
     log_count BIGINT DEFAULT 0,
     size_bytes BIGINT DEFAULT 0,
     earliest_log TIMESTAMP,
-    latest_log TIMESTAMP
+    latest_log TIMESTAMP,
+
+    -- Restore provenance (set for fractals created as a restore target)
+    restored_from_fractal_id UUID REFERENCES fractals(id) ON DELETE SET NULL,
+    restored_from_ts TIMESTAMPTZ,
+    restored_to_ts TIMESTAMPTZ
 );
 
 -- Ensure only one default fractal exists
@@ -280,6 +285,13 @@ ALTER TABLE fractals ADD COLUMN IF NOT EXISTS retention_days INTEGER DEFAULT NUL
 -- Disk quota (NULL = no limit)
 ALTER TABLE fractals ADD COLUMN IF NOT EXISTS disk_quota_bytes BIGINT DEFAULT NULL;
 ALTER TABLE fractals ADD COLUMN IF NOT EXISTS disk_quota_action VARCHAR(10) DEFAULT 'reject';
+
+-- Restore provenance: set when a fractal is created as a restore target, so the
+-- UI can show it was restored from another fractal's archive over a given window.
+-- ON DELETE SET NULL keeps the workspace when its source fractal is deleted.
+ALTER TABLE fractals ADD COLUMN IF NOT EXISTS restored_from_fractal_id UUID REFERENCES fractals(id) ON DELETE SET NULL;
+ALTER TABLE fractals ADD COLUMN IF NOT EXISTS restored_from_ts TIMESTAMPTZ;
+ALTER TABLE fractals ADD COLUMN IF NOT EXISTS restored_to_ts   TIMESTAMPTZ;
 
 -- Insert default fractal (will be used for existing data migration)
 INSERT INTO fractals (name, description, is_default, created_by)
@@ -1927,6 +1939,7 @@ CREATE TABLE IF NOT EXISTS archive_restore_jobs (
     id            BIGSERIAL PRIMARY KEY,
     batch_id      UUID NOT NULL,
     fractal_id    TEXT NOT NULL,
+    target_fractal_id TEXT,
     mode          TEXT NOT NULL DEFAULT 'restore' CHECK (mode IN ('restore', 'reconcile')),
     from_ts       TIMESTAMPTZ NOT NULL,
     to_ts         TIMESTAMPTZ NOT NULL,
@@ -1947,6 +1960,10 @@ CREATE TABLE IF NOT EXISTS archive_restore_jobs (
 ALTER TABLE archive_restore_jobs ADD COLUMN IF NOT EXISTS cursor_ts    TIMESTAMPTZ;
 ALTER TABLE archive_restore_jobs ADD COLUMN IF NOT EXISTS chunks_total INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE archive_restore_jobs ADD COLUMN IF NOT EXISTS chunks_done  INTEGER NOT NULL DEFAULT 0;
+-- Destination fractal for the restored rows. NULL = same as fractal_id (a
+-- self-restore); a value routes the archive read from fractal_id into a
+-- different, typically no-retention, fractal.
+ALTER TABLE archive_restore_jobs ADD COLUMN IF NOT EXISTS target_fractal_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_archive_restore_jobs_pending
     ON archive_restore_jobs (created_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_archive_restore_jobs_created

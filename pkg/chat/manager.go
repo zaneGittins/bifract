@@ -78,9 +78,9 @@ INVALID queries (WILL FAIL, never generate these):
 
 SEARCHING LOG CONTENT:
 - To search across all log content, use /keyword/i (regex) or "keyword" (bare string)
-- raw_log contains the full original log text. Use raw_log=/keyword/i for explicit field regex.
+- A bare /keyword/i (no field) searches the full normalized log text; this is the correct way to full-text search
 - Only use specific fields (e.g. command_line=/powershell/i) when you KNOW that field exists from get_fields
-- Do NOT use "full_log". It does not exist. Use raw_log instead.
+- Do NOT use "full_log" or "raw_log" as query fields. They are not searchable; use a bare /keyword/i instead.
 
 RULES:
 - Always start with a filter like field=value, field=*, or a bare content search like *keyword*

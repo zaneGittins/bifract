@@ -269,6 +269,7 @@ const Performance = {
         if (!this._restoreInit) {
             this._restoreInit = true;
             this.restoreMode = 'restore';
+            this.restoreTarget = 'existing';
             this._restoreSelected = new Set();
             this.restorePage = 1;
             this.restorePageSize = 20;
@@ -601,13 +602,31 @@ const Performance = {
         document.querySelectorAll('#restoreModeToggle .restore-mode').forEach(b =>
             b.classList.toggle('active', b.getAttribute('data-mode') === mode));
         const hint = document.getElementById('restoreModeHint');
-        const dedupRow = document.getElementById('restoreDedupRow');
+        const targetField = document.getElementById('restoreTargetField');
         if (mode === 'reconcile') {
             if (hint) hint.textContent = 'Compares hot-store and archive counts, then restores only the rows missing from the hot store (heals a gap).';
-            if (dedupRow) dedupRow.style.display = 'none';
+            // Reconcile is inherently same-fractal; a new destination is meaningless.
+            if (targetField) targetField.style.display = 'none';
+            this.setRestoreTarget('existing');
         } else {
             if (hint) hint.textContent = 'Inserts archived rows for the window, skipping any log IDs already present.';
-            if (dedupRow) dedupRow.style.display = '';
+            if (targetField) targetField.style.display = '';
+        }
+        this.disarmRestore();
+    },
+
+    setRestoreTarget(target) {
+        this.restoreTarget = target;
+        document.querySelectorAll('#restoreTargetToggle .restore-mode').forEach(b =>
+            b.classList.toggle('active', b.getAttribute('data-target') === target));
+        const hint = document.getElementById('restoreTargetHint');
+        const nameRow = document.getElementById('restoreNewFractalRow');
+        if (target === 'new') {
+            if (hint) hint.textContent = 'Creates a new fractal with no retention and restores the selected source into it. Select a single source fractal.';
+            if (nameRow) nameRow.style.display = '';
+        } else {
+            if (hint) hint.textContent = 'Restores each selected fractal back into itself.';
+            if (nameRow) nameRow.style.display = 'none';
         }
         this.disarmRestore();
     },
@@ -683,16 +702,25 @@ const Performance = {
         if (!(new Date(toISO) > new Date(fromISO))) { this.setRestoreMsg('End must be after start.', 'error'); return; }
 
         const mode = this.restoreMode || 'restore';
-        const noDedupEl = document.getElementById('restoreNoDedup');
-        const dedup = mode === 'reconcile' ? true : !(noDedupEl && noDedupEl.checked);
+
+        // Destination: same fractal (self-restore) or a new no-retention fractal.
+        const targetMode = (mode === 'reconcile') ? 'existing' : (this.restoreTarget || 'existing');
+        let newFractalName = '';
+        if (targetMode === 'new') {
+            if (fractals.length !== 1) { this.setRestoreMsg('Restoring into a new fractal takes a single source fractal.', 'error'); return; }
+            newFractalName = ((document.getElementById('restoreNewFractalName') || {}).value || '').trim();
+            if (!newFractalName) { this.setRestoreMsg('Name the new fractal.', 'error'); return; }
+        }
 
         // Two-step arm to guard a heavy, hard-to-undo operation without a modal.
         if (!this._restoreArmed) {
             // Fresh confirmation sequence: any previous retention override is
             // void, so a changed window or fractal set is re-checked.
             this._restoreAckRetention = false;
-            const n = fractals.length;
-            this.setRestoreMsg(`Click again to confirm ${mode} of ${n} fractal${n > 1 ? 's' : ''} into the hot store.`, 'warn');
+            const confirmMsg = targetMode === 'new'
+                ? `Click again to create "${newFractalName}" and restore into it.`
+                : `Click again to confirm ${mode} of ${fractals.length} fractal${fractals.length > 1 ? 's' : ''} into the hot store.`;
+            this.setRestoreMsg(confirmMsg, 'warn');
             const btn = document.getElementById('restoreSubmitBtn');
             if (btn) { btn.textContent = 'Confirm restore'; btn.classList.add('armed'); }
             this._restoreArmed = true;
@@ -710,7 +738,8 @@ const Performance = {
                 method: 'POST', credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    fractal_ids: fractals, from: fromISO, to: toISO, mode, dedup,
+                    fractal_ids: fractals, from: fromISO, to: toISO, mode,
+                    target_mode: targetMode, new_fractal_name: newFractalName,
                     acknowledge_retention: !!this._restoreAckRetention,
                 })
             });
@@ -733,7 +762,16 @@ const Performance = {
             this._restoreAckRetention = false;
             const data = await res.json();
             const n = (data.job_ids || []).length;
-            this.setRestoreMsg(`Queued ${n} job${n > 1 ? 's' : ''}.`, 'ok');
+            if (data.target_fractal_name) {
+                this.setRestoreMsg(`Created "${data.target_fractal_name}" and queued restore.`, 'ok');
+            } else {
+                this.setRestoreMsg(`Queued ${n} job${n > 1 ? 's' : ''}.`, 'ok');
+            }
+            // Reset the destination back to self so the next restore doesn't
+            // accidentally reuse the new-fractal choice.
+            this.setRestoreTarget('existing');
+            const nameEl = document.getElementById('restoreNewFractalName');
+            if (nameEl) nameEl.value = '';
             this._restoreSelected = new Set();
             // Reset the view so the new pending jobs are visible, then close.
             this.restoreStatusFilter = '';
@@ -813,8 +851,8 @@ const Performance = {
         html += '<div class="restore-detail-grid">';
         html += row('Mode', this.escapeHtml(j.mode));
         html += row('Ingested between', `${this.fmtWindow(j.from)} &rarr; ${this.fmtWindow(j.to)} UTC`);
-        html += row('Duplicate check', j.dedup ? 'on' : 'off');
-        if (chunksTotal > 0) html += row('Chunks', `${chunksDone} of ${chunksTotal} ingest days`);
+        if (j.target_fractal_name) html += row('Destination', this.escapeHtml(j.target_fractal_name));
+        if (chunksTotal > 0) html += row('Chunks', `${chunksDone} of ${chunksTotal}`);
         if (j.cursor_ts && (j.status === 'failed' || j.status === 'canceled')) {
             html += row('Resumes from', this.fmtStamp(j.cursor_ts));
         }
@@ -875,7 +913,11 @@ const Performance = {
     },
 
     restoreRow(j) {
-        const name = (this._restoreFractals && this._restoreFractals[j.fractal_id]) || j.fractal_id;
+        const srcName = this.escapeHtml((this._restoreFractals && this._restoreFractals[j.fractal_id]) || j.fractal_id);
+        // Restore-into-fractal jobs show "source -> destination".
+        const name = j.target_fractal_id
+            ? `${srcName} <span class="restore-arrow">&rarr;</span> ${this.escapeHtml(j.target_fractal_name || j.target_fractal_id)}`
+            : srcName;
         const target = Number(j.target_rows || 0), done = Number(j.rows_restored || 0);
         const chunksTotal = Number(j.chunks_total || 0), chunksDone = Number(j.chunks_done || 0);
         const pct = chunksTotal > 0
@@ -899,7 +941,7 @@ const Performance = {
             : (j.status === 'failed' || j.status === 'canceled')
                 ? `<button class="restore-row-resume" onclick="event.stopPropagation();Performance.resumeRestoreJob(${j.id})">Resume</button>` : '';
         return `<tr class="restore-row" onclick="Performance.openRestoreDetail(${j.id})">
-            <td class="restore-td-fractal">${this.escapeHtml(name)}</td>
+            <td class="restore-td-fractal">${name}</td>
             <td class="restore-td-mode">${this.escapeHtml(j.mode)}</td>
             <td class="restore-td-window">${this.fmtWindow(j.from)} &rarr; ${this.fmtWindow(j.to)}</td>
             <td>${this.statusChip(j.status)}</td>

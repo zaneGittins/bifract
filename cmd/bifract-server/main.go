@@ -1089,6 +1089,40 @@ func main() {
 				json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 			})
 
+			// Clear the archive spool (admin only): discard un-archived buffered data
+			// on every ingest pod. The spool is durable and per-pod, so this is a
+			// broadcast, not a single wipe: incrementing a global generation asks each
+			// pod to reset its own spool and stamp a marker its archiver waits on
+			// (see startArchiveSpool + Archiver.syncSpoolClear). Pods apply it within
+			// their poll interval (~10s). Use before re-pointing to a fresh archive so
+			// the old spool's tail does not drain into the new one; NOT needed when
+			// migrating backends (there the tail correctly bridges the gap).
+			r.Post("/system/archive/spool/clear", func(w http.ResponseWriter, r *http.Request) {
+				u, ok := r.Context().Value("user").(*storage.User)
+				if !ok || u == nil || !u.IsAdmin {
+					http.Error(w, "Admin access required", http.StatusForbidden)
+					return
+				}
+				// Require archiving disabled: the reset runs on the ingest (Writer)
+				// side only while the tee is not spooling, so a clear while enabled
+				// would race live writes.
+				if v, _ := pg.GetSetting(r.Context(), archiveEnabledSetting); v == "true" {
+					http.Error(w, "Disable archiving before clearing the spool.", http.StatusConflict)
+					return
+				}
+				gen := spoolClearGeneration(pg) + 1
+				if err := pg.SetSetting(r.Context(), spool.ClearGenerationSettingKey, strconv.FormatInt(gen, 10)); err != nil {
+					http.Error(w, "Failed to request spool clear", http.StatusInternalServerError)
+					return
+				}
+				log.Printf("[Archive] spool clear requested (generation %d) by %s", gen, u.Username)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"success": true, "generation": gen,
+					"message": "Each ingest pod will clear its spool within ~10s.",
+				})
+			})
+
 			// Advanced endpoint analysis toggle (admin only): gates the process
 			// lineage/frequency materialized views (heavy per-insert triggers).
 			r.Get("/system/endpoint-analysis", func(w http.ResponseWriter, r *http.Request) {
@@ -1185,7 +1219,13 @@ func main() {
 					From       string   `json:"from"`
 					To         string   `json:"to"`
 					Mode       string   `json:"mode"`
-					Dedup      *bool    `json:"dedup"`
+					// TargetMode selects where restored rows land: "existing" (the
+					// default) restores each source fractal into itself; "new"
+					// creates a dedicated no-retention fractal and restores a single
+					// source into it.
+					TargetMode string `json:"target_mode"`
+					// NewFractalName names the fractal created when TargetMode="new".
+					NewFractalName string `json:"new_fractal_name"`
 					// AcknowledgeRetention confirms the operator has been shown that
 					// the restored window falls outside the fractal's retention and
 					// will be deleted again. See retentionConflicts.
@@ -1225,9 +1265,50 @@ func main() {
 					http.Error(w, "mode must be 'restore' or 'reconcile'", http.StatusBadRequest)
 					return
 				}
-				dedup := true
-				if body.Dedup != nil {
-					dedup = *body.Dedup
+
+				// Restore into a new dedicated fractal: create a no-retention
+				// workspace and route a single source fractal's archive into it. The
+				// new fractal has no retention, so the retention-conflict check does
+				// not apply. Restore-mode only (reconcile is inherently same-fractal),
+				// single-source only (the provenance columns hold one source).
+				if body.TargetMode == "new" {
+					if mode != "restore" {
+						http.Error(w, "Restoring into a new fractal is only supported in restore mode", http.StatusBadRequest)
+						return
+					}
+					if len(body.FractalIDs) != 1 || body.FractalIDs[0] == "" {
+						http.Error(w, "Restoring into a new fractal requires exactly one source fractal", http.StatusBadRequest)
+						return
+					}
+					if strings.TrimSpace(body.NewFractalName) == "" {
+						http.Error(w, "A name for the new fractal is required", http.StatusBadRequest)
+						return
+					}
+					sourceID := body.FractalIDs[0]
+					newFractal, err := fractalManager.CreateFractalForRestore(
+						r.Context(), strings.TrimSpace(body.NewFractalName),
+						fmt.Sprintf("Restored from fractal %s", sourceID), u.Username, sourceID, from, to)
+					if err != nil {
+						// Name collision and validation surface as a 400; the manager
+						// wraps both, so a bad name does not read as a server error.
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					batchID := uuid.NewString()
+					var id int64
+					if err := pg.QueryRow(r.Context(),
+						`INSERT INTO archive_restore_jobs (batch_id, fractal_id, target_fractal_id, mode, from_ts, to_ts, requested_by)
+						 VALUES ($1, $2, $3, 'restore', $4, $5, $6) RETURNING id`,
+						batchID, sourceID, newFractal.ID, from, to, u.Username).Scan(&id); err != nil {
+						http.Error(w, "Fractal created but failed to enqueue restore job", http.StatusInternalServerError)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"success": true, "batch_id": batchID, "job_ids": []int64{id},
+						"target_fractal_id": newFractal.ID, "target_fractal_name": newFractal.Name,
+					})
+					return
 				}
 
 				// Restoring past a fractal's retention horizon puts rows back that
@@ -1261,9 +1342,9 @@ func main() {
 					}
 					var id int64
 					err := pg.QueryRow(r.Context(),
-						`INSERT INTO archive_restore_jobs (batch_id, fractal_id, mode, from_ts, to_ts, dedup, requested_by)
-						 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-						batchID, fid, mode, from, to, dedup, u.Username).Scan(&id)
+						`INSERT INTO archive_restore_jobs (batch_id, fractal_id, mode, from_ts, to_ts, requested_by)
+						 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+						batchID, fid, mode, from, to, u.Username).Scan(&id)
 					if err != nil {
 						http.Error(w, "Failed to enqueue restore job", http.StatusInternalServerError)
 						return
@@ -1363,13 +1444,18 @@ func main() {
 					return
 				}
 				offset := (page - 1) * pageSize
+				// LEFT JOIN the destination fractal so the UI can show "-> name"
+				// for restore-into-fractal jobs. Columns are qualified because the
+				// join collides on id/created_at.
 				rows, err := pg.Query(r.Context(),
-					`SELECT id, batch_id, fractal_id, mode, from_ts, to_ts, dedup, status,
-					        target_rows, rows_restored, chunks_total, chunks_done, cursor_ts,
-					        COALESCE(error, ''), COALESCE(requested_by, ''),
-					        created_at, started_at, finished_at
-					 FROM archive_restore_jobs `+where+
-						fmt.Sprintf(" ORDER BY created_at DESC LIMIT %d OFFSET %d", pageSize, offset), args...)
+					`SELECT j.id, j.batch_id, j.fractal_id, j.target_fractal_id, COALESCE(tf.name, ''),
+					        j.mode, j.from_ts, j.to_ts, j.status,
+					        j.target_rows, j.rows_restored, j.chunks_total, j.chunks_done, j.cursor_ts,
+					        COALESCE(j.error, ''), COALESCE(j.requested_by, ''),
+					        j.created_at, j.started_at, j.finished_at
+					 FROM archive_restore_jobs j
+					 LEFT JOIN fractals tf ON tf.id::text = j.target_fractal_id `+where+
+						fmt.Sprintf(" ORDER BY j.created_at DESC LIMIT %d OFFSET %d", pageSize, offset), args...)
 				if err != nil {
 					http.Error(w, "Failed to load jobs", http.StatusInternalServerError)
 					return
@@ -1381,23 +1467,27 @@ func main() {
 						id                         int64
 						batchID, fid, mode, status string
 						errMsg, reqBy              string
+						targetID, targetName       sql.NullString
 						from, to, created          time.Time
 						started, finished, cursor  sql.NullTime
 						target, restored           int64
 						chunksTotal, chunksDone    int
-						dedup                      bool
 					)
-					if err := rows.Scan(&id, &batchID, &fid, &mode, &from, &to, &dedup, &status,
+					if err := rows.Scan(&id, &batchID, &fid, &targetID, &targetName, &mode, &from, &to, &status,
 						&target, &restored, &chunksTotal, &chunksDone, &cursor,
 						&errMsg, &reqBy, &created, &started, &finished); err != nil {
 						continue
 					}
 					j := map[string]interface{}{
 						"id": id, "batch_id": batchID, "fractal_id": fid, "mode": mode,
-						"from": from.UTC(), "to": to.UTC(), "dedup": dedup, "status": status,
+						"from": from.UTC(), "to": to.UTC(), "status": status,
 						"target_rows": target, "rows_restored": restored,
 						"chunks_total": chunksTotal, "chunks_done": chunksDone,
 						"requested_by": reqBy, "created_at": created.UTC(),
+					}
+					if targetID.Valid && targetID.String != "" {
+						j["target_fractal_id"] = targetID.String
+						j["target_fractal_name"] = targetName.String
 					}
 					if cursor.Valid {
 						j["cursor_ts"] = cursor.Time.UTC()
@@ -1422,7 +1512,7 @@ func main() {
 			// Cancel a pending or running restore job. Moving the row out of
 			// 'running' is the cancel signal: the owning worker notices on its next
 			// heartbeat, issues KILL QUERY against the insert's query_id, and stops.
-			// Rows already inserted stay put; re-running in dedup mode resumes safely.
+			// Rows already inserted stay put; re-running is idempotent (always deduped).
 			r.Post("/system/archive/restore/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
 				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
 					http.Error(w, "Admin access required", http.StatusForbidden)
@@ -1447,7 +1537,7 @@ func main() {
 			// Resume a failed or cancelled restore. cursor_ts survives on the row, so
 			// requeueing picks up at the first unfinished ingest-day chunk instead of
 			// replaying the whole window. Safe to use even if the cursor is stale:
-			// restores run in dedup mode by default and are idempotent.
+			// restores are always deduped and therefore idempotent.
 			r.Post("/system/archive/restore/{id}/resume", func(w http.ResponseWriter, r *http.Request) {
 				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
 					http.Error(w, "Admin access required", http.StatusForbidden)
@@ -2087,6 +2177,13 @@ func main() {
 	// listings, so requests for a directory 404 instead of enumerating it.
 	fileServer := http.FileServer(noDirFS{http.Dir("./web")})
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
+		// Revalidate on every load. Without this the browser heuristically
+		// reuses cached assets without asking, which after a deploy leaves a
+		// stale mix (e.g. new dashboards.js calling into an old utils.js). The
+		// file server still answers If-Modified-Since with 304, so an unchanged
+		// asset costs only a small conditional round-trip, not a re-download.
+		w.Header().Set("Cache-Control", "no-cache")
+
 		if r.URL.Path == "/" {
 			http.ServeFile(w, r, "./web/index.html")
 			return
@@ -2469,6 +2566,23 @@ func startArchiveSpool(q *ingest.IngestQueue, pg *storage.PostgresClient) {
 			enabled = v == "true"
 		}
 		q.SetArchiveEnabled(enabled)
+		// Apply an admin "clear archive spool" request. Only while archiving is
+		// disabled (so nothing is spooling) and only when the global clear
+		// generation is ahead of what this pod's spool last applied: reset the local
+		// spool, then stamp the marker the co-located archiver waits on before it
+		// resumes draining. This is the Writer side of the clear handshake; the
+		// archiver (Reader) re-syncs off the marker.
+		if !enabled {
+			if gen := spoolClearGeneration(pg); gen > spool.ReadClearGeneration(spoolPath) {
+				if err := w.Reset(); err != nil {
+					log.Printf("Warning: clear archive spool failed: %v", err)
+				} else if err := spool.WriteClearGeneration(spoolPath, gen); err != nil {
+					log.Printf("Warning: clear archive spool marker write failed: %v", err)
+				} else {
+					log.Printf("Archive spool cleared (generation %d)", gen)
+				}
+			}
+		}
 		// Publish spool state so the app/UI tier can report archive provisioning and
 		// usage even when (in a split deployment) the spool lives in this separate
 		// ingest container.
@@ -2488,6 +2602,21 @@ func startArchiveSpool(q *ingest.IngestQueue, pg *storage.PostgresClient) {
 			refresh()
 		}
 	}()
+}
+
+// spoolClearGeneration reads the current global clear-spool generation from
+// settings (0 when unset). An admin action increments it to request that every
+// ingest pod reset its spool.
+func spoolClearGeneration(pg *storage.PostgresClient) int64 {
+	v, err := pg.GetSetting(context.Background(), spool.ClearGenerationSettingKey)
+	if err != nil || v == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // APIKeyValidatorAdapter adapts apikeys.Storage to auth.APIKeyValidator interface

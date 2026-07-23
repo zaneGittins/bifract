@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -39,6 +40,11 @@ type Archiver struct {
 	committedCP   spool.Checkpoint // last checkpoint persisted to the spool
 	lastFlush     time.Time
 	lastHeartbeat time.Time
+
+	// appliedClearGen is the "clear archive spool" generation this archiver has
+	// re-synced its Reader to (see syncSpoolClear). It trails the marker the peer
+	// ingest Writer stamps after resetting the shared spool.
+	appliedClearGen int64
 }
 
 // NewArchiver constructs an archiver over the spool and catalog. enabled is
@@ -82,6 +88,15 @@ func (a *Archiver) Run(ctx context.Context) error {
 		// Paused: archiving toggled off at runtime. Stop draining but stay alive;
 		// spooled data remains durable and resumes from the checkpoint on re-enable.
 		if !a.enabled() {
+			if !sleep(ctx, a.cfg.PollInterval) {
+				return ctx.Err()
+			}
+			continue
+		}
+
+		// Apply/await an admin "clear archive spool" before draining, so a cleared
+		// spool is never partially shipped to the archive.
+		if !a.syncSpoolClear(ctx) {
 			if !sleep(ctx, a.cfg.PollInterval) {
 				return ctx.Err()
 			}
@@ -223,6 +238,51 @@ func (a *Archiver) flush(ctx context.Context) error {
 	a.committedCP = a.lastReadCP
 	markCommit(ctx, a.db)
 	return nil
+}
+
+// syncSpoolClear applies a completed "clear archive spool" before draining.
+//
+// The peer ingest Writer performs the actual reset (while archiving is disabled)
+// and stamps the shared spool's clear marker. This archiver watches that marker:
+// when it advances, the spool underneath has been emptied, so the Reader's open
+// handle and any in-memory pending buffer reference deleted segments and must be
+// dropped, or a cleared spool would still be shipped to the archive.
+//
+// It returns false when a clear has been REQUESTED (the settings generation) but
+// the Writer has not finished it yet (marker still behind), so Run holds off
+// draining until the reset completes.
+func (a *Archiver) syncSpoolClear(ctx context.Context) bool {
+	if marker := spool.ReadClearGeneration(a.cfg.SpoolPath); marker > a.appliedClearGen {
+		if err := a.reader.Reload(); err != nil {
+			log.Printf("[Archiver] spool reload after clear failed: %v", err)
+			return false
+		}
+		// Drop pre-clear data buffered in memory and re-anchor the checkpoints to
+		// the reset spool so nothing stale is flushed.
+		a.pending = make(map[string][]storage.LogEntry)
+		a.pendingBytes = make(map[string]int64)
+		a.totalBytes = 0
+		a.lastReadCP = a.reader.Position()
+		a.committedCP = a.reader.Position()
+		a.appliedClearGen = marker
+		log.Printf("[Archiver] applied spool clear (generation %d)", marker)
+	}
+	// A clear requested but not yet applied by the writer: hold off draining.
+	return spoolClearRequested(ctx, a.db) <= a.appliedClearGen
+}
+
+// spoolClearRequested reads the global clear-spool generation from settings (0
+// when unset or db is nil), matched per loop against the applied marker.
+func spoolClearRequested(ctx context.Context, db *sql.DB) int64 {
+	if db == nil {
+		return 0
+	}
+	var v string
+	if err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", spool.ClearGenerationSettingKey).Scan(&v); err != nil {
+		return 0
+	}
+	n, _ := strconv.ParseInt(v, 10, 64)
+	return n
 }
 
 // maybeHeartbeat refreshes archive_status liveness at most every

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	"bifract/pkg/storage"
@@ -51,6 +52,36 @@ func (m *Manager) CreateFractal(ctx context.Context, req CreateFractalRequest, c
 	}
 
 	return fractal, nil
+}
+
+// CreateFractalForRestore creates a no-retention fractal to receive restored
+// archive data, stamped with where it was restored from. Same validation and
+// create hook as CreateFractal; the source/window are recorded for display.
+func (m *Manager) CreateFractalForRestore(ctx context.Context, name, description, createdBy, sourceFractalID string, from, to time.Time) (*Fractal, error) {
+	if err := m.validateCreateRequest(CreateFractalRequest{Name: name, Description: description}); err != nil {
+		return nil, err
+	}
+	existing, err := m.storage.GetFractalByName(ctx, name)
+	if err == nil && existing != nil {
+		return nil, fmt.Errorf("fractal with name '%s' already exists", name)
+	}
+	fractal, err := m.storage.CreateFractalForRestore(ctx, name, description, createdBy, sourceFractalID, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create restore fractal: %w", err)
+	}
+	if m.onCreateHook != nil {
+		m.onCreateHook(ctx, fractal)
+	}
+	return fractal, nil
+}
+
+// GetFractalProvenance returns a fractal's restore provenance (ok=false when it
+// was not created as a restore target).
+func (m *Manager) GetFractalProvenance(ctx context.Context, fractalID string) (*RestoreProvenance, bool, error) {
+	if fractalID == "" {
+		return nil, false, fmt.Errorf("fractal ID is required")
+	}
+	return m.storage.GetFractalProvenance(ctx, fractalID)
 }
 
 // GetFractal retrieves an index by ID

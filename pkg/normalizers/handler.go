@@ -221,19 +221,13 @@ func (h *Handler) HandleSamples(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	samples, err := h.collectSamples(ctx, h.ch.HotReadTable(), "ingest_timestamp", "", fractalID, scanRows, limit)
+	// raw_log lives in logs_raw, which already holds only the last 7 days; order by
+	// timestamp to surface the most recent samples.
+	samples, err := h.collectSamples(ctx, h.ch.RawReadTable(), "timestamp", "", fractalID, scanRows, limit)
 	if err != nil {
-		log.Printf("[Normalizers] Sample capture from hot table failed: %v", err)
-	}
-	if len(samples) == 0 {
-		// raw_log carries a 7-day TTL, so a wider window would return empty rows.
-		samples, err = h.collectSamples(ctx, h.ch.ReadTable(), "timestamp",
-			"AND timestamp >= now() - INTERVAL 7 DAY", fractalID, scanRows, limit)
-		if err != nil {
-			log.Printf("[Normalizers] Sample capture failed: %v", err)
-			h.respondError(w, http.StatusInternalServerError, "Failed to capture samples")
-			return
-		}
+		log.Printf("[Normalizers] Sample capture failed: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to capture samples")
+		return
 	}
 
 	if samples == nil {

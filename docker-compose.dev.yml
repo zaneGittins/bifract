@@ -2,6 +2,8 @@ services:
   bifract:
     build: .
     image: bifract-dev
+    environment:
+      BIFRACT_MODEL_SCORE_INTERVAL: "30"
 
   caddy:
     volumes:

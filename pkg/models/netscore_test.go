@@ -112,6 +112,29 @@ func TestScoreBeacon_BurstyScoresLow(t *testing.T) {
 	}
 }
 
+// TestScoreBeacon_QuantizedTightBeacon guards the Bowley-skew regression: a tight
+// beacon whose second-resolution intervals take only a few adjacent integer values
+// (e.g. Merlin d90/j3: ~92s median, ~1s MAD) collapses the quartiles onto adjacent
+// ticks. Without relative-IQR weighting, Bowley skew saturates to 1 and halves the
+// timing score to ~0.5 for a textbook beacon. It must score high instead.
+func TestScoreBeacon_QuantizedTightBeacon(t *testing.T) {
+	// Deterministic deltas drawn from {90,91,92,93,94} clustered near 92, matching
+	// the observed distribution of a real low-jitter beacon at second resolution.
+	pattern := []int64{92, 91, 93, 92, 91, 92, 93, 92, 90, 92, 93, 91, 92, 94, 92}
+	ts := make([]int64, 0, 300)
+	var cur int64 = 0
+	ts = append(ts, cur)
+	for i := 0; len(ts) < 300; i++ {
+		cur += pattern[i%len(pattern)]
+		ts = append(ts, cur)
+	}
+	p := PairAgg{Count: uint64(len(ts)), TsList: ts, SizeList: constSizes(1024, len(ts)), FirstTs: ts[0], LastTs: ts[len(ts)-1]}
+	got := ScoreBeacon(p, defaultBeaconParams(), testWindowSecs)
+	if got.TsScore < 0.85 {
+		t.Fatalf("tight quantized beacon must score high on timing, got ts_score=%.3f (%+v)", got.TsScore, got)
+	}
+}
+
 func TestScoreBeacon_TooFewPoints(t *testing.T) {
 	ts := []int64{0, 300, 600} // only 3 points (< 4)
 	p := PairAgg{Count: 3, TsList: ts, SizeList: constSizes(1024, 3), FirstTs: 0, LastTs: 600}

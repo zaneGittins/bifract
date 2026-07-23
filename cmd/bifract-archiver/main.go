@@ -389,21 +389,29 @@ func archiveEnabledFromDB(dsn string) bool {
 
 // restoreCmd replays an Iceberg event-time window back into ClickHouse.
 //
-//	bifract-archiver restore --fractal <id> --from <ts> --to <ts> [--no-dedup]
+//	bifract-archiver restore --fractal <id> --from <ts> --to <ts> [--target <id>]
+//
+// --target routes the restored rows into a different fractal (restore into a
+// dedicated workspace); it defaults to --fractal for a self-restore. The CLI does
+// not create the target fractal; it must already exist. Restore is always deduped.
 func restoreCmd(args []string) {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
-	fractal := fs.String("fractal", "", "fractal UUID (required)")
+	fractal := fs.String("fractal", "", "source fractal UUID whose archive to read (required)")
+	target := fs.String("target", "", "destination fractal UUID (default: same as --fractal)")
 	fromS := fs.String("from", "", "window start (RFC3339 or 'YYYY-MM-DD [HH:MM:SS]', required)")
 	toS := fs.String("to", "", "window end (exclusive, required)")
-	noDedup := fs.Bool("no-dedup", false, "straight insert (skip windowed log_id anti-join)")
 	fs.Parse(args)
 
 	from, to := mustParseWindow(*fractal, *fromS, *toS)
+	tgt := *target
+	if tgt == "" {
+		tgt = *fractal
+	}
 	cfg, cat, ch := restoreDeps()
 	defer ch.Close()
 
-	log.Printf("restoring fractal %s ingested [%s, %s) dedup=%v ...", *fractal, chFmt(from), chFmt(to), !*noDedup)
-	n, err := cat.Restore(context.Background(), ch, cfg.Obj, *fractal, from, to, !*noDedup, "", logRestoreChunk)
+	log.Printf("restoring fractal %s -> %s ingested [%s, %s) ...", *fractal, tgt, chFmt(from), chFmt(to))
+	n, err := cat.Restore(context.Background(), ch, cfg.Obj, *fractal, tgt, from, to, "", logRestoreChunk)
 	if err != nil {
 		log.Fatalf("restore failed: %v", err)
 	}
@@ -413,8 +421,8 @@ func restoreCmd(args []string) {
 // logRestoreChunk reports per-chunk progress for the one-shot CLI commands. The
 // timestamp it prints is the resume point: re-running with --from set to it
 // continues where an interrupted run stopped.
-func logRestoreChunk(next time.Time, chunksDone int, rowsSoFar int64) {
-	log.Printf("  chunk %d done, %d row(s) so far; resume point %s", chunksDone, rowsSoFar, chFmt(next))
+func logRestoreChunk(next time.Time, chunksDone, chunksTotal int, rowsSoFar int64) {
+	log.Printf("  chunk %d/%d done, %d row(s) so far; resume point %s", chunksDone, chunksTotal, rowsSoFar, chFmt(next))
 }
 
 // reconcileCmd heals a ClickHouse gap from Iceberg (restores when Iceberg holds

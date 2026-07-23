@@ -713,6 +713,21 @@
     cursor: pointer;
 }
 
+/* New-fractal name input in the restore drawer, shown when destination = new. */
+.restore-newfractal-row {
+    margin-top: 8px;
+}
+
+.restore-newfractal-row .restore-input {
+    width: 100%;
+}
+
+/* source -> destination arrow in the restore jobs table. */
+.restore-arrow {
+    color: var(--text-muted);
+    margin: 0 2px;
+}
+
 .restore-row-progress {
     display: inline-block;
     vertical-align: middle;

@@ -21,7 +21,7 @@ const BQLLang = {
 
     // Base columns of the log table (always queryable, independent of the JSON
     // fields). Surfaced in completion alongside the configured schema fields.
-    baseColumns: ['timestamp', 'raw_log', 'ingest_timestamp', 'fractal_id', 'log_id'],
+    baseColumns: ['timestamp', 'norm_log', 'ingest_timestamp', 'fractal_id', 'log_id'],
     // Configured schema fields (project defaults + admin-defined custom), loaded
     // from the backend so completion knows useful field names before any query runs.
     schemaFields: [],

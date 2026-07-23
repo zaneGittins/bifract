@@ -7,10 +7,6 @@ USE logs;
 -- Create the main logs table with fractal isolation support
 CREATE TABLE IF NOT EXISTS logs (
     timestamp DateTime64(3),
-    -- raw_log is the true PRE-normalization original, kept only as a short troubleshooting
-    -- window (parser debugging). It is NOT addressable in BQL; norm_log is the canonical
-    -- text field. Column TTL reclaims it after 7 days.
-    raw_log String CODEC(ZSTD(3)) TTL toDateTime(timestamp) + INTERVAL 7 DAY,
     log_id String,
     fields JSON(
         max_dynamic_paths=1024,
@@ -119,7 +115,10 @@ ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_process_guid       fields.process_g
 -- column, so on existing data it is computed-on-read until MATERIALIZE COLUMN runs.
 ALTER TABLE logs ADD COLUMN IF NOT EXISTS norm_log String DEFAULT toString(fields) CODEC(ZSTD(3));
 ALTER TABLE logs ADD COLUMN IF NOT EXISTS normalizer LowCardinality(String) DEFAULT '';
-ALTER TABLE logs MODIFY COLUMN raw_log String CODEC(ZSTD(3)) TTL toDateTime(timestamp) + INTERVAL 7 DAY;
+-- raw_log lives in its own daily-partitioned logs_raw table (whole-partition TTL drop),
+-- never as a column TTL here: a column TTL on the largest column forces perpetual part
+-- rewrites during merges. Drop it defensively on installs that predate the split.
+ALTER TABLE logs DROP COLUMN IF EXISTS raw_log;
 
 -- Full-text n-gram index now lives on lower(norm_log) (the canonical text field), not
 -- raw_log. DROP/ADD INDEX are metadata-only and instant, so this is safe at startup.
@@ -129,6 +128,23 @@ ALTER TABLE logs MODIFY COLUMN raw_log String CODEC(ZSTD(3)) TTL toDateTime(time
 ALTER TABLE logs DROP INDEX IF EXISTS raw_log_inverted;
 ALTER TABLE logs DROP INDEX IF EXISTS raw_log_ngram_lc;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS norm_log_ngram_lc lower(norm_log) TYPE text(tokenizer = ngrams(3)) GRANULARITY 1;
+
+-- Pre-normalization original log text, split out of the logs table into its own
+-- daily-partitioned table so its 7-day retention is a metadata-only DROP PARTITION
+-- (ttl_only_drop_parts) instead of a column TTL, which on the largest column forces
+-- perpetual part rewrites during merges. Read only by the log-detail "Raw" tab and the
+-- normalizer preview, both keyed by (timestamp, log_id).
+CREATE TABLE IF NOT EXISTS logs_raw (
+    timestamp   DateTime64(3),
+    fractal_id  LowCardinality(String) DEFAULT '',
+    log_id      String,
+    raw_log     String CODEC(ZSTD(3)),
+    INDEX log_id_bloom log_id TYPE bloom_filter(0.001) GRANULARITY 1
+) ENGINE = MergeTree()
+PARTITION BY (fractal_id, toDate(timestamp))
+ORDER BY (timestamp, log_id)
+TTL toDateTime(timestamp) + INTERVAL 7 DAY DELETE
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 
 -- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
 -- Querying this instead of raw logs reduces the recent-logs histogram from a
@@ -160,7 +176,6 @@ GROUP BY fractal_id, minute;
 -- TTL is a safety net only; the StartHotTableCleaner goroutine is the primary mechanism.
 CREATE TABLE IF NOT EXISTS logs_hot (
     timestamp        DateTime64(3),
-    raw_log          String CODEC(ZSTD(3)),
     log_id           String,
     fields           JSON(
         max_dynamic_paths=1024,
@@ -216,7 +231,6 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 CREATE MATERIALIZED VIEW IF NOT EXISTS logs_hot_mv TO logs_hot AS
 SELECT
     timestamp,
-    raw_log,
     log_id,
     fields,
     fractal_id,
@@ -232,6 +246,9 @@ FROM logs;
 -- Migration 012 carries the same changes plus the matching MODIFY QUERY for the MV.
 ALTER TABLE logs_hot ADD COLUMN IF NOT EXISTS norm_log String DEFAULT toString(fields) CODEC(ZSTD(3));
 ALTER TABLE logs_hot ADD COLUMN IF NOT EXISTS normalizer LowCardinality(String) DEFAULT '';
+-- logs_hot no longer mirrors raw_log (it is not addressable by any alert query). Drop it
+-- defensively; the feeding MV (logs_hot_mv) no longer projects it.
+ALTER TABLE logs_hot DROP COLUMN IF EXISTS raw_log;
 
 -- Process-lineage skeleton: one row per process-create event, ordered by
 -- (fractal_id, process_guid) so ptg() traversal hops are primary-key point lookups

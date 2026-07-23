@@ -1,11 +1,23 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: bifract-ingest
   namespace: bifract
 spec:
+  # A StatefulSet (not a Deployment) so each ingest pod gets its own stable,
+  # durable spool PVC via volumeClaimTemplates. The archive spool is the
+  # fail-closed durability boundary (fsync before ack); on an emptyDir it was lost
+  # on every rolling update or eviction, silently punching a hole in the archive
+  # that only the completeness sweep could later detect. serviceName points at the
+  # headless Service below; routing still goes through the ClusterIP Service.
+  serviceName: bifract-ingest-headless
+  # Parallel management: this tier is load-balanced and stateless apart from its
+  # own spool, so pods start/scale together like a Deployment rather than waiting
+  # for ordinal ordering.
+  podManagementPolicy: Parallel
   # Independently scalable data-plane tier. Scale to 0 to pause ingest during
-  # ClickHouse merge recovery while the app/UI tier keeps serving.
+  # ClickHouse merge recovery while the app/UI tier keeps serving. Each pod's spool
+  # PVC persists across a scale-to-0/back, so buffered data survives the pause.
   replicas: {{.IngestReplicas}}
   selector:
     matchLabels:
@@ -34,6 +46,10 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+        # The spool PVC is CSI-provisioned and root-owned by default; fsGroup makes
+        # it group-writable so the non-root (65534) ingest/archiver containers can
+        # write the spool under readOnlyRootFilesystem.
+        fsGroup: 65534
       containers:
         # Ingest data plane: `/bifract-server ingest`. No control plane, no UI.
         - name: bifract-ingest
@@ -101,12 +117,11 @@ spec:
                   optional: true
             - name: BIFRACT_ARCHIVE_SPOOL_PATH
               value: /var/lib/bifract/spool
+            # Spool capacity watermark: ingest backpressures (429) at 90% of this.
+            # Defaults to ~80% of the spool PVC so a full spool hits backpressure,
+            # not ENOSPC; moves with the size profile. Override via the secret.
             - name: BIFRACT_ARCHIVE_SPOOL_MAX_BYTES
-              valueFrom:
-                secretKeyRef:
-                  name: bifract-secrets
-                  key: ARCHIVE_SPOOL_MAX_BYTES
-                  optional: true
+              value: "{{.SpoolMaxBytes}}"
             - name: BIFRACT_ARCHIVE_ROLL_BYTES
               valueFrom:
                 secretKeyRef:
@@ -307,23 +322,48 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-        # Pod-local spool shared between the ingest server (writer) and archiver
-        # (reader). emptyDir (disk medium) is ephemeral; a pod restart while the
-        # spool holds un-archived data relies on the reconcile path to heal any gap
-        # (ClickHouse still holds the recent window). NOT Memory medium.
-        - name: spool
-          emptyDir: {}
         - name: archiver-tmp
           emptyDir: {}
+        # Disk-backend local Iceberg path. Only used by the (single-pod/testing)
+        # disk backend; production uses S3/Azure, where this is unused. Ephemeral by
+        # design -- unlike the spool, it is not a durability boundary.
         - name: archive-data
           emptyDir: {}
+  # Per-pod durable spool. Shared within the pod by the ingest server (writer) and
+  # the archiver sidecar (reader). Survives pod restarts, rolling updates, and
+  # evictions, so un-archived batches are never dropped. ReadWriteOnce: exactly one
+  # pod (its own) mounts each claim, matching the spool's single-writer contract.
+  volumeClaimTemplates:
+    - metadata:
+        name: spool
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{.SpoolPVCSize}}
 ---
+# ClusterIP Service: the load-balanced ingest endpoint Caddy routes to.
 apiVersion: v1
 kind: Service
 metadata:
   name: bifract-ingest
   namespace: bifract
 spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+  selector:
+    app: bifract-ingest
+---
+# Headless Service backing the StatefulSet's stable per-pod DNS identity. Not used
+# for routing (the ClusterIP Service above does that); required by StatefulSet.
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifract-ingest-headless
+  namespace: bifract
+spec:
+  clusterIP: None
   ports:
     - port: 8080
       targetPort: 8080

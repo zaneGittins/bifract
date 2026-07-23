@@ -593,10 +593,17 @@
                                             <button type="button" class="restore-mode" data-mode="reconcile" onclick="Performance.setRestoreMode('reconcile')">Reconcile</button>
                                         </div>
                                         <span class="restore-mode-hint" id="restoreModeHint">Inserts archived rows for the window, skipping any log IDs already present.</span>
-                                        <label class="restore-checkbox" id="restoreDedupRow">
-                                            <input type="checkbox" id="restoreNoDedup">
-                                            <span>Skip duplicate check <span class="restore-sublabel">faster, only if the window is empty in the hot store</span></span>
-                                        </label>
+                                    </div>
+                                    <div class="restore-field" id="restoreTargetField">
+                                        <label class="restore-label">Destination</label>
+                                        <div class="restore-mode-toggle" id="restoreTargetToggle">
+                                            <button type="button" class="restore-mode active" data-target="existing" onclick="Performance.setRestoreTarget('existing')">Same fractal</button>
+                                            <button type="button" class="restore-mode" data-target="new" onclick="Performance.setRestoreTarget('new')">New fractal</button>
+                                        </div>
+                                        <span class="restore-mode-hint" id="restoreTargetHint">Restores each selected fractal back into itself.</span>
+                                        <div class="restore-newfractal-row" id="restoreNewFractalRow" style="display:none;">
+                                            <input type="text" id="restoreNewFractalName" class="restore-input" placeholder="New fractal name" maxlength="100">
+                                        </div>
                                     </div>
                                 </div>
                                 <div class="archive-drawer-footer">
@@ -853,6 +860,17 @@
                                     </div>
                                     <div class="sp-row-control">
                                         <button id="archiveClearCatalogBtn" class="danger-btn">Clear Catalog</button>
+                                    </div>
+                                </div>
+                                <div class="sp-row" id="archiveClearSpoolItem">
+                                    <div class="sp-row-info">
+                                        <span class="sp-row-label">Clear archive spool</span>
+                                        <p class="sp-row-desc">Discards un-archived buffered logs on every ingest pod. Use before pointing at a fresh archive so the old spool's tail does not drain into the new one.</p>
+                                        <p class="sp-row-meta">Not needed when migrating backends: there the buffered tail correctly bridges the gap into the new archive. Each ingest pod applies this within about 10 seconds.</p>
+                                        <p class="sp-row-blocked" id="archiveClearSpoolBlocked" style="display:none;">Disable the Iceberg archive above before clearing the spool.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <button id="archiveClearSpoolBtn" class="danger-btn">Clear Spool</button>
                                     </div>
                                 </div>
                                 <div class="sp-row" id="schemaResetItem">

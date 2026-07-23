@@ -127,6 +127,26 @@ func (c *ClickHouseClient) WriteTable() string {
 	return "logs"
 }
 
+// RawWriteTable returns the table for raw_log inserts. In cluster mode this is
+// logs_raw_distributed so the Distributed engine shards writes across nodes.
+func (c *ClickHouseClient) RawWriteTable() string {
+	if c.Cluster != "" {
+		return "logs_raw_distributed"
+	}
+	return "logs_raw"
+}
+
+// RawReadTable returns the table for raw_log point lookups (detail "Raw" tab,
+// normalizer preview). In cluster mode this is logs_raw_distributed: a raw_log row
+// is placed independently of its logs row (separate rand() distribution), so it is
+// not co-located on any one shard and must be read via the fan-out table.
+func (c *ClickHouseClient) RawReadTable() string {
+	if c.Cluster != "" {
+		return "logs_raw_distributed"
+	}
+	return "logs_raw"
+}
+
 // HistogramReadTable returns the table name for pre-aggregated histogram reads.
 // In cluster mode this fans out to all shards via logs_histogram_distributed.
 func (c *ClickHouseClient) HistogramReadTable() string {
@@ -363,6 +383,13 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 			if err := c.conn.Exec(ctx, freqDistSQL); err != nil {
 				return fmt.Errorf("failed to create proc_freq distributed table: %w\nstatement: %s", err, freqDistSQL)
 			}
+			rawDistSQL := fmt.Sprintf(
+				"CREATE TABLE IF NOT EXISTS logs_raw_distributed%s AS logs_raw ENGINE = Distributed('%s', currentDatabase(), 'logs_raw', rand())",
+				c.OnClusterSQL(), EscCHStr(c.Cluster),
+			)
+			if err := c.conn.Exec(ctx, rawDistSQL); err != nil {
+				return fmt.Errorf("failed to create logs_raw distributed table: %w\nstatement: %s", err, rawDistSQL)
+			}
 		}
 		setClickHouseMigrationsBaseline(ctx, c.conn, c.RewriteEngine, migrations, migrationsDir)
 		c.markSchemaReady()
@@ -397,6 +424,10 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 			"CREATE TABLE IF NOT EXISTS process_edges_distributed AS process_edges ENGINE = Distributed('%s', currentDatabase(), 'process_edges', rand())",
 			EscCHStr(c.Cluster),
 		)
+		rawDistSQL := fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS logs_raw_distributed AS logs_raw ENGINE = Distributed('%s', currentDatabase(), 'logs_raw', rand())",
+			EscCHStr(c.Cluster),
+		)
 		go func() {
 			initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
 
@@ -426,7 +457,7 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 						log.Printf("Applied %d ClickHouse migration(s) to shard %s", n, addr)
 					}
 				}
-				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL, procDistSQL, freqDistSQL, edgeDistSQL} {
+				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL, procDistSQL, freqDistSQL, edgeDistSQL, rawDistSQL} {
 					stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
 					hostConn.Exec(stmtCtx, stmt)
 					stmtCancel()
@@ -441,12 +472,24 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 					{"proc_lineage_distributed", "proc_lineage"},
 					{"proc_freq_distributed", "proc_freq"},
 					{"process_edges_distributed", "process_edges"},
+					{"logs_raw_distributed", "logs_raw"},
 				} {
 					syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
 					if err := syncDistributedColumns(syncCtx, hostConn, c.Database, pair[0], pair[1]); err != nil {
 						log.Printf("Warning: column sync %s on %s: %v", pair[0], addr, err)
 					}
 					syncCancel()
+				}
+				// syncDistributedColumns only adds/modifies columns; it never drops. After
+				// migration 013 removes raw_log from the local logs/logs_hot tables, the
+				// Distributed variants still carry it, and an INSERT through a Distributed
+				// table forwards its columns to the local table (which no longer has raw_log).
+				// Drop it explicitly so the two stay in lockstep. Runs after sync so it is
+				// the final word (sync would otherwise re-add it while the local drop lags).
+				for _, dt := range []string{"logs_distributed", "logs_hot_distributed"} {
+					dropCtx, dropCancel := context.WithTimeout(ctx, 30*time.Second)
+					hostConn.Exec(dropCtx, "ALTER TABLE "+dt+" DROP COLUMN IF EXISTS raw_log")
+					dropCancel()
 				}
 				hostConn.Close()
 			}
@@ -1317,9 +1360,10 @@ func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) erro
 		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(c.insertSettings))
 	}
 
-	// norm_log is intentionally omitted: it is a ClickHouse DEFAULT toString(fields)
-	// column, auto-populated at insert. normalizer carries the "name@version" stamp.
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.WriteTable()+" (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp, normalizer)")
+	// raw_log is omitted: it lives in the separate logs_raw table (best-effort insert
+	// below). norm_log is a ClickHouse DEFAULT toString(fields) column, auto-populated at
+	// insert. normalizer carries the "name@version" stamp.
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.WriteTable()+" (timestamp, log_id, fields, fractal_id, ingest_timestamp, normalizer)")
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
@@ -1331,7 +1375,6 @@ func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) erro
 		}
 		err := batch.Append(
 			log.Timestamp,
-			log.RawLog,
 			log.LogID,
 			log.Fields,
 			log.FractalID,
@@ -1347,7 +1390,41 @@ func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) erro
 		return fmt.Errorf("failed to send batch: %w", err)
 	}
 
+	// logs table is the source of truth; raw_log is a 7-day troubleshooting copy. Insert
+	// it best-effort so a logs_raw failure never fails or blocks ingestion.
+	c.insertRawLogs(ctx, logs)
+
 	return nil
+}
+
+// insertRawLogs writes the pre-normalization raw_log into the logs_raw side table.
+// Best-effort: failures are logged, not returned, since logs_raw only backs the detail
+// "Raw" tab and normalizer preview. Rows with an empty raw_log are skipped.
+func (c *ClickHouseClient) insertRawLogs(ctx context.Context, logs []LogEntry) {
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.RawWriteTable()+" (timestamp, fractal_id, log_id, raw_log)")
+	if err != nil {
+		log.Printf("[InsertLogs] prepare logs_raw batch failed (raw tab/preview degraded): %v", err)
+		return
+	}
+	appended := 0
+	for _, l := range logs {
+		if l.RawLog == "" {
+			continue
+		}
+		if err := batch.Append(l.Timestamp, l.FractalID, l.LogID, l.RawLog); err != nil {
+			log.Printf("[InsertLogs] append logs_raw row failed: %v", err)
+			batch.Abort()
+			return
+		}
+		appended++
+	}
+	if appended == 0 {
+		batch.Abort()
+		return
+	}
+	if err := batch.Send(); err != nil {
+		log.Printf("[InsertLogs] send logs_raw batch failed (raw tab/preview degraded): %v", err)
+	}
 }
 
 func (c *ClickHouseClient) Exec(ctx context.Context, query string) error {
@@ -2049,7 +2126,7 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 	// PREWHERE on (log_id, timestamp): timestamp is the leading primary-key column, so
 	// this prunes granules before reading norm_log. Matches GetLogFieldsByIDDirect.
 	query := fmt.Sprintf(
-		"SELECT log_id, fractal_id, norm_log AS fields, raw_log, normalizer FROM %s PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')",
+		"SELECT log_id, fractal_id, norm_log AS fields, normalizer FROM %s PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')",
 		c.ReadTable())
 	args := []interface{}{logID, ts.UTC().Format("2006-01-02 15:04:05.000")}
 	if fractalID != "" {
@@ -2071,8 +2148,8 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 		return nil, nil
 	}
 
-	var resLogID, logFractalID, fieldsStr, rawLog, normalizer string
-	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr, &rawLog, &normalizer); err != nil {
+	var resLogID, logFractalID, fieldsStr, normalizer string
+	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr, &normalizer); err != nil {
 		return nil, fmt.Errorf("failed to scan log fields row: %w", err)
 	}
 	flds := c.parseLogFields(ctx, fieldsStr)
@@ -2081,8 +2158,41 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 	if normalizer != "" {
 		flds["_normalizer"] = normalizer
 	}
-	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID, "raw_log": rawLog, "fields": flds}
+	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID, "raw_log": c.fetchRawLog(ctx, logID, ts, fractalID), "fields": flds}
 	return entry, nil
+}
+
+// fetchRawLog returns the pre-normalization raw_log for one row from logs_raw, or ""
+// when it is absent (outside the 7-day window) or unreadable. Best-effort: the detail
+// "Raw" tab renders an "unavailable" placeholder for an empty result. Always reads via
+// RawReadTable (the distributed fan-out in cluster mode) because a raw_log row is not
+// co-located with its logs row on any single shard.
+func (c *ClickHouseClient) fetchRawLog(ctx context.Context, logID string, ts time.Time, fractalID string) string {
+	query := fmt.Sprintf(
+		"SELECT raw_log FROM %s WHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')",
+		c.RawReadTable())
+	args := []interface{}{logID, ts.UTC().Format("2006-01-02 15:04:05.000")}
+	if fractalID != "" {
+		query += " AND fractal_id = ?"
+		args = append(args, fractalID)
+	}
+	query += " LIMIT 1"
+
+	rows, err := c.conn.Query(ctx, query, args...)
+	if err != nil {
+		log.Printf("[fetchRawLog] logs_raw lookup for %s failed: %v", logID, err)
+		return ""
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return ""
+	}
+	var raw string
+	if err := rows.Scan(&raw); err != nil {
+		log.Printf("[fetchRawLog] logs_raw scan for %s failed: %v", logID, err)
+		return ""
+	}
+	return raw
 }
 
 // shardHostForNum returns the host:port for a given shard number by querying
@@ -2190,7 +2300,7 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 		return c.GetLogFieldsByID(ctx, logID, ts, fractalID)
 	}
 
-	query := "SELECT log_id, fractal_id, norm_log AS fields, raw_log, normalizer FROM logs PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')"
+	query := "SELECT log_id, fractal_id, norm_log AS fields, normalizer FROM logs PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')"
 	args := []interface{}{logID, ts.UTC().Format("2006-01-02 15:04:05.000")}
 	if fractalID != "" {
 		query += " AND fractal_id = ?"
@@ -2212,8 +2322,8 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 		return nil, nil
 	}
 
-	var resLogID, logFractalID, fieldsStr, rawLog, normalizer string
-	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr, &rawLog, &normalizer); err != nil {
+	var resLogID, logFractalID, fieldsStr, normalizer string
+	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr, &normalizer); err != nil {
 		return nil, fmt.Errorf("failed to scan log fields row: %w", err)
 	}
 	flds := c.parseLogFields(ctx, fieldsStr)
@@ -2222,7 +2332,8 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 	if normalizer != "" {
 		flds["_normalizer"] = normalizer
 	}
-	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID, "raw_log": rawLog, "fields": flds}
+	// raw_log is not on this shard's logs table anymore; read it from logs_raw (fan-out).
+	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID, "raw_log": c.fetchRawLog(ctx, logID, ts, fractalID), "fields": flds}
 	return entry, nil
 }
 

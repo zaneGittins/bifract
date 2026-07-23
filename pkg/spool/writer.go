@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -183,6 +184,42 @@ func (w *Writer) rotateLocked() error {
 // DiskUsage returns the total bytes consumed by the spool on disk.
 func (w *Writer) DiskUsage() (int64, error) {
 	return DiskUsage(w.dir)
+}
+
+// Reset discards all spooled data: it closes the active segment, removes every
+// segment file and the persisted checkpoint, and opens a fresh empty segment. It
+// backs the admin "clear archive spool" action and MUST run only while archiving
+// is disabled, so there is no concurrent Append. The clear marker (clear_gen) is
+// left intact -- the caller stamps it after Reset returns so the peer archiver
+// knows the clear completed. The single-consumer Reader in the archiver process
+// re-syncs via Reload once it observes the advanced marker.
+func (w *Writer) Reset() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file != nil {
+		_ = w.file.Sync()
+		_ = w.file.Close()
+		w.file = nil
+	}
+	seqs, err := listSegments(w.dir)
+	if err != nil {
+		return err
+	}
+	for _, s := range seqs {
+		if err := os.Remove(segmentPath(w.dir, s)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("spool: reset remove segment %d: %w", s, err)
+		}
+	}
+	if err := os.Remove(filepath.Join(w.dir, checkpointFile)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("spool: reset remove checkpoint: %w", err)
+	}
+	// Invalidate group-commit sync state, then start a fresh segment stream at 0.
+	// A stale Reader's checkpoint now points at a missing segment, which its
+	// ensureFile/Reload resolves to "resume from earliest".
+	w.syncMu.Lock()
+	w.syncedSeq, w.syncedOff = 0, 0
+	w.syncMu.Unlock()
+	return w.openSegment(0)
 }
 
 // Close flushes and closes the active segment.

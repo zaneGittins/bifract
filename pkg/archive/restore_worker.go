@@ -54,9 +54,11 @@ func NewRestoreWorker(cfg Config, db *sql.DB) *RestoreWorker {
 type restoreJob struct {
 	ID        int64
 	FractalID string
-	Mode      string
-	From, To  time.Time
-	Dedup     bool
+	// TargetFractalID is where the rows land. Empty means a self-restore (same as
+	// FractalID); a value routes the source fractal's archive into another fractal.
+	TargetFractalID string
+	Mode            string
+	From, To        time.Time
 	// Cursor is the chunk boundary a previous attempt reached, if any. Non-zero
 	// means this job is resuming and the chunks before it are already done.
 	Cursor time.Time
@@ -74,6 +76,15 @@ func (j restoreJob) start() time.Time {
 		return j.Cursor
 	}
 	return j.From
+}
+
+// target returns the destination fractal: the explicit target when set, else the
+// source fractal (a self-restore).
+func (j restoreJob) target() string {
+	if j.TargetFractalID != "" {
+		return j.TargetFractalID
+	}
+	return j.FractalID
 }
 
 // Run polls for and executes restore jobs until ctx is cancelled.
@@ -120,6 +131,7 @@ func (w *RestoreWorker) Run(ctx context.Context) {
 func claimRestoreJob(ctx context.Context, db *sql.DB) (restoreJob, bool, error) {
 	var j restoreJob
 	var cursor sql.NullTime
+	var target sql.NullString
 	err := db.QueryRowContext(ctx, `
 		UPDATE archive_restore_jobs SET status = 'running', started_at = NOW(), updated_at = NOW()
 		WHERE id = (
@@ -129,13 +141,16 @@ func claimRestoreJob(ctx context.Context, db *sql.DB) (restoreJob, bool, error) 
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)
-		RETURNING id, fractal_id, mode, from_ts, to_ts, dedup, cursor_ts, rows_restored, chunks_done`).
-		Scan(&j.ID, &j.FractalID, &j.Mode, &j.From, &j.To, &j.Dedup, &cursor, &j.RowsDone, &j.ChunksDone)
+		RETURNING id, fractal_id, target_fractal_id, mode, from_ts, to_ts, cursor_ts, rows_restored, chunks_done`).
+		Scan(&j.ID, &j.FractalID, &target, &j.Mode, &j.From, &j.To, &cursor, &j.RowsDone, &j.ChunksDone)
 	if err == sql.ErrNoRows {
 		return restoreJob{}, false, nil
 	}
 	if err != nil {
 		return restoreJob{}, false, err
+	}
+	if target.Valid {
+		j.TargetFractalID = target.String
 	}
 	if cursor.Valid {
 		j.Cursor = cursor.Time
@@ -145,8 +160,13 @@ func claimRestoreJob(ctx context.Context, db *sql.DB) (restoreJob, bool, error) 
 
 // execute runs one claimed job and records the terminal status.
 func (w *RestoreWorker) execute(ctx context.Context, j restoreJob) {
-	log.Printf("[Restore] job %d: %s fractal %s [%s, %s) dedup=%v",
-		j.ID, j.Mode, j.FractalID, chTime(j.From), chTime(j.To), j.Dedup)
+	if tgt := j.target(); tgt != j.FractalID {
+		log.Printf("[Restore] job %d: %s fractal %s -> %s [%s, %s)",
+			j.ID, j.Mode, j.FractalID, tgt, chTime(j.From), chTime(j.To))
+	} else {
+		log.Printf("[Restore] job %d: %s fractal %s [%s, %s)",
+			j.ID, j.Mode, j.FractalID, chTime(j.From), chTime(j.To))
+	}
 
 	if err := w.ensureDeps(ctx); err != nil {
 		w.finishFailed(j.ID, err.Error())
@@ -159,16 +179,12 @@ func (w *RestoreWorker) execute(ctx context.Context, j restoreJob) {
 			j.ID, chTime(start), j.ChunksDone, j.RowsDone)
 	}
 
-	// Record the total chunk count and a best-effort row target (the Iceberg count
-	// for the window) so the UI can render an exact percentage.
-	chunksTotal := j.ChunksDone + len(dayChunks(start, j.To))
+	// Best-effort row target (the Iceberg count for the window) so the UI can show
+	// a percentage before the first chunk lands. The chunk total is not known until
+	// the plan is built inside Restore; it arrives via onChunk below.
 	if target, err := w.cat.countIceberg(ctx, w.ch, w.cfg.Obj, j.FractalID, j.From, j.To); err == nil {
 		_, _ = w.db.ExecContext(ctx,
-			`UPDATE archive_restore_jobs SET target_rows = $1, chunks_total = $2, updated_at = NOW() WHERE id = $3`,
-			target, chunksTotal, j.ID)
-	} else {
-		_, _ = w.db.ExecContext(ctx,
-			`UPDATE archive_restore_jobs SET chunks_total = $1, updated_at = NOW() WHERE id = $2`, chunksTotal, j.ID)
+			`UPDATE archive_restore_jobs SET target_rows = $1, updated_at = NOW() WHERE id = $2`, target, j.ID)
 	}
 
 	// A fixed query_id lets the watcher (or an operator) interrupt the in-flight
@@ -186,24 +202,26 @@ func (w *RestoreWorker) execute(ctx context.Context, j restoreJob) {
 
 	// Persist the resume cursor and exact progress after every chunk. This is what
 	// makes an interrupted restore continue instead of replaying from the start,
-	// and it replaces polling ClickHouse for a live row count.
-	onChunk := func(next time.Time, chunksDone int, rowsSoFar int64) {
+	// and it replaces polling ClickHouse for a live row count. chunksDone/Total are
+	// this-attempt figures; the prior attempts' offsets are added here.
+	onChunk := func(next time.Time, chunksDone, chunksTotal int, rowsSoFar int64) {
 		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, _ = w.db.ExecContext(cctx, `
 			UPDATE archive_restore_jobs
-			SET cursor_ts = $1, chunks_done = $2, rows_restored = $3, updated_at = NOW()
-			WHERE id = $4 AND status = 'running'`,
-			next, j.ChunksDone+chunksDone, j.RowsDone+rowsSoFar, j.ID)
+			SET cursor_ts = $1, chunks_done = $2, chunks_total = $3, rows_restored = $4, updated_at = NOW()
+			WHERE id = $5 AND status = 'running'`,
+			next, j.ChunksDone+chunksDone, j.ChunksDone+chunksTotal, j.RowsDone+rowsSoFar, j.ID)
 	}
 
 	var n int64
 	var err error
 	switch j.Mode {
 	case "reconcile":
+		// Reconcile is always same-fractal; target() equals FractalID here.
 		n, err = w.cat.Reconcile(runCtx, w.ch, w.cfg.Obj, j.FractalID, start, j.To, queryID, onChunk)
 	default:
-		n, err = w.cat.Restore(runCtx, w.ch, w.cfg.Obj, j.FractalID, start, j.To, j.Dedup, queryID, onChunk)
+		n, err = w.cat.Restore(runCtx, w.ch, w.cfg.Obj, j.FractalID, j.target(), start, j.To, queryID, onChunk)
 	}
 	close(done)
 	n += j.RowsDone

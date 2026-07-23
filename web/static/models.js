@@ -742,7 +742,7 @@ const AnalyticsModels = {
             else if (fc.op === '!cidr') lines.push(`| !cidr(${fc.field}, ${esc(fc.value)})`);
         }
         for (const ext of (def.extractions || [])) {
-            const from = ext.from_field || 'raw_log';
+            const from = ext.from_field || 'norm_log';
             lines.push(`| regex(field=${from}, regex=${esc(ext.pattern)}, as=${ext.output_field})`);
             if (ext.min_length > 0) {
                 lines.push(`| len(${ext.output_field}, as=${ext.output_field}_len) | ${ext.output_field}_len >= ${ext.min_length}`);
@@ -864,7 +864,7 @@ const AnalyticsModels = {
     // ============================
     // Editor (split-panel, BQL-first)
     // ============================
-    BASE_FIELDS: ['raw_log', 'contents', 'commandline', 'target_file', 'src_ip', 'dst_ip', 'user', 'image', 'parent_process', 'process_name'],
+    BASE_FIELDS: ['norm_log', 'contents', 'commandline', 'target_file', 'src_ip', 'dst_ip', 'user', 'image', 'parent_process', 'process_name'],
 
     _startEditor() {
         window.App?.pushSubPath('new');

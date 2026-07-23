@@ -53,6 +53,18 @@ type SizeProfile struct {
 	// costs nothing (it is a cap, and leftover work carries to the next pass), so
 	// the headroom is cheap insurance against a lower-than-assumed ratio.
 	ArchiveMaintainByteBudget int64
+
+	// SpoolPVCSizeGB is the per-ingest-pod durable archive-spool PVC size. The
+	// spool is fsync-before-ack and pod-local; on a StatefulSet each pod keeps its
+	// own PVC so a rolling update or eviction never drops un-archived batches. It
+	// is sized for OUTAGE HEADROOM, not throughput: how long object storage can be
+	// unreachable before the spool fills and ingest backpressures (fail-closed, so
+	// 429s and client retries, never data loss). The spool cap
+	// (BIFRACT_ARCHIVE_SPOOL_MAX_BYTES) defaults to 80% of this; the PVC is sized a
+	// little above the cap so a full spool hits backpressure rather than ENOSPC.
+	// Roughly 1-2h of per-pod ingest at the top of each band; the spool is
+	// uncompressed and carries raw_log, so shrink these if raw_log leaves the archive.
+	SpoolPVCSizeGB int
 }
 
 // sizeProfiles are anchored on ~500 GB/day = 3 shards at 32 vCPU / 64GB per node.
@@ -73,6 +85,7 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           100,
 		IngestWorkers:             4,
 		ArchiveMaintainByteBudget: 1 << 30,
+		SpoolPVCSizeGB:            10,
 	},
 	{
 		Name:                      "X-Small",
@@ -88,6 +101,7 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           200,
 		IngestWorkers:             4,
 		ArchiveMaintainByteBudget: 2 << 30,
+		SpoolPVCSizeGB:            10,
 	},
 	{
 		Name:                      "Small",
@@ -103,6 +117,7 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           300,
 		IngestWorkers:             6,
 		ArchiveMaintainByteBudget: 4 << 30,
+		SpoolPVCSizeGB:            20,
 	},
 	{
 		Name:                      "Medium",
@@ -118,6 +133,7 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           500,
 		IngestWorkers:             8,
 		ArchiveMaintainByteBudget: 8 << 30,
+		SpoolPVCSizeGB:            32,
 	},
 	{
 		Name:                      "Large",
@@ -133,6 +149,7 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           1000,
 		IngestWorkers:             8,
 		ArchiveMaintainByteBudget: 32 << 30,
+		SpoolPVCSizeGB:            64,
 	},
 	{
 		Name:                      "X-Large",
@@ -148,6 +165,7 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           2000,
 		IngestWorkers:             16,
 		ArchiveMaintainByteBudget: 96 << 30,
+		SpoolPVCSizeGB:            128,
 	},
 }
 
@@ -861,6 +879,12 @@ type k8sTemplateData struct {
 	// IngestReplicas is the replica count for the independently-scalable ingest tier.
 	IngestReplicas int
 
+	// SpoolPVCSize is the per-ingest-pod durable spool PVC size (e.g. "64Gi"), and
+	// SpoolMaxBytes is the spool capacity watermark in bytes (~80% of the PVC), at
+	// which ingest backpressures. They move together with the size profile.
+	SpoolPVCSize  string
+	SpoolMaxBytes int64
+
 	// ArchiveMaintainByteBudget and ArchiveMaintainCommitRetries tune the
 	// archive-maintain compaction pass (resolved to binary defaults when unset).
 	ArchiveMaintainByteBudget    int64
@@ -953,38 +977,46 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		chMaxBytesToMerge = chMaxServerMemory / 4
 		chMergesMutationsMemoryLimit = chMaxServerMemory / 2
 	}
+	// Guard against a zero-value profile (a custom/partial SizeProfile) yielding a
+	// "0Gi" PVC, which the API server rejects: fall back to the Dev spool size.
+	spoolPVCSizeGB := cfg.SizeProfile.SpoolPVCSizeGB
+	if spoolPVCSizeGB <= 0 {
+		spoolPVCSizeGB = 10
+	}
 	data := k8sTemplateData{
-		ImageTag:                     cfg.ImageTag,
-		ImagePullSecrets:             cfg.ImagePullSecrets,
-		Domain:                       cfg.Domain,
-		CHShards:                     cfg.CHShards,
-		CHStorageGB:                  cfg.CHStorageGB,
-		CHStorageStr:                 formatStorageSize(cfg.CHStorageGB),
-		CHPasswordHash:               fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
-		CHHostsList:                  buildCHHostsList(cfg.CHShards),
-		PostgresPassword:             cfg.PostgresPassword,
-		ClickHousePassword:           cfg.ClickHousePassword,
-		IngestClickHousePassword:     cfg.IngestClickHousePassword,
-		IngestPostgresPassword:       cfg.IngestPostgresPassword,
-		PasswordPepper:               cfg.PasswordPepper,
-		AdminPasswordHash:            cfg.AdminPasswordHash,
-		FeedEncryptionKey:            cfg.FeedEncryptionKey,
-		BackupEncryptionKey:          cfg.BackupEncryptionKey,
-		LiteLLMMasterKey:             cfg.LiteLLMMasterKey,
-		UserSecrets:                  cfg.UserSecrets,
-		IPBlock:                      buildIPBlock(cfg),
-		IPBlockIngest:                buildIPBlockIngest(cfg),
-		MTLSEnabled:                  cfg.MTLSEnabled,
-		MTLSCACert:                   indentPEM(cfg.MTLSCACert, "    "),
-		MTLSCAKey:                    indentPEM(cfg.MTLSCAKey, "    "),
-		MaxmindPVCAccessMode:         cfg.MaxmindPVCAccessMode,
-		MaxmindPVCStorageClass:       cfg.MaxmindPVCStorageClass,
-		IngestQueueSize:              cfg.SizeProfile.IngestQueueSize,
-		IngestWorkers:                cfg.SizeProfile.IngestWorkers,
-		IngestReplicas:               fallbackInt(cfg.IngestReplicas, 1),
-		DashboardTick:                fallbackInt(cfg.DashboardTick, defaultDashboardTick),
-		DashboardMinRefresh:          fallbackInt(cfg.DashboardMinRefresh, defaultDashboardMinRefresh),
-		DashboardWorkers:             fallbackInt(cfg.DashboardWorkers, defaultDashboardWorkers),
+		ImageTag:                 cfg.ImageTag,
+		ImagePullSecrets:         cfg.ImagePullSecrets,
+		Domain:                   cfg.Domain,
+		CHShards:                 cfg.CHShards,
+		CHStorageGB:              cfg.CHStorageGB,
+		CHStorageStr:             formatStorageSize(cfg.CHStorageGB),
+		CHPasswordHash:           fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
+		CHHostsList:              buildCHHostsList(cfg.CHShards),
+		PostgresPassword:         cfg.PostgresPassword,
+		ClickHousePassword:       cfg.ClickHousePassword,
+		IngestClickHousePassword: cfg.IngestClickHousePassword,
+		IngestPostgresPassword:   cfg.IngestPostgresPassword,
+		PasswordPepper:           cfg.PasswordPepper,
+		AdminPasswordHash:        cfg.AdminPasswordHash,
+		FeedEncryptionKey:        cfg.FeedEncryptionKey,
+		BackupEncryptionKey:      cfg.BackupEncryptionKey,
+		LiteLLMMasterKey:         cfg.LiteLLMMasterKey,
+		UserSecrets:              cfg.UserSecrets,
+		IPBlock:                  buildIPBlock(cfg),
+		IPBlockIngest:            buildIPBlockIngest(cfg),
+		MTLSEnabled:              cfg.MTLSEnabled,
+		MTLSCACert:               indentPEM(cfg.MTLSCACert, "    "),
+		MTLSCAKey:                indentPEM(cfg.MTLSCAKey, "    "),
+		MaxmindPVCAccessMode:     cfg.MaxmindPVCAccessMode,
+		MaxmindPVCStorageClass:   cfg.MaxmindPVCStorageClass,
+		IngestQueueSize:          cfg.SizeProfile.IngestQueueSize,
+		IngestWorkers:            cfg.SizeProfile.IngestWorkers,
+		IngestReplicas:           fallbackInt(cfg.IngestReplicas, 1),
+		SpoolPVCSize:             formatStorageSize(spoolPVCSizeGB),
+		SpoolMaxBytes:            int64(spoolPVCSizeGB) * (1 << 30) * 80 / 100,
+		DashboardTick:            fallbackInt(cfg.DashboardTick, defaultDashboardTick),
+		DashboardMinRefresh:      fallbackInt(cfg.DashboardMinRefresh, defaultDashboardMinRefresh),
+		DashboardWorkers:         fallbackInt(cfg.DashboardWorkers, defaultDashboardWorkers),
 		// An explicitly tuned value wins; otherwise scale with the size profile so
 		// compaction throughput keeps pace with the profile's ingest band (see
 		// SizeProfile.ArchiveMaintainByteBudget). The binary default is the last

@@ -235,6 +235,16 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 		fmt.Println(DimStyle.Render("  After applying, remove the obsolete CronJob:"))
 		fmt.Println(DimStyle.Render("    kubectl delete cronjob bifract-archive-maintain -n bifract"))
 	}
+	// The ingest tier changed from a Deployment to a StatefulSet (durable per-pod
+	// spool PVC). kubectl apply cannot convert kinds in place: it creates the
+	// StatefulSet alongside the old Deployment, so both would run ingest pods until
+	// the Deployment is deleted. Deleting it is safe -- ingest is stateless apart
+	// from the spool, and the old emptyDir spool held nothing durable. Do it AFTER
+	// applying so the StatefulSet's pods are already taking traffic.
+	fmt.Println()
+	fmt.Println(WarningStyle.Render("  The ingest tier is now a StatefulSet (was a Deployment) for a durable spool."))
+	fmt.Println(DimStyle.Render("  After applying, remove the obsolete Deployment:"))
+	fmt.Println(DimStyle.Render("    kubectl delete deployment bifract-ingest -n bifract"))
 	fmt.Println()
 	printDone("Upgrade complete")
 	fmt.Println()

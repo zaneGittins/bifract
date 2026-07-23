@@ -48,6 +48,75 @@ func (s *Storage) CreateFractal(ctx context.Context, req CreateFractalRequest, c
 	return fractal, nil
 }
 
+// CreateFractalForRestore creates a fractal to receive restored archive data. It
+// differs from CreateFractal in two ways: retention_days is pinned to NULL
+// (unlimited) so the retention pass never deletes the restored rows, and the
+// provenance columns record which fractal's archive it was restored from over
+// what window. Reuses the standard RETURNING/scan so it returns a fully
+// populated Fractal.
+func (s *Storage) CreateFractalForRestore(ctx context.Context, name, description, createdBy, sourceFractalID string, from, to time.Time) (*Fractal, error) {
+	fractal := &Fractal{}
+	query := `
+		INSERT INTO fractals (name, description, created_by, retention_days,
+		                      restored_from_fractal_id, restored_from_ts, restored_to_ts)
+		VALUES ($1, $2, $3, NULL, $4, $5, $6)
+		RETURNING id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
+		          retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+	`
+	err := s.pg.QueryRow(ctx, query, name, description, createdBy, sourceFractalID, from, to).Scan(
+		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
+		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
+		&fractal.RetentionDays,
+		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
+		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create restore fractal: %w", err)
+	}
+	return fractal, nil
+}
+
+// RestoreProvenance describes where a restore-target fractal's data came from.
+type RestoreProvenance struct {
+	SourceFractalID   string     `json:"source_fractal_id"`
+	SourceFractalName string     `json:"source_fractal_name"`
+	From              *time.Time `json:"from,omitempty"`
+	To                *time.Time `json:"to,omitempty"`
+}
+
+// GetFractalProvenance returns a fractal's restore provenance, or ok=false when
+// it was not created as a restore target. The source name is resolved through
+// the self-FK, and is empty when the source fractal has since been deleted.
+func (s *Storage) GetFractalProvenance(ctx context.Context, fractalID string) (*RestoreProvenance, bool, error) {
+	var (
+		srcID   *string
+		srcName *string
+		from    *time.Time
+		to      *time.Time
+	)
+	err := s.pg.QueryRow(ctx, `
+		SELECT f.restored_from_fractal_id::text, src.name, f.restored_from_ts, f.restored_to_ts
+		FROM fractals f
+		LEFT JOIN fractals src ON src.id = f.restored_from_fractal_id
+		WHERE f.id = $1`, fractalID).Scan(&srcID, &srcName, &from, &to)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to get fractal provenance: %w", err)
+	}
+	// A restore target always has the window set even if the source fractal is
+	// gone (srcID NULL via ON DELETE SET NULL), so key presence on the window.
+	if from == nil && to == nil && srcID == nil {
+		return nil, false, nil
+	}
+	p := &RestoreProvenance{From: from, To: to}
+	if srcID != nil {
+		p.SourceFractalID = *srcID
+	}
+	if srcName != nil {
+		p.SourceFractalName = *srcName
+	}
+	return p, true, nil
+}
+
 // GetFractal retrieves an index by ID
 func (s *Storage) GetFractal(ctx context.Context, fractalID string) (*Fractal, error) {
 	fractal := &Fractal{}

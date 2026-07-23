@@ -170,17 +170,32 @@ func TestRestoreJobStart(t *testing.T) {
 // inflates row counts, which was observed end-to-end (4000 archived rows holding
 // 2000 distinct log_ids restored as 4000 rows) before the clause was added.
 func TestBuildRestoreInsert(t *testing.T) {
-	sql := buildRestoreInsert("logs", "raw_log", "icebergS3('u')", "fractal_id = 'f'")
+	sql := buildRestoreInsert("logs", "'f'", "icebergS3('u')", "fractal_id = 'f'")
 
 	for _, want := range []string{
 		"LIMIT 1 BY log_id",
 		"max_partitions_per_insert_block = 1000",
 		"norm_log::JSON",
-		"INSERT INTO logs (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp, normalizer)",
+		"INSERT INTO logs (timestamp, log_id, fields, fractal_id, ingest_timestamp, normalizer)",
+		// The dedup set is capped, and MUST throw on overflow rather than break:
+		// a truncated set would silently stop excluding log_ids and double-insert.
+		"max_rows_in_set = 200000000",
+		"set_overflow_mode = 'throw'",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("generated insert is missing %q:\n%s", want, sql)
 		}
+	}
+
+	// 'break' overflow mode would truncate the dedup set and double-insert; guard
+	// against a future edit swapping it in.
+	if strings.Contains(sql, "set_overflow_mode = 'break'") {
+		t.Errorf("dedup set must not use break overflow mode (silently double-inserts):\n%s", sql)
+	}
+
+	// raw_log is not restored: the logs table no longer has the column.
+	if strings.Contains(sql, "raw_log") {
+		t.Errorf("restore insert should not reference raw_log:\n%s", sql)
 	}
 
 	// LIMIT 1 BY must sit after WHERE and before SETTINGS, or ClickHouse rejects it.
@@ -190,10 +205,23 @@ func TestBuildRestoreInsert(t *testing.T) {
 	if !(wherePos < limitPos && limitPos < setPos) {
 		t.Errorf("clause order wrong (want WHERE < LIMIT 1 BY < SETTINGS):\n%s", sql)
 	}
+}
 
-	// A window past the raw_log TTL substitutes an empty literal rather than
-	// shipping bytes ClickHouse would immediately reclaim.
-	if got := buildRestoreInsert("logs", "''", "icebergS3('u')", "x"); !strings.Contains(got, "SELECT timestamp, '', log_id") {
-		t.Errorf("expired-window insert should select an empty raw_log:\n%s", got)
+// TestBuildRestoreInsertTargetFractal checks that the projected fractal_id is the
+// target literal, not the archive's own fractal_id column. A restore into a
+// different fractal that still copied the source fractal_id through would land the
+// rows under the source, defeating the separate-lifecycle guarantee.
+func TestBuildRestoreInsertTargetFractal(t *testing.T) {
+	sql := buildRestoreInsert("logs", "'investigation'", "icebergS3('u')",
+		"fractal_id = 'source'")
+
+	// The SELECT list must project the literal target in the fractal_id position,
+	// i.e. "..., log_id, norm_log::JSON, 'investigation', ingest_timestamp, ...".
+	if !strings.Contains(sql, "norm_log::JSON, 'investigation', ingest_timestamp") {
+		t.Errorf("target fractal literal not projected into the SELECT:\n%s", sql)
+	}
+	// The read filter still scopes to the source fractal.
+	if !strings.Contains(sql, "fractal_id = 'source'") {
+		t.Errorf("read filter should still target the source fractal:\n%s", sql)
 	}
 }

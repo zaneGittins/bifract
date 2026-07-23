@@ -89,7 +89,7 @@ func GenerateSourceQuery(def ModelDefinition) string {
 	for _, ext := range def.Extractions {
 		from := ext.FromField
 		if from == "" {
-			from = "raw_log"
+			from = "norm_log"
 		}
 		lines = append(lines, fmt.Sprintf("| regex(field=%s, regex=%s, as=%s)",
 			from, escapeBQLString(ext.Pattern), ext.OutputField))

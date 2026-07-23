@@ -170,9 +170,14 @@ func (h *Handler) HandleGetFractal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendSuccess(w, "Fractal retrieved successfully", map[string]interface{}{
-		"index": fractal,
-	})
+	data := map[string]interface{}{"index": fractal}
+	// Restore provenance, when this fractal was created as a restore target, so
+	// the UI can show it was restored from another fractal's archive.
+	if prov, ok, perr := h.manager.GetFractalProvenance(r.Context(), fractalID); perr == nil && ok {
+		data["restore_provenance"] = prov
+	}
+
+	h.sendSuccess(w, "Fractal retrieved successfully", data)
 }
 
 // HandleUpdateFractal updates an existing index (fractal admin+)

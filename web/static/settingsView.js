@@ -65,6 +65,10 @@ const SettingsView = {
         if (clearCatalogBtn) {
             clearCatalogBtn.addEventListener('click', () => this.openClearCatalogModal());
         }
+        const clearSpoolBtn = document.getElementById('archiveClearSpoolBtn');
+        if (clearSpoolBtn) {
+            clearSpoolBtn.addEventListener('click', () => this.clearSpool());
+        }
         const endpointAnalysisToggle = document.getElementById('endpointAnalysisToggle');
         if (endpointAnalysisToggle) {
             endpointAnalysisToggle.addEventListener('change', () => this.saveEndpointAnalysis());
@@ -123,13 +127,62 @@ const SettingsView = {
     // that in the UI so the action is visibly unavailable rather than failing
     // after the user has already confirmed it.
     syncClearCatalogGuard(archiveEnabled) {
-        const btn = document.getElementById('archiveClearCatalogBtn');
-        const blocked = document.getElementById('archiveClearCatalogBlocked');
-        if (btn) {
-            btn.disabled = !!archiveEnabled;
-            btn.title = archiveEnabled ? 'Disable the Iceberg archive first' : '';
+        // Both clear-catalog and clear-spool require archiving disabled (the server
+        // enforces it too); reflect that on both controls.
+        [['archiveClearCatalogBtn', 'archiveClearCatalogBlocked'],
+        ['archiveClearSpoolBtn', 'archiveClearSpoolBlocked']].forEach(([btnId, blockedId]) => {
+            const btn = document.getElementById(btnId);
+            const blocked = document.getElementById(blockedId);
+            if (btn) {
+                btn.disabled = !!archiveEnabled;
+                btn.title = archiveEnabled ? 'Disable the Iceberg archive first' : '';
+            }
+            if (blocked) blocked.style.display = archiveEnabled ? '' : 'none';
+        });
+    },
+
+    // Requests a spool clear across all ingest pods. Two-step arm (click, then
+    // confirm) rather than a typed modal: the spool is a transient buffer, so this
+    // is less catastrophic than clearing the catalog, but it still discards
+    // un-archived data, so it is not a single silent click.
+    async clearSpool() {
+        const btn = document.getElementById('archiveClearSpoolBtn');
+        if (!btn || btn.disabled) return;
+        if (!this._spoolArmed) {
+            this._spoolArmed = true;
+            btn.dataset.label = btn.textContent;
+            btn.textContent = 'Click again to confirm';
+            clearTimeout(this._spoolArmTimer);
+            this._spoolArmTimer = setTimeout(() => {
+                this._spoolArmed = false;
+                btn.textContent = btn.dataset.label || 'Clear Spool';
+            }, 5000);
+            return;
         }
-        if (blocked) blocked.style.display = archiveEnabled ? '' : 'none';
+        this._spoolArmed = false;
+        clearTimeout(this._spoolArmTimer);
+        const original = btn.dataset.label || 'Clear Spool';
+        try {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Requesting...';
+            const res = await fetch('/api/v1/system/archive/spool/clear', {
+                method: 'POST',
+                credentials: 'include'
+            });
+            if (!res.ok) {
+                const msg = await res.text();
+                throw new Error(msg || 'Failed to clear spool');
+            }
+            const d = await res.json().catch(() => ({}));
+            if (window.Toast) {
+                Toast.success('Spool Clear Requested', d.message || 'Each ingest pod will clear its spool shortly.');
+            }
+        } catch (err) {
+            if (window.Toast) Toast.error('Clear Spool Failed', (err.message || '').trim());
+        } finally {
+            btn.innerHTML = original;
+            this.syncClearCatalogGuard(document.getElementById('archiveEnabledToggle')?.checked);
+        }
     },
 
     // Loads the Iceberg archive enable state. The toggle is disabled (with a

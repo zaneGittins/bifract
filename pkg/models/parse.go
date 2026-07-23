@@ -291,7 +291,7 @@ func cidrArgs(cmd parser.CommandNode) (field, value, errMsg string) {
 // output name follows the engine's precedence: a named capture group wins over
 // as= (so the parsed OutputField matches the column the live preview produces).
 func regexCommandToExtraction(cmd parser.CommandNode) (ExtractionStep, string) {
-	from := "raw_log"
+	from := "norm_log"
 	var pattern, asName string
 	patternSet := false
 	for _, arg := range cmd.Arguments {
@@ -315,6 +315,12 @@ func regexCommandToExtraction(cmd parser.CommandNode) (ExtractionStep, string) {
 	if pattern == "" {
 		return ExtractionStep{}, "regex() requires a pattern"
 	}
+	// raw_log is a 7-day ephemeral troubleshooting column; model state is long-lived,
+	// so an extraction sourced from it would silently yield nothing for older data.
+	// Extract from norm_log (canonical normalized text) or a specific field instead.
+	if from == "raw_log" {
+		return ExtractionStep{}, "raw_log cannot be a model extraction source (it is not retained); use norm_log or a specific field"
+	}
 	// A model extraction has a single output column. The engine creates one column
 	// per named group, so reject patterns with more than one named group.
 	named := parseNamedGroupRe.FindAllStringSubmatch(pattern, -1)
@@ -334,8 +340,8 @@ func regexCommandToExtraction(cmd parser.CommandNode) (ExtractionStep, string) {
 
 // candidateFields returns the fields available for shaping a model: every field
 // referenced in filters plus every extraction output, de-duplicated in order,
-// always including raw_log. The frontend may additionally merge its own list of
-// known log fields.
+// always including norm_log (the canonical normalized text). The frontend may
+// additionally merge its own list of known log fields.
 func (p *ParsedSource) candidateFields() []string {
 	seen := map[string]bool{}
 	var out []string
@@ -346,7 +352,7 @@ func (p *ParsedSource) candidateFields() []string {
 		seen[f] = true
 		out = append(out, f)
 	}
-	add("raw_log")
+	add("norm_log")
 	for _, fc := range p.Filter {
 		add(fc.Field)
 	}

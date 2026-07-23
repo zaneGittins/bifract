@@ -362,7 +362,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 // match() / extract() receive a concrete String type rather than Dynamic.
 func chFieldRef(field string) string {
 	switch field {
-	case "timestamp", "raw_log", "log_id", "fractal_id", "ingest_timestamp":
+	case "timestamp", "norm_log", "log_id", "fractal_id", "ingest_timestamp", "normalizer":
 		return field
 	default:
 		return "fields.`" + field + "`::String"

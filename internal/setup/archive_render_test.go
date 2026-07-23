@@ -13,6 +13,8 @@ func TestArchiveRendersK8s(t *testing.T) {
 		Domain:         "example.com",
 		CHHostsList:    "host1",
 		IngestReplicas: 1,
+		SpoolPVCSize:   "32Gi",
+		SpoolMaxBytes:  27487790694, // ~80% of 32Gi
 		BifractRes:     ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 		ArchiverRes:    ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 	}
@@ -53,10 +55,25 @@ func TestArchiveRendersK8s(t *testing.T) {
 		"BIFRACT_ARCHIVE_BACKEND",
 		"BIFRACT_ARCHIVE_S3_SECRET_KEY",
 		"name: spool",
+		// Durable spool: StatefulSet with a per-pod PVC, not a Deployment+emptyDir.
+		"kind: StatefulSet",
+		"serviceName: bifract-ingest-headless",
+		"podManagementPolicy: Parallel",
+		"volumeClaimTemplates:",
+		"storage: 32Gi",
+		"fsGroup: 65534",
+		// Spool cap tracks the PVC (literal, ~80%), and the headless Service exists.
+		`value: "27487790694"`,
+		"name: bifract-ingest-headless",
+		"clusterIP: None",
 	} {
 		if !strings.Contains(ing, want) {
 			t.Errorf("rendered ingest deployment missing %q", want)
 		}
+	}
+	// The spool must no longer be an ephemeral emptyDir.
+	if strings.Contains(ing, "name: spool\n          emptyDir") {
+		t.Errorf("spool should be a PVC (volumeClaimTemplates), not an emptyDir")
 	}
 
 	// Maintenance now runs as an always-on, singleton Deployment (was a CronJob):

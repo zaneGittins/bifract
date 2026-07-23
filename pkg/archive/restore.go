@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -97,12 +98,6 @@ func chIcebergTableFunc(obj objstore.Config, tableLocation, cluster string) (str
 	return "", fmt.Errorf("archive: unsupported backend %q for restore", obj.Backend)
 }
 
-// rawLogTTLDays mirrors the raw_log column TTL on the logs table
-// (db/init-clickhouse.sql: `TTL toDateTime(timestamp) + INTERVAL 7 DAY`). Keep
-// the two in sync: restore uses it to decide whether shipping raw_log back is
-// worth the I/O.
-const rawLogTTLDays = 7
-
 // restoreMaxPartitionsPerInsert raises ClickHouse's max_partitions_per_insert_block
 // (default 100) for restore inserts. Chunking bounds the Iceberg read side to one
 // ingest_date, but the logs table partitions by EVENT date, so one ingest day can
@@ -111,21 +106,59 @@ const rawLogTTLDays = 7
 // chunk outright; this is a guard against that, not an invitation to insert wide.
 const restoreMaxPartitionsPerInsert = 1000
 
+// restoreChunkRowTarget bounds the rows any single restore INSERT touches, so the
+// in-memory structures ClickHouse builds for it stay bounded regardless of how
+// dense an ingest day is: the LIMIT 1 BY log_id set over the inserted rows, and
+// the anti-join set over the destination window. A window whose estimated row
+// count (the larger of source and destination, see windowRowEstimate) exceeds
+// this is bisected in time until each piece is under it.
+const restoreChunkRowTarget = 50_000_000
+
+// restoreMaxRowsInSet caps the dedup anti-join's IN-set cardinality as a backstop
+// to chunk sizing: if a row-count estimate was stale (the window grew between
+// planning and execution) the insert fails loudly instead of building an
+// unbounded set and OOM-ing the node. Set to a multiple of the chunk target so
+// normal chunks pass with headroom and only a real runaway trips it.
+//
+// set_overflow_mode MUST be 'throw', never 'break': 'break' would silently
+// truncate the dedup set, so log_ids past the cap would not be excluded and would
+// double-insert. A failed chunk is recoverable (retry/resume); silent duplication
+// is not.
+const restoreMaxRowsInSet = 4 * restoreChunkRowTarget
+
+// minChunkDuration floors time-bisection so a pathological burst (millions of
+// rows sharing one instant) cannot recurse forever. A window at this floor that
+// still exceeds the row target is emitted as a single chunk; restoreMaxRowsInSet
+// is the backstop that keeps its anti-join from OOM-ing the node.
+const minChunkDuration = time.Second
+
 // buildRestoreInsert assembles one chunk's INSERT ... SELECT. Extracted so the
 // correctness-critical clauses stay under test: dropping LIMIT 1 BY would silently
-// duplicate rows, and dropping the SETTINGS would make wide chunks fail outright.
-func buildRestoreInsert(writeTable, rawLogExpr, tableFunc, where string) string {
+// duplicate archive-internal dupes, dropping max_partitions_per_insert_block would
+// make wide chunks fail outright, and set_overflow_mode must stay 'throw' so a
+// too-large dedup set fails rather than silently truncating.
+//
+// fractalLiteral is the fractal_id written into the destination rows, as a quoted
+// SQL literal. It replaces the archive's own fractal_id column so a restore can
+// land in a fractal different from the one it was archived under (restore into a
+// dedicated no-retention fractal); for a self-restore it is just the source
+// fractal's own id.
+func buildRestoreInsert(writeTable, fractalLiteral, tableFunc, where string) string {
 	return fmt.Sprintf(
-		"INSERT INTO %s (timestamp, raw_log, log_id, fields, fractal_id, ingest_timestamp, normalizer) "+
-			"SELECT timestamp, %s, log_id, norm_log::JSON, fractal_id, ingest_timestamp, normalizer "+
-			"FROM %s WHERE %s LIMIT 1 BY log_id SETTINGS max_partitions_per_insert_block = %d",
-		writeTable, rawLogExpr, tableFunc, where, restoreMaxPartitionsPerInsert)
+		"INSERT INTO %s (timestamp, log_id, fields, fractal_id, ingest_timestamp, normalizer) "+
+			"SELECT timestamp, log_id, norm_log::JSON, %s, ingest_timestamp, normalizer "+
+			"FROM %s WHERE %s LIMIT 1 BY log_id "+
+			"SETTINGS max_partitions_per_insert_block = %d, max_rows_in_set = %d, set_overflow_mode = 'throw'",
+		writeTable, fractalLiteral, tableFunc, where, restoreMaxPartitionsPerInsert, restoreMaxRowsInSet)
 }
 
 // RestoreProgress is called after each chunk commits, with the timestamp the next
-// attempt should resume from, the number of chunks finished, and the running row
-// total. Persisting `next` is what makes a restore resumable.
-type RestoreProgress func(next time.Time, chunksDone int, rowsSoFar int64)
+// attempt should resume from, the number of chunks finished and planned in THIS
+// attempt, and the running row total for this attempt. Persisting `next` is what
+// makes a restore resumable; chunksTotal comes from the row-count plan rather than
+// a day count, so it reflects the actual bisected chunk count. A caller that
+// resumes adds its own prior-attempt offsets.
+type RestoreProgress func(next time.Time, chunksDone, chunksTotal int, rowsSoFar int64)
 
 // dayChunks splits [from, to) into UTC-day-aligned windows, one per ingest_date
 // partition in the archive. The first and last chunks are clipped to the requested
@@ -148,28 +181,121 @@ func dayChunks(from, to time.Time) [][2]time.Time {
 	return out
 }
 
+// windowRowEstimate returns the larger of the source (archive) and destination
+// (hot store) row counts for a window. That maximum is the figure that bounds the
+// restore insert's memory: the LIMIT 1 BY set scales with the source rows read,
+// the dedup anti-join set with the destination rows in the same window, and a
+// dense destination can dwarf a small source (e.g. reconcile healing a tiny gap
+// in a full window). Both counts are cheap -- the archive count prunes to one
+// ingest_date partition, the hot-store count rides the ingest_timestamp minmax
+// skip index.
+func (c *Catalog) windowRowEstimate(ctx context.Context, ch *storage.ClickHouseClient, obj objstore.Config, sourceFractalID, targetFractalID string, from, to time.Time) (int64, error) {
+	src, err := c.countIceberg(ctx, ch, obj, sourceFractalID, from, to)
+	if err != nil {
+		return 0, err
+	}
+	dst, err := countLogs(ctx, ch, targetFractalID, from, to)
+	if err != nil {
+		return 0, err
+	}
+	if dst > src {
+		return dst, nil
+	}
+	return src, nil
+}
+
+// planChunks splits [from, to) into restore chunks bounded by row count. It first
+// splits on UTC day (the archive's ingest_date partition axis, so each chunk
+// prunes to one partition), then bisects any day whose row estimate exceeds
+// restoreChunkRowTarget in time until every chunk is under the target or hits the
+// minChunkDuration floor. Boundaries stay real timestamps so the resume cursor can
+// address them and a re-plan of [cursor, to) tiles the remainder without gaps.
+func (c *Catalog) planChunks(ctx context.Context, ch *storage.ClickHouseClient, obj objstore.Config, sourceFractalID, targetFractalID string, from, to time.Time) ([][2]time.Time, error) {
+	count := func(f, t time.Time) (int64, error) {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		return c.windowRowEstimate(ctx, ch, obj, sourceFractalID, targetFractalID, f, t)
+	}
+	return planChunksWith(from, to, count)
+}
+
+// windowCounter estimates the row count of a [from, to) window. Injected so the
+// chunk-planning math can be tested without ClickHouse.
+type windowCounter func(from, to time.Time) (int64, error)
+
+// planChunksWith is the ClickHouse-free core of planChunks: day-split, then
+// bisect each day by the injected counter. Kept pure so the tiling properties the
+// resume cursor depends on (contiguous, no gaps/overlaps, each chunk inside one
+// UTC day) are unit-testable.
+func planChunksWith(from, to time.Time, count windowCounter) ([][2]time.Time, error) {
+	var out [][2]time.Time
+	for _, day := range dayChunks(from, to) {
+		if err := bisectWindow(day[0], day[1], count, &out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// bisectWindow recursively halves a within-a-day window until its row estimate is
+// under restoreChunkRowTarget, appending the leaf windows to out in order. The
+// midpoint of a window inside one UTC day is still inside that day, so the
+// single-partition pruning premise is preserved at every level.
+func bisectWindow(from, to time.Time, count windowCounter, out *[][2]time.Time) error {
+	n, err := count(from, to)
+	if err != nil {
+		return err
+	}
+	mid := from.Add(to.Sub(from) / 2)
+	// Emit as a leaf when under target, or when the window is too small to split
+	// further (a burst sharing one instant). max_rows_in_set on the insert is the
+	// backstop for an over-target leaf.
+	if n <= restoreChunkRowTarget || to.Sub(from) <= minChunkDuration || !mid.After(from) || !mid.Before(to) {
+		if n > restoreChunkRowTarget {
+			log.Printf("[Restore] window [%s, %s) holds ~%d rows, over the %d target but at the time-bisection floor; the max_rows_in_set guard bounds its dedup set",
+				chTime(from), chTime(to), n, restoreChunkRowTarget)
+		}
+		*out = append(*out, [2]time.Time{from, to})
+		return nil
+	}
+	if err := bisectWindow(from, mid, count, out); err != nil {
+		return err
+	}
+	return bisectWindow(mid, to, count, out)
+}
+
 // Restore replays a fractal's logs from Iceberg back into the ClickHouse logs
-// table for the given INGEST-time window, one chunk per ingest day.
+// table for the given INGEST-time window, in row-count-bounded chunks.
 //
 // The window is ingest-time because that is the archive's partition axis: each
 // chunk reads exactly the ingest_date partitions it needs instead of scanning the
-// whole table, and it matches how Recall queries the archive. Chunking also keeps
-// each insert bounded and, via onChunk, makes an interrupted restore resumable
-// rather than an all-or-nothing replay.
+// whole table, and it matches how Recall queries the archive. Chunks are planned
+// by row count (see planChunks) so a single insert never builds an unbounded
+// in-memory set, however dense an ingest day is; onChunk after each keeps an
+// interrupted restore resumable rather than an all-or-nothing replay.
 //
-// When dedup is true each chunk skips log_ids already present in that chunk's
-// window (idempotent re-restore); when false it does a straight insert (fastest
-// for a window that was fully deleted by retention). queryID, when non-empty, is
-// applied as the ClickHouse query_id so an in-flight chunk can be interrupted with
-// KILL QUERY. onChunk may be nil.
+// Restore is always idempotent: every chunk excludes log_ids already present in
+// the destination window (the anti-join) and collapses archive-internal
+// duplicates (LIMIT 1 BY). There is no straight-insert mode -- skipping the
+// anti-join is the only way to double-insert, and a re-run or crash-resume must
+// stay safe. queryID, when non-empty, is applied as the ClickHouse query_id so an
+// in-flight chunk can be interrupted with KILL QUERY. onChunk may be nil.
+//
+// sourceFractalID selects the archive (its per-fractal Iceberg table) and the
+// ingest_date/fractal_id read filter. targetFractalID is the fractal the rows are
+// written under: equal to source for a self-restore, or a different (typically
+// no-retention) fractal to restore into a dedicated workspace. The hot-store
+// counts and the dedup anti-join key on the TARGET, so they measure and dedup
+// against the destination, not the source.
 //
 // Returns the total number of rows inserted across all chunks. On error it returns
 // the rows restored so far alongside the error, so a caller can record partial
 // progress.
-func (c *Catalog) Restore(ctx context.Context, ch *storage.ClickHouseClient, obj objstore.Config, fractalID string, from, to time.Time, dedup bool, queryID string, onChunk RestoreProgress) (int64, error) {
-	loc, err := c.TableLocation(ctx, fractalID)
+func (c *Catalog) Restore(ctx context.Context, ch *storage.ClickHouseClient, obj objstore.Config, sourceFractalID, targetFractalID string, from, to time.Time, queryID string, onChunk RestoreProgress) (int64, error) {
+	loc, err := c.TableLocation(ctx, sourceFractalID)
 	if err != nil {
-		return 0, fmt.Errorf("archive: no Iceberg table for fractal %s: %w", fractalID, err)
+		return 0, fmt.Errorf("archive: no Iceberg table for fractal %s: %w", sourceFractalID, err)
 	}
 	tf, err := chIcebergTableFunc(obj, loc, ch.Cluster)
 	if err != nil {
@@ -180,40 +306,41 @@ func (c *Catalog) Restore(ctx context.Context, ch *storage.ClickHouseClient, obj
 	// and placement span the whole cluster; single-node they are the local logs.
 	readTable := ch.ReadTable()
 	writeTable := ch.WriteTable()
+	targetLiteral := chQuote(targetFractalID)
+
+	// Plan the whole window up front so chunksTotal is known and the progress bar
+	// is accurate. The planning counts are cheap (partition-pruned / skip-indexed).
+	chunks, err := c.planChunks(ctx, ch, obj, sourceFractalID, targetFractalID, from, to)
+	if err != nil {
+		return 0, fmt.Errorf("archive: plan restore chunks: %w", err)
+	}
 
 	var total int64
-	for i, chunk := range dayChunks(from, to) {
+	for i, chunk := range chunks {
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
 		cf, ct := chunk[0], chunk[1]
 
-		// ingest_date is the archive's partition column, so pinning it to this
-		// chunk's day is what prunes the read down to a single partition. The
-		// ingest_timestamp bounds clip the first and last (possibly partial) days.
+		// The read filter is on the SOURCE fractal. ingest_date is the archive's
+		// partition column, so pinning it to this chunk's day prunes the read to a
+		// single partition; a bisected chunk stays inside one UTC day, so its
+		// ingest_date is cf's day. The ingest_timestamp bounds clip within the day.
 		where := fmt.Sprintf(
 			"fractal_id = %s AND ingest_date = %s AND ingest_timestamp >= %s AND ingest_timestamp < %s",
-			chQuote(fractalID), chQuote(chDate(cf)), chQuote(chTime(cf)), chQuote(chTime(ct)))
-		if dedup {
-			// Anti-join bounded by this chunk only, so it stays tractable no matter
-			// how long the overall restore window is; never a full-table NOT IN.
-			where += fmt.Sprintf(
-				" AND log_id NOT IN (SELECT log_id FROM %s WHERE fractal_id = %s AND ingest_timestamp >= %s AND ingest_timestamp < %s)",
-				readTable, chQuote(fractalID), chQuote(chTime(cf)), chQuote(chTime(ct)))
-		}
+			chQuote(sourceFractalID), chQuote(chDate(cf)), chQuote(chTime(cf)), chQuote(chTime(ct)))
+		// Anti-join on the TARGET fractal: skip log_ids already present in the
+		// destination so a re-restore or crash-resume into the same fractal is
+		// idempotent. Bounded to this chunk's window and capped by max_rows_in_set,
+		// so it stays tractable no matter how long the overall restore window is.
+		where += fmt.Sprintf(
+			" AND log_id NOT IN (SELECT log_id FROM %s WHERE fractal_id = %s AND ingest_timestamp >= %s AND ingest_timestamp < %s)",
+			readTable, targetLiteral, chQuote(chTime(cf)), chQuote(chTime(ct)))
 
-		// raw_log carries a column TTL on the logs table keyed on EVENT time, so for
-		// a chunk ingested entirely before that horizon every raw_log byte would be
-		// read out of Parquet, shipped, inserted, and then reclaimed by the next
-		// merge. raw_log is the bulk of a row, so skip it and restore the normalized
-		// fields only (all a deep restore can keep anyway). Logs are ingested at or
-		// after the event they describe, so ingest before the horizon implies the
-		// event is too; a future-dated log inside an old chunk is the one case this
-		// drops a raw_log ClickHouse would briefly have kept.
-		rawLogExpr := "raw_log"
-		if !ct.After(time.Now().AddDate(0, 0, -rawLogTTLDays)) {
-			rawLogExpr = "''"
-		}
+		// raw_log is not restored: the logs table no longer has the column (it lives in
+		// the separate logs_raw 7-day troubleshooting table, which a restore of archived
+		// data -- typically older than that window -- would not meaningfully repopulate).
+		// A restore keeps the normalized fields, which is all a deep restore can anyway.
 
 		// norm_log is a flat JSON String in Iceberg; cast it to the logs JSON column
 		// so ClickHouse re-applies the `fields` type hints. The hot-store norm_log
@@ -227,9 +354,11 @@ func (c *Catalog) Restore(ctx context.Context, ch *storage.ClickHouseClient, obj
 		// hypothetical: the spool is replayed at-least-once from its checkpoint after
 		// a crash or restart, so a re-commit of the same records is expected. The
 		// duplicates are byte-identical copies, so picking an arbitrary one is safe.
-		insert := buildRestoreInsert(writeTable, rawLogExpr, tf, where)
+		insert := buildRestoreInsert(writeTable, targetLiteral, tf, where)
 
-		before, err := countLogs(ctx, ch, fractalID, cf, ct)
+		// before/after count the TARGET fractal, so the delta is rows actually
+		// landed in the destination this chunk.
+		before, err := countLogs(ctx, ch, targetFractalID, cf, ct)
 		if err != nil {
 			return total, err
 		}
@@ -241,7 +370,7 @@ func (c *Catalog) Restore(ctx context.Context, ch *storage.ClickHouseClient, obj
 		if err != nil {
 			return total, fmt.Errorf("archive: restore insert failed for %s: %w", chDate(cf), err)
 		}
-		after, err := countLogs(ctx, ch, fractalID, cf, ct)
+		after, err := countLogs(ctx, ch, targetFractalID, cf, ct)
 		if err != nil {
 			return total, err
 		}
@@ -249,7 +378,7 @@ func (c *Catalog) Restore(ctx context.Context, ch *storage.ClickHouseClient, obj
 			total += n
 		}
 		if onChunk != nil {
-			onChunk(ct, i+1, total)
+			onChunk(ct, i+1, len(chunks), total)
 		}
 	}
 	return total, nil
@@ -257,8 +386,13 @@ func (c *Catalog) Restore(ctx context.Context, ch *storage.ClickHouseClient, obj
 
 // Reconcile compares the log_id count in ClickHouse vs Iceberg for an ingest-time
 // window and, if Iceberg holds more (a gap in the hot store), restores the missing
-// rows (with dedup). queryID and onChunk are threaded through to the underlying
+// rows. Restore is always deduped, so healing a partial gap only inserts what is
+// actually missing. queryID and onChunk are threaded through to the underlying
 // restore so the insert stays interruptible and resumable. Returns rows restored.
+//
+// Reconcile is always same-fractal: it heals a fractal's own hot store from its
+// own archive, so source and target are identical. Cross-fractal reconcile is
+// meaningless (a different fractal has no gap to compare against this archive).
 func (c *Catalog) Reconcile(ctx context.Context, ch *storage.ClickHouseClient, obj objstore.Config, fractalID string, from, to time.Time, queryID string, onChunk RestoreProgress) (int64, error) {
 	chCount, err := countLogs(ctx, ch, fractalID, from, to)
 	if err != nil {
@@ -271,7 +405,7 @@ func (c *Catalog) Reconcile(ctx context.Context, ch *storage.ClickHouseClient, o
 	if iceCount <= chCount {
 		return 0, nil
 	}
-	return c.Restore(ctx, ch, obj, fractalID, from, to, true, queryID, onChunk)
+	return c.Restore(ctx, ch, obj, fractalID, fractalID, from, to, queryID, onChunk)
 }
 
 // countIceberg counts archived rows in an ingest-time window. The ingest_date

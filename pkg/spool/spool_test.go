@@ -229,3 +229,42 @@ func TestConcurrentAppendGroupCommit(t *testing.T) {
 		t.Fatalf("got %d logs, want %d", len(got), goroutines*perG)
 	}
 }
+
+// TestConcurrentAppendWithRotation forces frequent segment rotation while many
+// goroutines append, so rotateLocked routinely fires while another goroutine is
+// mid-fsync in syncTo. Every Append that returns nil must have durably persisted
+// its batch: the test asserts no batch is lost and none is spuriously rejected.
+// This is the regression guard for the group-commit-vs-rotation durability fix.
+func TestConcurrentAppendWithRotation(t *testing.T) {
+	dir := t.TempDir()
+	// A tiny segment cap makes almost every append rotate.
+	w, err := NewWriter(WriterOptions{Dir: dir, MaxSegmentBytes: 512})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const goroutines = 8
+	const perG = 250
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < perG; i++ {
+				if err := w.Append(sampleLogs(1, g*100000+i)); err != nil {
+					t.Errorf("append: %v", err) // a rotation must never reject a batch
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	w.Close()
+
+	r, err := NewReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := drainAll(t, r); len(got) != goroutines*perG {
+		t.Fatalf("got %d logs, want %d (a durably-acked batch was lost)", len(got), goroutines*perG)
+	}
+}
