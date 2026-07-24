@@ -85,7 +85,7 @@ Set on the `bifract-archiver` service (compose) or the `bifract-secrets` Secret 
 | `BIFRACT_ARCHIVE_PREFIX` | | Optional path prefix within the bucket/container/dir |
 | `BIFRACT_ARCHIVE_SPOOL_MAX_BYTES` | `10 GiB` | Spool capacity; ingest applies backpressure (`429`) near it |
 | `BIFRACT_ARCHIVE_ROLL_BYTES` | `128 MiB` | Roll a Parquet file at this size |
-| `BIFRACT_ARCHIVE_ROLL_INTERVAL` | `5m` | ...or after this long, whichever first |
+| `BIFRACT_ARCHIVE_ROLL_INTERVAL` | `30m` | ...or after this long, whichever first |
 
 === "S3 / MinIO"
 
