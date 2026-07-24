@@ -4950,13 +4950,29 @@ func TestJoinFunction(t *testing.T) {
 			},
 		},
 		{
+			// include= must name columns the subquery actually produces; selectFirst
+			// outputs first_<field>, so those are the referenceable names.
 			name:  "Join with include parameter",
-			query: `* | join(user, include=[department,role]) { * | groupby(user, function=count()) }`,
+			query: `* | join(user, include=[first_department,first_role]) { * | groupby(user) | selectFirst(department) | selectFirst(role) }`,
 			wantContain: []string{
 				"INNER JOIN",
-				"_join_sub.department AS _join_department",
-				"_join_sub.role AS _join_role",
+				"_join_sub.first_department AS _join_first_department",
+				"_join_sub.first_role AS _join_first_role",
 			},
+		},
+		{
+			name:        "Join rejects include of a column the subquery does not produce",
+			query:       `* | join(user, include=[department]) { * | groupby(user, function=count()) }`,
+			wantErr:     true,
+			errContains: "not produced by the subquery",
+		},
+		{
+			// A bare count() after groupby re-aggregates to a single row and drops the
+			// group key, leaving nothing to join on.
+			name:        "Join rejects a subquery that drops the join key",
+			query:       `* | join(user) { * | groupby(user) | count() }`,
+			wantErr:     true,
+			errContains: "must output the join key",
 		},
 		{
 			name:  "Join with max parameter",

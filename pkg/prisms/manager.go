@@ -154,10 +154,12 @@ func (m *Manager) RemoveMember(ctx context.Context, prismID, fractalID string) e
 	return err
 }
 
-// GetMemberFractalIDs returns the fractal UUIDs that belong to a prism.
+// GetMemberFractalIDs returns the fractal UUIDs that belong to a prism, in a
+// stable order so the generated SQL (and thus ClickHouse's query cache key) is
+// identical across runs of the same query.
 func (m *Manager) GetMemberFractalIDs(ctx context.Context, prismID string) ([]string, error) {
 	rows, err := m.pg.Query(ctx, `
-		SELECT fractal_id FROM prism_members WHERE prism_id = $1
+		SELECT fractal_id FROM prism_members WHERE prism_id = $1 ORDER BY fractal_id
 	`, prismID)
 	if err != nil {
 		return nil, fmt.Errorf("get member fractal IDs: %w", err)

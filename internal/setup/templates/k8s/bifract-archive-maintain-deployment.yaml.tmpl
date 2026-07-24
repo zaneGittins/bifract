@@ -69,6 +69,19 @@ spec:
               value: "{{.ArchiveMaintainByteBudget}}"
             - name: BIFRACT_ARCHIVE_MAINTAIN_COMMIT_RETRIES
               value: "{{.ArchiveMaintainCommitRetries}}"
+            # Orphan-file cleanup: DISABLED (0). iceberg-go v0.6.0's
+            # DeleteOrphanFiles livelocks on the S3/MinIO backend -- it spins on
+            # CPU without progressing, and because the sweep runs inside the
+            # maintain pass it would hold the singleton lock and block compaction,
+            # retention, and snapshot expiry indefinitely. Orphans are an
+            # already-unreachable-bytes leak, never a correctness problem, so
+            # leaving them is strictly safer. Enable only after validating against
+            # your own backend. OLDER_THAN is the safety margin that keeps a sweep
+            # from deleting a concurrent writer's not-yet-committed data files.
+            - name: BIFRACT_ARCHIVE_ORPHAN_INTERVAL
+              value: "0"
+            - name: BIFRACT_ARCHIVE_ORPHAN_OLDER_THAN
+              value: "72h"
             # Sealed ingest days re-checked per pass for hot-store vs archive
             # drift. 0 disables the sweep. Cost is fractals x days x 2 counts.
             - name: BIFRACT_ARCHIVE_COMPLETENESS_DAYS

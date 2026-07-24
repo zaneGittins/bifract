@@ -236,6 +236,19 @@ func (m *Manager) SetRetention(ctx context.Context, fractalID string, days *int)
 	return m.storage.SetRetention(ctx, fractalID, days)
 }
 
+// SetArchiveRetention bounds the fractal's Iceberg archive copy (nil = keep
+// forever). Independent of hot retention: the archive is a separate copy, and
+// setting this below the hot window is legal (just pointless).
+func (m *Manager) SetArchiveRetention(ctx context.Context, fractalID string, days *int) error {
+	if fractalID == "" {
+		return fmt.Errorf("fractal ID is required")
+	}
+	if days != nil && *days < 1 {
+		return fmt.Errorf("archive retention days must be at least 1")
+	}
+	return m.storage.SetArchiveRetention(ctx, fractalID, days)
+}
+
 // SetDiskQuota sets the disk quota and enforcement action for a fractal.
 func (m *Manager) SetDiskQuota(ctx context.Context, fractalID string, quotaBytes *int64, action string) error {
 	if fractalID == "" {

@@ -58,6 +58,13 @@ type Config struct {
 	// ClickHouse query is killed and the job is marked failed, freeing the user's
 	// in-flight slot. Configurable via BIFRACT_RECALL_TIMEOUT.
 	RecallTimeout time.Duration
+
+	// JobConcurrency caps how many recall (and, separately, restore) jobs run at
+	// once across the whole deployment. Both hand their scan to ClickHouse, so
+	// the resource worth bounding is concurrent archive scans against the
+	// cluster, not worker processes. Enforced globally at claim time, so the
+	// number does not drift with replica count.
+	JobConcurrency int
 }
 
 // ConfigFromEnv assembles archiver config from the environment.
@@ -84,6 +91,10 @@ func ConfigFromEnv() (Config, error) {
 		RecallTimeout: getDuration("BIFRACT_RECALL_TIMEOUT", 5*time.Minute),
 
 		MaxPendingBytes: getInt64("BIFRACT_ARCHIVE_MAX_PENDING_BYTES", 1<<30),
+		JobConcurrency:  getIntEnv("BIFRACT_ARCHIVE_JOB_CONCURRENCY", 2),
+	}
+	if c.JobConcurrency < 1 {
+		c.JobConcurrency = 1
 	}
 	// A cap below the per-fractal threshold would make the memory backstop, not
 	// RollBytes, decide every commit. Keep at least one full roll of headroom.

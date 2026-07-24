@@ -9,6 +9,10 @@ import (
 const (
 	joinDefaultMaxRows = 10000
 	joinHardMaxRows    = 100000
+
+	// joinHiddenKeyCol is the alias the source scan projects the outer join key
+	// under, so the ON clause has a column to reference inside _outer.
+	joinHiddenKeyCol = "_join_k"
 )
 
 // joinHandler handles join(key, type=inner|left, max=N, include=[f1,f2]) { subquery }
@@ -107,12 +111,27 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		Dictionaries:          ctx.Opts.Dictionaries,
 		GeoIPEnabled:          ctx.Opts.GeoIPEnabled,
 		TableName:             ctx.Opts.TableName,
-		UseIngestTimestamp:     ctx.Opts.UseIngestTimestamp,
+		UseIngestTimestamp:    ctx.Opts.UseIngestTimestamp,
 	}
 
 	subResult, err := TranslateToSQLWithOrder(subPipeline, subOpts)
 	if err != nil {
 		return fmt.Errorf("join() subquery translation error: %w", err)
+	}
+
+	// The ON clause reads the key off the subquery by name, so the subquery must
+	// actually output it. A bare count() after groupby is the common trap: it
+	// re-aggregates into a single row and drops the group key entirely.
+	if !contains(subResult.FieldOrder, joinKey) {
+		return fmt.Errorf("join() subquery must output the join key %q, but returns [%s]%s",
+			joinKey, strings.Join(subResult.FieldOrder, ", "), joinSubqueryHint(subPipeline, joinKey))
+	}
+	// include= names columns read off the subquery, so they must exist there too.
+	for _, f := range includeFields {
+		if !contains(subResult.FieldOrder, f) {
+			return fmt.Errorf("join() include=%s is not produced by the subquery, which returns [%s]",
+				f, strings.Join(subResult.FieldOrder, ", "))
+		}
 	}
 
 	// Resolve the join key reference for the outer query
@@ -125,9 +144,60 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.JoinKey = safeKey
 	ctx.Plan.JoinSubSQL = subResult.SQL
 	ctx.Plan.JoinInclude = includeFields
+	ctx.Plan.JoinOutputs = subResult.FieldOrder
 	ctx.Plan.JoinMaxRows = maxRows
 
+	// Register the joined-in columns so a filter or sort on one is deferred to a
+	// post-join layer instead of the source scan, where it does not exist yet.
+	// Same mechanism as model_lookup()'s outputs.
+	for _, col := range joinCarriedColumns(subResult.FieldOrder, includeFields, safeKey) {
+		name := joinPrefixed(col)
+		ctx.Registry.Register(name, FieldKindJoined, name, ctx.CmdIndex)
+	}
+
 	return nil
+}
+
+// joinCarriedColumns returns the subquery columns the join wrapper brings back,
+// honouring include= when present. The join key itself is excluded: it is matched on,
+// not carried through. Single source of truth for the SQL projection (wrapWithJoin),
+// the registry entries, and the display order -- these must not drift apart.
+func joinCarriedColumns(subFields, includeFields []string, joinKey string) []string {
+	src := subFields
+	if len(includeFields) > 0 {
+		src = includeFields
+	}
+	out := make([]string, 0, len(src))
+	for _, f := range src {
+		if f == joinKey {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// joinPrefixed is the name a carried subquery column is exposed under.
+func joinPrefixed(col string) string { return "_join_" + col }
+
+// joinDisplayNames returns the prefixed names of the columns the join contributes.
+func joinDisplayNames(plan *QueryPlan) []string {
+	cols := joinCarriedColumns(plan.JoinOutputs, plan.JoinInclude, plan.JoinKey)
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = joinPrefixed(c)
+	}
+	return out
+}
+
+// joinSubqueryHint points at the usual cause when a subquery drops its group key.
+func joinSubqueryHint(sub *PipelineNode, joinKey string) string {
+	for _, c := range sub.Commands {
+		if strings.EqualFold(c.Name, "count") && len(c.Arguments) == 0 {
+			return fmt.Sprintf(" -- a bare count() after groupby(%s) counts the groups and drops %s; groupby() already returns a count, so drop the count()", joinKey, joinKey)
+		}
+	}
+	return ""
 }
 
 func init() {

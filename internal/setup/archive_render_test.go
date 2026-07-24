@@ -99,6 +99,28 @@ func TestArchiveRendersK8s(t *testing.T) {
 		}
 	}
 
+	// The recall/restore queues live in the always-on app tier: they only dispatch
+	// to ClickHouse, so hosting them there costs no workload of its own and keeps
+	// them alive when the ingest tier is scaled down. That needs the archive
+	// object-store credentials to be real config on the app tier, not display hints.
+	app, err := renderK8sTemplate("templates/k8s/bifract-deployment.yaml.tmpl", data)
+	if err != nil {
+		t.Fatalf("app deployment render failed: %v", err)
+	}
+	if strings.Contains(app, "<no value>") {
+		t.Fatalf("app deployment produced <no value> (missing field)")
+	}
+	for _, want := range []string{
+		"BIFRACT_ARCHIVE_S3_ACCESS_KEY",
+		"BIFRACT_ARCHIVE_S3_SECRET_KEY",
+		"BIFRACT_ARCHIVE_AZURE_ACCOUNT",
+		"BIFRACT_ARCHIVE_JOB_CONCURRENCY",
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("rendered app deployment missing %q (recall/restore workers need it)", want)
+		}
+	}
+
 	sec, err := renderK8sTemplate("templates/k8s/bifract-secrets.yaml.tmpl", k8sTemplateData{
 		UserSecrets: map[string]string{"ARCHIVE_ENABLED": "true", "ARCHIVE_BACKEND": "s3"},
 	})

@@ -18,6 +18,7 @@ import (
 	dbsql "bifract/db"
 	"bifract/pkg/alerts"
 	"bifract/pkg/apikeys"
+	"bifract/pkg/archive"
 	"bifract/pkg/auth"
 	"bifract/pkg/chat"
 	"bifract/pkg/comments"
@@ -36,6 +37,7 @@ import (
 	"bifract/pkg/normalizers"
 	"bifract/pkg/notebooks"
 	"bifract/pkg/notifications"
+	"bifract/pkg/objstore"
 	"bifract/pkg/oidc"
 	"bifract/pkg/parser"
 	"bifract/pkg/prisms"
@@ -460,6 +462,12 @@ func main() {
 	// never links the archiver's Arrow/Iceberg dependencies.
 	startArchiveSpool(ingestQueue, pg)
 
+	// Recall/restore job queues. Hosted here because both only resolve Iceberg
+	// metadata and hand the scan to ClickHouse: they have no spool affinity, and
+	// running them in the always-on app tier means scaling ingest down cannot
+	// leave archive jobs stuck at 'pending'.
+	stopArchiveJobWorkers := startArchiveJobWorkers()
+
 	// Queue depth at which alert evaluation is deferred to protect ingestion.
 	// Clamp the configured percentage to a sane (1, 100] range so a bad value
 	// can't disable alerts (0%) or wedge them permanently above 100%.
@@ -863,13 +871,16 @@ func main() {
 				var maintainDurationMs int64
 				var maintainTables, maintainCompacted, maintainGroupsFailed, maintainExpired int
 				var maintainCandidateBytes, maintainCompactedBytes int64
+				var maintainRetentionTables, maintainRetentionFiles, maintainOrphansDeleted int
 				_ = pg.QueryRow(r.Context(),
 					`SELECT last_run_at, last_attempt_at, last_outcome, last_error, duration_ms, tables_seen, compacted,
-					        groups_failed, expired, candidate_bytes, compacted_bytes, run_requested_at, run_requested_by
+					        groups_failed, expired, candidate_bytes, compacted_bytes, run_requested_at, run_requested_by,
+					        retention_tables, retention_files, orphans_deleted
 					 FROM archive_maintain_status WHERE id = 1`).
 					Scan(&maintainLastRun, &maintainLastAttempt, &maintainOutcome, &maintainError, &maintainDurationMs,
 						&maintainTables, &maintainCompacted, &maintainGroupsFailed, &maintainExpired,
-						&maintainCandidateBytes, &maintainCompactedBytes, &maintainRunRequestedAt, &maintainRunRequestedBy)
+						&maintainCandidateBytes, &maintainCompactedBytes, &maintainRunRequestedAt, &maintainRunRequestedBy,
+						&maintainRetentionTables, &maintainRetentionFiles, &maintainOrphansDeleted)
 				maintainResp := map[string]interface{}{
 					"outcome":         maintainOutcome,
 					"duration_ms":     maintainDurationMs,
@@ -879,6 +890,11 @@ func main() {
 					"expired":         maintainExpired,
 					"candidate_bytes": maintainCandidateBytes,
 					"compacted_bytes": maintainCompactedBytes,
+					// Lifecycle: expired archive partitions dropped and unreferenced files
+					// swept, so the panel shows storage being returned, not just compaction.
+					"retention_tables": maintainRetentionTables,
+					"retention_files":  maintainRetentionFiles,
+					"orphans_deleted":  maintainOrphansDeleted,
 					// on_schedule mirrors archiver_alive's freshness check above, sized to
 					// the maintainer's scheduled cadence instead of the archiver's ~30s
 					// heartbeat interval. false with no prior attempt at all (maintainOutcome
@@ -1986,6 +2002,7 @@ func main() {
 			r.Post("/fractals/{id}/select", fractalHandler.HandleSelectFractal)
 			r.Get("/fractals/{id}/stats", fractalHandler.HandleGetStats)
 			r.Put("/fractals/{id}/retention", fractalHandler.HandleSetRetention)
+			r.Put("/fractals/{id}/archive-retention", fractalHandler.HandleSetArchiveRetention)
 			r.Put("/fractals/{id}/disk-quota", fractalHandler.HandleSetDiskQuota)
 			r.Post("/fractals/stats/refresh", fractalHandler.HandleRefreshStats)
 
@@ -2276,6 +2293,9 @@ func main() {
 
 	// Stop the background dashboard executor (waits for in-flight refreshes)
 	dashboardExecutor.Stop()
+
+	// Stop claiming archive recall/restore jobs
+	stopArchiveJobWorkers()
 
 	// Stop the distribution queue and DDL monitors
 	distMonitor.Stop()
@@ -2583,6 +2603,50 @@ func validateRecallQuery(query string) error {
 		return err
 	}
 	return nil
+}
+
+// startArchiveJobWorkers runs the recall and restore queues. Both are dispatchers
+// (resolve Iceberg metadata, issue an icebergS3()/icebergAzure() query, wait), so
+// they cost a few idle goroutines here rather than a workload of their own.
+//
+// Skipped unless an object-storage backend is configured: ClickHouse cannot read
+// the pod-local disk backend, so neither queue can do anything without one, and
+// skipping keeps a hot-only install free of the claim polling entirely.
+// Concurrency is capped globally at claim time, so every app replica running this
+// does not multiply concurrent archive scans against ClickHouse.
+// Returns a stop function that halts claiming and cancels in-flight jobs; a
+// cancelled job is left 'running' and picked up by the stale reaper, exactly as
+// after a pod kill.
+func startArchiveJobWorkers() func() {
+	cfg, err := archive.ConfigFromEnv()
+	if err != nil {
+		log.Printf("Warning: archive job workers disabled, bad config: %v", err)
+		return func() {}
+	}
+	if cfg.Obj.Backend == objstore.BackendDisk || cfg.Obj.Backend == "" {
+		return func() {}
+	}
+	db, err := sql.Open("postgres", cfg.PGDSN)
+	if err != nil {
+		log.Printf("Warning: archive job workers disabled, cannot open postgres: %v", err)
+		return func() {}
+	}
+	// Sized to the peak these queues can demand: each in-flight job uses one
+	// connection for its own writes and one for its heartbeat goroutine, and a
+	// claim loop holds one while it waits on the claim lock. Undersizing starves
+	// heartbeats, which the stale reaper would eventually read as a dead worker
+	// and fail a healthy job.
+	maxConns := 2 * 2 * cfg.JobConcurrency
+	db.SetMaxOpenConns(maxConns)
+	db.SetMaxIdleConns(2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	archive.StartJobWorkers(ctx, cfg, db)
+	log.Printf("Archive job workers started (recall + restore, concurrency %d each)", cfg.JobConcurrency)
+	return func() {
+		cancel()
+		db.Close()
+	}
 }
 
 // startArchiveSpool provisions the ingest archive spool tee when a spool path is

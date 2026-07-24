@@ -51,10 +51,10 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 
 	// Register each output field as a model-lookup column: it exists only after the
 	// JOIN wrap, so it resolves to its bare output name and conditions on it defer
-	// to a post-join WHERE (see FieldKindModelLookup handling in conditions.go).
+	// to a post-join WHERE (see FieldKindJoined handling in conditions.go).
 	reg := func(names ...string) {
 		for _, n := range names {
-			ctx.Registry.Register(n, FieldKindModelLookup, n, ctx.CmdIndex)
+			ctx.Registry.Register(n, FieldKindJoined, n, ctx.CmdIndex)
 		}
 	}
 	switch info.ModelType {
@@ -160,6 +160,7 @@ func setModelLookupJoin(ctx *CommandContext, keyFields, rightCols []string) {
 		rightParts[i] = "_mlookup." + c
 	}
 	ctx.Plan.ModelLookupKeyExprs = keyExprs
+	ctx.Plan.ModelLookupKeyFields = append([]string(nil), keyFields...)
 	ctx.Plan.ModelLookupOn = concatModelKeys(leftParts) + " = " + concatModelKeys(rightParts)
 }
 

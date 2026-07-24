@@ -17,6 +17,15 @@ const FractalManageTab = {
             });
         }
 
+        // Free-form, so commit on blur/Enter rather than per keystroke.
+        const archiveRetentionInput = document.getElementById('manageFractalArchiveRetentionInput');
+        if (archiveRetentionInput) {
+            archiveRetentionInput.addEventListener('change', () => {
+                this.saveArchiveRetentionSetting();
+                this.updateLifecycleSummary();
+            });
+        }
+
         // Quota action select - show/hide rollover warning
         const quotaActionSelect = document.getElementById('manageFractalQuotaAction');
         if (quotaActionSelect) {
@@ -310,6 +319,13 @@ const FractalManageTab = {
             retentionSelect.value = fractal.retention_days != null ? String(fractal.retention_days) : '';
         }
 
+        const archiveRetentionInput = document.getElementById('manageFractalArchiveRetentionInput');
+        if (archiveRetentionInput) {
+            archiveRetentionInput.value = fractal.archive_retention_days != null
+                ? String(fractal.archive_retention_days)
+                : '';
+        }
+
         // Populate disk quota fields
         const quotaInput = document.getElementById('manageFractalQuotaInput');
         if (quotaInput) {
@@ -428,6 +444,49 @@ const FractalManageTab = {
             console.error('Failed to save retention:', error);
             if (window.Toast) {
                 Toast.error('Retention Save Failed', error.message);
+            }
+        }
+    },
+
+    async saveArchiveRetentionSetting() {
+        if (!this.currentFractal) return;
+
+        const input = document.getElementById('manageFractalArchiveRetentionInput');
+        if (!input) return;
+
+        const raw = input.value.trim();
+        let days = null;
+        if (raw !== '') {
+            days = parseInt(raw, 10);
+            if (!Number.isFinite(days) || days < 1) {
+                if (window.Toast) {
+                    Toast.error('Invalid Archive Retention', 'Enter at least 1 day, or leave blank to keep forever.');
+                }
+                input.value = this.currentFractal.archive_retention_days != null
+                    ? String(this.currentFractal.archive_retention_days)
+                    : '';
+                return;
+            }
+        }
+
+        try {
+            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/archive-retention`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ archive_retention_days: days })
+            });
+
+            const data = await response.json();
+            if (!data.success) throw new Error(data.error || 'Failed to save archive retention');
+
+            this.currentFractal.archive_retention_days = days;
+            if (window.FractalContext) FractalContext.currentFractal = this.currentFractal;
+
+        } catch (error) {
+            console.error('Failed to save archive retention:', error);
+            if (window.Toast) {
+                Toast.error('Archive Retention Save Failed', error.message);
             }
         }
     },
@@ -561,6 +620,12 @@ const FractalManageTab = {
             parts.push('Logs are kept indefinitely.');
         } else {
             parts.push(`Logs older than ${retentionDays} days are deleted hourly.`);
+        }
+
+        const archiveInput = document.getElementById('manageFractalArchiveRetentionInput');
+        const archiveDays = archiveInput ? archiveInput.value.trim() : '';
+        if (archiveDays !== '') {
+            parts.push(`Archived data older than ${archiveDays} days is dropped during archive maintenance.`);
         }
 
         el.textContent = parts.join(' ');

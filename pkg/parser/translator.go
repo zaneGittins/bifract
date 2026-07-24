@@ -689,8 +689,13 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		activeStage.Layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
 	}
 
-	// --- Defer window-field ORDER BY to post-window layer ---
-	deferWindowOrderBy(ctx, plan, activeStage)
+	// --- Defer out-of-scope ORDER BY (window fields, join/model_lookup outputs) ---
+	deferOutOfScopeOrderBy(ctx, plan, activeStage)
+
+	// --- Export the source columns those deferred expressions reference ---
+	if err := plan.exportDeferredColumns(); err != nil {
+		return nil, err
+	}
 
 	// --- Build chained aggregation stages ---
 	if len(plan.outerAggregations) > 0 {
@@ -708,6 +713,9 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		// Standard: build outer SELECT with timestamp formatting + deferred math
 		plan.Formatters = buildFormatters(selectStrings, ctx.Registry, deferredAssignments)
 		fieldOrder = computeFieldOrder(selectStrings, deferredAssignments)
+		// Columns exported purely to make deferred expressions resolvable are
+		// stripped from the SQL result, so they must not be listed for display.
+		fieldOrder = dropHiddenDeferredFields(fieldOrder, plan)
 
 		// When formatters add a subquery wrapper AND the query uses the default
 		// timestamp-DESC order, lift ORDER BY and LIMIT to the formatter outer SELECT.
@@ -747,32 +755,23 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		}
 	}
 
-	// --- Join: skip explicit formatter to let all join columns pass through ---
+	// --- Join wraps (join / model_lookup): skip the explicit formatter so the
+	// wrapper's added columns pass through. An explicit formatter SELECT would drop
+	// them, breaking both the enrichment display and any trailing filter (deferred
+	// to a post-join WHERE that references those columns).
+	//
+	// Their outputs are then appended to the result column order, mirroring how
+	// z-score/histogram surface their computed fields. Skip any already present
+	// (e.g. a key column the source projected). An explicit `| table(...)` picks the
+	// columns, so show only the joined outputs it named; the wrap still projects them
+	// all, since a deferred filter or sort may reference one that is not displayed.
 	if plan.IsJoin && plan.JoinSubSQL != "" {
-		// The join wrapper adds columns from the subquery. An explicit formatter
-		// SELECT would drop them. Use SELECT * with timestamp formatting instead.
 		plan.Formatters = nil
+		fieldOrder = appendJoinedFields(fieldOrder, joinDisplayNames(plan), plan)
 	}
-
-	// --- model_lookup: same reasoning — the join wrapper adds the model output
-	// columns (beacon_score, confidence, ...). An explicit formatter SELECT would
-	// drop them, breaking both the enrichment display and any trailing threshold
-	// filter (which is deferred to a post-join WHERE that references those columns).
 	if plan.ModelLookupSQL != "" {
 		plan.Formatters = nil
-		// Surface the model output columns in the result column order (mirrors how
-		// z-score/histogram append their computed fields). Skip any already present
-		// (e.g. a key column the source projected).
-		seen := make(map[string]bool, len(fieldOrder))
-		for _, f := range fieldOrder {
-			seen[f] = true
-		}
-		for _, f := range plan.ModelLookupFields {
-			if !seen[f] {
-				fieldOrder = append(fieldOrder, f)
-				seen[f] = true
-			}
-		}
+		fieldOrder = appendJoinedFields(fieldOrder, plan.ModelLookupFields, plan)
 	}
 
 	// --- Build z-score window layers ---
@@ -1174,11 +1173,18 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 	}
 }
 
-// deferWindowOrderBy moves ORDER BY clauses that reference window fields
-// (z-score, outlier) from the source stage to DeferredOrder, using the
-// FieldRegistry to identify window fields.
-func deferWindowOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryStage) {
-	if plan.ModifiedZScoreExpr == "" || len(source.Layer.OrderBy) == 0 {
+// deferOutOfScopeOrderBy moves ORDER BY clauses that reference columns produced
+// after the source scan -- window fields (z-score, outlier) and the outputs of a
+// model_lookup()/join() wrap -- to the deferred outer layer, where they exist.
+//
+// It also lifts the source LIMIT past the join whenever a filter on a joined column
+// was deferred. Leaving the LIMIT on the source would apply it BEFORE that filter, so
+// the filter would only ever see the newest MaxRows logs: the result would be a
+// near-arbitrary subset that changes run to run whenever rows tie on timestamp (and
+// especially across a prism's member fractals).
+func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryStage) {
+	hasJoinWrap := plan.ModelLookupSQL != "" || (plan.IsJoin && plan.JoinSubSQL != "")
+	if plan.ModifiedZScoreExpr == "" && !hasJoinWrap {
 		return
 	}
 
@@ -1188,19 +1194,90 @@ func deferWindowOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryStage
 	for _, ob := range source.Layer.OrderBy {
 		// Extract field name (strip direction suffix)
 		fieldName := strings.Fields(ob)[0]
-		if ctx.Registry.IsWindow(fieldName) {
+		if ctx.Registry.IsWindow(fieldName) || (hasJoinWrap && isJoinedField(ctx.Registry, fieldName)) {
 			deferredOrder = append(deferredOrder, ob)
 		} else {
 			innerOrder = append(innerOrder, ob)
 		}
 	}
 
+	liftLimit := len(deferredOrder) > 0 || (hasJoinWrap && len(plan.DeferredWhere) > 0)
+	if liftLimit && hasJoinWrap {
+		// The ordering must follow the filter, so it moves out with the LIMIT.
+		deferredOrder = append(deferredOrder, innerOrder...)
+		innerOrder = nil
+	}
+
 	source.Layer.OrderBy = innerOrder
-	if len(deferredOrder) > 0 {
+	if liftLimit {
+		// Relocated ORDER BY expressions face the same scope limit as relocated
+		// filters: a `sort(image)` carried past the join must read the exported
+		// hidden column, not the source-only `fields.image`.
+		for i, ob := range deferredOrder {
+			deferredOrder[i] = scopeOrderByExpr(ob, plan.deferredScope())
+		}
 		plan.DeferredOrder = append(plan.DeferredOrder, deferredOrder...)
 		plan.DeferredLimit = source.Layer.Limit
 		source.Layer.Limit = ""
 	}
+}
+
+// dropHiddenDeferredFields removes the deferred scope's exported columns from the
+// display order; they are EXCEPT-ed out of the result set.
+func dropHiddenDeferredFields(fieldOrder []string, plan *QueryPlan) []string {
+	if !plan.deferred.used() {
+		return fieldOrder
+	}
+	hidden := make(map[string]bool, len(plan.deferred.names))
+	for _, n := range plan.deferred.names {
+		hidden[n] = true
+	}
+	out := fieldOrder[:0]
+	for _, f := range fieldOrder {
+		if !hidden[f] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// scopeOrderByExpr rewrites the expression part of an "<expr> ASC|DESC" ORDER BY
+// entry through the deferred scope, leaving the direction intact.
+func scopeOrderByExpr(orderBy string, scope *deferredScope) string {
+	expr, dir := orderBy, ""
+	if i := strings.LastIndex(orderBy, " "); i > 0 {
+		switch strings.ToUpper(orderBy[i+1:]) {
+		case "ASC", "DESC":
+			expr, dir = orderBy[:i], orderBy[i:]
+		}
+	}
+	return scope.ref(expr, "") + dir
+}
+
+// appendJoinedFields adds a JOIN wrap's output columns to the display order,
+// narrowed to what an explicit `| table(...)` asked for.
+func appendJoinedFields(fieldOrder, outputs []string, plan *QueryPlan) []string {
+	if plan.TableHasExplicitColumns {
+		outputs = plan.TableJoinedFields
+	}
+	seen := make(map[string]bool, len(fieldOrder))
+	for _, f := range fieldOrder {
+		seen[f] = true
+	}
+	for _, f := range outputs {
+		if !seen[f] {
+			fieldOrder = append(fieldOrder, f)
+			seen[f] = true
+		}
+	}
+	return fieldOrder
+}
+
+// isJoinedField reports whether a name resolves to a column added by a JOIN wrap,
+// which exists only after that wrap.
+func isJoinedField(registry *FieldRegistry, name string) bool {
+	entry := registry.Get(strings.Trim(name, "`"))
+	return entry != nil && entry.Kind == FieldKindJoined
 }
 
 // buildChainedAggStages creates additional QueryStages for chained aggregation

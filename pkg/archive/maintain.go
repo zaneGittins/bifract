@@ -29,6 +29,15 @@ type MaintainOptions struct {
 	// CommitRetries bounds how many times compactGroup reloads and retries a
 	// single group's commit after losing an optimistic-concurrency race.
 	CommitRetries int
+	// Retention maps archive table name to its retention in days. Tables absent
+	// from the map are kept forever, which is every fractal's default.
+	Retention RetentionPolicy
+	// OrphanOlderThan bounds orphan-file cleanup: files under the table location
+	// that no live snapshot references AND that are older than this are deleted
+	// (0 disables). The age floor is the safety margin -- an in-flight commit has
+	// written its data files but not yet its metadata, so a small value would race
+	// a concurrent writer and delete live data.
+	OrphanOlderThan time.Duration
 }
 
 // DefaultMaintainOptions returns sensible defaults: keep ~7 days of snapshots,
@@ -42,6 +51,7 @@ func DefaultMaintainOptions() MaintainOptions {
 		RetainLast:      10,
 		ByteBudget:      4 << 30,
 		CommitRetries:   3,
+		OrphanOlderThan: 72 * time.Hour,
 	}
 }
 
@@ -54,7 +64,30 @@ func MaintainOptionsFromEnv() MaintainOptions {
 	opts := DefaultMaintainOptions()
 	opts.ByteBudget = getInt64("BIFRACT_ARCHIVE_MAINTAIN_BYTE_BUDGET", opts.ByteBudget)
 	opts.CommitRetries = getIntEnv("BIFRACT_ARCHIVE_MAINTAIN_COMMIT_RETRIES", opts.CommitRetries)
+	opts.OrphanOlderThan = getDuration("BIFRACT_ARCHIVE_ORPHAN_OLDER_THAN", opts.OrphanOlderThan)
 	return opts
+}
+
+// defaultOrphanSweepInterval DISABLES orphan cleanup.
+//
+// iceberg-go v0.6.0's Table.DeleteOrphanFiles livelocks on the gocloud S3/MinIO
+// backend: measured against a live MinIO archive it burned ~1.25 cores for 7+
+// minutes while issuing ~200 bytes of network traffic, and never finished. That
+// is not merely slow -- the sweep runs inside the maintain pass, which holds the
+// singleton advisory lock, so a wedged sweep blocks compaction, retention, and
+// snapshot expiry indefinitely. The failure mode is far worse than the leak it
+// cleans up.
+//
+// The plumbing below is kept because it is correct and cheap, and orphans are
+// already-unreachable bytes (a leak, never a correctness problem). Set
+// BIFRACT_ARCHIVE_ORPHAN_INTERVAL to enable it once upstream is fixed, and
+// validate against your own backend first.
+const defaultOrphanSweepInterval = 0
+
+// OrphanSweepIntervalFromEnv returns the orphan-cleanup cadence, overridable via
+// BIFRACT_ARCHIVE_ORPHAN_INTERVAL. Zero (the default) disables the sweep.
+func OrphanSweepIntervalFromEnv() time.Duration {
+	return getDuration("BIFRACT_ARCHIVE_ORPHAN_INTERVAL", defaultOrphanSweepInterval)
 }
 
 // maintainScanConcurrency caps compaction's concurrent file-decode workers.
@@ -116,6 +149,13 @@ type MaintainStats struct {
 	// fractal per replica.
 	FootprintBytes   int64
 	FootprintRecords int64
+
+	// RetentionTables/RetentionFiles count tables that had expired ingest_date
+	// partitions dropped this pass, and the data files dropped across them.
+	RetentionTables int
+	RetentionFiles  int
+	// OrphansDeleted counts unreferenced files reclaimed this pass.
+	OrphansDeleted int
 }
 
 // Maintain runs compaction + snapshot expiry across every fractal's Iceberg
@@ -124,8 +164,9 @@ type MaintainStats struct {
 // never fight over table metadata. Errors on individual tables are logged and
 // skipped so one bad table does not abort the whole pass.
 //
-// Orphan-file cleanup is not yet included (iceberg-go v0.6.0 exposes no stable
-// standalone entrypoint); roll-on-size + snapshot expiry keep growth bounded.
+// Per table the pass runs compaction, then archive retention (dropping expired
+// ingest_date partitions), then snapshot expiry. Orphan-file cleanup is wired in
+// but disabled by default; see defaultOrphanSweepInterval.
 func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainStats, error) {
 	start := time.Now()
 	ns := catalog.ToIdentifier(Namespace)
@@ -138,6 +179,9 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 		}
 		idents = append(idents, ident)
 	}
+
+	// The pass iterates catalog tables, so re-key the fractal-scoped policy once.
+	retention := opts.Retention.ByTable()
 
 	stats := MaintainStats{Tables: len(idents)}
 	budget := opts.ByteBudget
@@ -175,6 +219,22 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 			}
 		}
 
+		// Retention before expiry: the delete only unlinks files from the current
+		// snapshot, and it is expireSnapshots that actually reclaims them once no
+		// retained snapshot references them. Running it first lets a single pass
+		// drop and (for already-aged snapshots) free in one go.
+		if days := retention[name]; days > 0 {
+			res, err := applyRetention(ctx, c, ident, days)
+			if err != nil {
+				log.Printf("[Maintain] retention %s: %v", name, err)
+			} else if res.Deleted {
+				stats.RetentionTables++
+				stats.RetentionFiles += res.Files
+				log.Printf("[Maintain] retention %s: dropped %d file(s) before %s (keep %dd)",
+					name, res.Files, res.Cutoff.Format("2006-01-02"), days)
+			}
+		}
+
 		if opts.ExpireOlderThan > 0 {
 			if err := expireSnapshots(ctx, c, ident, opts); err != nil {
 				log.Printf("[Maintain] expire %s: %v", name, err)
@@ -182,10 +242,23 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 				stats.Expired++
 			}
 		}
+
+		// Orphan cleanup last, so it sees the files the two steps above just
+		// unlinked. Reloads the table: it must not act on pre-expiry state.
+		if opts.OrphanOlderThan > 0 {
+			deleted, err := cleanOrphans(ctx, c, ident, opts.OrphanOlderThan)
+			if err != nil {
+				log.Printf("[Maintain] orphans %s: %v", name, err)
+			} else if deleted > 0 {
+				stats.OrphansDeleted += deleted
+				log.Printf("[Maintain] orphans %s: deleted %d unreferenced file(s)", name, deleted)
+			}
+		}
 	}
 	stats.Duration = time.Since(start)
-	log.Printf("[Maintain] done: %d tables, %d compacted, %d groups failed, %d expired, %d/%d backlog bytes compacted, footprint %d bytes / %d records, took %s",
+	log.Printf("[Maintain] done: %d tables, %d compacted, %d groups failed, %d expired, %d/%d backlog bytes compacted, retention dropped %d file(s) across %d table(s), %d orphan(s) reclaimed, footprint %d bytes / %d records, took %s",
 		stats.Tables, stats.Compacted, stats.GroupsFailed, stats.Expired, stats.CompactedBytes, stats.CandidateBytes,
+		stats.RetentionFiles, stats.RetentionTables, stats.OrphansDeleted,
 		stats.FootprintBytes, stats.FootprintRecords, stats.Duration)
 	return stats, nil
 }
@@ -375,6 +448,34 @@ func compactGroup(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 // future upstream wording change could silently stop this matching.
 func isCommitConflict(err error) bool {
 	return errors.Is(err, icetable.ErrCommitFailed) || strings.Contains(err.Error(), "requirement failed")
+}
+
+// cleanOrphans deletes files under the table's location that no live snapshot
+// references. These accumulate from commits that wrote data files and then
+// failed, and from compaction rewrites whose commit lost a race -- neither is
+// reachable, so nothing else ever reclaims them.
+//
+// olderThan is a safety margin, not a policy: a writer that has uploaded its
+// Parquet but not yet committed its metadata looks exactly like an orphan, so
+// only files older than any plausible in-flight commit are eligible. Reloads the
+// table so it sees the post-expiry snapshot set.
+// Reports a file count only, deliberately: OrphanCleanupResult.TotalSizeBytes is
+// the size of every file the scan considered, not of the orphans it deleted, so
+// surfacing it as reclaimed bytes would overstate by roughly the table size on
+// every pass.
+func cleanOrphans(ctx context.Context, c *Catalog, ident icetable.Identifier, olderThan time.Duration) (int, error) {
+	tbl, err := c.cat.LoadTable(ctx, ident)
+	if err != nil {
+		return 0, err
+	}
+	res, err := tbl.DeleteOrphanFiles(ctx,
+		icetable.WithFilesOlderThan(olderThan),
+		icetable.WithMaxConcurrency(maintainScanConcurrency),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return len(res.DeletedFiles), nil
 }
 
 // expireSnapshots drops snapshots older than the retention window (keeping at

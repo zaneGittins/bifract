@@ -125,24 +125,31 @@ type QueryPlan struct {
 	IsJoin      bool
 	JoinType    string   // "inner" or "left"
 	JoinKey     string   // field to join on
+	JoinKeyExpr string   // outer join-key expression, projected as the hidden _join_k column
 	JoinSubSQL  string   // translated subquery SQL
 	JoinInclude []string // fields to include from subquery (empty = all)
+	JoinOutputs []string // subquery output columns, surfaced as _join_<col>
 	JoinMaxRows int      // max rows for subquery safety limit
 
 	// ModelLookup-specific fields (set by model_lookup() BQL command)
-	ModelLookupSQL      string   // pre-built scoring subquery SQL
-	ModelLookupOn       string   // JOIN ON condition (references _outer._mlk_k<i>)
-	ModelLookupFields   []string // output field names added to outer SELECT
-	ModelLookupKeyExprs []string // outer join-key expressions, projected as hidden _mlk_k<i> columns
+	ModelLookupSQL       string   // pre-built scoring subquery SQL
+	ModelLookupOn        string   // JOIN ON condition (references _outer._mlk_k<i>)
+	ModelLookupFields    []string // output field names added to outer SELECT
+	ModelLookupKeyExprs  []string // outer join-key expressions, projected as hidden _mlk_k<i> columns
+	ModelLookupKeyFields []string // the BQL field names behind ModelLookupKeyExprs (for error messages)
 
 	// Table command tracking
 	HasTableCmd             bool
 	TableHasExplicitColumns bool
+	TableJoinedFields       []string // join/model_lookup outputs named in table(), in the order given
 
 	// Pending conditions: classified by kind after Declare, materialized after Execute
 	pendingWhereConditions    []HavingCondition
 	pendingHavingConditions   []HavingCondition
 	pendingDeferredConditions []HavingCondition
+
+	// Source expressions exported to the deferred layer as hidden columns.
+	deferred *deferredScope
 
 	// Chained aggregation state (for sum/avg/etc. on prior aggregation outputs)
 	outerAggregations  []string          // expressions for outer (chained) aggregation query
@@ -193,6 +200,54 @@ func (p *QueryPlan) havingStageIndex() int {
 	return 0
 }
 
+// hasDeferredWrap reports whether renderStandard will emit the outer layer that
+// carries deferred filters/ordering (and strips the exported hidden columns).
+func (p *QueryPlan) hasDeferredWrap() bool {
+	return len(p.DeferredWhere) > 0 || len(p.DeferredOrder) > 0 || p.DeferredLimit != ""
+}
+
+// deferredScope returns the plan's scope for expressions relocated above the source
+// scan, creating it on first use.
+func (p *QueryPlan) deferredScope() *deferredScope {
+	if p.deferred == nil {
+		p.deferred = newDeferredScope()
+	}
+	return p.deferred
+}
+
+// exportDeferredColumns projects the hidden columns the deferred layer needs into the
+// source scan. Nothing to do unless a relocated expression actually referenced a
+// source expression.
+func (p *QueryPlan) exportDeferredColumns() error {
+	if !p.deferred.used() {
+		return nil
+	}
+	// A scope reference can be allocated for a condition whose SQL then comes out
+	// empty (an operator with no builder), leaving nothing to strip the hidden
+	// columns. Without a deferred wrap they would leak into the result, and nothing
+	// references them anyway, so skip the export.
+	if !p.hasDeferredWrap() {
+		return nil
+	}
+	source := p.SourceStage()
+	if len(p.Stages) > 1 {
+		return fmt.Errorf("a filter or sort on a log field cannot be combined with this pipeline: the field is not available after the aggregation stages; move the filter before the aggregation")
+	}
+	if err := p.validateJoinKeysSurviveAggregation(source, "the filtered or sorted field", p.deferred.exprs, p.deferred.labels); err != nil {
+		return err
+	}
+	if len(source.Layer.Selects) == 0 {
+		// The scan would fall back to renderStandard's default projection, which
+		// appending to would replace rather than extend. Assembly runs before this,
+		// so no real pipeline reaches here; fail loudly rather than silently drop
+		// the query's columns.
+		return fmt.Errorf("cannot evaluate a filter or sort on a log field at this point in the pipeline")
+	}
+	source.Layer.Selects = append(source.Layer.Selects, p.deferred.projections()...)
+	p.deferred.markExported()
+	return nil
+}
+
 // PushStage adds a new empty stage to the pipeline.
 // Subsequent commands writing to CurrentStage() will write to this new stage.
 // The new stage's SELECT, GROUP BY, etc. are initially empty.
@@ -241,8 +296,28 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	// direct `FROM logs` scan. Project them here as hidden `_mlk_k<i>` columns so
 	// the JOIN ON (in wrapWithModelLookup) can reference `_outer._mlk_k<i>`; the
 	// wrap strips them from the final output via EXCEPT.
+	if len(p.ModelLookupKeyExprs) > 0 {
+		if err := p.validateJoinKeysSurviveAggregation(source, "model_lookup() key", p.ModelLookupKeyExprs, p.ModelLookupKeyFields); err != nil {
+			return "", err
+		}
+	}
 	for i, keyExpr := range p.ModelLookupKeyExprs {
 		selectClause += fmt.Sprintf(", %s AS _mlk_k%d", keyExpr, i)
+	}
+
+	// join() resolves its key the same way: the outer key expression derives from
+	// `fields.X`, which exists only in this scan, so project it as a hidden
+	// `_join_k` column for the ON clause to reference (stripped by wrapWithJoin).
+	// A key the outer SELECT already names (a groupby output) needs no projection,
+	// and over a subquery source every column is already flat.
+	if p.IsJoin && p.JoinSubSQL != "" && opts.SourceSubquery == "" && !p.outerHasColumn(p.JoinKey) {
+		p.JoinKeyExpr = groupableCast(jsonFieldRef(p.JoinKey))
+	}
+	if p.JoinKeyExpr != "" {
+		if err := p.validateJoinKeysSurviveAggregation(source, "join() key", []string{p.JoinKeyExpr}, []string{p.JoinKey}); err != nil {
+			return "", err
+		}
+		selectClause += fmt.Sprintf(", %s AS %s", p.JoinKeyExpr, joinHiddenKeyCol)
 	}
 
 	var sql strings.Builder
@@ -333,9 +408,15 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	}
 
 	// Apply deferred conditions/ordering (post-window filters)
-	if len(p.DeferredWhere) > 0 || len(p.DeferredOrder) > 0 || p.DeferredLimit != "" {
+	if p.hasDeferredWrap() {
 		var outer strings.Builder
-		outer.WriteString("SELECT * FROM (")
+		outer.WriteString("SELECT *")
+		if p.deferred.exported {
+			// The exported columns exist only to make this layer's expressions
+			// resolvable; drop them from the result.
+			outer.WriteString(" EXCEPT (" + strings.Join(p.deferred.names, ", ") + ")")
+		}
+		outer.WriteString(" FROM (")
 		outer.WriteString(innerSQL)
 		outer.WriteString(")")
 		if len(p.DeferredWhere) > 0 {
@@ -486,26 +567,27 @@ func (p *QueryPlan) wrapWithJoin(outerSQL string) string {
 		joinType = "LEFT"
 	}
 
-	// Resolve the join key for the outer query. If the outer SELECT has the
-	// join key as a named column (e.g. from groupby), use it directly.
-	// Otherwise, use the JSON field reference so ClickHouse can find it.
+	// Resolve the join key for the outer query. If the outer SELECT has the join
+	// key as a named column (e.g. from groupby), use it directly; otherwise the
+	// source scan projected it as the hidden _join_k column (see renderStandard),
+	// which is the only reference that resolves inside _outer.
 	outerKeyRef := p.JoinKey
-	if !p.outerHasColumn(outerSQL, p.JoinKey) {
-		// JOIN on a bare Dynamic subcolumn errors 44; cast raw JSON keys to
-		// ::String so a mixed-history (pre-type-hint) path can be joined.
-		outerKeyRef = groupableCast(jsonFieldRef(p.JoinKey))
+	if p.JoinKeyExpr != "" {
+		outerKeyRef = joinHiddenKeyCol
 	}
 
 	var sql strings.Builder
 	sql.WriteString("SELECT _outer.*")
+	if p.JoinKeyExpr != "" {
+		sql.WriteString(fmt.Sprintf(" EXCEPT (%s)", joinHiddenKeyCol))
+	}
 
-	// Add subquery fields (with _join_ prefix to avoid collisions)
-	if len(p.JoinInclude) > 0 {
-		for _, field := range p.JoinInclude {
-			sql.WriteString(fmt.Sprintf(", _join_sub.%s AS _join_%s", field, field))
-		}
-	} else {
-		sql.WriteString(", _join_sub.*")
+	// Every subquery column comes through under a `_join_` prefix. A bare
+	// `_join_sub.*` would re-emit the join key and collide with same-named outer
+	// columns (an aggregating outer query and its subquery both produce `_count`),
+	// leaving the result with duplicate names that no filter or sort can reference.
+	for _, col := range joinCarriedColumns(p.JoinOutputs, p.JoinInclude, p.JoinKey) {
+		sql.WriteString(fmt.Sprintf(", _join_sub.%s AS %s", col, joinPrefixed(col)))
 	}
 
 	sql.WriteString(" FROM (")
@@ -520,6 +602,50 @@ func (p *QueryPlan) wrapWithJoin(outerSQL string) string {
 	sql.WriteString(p.JoinKey)
 
 	return sql.String()
+}
+
+// validateJoinKeysSurviveAggregation rejects a join whose keys cannot be projected
+// from an aggregating source scan. The join runs outside that scan, so each key must
+// survive the aggregation as a group expression (or an alias of one); a key that does
+// not is not an aggregate, and ClickHouse would reject the query (code 215) with an
+// error that says nothing about the real problem. Shared by model_lookup() and join().
+func (p *QueryPlan) validateJoinKeysSurviveAggregation(source *QueryStage, what string, keyExprs, keyFields []string) error {
+	if len(source.Layer.GroupBy) == 0 && !p.IsAggregated {
+		return nil
+	}
+	grouped := make(map[string]bool, len(source.Layer.GroupBy)*2)
+	for _, g := range source.Layer.GroupBy {
+		grouped[strings.Trim(strings.TrimSpace(g), "`")] = true
+	}
+	// A group key written as an alias (GROUP BY src_ip) also covers the expression
+	// that alias was defined from in this stage's SELECT.
+	for _, sel := range source.Layer.Selects {
+		s := sel.String()
+		alias := strings.Trim(extractFieldAlias(s), "`")
+		if alias == "" || !grouped[alias] {
+			continue
+		}
+		if idx := strings.LastIndex(s, " AS "); idx > 0 {
+			grouped[strings.TrimSpace(s[:idx])] = true
+		}
+	}
+
+	var missing []string
+	for i, keyExpr := range keyExprs {
+		if grouped[strings.Trim(keyExpr, "`")] {
+			continue
+		}
+		name := keyExpr
+		if i < len(keyFields) {
+			name = keyFields[i]
+		}
+		missing = append(missing, name)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s %s must be part of the grouping to survive aggregation: add %s to the group/table columns, or drop the aggregation",
+		what, strings.Join(missing, ", "), strings.Join(missing, ", "))
 }
 
 // wrapWithModelLookup wraps the outer query with a LEFT JOIN against the model
@@ -549,8 +675,9 @@ func (p *QueryPlan) wrapWithModelLookup(outerSQL string) string {
 	return b.String()
 }
 
-// outerHasColumn checks if the outer SQL SELECT clause contains the given column name as an alias.
-func (p *QueryPlan) outerHasColumn(sql string, column string) bool {
+// outerHasColumn reports whether the source stage's SELECT already exposes the given
+// column under that name.
+func (p *QueryPlan) outerHasColumn(column string) bool {
 	// Check source stage selects for an alias matching the column
 	source := p.SourceStage()
 	for _, sel := range source.Layer.Selects {

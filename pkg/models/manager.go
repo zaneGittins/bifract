@@ -196,7 +196,11 @@ func (m *Manager) ListModelInfos(ctx context.Context, fractalID string) (map[str
 // owned by any of the given fractals. Used for model_lookup() resolution in a
 // prism query, where the model being referenced lives in one specific member
 // fractal rather than the prism itself (models have no prism_id of their own).
-// On a name collision across member fractals, one arbitrarily wins (map order).
+//
+// Member fractals can hold same-named models. Postgres returns rows in no
+// guaranteed order, so an unordered scan let the winner flip between runs and the
+// same query resolve to a different model table. Ordering by creation makes the
+// resolution stable: the oldest model with a given name wins, every time.
 func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []string) (map[string]ModelInfo, error) {
 	result := make(map[string]ModelInfo)
 	if len(fractalIDs) == 0 {
@@ -204,7 +208,8 @@ func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []st
 	}
 	rows, err := m.pg.Query(ctx,
 		`SELECT id, name, model_type, definition, fractal_id FROM analytics_models
-		 WHERE fractal_id = ANY($1) AND status = 'active'`, pq.Array(fractalIDs))
+		 WHERE fractal_id = ANY($1) AND status = 'active'
+		 ORDER BY created_at ASC, id ASC`, pq.Array(fractalIDs))
 	if err != nil {
 		return nil, fmt.Errorf("list model infos for fractals: %w", err)
 	}
@@ -218,6 +223,10 @@ func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []st
 		}
 		var def ModelDefinition
 		_ = json.Unmarshal(defRaw, &def)
+
+		if _, taken := result[name]; taken {
+			continue // first (oldest) wins; see the ordering note above
+		}
 
 		tableName := chModelTableName(id)
 		if m.ch.IsCluster() {

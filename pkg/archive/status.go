@@ -3,6 +3,8 @@ package archive
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"time"
 )
 
 // execStatusUpdate runs a best-effort single-row status UPDATE: the archive
@@ -53,10 +55,12 @@ const maintainHistoryLimit = 50
 func WriteMaintainStatus(ctx context.Context, db *sql.DB, stats MaintainStats) error {
 	if err := execStatusUpdate(ctx, db,
 		`UPDATE archive_maintain_status SET last_run_at = NOW(), last_attempt_at = NOW(), last_outcome = 'ok', last_error = NULL,
-		 duration_ms = $1, tables_seen = $2, compacted = $3, groups_failed = $4, expired = $5, candidate_bytes = $6, compacted_bytes = $7
+		 duration_ms = $1, tables_seen = $2, compacted = $3, groups_failed = $4, expired = $5, candidate_bytes = $6, compacted_bytes = $7,
+		 retention_tables = $8, retention_files = $9, orphans_deleted = $10
 		 WHERE id = 1`,
 		stats.Duration.Milliseconds(), stats.Tables, stats.Compacted, stats.GroupsFailed, stats.Expired,
-		stats.CandidateBytes, stats.CompactedBytes); err != nil {
+		stats.CandidateBytes, stats.CompactedBytes,
+		stats.RetentionTables, stats.RetentionFiles, stats.OrphansDeleted); err != nil {
 		return err
 	}
 	return appendMaintainHistory(ctx, db, MaintainOutcomeOK, stats, nil)
@@ -130,6 +134,34 @@ func ClaimMaintainRunRequest(ctx context.Context, db *sql.DB) (requestedBy strin
 	return by.String, true, nil
 }
 
+// ClaimOrphanSweep reports whether this pass should run orphan-file cleanup,
+// stamping the claim in the same statement so only one pass per interval sweeps
+// even if two maintainer pods briefly overlap during a rolling update.
+//
+// Orphan cleanup lists every file under every table location and reads every
+// live manifest to build the referenced set, which is far too expensive to run
+// on the maintain pass's own (hourly) cadence. Orphans are also not urgent: they
+// are already-unreachable bytes, so sweeping daily is enough. A nil db means no
+// coordination is possible, so it is skipped rather than run unbounded.
+func ClaimOrphanSweep(ctx context.Context, db *sql.DB, interval time.Duration) (bool, error) {
+	if db == nil || interval <= 0 {
+		return false, nil
+	}
+	var claimed bool
+	err := db.QueryRowContext(ctx,
+		`UPDATE archive_maintain_status SET last_orphan_sweep_at = NOW()
+		 WHERE id = 1 AND (last_orphan_sweep_at IS NULL OR last_orphan_sweep_at < NOW() - $1::interval)
+		 RETURNING true`,
+		fmt.Sprintf("%d seconds", int64(interval.Seconds()))).Scan(&claimed)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return claimed, nil
+}
+
 // appendMaintainHistory inserts one row per maintain invocation (whatever the
 // outcome) and trims the table back down to maintainHistoryLimit rows, so the
 // admin UI can show a trend across recent passes -- including skipped/failed
@@ -144,10 +176,12 @@ func appendMaintainHistory(ctx context.Context, db *sql.DB, outcome MaintainOutc
 	}
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO archive_maintain_history
-		 (outcome, duration_ms, tables_seen, compacted, groups_failed, expired, candidate_bytes, compacted_bytes, error)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		 (outcome, duration_ms, tables_seen, compacted, groups_failed, expired, candidate_bytes, compacted_bytes, error,
+		  retention_tables, retention_files, orphans_deleted)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		string(outcome), stats.Duration.Milliseconds(), stats.Tables, stats.Compacted, stats.GroupsFailed, stats.Expired,
-		stats.CandidateBytes, stats.CompactedBytes, errMsg); err != nil {
+		stats.CandidateBytes, stats.CompactedBytes, errMsg,
+		stats.RetentionTables, stats.RetentionFiles, stats.OrphansDeleted); err != nil {
 		return err
 	}
 	_, err := db.ExecContext(ctx,

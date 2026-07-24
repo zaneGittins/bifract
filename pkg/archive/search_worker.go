@@ -24,10 +24,11 @@ const (
 )
 
 // SearchWorker drains the archive_search_jobs queue: it claims one pending job
-// at a time (FOR UPDATE SKIP LOCKED, safe across the N archiver sidecars), runs
-// the BQL search against the fractal's Iceberg archive via Catalog.Search, and
-// writes the bounded result set + terminal status back to the row so the Recall
-// tab can render (and reattach to) it.
+// at a time (FOR UPDATE SKIP LOCKED, safe across every worker process, and
+// bounded by the global cap in beginClaim), runs the BQL search against the
+// fractal's Iceberg archive via Catalog.Search, and writes the bounded result
+// set + terminal status back to the row so the Recall tab can render (and
+// reattach to) it.
 //
 // Like the restore worker it runs independently of the drain enable gate (a
 // Recall may be wanted while ongoing archiving is paused) and builds the
@@ -74,7 +75,7 @@ func (w *SearchWorker) Run(ctx context.Context) {
 			lastReap = now
 			w.reapStale(ctx)
 		}
-		job, ok, err := claimSearchJob(ctx, w.db)
+		job, ok, err := claimSearchJob(ctx, w.db, w.cfg.JobConcurrency)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("[Recall] claim error: %v", err)
@@ -94,10 +95,17 @@ func (w *SearchWorker) Run(ctx context.Context) {
 	}
 }
 
-// claimSearchJob atomically transitions the oldest pending job to running.
-func claimSearchJob(ctx context.Context, db *sql.DB) (searchJob, bool, error) {
+// claimSearchJob atomically transitions the oldest pending job to running, once
+// the global recall concurrency cap has a free slot.
+func claimSearchJob(ctx context.Context, db *sql.DB, limit int) (searchJob, bool, error) {
+	tx, ok, err := beginClaim(ctx, db, searchClaimLock, "archive_search_jobs", limit)
+	if err != nil || !ok {
+		return searchJob{}, false, err
+	}
+	defer tx.Rollback()
+
 	var j searchJob
-	err := db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		UPDATE archive_search_jobs SET status = 'running', started_at = NOW(), updated_at = NOW()
 		WHERE id = (
 			SELECT id FROM archive_search_jobs
@@ -112,6 +120,9 @@ func claimSearchJob(ctx context.Context, db *sql.DB) (searchJob, bool, error) {
 		return searchJob{}, false, nil
 	}
 	if err != nil {
+		return searchJob{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
 		return searchJob{}, false, err
 	}
 	return j, true, nil

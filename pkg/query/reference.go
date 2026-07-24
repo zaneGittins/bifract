@@ -198,18 +198,19 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			{
 				Name:        "join",
 				Category:    "Enrichment",
-				Description: "Correlates results with a subquery by joining on a shared field. The subquery runs with the same time range and fractal isolation. Supports inner and left joins.",
+				Description: "Correlates results with a subquery by joining on a shared field. The subquery runs with the same time range and fractal isolation. Supports inner and left joins. The subquery MUST output the join key as a column -- note that groupby(x) already returns x plus a count, so a trailing bare count() is wrong: it re-aggregates to a single row and drops x, leaving nothing to join on. Every column the subquery returns comes back prefixed with _join_ (so a subquery count arrives as _join__count), which is also the name to filter or sort on.",
 				Syntax:      "| join(key, type=inner|left, max=N, include=[fields]) { subquery }",
 				Parameters: []Param{
-					{Name: "key", Type: "string", Required: true, Description: "Field to join on (must exist in both outer query and subquery results)"},
-					{Name: "type", Type: "string", Required: false, Description: "Join type: inner (default) or left"},
+					{Name: "key", Type: "string", Required: true, Description: "Field to join on. Must be produced by the subquery, and must survive any aggregation in the outer query (i.e. be one of its group columns)"},
+					{Name: "type", Type: "string", Required: false, Description: "Join type: inner (default, keeps only matching rows) or left (keeps all outer rows)"},
 					{Name: "max", Type: "number", Required: false, Description: "Max rows the subquery can return (default: 10000, hard max: 100000)"},
-					{Name: "include", Type: "array", Required: false, Description: "Fields to include from subquery results (default: all, prefixed with _join_)"},
+					{Name: "include", Type: "array", Required: false, Description: "Subquery columns to bring back, named exactly as the subquery outputs them (default: all). Each arrives prefixed with _join_"},
 				},
 				Examples: []string{
-					`action="denied" | join(src_ip) { action="login" | groupby(src_ip) | count() }`,
-					`* | join(user, type=left, include=[department,role]) { * | groupby(user) | selectFirst(department) | selectFirst(role) }`,
-					`action="login_failed" | join(user, max=5000) { action="login_success" | groupby(user) | count() }`,
+					`action="denied" | join(src_ip) { action="login" | groupby(src_ip) }`,
+					`action="denied" | join(src_ip) { action="login" | groupby(src_ip) } | _join__count > 10`,
+					`* | join(user, type=left, include=[first_department,first_role]) { * | groupby(user) | selectFirst(department) | selectFirst(role) }`,
+					`action="login_failed" | join(user, max=5000) { action="login_success" | groupby(user) } | sort(_join__count, order=desc)`,
 				},
 			},
 			{
@@ -361,6 +362,22 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 					`| match(dict="threat_intel", field=src_ip, column=ip, include=[threat_score,category], strict=false)`,
 					`| match(dict="users", field=user_id, column=id, include=[username,department], strict=true)`,
 					`| match(dict="geo", field=ip, column=ip, include=[country,city])`,
+				},
+			},
+			{
+				Name:        "model_lookup",
+				Category:    "Enrichment",
+				Description: "Scores each log row against a trained analytics model (Models tab) and adds that model's output columns, so a rarity/first-seen/volume/beacon verdict can be filtered, sorted and displayed like any other field. key= maps YOUR log fields onto the model's key positionally, so the field names need not match the model's. Output columns by model type: rarity -> percent, confidence, model_count; first_seen -> first_seen, last_seen, is_new; volume_baseline -> z_score, baseline_median, latest_count, mad, n_buckets; beacon -> beacon_score, regularity_score, ts_score, ds_score, dur_score, hist_score, prevalence, prevalence_score, conn_count; long_connection -> longconn_score, total_duration, conn_count, prevalence, prevalence_score. Filter the source logs BEFORE model_lookup() so the scan stays small, then threshold on the model outputs after it. Aggregating after model_lookup() requires every key field to be one of the group columns, since the score is joined on that key. Only one model_lookup() per query, and it cannot be combined with join(). In a prism the model is resolved across the member fractals. Models score forward from creation, so rows older than the model (or outside its backfill) have no match and come back empty.",
+				Syntax:      `| model_lookup(model="name", key=[field1, field2, ...])`,
+				Parameters: []Param{
+					{Name: "model", Type: "string", Required: true, Description: "Name of an active model from the Models tab"},
+					{Name: "key", Type: "array", Required: true, Description: "Log fields matched against the model's key, in order. rarity: [partition_key, value_key]; first_seen and volume_baseline: [entity]; beacon and long_connection: [src_ip, dst_ip, dst_port]"},
+				},
+				Examples: []string{
+					`event_id=3 | model_lookup(model="zeek_beacons", key=[src_ip, dst_ip, dst_port]) | beacon_score > 0.8`,
+					`event_id=3 | model_lookup(model="zeek_beacons", key=[src_ip, dst_ip, dst_port]) | beacon_score > 0.8 AND NOT image=~zerotier | table(timestamp, src_ip, dst_ip, dst_port, beacon_score, conn_count)`,
+					`event_id=1 | model_lookup(model="rare_images", key=[computer_name, image]) | percent < 0.1 | sort(percent)`,
+					`* | model_lookup(model="new_users", key=[user]) | is_new = "1"`,
 				},
 			},
 			{

@@ -6,17 +6,20 @@ import (
 
 // Fractal represents a log fractal for multi-tenant isolation
 type Fractal struct {
-	ID              string    `json:"id" db:"id"`
-	Name            string    `json:"name" db:"name"`
-	Description     string    `json:"description,omitempty" db:"description"`
-	IsDefault       bool      `json:"is_default" db:"is_default"`
-	IsSystem        bool      `json:"is_system" db:"is_system"`
-	CreatedBy       string    `json:"created_by" db:"created_by"`
-	CreatedAt       time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
-	RetentionDays   *int      `json:"retention_days" db:"retention_days"`
-	DiskQuotaBytes  *int64    `json:"disk_quota_bytes" db:"disk_quota_bytes"`
-	DiskQuotaAction string    `json:"disk_quota_action" db:"disk_quota_action"`
+	ID            string    `json:"id" db:"id"`
+	Name          string    `json:"name" db:"name"`
+	Description   string    `json:"description,omitempty" db:"description"`
+	IsDefault     bool      `json:"is_default" db:"is_default"`
+	IsSystem      bool      `json:"is_system" db:"is_system"`
+	CreatedBy     string    `json:"created_by" db:"created_by"`
+	CreatedAt     time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
+	RetentionDays *int      `json:"retention_days" db:"retention_days"`
+	// ArchiveRetentionDays bounds the Iceberg archive copy independently of the
+	// hot store; nil means keep forever.
+	ArchiveRetentionDays *int   `json:"archive_retention_days" db:"archive_retention_days"`
+	DiskQuotaBytes       *int64 `json:"disk_quota_bytes" db:"disk_quota_bytes"`
+	DiskQuotaAction      string `json:"disk_quota_action" db:"disk_quota_action"`
 
 	// Statistics (computed via background jobs)
 	LogCount    int64      `json:"log_count" db:"log_count"`
@@ -74,6 +77,11 @@ type FractalSelectRequest struct {
 // UpdateRetentionRequest sets the retention period for a fractal
 type UpdateRetentionRequest struct {
 	RetentionDays *int `json:"retention_days"` // nil = unlimited
+}
+
+// UpdateArchiveRetentionRequest sets the Iceberg archive retention for a fractal
+type UpdateArchiveRetentionRequest struct {
+	ArchiveRetentionDays *int `json:"archive_retention_days"` // nil = keep forever
 }
 
 // UpdateDiskQuotaRequest sets the disk quota for a fractal

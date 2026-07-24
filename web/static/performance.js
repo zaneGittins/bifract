@@ -498,6 +498,22 @@ const Performance = {
             ? `${Math.round((compactedBytes / candidateBytes) * 100)}% of this pass's backlog`
             : '');
 
+        // Lifecycle: expired archive partitions dropped, and unreferenced files
+        // swept. Files rather than bytes -- the orphan sweep reports only counts.
+        const retentionFiles = m.retention_files || 0;
+        const orphansDeleted = m.orphans_deleted || 0;
+        this.setText('maintainReclaimed', hasRunOnce
+            ? (retentionFiles || orphansDeleted ? `${retentionFiles + orphansDeleted} files` : 'nothing due')
+            : '--');
+        const reclaimedParts = [];
+        if (retentionFiles) {
+            reclaimedParts.push(`${retentionFiles} expired across ${m.retention_tables || 0} fractal(s)`);
+        }
+        if (orphansDeleted) {
+            reclaimedParts.push(`${orphansDeleted} orphaned`);
+        }
+        this.setText('maintainReclaimedSub', reclaimedParts.join(', '));
+
         const maintainHint = document.getElementById('maintainHint');
         if (maintainHint) {
             let msg = '';

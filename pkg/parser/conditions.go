@@ -34,10 +34,17 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 	willHaveAggregation := plan.IsAggregated || plan.HasGroupBy
 
 	for _, cond := range conditions {
-		// Compound nodes: inspect all leaf fields to determine the
-		// highest-priority target. The entire compound must stay as a
-		// unit since its children are connected by AND/OR.
+		// Compound nodes: inspect all leaf fields to determine the highest-priority
+		// target. A compound normally stays a unit, since its children are connected
+		// by AND/OR and the operators bind them together.
 		if cond.IsCompound {
+			// The exception is a pure-AND compound whose conjuncts belong to
+			// different stages: AND distributes, so split it and bind each
+			// conjunct where its fields exist.
+			if parts := splitMixedAndCompound(cond, registry, plan, willHaveAggregation); parts != nil {
+				classifyConditions(parts, registry, plan)
+				continue
+			}
 			target := classifyCompoundTarget(cond, registry, plan, willHaveAggregation)
 			*target = append(*target, cond)
 			continue
@@ -54,7 +61,7 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 				} else {
 					target = &plan.pendingDeferredConditions
 				}
-			case FieldKindModelLookup:
+			case FieldKindJoined:
 				// Model-lookup outputs exist only after the JOIN wrap; defer to a
 				// post-join outer WHERE (same mechanism as window fields).
 				target = &plan.pendingDeferredConditions
@@ -88,52 +95,88 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 	}
 }
 
+// leafPriority returns the stage bucket a single (non-compound) condition needs:
+// 0=WHERE, 1=DeferredWhere, 2=HAVING.
+func leafPriority(c HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
+	entry := registry.Get(c.Field)
+	if entry == nil {
+		switch c.Field {
+		case "count", "sum", "avg":
+			if willHaveAggregation {
+				return 2
+			}
+		}
+		return 0
+	}
+	switch entry.ClassifyKind() {
+	case FieldKindWindow:
+		if plan.IsTraversal || plan.IsProcessTree {
+			return 2
+		}
+		return 1
+	case FieldKindJoined:
+		return 1 // deferred (post-join), like window fields
+	case FieldKindAggregate:
+		if willHaveAggregation {
+			return 2
+		}
+	}
+	return 0
+}
+
+// subtreePriority returns the highest leafPriority within a condition subtree.
+func subtreePriority(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
+	if !cond.IsCompound {
+		return leafPriority(cond, registry, plan, willHaveAggregation)
+	}
+	highest := 0
+	for _, child := range cond.Children {
+		if p := subtreePriority(child, registry, plan, willHaveAggregation); p > highest {
+			highest = p
+		}
+	}
+	return highest
+}
+
+// splitMixedAndCompound decomposes a compound that mixes a deferred-stage conjunct
+// (a window or model_lookup output, produced only after the outer wrap) with one
+// that is not, so each binds where its fields actually exist. Without it a clause
+// like `beacon_score > 0.5 AND NOT image=~foo` is routed wholesale past the
+// model_lookup join, where the source-only `fields.image` no longer resolves.
+// Distribution over AND is safe; a negated node or an OR connector is not, and a
+// compound that needs no deferral is left intact so its SQL is unchanged.
+func splitMixedAndCompound(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) []HavingCondition {
+	if !cond.IsCompound || cond.Negate || len(cond.Children) < 2 {
+		return nil
+	}
+	for _, c := range cond.Children[:len(cond.Children)-1] {
+		if c.Logic != "" && c.Logic != "AND" {
+			return nil
+		}
+	}
+	deferred, other := 0, 0
+	for _, c := range cond.Children {
+		if subtreePriority(c, registry, plan, willHaveAggregation) == 1 {
+			deferred++
+		} else {
+			other++
+		}
+	}
+	if deferred == 0 || other == 0 {
+		return nil
+	}
+	parts := make([]HavingCondition, len(cond.Children))
+	copy(parts, cond.Children)
+	for i := range parts {
+		parts[i].Logic = "" // each conjunct now stands alone in its bucket
+	}
+	return parts
+}
+
 // classifyCompoundTarget inspects all leaf fields in a compound HavingCondition
 // and returns the highest-priority target bucket. Priority: HAVING > DeferredWhere > WHERE.
 func classifyCompoundTarget(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) *[]HavingCondition {
-	// Priority levels: 0=WHERE, 1=DeferredWhere, 2=HAVING
-	maxPriority := 0
-
-	var walk func(c HavingCondition)
-	walk = func(c HavingCondition) {
-		if c.IsCompound {
-			for _, child := range c.Children {
-				walk(child)
-			}
-			return
-		}
-		priority := 0
-		entry := registry.Get(c.Field)
-		if entry != nil {
-			switch entry.ClassifyKind() {
-			case FieldKindWindow:
-				if plan.IsTraversal || plan.IsProcessTree {
-					priority = 2
-				} else {
-					priority = 1
-				}
-			case FieldKindModelLookup:
-				priority = 1 // deferred (post-join), like window fields
-			case FieldKindAggregate:
-				if willHaveAggregation {
-					priority = 2
-				}
-			case FieldKindAssignment:
-				// per-row scalar, always WHERE
-			}
-		} else {
-			switch c.Field {
-			case "count", "sum", "avg":
-				if willHaveAggregation {
-					priority = 2
-				}
-			}
-		}
-		if priority > maxPriority {
-			maxPriority = priority
-		}
-	}
-	walk(cond)
+	maxPriority := subtreePriority(cond, registry, plan, willHaveAggregation)
 
 	// A HAVING target only works if every leaf field is available at the groupby
 	// (HAVING) stage. A compound that mixes an aggregate with a column produced by
@@ -217,17 +260,19 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 		byStage[idx] = append(byStage[idx], cond)
 	}
 	for _, idx := range stageOrder {
-		if clause := materializeCondGroup(byStage[idx], registry); clause != "" {
+		if clause := materializeCondGroup(byStage[idx], registry, nil); clause != "" {
 			plan.Stages[idx].Layer.Where = append(plan.Stages[idx].Layer.Where, clause)
 		}
 	}
 	// HAVING binds to the outermost aggregation stage, not the innermost source
 	// stage, so chained-groupby filters apply to the final aggregates.
-	if clause := materializeCondGroup(plan.pendingHavingConditions, registry); clause != "" {
+	if clause := materializeCondGroup(plan.pendingHavingConditions, registry, nil); clause != "" {
 		havingStage := plan.havingStage()
 		havingStage.Layer.Having = append(havingStage.Layer.Having, clause)
 	}
-	if clause := materializeCondGroup(plan.pendingDeferredConditions, registry); clause != "" {
+	// Deferred conditions land above the source scan, so any source expression they
+	// reference must be exported there under a hidden alias (see deferredScope).
+	if clause := materializeCondGroup(plan.pendingDeferredConditions, registry, plan.deferredScope()); clause != "" {
 		plan.DeferredWhere = append(plan.DeferredWhere, clause)
 	}
 }
@@ -272,7 +317,7 @@ func fieldOwningStage(field string, plan *QueryPlan) int {
 // materializeCondGroup builds SQL for a group of conditions and joins them.
 // Handles both flat conditions (with GroupID-based grouping) and compound
 // nodes (tree-based nesting) for arbitrary expression depth.
-func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry) string {
+func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry, scope *deferredScope) string {
 	if len(conditions) == 0 {
 		return ""
 	}
@@ -282,7 +327,7 @@ func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry)
 	for _, cond := range conditions {
 		var condSQL string
 		if cond.IsCompound {
-			inner := materializeCondGroup(cond.Children, registry)
+			inner := materializeCondGroup(cond.Children, registry, scope)
 			if inner == "" {
 				continue
 			}
@@ -292,7 +337,7 @@ func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry)
 				condSQL = "(" + inner + ")"
 			}
 		} else {
-			condSQL = buildConditionSQL(cond, registry)
+			condSQL = buildConditionSQL(cond, registry, scope)
 			if condSQL == "" {
 				continue
 			}
@@ -326,7 +371,7 @@ func joinCondGroups(groups []condGroup) string {
 }
 
 // buildConditionSQL builds the SQL for a single HavingCondition using the registry.
-func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
+func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferredScope) string {
 	var fieldRef string
 	isJSONField := false
 
@@ -341,7 +386,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 			fieldRef = entry.Name
 		case FieldKindWindow:
 			fieldRef = entry.Name
-		case FieldKindModelLookup:
+		case FieldKindJoined:
 			fieldRef = entry.Name
 		default:
 			fieldRef = entry.Name
@@ -368,6 +413,10 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 			isJSONField = true
 		}
 	}
+
+	// At a deferred layer a source expression must be read from its exported hidden
+	// column; bare column names pass through untouched.
+	fieldRef = scope.ref(fieldRef, cond.Field)
 
 	if cond.Value == "*" {
 		if cond.Operator == "!=" {
@@ -431,7 +480,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry) string {
 		// Bare aggregate names (count/sum/avg with no registry entry) resolve to the
 		// numeric _count/_sum/_avg aliases and must not be coerced via toFloat64OrZero.
 		isAggFallback := entry == nil && (cond.Field == "count" || cond.Field == "sum" || cond.Field == "avg")
-		isComputed := isAggFallback || (entry != nil && (entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow || entry.Kind == FieldKindModelLookup))
+		isComputed := isAggFallback || (entry != nil && (entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow || entry.Kind == FieldKindJoined))
 		if isPerRow {
 			return fmt.Sprintf("toFloat64OrZero(%s) %s %s", fieldRef, cond.Operator, cond.Value)
 		}

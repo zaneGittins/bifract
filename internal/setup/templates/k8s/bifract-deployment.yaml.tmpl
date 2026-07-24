@@ -146,24 +146,91 @@ spec:
             - name: BIFRACT_DASHBOARD_TICK
               value: "{{.DashboardTick}}"
             # Archive: the spool + tee live in the bifract-ingest tier (the primary
-            # log producer); the app tier is not a spool writer. ENABLED/BACKEND are
-            # display-only hints for the admin UI (provisioned/usage come from the
-            # ingest tier's status published to Postgres).
+            # log producer); the app tier is not a spool writer (provisioned/usage
+            # come from the ingest tier's status published to Postgres).
+            #
+            # The app tier DOES host the recall + restore job queues. Both only
+            # resolve Iceberg metadata and hand the scan to ClickHouse, so they cost
+            # a few idle goroutines rather than a workload of their own, and running
+            # them in the always-on tier means scaling ingest down cannot leave
+            # archive jobs stuck at 'pending'. That is why the object-store settings
+            # below are live config here and not display hints. Concurrency is capped
+            # globally at claim time, so replicas do not multiply archive scans.
             - name: BIFRACT_ARCHIVE_ENABLED
               valueFrom:
                 secretKeyRef:
                   name: bifract-secrets
                   key: ARCHIVE_ENABLED
                   optional: true
-            # Archive backend, for the admin UI display only. Restore/recall and
-            # the object-storage writes run in the archiver (cronjob/sidecar),
-            # which owns the S3/Azure credentials; the server never reads them.
             - name: BIFRACT_ARCHIVE_BACKEND
               valueFrom:
                 secretKeyRef:
                   name: bifract-secrets
                   key: ARCHIVE_BACKEND
                   optional: true
+            - name: BIFRACT_ARCHIVE_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_PREFIX
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_ENDPOINT
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_BUCKET
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_REGION
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_ACCESS_KEY
+                  optional: true
+            - name: BIFRACT_ARCHIVE_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_S3_SECRET_KEY
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_ACCOUNT
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_KEY
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_CONTAINER
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_CONTAINER
+                  optional: true
+            - name: BIFRACT_ARCHIVE_AZURE_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: ARCHIVE_AZURE_ENDPOINT
+                  optional: true
+            # Concurrent archive scans allowed against ClickHouse, per queue.
+            - name: BIFRACT_ARCHIVE_JOB_CONCURRENCY
+              value: "{{.ArchiveJobConcurrency}}"
             # S3 (for PostgreSQL backups)
             - name: BIFRACT_S3_ENDPOINT
               valueFrom:

@@ -88,15 +88,11 @@ func runCmd() {
 	defer db.Close()
 	enabled := func() bool { return archiveEnabled(ctx, db, cfg.Enabled) }
 
-	// Restore worker: services admin-requested restore/reconcile jobs. It runs
-	// independently of the drain enable gate (a DR restore may be needed while
-	// ongoing archiving is paused) and builds the object-store catalog lazily on
-	// the first job, so it does not break the dormant-but-present guarantee.
-	go archive.NewRestoreWorker(cfg, db).Run(ctx)
-
-	// Recall search worker: services per-fractal BQL searches over the Iceberg
-	// archive. Same lazy-dep / independent-of-enable-gate design as restore.
-	go archive.NewSearchWorker(cfg, db).Run(ctx)
+	// Recall and restore workers do NOT run here. This process is the spool
+	// drainer, co-located with an ingest pod because the spool is that pod's own
+	// volume. The job queues only dispatch to ClickHouse and have no such affinity,
+	// so bifract-server hosts them: scaling ingest down must not leave archive jobs
+	// stuck at 'pending'.
 
 	// Dormant-but-present: idle until archiving is enabled, so a provisioned but
 	// disabled archive never needs the object store to be reachable.
@@ -311,8 +307,32 @@ func runMaintainOnce(ctx context.Context, cfg archive.Config, db *sql.DB) error 
 		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
 		return fmt.Errorf("open catalog: %w", err)
 	}
-	log.Println("maintain: compaction + snapshot expiry ...")
-	stats, err := cat.Maintain(ctx, archive.MaintainOptionsFromEnv())
+	opts := archive.MaintainOptionsFromEnv()
+	// Per-fractal archive retention. A lookup failure must not skip the whole
+	// pass: compaction and expiry are still worth running, and the next pass
+	// retries retention. Absent policy means keep forever, so failing open here
+	// keeps data rather than dropping it.
+	if policy, err := archive.LoadRetentionPolicy(ctx, db); err != nil {
+		log.Printf("maintain: archive retention policy unavailable, skipping retention this pass: %v", err)
+	} else {
+		opts.Retention = policy
+	}
+
+	// Orphan cleanup walks every table's full location, so it runs on its own
+	// cadence rather than every pass. Skipping is always safe: orphans are already
+	// unreachable bytes, so a deferred sweep costs storage, never correctness.
+	orphanInterval := archive.OrphanSweepIntervalFromEnv()
+	if sweep, err := archive.ClaimOrphanSweep(ctx, db, orphanInterval); err != nil {
+		log.Printf("maintain: orphan sweep claim failed, skipping this pass: %v", err)
+		opts.OrphanOlderThan = 0
+	} else if !sweep {
+		opts.OrphanOlderThan = 0
+	} else {
+		log.Printf("maintain: orphan sweep due (every %s)", orphanInterval)
+	}
+
+	log.Println("maintain: compaction + retention + snapshot expiry ...")
+	stats, err := cat.Maintain(ctx, opts)
 	if err != nil {
 		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
 		return fmt.Errorf("maintain: %w", err)
@@ -328,7 +348,7 @@ func runMaintainOnce(ctx context.Context, cfg archive.Config, db *sql.DB) error 
 	// Completeness sweep rides the same singleton so the ClickHouse counts run
 	// once per interval, not once per replica. Failures are logged, not fatal:
 	// compaction already succeeded and must not be reported as a failed pass.
-	runCompletenessSweep(ctx, cfg, cat)
+	runCompletenessSweep(ctx, cfg, cat, opts.Retention)
 	return nil
 }
 
@@ -336,11 +356,13 @@ func runMaintainOnce(ctx context.Context, cfg archive.Config, db *sql.DB) error 
 // sealed ingest days and records any gap. Needs ClickHouse (the counts run
 // there) and object storage, so it is skipped on the pod-local disk backend,
 // which ClickHouse cannot read.
-func runCompletenessSweep(ctx context.Context, cfg archive.Config, cat *archive.Catalog) {
+func runCompletenessSweep(ctx context.Context, cfg archive.Config, cat *archive.Catalog, retention archive.RetentionPolicy) {
 	opts := archive.CompletenessOptionsFromEnv()
 	if opts.Days <= 0 {
 		return
 	}
+	// Days the archive expired on purpose are not gaps.
+	opts.Retention = retention
 	if cfg.Obj.Backend == objstore.BackendDisk {
 		return
 	}

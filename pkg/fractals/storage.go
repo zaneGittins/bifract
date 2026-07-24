@@ -31,13 +31,14 @@ func (s *Storage) CreateFractal(ctx context.Context, req CreateFractalRequest, c
 		INSERT INTO fractals (name, description, created_by)
 		VALUES ($1, $2, $3)
 		RETURNING id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		          retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		          retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 	`
 
 	err := s.pg.QueryRow(ctx, query, req.Name, req.Description, createdBy).Scan(
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
 		&fractal.RetentionDays,
+		&fractal.ArchiveRetentionDays,
 		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 	)
@@ -62,12 +63,13 @@ func (s *Storage) CreateFractalForRestore(ctx context.Context, name, description
 		                      restored_from_fractal_id, restored_from_ts, restored_to_ts)
 		VALUES ($1, $2, $3, NULL, $4, $5, $6)
 		RETURNING id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		          retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		          retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 	`
 	err := s.pg.QueryRow(ctx, query, name, description, createdBy, sourceFractalID, from, to).Scan(
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
 		&fractal.RetentionDays,
+		&fractal.ArchiveRetentionDays,
 		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 	)
@@ -124,7 +126,7 @@ func (s *Storage) GetFractal(ctx context.Context, fractalID string) (*Fractal, e
 
 	query := `
 		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		       retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		WHERE id = $1
 	`
@@ -133,6 +135,7 @@ func (s *Storage) GetFractal(ctx context.Context, fractalID string) (*Fractal, e
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
 		&fractal.RetentionDays,
+		&fractal.ArchiveRetentionDays,
 		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 	)
@@ -150,7 +153,7 @@ func (s *Storage) GetFractalByName(ctx context.Context, name string) (*Fractal, 
 
 	query := `
 		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		       retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		WHERE name = $1
 	`
@@ -159,6 +162,7 @@ func (s *Storage) GetFractalByName(ctx context.Context, name string) (*Fractal, 
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
 		&fractal.RetentionDays,
+		&fractal.ArchiveRetentionDays,
 		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 	)
@@ -176,7 +180,7 @@ func (s *Storage) GetDefaultFractal(ctx context.Context) (*Fractal, error) {
 
 	query := `
 		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		       retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		WHERE is_default = true
 		LIMIT 1
@@ -186,6 +190,7 @@ func (s *Storage) GetDefaultFractal(ctx context.Context) (*Fractal, error) {
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
 		&fractal.RetentionDays,
+		&fractal.ArchiveRetentionDays,
 		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 	)
@@ -201,7 +206,7 @@ func (s *Storage) GetDefaultFractal(ctx context.Context) (*Fractal, error) {
 func (s *Storage) ListFractals(ctx context.Context) ([]*Fractal, error) {
 	query := `
 		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		       retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 		FROM fractals
 		ORDER BY is_default DESC, name ASC
 	`
@@ -219,6 +224,7 @@ func (s *Storage) ListFractals(ctx context.Context) ([]*Fractal, error) {
 			&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 			&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
 			&fractal.RetentionDays,
+			&fractal.ArchiveRetentionDays,
 			&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 			&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 		)
@@ -238,7 +244,7 @@ func (s *Storage) UpdateFractal(ctx context.Context, fractalID string, req Updat
 		SET name = $2, description = $3, updated_at = NOW()
 		WHERE id = $1
 		RETURNING id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		          retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		          retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 	`
 
 	fractal := &Fractal{}
@@ -246,6 +252,7 @@ func (s *Storage) UpdateFractal(ctx context.Context, fractalID string, req Updat
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
 		&fractal.RetentionDays,
+		&fractal.ArchiveRetentionDays,
 		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
 		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
 	)
@@ -265,6 +272,18 @@ func (s *Storage) SetRetention(ctx context.Context, fractalID string, days *int)
 	)
 	if err != nil {
 		return fmt.Errorf("failed to set retention: %w", err)
+	}
+	return nil
+}
+
+// SetArchiveRetention updates archive_retention_days (nil = keep forever).
+func (s *Storage) SetArchiveRetention(ctx context.Context, fractalID string, days *int) error {
+	_, err := s.pg.Exec(ctx,
+		"UPDATE fractals SET archive_retention_days = $2, updated_at = NOW() WHERE id = $1",
+		fractalID, days,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set archive retention: %w", err)
 	}
 	return nil
 }

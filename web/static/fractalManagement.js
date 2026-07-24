@@ -100,6 +100,13 @@ const FractalManagement = {
         if (retentionSelect) {
             retentionSelect.addEventListener('change', () => this.saveRetentionSetting());
         }
+
+        // Archive retention is free-form, so commit on blur/Enter rather than
+        // firing a request per keystroke.
+        const archiveInput = document.getElementById('fractalArchiveRetentionInput');
+        if (archiveInput) {
+            archiveInput.addEventListener('change', () => this.saveArchiveRetentionSetting());
+        }
     },
 
     show() {
@@ -711,6 +718,13 @@ const FractalManagement = {
             retentionSelect.value = fractal.retention_days != null ? String(fractal.retention_days) : '';
         }
 
+        const archiveRetentionInput = document.getElementById('fractalArchiveRetentionInput');
+        if (archiveRetentionInput) {
+            archiveRetentionInput.value = fractal.archive_retention_days != null
+                ? String(fractal.archive_retention_days)
+                : '';
+        }
+
         // Populate disk quota fields
         const quotaInput = document.getElementById('fractalQuotaInput');
         const quotaActionSelect = document.getElementById('fractalQuotaActionSelect');
@@ -966,6 +980,49 @@ const FractalManagement = {
         } catch (error) {
             console.error('Failed to save retention:', error);
             Toast.show(`Failed to save retention: ${error.message}`, 'error');
+        }
+    },
+
+    async saveArchiveRetentionSetting() {
+        if (!this.currentDetailFractal) return;
+
+        const input = document.getElementById('fractalArchiveRetentionInput');
+        if (!input) return;
+
+        const raw = input.value.trim();
+        let days = null;
+        if (raw !== '') {
+            days = parseInt(raw, 10);
+            if (!Number.isFinite(days) || days < 1) {
+                Toast.show('Archive retention must be at least 1 day, or blank to keep forever', 'error');
+                input.value = this.currentDetailFractal.archive_retention_days != null
+                    ? String(this.currentDetailFractal.archive_retention_days)
+                    : '';
+                return;
+            }
+        }
+
+        try {
+            const response = await fetch(`/api/v1/fractals/${this.currentDetailFractal.id}/archive-retention`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ archive_retention_days: days })
+            });
+
+            const data = await response.json();
+            if (!data.success) throw new Error(data.error || 'Failed to save archive retention');
+
+            this.currentDetailFractal.archive_retention_days = days;
+            Toast.show(
+                days == null
+                    ? 'Archive retention set to keep forever'
+                    : `Archive retention set to ${days} days`,
+                'success'
+            );
+        } catch (error) {
+            console.error('Failed to save archive retention:', error);
+            Toast.show(`Failed to save archive retention: ${error.message}`, 'error');
         }
     },
 

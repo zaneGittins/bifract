@@ -218,6 +218,11 @@ const (
 	defaultDashboardWorkers    = 4
 )
 
+// defaultArchiveJobConcurrency mirrors archive.ConfigFromEnv's default: the cap
+// is on concurrent archive scans hitting ClickHouse, so it is a policy number
+// rather than a sizing one and stays constant across profiles.
+const defaultArchiveJobConcurrency = 2
+
 // K8s wizard steps
 type k8sStep int
 
@@ -890,6 +895,11 @@ type k8sTemplateData struct {
 	ArchiveMaintainByteBudget    int64
 	ArchiveMaintainCommitRetries int
 
+	// ArchiveJobConcurrency caps concurrent recall (and, separately, restore) jobs
+	// deployment-wide. It bounds archive scans against ClickHouse rather than
+	// worker processes, so it does not scale with the size profile.
+	ArchiveJobConcurrency int
+
 	// Dashboard executor tuning (resolved to defaults when unset).
 	DashboardTick       int
 	DashboardMinRefresh int
@@ -1024,6 +1034,7 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		ArchiveMaintainByteBudget: fallbackInt64(cfg.ArchiveMaintainByteBudget,
 			fallbackInt64(cfg.SizeProfile.ArchiveMaintainByteBudget, archive.DefaultMaintainOptions().ByteBudget)),
 		ArchiveMaintainCommitRetries: fallbackInt(cfg.ArchiveMaintainCommitRetries, archive.DefaultMaintainOptions().CommitRetries),
+		ArchiveJobConcurrency:        defaultArchiveJobConcurrency,
 		CHMaxServerMemory:            chMaxServerMemory,
 		CHMaxBytesToMerge:            chMaxBytesToMerge,
 		CHMergesMutationsMemoryLimit: chMergesMutationsMemoryLimit,

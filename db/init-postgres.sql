@@ -282,6 +282,12 @@ ALTER TABLE fractals ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT
 -- Retention period in days (NULL = unlimited)
 ALTER TABLE fractals ADD COLUMN IF NOT EXISTS retention_days INTEGER DEFAULT NULL;
 
+-- Iceberg archive retention in days (NULL = keep forever). Independent of
+-- retention_days: the archive is a separate copy with its own lifecycle. The
+-- maintain pass drops whole ingest_date partitions past this age; storage is
+-- reclaimed once the snapshots referencing them expire.
+ALTER TABLE fractals ADD COLUMN IF NOT EXISTS archive_retention_days INTEGER DEFAULT NULL;
+
 -- Disk quota (NULL = no limit)
 ALTER TABLE fractals ADD COLUMN IF NOT EXISTS disk_quota_bytes BIGINT DEFAULT NULL;
 ALTER TABLE fractals ADD COLUMN IF NOT EXISTS disk_quota_action VARCHAR(10) DEFAULT 'reject';
@@ -1906,6 +1912,13 @@ INSERT INTO archive_maintain_status (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 -- Defensive: ensure the run-now columns exist even if the table predates them.
 ALTER TABLE archive_maintain_status ADD COLUMN IF NOT EXISTS run_requested_at TIMESTAMPTZ;
 ALTER TABLE archive_maintain_status ADD COLUMN IF NOT EXISTS run_requested_by TEXT;
+-- Lifecycle counters: expired archive partitions dropped, and unreferenced files reclaimed.
+ALTER TABLE archive_maintain_status ADD COLUMN IF NOT EXISTS retention_tables  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE archive_maintain_status ADD COLUMN IF NOT EXISTS retention_files   INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE archive_maintain_status ADD COLUMN IF NOT EXISTS orphans_deleted   INTEGER NOT NULL DEFAULT 0;
+-- Orphan cleanup lists every file under each table location, so it runs on its own
+-- (much longer) cadence than a maintain pass. This is its claim stamp.
+ALTER TABLE archive_maintain_status ADD COLUMN IF NOT EXISTS last_orphan_sweep_at TIMESTAMPTZ;
 
 -- Per-run history (bounded to the most recent rows by the writer, see
 -- appendMaintainHistory) so the admin UI can show a trend across multiple
@@ -1924,6 +1937,9 @@ CREATE TABLE IF NOT EXISTS archive_maintain_history (
     error           TEXT
 );
 CREATE INDEX IF NOT EXISTS archive_maintain_history_ran_at_idx ON archive_maintain_history (ran_at DESC);
+ALTER TABLE archive_maintain_history ADD COLUMN IF NOT EXISTS retention_tables INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE archive_maintain_history ADD COLUMN IF NOT EXISTS retention_files  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE archive_maintain_history ADD COLUMN IF NOT EXISTS orphans_deleted  INTEGER NOT NULL DEFAULT 0;
 
 -- Async restore jobs: the admin UI enqueues one row per (fractal, window); the
 -- bifract-archiver run process claims (FOR UPDATE SKIP LOCKED) and executes it,
@@ -1968,6 +1984,9 @@ CREATE INDEX IF NOT EXISTS idx_archive_restore_jobs_pending
     ON archive_restore_jobs (created_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_archive_restore_jobs_created
     ON archive_restore_jobs (created_at DESC);
+-- Serves the job-admission running-count, which runs under a global claim lock.
+CREATE INDEX IF NOT EXISTS idx_archive_restore_jobs_running
+    ON archive_restore_jobs (id) WHERE status = 'running';
 
 -- Async Recall search jobs (per-fractal BQL search over the Iceberg archive).
 -- The archiver claims and executes; results are bounded JSONB, aged out by the
@@ -1999,6 +2018,9 @@ CREATE INDEX IF NOT EXISTS idx_archive_search_jobs_pending
     ON archive_search_jobs (created_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_archive_search_jobs_fractal
     ON archive_search_jobs (fractal_id, created_at DESC);
+-- Serves the job-admission running-count, which runs under a global claim lock.
+CREATE INDEX IF NOT EXISTS idx_archive_search_jobs_running
+    ON archive_search_jobs (id) WHERE status = 'running';
 
 -- Archive completeness: hot-store vs archive row counts per (fractal, ingest
 -- day). The archive spool is pod-local, so an ingest pod replaced while holding

@@ -24,6 +24,11 @@ type CompletenessOptions struct {
 	// excluded: it is still being written on both sides, so any count difference
 	// is just archiver lag rather than a gap.
 	Days int
+	// Retention is the per-fractal archive retention policy. Days the archive has
+	// deliberately expired must not be counted as gaps: the archive is empty there
+	// by policy, and reporting that as missing data is a false alarm that gets
+	// louder the shorter the retention is.
+	Retention RetentionPolicy
 }
 
 // CompletenessOptionsFromEnv reads the sweep configuration.
@@ -84,6 +89,11 @@ func CheckCompleteness(ctx context.Context, db *sql.DB, cat *Catalog, ch *storag
 			}
 			day := today.AddDate(0, 0, -i)
 			next := day.AddDate(0, 0, 1)
+
+			// Past this fractal's archive retention the archive is empty on purpose.
+			if opts.Retention.Expired(fractalID, day) {
+				continue
+			}
 
 			chCount, err := countLogs(ctx, ch, fractalID, day, next)
 			if err != nil {

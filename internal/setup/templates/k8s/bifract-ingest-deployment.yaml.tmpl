@@ -188,25 +188,10 @@ spec:
                 secretKeyRef:
                   name: bifract-secrets
                   key: POSTGRES_PASSWORD
-            # ClickHouse: the restore/reconcile worker writes archived rows back into
-            # the logs table. Cluster-aware (mirrors the server) so restore targets
-            # logs_distributed - rows shard across nodes and dedup/counts span the
-            # whole cluster instead of a single shard's local table.
-            - name: CLICKHOUSE_HOSTS
-              value: "{{.CHHostsList}}"
-            - name: CLICKHOUSE_CLUSTER
-              value: default
-            - name: CLICKHOUSE_PORT
-              value: "9000"
-            - name: CLICKHOUSE_DB
-              value: logs
-            - name: CLICKHOUSE_USER
-              value: default
-            - name: CLICKHOUSE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: bifract-secrets
-                  key: CLICKHOUSE_PASSWORD
+            # No ClickHouse env: this sidecar only drains the spool into Iceberg.
+            # Restore (the one archive path that writes back into logs) moved to the
+            # archive-workers container, so the ingest tier no longer holds
+            # ClickHouse credentials at all.
             - name: BIFRACT_ARCHIVE_SPOOL_PATH
               value: /var/lib/bifract/spool
             - name: BIFRACT_ARCHIVE_DISK_PATH

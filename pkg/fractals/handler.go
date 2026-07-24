@@ -345,6 +345,42 @@ func (h *Handler) HandleSetRetention(w http.ResponseWriter, r *http.Request) {
 	h.sendSuccess(w, "Retention updated successfully", nil)
 }
 
+// HandleSetArchiveRetention sets the Iceberg archive retention for a fractal
+// (fractal admin+).
+func (h *Handler) HandleSetArchiveRetention(w http.ResponseWriter, r *http.Request) {
+	user := h.getCurrentUser(r)
+	if user == nil {
+		h.sendError(w, http.StatusUnauthorized, "Authentication required")
+		return
+	}
+
+	fractalID := chi.URLParam(r, "id")
+	if fractalID == "" {
+		h.sendError(w, http.StatusBadRequest, "Fractal ID is required")
+		return
+	}
+
+	role := h.resolveFractalRole(r, fractalID)
+	if !rbac.HasAccess(user, role, rbac.RoleAdmin) {
+		h.sendError(w, http.StatusForbidden, "Insufficient permissions")
+		return
+	}
+
+	var req UpdateArchiveRetentionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.sendError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := h.manager.SetArchiveRetention(r.Context(), fractalID, req.ArchiveRetentionDays); err != nil {
+		log.Printf("[Fractals] Failed to set archive retention for %s: %v", fractalID, err)
+		h.sendError(w, http.StatusBadRequest, "Failed to update archive retention policy")
+		return
+	}
+
+	h.sendSuccess(w, "Archive retention updated successfully", nil)
+}
+
 // HandleSetDiskQuota sets the disk quota and enforcement action for a fractal (fractal admin+).
 func (h *Handler) HandleSetDiskQuota(w http.ResponseWriter, r *http.Request) {
 	user := h.getCurrentUser(r)

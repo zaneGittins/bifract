@@ -451,6 +451,11 @@
                                         <div class="perf-metric-value" id="maintainBacklog">&mdash;</div>
                                         <div class="perf-metric-sub" id="maintainBacklogSub"></div>
                                     </div>
+                                    <div class="perf-metric-card">
+                                        <div class="perf-metric-label">Reclaimed</div>
+                                        <div class="perf-metric-value" id="maintainReclaimed">&mdash;</div>
+                                        <div class="perf-metric-sub" id="maintainReclaimedSub"></div>
+                                    </div>
                                 </div>
 
                                 <p class="perf-section-hint" id="maintainHint" style="margin-top: 14px; display:none;"></p>
@@ -2762,6 +2767,14 @@
                             </select>
                         </div>
 
+                        <div class="setting-item">
+                            <div class="setting-info">
+                                <label for="manageFractalArchiveRetentionInput" class="setting-label">Delete archived data after</label>
+                                <p class="setting-description">Applies to the Iceberg archive only, independently of the log retention above. Any number of days; blank keeps the archive forever.</p>
+                            </div>
+                            <input type="number" id="manageFractalArchiveRetentionInput" class="setting-input" min="1" step="1" placeholder="Never (keep forever)">
+                        </div>
+
                         <div class="lifecycle-divider fractal-admin-only"></div>
 
                         <div class="setting-item fractal-admin-only">
@@ -3347,6 +3360,14 @@
                             <option value="180">180 days</option>
                             <option value="365">365 days</option>
                         </select>
+                    </div>
+
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <label for="fractalArchiveRetentionInput" class="setting-label">Archive Retention Period</label>
+                            <p class="setting-description">Drop archived data older than this many days. Applies to the Iceberg archive only, independently of log retention above. Leave blank to keep forever.</p>
+                        </div>
+                        <input type="number" id="fractalArchiveRetentionInput" class="setting-input" min="1" step="1" placeholder="Keep forever">
                     </div>
                 </div>
 

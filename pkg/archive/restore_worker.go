@@ -26,10 +26,10 @@ const (
 )
 
 // RestoreWorker drains the archive_restore_jobs queue: it claims one pending job
-// at a time (FOR UPDATE SKIP LOCKED, safe across the N archiver sidecars),
-// replays the requested Iceberg window back into ClickHouse via Catalog.Restore /
-// Reconcile, and streams row progress back to the row so the admin UI can show a
-// live progress bar.
+// at a time (FOR UPDATE SKIP LOCKED, safe across every worker process, and
+// bounded by the global cap in beginClaim), replays the requested Iceberg window
+// back into ClickHouse via Catalog.Restore / Reconcile, and streams row progress
+// back to the row so the admin UI can show a live progress bar.
 //
 // It runs independently of the drain loop's enable gate: a restore is a
 // deliberate DR action an operator may need even while ongoing archiving is
@@ -105,7 +105,7 @@ func (w *RestoreWorker) Run(ctx context.Context) {
 			lastReap = now
 			w.reapStale(ctx)
 		}
-		job, ok, err := claimRestoreJob(ctx, w.db)
+		job, ok, err := claimRestoreJob(ctx, w.db, w.cfg.JobConcurrency)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("[Restore] claim error: %v", err)
@@ -126,13 +126,20 @@ func (w *RestoreWorker) Run(ctx context.Context) {
 }
 
 // claimRestoreJob atomically transitions the oldest pending job to running and
-// returns it. Returns ok=false when there is nothing to do. FOR UPDATE SKIP
+// returns it, once the global restore concurrency cap has a free slot. Returns
+// ok=false when the cap is reached or there is nothing to do. FOR UPDATE SKIP
 // LOCKED guarantees only one worker claims a given row.
-func claimRestoreJob(ctx context.Context, db *sql.DB) (restoreJob, bool, error) {
+func claimRestoreJob(ctx context.Context, db *sql.DB, limit int) (restoreJob, bool, error) {
+	tx, ok, err := beginClaim(ctx, db, restoreClaimLock, "archive_restore_jobs", limit)
+	if err != nil || !ok {
+		return restoreJob{}, false, err
+	}
+	defer tx.Rollback()
+
 	var j restoreJob
 	var cursor sql.NullTime
 	var target sql.NullString
-	err := db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		UPDATE archive_restore_jobs SET status = 'running', started_at = NOW(), updated_at = NOW()
 		WHERE id = (
 			SELECT id FROM archive_restore_jobs
@@ -154,6 +161,9 @@ func claimRestoreJob(ctx context.Context, db *sql.DB) (restoreJob, bool, error) 
 	}
 	if cursor.Valid {
 		j.Cursor = cursor.Time
+	}
+	if err := tx.Commit(); err != nil {
+		return restoreJob{}, false, err
 	}
 	return j, true, nil
 }
