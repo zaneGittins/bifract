@@ -87,7 +87,7 @@ func ConfigFromEnv() (Config, error) {
 		CHCluster:     getStr("CLICKHOUSE_CLUSTER", ""),
 		SpoolPath:     getStr("BIFRACT_ARCHIVE_SPOOL_PATH", "/var/lib/bifract/spool"),
 		RollBytes:     getInt64("BIFRACT_ARCHIVE_ROLL_BYTES", 256<<20),
-		RollInterval:  getDuration("BIFRACT_ARCHIVE_ROLL_INTERVAL", time.Hour),
+		RollInterval:  getDuration("BIFRACT_ARCHIVE_ROLL_INTERVAL", 30*time.Minute),
 		PollInterval:  getDuration("BIFRACT_ARCHIVE_POLL_INTERVAL", 2*time.Second),
 		RecallTimeout: getDuration("BIFRACT_RECALL_TIMEOUT", 15*time.Minute),
 

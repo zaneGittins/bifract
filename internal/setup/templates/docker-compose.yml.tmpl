@@ -247,7 +247,7 @@ services:
       BIFRACT_ARCHIVE_AZURE_ENDPOINT: ${BIFRACT_ARCHIVE_AZURE_ENDPOINT:-}
       BIFRACT_ARCHIVE_SPOOL_PATH: /var/lib/bifract/spool
       BIFRACT_ARCHIVE_ROLL_BYTES: ${BIFRACT_ARCHIVE_ROLL_BYTES:-134217728}
-      BIFRACT_ARCHIVE_ROLL_INTERVAL: ${BIFRACT_ARCHIVE_ROLL_INTERVAL:-1h}
+      BIFRACT_ARCHIVE_ROLL_INTERVAL: ${BIFRACT_ARCHIVE_ROLL_INTERVAL:-5m}
     volumes:
       - bifract-spool:/var/lib/bifract/spool
       - bifract-archive:/var/lib/bifract/archive
