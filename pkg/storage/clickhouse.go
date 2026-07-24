@@ -1576,25 +1576,57 @@ type QueryStats struct {
 	ReadBytes uint64
 }
 
-// QueryWithStats runs a query under a fixed query_id and reports how much data
-// ClickHouse read to answer it. Used by Recall, where the scan is over object
-// storage and the cost is both large and invisible: without this a search that
-// times out is indistinguishable from one that was simply too broad.
+// QueryStream runs a query under a fixed query_id, delivering each row to onRow
+// as it arrives instead of materializing the whole result set, and reporting how
+// much data ClickHouse has read so far to onProgress.
 //
-// Progress packets carry deltas, so they accumulate.
-func (c *ClickHouseClient) QueryWithStats(ctx context.Context, queryID, query string) ([]map[string]interface{}, QueryStats, error) {
+// Used by Recall, where the scan is over object storage and the cost is both
+// large and invisible: without progress a search that runs for minutes is
+// indistinguishable from one that is stuck, and without incremental rows the
+// user waits for the slowest partition before seeing anything.
+//
+// Both callbacks are invoked from this goroutine (the native protocol decodes
+// progress packets while iterating rows), and both must return quickly: they run
+// inline with the read loop, so blocking in one stalls the ClickHouse stream.
+// Progress packets carry deltas, so they accumulate. Stats are returned even on
+// failure -- a timed-out or killed query still read whatever it read, and that is
+// exactly the number the user needs to see.
+func (c *ClickHouseClient) QueryStream(ctx context.Context, queryID, query string, onRow func(map[string]interface{}), onProgress func(QueryStats)) (QueryStats, error) {
 	var readRows, readBytes atomic.Uint64
+	stats := func() QueryStats {
+		return QueryStats{ReadRows: readRows.Load(), ReadBytes: readBytes.Load()}
+	}
 	ctx = clickhouse.Context(ctx,
 		clickhouse.WithQueryID(queryID),
 		clickhouse.WithProgress(func(p *clickhouse.Progress) {
 			readRows.Add(p.Rows)
 			readBytes.Add(p.Bytes)
+			if onProgress != nil {
+				onProgress(stats())
+			}
 		}),
 	)
-	rows, err := c.Query(ctx, query)
-	// Report the stats even on failure: a timed-out or killed query still read
-	// whatever it read, and that is exactly the number the user needs to see.
-	return rows, QueryStats{ReadRows: readRows.Load(), ReadBytes: readBytes.Load()}, err
+
+	rows, err := c.conn.Query(ctx, query)
+	if err != nil {
+		return stats(), fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	columnTypes := rows.ColumnTypes()
+	for rows.Next() {
+		row, err := scanRowMap(columnTypes, rows)
+		if err != nil {
+			return stats(), err
+		}
+		if onRow != nil {
+			onRow(row)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return stats(), fmt.Errorf("error iterating rows: %w", err)
+	}
+	return stats(), nil
 }
 
 // ExecWithID runs a statement with a fixed query_id so a long-running write (a

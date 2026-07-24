@@ -92,6 +92,8 @@ const RecallTimePicker = {
         Object.assign(this.state, newState);
         this._updateLabel();
         this._updateActivePreset();
+        // The scan estimate is window-scoped; refresh it when the window moves.
+        if (window.Recall && Recall.isActive) Recall.refreshEstimate();
     },
 
     _updateLabel() {
@@ -194,6 +196,8 @@ const Recall = {
     _pager: null,         // scoped client-side pagination for the results table
     _fieldOrder: null,    // column order of the active job's results
     _isAggregated: false, // whether the active job's results are aggregated
+    _estToken: 0,         // guards out-of-order pre-flight estimate fetches
+    _estTimer: null,      // debounces estimate refreshes on window changes
 
     init() {
         if (this._initDone) return;
@@ -264,6 +268,7 @@ const Recall = {
     onFractalChange() {
         this.stopPolling();
         this._activeJobId = null;
+        this.clearEstimate();
         this.refreshTabVisibility();
         // If the tab is currently showing, reload for the new fractal.
         const view = document.getElementById('recallView');
@@ -298,10 +303,81 @@ const Recall = {
         return false;
     },
 
+    // ---- Pre-flight scan estimate --------------------------------------
+
+    // Debounced fetch of what the current window would open in the archive
+    // (from Iceberg manifests only; no data read). Purely advisory: it tells a
+    // user a broad window is going to be slow before they wait on it.
+    refreshEstimate() {
+        if (this._estTimer) clearTimeout(this._estTimer);
+        this._estTimer = setTimeout(() => this._fetchEstimate(), 250);
+    },
+
+    async _fetchEstimate() {
+        const fid = this.fractalId();
+        const box = document.getElementById('recallEstimate');
+        if (!fid || !box) return;
+        const range = RecallTimePicker.resolve();
+        if (!range.from || !range.to) { box.style.display = 'none'; return; }
+        const token = ++this._estToken;
+        try {
+            const url = `/api/v1/recall/${encodeURIComponent(fid)}/estimate`
+                + `?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}`;
+            const res = await fetch(url, { credentials: 'include' });
+            if (token !== this._estToken) return; // superseded by a newer window
+            if (!res.ok) { box.style.display = 'none'; return; }
+            const d = await res.json();
+            if (token !== this._estToken) return;
+            this._renderEstimate(d);
+        } catch (_) {
+            if (token === this._estToken) box.style.display = 'none';
+        }
+    },
+
+    // Files, not bytes, is the headline: ClickHouse prunes row groups and reads
+    // only referenced columns, so bytes is a loose ceiling, but every file in
+    // range is at least opened. A high file count is the honest slow-search signal.
+    _renderEstimate(d) {
+        const box = document.getElementById('recallEstimate');
+        if (!box) return;
+        if (!d || !d.archived) {
+            box.style.display = 'none';
+            return;
+        }
+        const files = Number(d.files || 0);
+        const bytes = Number(d.bytes || 0);
+        const parts = Number(d.partitions || 0);
+        if (!files) {
+            box.className = 'recall-estimate';
+            box.innerHTML = '<span class="recall-estimate-icon"></span>No archived logs in this window';
+            box.style.display = '';
+            return;
+        }
+        // Rough guidance: a few thousand files is a heavy scan worth flagging.
+        const heavy = files >= 5000 || bytes >= 20 * 1024 * 1024 * 1024;
+        const dayLabel = parts === 1 ? '1 day' : `${parts.toLocaleString()} days`;
+        box.className = 'recall-estimate' + (heavy ? ' recall-estimate-heavy' : '');
+        box.innerHTML =
+            '<span class="recall-estimate-icon"></span>' +
+            `<span>Scans up to <strong>${this._compact(files)}</strong> files &middot; ` +
+            `<strong>${this._bytes(bytes)}</strong> across ${dayLabel}` +
+            (heavy ? ' &mdash; narrow the window or predicate to speed this up' : '') +
+            '</span>';
+        box.style.display = '';
+    },
+
+    clearEstimate() {
+        this._estToken++;
+        if (this._estTimer) { clearTimeout(this._estTimer); this._estTimer = null; }
+        const box = document.getElementById('recallEstimate');
+        if (box) box.style.display = 'none';
+    },
+
     // ---- Tab lifecycle --------------------------------------------------
 
     async show(subPath = '') {
         this.isActive = true;
+        this.refreshEstimate();
         await this.loadRecent();
 
         const jobId = (subPath && /^\d+$/.test(String(subPath))) ? String(subPath) : null;
@@ -316,6 +392,7 @@ const Recall = {
     hide() {
         this.isActive = false;
         this.stopPolling();
+        this.clearEstimate();
     },
 
     stopPolling() {
@@ -441,19 +518,33 @@ const Recall = {
         const startMs = job.started_at ? new Date(job.started_at).getTime()
             : (job.created_at ? new Date(job.created_at).getTime() : Date.now());
         const label = job.status === 'pending' ? 'Queued' : 'Searching archive';
+        // Partial results the worker has streamed onto the job so far. Rendering
+        // them (rather than a spinner over an empty pane) is what makes a long
+        // archive scan feel responsive: rows appear as ClickHouse returns them.
+        const partial = Array.isArray(job.results) ? job.results : null;
         const paint = () => {
             const secs = Math.max(0, Math.round((Date.now() - startMs) / 1000));
-            this.setStatus(
-                `<span class="recall-spinner"></span><span>${label}</span>` +
-                `<span class="recall-status-elapsed">${secs}s</span>`,
-                'running'
-            );
+            let html = `<span class="recall-spinner"></span><span>${label}</span>` +
+                `<span class="recall-status-elapsed">${secs}s</span>`;
+            if (partial && partial.length) {
+                html += `<span class="recall-status-count">${partial.length.toLocaleString()} rows so far</span>`;
+            }
+            html += this._scannedHtml(job);
+            this.setStatus(html, 'running');
         };
         paint();
         this._elapsedTimer = setInterval(paint, 1000);
-        // Keep the previous table (if any) but dim it; show a placeholder if empty.
+
         const pane = document.getElementById('recallResults');
-        if (pane && !pane.querySelector('table')) {
+        if (partial && partial.length) {
+            // Render the prefix the worker has produced. It is always a true prefix
+            // (sorted/aggregated output only lands once complete), so it never
+            // reorders under the user as more arrives.
+            this._fieldOrder = job.field_order || this._fieldOrder || null;
+            this._isAggregated = !!job.is_aggregated;
+            if (this._pager) this._pager.setResults(partial);
+            else this.renderPage(partial);
+        } else if (pane && !pane.querySelector('table')) {
             pane.innerHTML = '<div class="no-results">Searching the archive...</div>';
         }
     },

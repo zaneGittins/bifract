@@ -466,7 +466,7 @@ func main() {
 	// metadata and hand the scan to ClickHouse: they have no spool affinity, and
 	// running them in the always-on app tier means scaling ingest down cannot
 	// leave archive jobs stuck at 'pending'.
-	stopArchiveJobWorkers := startArchiveJobWorkers()
+	stopArchiveJobWorkers, recallEstimator := startArchiveJobWorkers()
 
 	// Queue depth at which alert evaluation is deferred to protect ingestion.
 	// Clamp the configured percentage to a sane (1, 100] range so a bad value
@@ -1657,6 +1657,51 @@ func main() {
 				})
 			})
 
+			// Pre-flight scan estimate: what a Recall over this window would open,
+			// from Iceberg manifests only (no object data read). Lets the UI warn
+			// before a user waits minutes on a window with tens of thousands of
+			// files behind it. Analyst+, same as the search itself.
+			r.Get("/recall/{fractalID}/estimate", func(w http.ResponseWriter, r *http.Request) {
+				fractalID := chi.URLParam(r, "fractalID")
+				if _, ok := recallAnalystOK(w, r, fractalID); !ok {
+					return
+				}
+				if recallEstimator == nil {
+					http.Error(w, "Archive estimate unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				from, err := parseArchiveTime(r.URL.Query().Get("from"))
+				if err != nil {
+					http.Error(w, "Invalid 'from' time", http.StatusBadRequest)
+					return
+				}
+				to, err := parseArchiveTime(r.URL.Query().Get("to"))
+				if err != nil {
+					http.Error(w, "Invalid 'to' time", http.StatusBadRequest)
+					return
+				}
+				if !to.After(from) {
+					http.Error(w, "'to' must be after 'from'", http.StatusBadRequest)
+					return
+				}
+				ectx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+				defer cancel()
+				est, err := recallEstimator.Estimate(ectx, fractalID, from, to)
+				if err != nil {
+					http.Error(w, "Failed to estimate scan", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"success":    true,
+					"files":      est.Files,
+					"rows":       est.Rows,
+					"bytes":      est.Bytes,
+					"partitions": est.Partitions,
+					"archived":   est.Archived,
+				})
+			})
+
 			// Submit a Recall search (returns the job id to poll).
 			r.Post("/recall/{fractalID}", func(w http.ResponseWriter, r *http.Request) {
 				fractalID := chi.URLParam(r, "fractalID")
@@ -1669,6 +1714,7 @@ func main() {
 					From    string `json:"from"`
 					To      string `json:"to"`
 					MaxRows int    `json:"max_rows"`
+					Fresh   bool   `json:"fresh"` // bypass result reuse, force a new scan
 				}
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -1704,6 +1750,30 @@ func main() {
 				}
 				if maxRows > 250 {
 					maxRows = 250
+				}
+				// Result reuse: an identical search (same fractal, query, window, and
+				// at least the requested row cap) that already succeeded and whose
+				// results are still cached is returned as-is instead of re-scanning
+				// object storage. Reuse is limited to answers that are still current:
+				// either it finished seconds ago (the re-run / concurrent-user case,
+				// where the archive is unchanged), or its window ends before the
+				// stability horizon so every ingest-day partition it covers is sealed.
+				// A live window (ending now) only reuses within the short TTL, so a
+				// search over "up to this minute" never serves a stale answer.
+				if !body.Fresh {
+					var reuseID int64
+					if err := pg.QueryRow(r.Context(),
+						`SELECT id FROM archive_search_jobs
+						 WHERE fractal_id = $1 AND query = $2 AND from_ts = $3 AND to_ts = $4
+						   AND max_rows >= $5 AND status = 'succeeded' AND results IS NOT NULL
+						   AND (finished_at > NOW() - INTERVAL '2 minutes'
+						        OR (to_ts < NOW() - INTERVAL '2 hours' AND finished_at > NOW() - INTERVAL '1 hour'))
+						 ORDER BY finished_at DESC LIMIT 1`,
+						fractalID, body.Query, from, to, maxRows).Scan(&reuseID); err == nil {
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "id": reuseID, "reused": true})
+						return
+					}
 				}
 				var inflight int
 				if err := pg.QueryRow(r.Context(),
@@ -2614,22 +2684,23 @@ func validateRecallQuery(query string) error {
 // skipping keeps a hot-only install free of the claim polling entirely.
 // Concurrency is capped globally at claim time, so every app replica running this
 // does not multiply concurrent archive scans against ClickHouse.
-// Returns a stop function that halts claiming and cancels in-flight jobs; a
+// Returns a stop function that halts claiming and cancels in-flight jobs (a
 // cancelled job is left 'running' and picked up by the stale reaper, exactly as
-// after a pod kill.
-func startArchiveJobWorkers() func() {
+// after a pod kill) plus a scan Estimator for the Recall pre-flight endpoint,
+// nil when no object-storage backend is configured.
+func startArchiveJobWorkers() (func(), *archive.Estimator) {
 	cfg, err := archive.ConfigFromEnv()
 	if err != nil {
 		log.Printf("Warning: archive job workers disabled, bad config: %v", err)
-		return func() {}
+		return func() {}, nil
 	}
 	if cfg.Obj.Backend == objstore.BackendDisk || cfg.Obj.Backend == "" {
-		return func() {}
+		return func() {}, nil
 	}
 	db, err := sql.Open("postgres", cfg.PGDSN)
 	if err != nil {
 		log.Printf("Warning: archive job workers disabled, cannot open postgres: %v", err)
-		return func() {}
+		return func() {}, nil
 	}
 	// Sized to the peak these queues can demand: each in-flight job uses one
 	// connection for its own writes and one for its heartbeat goroutine, and a
@@ -2646,7 +2717,7 @@ func startArchiveJobWorkers() func() {
 	return func() {
 		cancel()
 		db.Close()
-	}
+	}, archive.NewEstimator(cfg)
 }
 
 // startArchiveSpool provisions the ingest archive spool tee when a spool path is

@@ -872,6 +872,44 @@ body.recall-active {
     display: inline-block;
 }
 
+/* Pre-flight scan estimate: a subtle advisory under the query row. Muted by
+   default; amber only when the window is heavy enough to be worth flagging. */
+.recall-estimate {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    padding: 5px 2px 0;
+}
+
+.recall-estimate strong {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.recall-estimate-icon {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex: 0 0 auto;
+    opacity: 0.6;
+}
+
+.recall-estimate-heavy {
+    color: var(--warning);
+}
+
+.recall-estimate-heavy strong {
+    color: var(--warning);
+}
+
+.recall-estimate-heavy .recall-estimate-icon {
+    background: var(--warning);
+    opacity: 1;
+}
+
 .recall-rerun-btn {
     background: transparent;
     border: 1px solid var(--border-color);
