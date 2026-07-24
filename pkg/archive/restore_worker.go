@@ -7,7 +7,6 @@ import (
 	"log"
 	"time"
 
-	"bifract/pkg/objstore"
 	"bifract/pkg/storage"
 )
 
@@ -41,14 +40,18 @@ type RestoreWorker struct {
 	db   *sql.DB
 	poll time.Duration
 
-	// Lazily initialized on the first claimed job.
-	cat *Catalog
-	ch  *storage.ClickHouseClient
+	// Shared across all workers; the catalog + ClickHouse client are built once,
+	// on the first claimed job. cat/ch cache the resolved instances for this
+	// worker's own use (killQuery etc.) after ensureDeps.
+	deps *sharedDeps
+	cat  *Catalog
+	ch   *storage.ClickHouseClient
 }
 
-// NewRestoreWorker builds a worker over the shared config and Postgres handle.
-func NewRestoreWorker(cfg Config, db *sql.DB) *RestoreWorker {
-	return &RestoreWorker{cfg: cfg, db: db, poll: 3 * time.Second}
+// NewRestoreWorker builds a worker over the shared config, Postgres handle, and
+// process-shared catalog/ClickHouse dependencies.
+func NewRestoreWorker(cfg Config, db *sql.DB, deps *sharedDeps) *RestoreWorker {
+	return &RestoreWorker{cfg: cfg, db: db, poll: 3 * time.Second, deps: deps}
 }
 
 type restoreJob struct {
@@ -342,31 +345,14 @@ func (w *RestoreWorker) reapStale(ctx context.Context) {
 	}
 }
 
-// ensureDeps lazily builds the catalog + ClickHouse client. A disk backend is
-// rejected up front: it is pod-local and unreadable by ClickHouse, so a restore
-// from it cannot work.
+// ensureDeps resolves the process-shared catalog + ClickHouse client (built once
+// across all workers) and caches them on this worker for its own use.
 func (w *RestoreWorker) ensureDeps(ctx context.Context) error {
-	if w.cat != nil && w.ch != nil {
-		return nil
+	cat, ch, err := w.deps.ensure(ctx)
+	if err != nil {
+		return err
 	}
-	if w.cfg.Obj.Backend == objstore.BackendDisk {
-		return fmt.Errorf("restore requires an object-storage backend (s3, minio, or azure); the disk backend is pod-local and cannot be read back by ClickHouse")
-	}
-	ApplyBackendEnv(w.cfg.Obj)
-	if w.cat == nil {
-		cat, err := NewCatalog(ctx, Namespace, w.cfg.PGDSN, w.cfg.Obj)
-		if err != nil {
-			return fmt.Errorf("open catalog: %w", err)
-		}
-		w.cat = cat
-	}
-	if w.ch == nil {
-		ch, err := NewCHClient(w.cfg)
-		if err != nil {
-			return fmt.Errorf("connect clickhouse: %w", err)
-		}
-		w.ch = ch
-	}
+	w.cat, w.ch = cat, ch
 	return nil
 }
 

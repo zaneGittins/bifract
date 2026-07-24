@@ -294,6 +294,11 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	// leaves every other setting -- timestamp fields, the other recall knobs --
 	// at its current value instead of resetting it.
 	settings := Get()
+	// Get() shares TimestampFields' backing array with the live global; a body
+	// that includes timestamp_fields would make json reset+append into that shared
+	// array in place, racing the ingest hot path that iterates Get().TimestampFields.
+	// Copy it so the decode can only touch this goroutine's slice.
+	settings.TimestampFields = append([]TimestampField(nil), settings.TimestampFields...)
 	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 		respondJSON(w, http.StatusBadRequest, SettingsResponse{
 			Success: false,

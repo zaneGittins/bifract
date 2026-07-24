@@ -63,14 +63,17 @@ func beginClaim(ctx context.Context, db *sql.DB, lockKey int64, table string, li
 // each lazily builds its own catalog and ClickHouse client on first claim, which
 // would otherwise be a shared-state race.
 func StartJobWorkers(ctx context.Context, cfg Config, db *sql.DB) {
+	// One catalog + ClickHouse client shared by every worker, so the RecallWorkerPool
+	// search loops do not each open their own (unbounded) Postgres catalog pool.
+	deps := newSharedDeps(cfg)
 	restoreN := cfg.JobConcurrency
 	if restoreN < 1 {
 		restoreN = 1
 	}
 	for i := 0; i < restoreN; i++ {
-		go NewRestoreWorker(cfg, db).Run(ctx)
+		go NewRestoreWorker(cfg, db, deps).Run(ctx)
 	}
 	for i := 0; i < RecallWorkerPool; i++ {
-		go NewSearchWorker(cfg, db).Run(ctx)
+		go NewSearchWorker(cfg, db, deps).Run(ctx)
 	}
 }

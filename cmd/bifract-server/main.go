@@ -1751,22 +1751,6 @@ func main() {
 				if maxRows > 250 {
 					maxRows = 250
 				}
-				// Pre-flight scan ceiling: reject a window whose archived size exceeds
-				// the admin's recall scan limit before it ever runs. ClickHouse does
-				// not enforce max_bytes_to_read on iceberg table functions, so this
-				// admission gate is the real guard. It reuses the same manifest-only
-				// estimate the UI shows, so a rejection is exactly what the pre-flight
-				// box warned about. 0 = unlimited.
-				if limit := settings.Get().RecallMaxBytesRead; limit > 0 && recallEstimator != nil {
-					ectx, ecancel := context.WithTimeout(r.Context(), 20*time.Second)
-					est, eerr := recallEstimator.Estimate(ectx, fractalID, from, to)
-					ecancel()
-					if eerr == nil && est.Archived && est.Bytes > limit {
-						http.Error(w, fmt.Sprintf("This window holds about %s of archived data, above the %s recall scan limit. Narrow the time range or raise the limit in Settings.",
-							recallBytesHuman(est.Bytes), recallBytesHuman(limit)), http.StatusRequestEntityTooLarge)
-						return
-					}
-				}
 				// Result reuse: an identical search (same fractal, query, window, and
 				// at least the requested row cap) that already succeeded and whose
 				// results are still cached is returned as-is instead of re-scanning
@@ -1788,6 +1772,23 @@ func main() {
 						fractalID, body.Query, from, to, maxRows).Scan(&reuseID); err == nil {
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "id": reuseID, "reused": true})
+						return
+					}
+				}
+				// Pre-flight scan ceiling: reject a window whose archived size exceeds
+				// the admin's recall scan limit before it launches a NEW scan. Placed
+				// after reuse so a still-cached identical result is served without
+				// gating (a cache hit is not a scan) and without paying the estimate's
+				// latency. ClickHouse does not enforce max_bytes_to_read on iceberg
+				// table functions, so this admission gate is the real guard; it reuses
+				// the same manifest-only estimate the UI shows. 0 = unlimited.
+				if limit := settings.Get().RecallMaxBytesRead; limit > 0 && recallEstimator != nil {
+					ectx, ecancel := context.WithTimeout(r.Context(), 20*time.Second)
+					est, eerr := recallEstimator.Estimate(ectx, fractalID, from, to)
+					ecancel()
+					if eerr == nil && est.Archived && est.Bytes > limit {
+						http.Error(w, fmt.Sprintf("This window holds about %s of archived data, above the %s recall scan limit. Narrow the time range or raise the limit in Settings.",
+							recallBytesHuman(est.Bytes), recallBytesHuman(limit)), http.StatusRequestEntityTooLarge)
 						return
 					}
 				}
