@@ -286,6 +286,13 @@ type k8sSettings struct {
 	// ingestReplicas preserves an operator-set ingest tier replica count (incl. a
 	// value scaled into the manifest) across regeneration.
 	ingestReplicas int
+	// spoolPVCSizeGB preserves a manually-resized archive-spool PVC across
+	// regeneration. Without this, buildK8sConfigFromExisting leaves SizeProfile's
+	// SpoolPVCSizeGB at its zero value (the "custom" profile it builds has no
+	// concept of spool size), which silently falls back to the Dev size (10Gi) on
+	// every upgrade -- reverting any manual resize regardless of the cluster's
+	// actual size profile.
+	spoolPVCSizeGB int
 
 	// dashboard* preserve user-tuned dashboard executor settings.
 	dashboardTick       int
@@ -439,10 +446,22 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 		}
 	}
 
-	// Preserve the ingest tier's replica count (separate deployment file).
+	// Preserve the ingest tier's replica count and spool PVC size (separate
+	// deployment file). Spool storage is parsed from the volumeClaimTemplates
+	// block, same Ti/Gi pattern as the ClickHouse storage parse above.
 	if data, err := os.ReadFile(filepath.Join(dir, "bifract", "ingest-deployment.yaml")); err == nil {
-		if v := extractValue(string(data), `(?m)^\s*replicas:\s*(\d+)`); v != "" {
+		content := string(data)
+		if v := extractValue(content, `(?m)^\s*replicas:\s*(\d+)`); v != "" {
 			s.ingestReplicas, _ = strconv.Atoi(v)
+		}
+		if idx := strings.Index(content, "volumeClaimTemplates:"); idx != -1 {
+			claimDoc := content[idx:]
+			if v := extractValue(claimDoc, `storage:\s*(\d+)Ti`); v != "" {
+				ti, _ := strconv.Atoi(v)
+				s.spoolPVCSizeGB = ti * 1024
+			} else if v := extractValue(claimDoc, `storage:\s*(\d+)Gi`); v != "" {
+				s.spoolPVCSizeGB, _ = strconv.Atoi(v)
+			}
 		}
 	}
 

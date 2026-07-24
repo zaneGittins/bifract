@@ -118,8 +118,10 @@ spec:
             - name: BIFRACT_ARCHIVE_SPOOL_PATH
               value: /var/lib/bifract/spool
             # Spool capacity watermark: ingest backpressures (429) at 90% of this.
-            # Defaults to ~80% of the spool PVC so a full spool hits backpressure,
-            # not ENOSPC; moves with the size profile. Override via the secret.
+            # Always ~80% of the spool PVC size below, computed at render time --
+            # there is no secret override for this one. Resize the PVC (which
+            # upgrades now preserve, see spoolPVCSizeGB in upgrade_k8s.go) rather
+            # than trying to set this independently of it.
             - name: BIFRACT_ARCHIVE_SPOOL_MAX_BYTES
               value: "{{.SpoolMaxBytes}}"
             - name: BIFRACT_ARCHIVE_ROLL_BYTES

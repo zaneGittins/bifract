@@ -269,6 +269,7 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 			LiteLLM:         fallbackProfile(settings.litellmResources, fb.LiteLLM),
 			IngestQueueSize: fallbackInt(settings.ingestQueueSize, fb.IngestQueueSize),
 			IngestWorkers:   fallbackInt(settings.ingestWorkers, fb.IngestWorkers),
+			SpoolPVCSizeGB:  fallbackInt(settings.spoolPVCSizeGB, fb.SpoolPVCSizeGB),
 		},
 		CHShards:            settings.chShards,
 		CHStorageGB:         settings.chStorageGB,
