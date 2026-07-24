@@ -931,11 +931,10 @@
                                 <div class="sp-row" id="distQueueResetItem" style="display:none;">
                                     <div class="sp-row-info">
                                         <span class="sp-row-label">Reset distribution queue</span>
-                                        <p class="sp-row-desc">Drops and recreates <code>logs_distributed</code> on one shard, discarding that shard's queue of not-yet-forwarded log batches. Use when a shard's distribution queue is stuck or growing because of broken or permanently unsendable batches.</p>
-                                        <p class="sp-row-meta">Local operation on that shard only, not a cluster-wide DDL: other shards and this shard's own stored logs are untouched. Only shards with a non-empty queue are listed below.</p>
+                                        <p class="sp-row-desc">Drops and recreates <code>logs_distributed</code> on one shard, discarding its queued log batches.</p>
                                     </div>
                                     <div class="sp-row-control">
-                                        <div id="distQueueShardList" class="dist-queue-shard-list"></div>
+                                        <button id="distQueueResetBtn" class="danger-btn">Reset Queue</button>
                                     </div>
                                 </div>
                                 <div class="sp-row" id="schemaResetItem">
@@ -1144,6 +1143,29 @@
                     <div class="modal-footer">
                         <button id="archiveClearCatalogCancelBtn" class="btn-secondary">Cancel</button>
                         <button id="archiveClearCatalogConfirmBtn" class="btn-danger" disabled>Clear Catalog</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="distQueueResetModal" class="modal" style="display:none;">
+                <div class="modal-content" style="max-width:480px;">
+                    <div class="modal-header">
+                        <h3 style="margin:0;color:var(--error,#f87171)">Reset Distribution Queue</h3>
+                    </div>
+                    <div class="modal-body">
+                        <p style="margin:0 0 10px 0">This drops and recreates <strong>logs_distributed</strong> on the selected shard, discarding its queued log batches. Other shards and this shard's own stored logs are unaffected.</p>
+                        <div class="form-group" style="margin:0 0 16px 0">
+                            <label for="distQueueResetShardSelect">Shard</label>
+                            <select id="distQueueResetShardSelect" class="setting-select" style="width:100%"></select>
+                        </div>
+                        <div class="form-group" style="margin:0">
+                            <label for="distQueueResetConfirmInput">Type <strong>RESET QUEUE</strong> to confirm</label>
+                            <input type="text" id="distQueueResetConfirmInput" placeholder="RESET QUEUE" autocomplete="off" spellcheck="false">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button id="distQueueResetCancelBtn" class="btn-secondary">Cancel</button>
+                        <button id="distQueueResetConfirmBtn" class="btn-danger" disabled>Reset Queue</button>
                     </div>
                 </div>
             </div>

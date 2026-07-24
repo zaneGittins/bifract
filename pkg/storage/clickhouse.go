@@ -2358,8 +2358,15 @@ type ShardDistQueueStat struct {
 	// stats above are zero-valued placeholders, not a report of health.
 	// Surfaced instead of failing the whole call so one bad shard does not
 	// hide every other shard's real numbers, which matters most exactly when
-	// a shard is already in a degraded state.
-	Unreachable bool `json:"unreachable,omitempty"`
+	// a shard is already in a degraded state. Error holds why: this is a
+	// direct app-to-shard connection over system.clusters' advertised
+	// host:port, a different path than the cluster-health/dashboard queries
+	// (which run server-side via clusterAllReplicas), so it can fail for
+	// reasons that have nothing to do with the shard's actual health -- e.g.
+	// a NetworkPolicy that only permits the app to reach the ClickHouse
+	// Service, not each pod's headless DNS name directly.
+	Unreachable bool   `json:"unreachable,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 // DistributionQueueByShard reports logs_distributed's queue depth on every
@@ -2382,6 +2389,7 @@ func (c *ClickHouseClient) DistributionQueueByShard(ctx context.Context) ([]Shar
 		conn, err := c.shardConnForNum(ctx, sn)
 		if err != nil {
 			stat.Unreachable = true
+			stat.Error = err.Error()
 			out = append(out, stat)
 			continue
 		}
@@ -2396,6 +2404,7 @@ func (c *ClickHouseClient) DistributionQueueByShard(ctx context.Context) ([]Shar
 			WHERE table = '%s'`, EscCHStr(logsDistributedTable)))
 		if err != nil {
 			stat.Unreachable = true
+			stat.Error = err.Error()
 			out = append(out, stat)
 			continue
 		}
@@ -2403,6 +2412,7 @@ func (c *ClickHouseClient) DistributionQueueByShard(ctx context.Context) ([]Shar
 			var lastExc string
 			if err := rows.Scan(&stat.DataFiles, &stat.BrokenDataFiles, &stat.ErrorCount, &lastExc); err != nil {
 				stat.Unreachable = true
+				stat.Error = err.Error()
 				rows.Close()
 				out = append(out, stat)
 				continue
