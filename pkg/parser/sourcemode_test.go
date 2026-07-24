@@ -105,6 +105,80 @@ func TestIcebergSourceMode(t *testing.T) {
 	}
 }
 
+// Archive reads dedup by log_id before anything else: the spool is replayed
+// at-least-once, so the same log_id can be committed twice, and without this an
+// aggregation over the archive over-reports. The dedup must sit INSIDE the scan
+// (WHERE before LIMIT 1 BY log_id) so partition/bloom pruning still reaches
+// Parquet, and OUTSIDE-before any aggregation collapses rows.
+func TestIcebergDedupWrapsScan(t *testing.T) {
+	mustOrder := func(t *testing.T, sql, first, second string) {
+		t.Helper()
+		i, j := strings.Index(sql, first), strings.Index(sql, second)
+		if i < 0 || j < 0 {
+			t.Fatalf("expected both %q and %q\ngot: %s", first, second, sql)
+		}
+		if i >= j {
+			t.Errorf("%q must appear before %q\ngot: %s", first, second, sql)
+		}
+	}
+
+	t.Run("raw scan dedups with WHERE inside", func(t *testing.T) {
+		sql := translateIceberg(t, `"powershell"`)
+		if !strings.Contains(sql, "LIMIT 1 BY log_id") {
+			t.Fatalf("raw archive scan missing dedup\ngot: %s", sql)
+		}
+		// The dedup is an inner subquery over the table function, and the WHERE
+		// (partition pruning) lives inside it, before the LIMIT BY.
+		mustOrder(t, sql, "FROM (SELECT * FROM icebergS3('http://x/t')", "ingest_timestamp >=")
+		mustOrder(t, sql, "ingest_timestamp >=", "LIMIT 1 BY log_id)")
+	})
+
+	t.Run("count dedups before aggregating", func(t *testing.T) {
+		sql := translateIceberg(t, `event_id=* | count()`)
+		if !strings.Contains(sql, "LIMIT 1 BY log_id") {
+			t.Fatalf("archive count missing dedup\ngot: %s", sql)
+		}
+		if !strings.Contains(sql, "COUNT(*)") {
+			t.Fatalf("expected COUNT(*)\ngot: %s", sql)
+		}
+		// COUNT wraps the dedup subquery: the aggregate text precedes the inner
+		// scan, and the dedup closes inside the parenthesized source.
+		mustOrder(t, sql, "COUNT(*)", "FROM (SELECT * FROM icebergS3('http://x/t')")
+		mustOrder(t, sql, "FROM (SELECT * FROM icebergS3('http://x/t')", "LIMIT 1 BY log_id)")
+	})
+
+	t.Run("groupby dedups before grouping", func(t *testing.T) {
+		sql := translateIceberg(t, `event_id=* | groupby(event_id) | count()`)
+		if !strings.Contains(sql, "LIMIT 1 BY log_id") {
+			t.Fatalf("archive groupby missing dedup\ngot: %s", sql)
+		}
+		mustOrder(t, sql, "LIMIT 1 BY log_id)", "GROUP BY event_id")
+	})
+}
+
+// Hot-store reads must NOT gain the archive dedup wrapper: the hot table has no
+// at-least-once duplicates and the extra LIMIT BY would be pure cost.
+func TestHotModeHasNoDedupWrapper(t *testing.T) {
+	pipeline, err := ParseQuery(`src_ip="1.2.3.4" | count()`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	res, err := TranslateToSQLWithOrder(pipeline, QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:   5000,
+	})
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	if strings.Contains(res.SQL, "LIMIT 1 BY log_id") {
+		t.Errorf("hot mode should not dedup by log_id\ngot: %s", res.SQL)
+	}
+	if strings.Contains(res.SQL, "SELECT * FROM") {
+		t.Errorf("hot mode should not wrap the source in a dedup subquery\ngot: %s", res.SQL)
+	}
+}
+
 // extractFieldName must be the exact inverse of mapFieldRef (which escapes the
 // key via escapeString) so group-by alias recovery matches the original field.
 func TestIcebergFieldRefRoundTrip(t *testing.T) {

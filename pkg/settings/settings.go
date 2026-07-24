@@ -23,14 +23,28 @@ type TimestampField struct {
 // hammers ClickHouse with every enabled alert's query every few seconds.
 const minAlertEvalIntervalSeconds = 60
 
+// Recall (archive search) knobs. Defaults live here and in pkg/archive
+// (settings.go), which reads the same keys directly from the settings table so
+// the workers stay decoupled from this package; keep the two in sync.
+const (
+	defaultRecallTimeoutSeconds = 900 // 15m -- archive scans over object storage are legitimately slow
+	minRecallTimeoutSeconds     = 30  // floor so a mistype cannot make every recall fail instantly
+	defaultRecallConcurrency    = 5
+	maxRecallConcurrency        = 16 // ceiling: the search worker pool is sized to this
+)
+
 // Settings holds all Bifract configuration
 type Settings struct {
 	TimestampFields          []TimestampField `json:"timestamp_fields"`
 	AlertTimeoutSeconds      int              `json:"alert_timeout_seconds"`
 	QueryTimeoutSeconds      int              `json:"query_timeout_seconds"`
 	AlertEvalIntervalSeconds int              `json:"alert_eval_interval_seconds"`
-	mu                       sync.RWMutex
-	pg                       *storage.PostgresClient
+	// Recall (archive search) knobs, live-editable from the admin settings page.
+	RecallTimeoutSeconds int   `json:"recall_timeout_seconds"` // per-search wall clock; >= minRecallTimeoutSeconds
+	RecallMaxBytesRead   int64 `json:"recall_max_bytes_read"`  // ClickHouse max_bytes_to_read guard; 0 = unlimited
+	RecallConcurrency    int   `json:"recall_concurrency"`     // max concurrent recall searches; 1..maxRecallConcurrency
+	mu                   sync.RWMutex
+	pg                   *storage.PostgresClient
 }
 
 // Global settings instance
@@ -51,6 +65,9 @@ func Init(pg *storage.PostgresClient) error {
 		AlertTimeoutSeconds:      5,  // 5s default for alert queries
 		QueryTimeoutSeconds:      60, // 60s default for search queries
 		AlertEvalIntervalSeconds: 60, // 60s default between alert engine ticks
+		RecallTimeoutSeconds:     defaultRecallTimeoutSeconds,
+		RecallMaxBytesRead:       0, // unlimited by default (admin opts into a cap)
+		RecallConcurrency:        defaultRecallConcurrency,
 		pg:                       pg,
 	}
 
@@ -90,7 +107,39 @@ func Init(pg *storage.PostgresClient) error {
 		}
 	}
 
+	// Load recall_timeout_seconds
+	if v, err := pg.GetSetting(ctx, "recall_timeout_seconds"); err == nil && v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= minRecallTimeoutSeconds {
+			globalSettings.RecallTimeoutSeconds = n
+		}
+	}
+
+	// Load recall_max_bytes_read (0 = unlimited)
+	if v, err := pg.GetSetting(ctx, "recall_max_bytes_read"); err == nil && v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			globalSettings.RecallMaxBytesRead = n
+		}
+	}
+
+	// Load recall_concurrency
+	if v, err := pg.GetSetting(ctx, "recall_concurrency"); err == nil && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			globalSettings.RecallConcurrency = clampRecallConcurrency(n)
+		}
+	}
+
 	return nil
+}
+
+// clampRecallConcurrency bounds the recall concurrency setting to [1, ceiling].
+func clampRecallConcurrency(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > maxRecallConcurrency {
+		return maxRecallConcurrency
+	}
+	return n
 }
 
 // Get returns a copy of the current settings
@@ -105,6 +154,9 @@ func Get() Settings {
 			AlertTimeoutSeconds:      5,
 			QueryTimeoutSeconds:      60,
 			AlertEvalIntervalSeconds: 60,
+			RecallTimeoutSeconds:     defaultRecallTimeoutSeconds,
+			RecallMaxBytesRead:       0,
+			RecallConcurrency:        defaultRecallConcurrency,
 		}
 	}
 	globalSettings.mu.RLock()
@@ -114,6 +166,9 @@ func Get() Settings {
 		AlertTimeoutSeconds:      globalSettings.AlertTimeoutSeconds,
 		QueryTimeoutSeconds:      globalSettings.QueryTimeoutSeconds,
 		AlertEvalIntervalSeconds: globalSettings.AlertEvalIntervalSeconds,
+		RecallTimeoutSeconds:     globalSettings.RecallTimeoutSeconds,
+		RecallMaxBytesRead:       globalSettings.RecallMaxBytesRead,
+		RecallConcurrency:        globalSettings.RecallConcurrency,
 	}
 }
 
@@ -126,6 +181,13 @@ func Update(s *Settings) error {
 	if s.AlertEvalIntervalSeconds < minAlertEvalIntervalSeconds {
 		return fmt.Errorf("alert_eval_interval_seconds must be at least %d", minAlertEvalIntervalSeconds)
 	}
+	if s.RecallTimeoutSeconds < minRecallTimeoutSeconds {
+		return fmt.Errorf("recall_timeout_seconds must be at least %d", minRecallTimeoutSeconds)
+	}
+	if s.RecallMaxBytesRead < 0 {
+		return fmt.Errorf("recall_max_bytes_read cannot be negative (0 = unlimited)")
+	}
+	s.RecallConcurrency = clampRecallConcurrency(s.RecallConcurrency)
 
 	globalSettings.mu.Lock()
 	defer globalSettings.mu.Unlock()
@@ -133,6 +195,9 @@ func Update(s *Settings) error {
 	globalSettings.AlertTimeoutSeconds = s.AlertTimeoutSeconds
 	globalSettings.QueryTimeoutSeconds = s.QueryTimeoutSeconds
 	globalSettings.AlertEvalIntervalSeconds = s.AlertEvalIntervalSeconds
+	globalSettings.RecallTimeoutSeconds = s.RecallTimeoutSeconds
+	globalSettings.RecallMaxBytesRead = s.RecallMaxBytesRead
+	globalSettings.RecallConcurrency = s.RecallConcurrency
 
 	// Persist to database
 	ctx := context.Background()
@@ -157,7 +222,18 @@ func Update(s *Settings) error {
 	}
 
 	// Save alert_eval_interval_seconds
-	return globalSettings.pg.SetSetting(ctx, "alert_eval_interval_seconds", fmt.Sprintf("%d", s.AlertEvalIntervalSeconds))
+	if err := globalSettings.pg.SetSetting(ctx, "alert_eval_interval_seconds", fmt.Sprintf("%d", s.AlertEvalIntervalSeconds)); err != nil {
+		return err
+	}
+
+	// Save recall knobs
+	if err := globalSettings.pg.SetSetting(ctx, "recall_timeout_seconds", fmt.Sprintf("%d", s.RecallTimeoutSeconds)); err != nil {
+		return err
+	}
+	if err := globalSettings.pg.SetSetting(ctx, "recall_max_bytes_read", fmt.Sprintf("%d", s.RecallMaxBytesRead)); err != nil {
+		return err
+	}
+	return globalSettings.pg.SetSetting(ctx, "recall_concurrency", fmt.Sprintf("%d", s.RecallConcurrency))
 }
 
 // Handler handles settings API requests
@@ -213,7 +289,11 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var settings Settings
+	// Decode onto the current settings, not a zero value, so a partial POST (the
+	// UI autosaves one control at a time) only changes the keys it sends and
+	// leaves every other setting -- timestamp fields, the other recall knobs --
+	// at its current value instead of resetting it.
+	settings := Get()
 	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 		respondJSON(w, http.StatusBadRequest, SettingsResponse{
 			Success: false,

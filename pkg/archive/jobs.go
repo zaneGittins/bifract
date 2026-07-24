@@ -51,21 +51,26 @@ func beginClaim(ctx context.Context, db *sql.DB, lockKey int64, table string, li
 	return tx, true, nil
 }
 
-// StartJobWorkers launches the recall and restore queue workers. Each queue gets
-// cfg.JobConcurrency independent loops so a single host process can saturate the
-// global cap; the cap itself is enforced in beginClaim, so running this in more
-// than one process (or scaling its replicas) does not raise concurrency.
+// StartJobWorkers launches the recall and restore queue workers. Restore gets
+// cfg.JobConcurrency loops (its cap); recall gets RecallWorkerPool loops, but its
+// live cap is the recall_concurrency setting enforced in beginClaim -- so an admin
+// can raise recall concurrency up to the pool size without a restart, and the
+// extra idle loops simply find no free claim slot. Enforcing the cap at claim
+// time means running this in more than one process (or scaling replicas) does not
+// raise concurrency.
 //
 // Workers are deliberately separate instances rather than goroutines sharing one:
 // each lazily builds its own catalog and ClickHouse client on first claim, which
 // would otherwise be a shared-state race.
 func StartJobWorkers(ctx context.Context, cfg Config, db *sql.DB) {
-	n := cfg.JobConcurrency
-	if n < 1 {
-		n = 1
+	restoreN := cfg.JobConcurrency
+	if restoreN < 1 {
+		restoreN = 1
 	}
-	for i := 0; i < n; i++ {
+	for i := 0; i < restoreN; i++ {
 		go NewRestoreWorker(cfg, db).Run(ctx)
+	}
+	for i := 0; i < RecallWorkerPool; i++ {
 		go NewSearchWorker(cfg, db).Run(ctx)
 	}
 }

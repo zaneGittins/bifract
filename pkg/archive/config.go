@@ -54,9 +54,10 @@ type Config struct {
 	// up (no data available).
 	PollInterval time.Duration
 
-	// RecallTimeout bounds a single Recall (archive search) query. On expiry the
-	// ClickHouse query is killed and the job is marked failed, freeing the user's
-	// in-flight slot. Configurable via BIFRACT_RECALL_TIMEOUT.
+	// RecallTimeout is the FALLBACK per-search timeout used only when the live
+	// recall_timeout_seconds admin setting is unset. On expiry the ClickHouse
+	// query is killed and the job is marked failed, freeing the user's in-flight
+	// slot. Seeded from BIFRACT_RECALL_TIMEOUT; the settings page is the live knob.
 	RecallTimeout time.Duration
 
 	// JobConcurrency caps how many recall (and, separately, restore) jobs run at
@@ -88,7 +89,7 @@ func ConfigFromEnv() (Config, error) {
 		RollBytes:     getInt64("BIFRACT_ARCHIVE_ROLL_BYTES", 256<<20),
 		RollInterval:  getDuration("BIFRACT_ARCHIVE_ROLL_INTERVAL", time.Hour),
 		PollInterval:  getDuration("BIFRACT_ARCHIVE_POLL_INTERVAL", 2*time.Second),
-		RecallTimeout: getDuration("BIFRACT_RECALL_TIMEOUT", 5*time.Minute),
+		RecallTimeout: getDuration("BIFRACT_RECALL_TIMEOUT", 15*time.Minute),
 
 		MaxPendingBytes: getInt64("BIFRACT_ARCHIVE_MAX_PENDING_BYTES", 1<<30),
 		JobConcurrency:  getIntEnv("BIFRACT_ARCHIVE_JOB_CONCURRENCY", 2),

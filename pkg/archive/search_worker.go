@@ -83,7 +83,7 @@ func (w *SearchWorker) Run(ctx context.Context) {
 			lastReap = now
 			w.reapStale(ctx)
 		}
-		job, ok, err := claimSearchJob(ctx, w.db, w.cfg.JobConcurrency)
+		job, ok, err := claimSearchJob(ctx, w.db, recallConcurrency(ctx, w.db))
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("[Recall] claim error: %v", err)
@@ -148,10 +148,17 @@ func (w *SearchWorker) execute(ctx context.Context, j searchJob) {
 		return
 	}
 
+	// The timeout is read live from the settings table at job start, so an admin
+	// change on the settings page applies to the next search with no restart. (The
+	// byte-scan ceiling is enforced as a pre-flight admission gate at submit time,
+	// not here: ClickHouse does not enforce max_bytes_to_read on iceberg table
+	// functions, so a mid-scan guard would be a silent no-op.)
+	timeout := recallTimeout(ctx, w.db, w.cfg.RecallTimeout)
+
 	jctx := ctx
 	var cancel context.CancelFunc
-	if w.cfg.RecallTimeout > 0 {
-		jctx, cancel = context.WithTimeout(ctx, w.cfg.RecallTimeout)
+	if timeout > 0 {
+		jctx, cancel = context.WithTimeout(ctx, timeout)
 	} else {
 		jctx, cancel = context.WithCancel(ctx)
 	}
@@ -194,7 +201,7 @@ func (w *SearchWorker) execute(ctx context.Context, j searchJob) {
 		}
 		if errors.Is(jctx.Err(), context.DeadlineExceeded) {
 			w.killQuery(queryID)
-			w.finishFailed(j.ID, fmt.Sprintf("search timed out after %s", w.cfg.RecallTimeout), res, stats)
+			w.finishFailed(j.ID, fmt.Sprintf("search timed out after %s", timeout), res, stats)
 			return
 		}
 		// Watcher-driven cancel: the row is already 'canceled' and the guarded

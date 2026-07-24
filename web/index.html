@@ -786,6 +786,56 @@
                                         </select>
                                     </div>
                                 </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="recallTimeoutSettings" class="sp-row-label">Recall search timeout</label>
+                                        <p class="sp-row-desc">Maximum runtime for an archive (Recall) search before it is cancelled. Archive scans over object storage are slower than the hot store.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="recallTimeoutSettings" class="setting-select">
+                                            <option value="300">5 minutes</option>
+                                            <option value="900">15 minutes</option>
+                                            <option value="1800">30 minutes</option>
+                                            <option value="3600">1 hour</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="recallMaxBytesSettings" class="sp-row-label">Recall scan limit</label>
+                                        <p class="sp-row-desc">Rejects a Recall search up front when its time window holds more than this much archived data, before it runs. Uses the same estimate shown under the search box. Keeps a broad search from scanning a huge window.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="recallMaxBytesSettings" class="setting-select">
+                                            <option value="0">Unlimited</option>
+                                            <option value="53687091200">50 GB</option>
+                                            <option value="214748364800">200 GB</option>
+                                            <option value="536870912000">500 GB</option>
+                                            <option value="1099511627776">1 TB</option>
+                                            <option value="2199023255552">2 TB</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="recallConcurrencySettings" class="sp-row-label">Concurrent Recall searches</label>
+                                        <p class="sp-row-desc">How many archive searches may run at once across the deployment. Each is handed to ClickHouse and reads object storage, so higher serves more analysts but competes for cluster resources.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="recallConcurrencySettings" class="setting-select">
+                                            <option value="1">1</option>
+                                            <option value="2">2</option>
+                                            <option value="3">3</option>
+                                            <option value="5">5</option>
+                                            <option value="8">8</option>
+                                            <option value="12">12</option>
+                                            <option value="16">16</option>
+                                        </select>
+                                    </div>
+                                </div>
                             </div>
                         </section>
 

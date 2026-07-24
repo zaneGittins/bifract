@@ -1751,6 +1751,22 @@ func main() {
 				if maxRows > 250 {
 					maxRows = 250
 				}
+				// Pre-flight scan ceiling: reject a window whose archived size exceeds
+				// the admin's recall scan limit before it ever runs. ClickHouse does
+				// not enforce max_bytes_to_read on iceberg table functions, so this
+				// admission gate is the real guard. It reuses the same manifest-only
+				// estimate the UI shows, so a rejection is exactly what the pre-flight
+				// box warned about. 0 = unlimited.
+				if limit := settings.Get().RecallMaxBytesRead; limit > 0 && recallEstimator != nil {
+					ectx, ecancel := context.WithTimeout(r.Context(), 20*time.Second)
+					est, eerr := recallEstimator.Estimate(ectx, fractalID, from, to)
+					ecancel()
+					if eerr == nil && est.Archived && est.Bytes > limit {
+						http.Error(w, fmt.Sprintf("This window holds about %s of archived data, above the %s recall scan limit. Narrow the time range or raise the limit in Settings.",
+							recallBytesHuman(est.Bytes), recallBytesHuman(limit)), http.StatusRequestEntityTooLarge)
+						return
+					}
+				}
 				// Result reuse: an identical search (same fractal, query, window, and
 				// at least the requested row cap) that already succeeded and whose
 				// results are still cached is returned as-is instead of re-scanning
@@ -2657,6 +2673,23 @@ func retentionConflicts(ctx context.Context, pg *storage.PostgresClient, fractal
 // mode against a placeholder table so parse errors and commands unsupported in
 // archive search are rejected at submit time rather than surfacing as a failed
 // job. Only translation validity is checked; no query runs.
+// recallBytesHuman renders a byte count for the recall scan-limit rejection
+// message (binary units, one decimal above KB).
+func recallBytesHuman(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	f := float64(n)
+	units := []string{"KB", "MB", "GB", "TB", "PB"}
+	i := -1
+	for f >= unit && i < len(units)-1 {
+		f /= unit
+		i++
+	}
+	return fmt.Sprintf("%.1f %s", f, units[i])
+}
+
 func validateRecallQuery(query string) error {
 	pipeline, err := parser.ParseQuery(query)
 	if err != nil {
@@ -2704,16 +2737,21 @@ func startArchiveJobWorkers() (func(), *archive.Estimator) {
 	}
 	// Sized to the peak these queues can demand: each in-flight job uses one
 	// connection for its own writes and one for its heartbeat goroutine, and a
-	// claim loop holds one while it waits on the claim lock. Undersizing starves
-	// heartbeats, which the stale reaper would eventually read as a dead worker
-	// and fail a healthy job.
-	maxConns := 2 * 2 * cfg.JobConcurrency
+	// claim loop holds one briefly while it waits on the claim lock. The recall
+	// pool is the larger of the two (RecallWorkerPool loops, gated live), so size
+	// against it plus the restore loops. Undersizing starves heartbeats, which the
+	// stale reaper would eventually read as a dead worker and fail a healthy job.
+	restoreN := cfg.JobConcurrency
+	if restoreN < 1 {
+		restoreN = 1
+	}
+	maxConns := 2*(archive.RecallWorkerPool+restoreN) + 4
 	db.SetMaxOpenConns(maxConns)
-	db.SetMaxIdleConns(2)
+	db.SetMaxIdleConns(4)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	archive.StartJobWorkers(ctx, cfg, db)
-	log.Printf("Archive job workers started (recall + restore, concurrency %d each)", cfg.JobConcurrency)
+	log.Printf("Archive job workers started (restore concurrency %d; recall pool %d, live cap via recall_concurrency setting)", restoreN, archive.RecallWorkerPool)
 	return func() {
 		cancel()
 		db.Close()

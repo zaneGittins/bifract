@@ -323,12 +323,32 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	var sql strings.Builder
 	sql.WriteString("SELECT ")
 	sql.WriteString(selectClause)
-	sql.WriteString(" FROM " + opts.EffectiveTableName())
 
-	// WHERE
-	if len(source.Layer.Where) > 0 {
-		sql.WriteString(" WHERE ")
-		sql.WriteString(strings.Join(source.Layer.Where, " AND "))
+	if opts.SourceMode == SourceIceberg {
+		// Collapse at-least-once archive duplicates before any aggregation or the
+		// row cap. The spool is replayed from its last checkpoint after a crash, so
+		// the same log_id can be committed to Iceberg twice; restore dedups the same
+		// way (LIMIT 1 BY log_id) and without this recall count()/sum()/frequency
+		// would over-report exactly those duplicates. The source WHERE stays INSIDE
+		// this subquery so partition pruning and the `_ice_` bloom/min-max predicates
+		// still reach the Parquet scan -- ClickHouse will not push predicates down
+		// through LIMIT BY, so pruning would be lost if the WHERE were applied around
+		// it. Duplicate rows are byte-identical, so filtering after the dedup keeps
+		// exactly the row a pre-dedup filter would have kept.
+		sql.WriteString(" FROM (SELECT * FROM " + opts.EffectiveTableName())
+		if len(source.Layer.Where) > 0 {
+			sql.WriteString(" WHERE ")
+			sql.WriteString(strings.Join(source.Layer.Where, " AND "))
+		}
+		sql.WriteString(" LIMIT 1 BY log_id)")
+	} else {
+		sql.WriteString(" FROM " + opts.EffectiveTableName())
+
+		// WHERE
+		if len(source.Layer.Where) > 0 {
+			sql.WriteString(" WHERE ")
+			sql.WriteString(strings.Join(source.Layer.Where, " AND "))
+		}
 	}
 
 	// GROUP BY

@@ -53,7 +53,8 @@ const SettingsView = {
         }
 
         // Set up system limits dropdowns
-        ['alertTimeoutSettings', 'queryTimeoutSettings', 'alertEvalIntervalSettings'].forEach(id => {
+        ['alertTimeoutSettings', 'queryTimeoutSettings', 'alertEvalIntervalSettings',
+         'recallTimeoutSettings', 'recallMaxBytesSettings', 'recallConcurrencySettings'].forEach(id => {
             const select = document.getElementById(id);
             if (select) select.addEventListener('change', () => this.saveSettings(select));
         });
@@ -581,6 +582,18 @@ const SettingsView = {
                 if (alertEvalIntervalSelect) {
                     alertEvalIntervalSelect.value = String(data.settings.alert_eval_interval_seconds || 60);
                 }
+                const recallTimeoutSelect = document.getElementById('recallTimeoutSettings');
+                if (recallTimeoutSelect) {
+                    recallTimeoutSelect.value = String(data.settings.recall_timeout_seconds || 900);
+                }
+                const recallMaxBytesSelect = document.getElementById('recallMaxBytesSettings');
+                if (recallMaxBytesSelect) {
+                    recallMaxBytesSelect.value = String(data.settings.recall_max_bytes_read ?? 0);
+                }
+                const recallConcurrencySelect = document.getElementById('recallConcurrencySettings');
+                if (recallConcurrencySelect) {
+                    recallConcurrencySelect.value = String(data.settings.recall_concurrency || 5);
+                }
             }
         } catch (error) {
             console.error('Failed to load settings:', error);
@@ -610,7 +623,10 @@ const SettingsView = {
                 body: JSON.stringify({
                     alert_timeout_seconds: parseInt(document.getElementById('alertTimeoutSettings')?.value || '5', 10),
                     query_timeout_seconds: parseInt(document.getElementById('queryTimeoutSettings')?.value || '60', 10),
-                    alert_eval_interval_seconds: parseInt(document.getElementById('alertEvalIntervalSettings')?.value || '60', 10)
+                    alert_eval_interval_seconds: parseInt(document.getElementById('alertEvalIntervalSettings')?.value || '60', 10),
+                    recall_timeout_seconds: parseInt(document.getElementById('recallTimeoutSettings')?.value || '900', 10),
+                    recall_max_bytes_read: parseInt(document.getElementById('recallMaxBytesSettings')?.value || '0', 10),
+                    recall_concurrency: parseInt(document.getElementById('recallConcurrencySettings')?.value || '5', 10)
                 })
             });
 
