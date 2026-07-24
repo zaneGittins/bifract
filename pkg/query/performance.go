@@ -516,10 +516,13 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 	// Disk usage
 	diskSQL := `SELECT
 		round((total_space - free_space) / total_space * 100, 1) as used_pct,
-		formatReadableSize(free_space) as free_space
+		formatReadableSize(free_space) as free_space_readable
 		FROM system.disks WHERE name = 'default' LIMIT 1`
 	if diskRows, err := h.db.Query(r.Context(), diskSQL); err == nil && len(diskRows) > 0 {
-		result["disk"] = diskRows[0]
+		result["disk"] = map[string]interface{}{
+			"used_pct":   diskRows[0]["used_pct"],
+			"free_space": diskRows[0]["free_space_readable"],
+		}
 	}
 
 	// CPU and memory history from persisted Postgres samples. Survives restarts
