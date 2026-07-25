@@ -17,6 +17,9 @@ func TestArchiveRendersK8s(t *testing.T) {
 		SpoolMaxBytes:  27487790694, // ~80% of 32Gi
 		BifractRes:     ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 		ArchiverRes:    ResourceProfile{"500m", "1", "512Mi", "1Gi"},
+		// The maintainer is sized separately from the app/archiver: it decodes
+		// Parquet, so it needs room the drain loop never does.
+		ArchiveMaintainRes: ResourceProfile{"500m", "2", "3Gi", "5Gi"},
 	}
 
 	// The app deployment renders cleanly and keeps the archive-backend display hint,
@@ -93,10 +96,17 @@ func TestArchiveRendersK8s(t *testing.T) {
 		`command: ["/bifract-archiver", "maintain-loop"]`,
 		"BIFRACT_ARCHIVE_MAINTAIN_INTERVAL",
 		"component: archive-maintain",
+		// Its own resource profile, not the app's. An empty or app-sized limit here
+		// is what OOMKilled the maintainer every hour, and a missing template field
+		// renders as empty rather than <no value>, so assert the value itself.
+		"memory: 5Gi",
 	} {
 		if !strings.Contains(maint, want) {
 			t.Errorf("rendered maintain deployment missing %q", want)
 		}
+	}
+	if strings.Contains(maint, "memory: 1Gi") {
+		t.Errorf("maintain deployment is using the app's memory limit, not its own")
 	}
 
 	// The recall/restore queues live in the always-on app tier: they only dispatch

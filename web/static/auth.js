@@ -219,10 +219,6 @@ const Auth = {
                 el.classList.remove('admin-only');
                 el.removeAttribute('style');
             });
-
-            if (window.UserManagement) {
-                window.UserManagement.loadUsers();
-            }
         }
 
         // Update fractal-role-based visibility

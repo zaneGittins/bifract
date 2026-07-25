@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
 
   clickhouse:
-    image: clickhouse/clickhouse-server:26.6.1.1193-alpine
+    image: clickhouse/clickhouse-server:26.6.2.81-alpine
     container_name: bifract-clickhouse
     volumes:
       - clickhouse-data:/var/lib/clickhouse
@@ -243,7 +243,7 @@ services:
     restart: unless-stopped
     entrypoint: ["/bifract-archiver"]
     command: ["maintain-loop"]
-    mem_limit: ${BIFRACT_ARCHIVE_MAINTAIN_MEM_LIMIT:-2g}
+    mem_limit: ${BIFRACT_ARCHIVE_MAINTAIN_MEM_LIMIT:-4g}
     cpus: ${BIFRACT_ARCHIVE_MAINTAIN_CPUS:-2}
     environment:
       POSTGRES_HOST: postgres

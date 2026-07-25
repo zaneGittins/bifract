@@ -263,6 +263,7 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 			ClickHouse:      fallbackProfile(settings.chResources, fb.ClickHouse),
 			CHKeeper:        fallbackProfile(settings.chKeeperResources, fb.CHKeeper),
 			Bifract:         fallbackProfile(settings.bifractResources, fb.Bifract),
+			ArchiveMaintain: fallbackProfile(settings.archiveMaintainResources, fb.ArchiveMaintain),
 			Postgres:        fallbackProfile(settings.postgresResources, fb.Postgres),
 			Caddy:           fallbackProfile(settings.caddyResources, fb.Caddy),
 			CaddyShipper:    fallbackProfile(settings.caddyShipperResources, fb.CaddyShipper),

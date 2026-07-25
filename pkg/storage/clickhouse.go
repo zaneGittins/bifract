@@ -60,6 +60,12 @@ type ClickHouseClient struct {
 	// MV reconcile) wait on this via WaitForSchemaReady before acting.
 	schemaReady     chan struct{}
 	schemaReadyOnce sync.Once
+
+	// searchWorkloadActive reports whether the interactive-search CPU workload is
+	// provisioned (see ReconcileQueryWorkload). Queries are tagged only while true,
+	// so a failed or disabled reconcile leaves searches unscheduled rather than
+	// naming a workload that does not exist.
+	searchWorkloadActive atomic.Bool
 }
 
 // markSchemaReady signals that Initialize's schema work is complete (idempotent).
@@ -1709,6 +1715,28 @@ func (c *ClickHouseClient) QueryProvenance(ctx context.Context, query string) ([
 }
 
 func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[string]interface{}, error) {
+	return c.query(ctx, query, nil)
+}
+
+// QueryUserSearch runs an interactive user search, tagged with the CPU workload when
+// ctx was marked by UserSearchContext and the workload is provisioned. The tag is
+// applied here rather than inside Query because clickhouse-go's WithSettings replaces
+// the context's settings map wholesale, which would drop the budgets that
+// QueryProvenance and QueryLowPriority put there.
+func (c *ClickHouseClient) QueryUserSearch(ctx context.Context, query string) ([]map[string]interface{}, error) {
+	return c.query(ctx, query, c.applyUserSearchWorkload(ctx, nil))
+}
+
+// QueryUserSearchWithID is QueryUserSearch with a fixed query_id for profiling.
+func (c *ClickHouseClient) QueryUserSearchWithID(ctx context.Context, queryID, query string) ([]map[string]interface{}, error) {
+	ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(queryID))
+	return c.query(ctx, query, c.applyUserSearchWorkload(ctx, nil))
+}
+
+func (c *ClickHouseClient) query(ctx context.Context, query string, settings clickhouse.Settings) ([]map[string]interface{}, error) {
+	if len(settings) > 0 {
+		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(settings))
+	}
 	rows, err := c.conn.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
@@ -1900,7 +1928,10 @@ func (c *ClickHouseClient) StreamQuery(ctx context.Context, queryID, query strin
 	// Raise max_query_size: a pgr() source subquery (scoring + inlined reconnection/diffused edges)
 	// is machine-generated and legitimately large, so the default 256KB parser ceiling would fail
 	// it with code 62. Bounded worst case, safe headroom, no effect on ordinary search SQL.
-	opts := []clickhouse.QueryOption{clickhouse.WithSettings(clickhouse.Settings{"max_query_size": maxGeneratedQuerySize})}
+	// Shared with model preview/scoring, so the workload tag rides the ctx marker
+	// rather than the call site, and merges into the settings built here.
+	streamSettings := c.applyUserSearchWorkload(ctx, clickhouse.Settings{"max_query_size": maxGeneratedQuerySize})
+	opts := []clickhouse.QueryOption{clickhouse.WithSettings(streamSettings)}
 	if onProgress != nil {
 		var readSoFar uint64
 		opts = append(opts, clickhouse.WithProgress(func(p *clickhouse.Progress) {

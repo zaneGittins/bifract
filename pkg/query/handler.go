@@ -1024,12 +1024,14 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	queryStart := time.Now()
 
 	queryTimeoutSec := settings.Get().QueryTimeoutSeconds
+	// Marked as a user search so the CPU workload cap applies (see ReconcileQueryWorkload).
+	searchCtx := storage.UserSearchContext(r.Context())
 	var queryCtx context.Context
 	var cancel context.CancelFunc
 	if queryTimeoutSec > 0 {
-		queryCtx, cancel = context.WithTimeout(r.Context(), time.Duration(queryTimeoutSec)*time.Second)
+		queryCtx, cancel = context.WithTimeout(searchCtx, time.Duration(queryTimeoutSec)*time.Second)
 	} else {
-		queryCtx, cancel = context.WithCancel(r.Context())
+		queryCtx, cancel = context.WithCancel(searchCtx)
 	}
 	defer cancel()
 
@@ -1054,16 +1056,16 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		var raw []map[string]interface{}
 		var qErr error
 		if profileQueryID != "" {
-			raw, qErr = h.db.QueryWithID(queryCtx, profileQueryID, sql)
+			raw, qErr = h.db.QueryUserSearchWithID(queryCtx, profileQueryID, sql)
 		} else {
-			raw, qErr = h.db.Query(queryCtx, sql)
+			raw, qErr = h.db.QueryUserSearch(queryCtx, sql)
 		}
 		mainCh <- mainResult{rows: raw, err: qErr}
 	}()
 
 	if needsHistogram {
 		go func() {
-			raw, qErr := h.db.Query(histCtx, histogramSQL)
+			raw, qErr := h.db.QueryUserSearch(histCtx, histogramSQL)
 			histCh <- histResult{rows: raw, err: qErr}
 		}()
 	}
@@ -1363,12 +1365,14 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	}
 
 	queryTimeoutSec := settings.Get().QueryTimeoutSeconds
+	// Marked as a user search so the CPU workload cap applies (see ReconcileQueryWorkload).
+	searchCtx := storage.UserSearchContext(r.Context())
 	var queryCtx context.Context
 	var cancel context.CancelFunc
 	if queryTimeoutSec > 0 {
-		queryCtx, cancel = context.WithTimeout(r.Context(), time.Duration(queryTimeoutSec)*time.Second)
+		queryCtx, cancel = context.WithTimeout(searchCtx, time.Duration(queryTimeoutSec)*time.Second)
 	} else {
-		queryCtx, cancel = context.WithCancel(r.Context())
+		queryCtx, cancel = context.WithCancel(searchCtx)
 	}
 	defer cancel()
 
@@ -1377,7 +1381,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	histCh := make(chan []int, 1)
 	if prep.needsHistogram {
 		go func() {
-			rows, err := h.db.Query(queryCtx, prep.histogramSQL)
+			rows, err := h.db.QueryUserSearch(queryCtx, prep.histogramSQL)
 			if err != nil {
 				log.Printf("[QueryHandler] Streaming histogram failed (non-critical): %v", err)
 				histCh <- nil
@@ -1637,7 +1641,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			}
 		}
 	} else {
-		rows, qErr := h.db.Query(queryCtx, prep.sql)
+		rows, qErr := h.db.QueryUserSearch(queryCtx, prep.sql)
 		if qErr != nil {
 			if r.Context().Err() != nil {
 				return

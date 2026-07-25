@@ -101,7 +101,7 @@ func TestRetentionPolicyExpired(t *testing.T) {
 // everything.
 func TestApplyRetentionIgnoresNonPositiveWindow(t *testing.T) {
 	for _, days := range []int{0, -1} {
-		res, err := applyRetention(t.Context(), nil, nil, days)
+		res, err := applyRetention(t.Context(), nil, nil, days, 1)
 		if err != nil {
 			t.Fatalf("days=%d: unexpected error: %v", days, err)
 		}

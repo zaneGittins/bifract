@@ -52,8 +52,8 @@
     --chart-text-secondary: #b8bcc8;
     --chart-bg: #1a1a2e;
     --chart-border: #24243e;
-    --chart-grid: #24243e;
-    --chart-grid-half: rgba(36, 36, 62, 0.5);
+    /* Grid is a low-alpha ink, not a border: stays proportional to the surface it draws on */
+    --chart-grid: rgba(255, 255, 255, 0.05);
     --chart-accent: #9c6ade;
     --chart-accent-dark: #8b5fbf;
 
@@ -141,8 +141,7 @@
     --chart-text-secondary: #3d3730;
     --chart-bg: #f0ece6;
     --chart-border: #d6cfc6;
-    --chart-grid: #d6cfc6;
-    --chart-grid-half: rgba(214, 207, 198, 0.5);
+    --chart-grid: rgba(26, 22, 18, 0.06);
     --chart-accent: #2563b5;
     --chart-accent-dark: #1d4f91;
 

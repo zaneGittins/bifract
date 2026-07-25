@@ -851,10 +851,7 @@ const App = {
         }
 
         // Close editor views when switching tabs
-        const alertEditorView = document.getElementById('alertEditorView');
-        if (alertEditorView) {
-            alertEditorView.style.display = 'none';
-        }
+        if (window.Alerts) Alerts.closeAlertEditor();
         const actionsManageView = document.getElementById('actionsManageView');
         if (actionsManageView) {
             actionsManageView.style.display = 'none';
@@ -1050,12 +1047,12 @@ const App = {
             Alerts.stopPressurePolling();
         }
 
-        // Close alert editor and actions manage views when switching away from alerts tab
+        // The nav tabs are the only way out of the alert editor, so tear it down on
+        // every switch, including back into the alerts tab itself.
+        if (window.Alerts) Alerts.closeAlertEditor();
+
+        // Close the actions manage view when switching away from alerts tab
         if (tab !== 'alerts') {
-            const alertEditorView = document.getElementById('alertEditorView');
-            if (alertEditorView) {
-                alertEditorView.style.display = 'none';
-            }
             const actionsManageView = document.getElementById('actionsManageView');
             if (actionsManageView) {
                 actionsManageView.style.display = 'none';

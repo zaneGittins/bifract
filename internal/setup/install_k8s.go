@@ -29,12 +29,21 @@ type ResourceProfile struct {
 // ClickHouse runs a single replica per shard; durability and disaster recovery
 // are handled by the Apache Iceberg archive, not ClickHouse replication.
 type SizeProfile struct {
-	Name            string
-	Description     string
-	CHShards        int
-	ClickHouse      ResourceProfile
-	CHKeeper        ResourceProfile
-	Bifract         ResourceProfile
+	Name        string
+	Description string
+	CHShards    int
+	ClickHouse  ResourceProfile
+	CHKeeper    ResourceProfile
+	Bifract     ResourceProfile
+	// ArchiveMaintain sizes the archive-maintain Deployment. It is deliberately
+	// NOT the Bifract profile: compaction decodes whole Parquet row groups into
+	// Arrow, and zstd-compressed log text expands several-fold on the way, so its
+	// memory shape has nothing in common with the app's. Borrowing Bifract gave
+	// the maintainer 1Gi on Dev, well under one compaction worker's working set,
+	// which is an OOMKill on the first pass that finds real work. Memory here is
+	// also what MaintainScanConcurrency divides to pick its parallelism, so these
+	// limits set compaction throughput as well as its ceiling.
+	ArchiveMaintain ResourceProfile
 	Postgres        ResourceProfile
 	Caddy           ResourceProfile
 	CaddyShipper    ResourceProfile
@@ -78,6 +87,7 @@ var sizeProfiles = []SizeProfile{
 		ClickHouse:                ResourceProfile{"2", "3", "4Gi", "5Gi"},
 		CHKeeper:                  ResourceProfile{"250m", "500m", "256Mi", "512Mi"},
 		Bifract:                   ResourceProfile{"500m", "1", "512Mi", "1Gi"},
+		ArchiveMaintain:           ResourceProfile{"250m", "2", "2Gi", "4Gi"},
 		Postgres:                  ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 		Caddy:                     ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
@@ -94,6 +104,7 @@ var sizeProfiles = []SizeProfile{
 		ClickHouse:                ResourceProfile{"6", "8", "8Gi", "12Gi"},
 		CHKeeper:                  ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		Bifract:                   ResourceProfile{"500m", "2", "512Mi", "2Gi"},
+		ArchiveMaintain:           ResourceProfile{"250m", "2", "2Gi", "4Gi"},
 		Postgres:                  ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 		Caddy:                     ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
@@ -110,6 +121,7 @@ var sizeProfiles = []SizeProfile{
 		ClickHouse:                ResourceProfile{"10", "12", "12Gi", "24Gi"},
 		CHKeeper:                  ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		Bifract:                   ResourceProfile{"1", "2", "1Gi", "2Gi"},
+		ArchiveMaintain:           ResourceProfile{"500m", "2", "3Gi", "5Gi"},
 		Postgres:                  ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		Caddy:                     ResourceProfile{"200m", "1", "256Mi", "512Mi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
@@ -126,6 +138,7 @@ var sizeProfiles = []SizeProfile{
 		ClickHouse:                ResourceProfile{"12", "20", "20Gi", "40Gi"},
 		CHKeeper:                  ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		Bifract:                   ResourceProfile{"1", "4", "1Gi", "4Gi"},
+		ArchiveMaintain:           ResourceProfile{"500m", "3", "4Gi", "6Gi"},
 		Postgres:                  ResourceProfile{"500m", "2", "1Gi", "4Gi"},
 		Caddy:                     ResourceProfile{"250m", "1", "256Mi", "1Gi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
@@ -142,6 +155,7 @@ var sizeProfiles = []SizeProfile{
 		ClickHouse:                ResourceProfile{"16", "28", "28Gi", "56Gi"},
 		CHKeeper:                  ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		Bifract:                   ResourceProfile{"2", "4", "2Gi", "8Gi"},
+		ArchiveMaintain:           ResourceProfile{"1", "4", "6Gi", "8Gi"},
 		Postgres:                  ResourceProfile{"1", "4", "2Gi", "8Gi"},
 		Caddy:                     ResourceProfile{"500m", "2", "512Mi", "1Gi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
@@ -158,6 +172,7 @@ var sizeProfiles = []SizeProfile{
 		ClickHouse:                ResourceProfile{"16", "28", "28Gi", "56Gi"},
 		CHKeeper:                  ResourceProfile{"1", "2", "2Gi", "4Gi"},
 		Bifract:                   ResourceProfile{"4", "8", "4Gi", "16Gi"},
+		ArchiveMaintain:           ResourceProfile{"1", "6", "8Gi", "12Gi"},
 		Postgres:                  ResourceProfile{"2", "4", "4Gi", "16Gi"},
 		Caddy:                     ResourceProfile{"1", "4", "1Gi", "2Gi"},
 		CaddyShipper:              ResourceProfile{"10m", "200m", "32Mi", "128Mi"},
@@ -858,14 +873,17 @@ type k8sTemplateData struct {
 	MTLSCAKey                string
 
 	// Resource profiles
-	CH           ResourceProfile
-	CHKeeper     ResourceProfile
-	BifractRes   ResourceProfile
-	ArchiverRes  ResourceProfile
-	PostgresRes  ResourceProfile
-	CaddyRes     ResourceProfile
-	CaddyShipper ResourceProfile
-	LiteLLMRes   ResourceProfile
+	CH         ResourceProfile
+	CHKeeper   ResourceProfile
+	BifractRes ResourceProfile
+	// ArchiverRes sizes the archiver drain-loop sidecar; ArchiveMaintainRes sizes
+	// the compaction Deployment. Split because only the latter decodes Parquet.
+	ArchiverRes        ResourceProfile
+	ArchiveMaintainRes ResourceProfile
+	PostgresRes        ResourceProfile
+	CaddyRes           ResourceProfile
+	CaddyShipper       ResourceProfile
+	LiteLLMRes         ResourceProfile
 
 	// User-configured secrets (preserved during upgrades, empty on fresh install)
 	UserSecrets map[string]string
@@ -1043,11 +1061,12 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		BifractRes:                   cfg.SizeProfile.Bifract,
 		// The archive sidecar/maintenance mirrors the server's per-tier profile
 		// (comparable memory for Arrow/Iceberg roll buffers; adjust per deployment).
-		ArchiverRes:  cfg.SizeProfile.Bifract,
-		PostgresRes:  cfg.SizeProfile.Postgres,
-		CaddyRes:     cfg.SizeProfile.Caddy,
-		CaddyShipper: cfg.SizeProfile.CaddyShipper,
-		LiteLLMRes:   cfg.SizeProfile.LiteLLM,
+		ArchiverRes:        cfg.SizeProfile.Bifract,
+		ArchiveMaintainRes: cfg.SizeProfile.ArchiveMaintain,
+		PostgresRes:        cfg.SizeProfile.Postgres,
+		CaddyRes:           cfg.SizeProfile.Caddy,
+		CaddyShipper:       cfg.SizeProfile.CaddyShipper,
+		LiteLLMRes:         cfg.SizeProfile.LiteLLM,
 	}
 
 	for _, m := range k8sManifests {

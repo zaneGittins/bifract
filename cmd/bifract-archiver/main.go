@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -152,6 +153,32 @@ const defaultMaintainInterval = time.Hour
 // poll is negligible load on Postgres.
 const maintainPollInterval = 10 * time.Second
 
+// defaultMaintainPassTimeout bounds a single pass so a wedged object-store call
+// cannot hold the singleton lock and block every later pass indefinitely. The
+// loop blocks in runMaintainOnce for the whole pass, so an unbounded hang stops
+// maintenance permanently rather than just skipping a run. Sized just under the
+// hourly cadence: a pass that has not finished within it is not going to.
+// Override with BIFRACT_ARCHIVE_MAINTAIN_PASS_TIMEOUT, but keep it under the
+// server's maintainStaleAfter (100m): past that the admin panel ages a
+// still-running pass out as "Interrupted". Cosmetic only -- the advisory lock
+// still serializes passes -- but misleading.
+const defaultMaintainPassTimeout = 55 * time.Minute
+
+// maintainPassTimeout reads the per-pass bound. Non-positive disables it, for
+// an operator deliberately running an enormous catch-up pass by hand.
+func maintainPassTimeout() time.Duration {
+	raw := os.Getenv("BIFRACT_ARCHIVE_MAINTAIN_PASS_TIMEOUT")
+	if raw == "" {
+		return defaultMaintainPassTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Printf("maintain: invalid BIFRACT_ARCHIVE_MAINTAIN_PASS_TIMEOUT %q: %v; using %s", raw, err, defaultMaintainPassTimeout)
+		return defaultMaintainPassTimeout
+	}
+	return d
+}
+
 // maintainCmd runs a single compaction + snapshot-expiry pass, then exits. It
 // remains for manual/ad-hoc invocation (`bifract-archiver maintain`) and is a
 // singleton via the advisory lock in runMaintainOnce. Exits non-zero on a
@@ -201,6 +228,12 @@ func maintainLoopCmd() {
 	defer stop()
 
 	log.Printf("maintain-loop: scheduled every %s, checking for run-now every %s", interval, maintainPollInterval)
+
+	// A killed pass leaves the status row claiming 'running'. Reconciling at
+	// startup surfaces it within seconds of the restart instead of at the next
+	// scheduled pass, which is the difference between noticing an OOMKill loop
+	// and watching it run all night behind a green "Running now".
+	reconcileInterruptedPass(ctx, db)
 
 	// Scheduled cadence is tracked in-process, seeded to now: a fresh start (or a
 	// restart / rolling update) waits a full interval before the first scheduled
@@ -277,25 +310,63 @@ func maintainLoopInterval() time.Duration {
 // that never touched Postgres would be indistinguishable from a healthy one.
 // Returns an error only for a genuine pass failure (the caller decides whether
 // to exit or continue); a disabled/locked skip returns nil after writing status.
-func runMaintainOnce(ctx context.Context, cfg archive.Config, db *sql.DB) error {
+func runMaintainOnce(parent context.Context, cfg archive.Config, db *sql.DB) error {
 	if !maintainEnabled(cfg) {
 		log.Println("maintain: archiving disabled; nothing to do")
-		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeSkippedDisabled, nil)
+		_ = archive.WriteMaintainOutcome(parent, db, archive.MaintainOutcomeSkippedDisabled, nil)
 		return nil
 	}
 	archive.ApplyBackendEnv(cfg.Obj)
 
+	// The advisory lock is session-scoped, so it must be taken and released on one
+	// pinned connection. Taken from the pool it can be unlocked on a different
+	// connection than it was locked on, which fails and leaks the lock for that
+	// connection's lifetime -- every later pass then skips as "locked" forever.
+	conn, err := db.Conn(parent)
+	if err != nil {
+		_ = archive.WriteMaintainOutcome(parent, db, archive.MaintainOutcomeError, err)
+		return fmt.Errorf("advisory lock connection: %w", err)
+	}
+	defer conn.Close()
+
 	var locked bool
-	if err := db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", int64(maintainAdvisoryLock)).Scan(&locked); err != nil {
-		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
+	if err := conn.QueryRowContext(parent, "SELECT pg_try_advisory_lock($1)", int64(maintainAdvisoryLock)).Scan(&locked); err != nil {
+		_ = archive.WriteMaintainOutcome(parent, db, archive.MaintainOutcomeError, err)
 		return fmt.Errorf("advisory lock: %w", err)
 	}
 	if !locked {
 		log.Println("maintain: another maintenance pass is running; skipping")
-		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeSkippedLocked, nil)
+		_ = archive.WriteMaintainOutcome(parent, db, archive.MaintainOutcomeSkippedLocked, nil)
 		return nil
 	}
-	defer db.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", int64(maintainAdvisoryLock))
+	// WithoutCancel so shutdown and pass timeout still release the lock. A failure
+	// here returns the connection to the pool still holding a session-scoped lock,
+	// which would make every later pass skip as "locked" with no other symptom, so
+	// it is logged rather than discarded.
+	defer func() {
+		if _, err := conn.ExecContext(context.WithoutCancel(parent),
+			"SELECT pg_advisory_unlock($1)", int64(maintainAdvisoryLock)); err != nil {
+			log.Printf("maintain: failed to release the advisory lock: %v", err)
+		}
+	}()
+
+	// Holding the lock proves no pass is in flight, so a row still marked running
+	// belongs to a pass that was killed before it could record anything.
+	if found, err := archive.ReconcileInterruptedMaintain(parent, db,
+		"pass was killed before it could record an outcome (OOMKill, eviction, or restart)"); err != nil {
+		log.Printf("maintain: reconcile interrupted pass: %v", err)
+	} else if found {
+		log.Println("maintain: previous pass did not finish; recorded as interrupted")
+	}
+
+	// Bound the pass. The loop blocks here for its whole duration, so an
+	// unbounded hang inside object storage stops maintenance permanently.
+	ctx := parent
+	if timeout := maintainPassTimeout(); timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(parent, timeout)
+		defer cancel()
+	}
 
 	// Stamp an in-progress marker so the admin UI can show a live "running" state
 	// for the duration of the pass (catalog open + compaction), between here and
@@ -304,7 +375,7 @@ func runMaintainOnce(ctx context.Context, cfg archive.Config, db *sql.DB) error 
 
 	cat, err := archive.NewCatalog(ctx, "bifract", cfg.PGDSN, cfg.Obj)
 	if err != nil {
-		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
+		_ = archive.WriteMaintainOutcome(parent, db, maintainFailureOutcome(ctx, err), err)
 		return fmt.Errorf("open catalog: %w", err)
 	}
 	opts := archive.MaintainOptionsFromEnv()
@@ -334,15 +405,17 @@ func runMaintainOnce(ctx context.Context, cfg archive.Config, db *sql.DB) error 
 	log.Println("maintain: compaction + retention + snapshot expiry ...")
 	stats, err := cat.Maintain(ctx, opts)
 	if err != nil {
-		_ = archive.WriteMaintainOutcome(ctx, db, archive.MaintainOutcomeError, err)
+		// parent, not ctx: on a timeout ctx is already cancelled, and the whole
+		// point of the outcome write is to record that fact.
+		_ = archive.WriteMaintainOutcome(parent, db, maintainFailureOutcome(ctx, err), err)
 		return fmt.Errorf("maintain: %w", err)
 	}
-	if err := archive.WriteMaintainStatus(ctx, db, stats); err != nil {
+	if err := archive.WriteMaintainStatus(parent, db, stats); err != nil {
 		log.Printf("maintain: failed to write status: %v", err)
 	}
 	// The pass just loaded every table, so this is the cheapest place in the
 	// system to learn the archive's size. The drain loop no longer computes it.
-	if err := archive.WriteFootprint(ctx, db, stats.Tables, stats.FootprintBytes, stats.FootprintRecords); err != nil {
+	if err := archive.WriteFootprint(parent, db, stats.Tables, stats.FootprintBytes, stats.FootprintRecords); err != nil {
 		log.Printf("maintain: failed to write footprint: %v", err)
 	}
 	// Completeness sweep rides the same singleton so the ClickHouse counts run
@@ -350,6 +423,48 @@ func runMaintainOnce(ctx context.Context, cfg archive.Config, db *sql.DB) error 
 	// compaction already succeeded and must not be reported as a failed pass.
 	runCompletenessSweep(ctx, cfg, cat, opts.Retention)
 	return nil
+}
+
+// reconcileInterruptedPass records a previous pass that died without writing an
+// outcome. It takes the maintain advisory lock first: acquiring it proves no
+// pass is actually running, so a lingering 'running' marker is residue rather
+// than a live pass. Entirely best-effort -- failing to claim the lock just means
+// another maintainer is mid-pass, which is the normal case during a rolling
+// update, and the next pass reconciles anyway.
+func reconcileInterruptedPass(ctx context.Context, db *sql.DB) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	var locked bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", int64(maintainAdvisoryLock)).Scan(&locked); err != nil || !locked {
+		return
+	}
+	defer func() {
+		if _, err := conn.ExecContext(context.WithoutCancel(ctx),
+			"SELECT pg_advisory_unlock($1)", int64(maintainAdvisoryLock)); err != nil {
+			log.Printf("maintain-loop: failed to release the advisory lock: %v", err)
+		}
+	}()
+
+	if found, err := archive.ReconcileInterruptedMaintain(ctx, db,
+		"pass was killed before it could record an outcome (OOMKill, eviction, or restart)"); err != nil {
+		log.Printf("maintain-loop: reconcile interrupted pass: %v", err)
+	} else if found {
+		log.Println("maintain-loop: previous pass did not finish; recorded as interrupted")
+	}
+}
+
+// maintainFailureOutcome classifies a failed pass: a pass context that expired
+// on its own deadline is a timeout, anything else is an ordinary error. A
+// cancelled parent (shutdown) is not a deadline, so it stays an error.
+func maintainFailureOutcome(ctx context.Context, err error) archive.MaintainOutcome {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return archive.MaintainOutcomeTimeout
+	}
+	return archive.MaintainOutcomeError
 }
 
 // runCompletenessSweep compares hot-store and archive row counts for recent

@@ -20,6 +20,10 @@ func clickhouseUserMessage(err error) (string, bool) {
 	switch chErr.Code {
 	case 241: // MEMORY_LIMIT_EXCEEDED
 		return "Query exceeded memory limits. Narrow the time range or add more specific filters.", true
+	case 776, 777: // RESOURCE_LIMIT_EXCEEDED, MEMORY_RESERVATION_KILLED
+		// The search workload's memory share was exhausted, so ClickHouse cancelled the
+		// largest search rather than letting the server run out of memory.
+		return "Search exceeded the memory share reserved for searches. Narrow the time range, add filters, or retry when fewer searches are running.", true
 	case 159, 160: // TIMEOUT_EXCEEDED, TOO_SLOW
 		return "Query timed out. Add more specific filters or reduce the time range.", true
 	case 158, 396: // TOO_MANY_ROWS, TOO_MANY_ROWS_OR_BYTES

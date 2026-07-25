@@ -78,7 +78,7 @@ type retentionResult struct {
 // The bytes are not freed here. The delete leaves the files referenced by older
 // snapshots; ExpireSnapshots reclaims them once those snapshots age out, so the
 // effective storage lag is roughly the retention window plus ExpireOlderThan.
-func applyRetention(ctx context.Context, c *Catalog, ident icetable.Identifier, days int) (retentionResult, error) {
+func applyRetention(ctx context.Context, c *Catalog, ident icetable.Identifier, days int, concurrency int) (retentionResult, error) {
 	var res retentionResult
 	if days <= 0 {
 		return res, nil
@@ -115,7 +115,7 @@ func applyRetention(ctx context.Context, c *Catalog, ident icetable.Identifier, 
 	}
 
 	tx := tbl.NewTransaction()
-	if err := tx.Delete(ctx, filter, nil, icetable.WithDeleteConcurrency(maintainScanConcurrency)); err != nil {
+	if err := tx.Delete(ctx, filter, nil, icetable.WithDeleteConcurrency(concurrency)); err != nil {
 		return res, fmt.Errorf("delete partitions older than %s: %w", cutoff.Format("2006-01-02"), err)
 	}
 	if _, err := tx.Commit(ctx); err != nil {

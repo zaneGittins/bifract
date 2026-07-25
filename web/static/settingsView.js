@@ -53,7 +53,7 @@ const SettingsView = {
         }
 
         // Set up system limits dropdowns
-        ['alertTimeoutSettings', 'queryTimeoutSettings', 'alertEvalIntervalSettings',
+        ['alertTimeoutSettings', 'queryTimeoutSettings', 'queryCPUPercentSettings', 'queryMemoryPercentSettings', 'alertEvalIntervalSettings',
          'recallTimeoutSettings', 'recallMaxBytesSettings', 'recallConcurrencySettings'].forEach(id => {
             const select = document.getElementById(id);
             if (select) select.addEventListener('change', () => this.saveSettings(select));
@@ -547,30 +547,34 @@ const SettingsView = {
 
         this.isActive = true;
 
-        // Load data
-        await this.loadSettings();
-        await this.loadArchiveToggle();
-        await this.loadEndpointAnalysisToggle();
-        await this.loadSharedLinksToggle();
-        await this.loadMTLSStatus();
-        await this.loadUsers();
-
-        // Load groups if available
-        const groupsLoad = window.GroupsView ? GroupsView.loadGroups() : null;
-
         // subPath is "<subTab>" or "<subTab>/<groupId>" (groups detail deep-link).
-        if (subPath) {
-            const slash = subPath.indexOf('/');
-            const subTab = slash === -1 ? subPath : subPath.slice(0, slash);
-            const detailId = slash === -1 ? '' : subPath.slice(slash + 1);
-            this.switchSubTab(subTab, true);
-            if (subTab === 'context' && detailId && window.ContextLinks) {
-                ContextLinks.show(detailId);
-            }
-            if (subTab === 'groups' && detailId && window.GroupsView) {
-                if (groupsLoad) await groupsLoad;
-                GroupsView.openDetail(detailId, true);
-            }
+        const slash = subPath.indexOf('/');
+        const subTab = slash === -1 ? subPath : subPath.slice(0, slash);
+        const detailId = slash === -1 ? '' : subPath.slice(slash + 1);
+
+        // Reveal the requested panel before loading, so a deep link shows its own
+        // sub-tab immediately instead of the default one until every fetch lands.
+        if (subTab) this.switchSubTab(subTab, true);
+
+        // These loads are independent, so awaiting them in sequence would make the
+        // page cost the sum of every round trip. Each has its own error handling,
+        // so none of them can reject and abort the batch.
+        const groupsLoad = window.GroupsView ? GroupsView.loadGroups() : null;
+        await Promise.all([
+            this.loadSettings(),
+            this.loadArchiveToggle(),
+            this.loadEndpointAnalysisToggle(),
+            this.loadSharedLinksToggle(),
+            this.loadMTLSStatus(),
+            this.loadUsers(),
+        ]);
+
+        if (subTab === 'context' && detailId && window.ContextLinks) {
+            ContextLinks.show(detailId);
+        }
+        if (subTab === 'groups' && detailId && window.GroupsView) {
+            if (groupsLoad) await groupsLoad;
+            GroupsView.openDetail(detailId, true);
         }
     },
 
@@ -597,6 +601,14 @@ const SettingsView = {
                 const queryTimeoutSelect = document.getElementById('queryTimeoutSettings');
                 if (queryTimeoutSelect) {
                     queryTimeoutSelect.value = String(data.settings.query_timeout_seconds ?? 60);
+                }
+                const queryCPUPercentSelect = document.getElementById('queryCPUPercentSettings');
+                if (queryCPUPercentSelect) {
+                    queryCPUPercentSelect.value = String(data.settings.query_cpu_percent ?? 50);
+                }
+                const queryMemoryPercentSelect = document.getElementById('queryMemoryPercentSettings');
+                if (queryMemoryPercentSelect) {
+                    queryMemoryPercentSelect.value = String(data.settings.query_memory_percent ?? 50);
                 }
                 const alertEvalIntervalSelect = document.getElementById('alertEvalIntervalSettings');
                 if (alertEvalIntervalSelect) {
@@ -643,6 +655,8 @@ const SettingsView = {
                 body: JSON.stringify({
                     alert_timeout_seconds: parseInt(document.getElementById('alertTimeoutSettings')?.value || '5', 10),
                     query_timeout_seconds: parseInt(document.getElementById('queryTimeoutSettings')?.value || '60', 10),
+                    query_cpu_percent: parseInt(document.getElementById('queryCPUPercentSettings')?.value || '50', 10),
+                    query_memory_percent: parseInt(document.getElementById('queryMemoryPercentSettings')?.value || '50', 10),
                     alert_eval_interval_seconds: parseInt(document.getElementById('alertEvalIntervalSettings')?.value || '60', 10),
                     recall_timeout_seconds: parseInt(document.getElementById('recallTimeoutSettings')?.value || '900', 10),
                     recall_max_bytes_read: parseInt(document.getElementById('recallMaxBytesSettings')?.value || '0', 10),

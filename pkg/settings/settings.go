@@ -43,8 +43,25 @@ type Settings struct {
 	RecallTimeoutSeconds int   `json:"recall_timeout_seconds"` // per-search wall clock; >= minRecallTimeoutSeconds
 	RecallMaxBytesRead   int64 `json:"recall_max_bytes_read"`  // ClickHouse max_bytes_to_read guard; 0 = unlimited
 	RecallConcurrency    int   `json:"recall_concurrency"`     // max concurrent recall searches; 1..maxRecallConcurrency
-	mu                   sync.RWMutex
-	pg                   *storage.PostgresClient
+	// QueryCPUPercent is the share of each ClickHouse node's cores interactive user
+	// searches may use, so one expensive search cannot starve ingestion. 0 = uncapped.
+	QueryCPUPercent int `json:"query_cpu_percent"`
+	// QueryMemoryPercent is the share of each ClickHouse node's memory budget that
+	// running searches may reserve in total. 0 = uncapped.
+	QueryMemoryPercent int `json:"query_memory_percent"`
+	mu                 sync.RWMutex
+	pg                 *storage.PostgresClient
+}
+
+// queryLimitsApplier applies changed search resource shares to ClickHouse (CREATE OR
+// REPLACE WORKLOAD). Registered by the server at startup; nil in tools that only read
+// settings, where the DDL has no meaning.
+var queryLimitsApplier func(cpuPercent, memPercent int) error
+
+// RegisterQueryLimitsApplier wires the ClickHouse-side reconcile invoked when an admin
+// changes a search resource share, so it takes effect without a restart.
+func RegisterQueryLimitsApplier(fn func(cpuPercent, memPercent int) error) {
+	queryLimitsApplier = fn
 }
 
 // Global settings instance
@@ -68,6 +85,8 @@ func Init(pg *storage.PostgresClient) error {
 		RecallTimeoutSeconds:     defaultRecallTimeoutSeconds,
 		RecallMaxBytesRead:       0, // unlimited by default (admin opts into a cap)
 		RecallConcurrency:        defaultRecallConcurrency,
+		QueryCPUPercent:          storage.DefaultQueryCPUPercent,
+		QueryMemoryPercent:       storage.DefaultQueryMemoryPercent,
 		pg:                       pg,
 	}
 
@@ -128,6 +147,20 @@ func Init(pg *storage.PostgresClient) error {
 		}
 	}
 
+	// Load query_cpu_percent (0 = uncapped)
+	if v, err := pg.GetSetting(ctx, "query_cpu_percent"); err == nil && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			globalSettings.QueryCPUPercent = storage.ClampQueryLimitPercent(n)
+		}
+	}
+
+	// Load query_memory_percent (0 = uncapped)
+	if v, err := pg.GetSetting(ctx, "query_memory_percent"); err == nil && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			globalSettings.QueryMemoryPercent = storage.ClampQueryLimitPercent(n)
+		}
+	}
+
 	return nil
 }
 
@@ -157,6 +190,8 @@ func Get() Settings {
 			RecallTimeoutSeconds:     defaultRecallTimeoutSeconds,
 			RecallMaxBytesRead:       0,
 			RecallConcurrency:        defaultRecallConcurrency,
+			QueryCPUPercent:          storage.DefaultQueryCPUPercent,
+			QueryMemoryPercent:       storage.DefaultQueryMemoryPercent,
 		}
 	}
 	globalSettings.mu.RLock()
@@ -169,6 +204,8 @@ func Get() Settings {
 		RecallTimeoutSeconds:     globalSettings.RecallTimeoutSeconds,
 		RecallMaxBytesRead:       globalSettings.RecallMaxBytesRead,
 		RecallConcurrency:        globalSettings.RecallConcurrency,
+		QueryCPUPercent:          globalSettings.QueryCPUPercent,
+		QueryMemoryPercent:       globalSettings.QueryMemoryPercent,
 	}
 }
 
@@ -188,9 +225,14 @@ func Update(s *Settings) error {
 		return fmt.Errorf("recall_max_bytes_read cannot be negative (0 = unlimited)")
 	}
 	s.RecallConcurrency = clampRecallConcurrency(s.RecallConcurrency)
+	s.QueryCPUPercent = storage.ClampQueryLimitPercent(s.QueryCPUPercent)
+	s.QueryMemoryPercent = storage.ClampQueryLimitPercent(s.QueryMemoryPercent)
 
 	globalSettings.mu.Lock()
-	defer globalSettings.mu.Unlock()
+	limitsChanged := globalSettings.QueryCPUPercent != s.QueryCPUPercent ||
+		globalSettings.QueryMemoryPercent != s.QueryMemoryPercent
+	globalSettings.QueryCPUPercent = s.QueryCPUPercent
+	globalSettings.QueryMemoryPercent = s.QueryMemoryPercent
 	globalSettings.TimestampFields = s.TimestampFields
 	globalSettings.AlertTimeoutSeconds = s.AlertTimeoutSeconds
 	globalSettings.QueryTimeoutSeconds = s.QueryTimeoutSeconds
@@ -198,6 +240,9 @@ func Update(s *Settings) error {
 	globalSettings.RecallTimeoutSeconds = s.RecallTimeoutSeconds
 	globalSettings.RecallMaxBytesRead = s.RecallMaxBytesRead
 	globalSettings.RecallConcurrency = s.RecallConcurrency
+	// Unlocked before persisting: the ClickHouse workload DDL below can take seconds
+	// on a cluster, and every search reads Get() under this lock.
+	globalSettings.mu.Unlock()
 
 	// Persist to database
 	ctx := context.Background()
@@ -233,7 +278,24 @@ func Update(s *Settings) error {
 	if err := globalSettings.pg.SetSetting(ctx, "recall_max_bytes_read", fmt.Sprintf("%d", s.RecallMaxBytesRead)); err != nil {
 		return err
 	}
-	return globalSettings.pg.SetSetting(ctx, "recall_concurrency", fmt.Sprintf("%d", s.RecallConcurrency))
+	if err := globalSettings.pg.SetSetting(ctx, "recall_concurrency", fmt.Sprintf("%d", s.RecallConcurrency)); err != nil {
+		return err
+	}
+	if err := globalSettings.pg.SetSetting(ctx, "query_cpu_percent", fmt.Sprintf("%d", s.QueryCPUPercent)); err != nil {
+		return err
+	}
+	if err := globalSettings.pg.SetSetting(ctx, "query_memory_percent", fmt.Sprintf("%d", s.QueryMemoryPercent)); err != nil {
+		return err
+	}
+
+	// Apply the shares to ClickHouse. They are already persisted, so a failure here
+	// is reported but self-heals on the next restart's reconcile.
+	if limitsChanged && queryLimitsApplier != nil {
+		if err := queryLimitsApplier(s.QueryCPUPercent, s.QueryMemoryPercent); err != nil {
+			return fmt.Errorf("search limits saved but not applied: %w", err)
+		}
+	}
+	return nil
 }
 
 // Handler handles settings API requests

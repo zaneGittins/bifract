@@ -1823,8 +1823,6 @@
 }
 
 /* Editor inline toolbar buttons */
-.editor-back-btn,
-.alert-editor-back-btn,
 .alert-editor-config-btn {
     display: flex;
     align-items: center;
@@ -1841,8 +1839,6 @@
     flex-shrink: 0;
 }
 
-.editor-back-btn:hover,
-.alert-editor-back-btn:hover,
 .alert-editor-config-btn:hover {
     color: var(--text-primary);
     border-color: var(--text-muted);

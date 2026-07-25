@@ -3,7 +3,7 @@
 const UserManagement = {
     users: [],
 
-    async init() {
+    init() {
         // Event listeners
         const addUserBtn = document.getElementById('addUserBtn');
         const createUserBtn = document.getElementById('createUserBtn');
@@ -19,11 +19,6 @@ const UserManagement = {
 
         if (cancelAddUserBtn) {
             cancelAddUserBtn.addEventListener('click', () => this.hideAddUserForm());
-        }
-
-        // Load users if admin
-        if (Auth.getCurrentUser() && Auth.getCurrentUser().is_admin) {
-            await this.loadUsers();
         }
     },
 

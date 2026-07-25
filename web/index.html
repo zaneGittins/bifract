@@ -757,6 +757,40 @@
 
                                 <div class="sp-row">
                                     <div class="sp-row-info">
+                                        <label for="queryCPUPercentSettings" class="sp-row-label">Search CPU share</label>
+                                        <p class="sp-row-desc">Share of each ClickHouse node's cores that running searches may use in total. Keeps one expensive search from starving ingestion.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="queryCPUPercentSettings" class="setting-select">
+                                            <option value="10">10% of cores</option>
+                                            <option value="25">25% of cores</option>
+                                            <option value="50">50% of cores</option>
+                                            <option value="75">75% of cores</option>
+                                            <option value="90">90% of cores</option>
+                                            <option value="0">Uncapped</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="queryMemoryPercentSettings" class="sp-row-label">Search memory share</label>
+                                        <p class="sp-row-desc">Share of each ClickHouse node's memory budget that running searches may reserve in total. A search that would exceed it is cancelled instead of pressuring the server.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="queryMemoryPercentSettings" class="setting-select">
+                                            <option value="10">10% of memory</option>
+                                            <option value="25">25% of memory</option>
+                                            <option value="50">50% of memory</option>
+                                            <option value="75">75% of memory</option>
+                                            <option value="90">90% of memory</option>
+                                            <option value="0">Uncapped</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
                                         <label for="alertTimeoutSettings" class="sp-row-label">Alert query timeout</label>
                                         <p class="sp-row-desc">Maximum runtime for an alert query. Alerts that exceed it are disabled automatically.</p>
                                     </div>
@@ -1188,10 +1222,6 @@
                 <!-- Normalizer Editor View (full-page, replaces modal) -->
                 <div id="normalizerEditorView" class="admin-only" style="display: none;">
                     <div class="nz-topbar" id="normalizerTopbar">
-                        <button class="nz-back" onclick="Normalizers.backToList()">
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-                            Normalizers
-                        </button>
                         <div class="nz-title-group">
                             <h2 id="normalizerEditorTitle">Create Normalizer</h2>
                             <span class="nz-dirty-dot"></span>
@@ -1767,9 +1797,6 @@
                         <div id="notebookEditor" class="notebook-editor" style="display: none;">
                             <div class="notebook-header">
                                 <div class="notebook-title-area">
-                                    <button id="backToNotebooksBtn" class="editor-back-btn" title="Back to Notebooks">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-                                    </button>
                                     <h2 id="notebookTitle">Untitled Notebook</h2>
                                 </div>
 
@@ -2521,46 +2548,6 @@
                             <div id="prismPermissionsList" class="permissions-list">
                                 <div class="loading">Loading permissions...</div>
                             </div>
-
-                            <!-- Grant Permission Form -->
-                            <div id="grantPrismPermissionForm" class="access-grant-form" style="display: none;">
-                                <div class="access-grant-form-inner">
-                                    <div class="access-grant-form-fields">
-                                        <div class="form-group">
-                                            <label for="prismPermGrantType">Grant to</label>
-                                            <select id="prismPermGrantType" class="setting-select" onchange="GroupsView.togglePrismGrantType()">
-                                                <option value="user">User</option>
-                                                <option value="group">Group</option>
-                                            </select>
-                                        </div>
-                                        <div class="form-group" id="prismPermUserSelectGroup">
-                                            <label for="prismPermUserSelect">User</label>
-                                            <select id="prismPermUserSelect" class="setting-select">
-                                                <option value="">Select user...</option>
-                                            </select>
-                                        </div>
-                                        <div class="form-group" id="prismPermGroupSelectGroup" style="display: none;">
-                                            <label for="prismPermGroupSelect">Group</label>
-                                            <select id="prismPermGroupSelect" class="setting-select">
-                                                <option value="">Select group...</option>
-                                            </select>
-                                        </div>
-                                        <div class="form-group">
-                                            <label for="prismPermRoleSelect">Role</label>
-                                            <select id="prismPermRoleSelect" class="setting-select">
-                                                <option value="viewer">Viewer</option>
-                                                <option value="analyst">Analyst</option>
-                                                <option value="admin">Admin</option>
-                                            </select>
-                                            <span class="help-text">Viewer: query/view. Analyst: create content. Admin: manage prism settings.</span>
-                                        </div>
-                                    </div>
-                                    <div class="form-actions">
-                                        <button class="btn-ghost btn-sm" onclick="GroupsView.hidePrismGrantForm()">Cancel</button>
-                                        <button class="btn-primary btn-sm" onclick="GroupsView.grantPrismPermission()">Grant</button>
-                                    </div>
-                                </div>
-                            </div>
                         </div>
 
                         <!-- API Keys Card -->
@@ -2576,43 +2563,6 @@
                             <div id="prismInlineAPIKeysList" class="api-keys-inline-list">
                                 <div class="loading">Loading API keys...</div>
                             </div>
-
-                            <!-- Inline Create Form -->
-                            <div id="prismInlineCreateAPIKeyForm" class="access-grant-form" style="display: none;">
-                                <div class="access-grant-form-inner">
-                                    <form id="prismInlineCreateAPIKeyFormEl">
-                                        <div class="access-grant-form-fields">
-                                            <div class="form-group">
-                                                <label for="prismInlineApiKeyName">Name *</label>
-                                                <input type="text" id="prismInlineApiKeyName" name="name" required placeholder="Key name">
-                                            </div>
-                                            <div class="form-group">
-                                                <label for="prismInlineApiKeyExpires">Expires</label>
-                                                <input type="text" id="prismInlineApiKeyExpires" name="expires_at" placeholder="YYYY-MM-DD HH:mm">
-                                                <div class="checkbox-group" style="margin-top: 0.375rem;">
-                                                    <label><input type="checkbox" id="prismInlineApiKeyNeverExpires" name="never_expires"> Never expires</label>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div class="form-group" style="margin-top: 0.75rem;">
-                                            <label>Permissions</label>
-                                            <div class="inline-perm-toggles">
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermAll"> All</label>
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermQuery" checked> Query</label>
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermComment" checked> Comments</label>
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermAlertManage"> Alerts</label>
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermNotebook"> Notebooks</label>
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermDashboard"> Dashboards</label>
-                                            </div>
-                                        </div>
-                                        <div class="form-actions">
-                                            <button type="button" id="prismCancelInlineCreateBtn" class="btn-ghost btn-sm">Cancel</button>
-                                            <button type="button" id="prismSubmitInlineCreateBtn" class="btn-primary btn-sm">Create</button>
-                                        </div>
-                                    </form>
-                                </div>
-                            </div>
-
                         </div>
 
                     </div>
@@ -2720,46 +2670,6 @@
                             <div id="fractalPermissionsList" class="permissions-list">
                                 <div class="loading">Loading permissions...</div>
                             </div>
-
-                            <!-- Grant Permission Form -->
-                            <div id="grantPermissionForm" class="access-grant-form" style="display: none;">
-                                <div class="access-grant-form-inner">
-                                    <div class="access-grant-form-fields">
-                                        <div class="form-group">
-                                            <label for="permGrantType">Grant to</label>
-                                            <select id="permGrantType" class="setting-select">
-                                                <option value="user">User</option>
-                                                <option value="group">Group</option>
-                                            </select>
-                                        </div>
-                                        <div class="form-group" id="permUserSelectGroup">
-                                            <label for="permUserSelect">User</label>
-                                            <select id="permUserSelect" class="setting-select">
-                                                <option value="">Select user...</option>
-                                            </select>
-                                        </div>
-                                        <div class="form-group" id="permGroupSelectGroup" style="display: none;">
-                                            <label for="permGroupSelect">Group</label>
-                                            <select id="permGroupSelect" class="setting-select">
-                                                <option value="">Select group...</option>
-                                            </select>
-                                        </div>
-                                        <div class="form-group">
-                                            <label for="permRoleSelect">Role</label>
-                                            <select id="permRoleSelect" class="setting-select">
-                                                <option value="viewer">Viewer</option>
-                                                <option value="analyst">Analyst</option>
-                                                <option value="admin">Admin</option>
-                                            </select>
-                                            <span class="help-text">Viewer: query/view. Analyst: create content. Admin: manage fractal settings.</span>
-                                        </div>
-                                    </div>
-                                    <div class="form-actions">
-                                        <button id="cancelGrantPermBtn" class="btn-ghost btn-sm">Cancel</button>
-                                        <button id="submitGrantPermBtn" class="btn-primary btn-sm">Grant</button>
-                                    </div>
-                                </div>
-                            </div>
                         </div>
 
                         <!-- API Keys Card -->
@@ -2775,43 +2685,6 @@
                             <div id="inlineAPIKeysList" class="api-keys-inline-list">
                                 <div class="loading">Loading API keys...</div>
                             </div>
-
-                            <!-- Inline Create Form -->
-                            <div id="inlineCreateAPIKeyForm" class="access-grant-form" style="display: none;">
-                                <div class="access-grant-form-inner">
-                                    <form id="inlineCreateAPIKeyFormEl">
-                                        <div class="access-grant-form-fields">
-                                            <div class="form-group">
-                                                <label for="inlineApiKeyName">Name *</label>
-                                                <input type="text" id="inlineApiKeyName" name="name" required placeholder="Key name">
-                                            </div>
-                                            <div class="form-group">
-                                                <label for="inlineApiKeyExpires">Expires</label>
-                                                <input type="text" id="inlineApiKeyExpires" name="expires_at" placeholder="YYYY-MM-DD HH:mm">
-                                                <div class="checkbox-group" style="margin-top: 0.375rem;">
-                                                    <label><input type="checkbox" id="inlineApiKeyNeverExpires" name="never_expires"> Never expires</label>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div class="form-group" style="margin-top: 0.75rem;">
-                                            <label>Permissions</label>
-                                            <div class="inline-perm-toggles">
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermAll"> All</label>
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermQuery" checked> Query</label>
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermComment" checked> Comments</label>
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermAlertManage"> Alerts</label>
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermNotebook"> Notebooks</label>
-                                                <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermDashboard"> Dashboards</label>
-                                            </div>
-                                        </div>
-                                        <div class="form-actions">
-                                            <button type="button" id="cancelInlineCreateBtn" class="btn-ghost btn-sm">Cancel</button>
-                                            <button type="button" id="submitInlineCreateBtn" class="btn-primary btn-sm">Create</button>
-                                        </div>
-                                    </form>
-                                </div>
-                            </div>
-
                         </div>
 
                     </div>
@@ -2916,9 +2789,6 @@
                     <!-- Search Section -->
                     <section class="search-section">
                         <div class="search-toolbar">
-                            <button id="backToAlertsBtn" class="alert-editor-back-btn" onclick="Alerts.backToAlerts()" title="Back to Alerts">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-                            </button>
                             <select id="alertTimeRange" class="time-range-select">
                                 <option value="1h">Last 1 Hour</option>
                                 <option value="24h" selected>Last 24 Hours</option>
@@ -3623,222 +3493,6 @@ throttleTimeSeconds: 3600"></textarea>
         </div>
     </div>
 
-    <!-- Unified API Keys Management Modal -->
-    <div id="apiKeysModal" class="modal">
-        <div class="modal-content large">
-            <div class="modal-header">
-                <h2 id="apiKeysModalTitle">API Keys Management</h2>
-                <div class="modal-breadcrumb" id="apiKeysBreadcrumb" style="display: none;">
-                    <span class="breadcrumb-item" id="breadcrumbOverview">Overview</span>
-                    <span class="breadcrumb-separator">/</span>
-                    <span class="breadcrumb-item active" id="breadcrumbCurrent">Create Key</span>
-                </div>
-                <button class="close-btn">&times;</button>
-            </div>
-
-            <div class="modal-body">
-                <!-- Navigation Tabs -->
-                <div class="api-keys-tabs" id="apiKeysTabs">
-                    <button class="tab-btn active" data-tab="overview">Overview</button>
-                    <button class="tab-btn" data-tab="create">Create New</button>
-                </div>
-
-                <!-- Overview Tab - List existing API keys -->
-                <div id="apiKeysOverviewTab" class="api-keys-tab-content active">
-                    <div class="tab-header">
-                        <h3 id="apiKeysOverviewTitle">API Keys for [Fractal Name]</h3>
-                        <button id="createAPIKeyBtn" class="btn-primary">
-                            + Create API Key
-                        </button>
-                    </div>
-
-                    <div id="apiKeysList" class="api-keys-container">
-                        <!-- API keys will be populated here -->
-                    </div>
-                </div>
-
-                <!-- Create Tab - Create new API key form -->
-                <div id="apiKeysCreateTab" class="api-keys-tab-content" style="display: none;">
-                    <div class="tab-header">
-                        <h3>Create New API Key</h3>
-                        <button id="backToOverviewBtn" class="btn-secondary">
-                            ← Back to Overview
-                        </button>
-                    </div>
-
-                    <form id="createAPIKeyForm">
-                        <div class="form-group">
-                            <label for="apiKeyName">Name *</label>
-                            <input type="text" id="apiKeyName" name="name" required
-                                   placeholder="Enter a descriptive name for this API key">
-                            <div class="form-help">Choose a name that describes the purpose or application using this key</div>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="apiKeyDescription">Description</label>
-                            <textarea id="apiKeyDescription" name="description" rows="3"
-                                      placeholder="Optional description of what this API key will be used for"></textarea>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="apiKeyExpiresAt">Expires At</label>
-                            <input type="text" placeholder="YYYY-MM-DD HH:mm" id="apiKeyExpiresAt" name="expires_at">
-
-                            <div class="checkbox-group">
-                                <label>
-                                    <input type="checkbox" id="apiKeyNeverExpires" name="never_expires">
-                                    Never expires (not recommended for production)
-                                </label>
-                            </div>
-                            <div class="form-help">API keys that never expire pose a security risk. Consider setting an expiration date.</div>
-                        </div>
-
-                        <div class="form-group">
-                            <label>Permissions</label>
-                            <div class="form-help" style="margin-bottom: 10px;">Control what this API key can access. Follow the principle of least privilege.</div>
-                            <div class="api-key-permissions-grid">
-                                <div class="api-key-perm-row api-key-perm-all">
-                                    <div class="api-key-perm-info">
-                                        <span class="api-key-perm-name">All Permissions</span>
-                                        <span class="api-key-perm-desc">Grant full access to all operations</span>
-                                    </div>
-                                    <label class="toggle-switch">
-                                        <input type="checkbox" id="apiKeyPermAll" name="perm_all">
-                                        <span class="toggle-slider"></span>
-                                    </label>
-                                </div>
-                                <div class="api-key-perm-row">
-                                    <div class="api-key-perm-info">
-                                        <span class="api-key-perm-name">Query</span>
-                                        <span class="api-key-perm-desc">Execute BQL queries against logs</span>
-                                    </div>
-                                    <label class="toggle-switch">
-                                        <input type="checkbox" id="apiKeyPermQuery" name="perm_query" checked>
-                                        <span class="toggle-slider"></span>
-                                    </label>
-                                </div>
-                                <div class="api-key-perm-row">
-                                    <div class="api-key-perm-info">
-                                        <span class="api-key-perm-name">Comments</span>
-                                        <span class="api-key-perm-desc">Create and manage comments on logs</span>
-                                    </div>
-                                    <label class="toggle-switch">
-                                        <input type="checkbox" id="apiKeyPermComment" name="perm_comment" checked>
-                                        <span class="toggle-slider"></span>
-                                    </label>
-                                </div>
-                                <div class="api-key-perm-row">
-                                    <div class="api-key-perm-info">
-                                        <span class="api-key-perm-name">Alerts</span>
-                                        <span class="api-key-perm-desc">Create, update, and delete alerts</span>
-                                    </div>
-                                    <label class="toggle-switch">
-                                        <input type="checkbox" id="apiKeyPermAlertManage" name="perm_alert_manage">
-                                        <span class="toggle-slider"></span>
-                                    </label>
-                                </div>
-                                <div class="api-key-perm-row">
-                                    <div class="api-key-perm-info">
-                                        <span class="api-key-perm-name">Notebooks</span>
-                                        <span class="api-key-perm-desc">Create, edit, and manage notebooks</span>
-                                    </div>
-                                    <label class="toggle-switch">
-                                        <input type="checkbox" id="apiKeyPermNotebook" name="perm_notebook">
-                                        <span class="toggle-slider"></span>
-                                    </label>
-                                </div>
-                                <div class="api-key-perm-row">
-                                    <div class="api-key-perm-info">
-                                        <span class="api-key-perm-name">Dashboards</span>
-                                        <span class="api-key-perm-desc">Create, edit, and manage dashboards</span>
-                                    </div>
-                                    <label class="toggle-switch">
-                                        <input type="checkbox" id="apiKeyPermDashboard" name="perm_dashboard">
-                                        <span class="toggle-slider"></span>
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="form-actions">
-                            <button type="button" id="cancelCreateBtn" class="btn-secondary">Cancel</button>
-                            <button type="button" id="saveAPIKeyBtn" class="btn-primary">Create API Key</button>
-                        </div>
-                    </form>
-                </div>
-
-                <!-- Success Tab - Show created API key (replaces separate modal) -->
-                <div id="apiKeysSuccessTab" class="api-keys-tab-content" style="display: none;">
-                    <div class="tab-header">
-                        <h3>API Key Created Successfully</h3>
-                        <div class="success-indicator">
-                            <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <rect width="22" height="22" rx="4" fill="var(--success)"/>
-                                <path d="M6 11.5L9.5 15L16 7" stroke="var(--bg-primary)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-                            </svg>
-                        </div>
-                    </div>
-
-                    <div class="api-key-warning">
-                        <div class="warning-icon">
-                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <path d="M8.57 2.44L1.02 15.5A1.65 1.65 0 002.44 18h15.12a1.65 1.65 0 001.42-2.5L11.43 2.44a1.65 1.65 0 00-2.86 0z" stroke="var(--warning)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-                                <line x1="10" y1="7.5" x2="10" y2="11.5" stroke="var(--warning)" stroke-width="1.5" stroke-linecap="round"/>
-                                <circle cx="10" cy="14" r="0.75" fill="var(--warning)"/>
-                            </svg>
-                        </div>
-                        <div class="warning-content">
-                            <p><strong>Important:</strong> This is the only time you'll see the full API key.</p>
-                            <p>Please copy it now and store it securely. You won't be able to view it again.</p>
-                        </div>
-                    </div>
-
-                    <div class="api-key-result-info">
-                        <h4>API Key: <span id="apiKeyResultName"></span></h4>
-                        <p class="fractal-info">Valid for fractal: <strong id="apiKeyResultFractal"></strong></p>
-                    </div>
-
-                    <div class="api-key-display">
-                        <label>Full API Key:</label>
-                        <div class="key-copy-container">
-                            <input type="text" id="apiKeyDisplay" class="api-key-input" readonly>
-                            <button id="copyAPIKeyBtn" class="btn-secondary copy-key-btn">
-                                Copy
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="usage-examples">
-                        <h4>Usage Examples:</h4>
-
-                        <div class="code-example">
-                            <strong>cURL with Authorization header:</strong>
-                            <code>curl -H "Authorization: Bearer YOUR_API_KEY" "https://your-bifract-instance/api/v1/query"</code>
-                        </div>
-
-                        <div class="code-example">
-                            <strong>cURL with X-API-Key header:</strong>
-                            <code>curl -H "X-API-Key: YOUR_API_KEY" "https://your-bifract-instance/api/v1/query"</code>
-                        </div>
-
-                        <div class="code-example">
-                            <strong>JavaScript fetch:</strong>
-                            <code>fetch('/api/v1/query', { headers: { 'Authorization': 'Bearer YOUR_API_KEY' } })</code>
-                        </div>
-                    </div>
-
-                    <div class="form-actions">
-                        <button type="button" id="backToOverviewFromSuccessBtn" class="btn-secondary">
-                            ← Back to Overview
-                        </button>
-                        <button type="button" id="confirmAPIKeySavedBtn" class="btn-primary">
-                            I've Saved the Key
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
 
     <!-- Create Dictionary Modal -->
     <div id="createDictModal" class="modal" onclick="if(event.target===this)Dictionaries.hideCreateForm()">
@@ -3990,6 +3644,186 @@ throttleTimeSeconds: 3600"></textarea>
     </div>
 
     <!-- Create Ingest Token Modal -->
+    <!-- Grant Fractal Access Modal -->
+    <div id="grantPermissionModal" class="modal" onclick="if(event.target===this)GroupsView.hideGrantForm()">
+        <div class="modal-content" style="max-width:560px;">
+            <div class="modal-header">
+                <h2>Grant Access</h2>
+                <button class="close-btn" onclick="GroupsView.hideGrantForm()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="access-grant-form">
+                    <div class="access-grant-form-fields">
+                        <div class="form-group">
+                            <label for="permGrantType">Grant to</label>
+                            <select id="permGrantType" class="setting-select">
+                                <option value="user">User</option>
+                                <option value="group">Group</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="permUserSelectGroup">
+                            <label for="permUserSelect">User</label>
+                            <select id="permUserSelect" class="setting-select">
+                                <option value="">Select user...</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="permGroupSelectGroup" style="display: none;">
+                            <label for="permGroupSelect">Group</label>
+                            <select id="permGroupSelect" class="setting-select">
+                                <option value="">Select group...</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="permRoleSelect">Role</label>
+                            <select id="permRoleSelect" class="setting-select">
+                                <option value="viewer">Viewer</option>
+                                <option value="analyst">Analyst</option>
+                                <option value="admin">Admin</option>
+                            </select>
+                            <span class="help-text">Viewer: query/view. Analyst: create content. Admin: manage fractal settings.</span>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button id="cancelGrantPermBtn" class="btn-secondary">Cancel</button>
+                        <button id="submitGrantPermBtn" class="btn-primary">Grant</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Grant Prism Access Modal -->
+    <div id="grantPrismPermissionModal" class="modal" onclick="if(event.target===this)GroupsView.hidePrismGrantForm()">
+        <div class="modal-content" style="max-width:560px;">
+            <div class="modal-header">
+                <h2>Grant Prism Access</h2>
+                <button class="close-btn" onclick="GroupsView.hidePrismGrantForm()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="access-grant-form">
+                    <div class="access-grant-form-fields">
+                        <div class="form-group">
+                            <label for="prismPermGrantType">Grant to</label>
+                            <select id="prismPermGrantType" class="setting-select" onchange="GroupsView.togglePrismGrantType()">
+                                <option value="user">User</option>
+                                <option value="group">Group</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="prismPermUserSelectGroup">
+                            <label for="prismPermUserSelect">User</label>
+                            <select id="prismPermUserSelect" class="setting-select">
+                                <option value="">Select user...</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="prismPermGroupSelectGroup" style="display: none;">
+                            <label for="prismPermGroupSelect">Group</label>
+                            <select id="prismPermGroupSelect" class="setting-select">
+                                <option value="">Select group...</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="prismPermRoleSelect">Role</label>
+                            <select id="prismPermRoleSelect" class="setting-select">
+                                <option value="viewer">Viewer</option>
+                                <option value="analyst">Analyst</option>
+                                <option value="admin">Admin</option>
+                            </select>
+                            <span class="help-text">Viewer: query/view. Analyst: create content. Admin: manage prism settings.</span>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn-secondary" onclick="GroupsView.hidePrismGrantForm()">Cancel</button>
+                        <button class="btn-primary" onclick="GroupsView.grantPrismPermission()">Grant</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Fractal API Key Modal -->
+    <div id="inlineCreateAPIKeyModal" class="modal" onclick="if(event.target===this)APIKeys.hideCreateKeyModal()">
+        <div class="modal-content" style="max-width:560px;">
+            <div class="modal-header">
+                <h2>Create API Key</h2>
+                <button class="close-btn" onclick="APIKeys.hideCreateKeyModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="inlineCreateAPIKeyFormEl" class="access-grant-form">
+                    <div class="access-grant-form-fields">
+                        <div class="form-group">
+                            <label for="inlineApiKeyName">Name *</label>
+                            <input type="text" id="inlineApiKeyName" name="name" required placeholder="Key name">
+                        </div>
+                        <div class="form-group">
+                            <label for="inlineApiKeyExpires">Expires</label>
+                            <input type="text" id="inlineApiKeyExpires" name="expires_at" placeholder="YYYY-MM-DD HH:mm">
+                            <div class="checkbox-group" style="margin-top: 0.375rem;">
+                                <label><input type="checkbox" id="inlineApiKeyNeverExpires" name="never_expires"> Never expires</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-top: 0.75rem;">
+                        <label>Permissions</label>
+                        <div class="inline-perm-toggles">
+                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermAll"> All</label>
+                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermQuery" checked> Query</label>
+                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermComment" checked> Comments</label>
+                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermAlertManage"> Alerts</label>
+                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermNotebook"> Notebooks</label>
+                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermDashboard"> Dashboards</label>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" id="cancelInlineCreateBtn" class="btn-secondary">Cancel</button>
+                        <button type="button" id="submitInlineCreateBtn" class="btn-primary">Create</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Prism API Key Modal -->
+    <div id="prismInlineCreateAPIKeyModal" class="modal" onclick="if(event.target===this)APIKeys.hideCreateKeyModal()">
+        <div class="modal-content" style="max-width:560px;">
+            <div class="modal-header">
+                <h2>Create Prism API Key</h2>
+                <button class="close-btn" onclick="APIKeys.hideCreateKeyModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="prismInlineCreateAPIKeyFormEl" class="access-grant-form">
+                    <div class="access-grant-form-fields">
+                        <div class="form-group">
+                            <label for="prismInlineApiKeyName">Name *</label>
+                            <input type="text" id="prismInlineApiKeyName" name="name" required placeholder="Key name">
+                        </div>
+                        <div class="form-group">
+                            <label for="prismInlineApiKeyExpires">Expires</label>
+                            <input type="text" id="prismInlineApiKeyExpires" name="expires_at" placeholder="YYYY-MM-DD HH:mm">
+                            <div class="checkbox-group" style="margin-top: 0.375rem;">
+                                <label><input type="checkbox" id="prismInlineApiKeyNeverExpires" name="never_expires"> Never expires</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-top: 0.75rem;">
+                        <label>Permissions</label>
+                        <div class="inline-perm-toggles">
+                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermAll"> All</label>
+                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermQuery" checked> Query</label>
+                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermComment" checked> Comments</label>
+                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermAlertManage"> Alerts</label>
+                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermNotebook"> Notebooks</label>
+                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermDashboard"> Dashboards</label>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" id="prismCancelInlineCreateBtn" class="btn-secondary">Cancel</button>
+                        <button type="button" id="prismSubmitInlineCreateBtn" class="btn-primary">Create</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <div id="createIngestTokenModal" class="modal" onclick="if(event.target===this)IngestTokens.hideCreateModal()">
         <div class="modal-content" style="max-width:560px;">
             <div class="modal-header">

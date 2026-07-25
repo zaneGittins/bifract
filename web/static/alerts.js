@@ -1519,20 +1519,6 @@ const Alerts = {
         this.loadAllActions();
     },
 
-    backToAlertsFromActions() {
-        const alertsView = document.getElementById('alertsView');
-        const actionsView = document.getElementById('actionsManageView');
-
-        if (actionsView) actionsView.style.display = 'none';
-        if (alertsView) alertsView.style.display = 'block';
-
-        this.inlineWebhookForm = null;
-        this.inlineFractalActionForm = null;
-        this.inlineDictActionForm = null;
-        this.closeInlineWebhookForm();
-        this.closeInlineFractalActionForm();
-        this.closeInlineDictActionForm();
-    },
 
     closeModal(modalId) {
         const modal = document.getElementById(modalId);
@@ -2233,19 +2219,29 @@ throttleField: ${alert.throttle_field}` : ''}`;
         }, 100);
     },
 
-    backToAlerts() {
-        const wasFromFeed = this.editingFeedAlert;
+    // Editor teardown, shared by the post-save return and by tab navigation away
+    // from the editor, so no stale state (feed banner, log detail, form values)
+    // survives leaving it.
+    closeAlertEditor() {
+        const alertEditorView = document.getElementById('alertEditorView');
+        if (!alertEditorView || alertEditorView.style.display === 'none') return;
+
         this.editingFeedAlert = false;
         this.feedAlertOriginalId = null;
+        document.getElementById('feedAlertBanner')?.remove();
+        alertEditorView.style.display = 'none';
 
-        // Remove feed alert banner if present
-        const banner = document.getElementById('feedAlertBanner');
-        if (banner) banner.remove();
+        this.closeAlertPanel();
+        if (window.LogDetail) LogDetail.close();
+        this.clearAlertEditor();
+    },
 
-        // Hide alert editor and restore alerts tab content
-        const alertEditorView = document.getElementById('alertEditorView');
+    backToAlerts() {
+        const wasFromFeed = this.editingFeedAlert;
+
+        this.closeAlertEditor();
+
         const alertsTabContent = document.getElementById('fractalAlertsTabContent');
-        if (alertEditorView) alertEditorView.style.display = 'none';
         if (alertsTabContent) alertsTabContent.style.display = 'block';
 
         // Return to the correct view
@@ -2258,15 +2254,6 @@ throttleField: ${alert.throttle_field}` : ''}`;
             if (alertsView) alertsView.style.display = 'block';
             this.loadAlerts();
         }
-
-        // Close the right-hand configuration panel
-        this.closeAlertPanel();
-
-        // Close the log detail panel if it was left open
-        if (window.LogDetail) LogDetail.close();
-
-        // Clear the editor
-        this.clearAlertEditor();
     },
 
     clearAlertEditor() {

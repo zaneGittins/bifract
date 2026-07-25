@@ -88,14 +88,6 @@ const Notebooks = {
         }
 
         // Notebook editor events
-        const backBtn = document.getElementById('backToNotebooksBtn');
-        if (backBtn) {
-            backBtn.addEventListener('click', () => {
-                window.App?.pushSubPath('');
-                this.showNotebookListing();
-            });
-        }
-
         const saveBtn = document.getElementById('saveNotebookBtn');
         if (saveBtn) {
             saveBtn.addEventListener('click', () => this.saveCurrentNotebook());

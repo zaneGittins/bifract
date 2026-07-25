@@ -285,6 +285,16 @@ func main() {
 		log.Printf("Warning: failed to ensure ingest Postgres role: %v", err)
 	}
 
+	// Bound interactive searches to a share of each node's CPU and memory so one
+	// expensive search cannot consume the machine and stall ingestion. Non-fatal:
+	// on failure searches simply run unscheduled, as they did before this existed.
+	if err := db.ReconcileQueryWorkload(context.Background(), settings.Get().QueryCPUPercent, settings.Get().QueryMemoryPercent); err != nil {
+		log.Printf("Warning: failed to reconcile search resource limits: %v", err)
+	}
+	settings.RegisterQueryLimitsApplier(func(cpuPercent, memPercent int) error {
+		return db.ReconcileQueryWorkload(context.Background(), cpuPercent, memPercent)
+	})
+
 	// Initialize fractal management system
 	log.Println("Initializing fractal management system...")
 	fractalManager := fractals.NewManager(pg, db)
@@ -904,6 +914,12 @@ func main() {
 					// (claimed but not yet started, or waiting for the next poll); outcome
 					// == "running" is the live pass. Lets the UI show/disable the button.
 					"run_requested": maintainRunRequestedAt.Valid,
+					// The maintainer normally converts 'running' to a terminal outcome when
+					// it restarts, but it cannot if it is gone entirely (container removed,
+					// deployment scaled to 0). Age it out here too so a marker nothing will
+					// ever clear stops reading as a live pass and stops disabling "Run now".
+					"stale_running": maintainOutcome == string(archive.MaintainOutcomeRunning) &&
+						maintainLastAttempt.Valid && time.Since(maintainLastAttempt.Time) >= maintainStaleAfter,
 				}
 				if maintainError.Valid {
 					maintainResp["error"] = maintainError.String

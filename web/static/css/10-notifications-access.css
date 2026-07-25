@@ -1678,16 +1678,7 @@
     color: var(--accent-primary);
 }
 
-/* Grant Permission Form */
-.access-grant-form {
-    border-top: 1px solid var(--border-color);
-    background: var(--bg-tertiary);
-}
-
-.access-grant-form-inner {
-    padding: 1rem 1.25rem;
-}
-
+/* Access modal forms (grant permission, create API key) */
 .access-grant-form-fields {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1711,7 +1702,8 @@
     display: flex;
     justify-content: flex-end;
     gap: 0.5rem;
-    padding-top: 0.5rem;
+    margin-top: 1.25rem;
+    padding-top: 1rem;
     border-top: 1px solid var(--border-color);
 }
 

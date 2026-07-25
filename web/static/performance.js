@@ -436,14 +436,31 @@ const Performance = {
 
         const mDot = document.getElementById('maintainStatusDot');
         const mLabel = document.getElementById('maintainStatusLabel');
+        // A 'running' marker only means a pass started; a pass killed mid-flight
+        // (OOMKill, eviction) never writes a terminal outcome, so an aged one is
+        // checked first. Otherwise it masks every other state indefinitely --
+        // including "Overdue" -- and reads as a healthy live pass forever.
+        const runningNow = m.outcome === 'running' && !m.stale_running;
         if (mDot && mLabel) {
-            if (m.outcome === 'running') {
+            if (runningNow) {
                 mDot.className = 'status-dot status-enabled';
                 mLabel.textContent = 'Running now';
+            } else if (m.stale_running) {
+                // Ranked above 'Queued': the marker aged out because nothing is left
+                // to clear it, so a request sitting behind it will not be serviced
+                // either. Showing "Queued" here would promise a pass that never runs.
+                mDot.className = 'status-dot status-disabled';
+                mLabel.textContent = 'Interrupted';
             } else if (m.run_requested) {
                 // Requested from the UI, not yet claimed by the maintainer's poll.
                 mDot.className = 'status-dot status-enabled';
                 mLabel.textContent = 'Queued';
+            } else if (m.outcome === 'interrupted') {
+                mDot.className = 'status-dot status-disabled';
+                mLabel.textContent = 'Interrupted';
+            } else if (m.outcome === 'timeout') {
+                mDot.className = 'status-dot status-disabled';
+                mLabel.textContent = 'Timed out';
             } else if (!hasRunOnce) {
                 mDot.className = 'status-dot status-auto-disabled';
                 mLabel.textContent = 'Never run';
@@ -468,11 +485,11 @@ const Performance = {
         // so the button doesn't flicker back to enabled before the server catches up.
         const runBtn = document.getElementById('maintainRunNowBtn');
         if (runBtn) {
-            const serverBusy = m.outcome === 'running' || !!m.run_requested;
+            const serverBusy = runningNow || !!m.run_requested;
             if (serverBusy) this._maintainRunPending = false;
             const busy = serverBusy || this._maintainRunPending;
             runBtn.disabled = !d.enabled || !d.provisioned || busy;
-            runBtn.textContent = m.outcome === 'running' ? 'Running…' : (busy ? 'Queued…' : 'Run now');
+            runBtn.textContent = runningNow ? 'Running…' : (busy ? 'Queued…' : 'Run now');
             runBtn.title = !d.provisioned ? 'Archive not provisioned (run bifract --upgrade)'
                 : !d.enabled ? 'Enable archiving to run maintenance'
                 : busy ? 'A maintenance pass is in progress'
@@ -519,8 +536,12 @@ const Performance = {
             let msg = '';
             if (!hasRunOnce) {
                 msg = 'Maintenance has not run yet.';
+            } else if (m.stale_running || m.outcome === 'interrupted') {
+                msg = 'Last pass was killed before it finished -- usually the maintainer hitting its memory limit. Check the container/pod for OOMKills and raise its memory limit.';
+            } else if (m.outcome === 'timeout') {
+                msg = 'Last pass was abandoned at its time limit -- object storage is likely unreachable or very slow.';
             } else if (!m.on_schedule) {
-                msg = `Last attempt was ${this.timeAgo(m.last_attempt_at)} -- overdue for the hourly schedule. Check the CronJob.`;
+                msg = `Last attempt was ${this.timeAgo(m.last_attempt_at)} -- overdue for the hourly schedule. Check the archive-maintain container/pod.`;
             } else if (m.outcome === 'error') {
                 msg = `Last attempt failed: ${m.error || 'unknown error'}`;
             } else if (m.outcome === 'skipped_locked') {
@@ -981,6 +1002,8 @@ const Performance = {
             error: { cls: 'failed', label: 'Error' },
             skipped_locked: { cls: 'pending', label: 'Skipped (busy)' },
             skipped_disabled: { cls: 'pending', label: 'Skipped (disabled)' },
+            interrupted: { cls: 'failed', label: 'Interrupted' },
+            timeout: { cls: 'failed', label: 'Timed out' },
             never: { cls: 'pending', label: 'Never run' },
         };
         const entry = map[outcome] || { cls: 'pending', label: outcome || 'Unknown' };
@@ -1795,6 +1818,8 @@ const Performance = {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
+                // nearest, not index: scatter points share x buckets, so index would stack every point in the bucket
+                interaction: { intersect: false, mode: 'nearest' },
                 plugins: {
                     legend: { display: false },
                     tooltip: {
@@ -1958,6 +1983,7 @@ const Performance = {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
+                interaction: { intersect: false, mode: 'index' },
                 plugins: {
                     legend: { display: false },
                     tooltip: {
@@ -2081,6 +2107,7 @@ const Performance = {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
+                interaction: { intersect: false, mode: 'index' },
                 plugins: {
                     legend: { display: false },
                     tooltip: {
@@ -2163,6 +2190,7 @@ const Performance = {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
+                interaction: { intersect: false, mode: 'index' },
                 plugins: {
                     legend: { display: false },
                     tooltip: {
@@ -2246,6 +2274,7 @@ const Performance = {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
+                interaction: { intersect: false, mode: 'index' },
                 plugins: {
                     legend: { display: false },
                     tooltip: {

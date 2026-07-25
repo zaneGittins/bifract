@@ -609,24 +609,6 @@
     border-bottom: 1px solid var(--border-color);
 }
 
-.nz-back {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    border-radius: 5px;
-    background: transparent;
-    border: 1px solid var(--border-color);
-    color: var(--text-secondary);
-    cursor: pointer;
-    transition: var(--transition);
-}
-
-.nz-back:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-}
-
 .nz-title-group {
     display: flex;
     align-items: baseline;

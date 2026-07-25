@@ -169,11 +169,11 @@ spec:
               mountPath: /tmp
           resources:
             requests:
-              cpu: {{.ArchiverRes.CPURequest}}
-              memory: {{.ArchiverRes.MemRequest}}
+              cpu: {{.ArchiveMaintainRes.CPURequest}}
+              memory: {{.ArchiveMaintainRes.MemRequest}}
             limits:
-              cpu: "{{.ArchiverRes.CPULimit}}"
-              memory: {{.ArchiverRes.MemLimit}}
+              cpu: "{{.ArchiveMaintainRes.CPULimit}}"
+              memory: {{.ArchiveMaintainRes.MemLimit}}
       volumes:
         - name: tmp
           emptyDir: {}

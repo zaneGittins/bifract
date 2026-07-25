@@ -302,6 +302,9 @@ type k8sSettings struct {
 	// archiveMaintain* preserve user-tuned archive-maintain compaction settings.
 	archiveMaintainByteBudget    int64
 	archiveMaintainCommitRetries int
+	// archiveMaintainResources preserves a deliberately-sized maintainer across
+	// regeneration, but only above minArchiveMaintainMemLimit -- see the parse.
+	archiveMaintainResources ResourceProfile
 }
 
 // legacyFlatMaintainByteBudget is the compaction byte budget every install
@@ -404,6 +407,45 @@ func parseK8sSecrets(path string) (map[string]string, error) {
 	return secrets, scanner.Err()
 }
 
+// minArchiveMaintainMemLimit is the smallest maintainer memory limit treated as
+// a deliberate choice on upgrade. Below it, compaction cannot fit one file
+// decoder plus the writer's buffered row group, so the pass is OOMKilled rather
+// than slowed. See SizeProfile.ArchiveMaintain.
+const minArchiveMaintainMemLimit = 4 << 30
+
+// parseK8sQuantityBytes converts a Kubernetes memory quantity ("512Mi", "8Gi",
+// "2G", or plain bytes) to bytes, returning 0 when it cannot be parsed. Only the
+// memory suffixes k8s actually emits here are handled; an unrecognized one reads
+// as 0, which callers treat as "unknown", never as "zero bytes".
+func parseK8sQuantityBytes(q string) int64 {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return 0
+	}
+	units := []struct {
+		suffix string
+		mult   int64
+	}{
+		{"Ki", 1 << 10}, {"Mi", 1 << 20}, {"Gi", 1 << 30}, {"Ti", 1 << 40},
+		{"k", 1e3}, {"K", 1e3}, {"M", 1e6}, {"G", 1e9}, {"T", 1e12},
+	}
+	for _, u := range units {
+		if !strings.HasSuffix(q, u.suffix) {
+			continue
+		}
+		n, err := strconv.ParseFloat(strings.TrimSuffix(q, u.suffix), 64)
+		if err != nil {
+			return 0
+		}
+		return int64(n * float64(u.mult))
+	}
+	n, err := strconv.ParseInt(q, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // parseK8sSettings extracts configuration from existing rendered manifests.
 func parseK8sSettings(dir string) (*k8sSettings, error) {
 	s := &k8sSettings{
@@ -482,6 +524,17 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 		}
 		if v := extractValue(content, `BIFRACT_ARCHIVE_MAINTAIN_COMMIT_RETRIES\s*\n\s*value:\s*"?(\d+)"?`); v != "" {
 			s.archiveMaintainCommitRetries, _ = strconv.Atoi(v)
+		}
+		// The maintainer used to borrow the Bifract resource profile, which sizes an
+		// HTTP server, not a Parquet decoder: on the smaller profiles that produced a
+		// limit compaction cannot fit inside, and the pass was OOMKilled every hour
+		// forever. Anything at or above the floor is a real sizing decision and is
+		// preserved; anything below it is inherited breakage, so the field is left
+		// zero and the size profile supplies the new limit.
+		if res := extractResources(content, "bifract-archive-maintain"); !resourceProfileEmpty(res) {
+			if parseK8sQuantityBytes(res.MemLimit) >= minArchiveMaintainMemLimit {
+				s.archiveMaintainResources = res
+			}
 		}
 	}
 

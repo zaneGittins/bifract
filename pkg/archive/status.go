@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -93,6 +94,36 @@ func MarkMaintainRunning(ctx context.Context, db *sql.DB) error {
 	return execStatusUpdate(ctx, db,
 		`UPDATE archive_maintain_status SET last_attempt_at = NOW(), last_outcome = $1, last_error = NULL WHERE id = 1`,
 		string(MaintainOutcomeRunning))
+}
+
+// ReconcileInterruptedMaintain converts a stale 'running' marker into a terminal
+// 'interrupted' outcome, returning whether one was found.
+//
+// It MUST be called while holding the maintain advisory lock, which is what
+// makes the inference sound: the lock is session-scoped, so Postgres released it
+// when the previous process died. Holding it therefore proves no pass is in
+// flight, and a row still claiming 'running' can only be the residue of a pass
+// that was killed before it could write its own outcome (OOMKill, eviction,
+// SIGKILL). Without this the marker is permanent -- the admin panel shows a live
+// "Running now" forever, which is exactly how an hourly OOMKill loop stayed
+// invisible for 14 hours.
+func ReconcileInterruptedMaintain(ctx context.Context, db *sql.DB, cause string) (bool, error) {
+	if db == nil {
+		return false, nil
+	}
+	var found bool
+	err := db.QueryRowContext(ctx,
+		`UPDATE archive_maintain_status SET last_outcome = $1, last_error = $2
+		 WHERE id = 1 AND last_outcome = $3
+		 RETURNING true`,
+		string(MaintainOutcomeInterrupted), cause, string(MaintainOutcomeRunning)).Scan(&found)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, appendMaintainHistory(ctx, db, MaintainOutcomeInterrupted, MaintainStats{}, errors.New(cause))
 }
 
 // RequestMaintainRun records an admin "Run now" request for the maintain-loop to

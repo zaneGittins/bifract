@@ -4,6 +4,11 @@ import (
 	"context"
 	"errors"
 	"log"
+	"math"
+	"os"
+	"runtime"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +43,10 @@ type MaintainOptions struct {
 	// written its data files but not yet its metadata, so a small value would race
 	// a concurrent writer and delete live data.
 	OrphanOlderThan time.Duration
+	// ScanConcurrency caps how many data files compaction decodes at once. This
+	// is the pass's dominant memory term (see MaintainScanConcurrency), so it is
+	// resolved once per pass and logged rather than left to a library default.
+	ScanConcurrency int
 }
 
 // DefaultMaintainOptions returns sensible defaults: keep ~7 days of snapshots,
@@ -52,6 +61,7 @@ func DefaultMaintainOptions() MaintainOptions {
 		ByteBudget:      4 << 30,
 		CommitRetries:   3,
 		OrphanOlderThan: 72 * time.Hour,
+		ScanConcurrency: MaintainScanConcurrency(),
 	}
 }
 
@@ -90,13 +100,108 @@ func OrphanSweepIntervalFromEnv() time.Duration {
 	return getDuration("BIFRACT_ARCHIVE_ORPHAN_INTERVAL", defaultOrphanSweepInterval)
 }
 
-// maintainScanConcurrency caps compaction's concurrent file-decode workers.
-// iceberg-go defaults this to runtime.GOMAXPROCS(0), which reads the node's
-// total CPU count rather than this container's cgroup limit -- on a
-// many-core node that lets compaction fan out far beyond what the pod is
-// actually allowed, which is what caused repeated OOMKills on an abnormal
-// backlog. Matches the maintain CronJob's own CPU limit; bump alongside it.
-const maintainScanConcurrency = 4
+// scanWorkerMemoryBudget is the all-in memory a compaction pass needs per
+// concurrent file reader: the reader's own decoded Parquet row group plus its
+// share of the rolling writer's buffer, catalog metadata, and runtime overhead.
+//
+// MEASURED, not estimated: a single-worker pass compacting 3.8GB across 512MB
+// groups peaked at 2.34GB RSS. Groups are bin-packed to TargetFileSizeBytes
+// before compaction ever sees them, so this does not grow with backlog or
+// partition size -- which is why one number works across every deployment size.
+// Rounded up, because underestimating costs an OOMKill and overestimating costs
+// a slower pass, and compaction has multiples of headroom over ingest.
+const scanWorkerMemoryBudget = 2560 << 20
+
+// fallbackScanConcurrency is used only when the process memory limit is
+// unknown (no cgroup limit and no GOMEMLIMIT), where there is no budget to
+// divide. Bounded rather than GOMAXPROCS-wide because an unknown limit is not
+// evidence of a large one.
+const fallbackScanConcurrency = 2
+
+// MaintainScanConcurrency resolves how many data files compaction may decode
+// concurrently. This is compaction's dominant memory term and the direct
+// analogue of Iceberg's max-concurrent-file-group-rewrites, which upstream
+// guidance says to lower when memory pressure appears.
+//
+// It is derived from the process memory limit rather than from CPU count: a
+// fixed constant (this was 4) is unrelated to how much memory the container
+// actually has, and on a 2GB limit it reliably OOMKilled the maintainer mid
+// pass, every pass, forever -- compaction.Analyze replans identical work each
+// time, so nothing about the retry ever differed. GOMAXPROCS is still an upper
+// bound (more decoders than cores buys nothing), and
+// BIFRACT_ARCHIVE_MAINTAIN_SCAN_CONCURRENCY overrides the whole calculation.
+//
+// automemlimit sets GOMEMLIMIT from the cgroup at startup on both Docker and
+// k8s, so reading the runtime's limit here works identically on both without
+// any platform-specific probing.
+func MaintainScanConcurrency() int {
+	if n := getIntEnv("BIFRACT_ARCHIVE_MAINTAIN_SCAN_CONCURRENCY", 0); n > 0 {
+		return n
+	}
+	return scanConcurrencyFor(processMemoryLimit(), runtime.GOMAXPROCS(0))
+}
+
+// scanConcurrencyFor is MaintainScanConcurrency's arithmetic, split out so the
+// clamps are testable without a real cgroup. memLimit of 0 means unknown.
+//
+// The floor of 1 is a deliberate choice to attempt the pass rather than refuse
+// it: a limit too small for even one worker is a deployment problem, reported by
+// MaintainMemoryUndersized so it reads as a sizing error instead of a silent
+// hourly OOMKill.
+func scanConcurrencyFor(memLimit int64, cpus int) int {
+	cpus = max(1, cpus)
+	if memLimit <= 0 {
+		return min(cpus, fallbackScanConcurrency)
+	}
+	return max(1, min(int(memLimit/scanWorkerMemoryBudget), cpus))
+}
+
+// MaintainMemoryUndersized reports whether the process memory limit is below
+// what one compaction worker needs, i.e. the pass is expected to be OOMKilled.
+// Returns the limit and the requirement so the caller can say so precisely.
+// False when the limit is unknown: absence of a limit is not evidence of a
+// small one.
+func MaintainMemoryUndersized() (undersized bool, limit, need int64) {
+	limit = processMemoryLimit()
+	return limit > 0 && limit < scanWorkerMemoryBudget, limit, scanWorkerMemoryBudget
+}
+
+// processMemoryLimit reports the Go runtime's memory limit in bytes, or 0 when
+// none is set. math.MaxInt64 is the runtime's "no limit" sentinel.
+func processMemoryLimit() int64 {
+	limit := debug.SetMemoryLimit(-1)
+	if limit <= 0 || limit == math.MaxInt64 {
+		return 0
+	}
+	return limit
+}
+
+// peakRSSBytes reports the process's peak resident set size from
+// /proc/self/status (VmHWM), or 0 where unavailable. This is the number the
+// cgroup OOM killer acts on, so it is what a pass should report; it is a
+// high-water mark since process start, not per-pass. Linux-only by
+// construction, which is every environment Bifract ships in.
+func peakRSSBytes() int64 {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "VmHWM:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return 0
+		}
+		kb, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return 0
+		}
+		return kb * 1024
+	}
+	return 0
+}
 
 // maintainCommitConflictBackoff is the fixed delay before compactGroup
 // reloads and retries after losing a commit race, so the retry doesn't
@@ -114,6 +219,14 @@ const (
 	MaintainOutcomeError           MaintainOutcome = "error"
 	MaintainOutcomeSkippedLocked   MaintainOutcome = "skipped_locked"
 	MaintainOutcomeSkippedDisabled MaintainOutcome = "skipped_disabled"
+	// MaintainOutcomeTimeout marks a pass abandoned at MaintainPassTimeout. It is
+	// distinct from a plain error so a wedged object-store call is visibly not
+	// the same failure as a pass that ran and returned one.
+	MaintainOutcomeTimeout MaintainOutcome = "timeout"
+	// MaintainOutcomeInterrupted marks a pass that died without writing its own
+	// outcome -- OOMKill, node eviction, SIGKILL. It is recorded retroactively by
+	// ReconcileInterruptedMaintain, since by definition the pass itself cannot.
+	MaintainOutcomeInterrupted MaintainOutcome = "interrupted"
 	// MaintainOutcomeRunning is a transient marker written when a pass starts, so
 	// the admin UI can show a live in-progress state. It is never appended to the
 	// history table (that records only terminal outcomes).
@@ -171,6 +284,21 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 	start := time.Now()
 	ns := catalog.ToIdentifier(Namespace)
 
+	if opts.ScanConcurrency < 1 {
+		opts.ScanConcurrency = MaintainScanConcurrency()
+	}
+	// Logged before any work: a pass killed by the OOM killer writes no outcome
+	// of its own, so this line is the only record that it started and of the
+	// settings it started with.
+	log.Printf("[Maintain] starting: scan concurrency %d, byte budget %d, memory limit %d, GOMAXPROCS %d",
+		opts.ScanConcurrency, opts.ByteBudget, processMemoryLimit(), runtime.GOMAXPROCS(0))
+	if undersized, limit, need := MaintainMemoryUndersized(); undersized {
+		log.Printf("[Maintain] WARNING: memory limit %d bytes is below the %d bytes a compaction pass needs; "+
+			"this pass will likely be killed before it finishes. Raise the maintainer's memory limit "+
+			"(BIFRACT_ARCHIVE_MAINTAIN_MEM_LIMIT on Docker, the archive-maintain Deployment's limit on k8s).",
+			limit, need)
+	}
+
 	var idents []icetable.Identifier
 	for ident, err := range c.cat.ListTables(ctx, ns) {
 		if err != nil {
@@ -201,7 +329,7 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 			// actually compacted), so it grows later tables' shares in turn.
 			if budget > 0 {
 				share := budget / int64(len(idents)-i)
-				res, err := compactTable(ctx, c, ident, tbl, share, opts.CommitRetries)
+				res, err := compactTable(ctx, c, ident, tbl, share, opts)
 				if err != nil {
 					log.Printf("[Maintain] compact %s: %v", name, err)
 				} else {
@@ -224,7 +352,7 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 		// retained snapshot references them. Running it first lets a single pass
 		// drop and (for already-aged snapshots) free in one go.
 		if days := retention[name]; days > 0 {
-			res, err := applyRetention(ctx, c, ident, days)
+			res, err := applyRetention(ctx, c, ident, days, opts.ScanConcurrency)
 			if err != nil {
 				log.Printf("[Maintain] retention %s: %v", name, err)
 			} else if res.Deleted {
@@ -246,7 +374,7 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 		// Orphan cleanup last, so it sees the files the two steps above just
 		// unlinked. Reloads the table: it must not act on pre-expiry state.
 		if opts.OrphanOlderThan > 0 {
-			deleted, err := cleanOrphans(ctx, c, ident, opts.OrphanOlderThan)
+			deleted, err := cleanOrphans(ctx, c, ident, opts.OrphanOlderThan, opts.ScanConcurrency)
 			if err != nil {
 				log.Printf("[Maintain] orphans %s: %v", name, err)
 			} else if deleted > 0 {
@@ -256,10 +384,10 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 		}
 	}
 	stats.Duration = time.Since(start)
-	log.Printf("[Maintain] done: %d tables, %d compacted, %d groups failed, %d expired, %d/%d backlog bytes compacted, retention dropped %d file(s) across %d table(s), %d orphan(s) reclaimed, footprint %d bytes / %d records, took %s",
+	log.Printf("[Maintain] done: %d tables, %d compacted, %d groups failed, %d expired, %d/%d backlog bytes compacted, retention dropped %d file(s) across %d table(s), %d orphan(s) reclaimed, footprint %d bytes / %d records, peak RSS %d bytes (limit %d), took %s",
 		stats.Tables, stats.Compacted, stats.GroupsFailed, stats.Expired, stats.CompactedBytes, stats.CandidateBytes,
 		stats.RetentionFiles, stats.RetentionTables, stats.OrphansDeleted,
-		stats.FootprintBytes, stats.FootprintRecords, stats.Duration)
+		stats.FootprintBytes, stats.FootprintRecords, peakRSSBytes(), processMemoryLimit(), stats.Duration)
 	return stats, nil
 }
 
@@ -298,12 +426,15 @@ type compactResult struct {
 // racing it can never be won by retrying harder -- it becomes an ordinary,
 // uncontested compaction candidate once sealed at day rollover. Of what's
 // left, groups are selected up to budget bytes; the first selected group is
-// always included even if it alone exceeds budget (a single oversized group
-// -- e.g. one flagged purely by delete-file count, independent of size --
-// must not stall forever), which is logged so that safety valve is visible
-// rather than silent. No-op when the plan is empty (files already large
+// always included even if it alone exceeds budget, so a budget smaller than
+// one group cannot stall the table forever. That valve is safe because
+// compaction.Analyze bin-packs groups to TargetFileSizeBytes before we ever
+// see them: a group is bounded by file size (a single file larger than the
+// target simply gets its own bin, so the ceiling is MaxFileSizeBytes), never
+// by partition size. Group size is therefore not what makes a pass expensive
+// -- ScanConcurrency is. No-op when the plan is empty (files already large
 // enough - the common case given roll-on-size at write time).
-func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, budget int64, retries int) (compactResult, error) {
+func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, budget int64, opts MaintainOptions) (compactResult, error) {
 	plan, err := compaction.Analyze(ctx, tbl, compaction.DefaultConfig())
 	if err != nil {
 		return compactResult{}, err
@@ -323,9 +454,10 @@ func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 		return compactResult{}, nil
 	}
 
-	var candidateBytes int64
+	var candidateBytes, largestGroup int64
 	for _, g := range plan.Groups {
 		candidateBytes += g.TotalSizeBytes
+		largestGroup = max(largestGroup, g.TotalSizeBytes)
 	}
 
 	var selected []compaction.Group
@@ -337,6 +469,12 @@ func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 		selected = append(selected, g)
 		groupBytes += g.TotalSizeBytes
 	}
+	// Logged before the first rewrite so a pass that dies mid-compaction leaves
+	// behind what it was attempting. Without it an OOMKill is indistinguishable
+	// from a hang: nothing at all is written between pass start and pass end.
+	log.Printf("[Maintain] compact %s: plan has %d group(s), %d candidate bytes, largest group %d bytes; rewriting %d group(s)/%d bytes against a %d byte budget at concurrency %d",
+		ident[len(ident)-1], len(plan.Groups), candidateBytes, largestGroup,
+		len(selected), groupBytes, budget, opts.ScanConcurrency)
 	if groupBytes > budget {
 		log.Printf("[Maintain] compact %s: lead group is %d bytes, over this pass's %d byte budget for the table; compacting it anyway rather than stalling on it forever",
 			ident[len(ident)-1], groupBytes, budget)
@@ -349,7 +487,7 @@ func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 			Tasks:          g.Tasks,
 			TotalSizeBytes: g.TotalSizeBytes,
 		}
-		updated, err := compactGroup(ctx, c, ident, tbl, group, retries)
+		updated, err := compactGroup(ctx, c, ident, tbl, group, opts)
 		tbl = updated
 		if err != nil {
 			log.Printf("[Maintain] compact %s: group %s: %v", ident[len(ident)-1], g.PartitionKey, err)
@@ -396,7 +534,8 @@ func isOpenPartitionGroup(g compaction.Group, today iceberg.Date) bool {
 // Always returns the freshest table handle available -- even on final
 // failure -- so the caller carries forward whatever this call last reloaded
 // rather than starting the next group from an already-known-stale table.
-func compactGroup(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, group icetable.CompactionTaskGroup, retries int) (*icetable.Table, error) {
+func compactGroup(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, group icetable.CompactionTaskGroup, opts MaintainOptions) (*icetable.Table, error) {
+	retries := opts.CommitRetries
 	if retries < 1 {
 		retries = 1
 	}
@@ -406,7 +545,7 @@ func compactGroup(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 		var err error
 		if _, err = tx.RewriteDataFiles(ctx, []icetable.CompactionTaskGroup{group}, icetable.RewriteDataFilesOptions{
 			GroupOptions: []icetable.CompactionGroupOption{
-				icetable.WithCompactionScanConcurrency(maintainScanConcurrency),
+				icetable.WithCompactionScanConcurrency(opts.ScanConcurrency),
 			},
 		}); err == nil {
 			var updated *icetable.Table
@@ -463,14 +602,14 @@ func isCommitConflict(err error) bool {
 // the size of every file the scan considered, not of the orphans it deleted, so
 // surfacing it as reclaimed bytes would overstate by roughly the table size on
 // every pass.
-func cleanOrphans(ctx context.Context, c *Catalog, ident icetable.Identifier, olderThan time.Duration) (int, error) {
+func cleanOrphans(ctx context.Context, c *Catalog, ident icetable.Identifier, olderThan time.Duration, concurrency int) (int, error) {
 	tbl, err := c.cat.LoadTable(ctx, ident)
 	if err != nil {
 		return 0, err
 	}
 	res, err := tbl.DeleteOrphanFiles(ctx,
 		icetable.WithFilesOlderThan(olderThan),
-		icetable.WithMaxConcurrency(maintainScanConcurrency),
+		icetable.WithMaxConcurrency(concurrency),
 	)
 	if err != nil {
 		return 0, err

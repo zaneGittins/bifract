@@ -61,6 +61,12 @@ const GroupsView = {
 
         const cancelGrantBtn = document.getElementById('cancelGrantPermBtn');
         if (cancelGrantBtn) cancelGrantBtn.addEventListener('click', () => this.hideGrantForm());
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            if (document.getElementById('grantPermissionModal')?.style.display === 'flex') this.hideGrantForm();
+            if (document.getElementById('grantPrismPermissionModal')?.style.display === 'flex') this.hidePrismGrantForm();
+        });
     },
 
     // Groups CRUD
@@ -600,14 +606,15 @@ const GroupsView = {
     // Grant permission form
 
     showGrantForm() {
-        const form = document.getElementById('grantPermissionForm');
-        if (form) form.style.display = 'block';
+        const modal = document.getElementById('grantPermissionModal');
+        if (modal) modal.style.display = 'flex';
         this.loadGrantFormOptions();
+        setTimeout(() => document.getElementById('permGrantType')?.focus(), 50);
     },
 
     hideGrantForm() {
-        const form = document.getElementById('grantPermissionForm');
-        if (form) form.style.display = 'none';
+        const modal = document.getElementById('grantPermissionModal');
+        if (modal) modal.style.display = 'none';
         const typeSelect = document.getElementById('permGrantType');
         if (typeSelect) typeSelect.value = 'user';
         const roleSelect = document.getElementById('permRoleSelect');
@@ -824,14 +831,15 @@ const GroupsView = {
     },
 
     showPrismGrantForm() {
-        const form = document.getElementById('grantPrismPermissionForm');
-        if (form) form.style.display = 'block';
+        const modal = document.getElementById('grantPrismPermissionModal');
+        if (modal) modal.style.display = 'flex';
         this.loadPrismGrantFormOptions();
+        setTimeout(() => document.getElementById('prismPermGrantType')?.focus(), 50);
     },
 
     hidePrismGrantForm() {
-        const form = document.getElementById('grantPrismPermissionForm');
-        if (form) form.style.display = 'none';
+        const modal = document.getElementById('grantPrismPermissionModal');
+        if (modal) modal.style.display = 'none';
         const typeSelect = document.getElementById('prismPermGrantType');
         if (typeSelect) typeSelect.value = 'user';
         const roleSelect = document.getElementById('prismPermRoleSelect');

@@ -255,7 +255,6 @@ const Dictionaries = {
         detail.innerHTML = `
 <div class="dict-detail-header">
     <div class="dict-detail-header-left">
-        <button id="dictBackBtn" class="editor-back-btn" title="Back to Dicts"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
         <div class="dict-editable-block">
             <div id="dictDetailName" class="dict-editable-title" contenteditable="true" spellcheck="false"></div>
             <div id="dictDetailDesc" class="dict-editable-desc" contenteditable="true" spellcheck="false" data-placeholder="Add description..."></div>
@@ -311,7 +310,6 @@ const Dictionaries = {
     },
 
     _bindDetailEvents() {
-        document.getElementById('dictBackBtn')?.addEventListener('click', () => { window.App?.pushSubPath(''); this.showListing(); });
         document.getElementById('dictRowSearch')?.addEventListener('input', (e) => {
             this.rowSearch = e.target.value;
             this.rowPage = 0;
