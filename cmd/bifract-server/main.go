@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -128,6 +129,10 @@ func main() {
 		}
 		os.Exit(0)
 	}
+
+	// Logged before anything else so a support bundle always carries the exact
+	// build, even when the image tag is a moving target like "latest".
+	log.Printf("Bifract %s (%s/%s, %s)", Version, runtime.GOOS, runtime.GOARCH, runtime.Version())
 
 	logMemoryLimit()
 

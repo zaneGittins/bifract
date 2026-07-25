@@ -688,12 +688,17 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 
 	// Contiguous day window, zero-filled so bars stay evenly spaced and aligned.
 	// The window ends today, or later if data carries event timestamps into the
-	// future.
+	// future. The forward extension is capped at the requested window length:
+	// toDate() accepts dates out to 2149, so one log with a skewed or misparsed
+	// timestamp would otherwise zero-fill tens of thousands of buckets.
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	start := today.AddDate(0, 0, -days+1)
 	end := today
 	if t, err := time.Parse("2006-01-02", maxDataDay); err == nil && t.After(end) {
+		if limit := today.AddDate(0, 0, days); t.After(limit) {
+			t = limit
+		}
 		end = t
 	}
 

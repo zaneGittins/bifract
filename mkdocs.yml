@@ -60,6 +60,7 @@ nav:
     - Backup & Archive: administration/backup-restore.md
     - Reverse Proxy: administration/reverse-proxy.md
     - Disk Quotas: administration/disk-quotas.md
+    - Support Bundle: administration/support-bundle.md
   - Ingestion:
     - Sending Logs: ingestion/overview.md
     - CLI Tool: ingestion/cli-tool.md

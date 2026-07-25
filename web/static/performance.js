@@ -249,6 +249,7 @@ const Performance = {
             if (data.success) {
                 this._ingestData = data.days || [];
                 this._ingestSeries = (data.series && data.series.length) ? data.series : null;
+                this.clampIngestBuckets();
                 this.renderIngestChart();
             }
         } catch (err) {
@@ -1085,6 +1086,27 @@ const Performance = {
         if (id === '__other__') return 'Other';
         if (!id) return 'Default';
         return this.fractalNames[id] || id;
+    },
+
+    // Bounds what the chart is asked to draw. Bucket count is server-side
+    // capped, but a mismatched server version returning a huge window would
+    // otherwise lock the tab: every bucket is a formatted label plus one bar
+    // per fractal series. The window starts at the requested lookback, so the
+    // leading buckets are the real data and the tail is future-dated overrun.
+    clampIngestBuckets() {
+        const max = 400;
+        const total = this._ingestData.length;
+        if (total <= max) return;
+        this._ingestData = this._ingestData.slice(0, max);
+        if (this._ingestSeries) {
+            this._ingestSeries = this._ingestSeries.map(s => ({
+                fractal_id: s.fractal_id,
+                raw_bytes: (s.raw_bytes || []).slice(0, max),
+                disk_bytes: (s.disk_bytes || []).slice(0, max),
+                rows: (s.rows || []).slice(0, max)
+            }));
+        }
+        console.warn(`[Performance] ingest window truncated to ${max} of ${total} days`);
     },
 
     renderIngestChart() {
