@@ -104,3 +104,36 @@ func TestApplyWorkloadTagging(t *testing.T) {
 		t.Errorf("inactive workloads must not tag, got %v", got)
 	}
 }
+
+// Query classes must never be configurable to reserve more memory than the node
+// has: the leftover is what inserts, their MV cascade, and merges run in.
+func TestClampCombinedMemory(t *testing.T) {
+	// Defaults sit exactly at the ceiling and must pass through untouched.
+	in := WorkloadLimits{SearchMemoryPercent: DefaultQueryMemoryPercent, RecallMemoryPercent: DefaultRecallMemoryPercent}
+	got, clamped := ClampCombinedMemory(in)
+	if clamped || got != in {
+		t.Errorf("defaults (%d + %d) should fit under %d%%, got %+v clamped=%v",
+			DefaultQueryMemoryPercent, DefaultRecallMemoryPercent, MaxCombinedQueryMemoryPercent, got, clamped)
+	}
+
+	// Over-subscription is scaled down proportionally, preserving the ratio between
+	// the classes rather than zeroing one of them.
+	got, clamped = ClampCombinedMemory(WorkloadLimits{SearchMemoryPercent: 90, RecallMemoryPercent: 75})
+	if !clamped {
+		t.Fatal("90 + 75 must be clamped")
+	}
+	if total := got.SearchMemoryPercent + got.RecallMemoryPercent; total > MaxCombinedQueryMemoryPercent {
+		t.Errorf("clamped total %d%% still exceeds %d%%", total, MaxCombinedQueryMemoryPercent)
+	}
+	if got.SearchMemoryPercent <= got.RecallMemoryPercent {
+		t.Errorf("scaling should preserve the search > recall ordering, got %+v", got)
+	}
+
+	// CPU shares are untouched: merges run unscheduled and keep competing for cores
+	// at the OS level, so CPU over-subscription degrades rather than exhausts.
+	in = WorkloadLimits{SearchCPUPercent: 90, RecallCPUPercent: 75, SearchMemoryPercent: 50, RecallMemoryPercent: 25}
+	got, _ = ClampCombinedMemory(in)
+	if got.SearchCPUPercent != 90 || got.RecallCPUPercent != 75 {
+		t.Errorf("CPU shares must not be clamped, got %+v", got)
+	}
+}

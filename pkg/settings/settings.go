@@ -3,7 +3,9 @@ package settings
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"sync"
@@ -65,6 +67,17 @@ var queryLimitsApplier func(limits storage.WorkloadLimits) error
 // changes a query resource share, so it takes effect without a restart.
 func RegisterQueryLimitsApplier(fn func(limits storage.WorkloadLimits) error) {
 	queryLimitsApplier = fn
+}
+
+// ValidationError is a settings value an admin can correct, whose message is safe
+// and useful to show them. Anything else from Update is an internal failure and
+// stays generic.
+type ValidationError struct{ msg string }
+
+func (e ValidationError) Error() string { return e.msg }
+
+func validationErrorf(format string, args ...interface{}) error {
+	return ValidationError{msg: fmt.Sprintf(format, args...)}
 }
 
 // Global settings instance
@@ -237,13 +250,13 @@ func Update(s *Settings) error {
 	}
 
 	if s.AlertEvalIntervalSeconds < minAlertEvalIntervalSeconds {
-		return fmt.Errorf("alert_eval_interval_seconds must be at least %d", minAlertEvalIntervalSeconds)
+		return validationErrorf("alert evaluation interval must be at least %d seconds", minAlertEvalIntervalSeconds)
 	}
 	if s.RecallTimeoutSeconds < minRecallTimeoutSeconds {
-		return fmt.Errorf("recall_timeout_seconds must be at least %d", minRecallTimeoutSeconds)
+		return validationErrorf("Recall timeout must be at least %d seconds", minRecallTimeoutSeconds)
 	}
 	if s.RecallMaxBytesRead < 0 {
-		return fmt.Errorf("recall_max_bytes_read cannot be negative (0 = unlimited)")
+		return validationErrorf("Recall max bytes read cannot be negative (0 = unlimited)")
 	}
 	s.RecallConcurrency = clampRecallConcurrency(s.RecallConcurrency)
 	s.QueryCPUPercent = storage.ClampQueryLimitPercent(s.QueryCPUPercent)
@@ -254,7 +267,7 @@ func Update(s *Settings) error {
 	// the node has should be told, not shown a number that is not what runs. The
 	// headroom left over is what inserts, their MV cascade, and merges rely on.
 	if total := s.QueryMemoryPercent + s.RecallMemoryPercent; total > storage.MaxCombinedQueryMemoryPercent {
-		return fmt.Errorf("search and Recall memory shares total %d%%; they must total at most %d%% so merges and ingestion keep headroom",
+		return validationErrorf("search and Recall memory shares total %d%%; they must total at most %d%% so merges and ingestion keep headroom",
 			total, storage.MaxCombinedQueryMemoryPercent)
 	}
 
@@ -414,6 +427,12 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := Update(&settings); err != nil {
+		var ve ValidationError
+		if errors.As(err, &ve) {
+			respondJSON(w, http.StatusBadRequest, SettingsResponse{Success: false, Error: ve.Error()})
+			return
+		}
+		log.Printf("[Settings] save failed: %v", err)
 		respondJSON(w, http.StatusInternalServerError, SettingsResponse{
 			Success: false,
 			Error:   "Failed to save settings",
@@ -432,3 +451,4 @@ func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
 }
+

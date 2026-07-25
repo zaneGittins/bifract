@@ -7,6 +7,14 @@ README.md
 *.md
 
 # Build artifacts
+# Locally-built binaries at the repo root are ~230MB of build context that the
+# builder stage recompiles anyway.
+/bifract
+/bifract-server
+/bifract-archiver
+/bifract-setup
+/cmd/bifract/bifract
+/cmd/bifract-server/bifract-server
 *.exe
 *.exe~
 *.dll

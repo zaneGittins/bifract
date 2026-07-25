@@ -12,21 +12,22 @@ RUN go mod download
 
 COPY . .
 
-# Build fully static binary - strip debug symbols to reduce size
+# Build fully static binary - strip debug symbols to reduce size.
+# CGO_ENABLED=0 alone produces a static binary; -a/-installsuffix would force a
+# full stdlib rebuild on every build (~100s each) for an identical result.
+# The go-build cache mount makes rebuilds incremental across docker builds.
 # BIFRACT_VERSION can be passed as a build arg (e.g. docker build --build-arg BIFRACT_VERSION=v1.0.0)
 ARG BIFRACT_VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux go build \
--a \
--installsuffix cgo \
+RUN --mount=type=cache,target=/root/.cache/go-build \
+CGO_ENABLED=0 GOOS=linux go build \
 -ldflags="-w -s -X main.Version=${BIFRACT_VERSION}" \
 -o bifract-server ./cmd/bifract-server
 
 # Build the archive sidecar binary from the same module (version lockstep with
 # the server: they share the pkg/spool on-disk format). Shipped in the same
 # scratch image and run as a sidecar via `command: ["/bifract-archiver"]`.
-RUN CGO_ENABLED=0 GOOS=linux go build \
--a \
--installsuffix cgo \
+RUN --mount=type=cache,target=/root/.cache/go-build \
+CGO_ENABLED=0 GOOS=linux go build \
 -ldflags="-w -s -X main.Version=${BIFRACT_VERSION}" \
 -o bifract-archiver ./cmd/bifract-archiver
 
