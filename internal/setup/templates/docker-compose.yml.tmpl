@@ -82,6 +82,11 @@ services:
   bifract:
     image: ghcr.io/zanegittins/bifract:${BIFRACT_VERSION:-latest}
     container_name: bifract-app
+    # mem_limit gives automemlimit a real cgroup ceiling to derive GOMEMLIMIT from,
+    # so the GC tightens as the process approaches the limit instead of the container
+    # being OOM-killed at it. CPU is deliberately left uncapped: automaxprocs would
+    # shrink GOMAXPROCS to match and slow query serving.
+    mem_limit: ${BIFRACT_MEM_LIMIT:-4g}
     environment:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 9000
@@ -167,6 +172,10 @@ services:
     image: ghcr.io/zanegittins/bifract:${BIFRACT_VERSION:-latest}
     container_name: bifract-ingest
     command: ["ingest"]
+    # Sized above the ingest queue's worst case (BIFRACT_INGEST_QUEUE_SIZE x 5,000
+    # logs, ~1GB) plus the archive spool, so GOMEMLIMIT lands above normal working
+    # set and the GC only tightens under genuine pressure.
+    mem_limit: ${BIFRACT_INGEST_MEM_LIMIT:-4g}
     environment:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 9000

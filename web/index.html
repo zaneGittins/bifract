@@ -870,6 +870,38 @@
                                         </select>
                                     </div>
                                 </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="recallCPUPercentSettings" class="sp-row-label">Recall CPU share</label>
+                                        <p class="sp-row-desc">Share of each ClickHouse node's cores that running Recall searches may use in total. Recall is scheduled behind interactive search, so an archive scan cannot make live search feel slow.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="recallCPUPercentSettings" class="setting-select">
+                                            <option value="10">10% of cores</option>
+                                            <option value="25">25% of cores</option>
+                                            <option value="50">50% of cores</option>
+                                            <option value="75">75% of cores</option>
+                                            <option value="0">Uncapped</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="recallMemoryPercentSettings" class="sp-row-label">Recall memory share</label>
+                                        <p class="sp-row-desc">Share of each ClickHouse node's memory budget that running Recall searches may reserve in total. This is the only enforced ceiling on an archive scan, since ClickHouse cannot apply a byte limit to Iceberg reads once a scan is running.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="recallMemoryPercentSettings" class="setting-select">
+                                            <option value="10">10% of memory</option>
+                                            <option value="25">25% of memory</option>
+                                            <option value="50">50% of memory</option>
+                                            <option value="75">75% of memory</option>
+                                            <option value="0">Uncapped</option>
+                                        </select>
+                                    </div>
+                                </div>
                             </div>
                         </section>
 

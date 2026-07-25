@@ -613,9 +613,37 @@ const QueryExecutor = {
                         chart_type: frame.chart_type,
                         chart_config: frame.chart_config
                     }, elements, !!frame.streaming);
+                    // Replace the previous search's timeline with an empty axis for this
+                    // one, so a stale chart is never left on screen while counts arrive.
+                    if (frame.histogram_meta) {
+                        const hm = frame.histogram_meta;
+                        this._applyHistogram({
+                            buckets: new Array(hm.bucket_count).fill(0),
+                            bucket_start: hm.bucket_start,
+                            bucket_seconds: hm.bucket_seconds,
+                            covered_from: hm.bucket_count
+                        });
+                        this._histogramApplied = false;
+                    } else if (window.Timeline) {
+                        Timeline.hide();
+                    }
                     break;
                 case 'histogram':
-                    histogram = frame.buckets || null;
+                    // The server scans the histogram newest-first and sends one frame
+                    // per chunk, so paint each as it lands rather than waiting for the
+                    // full range. Frames keep arriving after 'done'.
+                    histogram = frame;
+                    this._histogramChunks++;
+                    this._applyHistogram(frame);
+                    break;
+                case 'histogram_end':
+                    // Scan ended without covering the range. Keep what was counted, but
+                    // stop implying the rest is still coming.
+                    if (this._histogramChunks === 0) {
+                        if (window.Timeline) Timeline.hide();
+                    } else if (histogram) {
+                        this._applyHistogram(histogram, null, { pendingLabel: 'not scanned' });
+                    }
                     break;
                 case 'rows':
                     if (frame.data && frame.data.length) {
@@ -643,6 +671,7 @@ const QueryExecutor = {
                         limit_hit: frame.limit_hit,
                         execution_ms: frame.execution_ms,
                         histogram: histogram,
+                        histogram_pending: frame.histogram_pending,
                         time_start: timeRange.start,
                         time_end: timeRange.end
                     }, elements);
@@ -686,6 +715,8 @@ const QueryExecutor = {
         this.chartConfig = data.chart_config || {};
         this.sortColumn = null;
         this.sortDirection = null;
+        this._histogramApplied = false;
+        this._histogramChunks = 0;
 
         const outputTypeLabels = {
             piechart: 'Pie Chart', barchart: 'Bar Chart', graph: 'Graph', mesh: 'Mesh Network',
@@ -733,6 +764,39 @@ const QueryExecutor = {
                 this.renderResults(this.currentResults);
             }
         }
+    },
+
+    // Paint a histogram onto the timeline. Accepts either a streaming frame (buckets
+    // plus its own bucket-snapped range and how much of it has been scanned) or a
+    // buffered response's plain bucket array, whose range rides on the response.
+    _applyHistogram(hist, response, opts) {
+        if (!window.Timeline || !hist) return;
+        const isFrame = !Array.isArray(hist);
+        const buckets = isFrame ? hist.buckets : hist;
+        if (!Array.isArray(buckets) || !buckets.length) return;
+
+        // pgraph() is a full-canvas process map, not a time series -- suppress the time
+        // histogram (its output columns include timestamp, so the field-order rule alone
+        // would not hide it) to give the graph the full screen height, like piechart.
+        const shouldShow = (!this.fieldOrder || this.fieldOrder.includes('timestamp')) && this.chartType !== 'pgraph';
+        if (!shouldShow) {
+            Timeline.hide();
+            return;
+        }
+
+        const start = (isFrame ? hist.bucket_start : response && response.time_start) || this.currentTimeRange.start;
+        const bucketSec = (isFrame ? hist.bucket_seconds : response && response.bucket_seconds) || 0;
+        let end = isFrame ? null : (response && response.time_end);
+        if (!end) {
+            end = bucketSec
+                ? new Date(new Date(start).getTime() + buckets.length * bucketSec * 1000).toISOString()
+                : this.currentTimeRange.end;
+        }
+
+        this._histogramApplied = true;
+        const coveredFrom = isFrame ? (hist.covered_from || 0) : 0;
+        const pendingLabel = (opts && opts.pendingLabel) || 'scanning…';
+        requestAnimationFrame(() => Timeline.renderFromHistogram(buckets, { start, end }, { coveredFrom, pendingLabel }));
     },
 
     // Finalize a completed query: counts, cursor, timeline, comments, profile.
@@ -795,20 +859,14 @@ const QueryExecutor = {
 
         if (window.FieldStats) FieldStats.onResults();
 
-        // pgraph() is a full-canvas process map, not a time series -- suppress the time histogram
-        // (its output columns include timestamp, so it wouldn't be hidden by the field-order rule
-        // alone) to give the graph the full screen height, like piechart and other chart outputs.
-        const shouldShowTimeline = (!this.fieldOrder || this.fieldOrder.includes('timestamp')) && this.chartType !== 'pgraph';
+        // The histogram is authoritative over the whole time range; the results table is
+        // capped at the row limit. Deriving a timeline from the returned rows instead would
+        // draw the capped page (all newest, one narrow band) as if it were the full range,
+        // so there is no row-derived fallback here: either a real histogram or nothing.
         if (window.Timeline) {
-            if (shouldShowTimeline && data.histogram) {
-                const histTimeRange = {
-                    start: data.time_start || this.currentTimeRange.start,
-                    end: data.time_end || this.currentTimeRange.end
-                };
-                requestAnimationFrame(() => Timeline.renderFromHistogram(data.histogram, histTimeRange));
-            } else if (shouldShowTimeline) {
-                requestAnimationFrame(() => Timeline.render(this.currentResults, this.currentTimeRange));
-            } else {
+            if (data.histogram && !this._histogramApplied) {
+                this._applyHistogram(data.histogram, data);
+            } else if (!data.histogram && !data.histogram_pending) {
                 Timeline.hide();
             }
         }

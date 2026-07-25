@@ -98,6 +98,12 @@ func (h *NotebookHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	}, client.ID)
 }
 
+func forbidden(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+}
+
 // requireRoleOnFractal checks the user has the required role on a specific fractal.
 func (h *NotebookHandler) requireRoleOnFractal(r *http.Request, fractalID string, required rbac.Role) bool {
 	user, ok := r.Context().Value("user").(*storage.User)
@@ -173,6 +179,21 @@ func (h *NotebookHandler) HandleListNotebooks(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Re-check access on the scope every request. The scope was authorized when
+	// it was selected, but permissions can be revoked while the session lives on.
+	selectedPrism, _ := r.Context().Value("selected_prism").(string)
+	if selectedPrism != "" {
+		if !h.requireRoleOnPrism(r, selectedPrism, rbac.RoleViewer) {
+			forbidden(w)
+			return
+		}
+	} else if selectedFractal != "" {
+		if !h.requireRoleOnFractal(r, selectedFractal, rbac.RoleViewer) {
+			forbidden(w)
+			return
+		}
+	}
+
 	// Parse pagination parameters
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
@@ -196,8 +217,8 @@ func (h *NotebookHandler) HandleListNotebooks(w http.ResponseWriter, r *http.Req
 	// Get notebooks with pagination
 	var notebooks []storage.Notebook
 	var total int
-	if prismID, ok := r.Context().Value("selected_prism").(string); ok && prismID != "" {
-		notebooks, total, err = h.pg.GetNotebooksByPrism(r.Context(), prismID, limit, offset)
+	if selectedPrism != "" {
+		notebooks, total, err = h.pg.GetNotebooksByPrism(r.Context(), selectedPrism, limit, offset)
 	} else {
 		notebooks, total, err = h.pg.GetNotebooksByFractal(r.Context(), selectedFractal, limit, offset)
 	}

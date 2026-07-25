@@ -54,7 +54,8 @@ const SettingsView = {
 
         // Set up system limits dropdowns
         ['alertTimeoutSettings', 'queryTimeoutSettings', 'queryCPUPercentSettings', 'queryMemoryPercentSettings', 'alertEvalIntervalSettings',
-         'recallTimeoutSettings', 'recallMaxBytesSettings', 'recallConcurrencySettings'].forEach(id => {
+         'recallTimeoutSettings', 'recallMaxBytesSettings', 'recallConcurrencySettings',
+         'recallCPUPercentSettings', 'recallMemoryPercentSettings'].forEach(id => {
             const select = document.getElementById(id);
             if (select) select.addEventListener('change', () => this.saveSettings(select));
         });
@@ -626,6 +627,14 @@ const SettingsView = {
                 if (recallConcurrencySelect) {
                     recallConcurrencySelect.value = String(data.settings.recall_concurrency || 5);
                 }
+                const recallCPUSelect = document.getElementById('recallCPUPercentSettings');
+                if (recallCPUSelect) {
+                    recallCPUSelect.value = String(data.settings.recall_cpu_percent ?? 25);
+                }
+                const recallMemorySelect = document.getElementById('recallMemoryPercentSettings');
+                if (recallMemorySelect) {
+                    recallMemorySelect.value = String(data.settings.recall_memory_percent ?? 25);
+                }
             }
         } catch (error) {
             console.error('Failed to load settings:', error);
@@ -660,7 +669,9 @@ const SettingsView = {
                     alert_eval_interval_seconds: parseInt(document.getElementById('alertEvalIntervalSettings')?.value || '60', 10),
                     recall_timeout_seconds: parseInt(document.getElementById('recallTimeoutSettings')?.value || '900', 10),
                     recall_max_bytes_read: parseInt(document.getElementById('recallMaxBytesSettings')?.value || '0', 10),
-                    recall_concurrency: parseInt(document.getElementById('recallConcurrencySettings')?.value || '5', 10)
+                    recall_concurrency: parseInt(document.getElementById('recallConcurrencySettings')?.value || '5', 10),
+                    recall_cpu_percent: parseInt(document.getElementById('recallCPUPercentSettings')?.value || '25', 10),
+                    recall_memory_percent: parseInt(document.getElementById('recallMemoryPercentSettings')?.value || '25', 10)
                 })
             });
 

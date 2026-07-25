@@ -278,8 +278,15 @@ func (h *Handler) HandleSelectFractal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Return the resolved role so the client renders role-gated controls for the
+	// scope it just moved to, instead of carrying the previous scope's role over.
+	roleName := string(role)
+	if user.IsAdmin {
+		roleName = string(rbac.RoleAdmin)
+	}
 	h.sendSuccess(w, "Fractal selected successfully", map[string]interface{}{
 		"selected_fractal": fractal,
+		"role":             roleName,
 	})
 }
 

@@ -9,6 +9,7 @@ import (
 	"bifract/pkg/models"
 	"bifract/pkg/parser"
 	"bifract/pkg/settings"
+	"bifract/pkg/storage"
 )
 
 // ExecuteResult is the output of a server-side (non-HTTP) BQL execution. Its
@@ -31,14 +32,20 @@ type ExecuteResult struct {
 //
 // Callers are responsible for authorization: this is a trusted path used by the
 // dashboard executor and the on-demand widget execute endpoints, where access is
-// already gated at the dashboard level. Queries run at low ClickHouse priority so
-// background refreshes never starve interactive searches or ingestion.
+// already gated at the dashboard level. Queries run at low ClickHouse priority and
+// under the search workload, so background refreshes never starve interactive
+// searches or ingestion.
 //
 // Pass either fractalID (direct scope) or prismID (prism scope), not both.
 func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, prismID string, start, end time.Time) (*ExecuteResult, error) {
 	if strings.TrimSpace(queryStr) == "" {
 		return nil, fmt.Errorf("query is empty")
 	}
+
+	// Dashboard widgets and shared-link wallboards are user-facing query work, so they
+	// share the search workload's budget rather than getting an unbounded one of their
+	// own: a dashboard is one page that happens to issue many queries at once.
+	ctx = storage.UserSearchContext(ctx)
 	const maxQueryLength = 10000
 	if len(queryStr) > maxQueryLength {
 		return nil, fmt.Errorf("query too long (%d chars, max %d)", len(queryStr), maxQueryLength)

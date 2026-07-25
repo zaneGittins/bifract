@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -51,6 +53,11 @@ import (
 	"bifract/pkg/sse"
 	"bifract/pkg/storage"
 
+	// automemlimit derives GOMEMLIMIT from the container's cgroup so the GC works
+	// harder as the process approaches the limit instead of being OOM-killed at it.
+	// Matters most in ingest mode, which buffers up to 500K logs plus the archive
+	// spool. No-op where no cgroup limit applies.
+	_ "github.com/KimMachineGun/automemlimit"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
@@ -100,6 +107,18 @@ func (a *fractalAccessAdapter) HasFractalAccess(ctx context.Context, user *stora
 	return role != rbac.RoleNone
 }
 
+// logMemoryLimit reports the GOMEMLIMIT automemlimit derived from the container's
+// cgroup. A deployment with no memory limit is worth surfacing: the GC then has no
+// ceiling to work against and the container is OOM-killed rather than collecting.
+func logMemoryLimit() {
+	limit := debug.SetMemoryLimit(-1)
+	if limit <= 0 || limit == math.MaxInt64 {
+		log.Println("[Runtime] No container memory limit detected; GOMEMLIMIT unset")
+		return
+	}
+	log.Printf("[Runtime] GOMEMLIMIT %d MiB (from cgroup)", limit>>20)
+}
+
 func main() {
 	// Quick health probe for Docker HEALTHCHECK.
 	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
@@ -109,6 +128,8 @@ func main() {
 		}
 		os.Exit(0)
 	}
+
+	logMemoryLimit()
 
 	// Ingest-only data-plane mode (`bifract-server ingest`), matching the archiver's
 	// command-arg dispatch. No arg = the full server below (control plane + query + UI).
@@ -285,14 +306,20 @@ func main() {
 		log.Printf("Warning: failed to ensure ingest Postgres role: %v", err)
 	}
 
-	// Bound interactive searches to a share of each node's CPU and memory so one
-	// expensive search cannot consume the machine and stall ingestion. Non-fatal:
-	// on failure searches simply run unscheduled, as they did before this existed.
-	if err := db.ReconcileQueryWorkload(context.Background(), settings.Get().QueryCPUPercent, settings.Get().QueryMemoryPercent); err != nil {
-		log.Printf("Warning: failed to reconcile search resource limits: %v", err)
+	// Bound each query class (interactive search, archive recall) to a share of each
+	// node's CPU and memory so no one class can consume the machine and stall
+	// ingestion. Non-fatal: on failure queries run unscheduled, as they did before.
+	cur := settings.Get()
+	if err := db.ReconcileQueryWorkloads(context.Background(), storage.WorkloadLimits{
+		SearchCPUPercent:    cur.QueryCPUPercent,
+		SearchMemoryPercent: cur.QueryMemoryPercent,
+		RecallCPUPercent:    cur.RecallCPUPercent,
+		RecallMemoryPercent: cur.RecallMemoryPercent,
+	}); err != nil {
+		log.Printf("Warning: failed to reconcile query resource limits: %v", err)
 	}
-	settings.RegisterQueryLimitsApplier(func(cpuPercent, memPercent int) error {
-		return db.ReconcileQueryWorkload(context.Background(), cpuPercent, memPercent)
+	settings.RegisterQueryLimitsApplier(func(limits storage.WorkloadLimits) error {
+		return db.ReconcileQueryWorkloads(context.Background(), limits)
 	})
 
 	// Initialize fractal management system
@@ -630,6 +657,15 @@ func main() {
 	sseHub := sse.NewHub()
 	notebookHandler.SetSSEHub(sseHub)
 	dashboardHandler.SetSSEHub(sseHub)
+
+	// The hub only reaches clients on this process. Attach the Postgres relay so
+	// collaborators spread across replicas still see each other's edits and
+	// presence. A failure here is not fatal: single-replica deployments keep
+	// working, multi-replica ones degrade to per-pod delivery with a loud log.
+	sseRelay, err := sse.NewRelay(pg.DB(), pg.ConnString(), sseHub)
+	if err != nil {
+		log.Printf("[SSE] Cross-replica relay unavailable, live updates will not span replicas: %v", err)
+	}
 
 	// Background dashboard executor: presence-gated, backpressure-aware periodic
 	// refresh of widgets for dashboards that currently have live viewers. It
@@ -2385,6 +2421,9 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down server...")
+	if sseRelay != nil {
+		sseRelay.Close()
+	}
 	sseHub.Close()
 
 	// Stop accepting new HTTP connections

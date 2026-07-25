@@ -268,10 +268,10 @@ const FractalSelector = {
             this.availableFractals = data.data.fractals || [];
             this.availablePrisms = data.data.prisms || [];
             this.renderFractalMenu();
-            this.selectCurrentFractal();
+            await this.selectCurrentFractal();
 
             // Process share link params now that fractals/prisms are loaded.
-            this.processShareLinkIfPresent();
+            await this.processShareLinkIfPresent();
 
         } catch (error) {
             console.error('Failed to load fractals:', error);
@@ -284,7 +284,7 @@ const FractalSelector = {
 
     // Check URL for share link params and auto-select the target fractal/prism.
     // Called after loadAvailableFractals so data is guaranteed ready.
-    processShareLinkIfPresent() {
+    async processShareLinkIfPresent() {
         if (!window.location.search) return;
         const params = new URLSearchParams(window.location.search);
         if (!params.has('q') || !params.has('tr')) return;
@@ -320,18 +320,25 @@ const FractalSelector = {
             }
         }
 
-        // Select the context (fires onFractalChange).
-        if (isPrism && window.FractalContext?.setCurrentPrism) {
-            window.FractalContext.setCurrentPrism(target);
-        } else if (window.FractalContext?.setCurrentFractal) {
-            window.FractalContext.setCurrentFractal(target);
-        }
-
-        // Navigate to the search view, then call loadFromShareLink.
-        // Data is guaranteed available since we just loaded it.
+        // Navigate first so the search DOM is live before any query runs.
         if (window.App?.showFractalView) {
             window.App.showFractalView('search');
         }
+
+        // Switching scope fires onFractalChange, which picks up the share params
+        // itself. Awaiting matters: the scope must be committed on the server
+        // before the query runs, or a prism share link (which sends no
+        // fractal_id) executes against whatever scope the session was last on.
+        const alreadyOnTarget = window.FractalContext?.currentFractal?.id === target.id;
+        if (!alreadyOnTarget && window.FractalContext) {
+            if (isPrism) {
+                await window.FractalContext.setCurrentPrism(target);
+            } else {
+                await window.FractalContext.setCurrentFractal(target);
+            }
+            return;
+        }
+
         if (window.QueryExecutor?.loadFromShareLink) {
             window.QueryExecutor.loadFromShareLink();
         }
@@ -401,7 +408,7 @@ const FractalSelector = {
         }
     },
 
-    selectCurrentFractal() {
+    async selectCurrentFractal() {
         if (this.currentFractal) return;
 
         // Source of truth for which scope we should render is the server
@@ -433,11 +440,15 @@ const FractalSelector = {
         if (this.availableFractals.length > 0) {
             const defaultFractal = this.availableFractals.find(fractal => fractal.is_default);
             const targetFractal = defaultFractal || this.availableFractals[0];
-            if (targetFractal) {
+            if (targetFractal && window.FractalContext) {
+                // Awaited: the hash router may be selecting a different scope
+                // concurrently, and an unawaited write here can land after it and
+                // leave the session on the default while the UI shows the other.
+                const role = await FractalContext.selectFractalOnServer(targetFractal.id);
+                if (role === null) return;
+                // Re-check: the router may have won the race while we waited.
+                if (this.currentFractal) return;
                 this._applyInitialSelection(targetFractal, 'fractal');
-                if (window.FractalContext) {
-                    FractalContext.selectFractalOnServer(targetFractal.id);
-                }
             }
         }
     },
@@ -473,47 +484,12 @@ const FractalSelector = {
                 throw new Error('Selected fractal not found');
             }
 
-            // Update session on server
-            const response = await fetch(`/api/v1/fractals/${fractalId}/select`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest'
-                },
-                credentials: 'include'
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.error || `HTTP ${response.status}`);
-            }
-
-            this.currentFractal = selectedFractal;
-            this.updateSelectorText(selectedFractal.name);
-
-            // Update auth fractal_role from the stored user_role
-            if (window.Auth && Auth.currentUser) {
-                Auth.currentUser.fractal_role = selectedFractal.user_role || '';
-                Auth.currentUser.selected_fractal = selectedFractal.id;
-                Auth.currentUser.selected_prism = '';
-                Auth.updateRBACVisibility();
-            }
-
-            // Keep FractalContext, the bottom-left time bar, and localStorage
-            // in sync. This mirrors the work FractalContext.setCurrentFractal()
-            // does, minus the redundant server call we already made above.
-            if (window.FractalContext) {
-                FractalContext.currentFractal = selectedFractal;
-                FractalContext.currentItemType = 'fractal';
-                FractalContext._saveToStorage();
-            }
-            if (window.TimeBar) {
-                TimeBar.updateFractalName(selectedFractal.name);
-            }
+            // Delegate the whole switch (server select, authoritative role,
+            // client state, notifications). Keeping a second copy of this here is
+            // what let the two paths drift, notably on the role refresh.
+            if (!(await FractalContext.setCurrentFractal(selectedFractal))) return;
 
             this._recordUsage(fractalId);
-            if (window.FractalContext) FractalContext.clearSearchState();
-            this.refreshCurrentView();
 
         } catch (error) {
             console.error('Failed to select fractal:', error);
@@ -534,40 +510,10 @@ const FractalSelector = {
             const prism = this.availablePrisms.find(p => p.id === prismId);
             if (!prism) throw new Error('Prism not found');
 
-            const response = await fetch(`/api/v1/prisms/${prismId}/select`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                credentials: 'include'
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.error || `HTTP ${response.status}`);
-            }
-
-            this.currentFractal = prism;
-            this.updateSelectorText(prism.name);
-
-            if (window.Auth && Auth.currentUser) {
-                Auth.currentUser.selected_prism = prism.id;
-                Auth.currentUser.selected_fractal = '';
-                // Refresh role-gated UI for the new prism scope. The fractal
-                // path does this too; keep them symmetrical.
-                Auth.updateRBACVisibility();
-            }
-
-            if (window.FractalContext) {
-                FractalContext.currentFractal = prism;
-                FractalContext.currentItemType = 'prism';
-                FractalContext._saveToStorage();
-            }
-            if (window.TimeBar) {
-                TimeBar.updateFractalName(prism.name);
-            }
+            // Same delegation as selectFractal: one implementation of a scope switch.
+            if (!(await FractalContext.setCurrentPrism(prism))) return;
 
             this._recordUsage(prismId);
-            if (window.FractalContext) FractalContext.clearSearchState();
-            this.refreshCurrentView();
 
         } catch (error) {
             console.error('Failed to select prism:', error);
@@ -581,23 +527,6 @@ const FractalSelector = {
     setCurrentFractal(fractalObject) {
         this.currentFractal = fractalObject;
         this.updateSelectorText(fractalObject.name);
-    },
-
-    refreshCurrentView() {
-        // Notify every module that cares about scope changes. This is the single
-        // source of truth for "tell the UI the scope changed" — do NOT special-case
-        // individual views here, or modules added later will silently stop reloading
-        // on scope switches. See FractalContext.notifyFractalChange() for the list.
-        try {
-            if (window.FractalContext && typeof FractalContext.notifyFractalChange === 'function') {
-                FractalContext.notifyFractalChange();
-            }
-            if (window.App && typeof App.updateScopedTabVisibility === 'function') {
-                App.updateScopedTabVisibility();
-            }
-        } catch (error) {
-            console.error('Error refreshing current view:', error);
-        }
     },
 
     toggleDropdown() {

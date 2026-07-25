@@ -1,3 +1,90 @@
+// Per-request scope propagation.
+//
+// The server session holds one fractal/prism per session cookie, which every
+// browser tab shares. Without a per-request scope, switching context in one tab
+// silently repoints every other tab: their lists, their writes, and (in prism
+// context, where no fractal_id is sent) their queries all follow the session.
+//
+// So every same-origin /api/v1 request carries this tab's scope in X-Bifract-Scope.
+// The server authorizes the header against RBAC and only falls back to the
+// session scope when the header is absent (fresh load, or a recovery endpoint).
+// See ScopeHeader in pkg/auth/auth.go.
+(function installScopeHeader() {
+    const SCOPE_HEADER = 'X-Bifract-Scope';
+    const SCOPE_INVALID_HEADER = 'X-Bifract-Scope-Invalid';
+    const nativeFetch = window.fetch.bind(window);
+    let rejectionHandled = false;
+
+    function currentScope() {
+        const ctx = window.FractalContext;
+        if (!ctx || !ctx.currentFractal || !ctx.currentFractal.id) return null;
+        return (ctx.isPrism() ? 'prism:' : 'fractal:') + ctx.currentFractal.id;
+    }
+
+    function isApiCall(input) {
+        try {
+            const raw = (input && typeof input === 'object' && input.url) ? input.url : String(input);
+            const url = new URL(raw, window.location.origin);
+            return url.origin === window.location.origin && url.pathname.startsWith('/api/v1/');
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // The scope this tab holds is gone (deleted, or access revoked). Drop it and
+    // return to the listing rather than letting every request fail. Debounced so
+    // a burst of parallel requests triggers one recovery.
+    function onScopeRejected() {
+        if (rejectionHandled) return;
+        rejectionHandled = true;
+        setTimeout(() => { rejectionHandled = false; }, 5000);
+
+        try {
+            localStorage.removeItem('bifract_current_context');
+        } catch (e) {
+            // localStorage may be unavailable
+        }
+        if (window.FractalContext) {
+            FractalContext.currentFractal = null;
+            FractalContext.currentItemType = 'fractal';
+        }
+        if (window.FractalSelector) {
+            FractalSelector.currentFractal = null;
+            FractalSelector.updateSelectorText('Select fractal');
+        }
+        if (window.Toast) {
+            Toast.error('Context unavailable', 'You no longer have access to this fractal or prism.');
+        }
+        if (window.App && typeof App.showMainView === 'function') {
+            App.showMainView('fractalListing');
+        }
+    }
+
+    function checkResponse(res) {
+        if (res.status === 403 && res.headers.get(SCOPE_INVALID_HEADER)) {
+            onScopeRejected();
+        }
+        return res;
+    }
+
+    window.fetch = function (input, init) {
+        const scope = currentScope();
+        if (!scope || !isApiCall(input)) return nativeFetch(input, init);
+
+        if (typeof Request !== 'undefined' && input instanceof Request) {
+            const req = new Request(input, init);
+            req.headers.set(SCOPE_HEADER, scope);
+            return nativeFetch(req).then(checkResponse);
+        }
+
+        const opts = Object.assign({}, init || {});
+        const headers = new Headers(opts.headers || {});
+        headers.set(SCOPE_HEADER, scope);
+        opts.headers = headers;
+        return nativeFetch(input, opts).then(checkResponse);
+    };
+})();
+
 // FractalContext - Manages the current fractal/prism context for queries
 const FractalContext = {
     currentFractal: null,
@@ -59,29 +146,23 @@ const FractalContext = {
     },
 
     // Restore the current fractal/prism from localStorage (for new-tab hash routing).
-    // Returns true if restored successfully, false otherwise. Same race rules
-    // as setCurrentFractal: await the server /select before notifying modules.
+    // Returns true if restored successfully, false otherwise. Same contract as
+    // setCurrentFractal: the server /select must succeed before any client state
+    // moves, so a stale or revoked saved context leaves nothing behind.
     async restoreFromStorage() {
         try {
             const raw = localStorage.getItem('bifract_current_context');
             if (!raw) return false;
             const saved = JSON.parse(raw);
             if (!saved || !saved.id || !saved.name) return false;
-            this.currentFractal = { id: saved.id, name: saved.name };
-            this.currentItemType = saved.type || 'fractal';
 
-            if (window.FractalSelector) {
-                FractalSelector.currentFractal = this.currentFractal;
-                FractalSelector.updateSelectorText(saved.name);
-            }
-            if (window.TimeBar) {
-                TimeBar.updateFractalName(saved.name);
-            }
-
-            const ok = this.currentItemType === 'prism'
+            const type = saved.type || 'fractal';
+            const role = type === 'prism'
                 ? await this.selectPrismOnServer(saved.id)
                 : await this.selectFractalOnServer(saved.id);
-            if (!ok) return false;
+            if (role === null) return false;
+
+            this._applyScope({ id: saved.id, name: saved.name }, type, role);
             this.notifyFractalChange();
             return true;
         } catch (e) {
@@ -105,88 +186,79 @@ const FractalContext = {
         }
     },
 
-    // Set the current fractal. MUST await the server /select call before
-    // firing notifyFractalChange, otherwise modules reload with the old
-    // session still active and display cross-scope data under the new label.
+    // Move every piece of client-side scope state to `target` in one step.
+    // Callers must have already committed the change on the server, so that a
+    // failed /select can never leave the label, the selector, localStorage and
+    // the session disagreeing about which scope the user is looking at.
+    _applyScope(target, type, role) {
+        this.currentFractal = target;
+        this.currentItemType = type;
+        this._saveToStorage();
+
+        if (window.FractalSelector) {
+            FractalSelector.currentFractal = target;
+            FractalSelector.updateSelectorText(target.name);
+        }
+        // Role-gated UI reads the role for the CURRENT scope. Carrying the previous
+        // scope's role over shows admin controls in a fractal or prism where the
+        // user is only a viewer, so always take the role the server just resolved.
+        if (window.Auth && Auth.currentUser) {
+            if (type === 'prism') {
+                Auth.currentUser.selected_prism = target.id;
+                Auth.currentUser.selected_fractal = '';
+                Auth.currentUser.prism_role = role || '';
+                Auth.currentUser.fractal_role = '';
+            } else {
+                Auth.currentUser.selected_fractal = target.id;
+                Auth.currentUser.selected_prism = '';
+                Auth.currentUser.fractal_role = role || '';
+                Auth.currentUser.prism_role = '';
+            }
+            if (typeof Auth.updateRBACVisibility === 'function') {
+                Auth.updateRBACVisibility();
+            }
+        }
+        this.clearSearchState();
+        if (window.TimeBar) {
+            TimeBar.updateFractalName(target.name);
+        }
+    },
+
+    // Set the current fractal. The server /select is awaited BEFORE any client
+    // state moves: on failure nothing has changed, so the UI never advertises a
+    // scope the session is not actually on.
     async setCurrentFractal(fractal) {
-        this.currentFractal = fractal;
-        this.currentItemType = 'fractal';
-        this._saveToStorage();
-
-        if (window.FractalSelector) {
-            FractalSelector.currentFractal = fractal;
-            FractalSelector.updateSelectorText(fractal.name);
-        }
-        if (window.Auth && Auth.currentUser) {
-            Auth.currentUser.selected_fractal = fractal.id;
-            Auth.currentUser.selected_prism = '';
-        }
-        this.clearSearchState();
-        if (window.TimeBar) {
-            TimeBar.updateFractalName(fractal.name);
-        }
-
-        const ok = await this.selectFractalOnServer(fractal.id);
-        if (!ok) return;
+        const role = await this.selectFractalOnServer(fractal.id);
+        if (role === null) return false;
+        this._applyScope(fractal, 'fractal', role);
         this.notifyFractalChange();
+        return true;
     },
 
-    // Set the current prism context. Same contract as setCurrentFractal:
-    // await the server session update before firing notifications so modules
-    // never read from the old session.
+    // Set the current prism context. Same contract as setCurrentFractal.
     async setCurrentPrism(prism) {
-        this.currentFractal = prism; // stored here for compat with existing reads
-        this.currentItemType = 'prism';
-        this._saveToStorage();
-
-        if (window.FractalSelector) {
-            FractalSelector.currentFractal = prism;
-            FractalSelector.updateSelectorText(prism.name);
-        }
-        if (window.Auth && Auth.currentUser) {
-            Auth.currentUser.selected_prism = prism.id;
-            Auth.currentUser.selected_fractal = '';
-        }
-        this.clearSearchState();
-        if (window.TimeBar) {
-            TimeBar.updateFractalName(prism.name);
-        }
-
-        const ok = await this.selectPrismOnServer(prism.id);
-        if (!ok) return;
+        const role = await this.selectPrismOnServer(prism.id);
+        if (role === null) return false;
+        this._applyScope(prism, 'prism', role);
         this.notifyFractalChange();
+        return true;
     },
 
-    // Update the server session to the given fractal. Returns true on success.
-    // Callers MUST await this before firing notifyFractalChange, otherwise
-    // scoped-list requests race the session update and return old-scope data.
+    // Update the server session to the given fractal. Returns the role the server
+    // resolved for this user on that fractal, or null on failure. Callers MUST
+    // await this before moving any client state, otherwise the UI can advertise
+    // a scope the session is not on.
     async selectFractalOnServer(fractalId) {
-        try {
-            const response = await fetch(`/api/v1/fractals/${fractalId}/select`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest'
-                },
-                credentials: 'include'
-            });
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.error || `HTTP ${response.status}`);
-            }
-            return true;
-        } catch (error) {
-            console.error('[FractalContext] Failed to select fractal on server:', error);
-            if (window.Toast) {
-                Toast.error('Failed to select fractal', error.message);
-            }
-            return false;
-        }
+        return this._selectOnServer(`/api/v1/fractals/${fractalId}/select`, 'fractal');
     },
 
     async selectPrismOnServer(prismId) {
+        return this._selectOnServer(`/api/v1/prisms/${prismId}/select`, 'prism');
+    },
+
+    async _selectOnServer(url, label) {
         try {
-            const response = await fetch(`/api/v1/prisms/${prismId}/select`, {
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -198,13 +270,16 @@ const FractalContext = {
                 const errorData = await response.json().catch(() => ({}));
                 throw new Error(errorData.error || `HTTP ${response.status}`);
             }
-            return true;
+            const body = await response.json().catch(() => ({}));
+            // Empty string is a valid role ("no access"), so normalise to a string
+            // rather than letting a missing field read as failure.
+            return (body && body.data && typeof body.data.role === 'string') ? body.data.role : '';
         } catch (error) {
-            console.error('[FractalContext] Failed to select prism on server:', error);
+            console.error(`[FractalContext] Failed to select ${label} on server:`, error);
             if (window.Toast) {
-                Toast.error('Failed to select prism', error.message);
+                Toast.error(`Failed to select ${label}`, error.message);
             }
-            return false;
+            return null;
         }
     },
 
@@ -284,11 +359,21 @@ const FractalContext = {
 
     },
 
-    // Clear the current fractal
+    // Leave the fractal/prism level entirely (the user navigated back to the
+    // listing). Every piece of in-memory scope state has to go, including
+    // currentItemType: leaving it as 'prism' makes isPrism() keep reporting true
+    // with no scope selected, which mis-renders tab visibility and role checks.
+    //
+    // localStorage and the server session are deliberately kept. They record the
+    // last scope used so a new tab or a legacy hash can resume it, and the
+    // request scope header is what actually scopes traffic now.
     clearCurrentFractal() {
         this.currentFractal = null;
+        this.currentItemType = 'fractal';
 
-        // Update time bar to show no fractal
+        if (window.FractalSelector) {
+            FractalSelector.currentFractal = null;
+        }
         if (window.TimeBar) {
             TimeBar.updateFractalName(null);
         }
@@ -319,16 +404,19 @@ const FractalContext = {
         const fallbackModules = [
             'Alerts',
             'AlertFeeds',
+            'AnalyticsModels',
             'Chat',
             'CommentedLogs',
             'Comments',
             'Dashboards',
             'Dictionaries',
+            'FractalManageTab',
             'IngestTokens',
             'InstructionLibraries',
             'Notebooks',
             'QueryExecutor',
-            'QueryPalette'
+            'QueryPalette',
+            'RealTimeComments'
         ];
 
         const invoked = new Set();
@@ -354,6 +442,18 @@ const FractalContext = {
                 } catch (error) {
                     console.error(`[FractalContext] Error notifying ${moduleName} of fractal change:`, error);
                 }
+            }
+        }
+
+        // Fractal-only tabs (models, ingest, recall) have to be re-evaluated on
+        // every scope change, and the user redirected off one that just became
+        // invalid. Done here rather than at each call site so no switch path can
+        // forget it.
+        if (window.App && typeof App.updateScopedTabVisibility === 'function') {
+            try {
+                App.updateScopedTabVisibility();
+            } catch (error) {
+                console.error('[FractalContext] Error updating scoped tab visibility:', error);
             }
         }
     }

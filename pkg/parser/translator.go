@@ -298,6 +298,24 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	return finalizePlan(ctx, assignmentFields, deferredAssignments)
 }
 
+// HistogramIsScopeOnly reports whether a histogram over this pipeline would be
+// filtered by nothing but time range and fractal scope. Such a histogram counts
+// every log in the window, which the pre-aggregated per-minute rollup already
+// knows, so the caller can read it from there instead of scanning the logs table.
+// Anything that narrows the count (a user filter, comment(), a computed-column
+// filter) or moves it off the timestamp axis makes the rollup inapplicable.
+func HistogramIsScopeOnly(pipeline *PipelineNode, opts QueryOptions) bool {
+	if opts.HasCommentFilter || opts.UseIngestTimestamp || opts.SourceSubquery != "" {
+		return false
+	}
+	if pipeline.Filter != nil && len(pipeline.Filter.Conditions) > 0 {
+		return false
+	}
+	// Mirrors BuildHistogramSQL: the computed-column pass only matters when there
+	// are having conditions to inline, and it is too costly to run otherwise.
+	return len(pipeline.HavingConditions) == 0 || histogramComputedWhere(pipeline, opts) == ""
+}
+
 // BuildHistogramSQL generates a lightweight COUNT(*) GROUP BY time-bucket query.
 // It applies the base filter conditions and, when the pipeline contains computed
 // column commands (e.g. len()), also inlines their downstream filters (e.g. _len > 500)

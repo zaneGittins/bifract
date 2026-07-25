@@ -114,6 +114,12 @@ func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj 
 	// the `_ice_` promoted columns and their Parquet bloom filters. norm_log is a
 	// plain String, so it sidesteps the ClickHouse Iceberg Map-decode bug (Code
 	// 117, upstream #91580) that broke field-dense fractals under a Map column.
+	// Scheduled under the recall workload so an archive scan cannot take the cores
+	// and memory that interactive search and ingestion need. This is recall's only
+	// enforceable ceiling: ClickHouse does not apply max_bytes_to_read to iceberg
+	// table functions, so the byte budget can gate admission but not a running scan.
+	ctx = storage.RecallContext(ctx)
+
 	var rows []map[string]interface{}
 	emit := newPartialEmitter(stream)
 	stats, err := ch.QueryStream(ctx, req.QueryID, res.SQL,

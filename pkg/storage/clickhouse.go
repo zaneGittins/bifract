@@ -61,11 +61,11 @@ type ClickHouseClient struct {
 	schemaReady     chan struct{}
 	schemaReadyOnce sync.Once
 
-	// searchWorkloadActive reports whether the interactive-search CPU workload is
-	// provisioned (see ReconcileQueryWorkload). Queries are tagged only while true,
-	// so a failed or disabled reconcile leaves searches unscheduled rather than
-	// naming a workload that does not exist.
-	searchWorkloadActive atomic.Bool
+	// activeWorkloads holds the set of provisioned query workloads (see
+	// ReconcileQueryWorkloads). Queries are tagged only for workloads in this set,
+	// so a failed or disabled reconcile leaves them unscheduled rather than naming
+	// a workload that does not exist.
+	activeWorkloads atomic.Pointer[map[string]bool]
 }
 
 // markSchemaReady signals that Initialize's schema work is complete (idempotent).
@@ -1471,7 +1471,7 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 
 	// Partition strings look like ('my-fractal','2024-01-15'). Match the prefix,
 	// escaping single quotes to match ClickHouse's canonical representation.
-	escapedID := strings.ReplaceAll(fractalID, "'", "''")
+	escapedID := escCHLiteral(fractalID)
 	prefix := fmt.Sprintf("('%s','", escapedID)
 
 	var partitions []string
@@ -1497,6 +1497,12 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 	}
 
 	log.Printf("Dropped %d partitions for fractal %s", len(partitions), fractalID)
+
+	// The rollup is fed by a materialized view on insert, so it outlives the
+	// partitions unless pruned here.
+	if err := c.PruneHistogramRollup(ctx, fractalID, ""); err != nil {
+		return fmt.Errorf("failed to prune histogram rollup for fractal %s: %w", fractalID, err)
+	}
 	return nil
 }
 
@@ -1602,16 +1608,21 @@ func (c *ClickHouseClient) QueryStream(ctx context.Context, queryID, query strin
 	stats := func() QueryStats {
 		return QueryStats{ReadRows: readRows.Load(), ReadBytes: readBytes.Load()}
 	}
-	ctx = clickhouse.Context(ctx,
-		clickhouse.WithQueryID(queryID),
-		clickhouse.WithProgress(func(p *clickhouse.Progress) {
-			readRows.Add(p.Rows)
-			readBytes.Add(p.Bytes)
-			if onProgress != nil {
-				onProgress(stats())
-			}
-		}),
-	)
+	opts := []clickhouse.QueryOption{clickhouse.WithQueryID(queryID)}
+	// Recall's workload tag rides the ctx marker (see RecallContext). It is the only
+	// enforcement an archive scan has, since max_bytes_to_read does not apply to
+	// iceberg table functions.
+	if s := c.applyWorkload(ctx, nil); s != nil {
+		opts = append(opts, clickhouse.WithSettings(s))
+	}
+	opts = append(opts, clickhouse.WithProgress(func(p *clickhouse.Progress) {
+		readRows.Add(p.Rows)
+		readBytes.Add(p.Bytes)
+		if onProgress != nil {
+			onProgress(stats())
+		}
+	}))
+	ctx = clickhouse.Context(ctx, opts...)
 
 	rows, err := c.conn.Query(ctx, query)
 	if err != nil {
@@ -1656,10 +1667,15 @@ const maxGeneratedQuerySize = 16 * 1024 * 1024 // 16 MB
 // to user-facing queries (priority 0) when both are competing for threads.
 // Use for background work (alert evaluation) that should never starve users.
 func (c *ClickHouseClient) QueryLowPriority(ctx context.Context, query string) ([]map[string]interface{}, error) {
-	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+	// Merged into this map rather than layered on top: clickhouse-go's WithSettings
+	// replaces the context's settings wholesale, so a second call would drop the
+	// priority set here. Dashboard widgets arrive tagged; alerts and field stats,
+	// which also use this helper, do not.
+	settings := c.applyWorkload(ctx, clickhouse.Settings{
 		"priority":       5,
 		"max_query_size": maxGeneratedQuerySize,
-	}))
+	})
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(settings))
 	return c.Query(ctx, query)
 }
 
@@ -1718,19 +1734,19 @@ func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[strin
 	return c.query(ctx, query, nil)
 }
 
-// QueryUserSearch runs an interactive user search, tagged with the CPU workload when
-// ctx was marked by UserSearchContext and the workload is provisioned. The tag is
+// QueryUserSearch runs an interactive user search, tagged with its workload when ctx
+// was marked by UserSearchContext and that workload is provisioned. The tag is
 // applied here rather than inside Query because clickhouse-go's WithSettings replaces
 // the context's settings map wholesale, which would drop the budgets that
 // QueryProvenance and QueryLowPriority put there.
 func (c *ClickHouseClient) QueryUserSearch(ctx context.Context, query string) ([]map[string]interface{}, error) {
-	return c.query(ctx, query, c.applyUserSearchWorkload(ctx, nil))
+	return c.query(ctx, query, c.applyWorkload(ctx, nil))
 }
 
 // QueryUserSearchWithID is QueryUserSearch with a fixed query_id for profiling.
 func (c *ClickHouseClient) QueryUserSearchWithID(ctx context.Context, queryID, query string) ([]map[string]interface{}, error) {
 	ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(queryID))
-	return c.query(ctx, query, c.applyUserSearchWorkload(ctx, nil))
+	return c.query(ctx, query, c.applyWorkload(ctx, nil))
 }
 
 func (c *ClickHouseClient) query(ctx context.Context, query string, settings clickhouse.Settings) ([]map[string]interface{}, error) {
@@ -1930,7 +1946,7 @@ func (c *ClickHouseClient) StreamQuery(ctx context.Context, queryID, query strin
 	// it with code 62. Bounded worst case, safe headroom, no effect on ordinary search SQL.
 	// Shared with model preview/scoring, so the workload tag rides the ctx marker
 	// rather than the call site, and merges into the settings built here.
-	streamSettings := c.applyUserSearchWorkload(ctx, clickhouse.Settings{"max_query_size": maxGeneratedQuerySize})
+	streamSettings := c.applyWorkload(ctx, clickhouse.Settings{"max_query_size": maxGeneratedQuerySize})
 	opts := []clickhouse.QueryOption{clickhouse.WithSettings(streamSettings)}
 	if onProgress != nil {
 		var readSoFar uint64
@@ -2821,7 +2837,26 @@ func (c *ClickHouseClient) FractalPartitionUsage(ctx context.Context) ([]Fractal
 // global queue, which a slow schema mutation can clog. partition must be a value
 // returned by FractalPartitionUsage (ClickHouse's canonical form).
 func (c *ClickHouseClient) DropLogPartition(ctx context.Context, partition string) error {
-	stmt := "ALTER TABLE logs DROP PARTITION " + partition
+	if err := c.execOnEveryShard(ctx, "ALTER TABLE logs DROP PARTITION "+partition, "drop partition "+partition); err != nil {
+		return err
+	}
+	day := parsePartitionDay(partition)
+	if day == "" {
+		// Without a day the prune would widen to the whole fractal, which is only
+		// ever correct when the fractal itself is being deleted.
+		log.Printf("[ClickHouse] Skipping histogram rollup prune: unparseable partition %s", partition)
+		return nil
+	}
+	return c.PruneHistogramRollup(ctx, parseFractalFromPartition(partition), day)
+}
+
+// execOnEveryShard runs a statement against every shard directly, bypassing the
+// distributed DDL queue. Both DROP PARTITION and lightweight DELETE replicate
+// only within a shard, so each shard needs its own execution. ON CLUSTER is
+// deliberately avoided for the reason given in StartHotTableCleaner: it
+// serializes DDL through Keeper's global queue, which a slow schema mutation can
+// clog. Returns the first error while still attempting every remaining shard.
+func (c *ClickHouseClient) execOnEveryShard(ctx context.Context, stmt, what string) error {
 	if c.Cluster == "" {
 		return c.conn.Exec(ctx, stmt)
 	}
@@ -2830,14 +2865,14 @@ func (c *ClickHouseClient) DropLogPartition(ctx context.Context, partition strin
 	for _, addr := range c.addrs {
 		conn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, pool)
 		if err != nil {
-			log.Printf("[QuotaRollover] connect to %s: %v", addr, err)
+			log.Printf("[ClickHouse] connect to %s for %s: %v", addr, what, err)
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
 		if err := conn.Exec(ctx, stmt); err != nil {
-			log.Printf("[QuotaRollover] drop partition %s on %s: %v", partition, addr, err)
+			log.Printf("[ClickHouse] %s on %s: %v", what, addr, err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -2845,6 +2880,34 @@ func (c *ClickHouseClient) DropLogPartition(ctx context.Context, partition strin
 		conn.Close()
 	}
 	return firstErr
+}
+
+// escCHLiteral escapes a value for use inside a single-quoted ClickHouse literal.
+func escCHLiteral(s string) string { return strings.ReplaceAll(s, "'", "''") }
+
+// parsePartitionDay extracts the day from a logs partition string, e.g.
+// ('my-fractal','2026-07-01') -> "2026-07-01".
+func parsePartitionDay(partition string) string {
+	idx := strings.LastIndex(partition, "','")
+	if idx < 0 || !strings.HasSuffix(partition, "')") {
+		return ""
+	}
+	return partition[idx+3 : len(partition)-2]
+}
+
+// PruneHistogramRollup removes the pre-aggregated counts belonging to log data
+// that has been dropped. logs_histogram is filled by a materialized view on
+// insert, so nothing removes its rows when a logs partition is dropped; without
+// this the rollup keeps counting data that no longer exists and any histogram
+// read from it reports phantom events. An empty day prunes the whole fractal.
+// An empty fractalID is the default fractal's real scope, not a missing value.
+func (c *ClickHouseClient) PruneHistogramRollup(ctx context.Context, fractalID, day string) error {
+	where := fmt.Sprintf("fractal_id = '%s'", escCHLiteral(fractalID))
+	if day != "" {
+		where += fmt.Sprintf(" AND toDate(minute) = '%s'", escCHLiteral(day))
+	}
+	stmt := "DELETE FROM logs_histogram WHERE " + where
+	return c.execOnEveryShard(ctx, stmt, "prune histogram rollup")
 }
 
 // NormLogIndexName is the lower(norm_log) n-gram text index (migration 006) used to

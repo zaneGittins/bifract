@@ -1061,6 +1061,74 @@ func (h *AuthHandler) HandleAdminResetPassword(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// ScopeHeader lets a single request override the session's fractal/prism scope.
+// Value is "fractal:<id>" or "prism:<id>". The web UI sends it on every API call
+// so that browser tabs sharing one session cookie can hold different scopes
+// without silently repointing each other.
+const ScopeHeader = "X-Bifract-Scope"
+
+// ScopeInvalidHeader marks a rejection caused by ScopeHeader so the client can
+// drop its stale context instead of surfacing a generic permission error.
+const ScopeInvalidHeader = "X-Bifract-Scope-Invalid"
+
+// scopeHeaderExempt lists paths that must stay reachable while a client still
+// holds a scope it can no longer use, otherwise a stale tab can never recover.
+func scopeHeaderExempt(path string) bool {
+	return strings.HasPrefix(path, "/api/v1/auth/") ||
+		path == "/api/v1/fractals" || path == "/api/v1/prisms" ||
+		strings.HasSuffix(path, "/select")
+}
+
+// parseScopeHeader splits "fractal:<id>" / "prism:<id>". Exactly one of the
+// returned ids is non-empty.
+func parseScopeHeader(v string) (fractalID, prismID string, err error) {
+	kind, id, ok := strings.Cut(strings.TrimSpace(v), ":")
+	if !ok || id == "" || len(id) > 36 || !isScopeID(id) {
+		return "", "", fmt.Errorf("invalid scope header")
+	}
+	switch kind {
+	case "fractal":
+		return id, "", nil
+	case "prism":
+		return "", id, nil
+	default:
+		return "", "", fmt.Errorf("unknown scope kind %q", kind)
+	}
+}
+
+func isScopeID(s string) bool {
+	for _, c := range s {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// canAccessScope reports whether the user holds at least viewer on the requested
+// scope. A deleted fractal/prism resolves to no role, so stale ids fail here too.
+func (h *AuthHandler) canAccessScope(ctx context.Context, user *storage.User, fractalID, prismID string) bool {
+	if user.IsAdmin {
+		return true
+	}
+	if h.rbacResolver == nil {
+		return false
+	}
+	if fractalID != "" {
+		role, err := h.rbacResolver.ResolveFractalRole(ctx, user.Username, fractalID)
+		return err == nil && rbac.HasAccess(user, role, rbac.RoleViewer)
+	}
+	role, err := h.rbacResolver.ResolvePrismRole(ctx, user.Username, prismID)
+	return err == nil && rbac.HasAccess(user, role, rbac.RoleViewer)
+}
+
+func writeScopeError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(ScopeInvalidHeader, "1")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(Response{Success: false, Error: msg})
+}
+
 // AuthMiddleware validates session or API key and loads user into context
 func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1085,21 +1153,40 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 
 					ctx := context.WithValue(r.Context(), "user", user)
 					ctx = context.WithValue(ctx, "auth_type", "session")
-					ctx = context.WithValue(ctx, "selected_fractal", session.SelectedFractal)
-					ctx = context.WithValue(ctx, "selected_prism", session.SelectedPrism)
+
+					// Per-request scope. The session scope is the default, but a
+					// request may override it with the X-Bifract-Scope header so
+					// that browser tabs sharing one session cookie can hold
+					// different fractals/prisms. The override is authorized here,
+					// never trusted blindly.
+					scopeFractal, scopePrism := session.SelectedFractal, session.SelectedPrism
+					if hdr := r.Header.Get(ScopeHeader); hdr != "" && !scopeHeaderExempt(r.URL.Path) {
+						hdrFractal, hdrPrism, err := parseScopeHeader(hdr)
+						if err != nil {
+							writeScopeError(w, http.StatusBadRequest, "Malformed scope header")
+							return
+						}
+						if !h.canAccessScope(ctx, user, hdrFractal, hdrPrism) {
+							writeScopeError(w, http.StatusForbidden, "No access to the requested fractal or prism")
+							return
+						}
+						scopeFractal, scopePrism = hdrFractal, hdrPrism
+					}
+					ctx = context.WithValue(ctx, "selected_fractal", scopeFractal)
+					ctx = context.WithValue(ctx, "selected_prism", scopePrism)
 
 					// Resolve fractal/prism role for RBAC
 					if user.IsAdmin {
 						ctx = context.WithValue(ctx, "fractal_role", "admin")
 						ctx = context.WithValue(ctx, "prism_role", "admin")
 					} else if h.rbacResolver != nil {
-						if session.SelectedFractal != "" {
-							if role, err := h.rbacResolver.ResolveFractalRole(ctx, user.Username, session.SelectedFractal); err == nil {
+						if scopeFractal != "" {
+							if role, err := h.rbacResolver.ResolveFractalRole(ctx, user.Username, scopeFractal); err == nil {
 								ctx = context.WithValue(ctx, "fractal_role", string(role))
 							}
 						}
-						if session.SelectedPrism != "" {
-							if role, err := h.rbacResolver.ResolvePrismRole(ctx, user.Username, session.SelectedPrism); err == nil {
+						if scopePrism != "" {
+							if role, err := h.rbacResolver.ResolvePrismRole(ctx, user.Username, scopePrism); err == nil {
 								ctx = context.WithValue(ctx, "prism_role", string(role))
 							}
 						}

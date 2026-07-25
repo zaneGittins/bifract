@@ -47,6 +47,36 @@ const AnalyticsModels = {
 
     init() {
         this._render();
+        if (window.FractalContext && FractalContext.subscribe) {
+            FractalContext.subscribe('AnalyticsModels', () => this.onFractalChange());
+        }
+    },
+
+    // Models are fractal-scoped server-side and every call here relies on the
+    // request scope, so a switch invalidates the whole panel. Without this the
+    // previous fractal's models stay on screen while edits and runs land in the
+    // new one.
+    onFractalChange() {
+        this.teardown();
+        this.models = [];
+        this.currentView = 'list';
+        this.selectedModel = null;
+        this.viewer.model = null;
+        this.viewer.rows = [];
+        this.viewer.total = 0;
+        this.viewer.offset = 0;
+        if (this._queryController) {
+            this._queryController.abort();
+            this._queryController = null;
+        }
+        this._runSeq++;
+
+        const view = document.getElementById('modelsView');
+        if (view && view.style.display !== 'none' && !FractalContext.isPrism()) {
+            this.show('');
+        } else {
+            this._render();
+        }
     },
 
     show(subPath = '') {

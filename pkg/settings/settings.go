@@ -49,18 +49,21 @@ type Settings struct {
 	// QueryMemoryPercent is the share of each ClickHouse node's memory budget that
 	// running searches may reserve in total. 0 = uncapped.
 	QueryMemoryPercent int `json:"query_memory_percent"`
-	mu                 sync.RWMutex
-	pg                 *storage.PostgresClient
+	// Recall (archive scan) shares, scheduled behind interactive search.
+	RecallCPUPercent    int `json:"recall_cpu_percent"`
+	RecallMemoryPercent int `json:"recall_memory_percent"`
+	mu                  sync.RWMutex
+	pg                  *storage.PostgresClient
 }
 
 // queryLimitsApplier applies changed search resource shares to ClickHouse (CREATE OR
 // REPLACE WORKLOAD). Registered by the server at startup; nil in tools that only read
 // settings, where the DDL has no meaning.
-var queryLimitsApplier func(cpuPercent, memPercent int) error
+var queryLimitsApplier func(limits storage.WorkloadLimits) error
 
 // RegisterQueryLimitsApplier wires the ClickHouse-side reconcile invoked when an admin
-// changes a search resource share, so it takes effect without a restart.
-func RegisterQueryLimitsApplier(fn func(cpuPercent, memPercent int) error) {
+// changes a query resource share, so it takes effect without a restart.
+func RegisterQueryLimitsApplier(fn func(limits storage.WorkloadLimits) error) {
 	queryLimitsApplier = fn
 }
 
@@ -87,6 +90,8 @@ func Init(pg *storage.PostgresClient) error {
 		RecallConcurrency:        defaultRecallConcurrency,
 		QueryCPUPercent:          storage.DefaultQueryCPUPercent,
 		QueryMemoryPercent:       storage.DefaultQueryMemoryPercent,
+		RecallCPUPercent:         storage.DefaultRecallCPUPercent,
+		RecallMemoryPercent:      storage.DefaultRecallMemoryPercent,
 		pg:                       pg,
 	}
 
@@ -161,6 +166,18 @@ func Init(pg *storage.PostgresClient) error {
 		}
 	}
 
+	// Load recall workload shares (0 = uncapped)
+	if v, err := pg.GetSetting(ctx, "recall_cpu_percent"); err == nil && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			globalSettings.RecallCPUPercent = storage.ClampQueryLimitPercent(n)
+		}
+	}
+	if v, err := pg.GetSetting(ctx, "recall_memory_percent"); err == nil && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			globalSettings.RecallMemoryPercent = storage.ClampQueryLimitPercent(n)
+		}
+	}
+
 	return nil
 }
 
@@ -192,6 +209,8 @@ func Get() Settings {
 			RecallConcurrency:        defaultRecallConcurrency,
 			QueryCPUPercent:          storage.DefaultQueryCPUPercent,
 			QueryMemoryPercent:       storage.DefaultQueryMemoryPercent,
+			RecallCPUPercent:         storage.DefaultRecallCPUPercent,
+			RecallMemoryPercent:      storage.DefaultRecallMemoryPercent,
 		}
 	}
 	globalSettings.mu.RLock()
@@ -206,6 +225,8 @@ func Get() Settings {
 		RecallConcurrency:        globalSettings.RecallConcurrency,
 		QueryCPUPercent:          globalSettings.QueryCPUPercent,
 		QueryMemoryPercent:       globalSettings.QueryMemoryPercent,
+		RecallCPUPercent:         globalSettings.RecallCPUPercent,
+		RecallMemoryPercent:      globalSettings.RecallMemoryPercent,
 	}
 }
 
@@ -227,12 +248,21 @@ func Update(s *Settings) error {
 	s.RecallConcurrency = clampRecallConcurrency(s.RecallConcurrency)
 	s.QueryCPUPercent = storage.ClampQueryLimitPercent(s.QueryCPUPercent)
 	s.QueryMemoryPercent = storage.ClampQueryLimitPercent(s.QueryMemoryPercent)
+	s.RecallCPUPercent = storage.ClampQueryLimitPercent(s.RecallCPUPercent)
+	s.RecallMemoryPercent = storage.ClampQueryLimitPercent(s.RecallMemoryPercent)
+	// Rejected rather than silently scaled: an admin who asks for more memory than
+	// the node has should be told, not shown a number that is not what runs. The
+	// headroom left over is what inserts, their MV cascade, and merges rely on.
+	if total := s.QueryMemoryPercent + s.RecallMemoryPercent; total > storage.MaxCombinedQueryMemoryPercent {
+		return fmt.Errorf("search and Recall memory shares total %d%%; they must total at most %d%% so merges and ingestion keep headroom",
+			total, storage.MaxCombinedQueryMemoryPercent)
+	}
 
 	globalSettings.mu.Lock()
-	limitsChanged := globalSettings.QueryCPUPercent != s.QueryCPUPercent ||
-		globalSettings.QueryMemoryPercent != s.QueryMemoryPercent
 	globalSettings.QueryCPUPercent = s.QueryCPUPercent
 	globalSettings.QueryMemoryPercent = s.QueryMemoryPercent
+	globalSettings.RecallCPUPercent = s.RecallCPUPercent
+	globalSettings.RecallMemoryPercent = s.RecallMemoryPercent
 	globalSettings.TimestampFields = s.TimestampFields
 	globalSettings.AlertTimeoutSeconds = s.AlertTimeoutSeconds
 	globalSettings.QueryTimeoutSeconds = s.QueryTimeoutSeconds
@@ -287,11 +317,25 @@ func Update(s *Settings) error {
 	if err := globalSettings.pg.SetSetting(ctx, "query_memory_percent", fmt.Sprintf("%d", s.QueryMemoryPercent)); err != nil {
 		return err
 	}
+	if err := globalSettings.pg.SetSetting(ctx, "recall_cpu_percent", fmt.Sprintf("%d", s.RecallCPUPercent)); err != nil {
+		return err
+	}
+	if err := globalSettings.pg.SetSetting(ctx, "recall_memory_percent", fmt.Sprintf("%d", s.RecallMemoryPercent)); err != nil {
+		return err
+	}
 
-	// Apply the shares to ClickHouse. They are already persisted, so a failure here
-	// is reported but self-heals on the next restart's reconcile.
-	if limitsChanged && queryLimitsApplier != nil {
-		if err := queryLimitsApplier(s.QueryCPUPercent, s.QueryMemoryPercent); err != nil {
+	// Apply the shares to ClickHouse. Unconditional rather than only on change, so
+	// that re-saving repairs a startup reconcile that failed (ClickHouse briefly
+	// unavailable), which an admin otherwise could not do from the UI at all. The
+	// values are already persisted, so a failure here is reported and self-heals on
+	// the next restart.
+	if queryLimitsApplier != nil {
+		if err := queryLimitsApplier(storage.WorkloadLimits{
+			SearchCPUPercent:    s.QueryCPUPercent,
+			SearchMemoryPercent: s.QueryMemoryPercent,
+			RecallCPUPercent:    s.RecallCPUPercent,
+			RecallMemoryPercent: s.RecallMemoryPercent,
+		}); err != nil {
 			return fmt.Errorf("search limits saved but not applied: %w", err)
 		}
 	}

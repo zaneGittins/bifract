@@ -6,43 +6,8 @@ const Timeline = {
     selectionStartTime: null,
     selectionEndTime: null,
     _resizeObserver: null,
-    _lastRenderData: null,
     _currentTotal: null,
     _currentPeak: null,
-
-    async fetch(timeRange) {
-        const queryInput = document.getElementById('queryInput');
-        if (!queryInput) return;
-
-        try {
-            let baseQuery = queryInput.value.trim();
-            baseQuery = baseQuery.split('|')[0].trim();
-            if (!baseQuery) baseQuery = '*';
-
-            let requestBody = {
-                query: baseQuery,
-                start: timeRange.start,
-                end: timeRange.end
-            };
-
-            if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
-                requestBody.fractal_id = window.FractalContext.currentFractal.id;
-            }
-
-            const response = await fetch('/api/v1/query', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(requestBody)
-            });
-
-            const data = await response.json();
-            if (data.success && data.results) {
-                this.render(data.results, timeRange);
-            }
-        } catch (error) {
-            // Silently fail
-        }
-    },
 
     // Render pre-bucketed histogram data to explicit elements (alert/model editors).
     // Does not set up drag-to-filter interaction — purely informational.
@@ -57,6 +22,7 @@ const Timeline = {
         this._currentTotal = total;
         this._currentPeak = Math.max(...buckets);
         this._currentBuckets = buckets;
+        this._pendingBefore = 0;
         setTimeout(() => {
             if (!canvasEl) return;
             canvasEl.style.width = '100%';
@@ -67,14 +33,19 @@ const Timeline = {
         }, 100);
     },
 
-    // Render from pre-bucketed histogram data (used by default recent logs view)
-    renderFromHistogram(buckets, timeRange) {
+    // Render from pre-bucketed histogram data (used by default recent logs view).
+    // The search page scans the histogram newest-first and calls this repeatedly as
+    // chunks land; opts.coveredFrom is the first bucket index already scanned, so
+    // the unscanned span left of it renders as pending instead of as zero counts.
+    renderFromHistogram(buckets, timeRange, opts = {}) {
         const timelineSection = document.getElementById('timelineSection');
         const canvas = document.getElementById('timeline');
         const timelineStats = document.getElementById('timelineStats');
 
+        const coveredFrom = Math.max(0, Math.min(opts.coveredFrom || 0, buckets.length));
+        const pending = coveredFrom > 0;
         const total = buckets.reduce((a, b) => a + b, 0);
-        if (total === 0) {
+        if (total === 0 && !pending) {
             if (timelineSection) timelineSection.style.display = 'none';
             return;
         }
@@ -85,9 +56,14 @@ const Timeline = {
         this.currentTimeRange = timeRange;
         this._currentTotal = total;
         this._currentPeak = Math.max(...buckets);
-        this._lastRenderData = { buckets, timeRange, isHistogram: true };
+        this._pendingBefore = coveredFrom;
+        this._pendingLabel = opts.pendingLabel || 'scanning…';
 
-        setTimeout(() => {
+        // Chunks can land faster than the draw delay; coalesce so only the newest
+        // cumulative state is drawn and interaction is rebound once.
+        if (this._histTimer) clearTimeout(this._histTimer);
+        this._histTimer = setTimeout(() => {
+            this._histTimer = null;
             if (!canvas) return;
             canvas.style.width = '100%';
             canvas.style.display = 'block';
@@ -101,85 +77,6 @@ const Timeline = {
             const bucketSize = duration / buckets.length;
 
             this.setupInteraction(canvas, buckets, canvas.offsetWidth / buckets.length, start, bucketSize, duration);
-            this._setupResizeObserver(canvas);
-        }, 100);
-    },
-
-    render(results, timeRange) {
-        const timelineSection = document.getElementById('timelineSection');
-        const canvas = document.getElementById('timeline');
-        const timelineStats = document.getElementById('timelineStats');
-
-        if (!results || results.length === 0) {
-            if (timelineSection) timelineSection.style.display = 'none';
-            return;
-        }
-
-        const hasTimestamp = results.length > 0 &&
-            (results[0].hasOwnProperty('timestamp') || results[0].timestamp !== undefined);
-
-        if (!hasTimestamp) {
-            if (timelineSection) timelineSection.style.display = 'none';
-            return;
-        }
-
-        if (timelineSection) timelineSection.style.display = 'block';
-        if (timelineStats) timelineStats.style.display = 'none';
-
-        this.currentTimeRange = timeRange;
-        this._lastRenderData = { results, timeRange };
-
-        setTimeout(() => {
-            if (!canvas) return;
-
-            canvas.style.width = '100%';
-            canvas.style.display = 'block';
-
-            if (canvas.offsetWidth === 0 || canvas.offsetHeight === 0) return;
-
-            const validTimestamps = [];
-            results.forEach(result => {
-                if (result.timestamp) {
-                    let tsString = result.timestamp;
-                    if (typeof tsString === 'string' && tsString.includes(' ')) {
-                        tsString = tsString.replace(' ', 'T') + 'Z';
-                    }
-                    const ts = new Date(tsString);
-                    if (!isNaN(ts.getTime())) validTimestamps.push(ts);
-                }
-            });
-
-            const start = new Date(timeRange.start);
-            const end = new Date(timeRange.end);
-            const duration = end - start;
-
-            let bucketSize, bucketCount;
-            if (duration <= 3600000) {
-                bucketSize = 30000;
-                bucketCount = 120;
-            } else if (duration <= 86400000) {
-                bucketSize = 900000;
-                bucketCount = 96;
-            } else if (duration <= 604800000) {
-                bucketSize = 3600000;
-                bucketCount = Math.ceil(duration / 3600000);
-            } else {
-                bucketSize = 10800000;
-                bucketCount = Math.ceil(duration / bucketSize);
-            }
-
-            const buckets = new Array(bucketCount).fill(0);
-            validTimestamps.forEach(ts => {
-                const idx = Math.floor((ts - start) / bucketSize);
-                if (idx >= 0 && idx < bucketCount) buckets[idx]++;
-            });
-
-            this._currentTotal = buckets.reduce((a, b) => a + b, 0);
-            this._currentPeak = Math.max(...buckets);
-
-            this._drawBars(canvas, buckets);
-
-            this.setupInteraction(canvas, buckets, canvas.offsetWidth / bucketCount, start, bucketSize, duration);
             this._setupResizeObserver(canvas);
         }, 100);
     },
@@ -243,6 +140,38 @@ const Timeline = {
         const BADGE_H = 12 + BADGE_PAD_V * 2;
         const BADGE_Y = 5;
         const BADGE_RESERVE = BADGE_Y + BADGE_H + 2; // px at top cleared for stat badge
+
+        // Pending span: the histogram scans newest-first, so buckets left of
+        // _pendingBefore have not been counted yet. Shade them so an in-progress
+        // timeline never reads as a finished one showing zero.
+        const pendingBefore = Math.min(this._pendingBefore || 0, buckets.length);
+        if (pendingBefore > 0) {
+            const pendingW = pendingBefore * barWidth;
+            ctx.save();
+            ctx.fillStyle = borderColor;
+            ctx.globalAlpha = 0.10;
+            ctx.fillRect(0, 0, pendingW, BAR_AREA_H);
+            ctx.globalAlpha = 0.35;
+            ctx.strokeStyle = textPrimary;
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(Math.round(pendingW) + 0.5, 0);
+            ctx.lineTo(Math.round(pendingW) + 0.5, BAR_AREA_H);
+            ctx.stroke();
+            ctx.restore();
+
+            if (pendingW > 70) {
+                ctx.save();
+                ctx.font = `10px ${fontFamily}`;
+                ctx.fillStyle = textColor;
+                ctx.globalAlpha = 0.55;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this._pendingLabel || 'scanning…', pendingW / 2, BAR_AREA_H / 2);
+                ctx.restore();
+            }
+        }
 
         // Bars
         buckets.forEach((count, i) => {
@@ -316,8 +245,9 @@ const Timeline = {
         if (total != null && peak != null && total > 0) {
             const labelFont = `600 12px ${fontFamily}`;
             const valueFont = `12px ${fontFamily}`;
-            const totalStr = total.toLocaleString();
-            const peakStr  = peak.toLocaleString();
+            // While chunks are still landing the totals only cover the scanned span.
+            const totalStr = total.toLocaleString() + (pendingBefore > 0 ? '+' : '');
+            const peakStr  = peak.toLocaleString() + (pendingBefore > 0 ? '+' : '');
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
             ctx.font = labelFont;
@@ -600,9 +530,31 @@ const Timeline = {
 
         const timeStr = this.formatDateLabel(time);
         tooltip.innerHTML = `<strong>${count.toLocaleString()}</strong> events &middot; ${timeStr}`;
+
+        // Measure before placing so the tooltip can be flipped rather than clipped.
+        // Hidden (not undisplayed) to keep the box measurable without a flash at the
+        // previous position.
+        tooltip.style.visibility = 'hidden';
         tooltip.style.display = 'block';
-        tooltip.style.left = (x + 10) + 'px';
-        tooltip.style.top  = (y - 30) + 'px';
+
+        const MARGIN = 8, GAP = 12;
+        const w = tooltip.offsetWidth, h = tooltip.offsetHeight;
+        const vw = window.innerWidth, vh = window.innerHeight;
+
+        // Sit to the right of the cursor, flipping to its left when that would run
+        // past the viewport edge, so the newest buckets stay readable.
+        let left = x + GAP;
+        if (left + w > vw - MARGIN) left = x - GAP - w;
+        left = Math.max(MARGIN, Math.min(left, vw - w - MARGIN));
+
+        // Above the cursor, dropping below only when there is no room up top.
+        let top = y - h - GAP;
+        if (top < MARGIN) top = y + GAP;
+        top = Math.max(MARGIN, Math.min(top, vh - h - MARGIN));
+
+        tooltip.style.left = left + 'px';
+        tooltip.style.top = top + 'px';
+        tooltip.style.visibility = 'visible';
     },
 
     hideTooltip() {

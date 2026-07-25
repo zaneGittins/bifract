@@ -5,6 +5,37 @@ const FractalManageTab = {
 
     init() {
         this.setupEventListeners();
+        if (window.FractalContext && FractalContext.subscribe) {
+            FractalContext.subscribe('FractalManageTab', () => this.onFractalChange());
+        }
+    },
+
+    // This panel renders a snapshot of one fractal/prism and every write targets
+    // that snapshot's id. Without this the snapshot survives a context switch and
+    // retention, rename and delete land on the fractal the user was viewing
+    // before, while the header shows the new one.
+    onFractalChange() {
+        this.currentFractal = window.FractalContext?.currentFractal || null;
+        this.currentPrismData = null;
+
+        const content = document.getElementById('fractalManageTabContent');
+        if (this.currentFractal && content && content.style.display !== 'none') {
+            this.show('');
+        }
+    },
+
+    // Returns the id to write to, or null if the rendered snapshot no longer
+    // matches the live context. Second line of defence for the case where a
+    // switch lands between rendering a control and the user committing it.
+    _writeTargetId() {
+        const live = window.FractalContext?.currentFractal;
+        if (!live || !this.currentFractal || live.id !== this.currentFractal.id) {
+            if (window.Toast) {
+                Toast.error('Context changed', 'Reopen the Manage tab and try again.');
+            }
+            return null;
+        }
+        return live.id;
     },
 
     setupEventListeners() {
@@ -169,13 +200,14 @@ const FractalManageTab = {
     },
 
     async addPrismMember() {
-        if (!this.currentFractal) return;
+        const targetId = this._writeTargetId();
+        if (!targetId) return;
         const select = document.getElementById('prismAddMemberSelect');
         if (!select || !select.value) return;
 
         const fractalId = select.value;
         try {
-            const resp = await fetch(`/api/v1/prisms/${this.currentFractal.id}/members`, {
+            const resp = await fetch(`/api/v1/prisms/${targetId}/members`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -193,9 +225,10 @@ const FractalManageTab = {
     },
 
     async removePrismMember(fractalId) {
-        if (!this.currentFractal) return;
+        const targetId = this._writeTargetId();
+        if (!targetId) return;
         try {
-            const resp = await fetch(`/api/v1/prisms/${this.currentFractal.id}/members/${fractalId}`, {
+            const resp = await fetch(`/api/v1/prisms/${targetId}/members/${fractalId}`, {
                 method: 'DELETE',
                 credentials: 'include'
             });
@@ -211,15 +244,19 @@ const FractalManageTab = {
     },
 
     async editPrism() {
-        if (!this.currentFractal) return;
+        if (!this._writeTargetId()) return;
 
         const newName = prompt('Prism name:', this.currentFractal.name);
         if (newName === null) return;
         const newDesc = prompt('Description:', this.currentFractal.description || '');
         if (newDesc === null) return;
 
+        // Re-check after the prompts: they block, so the context can move underneath.
+        const targetId = this._writeTargetId();
+        if (!targetId) return;
+
         try {
-            const resp = await fetch(`/api/v1/prisms/${this.currentFractal.id}`, {
+            const resp = await fetch(`/api/v1/prisms/${targetId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -241,7 +278,7 @@ const FractalManageTab = {
     },
 
     async deletePrism() {
-        if (!this.currentFractal) return;
+        if (!this._writeTargetId()) return;
 
         const confirmation = prompt(`Type "${this.currentFractal.name}" to confirm deletion of this prism:`);
         if (confirmation !== this.currentFractal.name) {
@@ -249,8 +286,12 @@ const FractalManageTab = {
             return;
         }
 
+        // The prompt blocks, so confirm the context is still the one the user named.
+        const targetId = this._writeTargetId();
+        if (!targetId) return;
+
         try {
-            const resp = await fetch(`/api/v1/prisms/${this.currentFractal.id}`, {
+            const resp = await fetch(`/api/v1/prisms/${targetId}`, {
                 method: 'DELETE',
                 credentials: 'include'
             });
@@ -375,7 +416,8 @@ const FractalManageTab = {
     },
 
     async executeDeleteFractal() {
-        if (!this.currentFractal) return;
+        const targetId = this._writeTargetId();
+        if (!targetId) return;
 
         const deleteBtn = document.getElementById('manageDeleteFractalBtn');
 
@@ -386,7 +428,7 @@ const FractalManageTab = {
             }
             this.hideError();
 
-            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}`, {
+            const response = await fetch(`/api/v1/fractals/${targetId}`, {
                 method: 'DELETE',
                 credentials: 'include'
             });
@@ -418,7 +460,8 @@ const FractalManageTab = {
     },
 
     async saveRetentionSetting() {
-        if (!this.currentFractal) return;
+        const targetId = this._writeTargetId();
+        if (!targetId) return;
 
         const select = document.getElementById('manageFractalRetentionSelect');
         if (!select) return;
@@ -427,7 +470,7 @@ const FractalManageTab = {
         const body = { retention_days: value === '' ? null : parseInt(value, 10) };
 
         try {
-            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/retention`, {
+            const response = await fetch(`/api/v1/fractals/${targetId}/retention`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -449,7 +492,8 @@ const FractalManageTab = {
     },
 
     async saveArchiveRetentionSetting() {
-        if (!this.currentFractal) return;
+        const targetId = this._writeTargetId();
+        if (!targetId) return;
 
         const input = document.getElementById('manageFractalArchiveRetentionInput');
         if (!input) return;
@@ -470,7 +514,7 @@ const FractalManageTab = {
         }
 
         try {
-            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/archive-retention`, {
+            const response = await fetch(`/api/v1/fractals/${targetId}/archive-retention`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -509,7 +553,8 @@ const FractalManageTab = {
     },
 
     async executeClearFractalLogs() {
-        if (!this.currentFractal) return;
+        const targetId = this._writeTargetId();
+        if (!targetId) return;
 
         const clearBtn = document.getElementById('manageClearFractalLogsBtn');
 
@@ -521,7 +566,7 @@ const FractalManageTab = {
             this.hideError();
 
             // Clear logs for the specific fractal using the existing logs API with fractal_id parameter
-            const response = await fetch(`/api/v1/logs?fractal_id=${encodeURIComponent(this.currentFractal.id)}`, {
+            const response = await fetch(`/api/v1/logs?fractal_id=${encodeURIComponent(targetId)}`, {
                 method: 'DELETE',
                 credentials: 'include',
                 headers: {
@@ -640,7 +685,8 @@ const FractalManageTab = {
     },
 
     async saveDiskQuota() {
-        if (!this.currentFractal) return;
+        const targetId = this._writeTargetId();
+        if (!targetId) return;
 
         const quotaInput = document.getElementById('manageFractalQuotaInput');
         const quotaActionSelect = document.getElementById('manageFractalQuotaAction');
@@ -656,7 +702,7 @@ const FractalManageTab = {
         }
 
         try {
-            const response = await fetch(`/api/v1/fractals/${this.currentFractal.id}/disk-quota`, {
+            const response = await fetch(`/api/v1/fractals/${targetId}/disk-quota`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',

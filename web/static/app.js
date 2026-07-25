@@ -938,6 +938,9 @@ const App = {
 
     // Hide/show tabs that only apply to fractals (not prisms) and vice-versa.
     // Called from showFractalView and whenever the scope type changes in-place.
+    // Tabs that only exist for fractals, not prisms.
+    _fractalOnlyTabs: new Set(['models', 'ingest', 'recall']),
+
     updateScopedTabVisibility() {
         const isPrism = window.FractalContext && window.FractalContext.isPrism();
         const ingestTabBtn = document.getElementById('fractalIngestTabBtn');
@@ -955,6 +958,17 @@ const App = {
             } else if (window.Recall && typeof Recall.refreshTabVisibility === 'function') {
                 Recall.refreshTabVisibility();
             }
+        }
+
+        // Hiding the button is not enough: the tab content stays on screen with no
+        // active tab, still showing the previous fractal's data. Move the user to
+        // search when the tab they are on stopped existing. Guarded on the fractal
+        // view being visible so this never fires while navigating to the listing.
+        const fractalView = document.getElementById('fractalView');
+        const onFractalView = fractalView && fractalView.style.display !== 'none';
+        if (isPrism && onFractalView && this.currentViewLevel === 'fractal' &&
+            this._fractalOnlyTabs.has(this.currentView)) {
+            this.showFractalViewTab('search');
         }
     },
 

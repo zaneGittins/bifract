@@ -28,64 +28,79 @@ func TestClampQueryLimitPercent(t *testing.T) {
 	}
 }
 
-func TestSearchWorkloadDDL(t *testing.T) {
-	settings := []string{"max_concurrent_threads_ratio_to_cores = 0.50", "max_memory = 4000000"}
+func TestClassWorkloadDDL(t *testing.T) {
+	const budget = int64(8_000_000_000)
 
-	// Single node, no existing hierarchy: the search workload is its own root.
-	got := searchWorkloadDDL(settings, "", "")
-	want := "CREATE OR REPLACE WORKLOAD bifract_search SETTINGS max_concurrent_threads_ratio_to_cores = 0.50, max_memory = 4000000"
+	// Search: both limits, default priority, nested under the tree root.
+	got := classWorkloadDDL(QuerySearchWorkload, "", 50, 50, 0, budget)
+	want := "CREATE OR REPLACE WORKLOAD bifract_search IN bifract SETTINGS " +
+		"max_concurrent_threads_ratio_to_cores = 0.50, max_memory = 4000000000"
 	if got != want {
-		t.Errorf("root DDL =\n%q\nwant\n%q", got, want)
+		t.Errorf("search DDL =\n%q\nwant\n%q", got, want)
 	}
 
-	// An operator-defined root already exists, so attach beneath it: ClickHouse
-	// permits only one root workload.
-	got = searchWorkloadDDL(settings, "", "all")
-	if !strings.Contains(got, "WORKLOAD bifract_search IN all SETTINGS") {
-		t.Errorf("expected IN clause under existing root, got %q", got)
+	// Recall carries an explicit priority so it yields to search for the same core.
+	got = classWorkloadDDL(QueryRecallWorkload, "", 25, 25, recallPriority, budget)
+	if !strings.Contains(got, "priority = 1") || !strings.Contains(got, "max_memory = 2000000000") {
+		t.Errorf("recall DDL missing priority or memory share: %q", got)
 	}
 
-	// Re-reconciling when we are already the root must not nest us under ourselves.
-	got = searchWorkloadDDL(settings, "", QuerySearchWorkload)
-	if strings.Contains(got, " IN ") {
-		t.Errorf("workload must not be nested under itself, got %q", got)
+	// A disabled share is omitted, not written as zero, which would forbid all work.
+	got = classWorkloadDDL(QuerySearchWorkload, "", 0, 50, 0, budget)
+	if strings.Contains(got, "max_concurrent_threads_ratio_to_cores") {
+		t.Errorf("cpu share of 0 must be omitted, got %q", got)
+	}
+	if !strings.Contains(got, "max_memory") {
+		t.Errorf("memory share should still be present, got %q", got)
 	}
 
-	// Cluster mode: ON CLUSTER sits after the name and before IN/SETTINGS.
-	got = searchWorkloadDDL(settings, " ON CLUSTER 'bifract'", "all")
-	if !strings.Contains(got, "WORKLOAD bifract_search ON CLUSTER 'bifract' IN all SETTINGS") {
+	// An unknown memory budget cannot be turned into a byte count, so it is omitted.
+	got = classWorkloadDDL(QuerySearchWorkload, "", 50, 50, 0, 0)
+	if strings.Contains(got, "max_memory") {
+		t.Errorf("memory limit must be omitted when the budget is unknown, got %q", got)
+	}
+
+	// Cluster mode: ON CLUSTER sits after the name, before IN/SETTINGS.
+	got = classWorkloadDDL(QueryRecallWorkload, " ON CLUSTER 'bifract'", 25, 0, 1, budget)
+	if !strings.Contains(got, "WORKLOAD bifract_recall ON CLUSTER 'bifract' IN bifract SETTINGS") {
 		t.Errorf("unexpected cluster DDL clause order: %q", got)
 	}
 }
 
-// The workload tag must only ride queries explicitly marked as user searches, so
-// ingestion, alerting, and model queries that share the same helpers stay unscheduled.
-func TestApplyUserSearchWorkloadTagging(t *testing.T) {
+// Tagging must be per class and must only happen for provisioned workloads, so
+// ingestion, alerting, and model queries sharing the same helpers stay unscheduled.
+func TestApplyWorkloadTagging(t *testing.T) {
 	c := &ClickHouseClient{}
-	c.searchWorkloadActive.Store(true)
+	c.setActiveWorkloads(map[string]bool{QuerySearchWorkload: true, QueryRecallWorkload: true})
 
-	if got := c.applyUserSearchWorkload(context.Background(), nil); got != nil {
+	if got := c.applyWorkload(context.Background(), nil); got != nil {
 		t.Errorf("unmarked context must not be tagged, got %v", got)
 	}
 
-	searchCtx := UserSearchContext(context.Background())
-	got := c.applyUserSearchWorkload(searchCtx, nil)
-	if got["workload"] != QuerySearchWorkload {
-		t.Errorf("marked context should carry workload tag, got %v", got)
+	if got := c.applyWorkload(UserSearchContext(context.Background()), nil); got["workload"] != QuerySearchWorkload {
+		t.Errorf("search context should carry the search workload, got %v", got)
+	}
+	if got := c.applyWorkload(RecallContext(context.Background()), nil); got["workload"] != QueryRecallWorkload {
+		t.Errorf("recall context should carry the recall workload, got %v", got)
 	}
 
 	// Existing settings must survive: clickhouse-go replaces the settings map
 	// wholesale, so dropping a caller's budget here would silently unbound it.
-	base := clickhouse.Settings{"max_query_size": 42}
-	got = c.applyUserSearchWorkload(searchCtx, base)
+	got := c.applyWorkload(UserSearchContext(context.Background()), clickhouse.Settings{"max_query_size": 42})
 	if got["max_query_size"] != 42 || got["workload"] != QuerySearchWorkload {
 		t.Errorf("expected merged settings, got %v", got)
 	}
 
-	// Provisioning failed or limits are disabled: tagging stops, so searches run
-	// exactly as they did before the workload existed.
-	c.searchWorkloadActive.Store(false)
-	if got := c.applyUserSearchWorkload(searchCtx, nil); got != nil {
-		t.Errorf("inactive workload must not tag, got %v", got)
+	// A class that is disabled or failed to provision is not tagged, even though
+	// its sibling is: recall off must not silently borrow search's budget.
+	c.setActiveWorkloads(map[string]bool{QuerySearchWorkload: true})
+	if got := c.applyWorkload(RecallContext(context.Background()), nil); got != nil {
+		t.Errorf("unprovisioned class must not tag, got %v", got)
+	}
+
+	// Nothing provisioned at all: back to pre-workload behavior.
+	c.setActiveWorkloads(nil)
+	if got := c.applyWorkload(UserSearchContext(context.Background()), nil); got != nil {
+		t.Errorf("inactive workloads must not tag, got %v", got)
 	}
 }

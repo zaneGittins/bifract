@@ -1396,6 +1396,22 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions(username);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 
+-- Cross-replica relay for SSE. The hub is per-process, so with more than one
+-- app replica two collaborators on the same notebook or dashboard land on
+-- different pods and never see each other's events. Publishers insert here and
+-- pg_notify the row id; every replica listens and delivers to its own clients.
+-- The payload goes in the row rather than the notification because NOTIFY is
+-- capped at 8000 bytes and query results routinely exceed that.
+CREATE TABLE IF NOT EXISTS sse_events (
+    id BIGSERIAL PRIMARY KEY,
+    origin VARCHAR(64) NOT NULL,
+    room TEXT NOT NULL,
+    exclude_client_id VARCHAR(64) NOT NULL DEFAULT '',
+    payload BYTEA NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sse_events_created_at ON sse_events(created_at);
+
 -- ============================
 -- Fix FK constraints: created_by/added_by/granted_by on shared resources
 -- should SET NULL on user deletion, not CASCADE (which would destroy shared data).

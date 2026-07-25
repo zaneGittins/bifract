@@ -270,6 +270,15 @@ const Recall = {
         this._activeJobId = null;
         this.clearEstimate();
         this.refreshTabVisibility();
+
+        // Recall is fractal-only, so there is nothing to reload in a prism; the
+        // tab is being navigated away from by updateScopedTabVisibility.
+        if (!this.fractalId()) {
+            this.isActive = false;
+            this.resetPane();
+            return;
+        }
+
         // If the tab is currently showing, reload for the new fractal.
         const view = document.getElementById('recallView');
         if (this.isActive && view && view.style.display !== 'none') {

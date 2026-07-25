@@ -60,6 +60,27 @@ const RealTimeComments = {
             this.knownCommentIds.clear();
             this.markAsRead();
         });
+
+        if (window.FractalContext && FractalContext.subscribe) {
+            FractalContext.subscribe('RealTimeComments', () => this.onFractalChange());
+        }
+    },
+
+    // The poll is scope-bound, so every comment in a newly selected fractal is
+    // unseen and would be announced as new. Rebuild the baseline the same way a
+    // login does: suppress notifications, reload the known set, then resume.
+    async onFractalChange() {
+        this.stop();
+        this.initialLoadCompleted = false;
+        this.knownCommentIds.clear();
+        this.markAsRead();
+
+        const token = window.FractalContext?.scopeToken?.();
+        await this.loadInitialComments();
+        if (window.FractalContext?.isScopeStale?.(token)) return;
+
+        this.initialLoadCompleted = true;
+        this.start();
     },
 
     async loadInitialComments() {

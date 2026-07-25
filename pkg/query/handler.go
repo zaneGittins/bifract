@@ -146,15 +146,16 @@ type QueryResponse struct {
 	ExecutionMs  int64                  `json:"execution_ms,omitempty"`
 	FieldOrder   []string               `json:"field_order,omitempty"`
 	IsAggregated bool                   `json:"is_aggregated,omitempty"`
-	LimitHit     string                 `json:"limit_hit,omitempty"`    // "bloom", "search", "truncated", or empty
-	ChartType    string                 `json:"chart_type,omitempty"`   // "piechart", "barchart", "" for table
-	ChartConfig  map[string]interface{} `json:"chart_config,omitempty"` // Chart-specific configuration
-	Histogram    []int                  `json:"histogram,omitempty"`    // Time-bucketed counts for timeline
-	TimeStart    string                 `json:"time_start,omitempty"`   // Query time range start (RFC3339)
-	TimeEnd      string                 `json:"time_end,omitempty"`     // Query time range end (RFC3339)
-	Profile      *ProfileData           `json:"profile,omitempty"`      // Per-shard profiling data (only when requested)
-	NextCursor   string                 `json:"next_cursor,omitempty"`  // Cursor token for next page (non-aggregated only)
-	HasMore      bool                   `json:"has_more,omitempty"`     // True when more rows exist beyond this page
+	LimitHit     string                 `json:"limit_hit,omitempty"`      // "bloom", "search", "truncated", or empty
+	ChartType    string                 `json:"chart_type,omitempty"`     // "piechart", "barchart", "" for table
+	ChartConfig  map[string]interface{} `json:"chart_config,omitempty"`   // Chart-specific configuration
+	Histogram    []int                  `json:"histogram,omitempty"`      // Time-bucketed counts for timeline
+	TimeStart    string                 `json:"time_start,omitempty"`     // Histogram range start, bucket-snapped (RFC3339)
+	TimeEnd      string                 `json:"time_end,omitempty"`       // Histogram range end, bucket-snapped (RFC3339)
+	BucketSec    int                    `json:"bucket_seconds,omitempty"` // Histogram bucket interval
+	Profile      *ProfileData           `json:"profile,omitempty"`        // Per-shard profiling data (only when requested)
+	NextCursor   string                 `json:"next_cursor,omitempty"`    // Cursor token for next page (non-aggregated only)
+	HasMore      bool                   `json:"has_more,omitempty"`       // True when more rows exist beyond this page
 }
 
 // ErrorSpan is the rune (code point) offset range of an error in the original
@@ -183,26 +184,113 @@ const cursorPageSize = 200
 // '\bLIMIT\b' is insufficient because '\b' fires at quote-letter boundaries like 'LIMIT'.
 var sqlLimitRE = regexp.MustCompile(`(?i)\sLIMIT[\s\d]`)
 
-// histogramBucketSeconds returns the bucket interval and total bucket count
-// for a histogram query, adapting granularity to the query time range.
-func histogramBucketSeconds(start, end time.Time) (bucketSec int, bucketCount int) {
+const (
+	// maxHistogramBuckets caps the bucket array so a malformed or absurd time
+	// range widens the interval instead of allocating without bound.
+	maxHistogramBuckets = 5000
+
+	// histogramChunkDiv sets the newest histogram chunk to this fraction of the
+	// range; each older chunk doubles. The recent end paints after one small read
+	// while the rest arrives in a handful of large ones instead of hundreds of
+	// small ones.
+	histogramChunkDiv = 16
+
+	// histogramCacheSettings caches a histogram chunk in ClickHouse. The generated
+	// SQL depends only on the query's WHERE clause and its bucket-snapped range, so
+	// editing downstream pipeline commands (| stats, | table) or re-running the same
+	// search reuses the scan instead of repeating it. The duration floor keeps cheap
+	// chunks out of the cache. Applied only to chunks behind the newest one, which is
+	// where freshly ingested logs land and must never be served stale.
+	histogramCacheSettings = "use_query_cache = 1, query_cache_ttl = 60, query_cache_min_query_duration = 200"
+)
+
+// histogramBucketSeconds returns the bucket interval for a histogram over the
+// given range, adapting granularity to its length.
+func histogramBucketSeconds(start, end time.Time) int {
 	dur := end.Sub(start)
 	switch {
 	case dur <= time.Hour:
-		bucketSec = 30
+		return 30
 	case dur <= 24*time.Hour:
-		bucketSec = 900 // 15 minutes
+		return 900 // 15 minutes
 	case dur <= 7*24*time.Hour:
-		bucketSec = 3600 // 1 hour
+		return 3600 // 1 hour
 	case dur <= 30*24*time.Hour:
-		bucketSec = 10800 // 3 hours
+		return 10800 // 3 hours
 	case dur <= 365*24*time.Hour:
-		bucketSec = 86400 // 1 day
+		return 86400 // 1 day
 	default:
-		bucketSec = 604800 // 1 week
+		return 604800 // 1 week
 	}
-	bucketCount = int(dur.Seconds())/bucketSec + 1
-	return
+}
+
+// histogramWindow snaps [start, end] outward onto whole bucket boundaries and
+// returns the bucket interval, bucket count, and snapped bounds. Snapping keeps
+// every bucket a full interval wide, and it holds the generated SQL steady for a
+// relative range over the life of one bucket, which is what lets the ClickHouse
+// query cache serve repeat runs of the same search.
+func histogramWindow(start, end time.Time) (bucketSec, bucketCount int, snapStart, snapEnd time.Time) {
+	if !end.After(start) {
+		return 0, 0, start, end
+	}
+	bucketSec = histogramBucketSeconds(start, end)
+	for {
+		bs := int64(bucketSec)
+		lo := start.Unix() / bs * bs
+		hi := (end.Unix() + bs - 1) / bs * bs
+		if hi == lo {
+			hi = lo + bs
+		}
+		bucketCount = int((hi - lo) / bs)
+		if bucketCount <= maxHistogramBuckets {
+			return bucketSec, bucketCount, time.Unix(lo, 0).UTC(), time.Unix(hi, 0).UTC()
+		}
+		bucketSec *= 2
+	}
+}
+
+// histogramChunk is one bucket-aligned slice of the histogram scan. loIdx/hiIdx
+// is the half-open bucket index range the chunk owns; counts landing outside it
+// (a row on the shared boundary second) belong to the adjacent chunk.
+type histogramChunk struct {
+	start, end   time.Time
+	loIdx, hiIdx int
+}
+
+// histogramChunks slices the snapped range into chunks ordered newest-first,
+// each twice the span of the one before it. Chunk bounds land on bucket
+// boundaries, and because logs is partitioned by (fractal_id, toDate(timestamp))
+// they also land on partition boundaries, so chunking reads the same granules a
+// single query would.
+func histogramChunks(snapStart time.Time, bucketSec, bucketCount int) []histogramChunk {
+	if bucketSec <= 0 || bucketCount <= 0 {
+		return nil
+	}
+	step := bucketCount / histogramChunkDiv
+	if step < 1 {
+		step = 1
+	}
+	var chunks []histogramChunk
+	for hi := bucketCount; hi > 0; {
+		n := step
+		if n > hi {
+			n = hi
+		}
+		// Absorb a small remainder rather than trailing a tiny extra query.
+		if hi-n < step/2 {
+			n = hi
+		}
+		lo := hi - n
+		chunks = append(chunks, histogramChunk{
+			start: snapStart.Add(time.Duration(lo*bucketSec) * time.Second),
+			end:   snapStart.Add(time.Duration(hi*bucketSec) * time.Second),
+			loIdx: lo,
+			hiIdx: hi,
+		})
+		hi = lo
+		step *= 2
+	}
+	return chunks
 }
 
 func NewQueryHandler(db *storage.ClickHouseClient, maxRows int) *QueryHandler {
@@ -270,8 +358,77 @@ type preparedQuery struct {
 	histogramSQL        string
 	histBucketSec       int
 	histBucketCount     int
+	histBucketStart     time.Time
+	histBucketEnd       time.Time
+	histChunks          []histogramChunk
+	histRollupTable     string // non-empty when the histogram reads the per-minute rollup
 	pipeline            *parser.PipelineNode
 	translationOpts     parser.QueryOptions
+}
+
+// buildHistogramSQL re-translates the histogram for one bucket-aligned slice of
+// the range. Only the WHERE portion of the pipeline is reused, so the result is
+// unaffected by downstream pipeline commands.
+func (p *preparedQuery) buildHistogramSQL(start, end time.Time, cache bool) (string, error) {
+	var sql string
+	if p.histRollupTable != "" {
+		sql = histogramRollupSQL(p.histRollupTable, p.translationOpts, start, end, p.histBucketSec)
+	} else {
+		opts := p.translationOpts
+		opts.StartTime = start
+		opts.EndTime = end
+		var err error
+		sql, err = parser.BuildHistogramSQL(p.pipeline, opts, p.histBucketSec)
+		if err != nil {
+			return "", err
+		}
+	}
+	if cache {
+		sql += " SETTINGS " + histogramCacheSettings
+	}
+	return sql, nil
+}
+
+// fractalScopeSQL renders the fractal predicate for a query's scope, matching the
+// scoping the translator applies to the logs table.
+func fractalScopeSQL(opts parser.QueryOptions) string {
+	var cond string
+	switch {
+	case len(opts.FractalIDs) > 0:
+		quoted := make([]string, len(opts.FractalIDs))
+		for i, id := range opts.FractalIDs {
+			quoted[i] = fmt.Sprintf("'%s'", escCHStr(id))
+		}
+		cond = fmt.Sprintf("fractal_id IN (%s)", strings.Join(quoted, ", "))
+	case opts.FractalID != "":
+		cond = fmt.Sprintf("fractal_id = '%s'", escCHStr(opts.FractalID))
+	default:
+		return ""
+	}
+	if opts.IncludeEmptyFractalID {
+		cond = fmt.Sprintf("(%s OR fractal_id = '')", cond)
+	}
+	return cond
+}
+
+// histogramRollupSQL reads bucket counts from the pre-aggregated per-minute rollup
+// instead of scanning logs, turning a full-range count into a few thousand rows.
+// Only valid for a scope-only histogram (parser.HistogramIsScopeOnly) whose bucket
+// is a whole number of minutes, since the rollup has no finer resolution and knows
+// nothing about the contents of a log. The upper bound is exclusive: end is a
+// bucket boundary, so a minute landing on it belongs to the next bucket.
+func histogramRollupSQL(table string, opts parser.QueryOptions, start, end time.Time, bucketSec int) string {
+	conds := []string{
+		fmt.Sprintf("minute >= '%s'", start.Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("minute < '%s'", end.Format("2006-01-02 15:04:05")),
+	}
+	if scope := fractalScopeSQL(opts); scope != "" {
+		conds = append(conds, scope)
+	}
+	return fmt.Sprintf(
+		"SELECT toStartOfInterval(minute, INTERVAL %d SECOND) AS bucket, sum(cnt) AS cnt FROM %s WHERE %s GROUP BY bucket ORDER BY bucket",
+		bucketSec, table, strings.Join(conds, " AND "),
+	)
 }
 
 // buildWindowSQL re-translates the query with a narrower time window and a
@@ -307,22 +464,8 @@ func buildActiveDaysSQL(opts parser.QueryOptions) string {
 		fmt.Sprintf("timestamp >= '%s'", opts.StartTime.Format("2006-01-02 15:04:05")),
 		fmt.Sprintf("timestamp <= '%s'", opts.EndTime.Format("2006-01-02 15:04:05")),
 	)
-	if len(opts.FractalIDs) > 0 {
-		quoted := make([]string, len(opts.FractalIDs))
-		for i, id := range opts.FractalIDs {
-			quoted[i] = fmt.Sprintf("'%s'", id)
-		}
-		fc := fmt.Sprintf("fractal_id IN (%s)", strings.Join(quoted, ", "))
-		if opts.IncludeEmptyFractalID {
-			fc = fmt.Sprintf("(%s OR fractal_id = '')", fc)
-		}
-		conds = append(conds, fc)
-	} else if opts.FractalID != "" {
-		fc := fmt.Sprintf("fractal_id = '%s'", opts.FractalID)
-		if opts.IncludeEmptyFractalID {
-			fc = fmt.Sprintf("(%s OR fractal_id = '')", fc)
-		}
-		conds = append(conds, fc)
+	if scope := fractalScopeSQL(opts); scope != "" {
+		conds = append(conds, scope)
 	}
 	return fmt.Sprintf(
 		"SELECT DISTINCT toDate(timestamp) AS day FROM %s WHERE %s ORDER BY day DESC",
@@ -772,12 +915,37 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	needsHistogram := !isAggregated && chartType == "" && req.Cursor == "" && !hasSubquerySource
 	var histogramSQL string
 	var histBucketSec, histBucketCount int
+	var histBucketStart, histBucketEnd time.Time
+	var histChunks []histogramChunk
+	var histRollupTable string
 	if needsHistogram {
-		histBucketSec, histBucketCount = histogramBucketSeconds(startTime, endTime)
-		histogramSQL, err = parser.BuildHistogramSQL(pipeline, opts, histBucketSec)
-		if err != nil {
-			log.Printf("[QueryHandler] Failed to build histogram SQL: %v", err)
+		histBucketSec, histBucketCount, histBucketStart, histBucketEnd = histogramWindow(startTime, endTime)
+		if histBucketCount <= 0 {
 			needsHistogram = false
+		} else {
+			histChunks = histogramChunks(histBucketStart, histBucketSec, histBucketCount)
+			// A histogram filtered by nothing but time and fractal is exactly what the
+			// per-minute rollup already stores, so read it from there and skip the log
+			// scan entirely. Buckets finer than a minute have no rollup equivalent, but
+			// they only occur on ranges under an hour, which are cheap to scan anyway.
+			if histBucketSec >= 60 && histBucketSec%60 == 0 && parser.HistogramIsScopeOnly(pipeline, opts) {
+				histRollupTable = h.db.HistogramReadTable()
+			}
+			// Single-shot histogram for the buffered path. Deliberately uncached: it
+			// spans the newest bucket, and it is the path the profiler uses, where a
+			// cache hit would misreport the query's real cost.
+			if histRollupTable != "" {
+				histogramSQL = histogramRollupSQL(histRollupTable, opts, histBucketStart, histBucketEnd, histBucketSec)
+			} else {
+				histOpts := opts
+				histOpts.StartTime = histBucketStart
+				histOpts.EndTime = histBucketEnd
+				histogramSQL, err = parser.BuildHistogramSQL(pipeline, histOpts, histBucketSec)
+				if err != nil {
+					log.Printf("[QueryHandler] Failed to build histogram SQL: %v", err)
+					needsHistogram = false
+				}
+			}
 		}
 	}
 
@@ -806,6 +974,10 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		histogramSQL:        histogramSQL,
 		histBucketSec:       histBucketSec,
 		histBucketCount:     histBucketCount,
+		histBucketStart:     histBucketStart,
+		histBucketEnd:       histBucketEnd,
+		histChunks:          histChunks,
+		histRollupTable:     histRollupTable,
 		pipeline:            pipeline,
 		translationOpts:     opts,
 	}
@@ -1004,8 +1176,6 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	appliedCursorPaging := prep.appliedCursorPaging
 	queryMaxRows := prep.queryMaxRows
 	isBloomQuery := prep.isBloomQuery
-	startTime := prep.startTime
-	endTime := prep.endTime
 	selectedIndex := prep.selectedIndex
 	needsHistogram := prep.needsHistogram
 	histogramSQL := prep.histogramSQL
@@ -1024,7 +1194,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	queryStart := time.Now()
 
 	queryTimeoutSec := settings.Get().QueryTimeoutSeconds
-	// Marked as a user search so the CPU workload cap applies (see ReconcileQueryWorkload).
+	// Marked as a user search so the search CPU/memory limits apply (see ReconcileQueryWorkload).
 	searchCtx := storage.UserSearchContext(r.Context())
 	var queryCtx context.Context
 	var cancel context.CancelFunc
@@ -1140,10 +1310,11 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Process histogram into bucketed array
+	// Process histogram into bucketed array. Buckets are aligned to the snapped
+	// window, not the raw query range.
 	var histogram []int
 	if needsHistogram && histRes.err == nil {
-		histogram = bucketHistogram(histRes.rows, startTime, histBucketSec, histBucketCount)
+		histogram = bucketHistogram(histRes.rows, prep.histBucketStart, histBucketSec, histBucketCount)
 	} else if needsHistogram && histRes.err != nil {
 		log.Printf("[QueryHandler] Histogram query failed (non-critical): %v", histRes.err)
 	}
@@ -1197,8 +1368,9 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 					Profile:      profileData,
 				}
 				if histogram != nil {
-					response.TimeStart = startTime.Format(time.RFC3339)
-					response.TimeEnd = endTime.Format(time.RFC3339)
+					response.TimeStart = prep.histBucketStart.Format(time.RFC3339)
+					response.TimeEnd = prep.histBucketEnd.Format(time.RFC3339)
+					response.BucketSec = histBucketSec
 				}
 
 				response.SQL = sql
@@ -1235,8 +1407,9 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		HasMore:      hasMore,
 	}
 	if histogram != nil {
-		response.TimeStart = startTime.Format(time.RFC3339)
-		response.TimeEnd = endTime.Format(time.RFC3339)
+		response.TimeStart = prep.histBucketStart.Format(time.RFC3339)
+		response.TimeEnd = prep.histBucketEnd.Format(time.RFC3339)
+		response.BucketSec = histBucketSec
 	}
 
 	response.SQL = sql
@@ -1258,6 +1431,15 @@ func bucketHistogram(rows []map[string]interface{}, startTime time.Time, histBuc
 		return nil
 	}
 	histogram := make([]int, histBucketCount)
+	foldHistogramRows(histogram, rows, startTime, histBucketSec, 0, histBucketCount)
+	return histogram
+}
+
+// foldHistogramRows writes histogram query rows into dst, keeping only buckets
+// in the half-open index range [loIdx, hiIdx). Chunked scans use the bound to
+// discard a boundary row that the adjacent chunk owns, which keeps the folded
+// result identical to a single full-range scan.
+func foldHistogramRows(dst []int, rows []map[string]interface{}, startTime time.Time, bucketSec, loIdx, hiIdx int) {
 	for _, row := range rows {
 		bucketVal, bOk := row["bucket"]
 		cntVal, cOk := row["cnt"]
@@ -1274,21 +1456,21 @@ func bucketHistogram(rows []map[string]interface{}, startTime time.Time, histBuc
 		if bucketTime.IsZero() {
 			continue
 		}
-		idx := int(bucketTime.Sub(startTime).Seconds()) / histBucketSec
-		if idx >= 0 && idx < histBucketCount {
-			switch c := cntVal.(type) {
-			case uint64:
-				histogram[idx] = int(c)
-			case int64:
-				histogram[idx] = int(c)
-			case float64:
-				histogram[idx] = int(c)
-			case int:
-				histogram[idx] = c
-			}
+		idx := int(bucketTime.Sub(startTime).Seconds()) / bucketSec
+		if idx < loIdx || idx >= hiIdx || idx >= len(dst) {
+			continue
+		}
+		switch c := cntVal.(type) {
+		case uint64:
+			dst[idx] = int(c)
+		case int64:
+			dst[idx] = int(c)
+		case float64:
+			dst[idx] = int(c)
+		case int:
+			dst[idx] = c
 		}
 	}
-	return histogram
 }
 
 // Sentinel errors used to unwind StreamQuery's onRow callback for non-failure
@@ -1350,7 +1532,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 
 	startWall := time.Now()
 
-	if !writeFrame(map[string]interface{}{
+	meta := map[string]interface{}{
 		"type":          "meta",
 		"streaming":     prep.streamable,
 		"sql":           prep.sql,
@@ -1360,12 +1542,23 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 		"chart_config":  prep.chartConfig,
 		"time_start":    prep.startTime.Format(time.RFC3339),
 		"time_end":      prep.endTime.Format(time.RFC3339),
-	}) {
+	}
+	// Announce the histogram's shape up front so the client can clear the previous
+	// search's timeline and reserve the axis before any counts exist, instead of
+	// leaving a stale chart on screen while the scan runs.
+	if prep.needsHistogram {
+		meta["histogram_meta"] = map[string]interface{}{
+			"bucket_start":   prep.histBucketStart.Format(time.RFC3339),
+			"bucket_seconds": prep.histBucketSec,
+			"bucket_count":   prep.histBucketCount,
+		}
+	}
+	if !writeFrame(meta) {
 		return
 	}
 
 	queryTimeoutSec := settings.Get().QueryTimeoutSeconds
-	// Marked as a user search so the CPU workload cap applies (see ReconcileQueryWorkload).
+	// Marked as a user search so the search CPU/memory limits apply (see ReconcileQueryWorkload).
 	searchCtx := storage.UserSearchContext(r.Context())
 	var queryCtx context.Context
 	var cancel context.CancelFunc
@@ -1376,49 +1569,81 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	}
 	defer cancel()
 
-	// Histogram (non-aggregated, first page only) runs concurrently and is
-	// emitted inline by the writer goroutine when ready.
-	histCh := make(chan []int, 1)
+	// Histogram (non-aggregated, first page only). The main query stops at the row
+	// limit after scanning only the newest window, while the histogram must count
+	// every matching row across the whole range, so it is routinely the slower of
+	// the two. Rather than race it against a deadline and discard it, scan it in
+	// bucket-aligned chunks newest-first and stream each cumulative result as it
+	// lands: the timeline fills in right-to-left while the table is already usable.
+	type histUpdate struct {
+		buckets     []int // cumulative snapshot across all chunks scanned so far
+		coveredFrom int   // buckets [coveredFrom, bucketCount) have been scanned
+	}
+	histCh := make(chan histUpdate, len(prep.histChunks))
 	if prep.needsHistogram {
 		go func() {
-			rows, err := h.db.QueryUserSearch(queryCtx, prep.histogramSQL)
-			if err != nil {
-				log.Printf("[QueryHandler] Streaming histogram failed (non-critical): %v", err)
-				histCh <- nil
-				return
+			defer close(histCh)
+			cumulative := make([]int, prep.histBucketCount)
+			for i, chunk := range prep.histChunks {
+				// Chunks are ordered newest-first; only cache the historical ones.
+				chunkSQL, sqlErr := prep.buildHistogramSQL(chunk.start, chunk.end, i > 0)
+				if sqlErr != nil {
+					log.Printf("[QueryHandler] Streaming histogram SQL failed (non-critical): %v", sqlErr)
+					return
+				}
+				rows, qErr := h.db.QueryUserSearch(queryCtx, chunkSQL)
+				if qErr != nil {
+					// Keep whatever earlier chunks already delivered; the client
+					// renders it as a partial histogram rather than losing it.
+					log.Printf("[QueryHandler] Streaming histogram chunk failed (non-critical): %v", qErr)
+					return
+				}
+				foldHistogramRows(cumulative, rows, prep.histBucketStart, prep.histBucketSec, chunk.loIdx, chunk.hiIdx)
+				snapshot := make([]int, len(cumulative))
+				copy(snapshot, cumulative)
+				histCh <- histUpdate{buckets: snapshot, coveredFrom: chunk.loIdx}
 			}
-			histCh <- bucketHistogram(rows, prep.startTime, prep.histBucketSec, prep.histBucketCount)
 		}()
 	}
-	histEmitted := false
-	tryEmitHistogram := func(block bool) {
-		if !prep.needsHistogram || histEmitted {
-			return
-		}
-		emit := func(buckets []int) {
-			histEmitted = true
-			if buckets != nil {
-				writeFrame(map[string]interface{}{
-					"type":           "histogram",
-					"buckets":        buckets,
-					"bucket_seconds": prep.histBucketSec,
-					"bucket_count":   prep.histBucketCount,
-				})
+
+	histDone := !prep.needsHistogram
+	histComplete := !prep.needsHistogram
+	// drainHistogram writes every chunk result that is ready. With block=true it
+	// waits for the scan to finish, bounded by the query timeout, so the complete
+	// histogram always reaches the client. Returns false if the client went away.
+	drainHistogram := func(block bool) bool {
+		for !histDone {
+			var update histUpdate
+			var ok bool
+			if block {
+				update, ok = <-histCh
+			} else {
+				select {
+				case update, ok = <-histCh:
+				default:
+					return true
+				}
+			}
+			if !ok {
+				histDone = true
+				break
+			}
+			if update.coveredFrom == 0 {
+				histComplete = true
+			}
+			if !writeFrame(map[string]interface{}{
+				"type":           "histogram",
+				"buckets":        update.buckets,
+				"bucket_start":   prep.histBucketStart.Format(time.RFC3339),
+				"bucket_seconds": prep.histBucketSec,
+				"bucket_count":   prep.histBucketCount,
+				"covered_from":   update.coveredFrom,
+				"complete":       update.coveredFrom == 0,
+			}) {
+				return false
 			}
 		}
-		if block {
-			select {
-			case buckets := <-histCh:
-				emit(buckets)
-			case <-time.After(500 * time.Millisecond):
-			}
-		} else {
-			select {
-			case buckets := <-histCh:
-				emit(buckets)
-			default:
-			}
-		}
+		return true
 	}
 
 	// Outcome fields populated by whichever branch runs, emitted in the done frame.
@@ -1478,7 +1703,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 					clientGone = true
 					return errStreamClient
 				}
-				tryEmitHistogram(false)
+				drainHistogram(false)
 			}
 			return nil
 		}
@@ -1600,7 +1825,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 					}
 					return
 				}
-				tryEmitHistogram(false)
+				drainHistogram(false)
 				windowEnd = windowStart
 			}
 			if count >= prep.queryMaxRows {
@@ -1672,23 +1897,38 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			sanitizeFloats(row)
 		}
 		count = len(rows)
-		tryEmitHistogram(true)
+		drainHistogram(false)
 		if !writeFrame(map[string]interface{}{"type": "rows", "data": rows}) {
 			return
 		}
 	}
 
-	tryEmitHistogram(true)
+	drainHistogram(false)
 
 	executionMs := time.Since(startWall).Milliseconds()
-	writeFrame(map[string]interface{}{
-		"type":         "done",
-		"count":        count,
-		"has_more":     hasMoreOut,
-		"next_cursor":  nextCursorOut,
-		"execution_ms": executionMs,
-		"limit_hit":    limitHitOut,
-	})
+	// done reports the row scan, not the histogram. histogram_pending tells the
+	// client more histogram frames are still coming so it can show the unscanned
+	// span as pending instead of treating a partial timeline as final.
+	if !writeFrame(map[string]interface{}{
+		"type":              "done",
+		"count":             count,
+		"has_more":          hasMoreOut,
+		"next_cursor":       nextCursorOut,
+		"execution_ms":      executionMs,
+		"limit_hit":         limitHitOut,
+		"histogram_pending": !histDone,
+	}) {
+		return
+	}
+
+	// Rows are delivered; let the remaining histogram chunks finish on the still
+	// open stream instead of discarding a scan the client is waiting on.
+	drainHistogram(true)
+	if !histComplete {
+		// The scan stopped early (error or timeout). Say so, so the client stops
+		// waiting and marks the uncounted span as unscanned rather than as zero.
+		writeFrame(map[string]interface{}{"type": "histogram_end", "complete": false})
+	}
 
 	username := ""
 	if user, ok := r.Context().Value("user").(*storage.User); ok && user != nil {

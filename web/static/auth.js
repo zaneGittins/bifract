@@ -126,6 +126,15 @@ const Auth = {
             const data = await response.json();
             if (data.success) {
                 this.currentUser = null;
+                // Scope state is per-user. Left behind on a shared browser, the
+                // next user sees the previous user's fractal name in the pill
+                // and their fractals ranked first in the selector.
+                try {
+                    localStorage.removeItem('bifract_current_context');
+                    localStorage.removeItem('bifract_selector_usage');
+                } catch (e) {
+                    // localStorage may be unavailable
+                }
                 window.location.href = '/login.html';
             }
         } catch (error) {
@@ -165,7 +174,7 @@ const Auth = {
             if (this.currentUser.is_admin) {
                 roleText = 'Tenant Admin';
             } else {
-                const fr = this.currentUser.fractal_role || '';
+                const fr = this.getFractalRole();
                 if (fr === 'admin') roleText = 'Fractal Admin';
                 else if (fr === 'analyst') roleText = 'Analyst';
                 else if (fr === 'viewer') roleText = 'Viewer';
@@ -250,9 +259,15 @@ const Auth = {
         return this.currentUser;
     },
 
-    // RBAC helpers
+    // RBAC helpers. The role that gates the UI is the one for the CURRENT scope:
+    // in a prism that is prism_role, not the fractal_role left over from whichever
+    // fractal was selected before.
     getFractalRole() {
-        return this.currentUser ? (this.currentUser.fractal_role || '') : '';
+        if (!this.currentUser) return '';
+        if (window.FractalContext && FractalContext.isPrism()) {
+            return this.currentUser.prism_role || '';
+        }
+        return this.currentUser.fractal_role || '';
     },
 
     hasFractalRole(minRole) {

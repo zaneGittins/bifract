@@ -181,6 +181,21 @@ func (h *DashboardHandler) HandleListDashboards(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// Re-check access on the scope every request. The scope was authorized when
+	// it was selected, but permissions can be revoked while the session lives on.
+	selectedPrism, _ := r.Context().Value("selected_prism").(string)
+	if selectedPrism != "" {
+		if !h.requireRoleOnPrism(r, selectedPrism, rbac.RoleViewer) {
+			jsonForbidden(w)
+			return
+		}
+	} else if selectedFractal != "" {
+		if !h.requireRoleOnFractal(r, selectedFractal, rbac.RoleViewer) {
+			jsonForbidden(w)
+			return
+		}
+	}
+
 	limit := 20
 	offset := 0
 	if l := r.URL.Query().Get("limit"); l != "" {
@@ -196,8 +211,8 @@ func (h *DashboardHandler) HandleListDashboards(w http.ResponseWriter, r *http.R
 
 	var dashboards []storage.Dashboard
 	var total int
-	if prismID, ok := r.Context().Value("selected_prism").(string); ok && prismID != "" {
-		dashboards, total, err = h.pg.GetDashboardsByPrism(r.Context(), prismID, limit, offset)
+	if selectedPrism != "" {
+		dashboards, total, err = h.pg.GetDashboardsByPrism(r.Context(), selectedPrism, limit, offset)
 	} else {
 		dashboards, total, err = h.pg.GetDashboardsByFractal(r.Context(), selectedFractal, limit, offset)
 	}

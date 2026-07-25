@@ -13,7 +13,8 @@ import (
 )
 
 type PostgresClient struct {
-	db *sql.DB
+	db      *sql.DB
+	connStr string
 }
 
 type User struct {
@@ -95,7 +96,13 @@ func NewPostgresClient(host string, port int, database, user, password string) (
 		return nil, fmt.Errorf("failed to ping postgres: %w", err)
 	}
 
-	return &PostgresClient{db: db}, nil
+	return &PostgresClient{db: db, connStr: connStr}, nil
+}
+
+// ConnString returns the libpq connection string. Needed by pq.NewListener,
+// which manages its own dedicated connection rather than using the pool.
+func (c *PostgresClient) ConnString() string {
+	return c.connStr
 }
 
 func (c *PostgresClient) Close() error {

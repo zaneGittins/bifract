@@ -76,3 +76,8 @@ spec:
       secret:
         name: bifract-secrets
         key: CLICKHOUSE_PASSWORD_HASH
+    # Workload/resource definitions (the search CPU and memory limits the app
+    # provisions with CREATE WORKLOAD) live in Keeper rather than each node's local
+    # disk, so every node enforces the same limits and a node added later inherits them.
+    extraConfig:
+      workload_zookeeper_path: /clickhouse/workload/definitions.sql

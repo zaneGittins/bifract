@@ -23,10 +23,18 @@ type Client struct {
 	Send chan []byte
 }
 
+// publisher fans an already-serialized event out to other app replicas.
+type publisher interface {
+	Publish(room string, payload []byte, excludeClientID string)
+}
+
 // Hub manages room-based pub/sub for SSE connections.
 type Hub struct {
 	mu    sync.RWMutex
 	rooms map[string]map[string]*Client // room -> clientID -> Client
+
+	relayMu sync.RWMutex
+	relay   publisher
 }
 
 // NewHub creates a new SSE hub.
@@ -34,6 +42,15 @@ func NewHub() *Hub {
 	return &Hub{
 		rooms: make(map[string]map[string]*Client),
 	}
+}
+
+// SetRelay attaches a cross-replica relay. Without one the hub only reaches
+// clients connected to this process, which silently breaks collaboration when
+// more than one replica is running.
+func (h *Hub) SetRelay(p publisher) {
+	h.relayMu.Lock()
+	h.relay = p
+	h.relayMu.Unlock()
 }
 
 // Register adds a client to a room and returns the client.
@@ -74,13 +91,30 @@ func (h *Hub) Unregister(c *Client) {
 }
 
 // Broadcast sends an event to all clients in a room, optionally excluding one
-// client (typically the sender, for self-echo filtering).
+// client (typically the sender, for self-echo filtering). The event also goes to
+// the relay, if attached, so clients connected to other replicas receive it.
 func (h *Hub) Broadcast(room string, event Event, excludeClientID string) {
 	data := FormatSSE(event)
 	if data == nil {
 		return
 	}
 
+	h.deliverLocal(room, data, excludeClientID)
+
+	// Published even when this replica has no clients in the room: another
+	// replica may.
+	h.relayMu.RLock()
+	relay := h.relay
+	h.relayMu.RUnlock()
+	if relay != nil {
+		relay.Publish(room, data, excludeClientID)
+	}
+}
+
+// deliverLocal sends a formatted event to this process's clients only. Used both
+// by Broadcast and by the relay when replaying an event from another replica,
+// which must not be re-published.
+func (h *Hub) deliverLocal(room string, data []byte, excludeClientID string) {
 	h.mu.RLock()
 	clients := h.rooms[room]
 	if clients == nil {

@@ -32,9 +32,20 @@ func (p *pgSessionStore) Get(sessionID string) (*Session, bool) {
 
 	s := &Session{}
 	var fractal, prism sql.NullString
+	// The joins resolve a scope that no longer exists to NULL. selected_fractal
+	// and selected_prism carry no foreign key, so deleting a fractal leaves every
+	// session that had it selected pinned to a dangling id, and callers only fall
+	// back to the default fractal when the value is empty. Resolving it here fixes
+	// that for every consumer at once, and covers ids that went stale by any route
+	// (delete, restore, manual SQL), not just through the delete handler.
 	err := p.db.QueryRowContext(ctx,
-		`SELECT username, created_at, expires_at, selected_fractal, selected_prism
-		 FROM sessions WHERE session_id = $1 AND expires_at > NOW()`,
+		`SELECT s.username, s.created_at, s.expires_at,
+		        CASE WHEN f.id IS NULL THEN NULL ELSE s.selected_fractal END,
+		        CASE WHEN p.id IS NULL THEN NULL ELSE s.selected_prism END
+		 FROM sessions s
+		 LEFT JOIN fractals f ON f.id::text = s.selected_fractal
+		 LEFT JOIN prisms   p ON p.id::text = s.selected_prism
+		 WHERE s.session_id = $1 AND s.expires_at > NOW()`,
 		sessionID,
 	).Scan(&s.Username, &s.CreatedAt, &s.ExpiresAt, &fractal, &prism)
 	if err != nil {

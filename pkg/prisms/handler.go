@@ -279,7 +279,14 @@ func (h *Handler) HandleSelectPrism(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "Failed to select prism")
 		return
 	}
-	respondSuccess(w, map[string]interface{}{"selected": true, "prism": prism})
+
+	// Return the resolved role so the client renders role-gated controls for the
+	// scope it just moved to, instead of carrying the previous scope's role over.
+	roleName := string(h.resolvePrismRole(r, id))
+	if user := getCurrentUser(r); user != nil && user.IsAdmin {
+		roleName = string(rbac.RoleAdmin)
+	}
+	respondSuccess(w, map[string]interface{}{"selected": true, "prism": prism, "role": roleName})
 }
 
 // ---- Permission Management ----
