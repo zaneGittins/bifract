@@ -38,6 +38,37 @@ Map multiple source names to a single target:
 
 This is useful when ingesting logs from different vendors that use different field names for the same concept.
 
+## Event Categories
+
+`bifract_category` is the canonical taxonomy field. It is what routes events into the
+provenance graph's backing tables and what [Sigma rules](../alerting/alert-feeds.md) are
+scoped against, so a normalizer handling endpoint telemetry should set it.
+
+Derive it with a value mapping from whatever your source uses to identify the event type:
+
+```yaml
+value_mappings:
+  - from_field: event_id
+    to_field: bifract_category
+    map:
+      "1": process_creation
+      "3": network_connect
+      "8": remote_thread
+      "10": process_access
+      "11": file_write
+      "22": dns_query
+```
+
+Value mappings run *after* field mappings, so `from_field` must name the target field, not
+the original source name.
+
+Use **Sigma's `logsource.category` vocabulary** for these values. Sigma rules are prefiltered
+by category, so a `registry_set` rule only matches events you labelled `registry_set`. The
+categories the [provenance graph](provenance-graph.md) consumes are `process_creation`,
+`file_write`, `network_connect`, `dns_query`, `remote_thread` and `process_access`; any other
+category is still searchable and still usable by Sigma rules, it just does not build graph
+edges.
+
 ## Timestamp Fields
 
 Define custom timestamp field names and their formats. During ingestion, Bifract checks for timestamps in this order:

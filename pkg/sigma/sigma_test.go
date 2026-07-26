@@ -772,11 +772,11 @@ func TestBuildFieldMapper_SnakeCase(t *testing.T) {
 	mapper := BuildFieldMapper(compiled)
 
 	tests := map[string]string{
-		"CommandLine":  "command_line",
-		"ParentImage":  "parent_image",
-		"EventID":      "event_id",
-		"User":         "user",
-		"SourceIp":     "source_ip",
+		"CommandLine":    "command_line",
+		"ParentImage":    "parent_image",
+		"EventID":        "event_id",
+		"User":           "user",
+		"SourceIp":       "source_ip",
 		"TargetFilename": "target_filename",
 	}
 
@@ -790,7 +790,7 @@ func TestBuildFieldMapper_SnakeCase(t *testing.T) {
 
 func TestBuildFieldMapper_WithExplicitMapping(t *testing.T) {
 	compiled := &normalizers.CompiledNormalizer{
-		Transforms:      []normalizers.Transform{normalizers.TransformSnakeCase, normalizers.TransformLowercase},
+		Transforms: []normalizers.Transform{normalizers.TransformSnakeCase, normalizers.TransformLowercase},
 		FieldMappingMap: map[string]string{
 			"parent_image": "parent_process_path",
 			"src_ip":       "source_address",

@@ -17,7 +17,37 @@ import (
 //	    regex, gaining SIMD multi-pattern search and text-index acceleration.
 //	    Falls back to regex only when a value contains a literal comma (which
 //	    would corrupt the comma-delimited list syntax) or for keyword/re searches.
-const TranslatorVersion = "v3"
+//	v4: scope rules by logsource.category via a bifract_category prefilter. Without
+//	    it a rule's detection ran against every event type, so for example a
+//	    create_stream_hash rule matching on Hashes fired on every process-creation
+//	    event, which also carries an IMPHASH.
+const TranslatorVersion = "v4"
+
+// sigmaCategoryAliases maps Sigma logsource categories onto Bifract's canonical
+// bifract_category vocabulary where the two names differ. Categories not listed pass
+// through unchanged, so Sigma's taxonomy is the vocabulary a normalizer should target.
+var sigmaCategoryAliases = map[string]string{
+	"network_connection":   "network_connect",
+	"dns_query_unfiltered": "dns_query",
+	"file_event":           "file_write",
+	"file_create":          "file_write",
+	"create_remote_thread": "remote_thread",
+}
+
+// CategoryFilter returns the bifract_category prefilter for a rule's logsource, or ""
+// when the rule is not category-scoped. Product/service-only rules (Windows Security log
+// rules, for instance) return "" deliberately: they scope themselves via EventID inside
+// their own detection block, and forcing a category on them would match nothing.
+func CategoryFilter(ls LogSource) string {
+	cat := strings.ToLower(strings.TrimSpace(ls.Category))
+	if cat == "" {
+		return ""
+	}
+	if alias, ok := sigmaCategoryAliases[cat]; ok {
+		cat = alias
+	}
+	return "bifract_category=" + encodeBQLNativeValue(cat)
+}
 
 // Translate converts a parsed Sigma rule's detection logic into a BQL query string.
 // fieldMapper optionally transforms Sigma field names to match stored field names.
@@ -40,6 +70,12 @@ func Translate(rule *SigmaRule, fieldMapper func(string) string) (string, error)
 	result, err := evaluateCondition(rule.Detection.Condition, selectionExprs)
 	if err != nil {
 		return "", fmt.Errorf("condition: %w", err)
+	}
+
+	// Scope the detection to the rule's logsource category. This goes first so the
+	// low-cardinality equality prunes before the detection predicates run.
+	if cf := CategoryFilter(rule.LogSource); cf != "" && result != "" {
+		result = cf + " AND (" + result + ")"
 	}
 
 	return result, nil
