@@ -322,9 +322,11 @@ func (a *Archiver) commitFractal(ctx context.Context, fractalID string, logs []s
 	if err := txn.Append(ctx, rdr, nil); err != nil {
 		return err
 	}
-	if _, err := txn.Commit(ctx); err != nil {
+	updated, err := txn.Commit(ctx)
+	if err != nil {
 		return err
 	}
+	writeVersionHint(ctx, updated)
 	log.Printf("[Archiver] committed %d logs for fractal %s", len(logs), fractalID)
 	return nil
 }

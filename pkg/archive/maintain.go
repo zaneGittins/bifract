@@ -550,6 +550,7 @@ func compactGroup(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 		}); err == nil {
 			var updated *icetable.Table
 			if updated, err = tx.Commit(ctx); err == nil {
+				writeVersionHint(ctx, updated)
 				return updated, nil
 			}
 		}
@@ -632,6 +633,12 @@ func expireSnapshots(ctx context.Context, c *Catalog, ident icetable.Identifier,
 	); err != nil {
 		return err
 	}
-	_, err = tx.Commit(ctx)
-	return err
+	updated, err := tx.Commit(ctx)
+	if err != nil {
+		return err
+	}
+	// Runs on every maintenance pass, so this also backfills the hint for dormant
+	// fractals that no longer receive archiver commits.
+	writeVersionHint(ctx, updated)
+	return nil
 }

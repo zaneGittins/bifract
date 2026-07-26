@@ -105,6 +105,9 @@ func (c *Catalog) EnsureTable(ctx context.Context, fractalID string) (*icetable.
 		}
 		return nil, fmt.Errorf("archive: create table %s: %w", tableName(fractalID), err)
 	}
+	// Publish the hint at creation so a fractal that is archived to but never
+	// committed to again is still resolvable from object storage alone.
+	writeVersionHint(ctx, tbl)
 	return tbl, nil
 }
 
@@ -222,6 +225,7 @@ func (c *Catalog) ensureTableCurrent(ctx context.Context, ident icetable.Identif
 		}
 		return nil, fmt.Errorf("archive: reconcile table: %w", err)
 	}
+	writeVersionHint(ctx, updated)
 	return updated, nil
 }
 

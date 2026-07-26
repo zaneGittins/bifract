@@ -2505,7 +2505,7 @@ const QueryExecutor = {
         networkDiv.style.pointerEvents = 'auto';
         networkDiv.style.touchAction = 'auto';
 
-        this.currentChart = new vis.Network(networkDiv, data, options);
+        this.currentChart = VisView.track(new vis.Network(networkDiv, data, options));
 
         // -- Minimap overlay (created after the network so it sits above vis's canvas) --
         let minimap = networkDiv.querySelector('.graph-minimap');
@@ -2516,19 +2516,15 @@ const QueryExecutor = {
         minimap.height = 160;
         networkDiv.appendChild(minimap);
 
-        // Fit view
+        // Initial framing. Not animated: the layout is only just on screen, and an
+        // animated view move started before the first redraw leaks vis's transition
+        // handler and permanently hijacks zoom/pan (see VisView).
         setTimeout(() => {
+            if (!this.currentChart) return;
             if (nodes.length < 10) {
-                this.currentChart.moveTo({
-                    position: { x: 0, y: 0 },
-                    scale: 0.8,
-                    animation: { duration: 400, easingFunction: 'easeInOutQuad' }
-                });
+                this.currentChart.moveTo({ position: { x: 0, y: 0 }, scale: 0.8 });
             } else {
-                this.currentChart.fit({
-                    animation: { duration: 400, easingFunction: 'easeInOutQuad' },
-                    padding: 40
-                });
+                this.currentChart.fit({ padding: 40 });
             }
         }, 200);
 
@@ -2646,7 +2642,8 @@ const QueryExecutor = {
             const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
             const cx = map.minX + (mx - map.offX) / map.scale;
             const cy = map.minY + (my - map.offY) / map.scale;
-            this.currentChart.moveTo({ position: { x: cx, y: cy }, animation: { duration: 150 } });
+            // Instant: the view has to track the cursor during a drag.
+            this.currentChart.moveTo({ position: { x: cx, y: cy } });
         };
         let mmDragging = false;
         minimap.addEventListener('mousedown', (e) => { mmDragging = true; mmNavigate(e); e.preventDefault(); });
@@ -2718,7 +2715,7 @@ const QueryExecutor = {
             });
             body.querySelector('[data-act="subtree"]')?.addEventListener('click', () => {
                 const connected = this.currentChart.getConnectedNodes(nodeId);
-                this.currentChart.fit({ nodes: [nodeId, ...connected], animation: { duration: 400 }, padding: 80 });
+                VisView.fit(this.currentChart, { nodes: [nodeId, ...connected], animation: { duration: 400 }, padding: 80 });
             });
             body.querySelector('[data-act="walkup"]')?.addEventListener('click', () => this.pivotTraversal(parentId));
             body.querySelectorAll('.graph-path-seg').forEach(el => {
@@ -2738,20 +2735,20 @@ const QueryExecutor = {
             dimExcept(ancestorsOf(nodeId), true);
             setTimeout(() => {
                 resizeGraph();
-                this.currentChart.focus(nodeId, { scale: Math.max(this.currentChart.getScale(), 0.6), animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+                VisView.focus(this.currentChart, nodeId, { scale: Math.max(this.currentChart.getScale(), 0.6), animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
                 drawMinimap();
             }, 210);
         };
 
         // -- Toolbar handlers --
         document.getElementById('graphFitBtn')?.addEventListener('click', () => {
-            this.currentChart.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 40 });
+            VisView.fit(this.currentChart, { animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 40 });
         });
         document.getElementById('graphZoomInBtn')?.addEventListener('click', () => {
-            this.currentChart.moveTo({ scale: this.currentChart.getScale() * 1.3, animation: { duration: 200 } });
+            VisView.moveTo(this.currentChart, { scale: this.currentChart.getScale() * 1.3, animation: { duration: 200 } });
         });
         document.getElementById('graphZoomOutBtn')?.addEventListener('click', () => {
-            this.currentChart.moveTo({ scale: this.currentChart.getScale() / 1.3, animation: { duration: 200 } });
+            VisView.moveTo(this.currentChart, { scale: this.currentChart.getScale() / 1.3, animation: { duration: 200 } });
         });
         document.getElementById('graphExportBtn')?.addEventListener('click', () => {
             const canvas = networkDiv.querySelector('canvas');
@@ -2823,7 +2820,7 @@ const QueryExecutor = {
             if (params.nodes.length > 0) {
                 const nodeId = params.nodes[0];
                 const connected = this.currentChart.getConnectedNodes(nodeId);
-                this.currentChart.fit({
+                VisView.fit(this.currentChart, {
                     nodes: [nodeId, ...connected],
                     animation: { duration: 400, easingFunction: 'easeInOutQuad' },
                     padding: 80
@@ -2861,7 +2858,7 @@ const QueryExecutor = {
                     this.pivotTraversal(ctxParentId);
                 } else if (action === 'focus') {
                     const connected = this.currentChart.getConnectedNodes(nodeId);
-                    this.currentChart.fit({ nodes: [nodeId, ...connected], animation: { duration: 400 }, padding: 80 });
+                    VisView.fit(this.currentChart, { nodes: [nodeId, ...connected], animation: { duration: 400 }, padding: 80 });
                 } else if (action === 'copy') {
                     navigator.clipboard.writeText(nodeId).then(() => Toast.show('Copied', 'success'));
                 }
@@ -4848,11 +4845,14 @@ const QueryExecutor = {
 
         networkDiv.style.pointerEvents = 'auto';
         networkDiv.style.touchAction = 'auto';
-        this.currentChart = new vis.Network(networkDiv, { nodes, edges }, options);
+        this.currentChart = VisView.track(new vis.Network(networkDiv, { nodes, edges }, options));
 
-        // Freeze physics once settled so the layout stays still and CPU idles.
+        // Freeze physics once settled so the layout stays still and CPU idles, then
+        // frame the final layout. The fit must wait for stabilization: vis blocks all
+        // redraws until then, so an animated fit started earlier cannot advance.
         this.currentChart.once('stabilizationIterationsDone', () => {
             this.currentChart.setOptions({ physics: false });
+            VisView.fit(this.currentChart, { padding: 40 });
         });
 
         // Best of both worlds: run physics only while a node is actively dragged
@@ -4873,10 +4873,6 @@ const QueryExecutor = {
                 meshSettleTimer = null;
             }, 1200);
         });
-        setTimeout(() => {
-            if (this.currentChart) this.currentChart.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 40 });
-        }, 400);
-
         // -- Minimap overlay (mirrors graph()): whole-graph thumbnail + viewport
         // rectangle; click/drag it to pan the main view. Dot size scales by degree. --
         let minimap = networkDiv.querySelector('.graph-minimap');
@@ -4929,7 +4925,8 @@ const QueryExecutor = {
             const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
             const cx = map.minX + (mx - map.offX) / map.scale;
             const cy = map.minY + (my - map.offY) / map.scale;
-            this.currentChart.moveTo({ position: { x: cx, y: cy }, animation: { duration: 150 } });
+            // Instant: the view has to track the cursor during a drag.
+            this.currentChart.moveTo({ position: { x: cx, y: cy } });
         };
         let mmDragging = false;
         minimap.addEventListener('mousedown', (e) => { mmDragging = true; mmNavigate(e); e.preventDefault(); });
@@ -5017,7 +5014,7 @@ const QueryExecutor = {
             });
             body.querySelector('[data-act="focus"]')?.addEventListener('click', () => {
                 const connected = this.currentChart.getConnectedNodes(nodeId);
-                this.currentChart.fit({ nodes: [nodeId, ...connected], animation: { duration: 400 }, padding: 80 });
+                VisView.fit(this.currentChart, { nodes: [nodeId, ...connected], animation: { duration: 400 }, padding: 80 });
             });
             body.querySelectorAll('.graph-mesh-neighbor').forEach(el => {
                 el.addEventListener('click', () => {
@@ -5036,19 +5033,19 @@ const QueryExecutor = {
             highlightNeighborhood(nodeId, true);
             setTimeout(() => {
                 resizeGraph();
-                this.currentChart.focus(nodeId, { scale: Math.max(this.currentChart.getScale(), 0.6), animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+                VisView.focus(this.currentChart, nodeId, { scale: Math.max(this.currentChart.getScale(), 0.6), animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
             }, 210);
         };
 
         // -- Toolbar handlers --
         document.getElementById('meshFitBtn')?.addEventListener('click', () => {
-            this.currentChart.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 40 });
+            VisView.fit(this.currentChart, { animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 40 });
         });
         document.getElementById('meshZoomInBtn')?.addEventListener('click', () => {
-            this.currentChart.moveTo({ scale: this.currentChart.getScale() * 1.3, animation: { duration: 200 } });
+            VisView.moveTo(this.currentChart, { scale: this.currentChart.getScale() * 1.3, animation: { duration: 200 } });
         });
         document.getElementById('meshZoomOutBtn')?.addEventListener('click', () => {
-            this.currentChart.moveTo({ scale: this.currentChart.getScale() / 1.3, animation: { duration: 200 } });
+            VisView.moveTo(this.currentChart, { scale: this.currentChart.getScale() / 1.3, animation: { duration: 200 } });
         });
         document.getElementById('meshExportBtn')?.addEventListener('click', () => {
             const canvas = networkDiv.querySelector('canvas');
@@ -5129,7 +5126,7 @@ const QueryExecutor = {
             if (params.nodes.length > 0) {
                 const nodeId = params.nodes[0];
                 const connected = this.currentChart.getConnectedNodes(nodeId);
-                this.currentChart.fit({ nodes: [nodeId, ...connected], animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 80 });
+                VisView.fit(this.currentChart, { nodes: [nodeId, ...connected], animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 80 });
             }
         });
     },

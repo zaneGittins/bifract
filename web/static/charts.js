@@ -47,6 +47,48 @@ window.MeshColor = {
     }
 };
 
+// vis-network keeps its view-transition callback registered on 'initRedraw' until
+// the animation completes. Starting a second animated moveTo/fit/focus before the
+// first has rendered a frame orphans the first callback, which then rewrites the
+// scale/translation on every redraw: zoom and pan stop responding until the graph
+// is re-rendered. The window is wide in practice because redraws are blocked for
+// the whole physics stabilization pass and rAF is frozen in background tabs.
+// Serialize view animations: while one is in flight, later moves apply instantly.
+window.VisView = {
+    track(network) {
+        if (!network || network._vvTracked) return network;
+        network._vvTracked = true;
+        network._vvBusy = false;
+        network.on('animationFinished', () => {
+            network._vvBusy = false;
+            clearTimeout(network._vvTimer);
+        });
+        return network;
+    },
+    fit(network, opts) { this._run(network, 'fit', opts); },
+    moveTo(network, opts) { this._run(network, 'moveTo', opts); },
+    focus(network, nodeId, opts) { this._run(network, 'focus', opts, nodeId); },
+    _run(network, method, opts, nodeId) {
+        if (!network) return;
+        this.track(network);
+        opts = opts || {};
+        const duration = opts.animation && opts.animation.duration;
+        if (opts.animation && duration !== 0) {
+            if (network._vvBusy) {
+                opts = Object.assign({}, opts, { animation: false });
+            } else {
+                network._vvBusy = true;
+                // An animation that can never advance (network destroyed or its
+                // container hidden) must not wedge us in instant mode forever.
+                clearTimeout(network._vvTimer);
+                network._vvTimer = setTimeout(() => { network._vvBusy = false; }, (duration || 1000) + 1500);
+            }
+        }
+        if (nodeId != null) network[method](nodeId, opts);
+        else network[method](opts);
+    }
+};
+
 // BifractCharts - Shared chart rendering module
 // All chart types are defined once here and called from search, notebooks, dashboards, and chat.
 window.BifractCharts = {

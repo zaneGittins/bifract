@@ -118,9 +118,11 @@ func applyRetention(ctx context.Context, c *Catalog, ident icetable.Identifier, 
 	if err := tx.Delete(ctx, filter, nil, icetable.WithDeleteConcurrency(concurrency)); err != nil {
 		return res, fmt.Errorf("delete partitions older than %s: %w", cutoff.Format("2006-01-02"), err)
 	}
-	if _, err := tx.Commit(ctx); err != nil {
+	updated, err := tx.Commit(ctx)
+	if err != nil {
 		return res, err
 	}
+	writeVersionHint(ctx, updated)
 	res.Deleted, res.Files = true, len(tasks)
 	return res, nil
 }
