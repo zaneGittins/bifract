@@ -43,9 +43,14 @@ taxonomy**. A handful of names are aliased onto Bifract's canonical vocabulary:
 | `file_event`, `file_create` | `file_write` |
 | `create_remote_thread` | `remote_thread` |
 | `dns_query_unfiltered` | `dns_query` |
+| `registry_add`, `registry_set`, `registry_delete`, `registry_rename` | `registry_event` |
+
+Registry is collapsed because Sigma splits it four ways (Sysmon 12/13/14) while the rules
+themselves carry the discriminator (`EventType: SetValue`, `DeleteValue`, ...) inside their
+detection block, so almost no precision is lost and normalizers only need one category.
 
 Everything else passes through unchanged (`process_creation`, `dns_query`, `process_access`,
-`registry_set`, `image_load`, and so on).
+`image_load`, `ps_script`, `pipe_created`, and so on).
 
 !!! warning "Rules for event types you do not collect will not match"
     Scoping means a `registry_set` rule matches nothing unless your normalizer emits

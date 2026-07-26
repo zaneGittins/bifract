@@ -62,12 +62,33 @@ value_mappings:
 Value mappings run *after* field mappings, so `from_field` must name the target field, not
 the original source name.
 
-Use **Sigma's `logsource.category` vocabulary** for these values. Sigma rules are prefiltered
-by category, so a `registry_set` rule only matches events you labelled `registry_set`. The
-categories the [provenance graph](provenance-graph.md) consumes are `process_creation`,
-`file_write`, `network_connect`, `dns_query`, `remote_thread` and `process_access`; any other
-category is still searchable and still usable by Sigma rules, it just does not build graph
-edges.
+Use **Sigma's `logsource.category` vocabulary** for these values, since Sigma rules are
+prefiltered by category. The exception is registry: emit `registry_event` for all registry
+activity, and Bifract maps Sigma's four registry categories onto it.
+
+### Common categories
+
+Only the first group builds [provenance graph](provenance-graph.md) edges. The rest are
+searchable and usable by Sigma rules like any other category.
+
+| Category | Sysmon event | Builds graph edges |
+|---|---|---|
+| `process_creation` | 1 | yes |
+| `network_connect` | 3 | yes |
+| `file_write` | 11 | yes |
+| `dns_query` | 22 | yes |
+| `remote_thread` | 8 | yes |
+| `process_access` | 10 | yes |
+| `registry_event` | 12, 13, 14 | no |
+| `image_load` | 7 | no |
+| `ps_script` | PowerShell/Operational 4104 | no |
+| `pipe_created` | 17, 18 | no |
+| `driver_load` | 6 | no |
+| `create_stream_hash` | 15 | no |
+| `file_delete` | 23, 26 | no |
+
+Categories not listed here still work: an unrecognised category is used verbatim, so any
+Sigma `logsource.category` is supported as long as your normalizer emits the same string.
 
 ## Timestamp Fields
 

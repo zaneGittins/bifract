@@ -12,6 +12,19 @@ func TestTranslateScopesByLogSourceCategory(t *testing.T) {
 		{"create_remote_thread", "bifract_category=remote_thread"},
 		{"dns_query", "bifract_category=dns_query"},
 		{"create_stream_hash", "bifract_category=create_stream_hash"},
+		{"image_load", "bifract_category=image_load"},
+		{"ps_script", "bifract_category=ps_script"},
+
+		// All four registry categories collapse onto one.
+		{"registry_set", "bifract_category=registry_event"},
+		{"registry_add", "bifract_category=registry_event"},
+		{"registry_delete", "bifract_category=registry_event"},
+		{"registry_rename", "bifract_category=registry_event"},
+		{"registry_event", "bifract_category=registry_event"},
+
+		// PowerShell categories stay distinct: their field shapes differ (ScriptBlockText vs
+		// ContextInfo/Payload), so aliasing them would run rules against absent fields.
+		{"ps_module", "bifract_category=ps_module"},
 		{"", ""},
 	}
 	for _, c := range cases {

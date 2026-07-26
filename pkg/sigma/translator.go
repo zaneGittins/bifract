@@ -21,7 +21,8 @@ import (
 //	    it a rule's detection ran against every event type, so for example a
 //	    create_stream_hash rule matching on Hashes fired on every process-creation
 //	    event, which also carries an IMPHASH.
-const TranslatorVersion = "v4"
+//	v5: collapse Sigma's four registry categories onto registry_event.
+const TranslatorVersion = "v5"
 
 // sigmaCategoryAliases maps Sigma logsource categories onto Bifract's canonical
 // bifract_category vocabulary where the two names differ. Categories not listed pass
@@ -32,6 +33,15 @@ var sigmaCategoryAliases = map[string]string{
 	"file_event":           "file_write",
 	"file_create":          "file_write",
 	"create_remote_thread": "remote_thread",
+
+	// Sigma splits registry activity four ways (Sysmon 12/13/14). Collapsing them onto one
+	// category spares normalizers from reproducing that split, and costs almost no precision
+	// because registry rules carry the discriminator (EventType: SetValue, DeleteValue, ...)
+	// inside their own detection block.
+	"registry_add":    "registry_event",
+	"registry_set":    "registry_event",
+	"registry_delete": "registry_event",
+	"registry_rename": "registry_event",
 }
 
 // CategoryFilter returns the bifract_category prefilter for a rule's logsource, or ""
