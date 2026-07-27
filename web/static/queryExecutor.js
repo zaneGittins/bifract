@@ -3216,7 +3216,49 @@ const QueryExecutor = {
         };
         const MAX_LINK_OWNERS = 48; // a hot shared artifact touched by hundreds of procs: cap the
         // pairwise expansion (the bridge is still conveyed) so build stays bounded, not O(owners^2).
-        sharedLeaves.forEach(id => {
+        // MAX_LINK_PAIRS caps the DISTINCT process pairs that become links. Pair count is
+        // combinatorial (owners x cross-tree owners, summed over every shared artifact), so one
+        // artifact touched by 40 processes reads as ~400 "reconnections" when it is one bridge.
+        // The backend peer cap (pgr peers=) bounds how many peer trees arrive; this bounds what
+        // the pairing of them can expand into. Overflow is counted, never silently dropped.
+        const MAX_LINK_PAIRS = 50;
+        const MAX_PAIR_SCAN = 5000; // stop counting overflow past this; the total reads as "N+"
+        const pairSeen = new Set(); // materialized as links
+        const pairOver = new Set(); // discovered past the cap, kept only to report an honest total
+        // "ownerGuid\0leafId" for every artifact that actually became a link on that process. The
+        // renderer hides a shared leaf from a process's chips only when that process has a link
+        // carrying it (see notShared) -- a process whose pairs were all capped away keeps its
+        // chips instead of losing the artifact from the chips AND the links both.
+        const linkedLeaves = new Set();
+        let pairScanCapped = false;
+        // Strongest bridges first, so the cap keeps them: a rare artifact (high anomaly) shared by
+        // FEW processes is a sharper link than a merely-uncommon one shared by dozens.
+        const sharedOrder = Array.from(sharedLeaves).sort((x, y) => {
+            const ax = (leafMeta.get(x) || {}).anomaly, ay = (leafMeta.get(y) || {}).anomaly;
+            const nx = isNaN(ax) ? 0 : ax, ny = isNaN(ay) ? 0 : ay;
+            if (nx !== ny) return ny - nx;
+            const ox = (leafOwners.get(x) || { size: 0 }).size, oy = (leafOwners.get(y) || { size: 0 }).size;
+            if (ox !== oy) return ox - oy;
+            return x < y ? -1 : 1;
+        });
+        // Records the pair and reports whether it may be materialized (a pair already kept always
+        // may, so its artifact list stays complete).
+        const takePair = (a, b) => {
+            const key = a < b ? a + '\x00' + b : b + '\x00' + a;
+            if (pairSeen.has(key)) return true;
+            if (pairSeen.size < MAX_LINK_PAIRS) { pairSeen.add(key); return true; }
+            if (pairOver.size < MAX_PAIR_SCAN) pairOver.add(key); else pairScanCapped = true;
+            return false;
+        };
+        // Dropped-and-ran file bridges claim the budget first: a written path that another tree
+        // then executed is the strongest bridge pgr emits, and there are few of them.
+        interactions.forEach((list, src) => list.forEach(it => {
+            if (!it.recon) return;
+            if (!takePair(src, it.target)) return;
+            addLink(src, 'file', it.label, it.target, it.info);
+            addLink(it.target, 'file', it.label, src, it.info);
+        }));
+        sharedOrder.forEach(id => {
             let owners = Array.from(leafOwners.get(id) || []);
             if (owners.length > MAX_LINK_OWNERS) owners = owners.slice(0, MAX_LINK_OWNERS);
             const meta = leafMeta.get(id) || {};
@@ -3226,14 +3268,21 @@ const QueryExecutor = {
                 // event (not the peer's process-creation log).
                 const ae = leafIndex.get(a + '\x00' + type + '\x00' + id);
                 const aInfo = ae ? ae.info : (logInfoById.get(id) || null);
-                owners.forEach(b => { if ((rootOf.get(a) || a) !== (rootOf.get(b) || b)) addLink(a, type, meta.label || id, b, aInfo); });
+                owners.forEach(b => {
+                    if ((rootOf.get(a) || a) === (rootOf.get(b) || b)) return;
+                    if (!takePair(a, b)) return;
+                    addLink(a, type, meta.label || id, b, aInfo);
+                    linkedLeaves.add(a + '\x00' + id);
+                });
             });
         });
-        interactions.forEach((list, src) => list.forEach(it => {
-            if (it.recon) { addLink(src, 'file', it.label, it.target, it.info); addLink(it.target, 'file', it.label, src, it.info); }
-        }));
+        // Bridges = distinct shared artifacts (plus dropped-and-ran file bridges): the count of
+        // things actually linking trees, which is what the pair count is a combinatorial view of.
+        let bridgeN = sharedLeaves.size;
+        interactions.forEach(list => list.forEach(it => { if (it.recon) bridgeN++; }));
+        const linkStats = { pairs: pairSeen.size, pairTotal: pairSeen.size + pairOver.size, bridges: bridgeN, capped: pairOver.size > 0, scanCapped: pairScanCapped };
 
-        return { procLabel, spawnKids, interactions, leafGroups, leafOwners, leafMeta, sharedLeaves, linkInfo,
+        return { procLabel, spawnKids, interactions, leafGroups, leafOwners, leafMeta, sharedLeaves, linkedLeaves, linkInfo, linkStats,
             logInfoById, anomalyByNode, procMeta, procTime, procHost, procSet, roots, rootOf, homeRoot, externalProcs, ghostProcs };
     },
 
@@ -3289,9 +3338,13 @@ const QueryExecutor = {
         const hostN = m.procHost ? new Set(Array.from(m.procHost.values()).filter(Boolean)).size : 0;
         // Triage summary: cross-tree reconnections, rare (>=0.7) behaviors, and the peak anomaly,
         // so the reason-to-care is visible at a glance without scanning the canvas.
-        const pairSet = new Set();
-        if (m.linkInfo) m.linkInfo.forEach((links, g) => links.forEach(l => { const lo = g < l.peerGuid ? g : l.peerGuid, hi = g < l.peerGuid ? l.peerGuid : g; pairSet.add(lo + '\x00' + hi); }));
-        const reconN = pairSet.size;
+        const ls = m.linkStats || { pairs: 0, pairTotal: 0, bridges: 0, capped: false, scanCapped: false };
+        const reconN = ls.pairs;
+        // Shown as "50 of 312" when the pair cap trims the tail, so a capped view never reads as
+        // the whole picture. The bridge count (what actually links the trees) rides in the title.
+        const reconLabel = ls.capped ? `${reconN} of ${ls.pairTotal}${ls.scanCapped ? '+' : ''}` : String(reconN);
+        const reconTitle = `${ls.bridges} cross-tree bridge${ls.bridges === 1 ? '' : 's'} (shared artifacts) linking ${ls.pairTotal}${ls.scanCapped ? '+' : ''} process pair${ls.pairTotal === 1 ? '' : 's'}` +
+            (ls.capped ? ` — showing the strongest ${reconN}` : '') + ' — click to list them';
         let rareN = 0, maxAnom = 0;
         const tally = (a) => { if (!isNaN(a)) { if (a >= 0.7) rareN++; if (a > maxAnom) maxAnom = a; } };
         if (m.leafMeta) m.leafMeta.forEach(v => tally(v.anomaly));
@@ -3316,7 +3369,7 @@ const QueryExecutor = {
             </div>
             <div class="graph-stats pg-stats-right"><span class="graph-stat-item"><span class="graph-stat-count">${procN}</span> processes</span>` +
                 `${hostN ? sep + `<span class="graph-stat-item"><span class="graph-stat-count">${hostN}</span> host${hostN === 1 ? '' : 's'}</span>` : ''}` +
-                `${reconN ? sep + `<span class="graph-stat-item pg-stat-recon" title="cross-tree reconnections"><span class="graph-stat-count">${reconN}</span> reconnect${reconN === 1 ? 'ion' : 'ions'}</span>` : ''}` +
+                `${reconN ? sep + `<span class="graph-stat-item pg-stat-recon" title="${reconTitle}"><span class="graph-stat-count">${reconLabel}</span> reconnect${reconN === 1 ? 'ion' : 'ions'}</span>` : ''}` +
                 `${rareN ? sep + `<span class="graph-stat-item pg-stat-rare" title="rare/anomalous events (>= 0.70)"><span class="graph-stat-count">${rareN}</span> rare</span><span class="pg-anom pg-anom-${maxSev}" title="peak anomaly score">${maxAnom.toFixed(2)}</span>` : ''}` +
                 relShade +
             `</div>
@@ -3383,7 +3436,7 @@ const QueryExecutor = {
             reconBtn.classList.add('pg-stat-click');
             reconBtn.setAttribute('role', 'button');
             reconBtn.setAttribute('tabindex', '0');
-            reconBtn.title = 'Cross-tree reconnections — click to list them';
+            reconBtn.title = reconTitle;
             const openOverview = () => {
                 if (this._pgView !== 'graph') {
                     this._pgView = 'graph';
@@ -3674,7 +3727,9 @@ const QueryExecutor = {
             const grp = m.leafGroups.get(id) || { file: [], net: [], dns: [] };
             // Shared (cross-tree) leaves are represented by the reconnection LINK, so they drop
             // out of the per-process file/net/dns chips; unshared activity still shows as chips.
-            const notShared = (x) => !(m.sharedLeaves && m.sharedLeaves.has(x.id));
+            // Only leaves that actually became a link ON THIS PROCESS are hidden -- one capped
+            // past the pair limit has no link to represent it, so it stays a chip.
+            const notShared = (x) => !(m.linkedLeaves && m.linkedLeaves.has(id + '\x00' + x.id));
             const fc = grp.file.filter(x => passT(x.anomaly) && notShared(x)).length;
             const nc = grp.net.filter(x => passT(x.anomaly) && notShared(x)).length;
             const dc = grp.dns.filter(x => passT(x.anomaly) && notShared(x)).length;
@@ -3971,9 +4026,13 @@ const QueryExecutor = {
                 `<span class="pg-recon-pair-end" data-focus="${esc(pr.b)}" role="button" tabindex="0" title="Center on ${esc(pr.nameB)}">${esc(pr.nameB)}</span>${hostChip}` +
                 `</div><div class="pg-recon-ioclist">${iocs}</div></div>`;
         }).join('') || '<div class="pg-drawer-empty">No reconnections.</div>';
+        const ls = m.linkStats || {};
+        const count = ls.capped
+            ? `${list.length} of ${ls.pairTotal}${ls.scanCapped ? '+' : ''} linked pairs (strongest first)`
+            : `${list.length} linked pair${list.length === 1 ? '' : 's'}`;
         drawer.innerHTML = `<div class="pg-drawer-head"><div class="pg-drawer-title"><span class="pg-drawer-heading">Reconnections</span></div>` +
             `<button class="pg-drawer-close" title="Close">&times;</button></div>` +
-            `<div class="pg-drawer-count">${list.length} linked pair${list.length === 1 ? '' : 's'}</div><div class="pg-drawer-body">${cards}</div>`;
+            `<div class="pg-drawer-count">${count}</div><div class="pg-drawer-body">${cards}</div>`;
         drawer.hidden = false;
         requestAnimationFrame(() => drawer.classList.add('open'));
         const mm = host.querySelector('.pg-minimap'); if (mm) mm.style.opacity = '0';

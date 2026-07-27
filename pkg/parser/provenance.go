@@ -44,7 +44,9 @@ const (
 	// maxReconnectCandidateArtifacts caps the distinct artifacts (written paths / external
 	// IPs / domains) pulled from the current subgraph before the reverse lookup.
 	maxReconnectCandidateArtifacts = 500
-	// maxReconnectPeers caps total peer edges the reverse lookup returns.
+	// maxReconnectPeers caps total peer edges the reverse lookup returns, PER recon type.
+	// The cross-type total is capped separately (MaxPeers / peers=), because every peer not
+	// picked for subtree expansion becomes its own root -- a whole extra tree in the graph.
 	maxReconnectPeers = 200
 	// reconnectHostPrevalenceMax is the ABSOLUTE floor of the net/dns rarity gate: an artifact
 	// on at most this many hosts always qualifies (keeps small deployments working).
@@ -68,6 +70,13 @@ const (
 	// groupUniqArray cap on the proc_freq.hosts state -- MUST match the DDL (256) or CH
 	// errors code 43 on the merge.
 	procFreqHostsCap = 256
+	// DefaultReconnectPeers is how many distinct PEER PROCESSES (across all recon types) are
+	// admitted into the graph, ranked by bridge strength. Each admitted peer is effectively
+	// another tree attached to the result, so this is a readability cap, not just a row cap.
+	// Overridable per query with peers=.
+	DefaultReconnectPeers = 50
+	// maxReconnectPeersArg bounds peers= so a typo cannot re-open the unbounded behavior.
+	maxReconnectPeersArg = 500
 )
 
 // Diffusion (NoDoze network-diffusion adaptation) caps. When diffuse is on, the FINAL anomaly
@@ -101,6 +110,7 @@ type ProvenanceParams struct {
 	Diffuse   bool            // propagate anomaly along the tree (NoDoze diffusion); default true
 	Lambda    float64         // diffusion decay rate, 0.0-1.0 (default defaultDiffuseLambda); only used when Diffuse
 	Limit     int             // outer result-row cap (default defaultPgrLimit, max maxPgrLimit)
+	MaxPeers  int             // distinct reconnected peer processes admitted (default DefaultReconnectPeers)
 }
 
 // ProvenanceOrderBy is the outer-query ORDER BY resolvePgrSource attaches alongside Limit: spawn
@@ -152,7 +162,7 @@ func parseEdgeTypeList(v string) []string {
 // missing. pgr is a source command (see source_command.go): the query layer's source resolver
 // calls this, then orchestrates the two-pass query into a subquery source.
 func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
-	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7, Reconnect: true, Diffuse: true, Limit: defaultPgrLimit, Lambda: defaultDiffuseLambda}
+	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7, Reconnect: true, Diffuse: true, Limit: defaultPgrLimit, Lambda: defaultDiffuseLambda, MaxPeers: DefaultReconnectPeers}
 	var includeTypes, excludeTypes []string
 	for _, arg := range cmd.Arguments {
 		switch {
@@ -164,6 +174,13 @@ func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
 					n = maxPgrLimit
 				}
 				p.Limit = n
+			}
+		case strings.HasPrefix(arg, "peers="):
+			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "peers=")); err == nil && n > 0 {
+				if n > maxReconnectPeersArg {
+					n = maxReconnectPeersArg
+				}
+				p.MaxPeers = n
 			}
 		case strings.HasPrefix(arg, "reconnect="):
 			v := strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "reconnect="), "\"'"))

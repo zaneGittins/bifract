@@ -321,7 +321,10 @@ func main() {
 		RecallCPUPercent:    cur.RecallCPUPercent,
 		RecallMemoryPercent: cur.RecallMemoryPercent,
 	}); err != nil {
-		log.Printf("Warning: failed to reconcile query resource limits: %v", err)
+		// State the consequence, not just the failure: the cluster comes up healthy and
+		// search works, so a bare "failed to reconcile" reads as cosmetic when it actually
+		// means a single heavy query can now take the node down.
+		log.Printf("Warning: query resource limits are NOT active, searches run with no CPU or memory ceiling: %v", err)
 	}
 	settings.RegisterQueryLimitsApplier(func(limits storage.WorkloadLimits) error {
 		return db.ReconcileQueryWorkloads(context.Background(), limits)

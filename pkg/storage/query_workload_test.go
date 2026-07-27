@@ -32,7 +32,7 @@ func TestClassWorkloadDDL(t *testing.T) {
 	const budget = int64(8_000_000_000)
 
 	// Search: both limits, default priority, nested under the tree root.
-	got := classWorkloadDDL(QuerySearchWorkload, "", 50, 50, 0, budget)
+	got := classWorkloadDDL(QuerySearchWorkload, 50, 50, 0, budget)
 	want := "CREATE OR REPLACE WORKLOAD bifract_search IN bifract SETTINGS " +
 		"max_concurrent_threads_ratio_to_cores = 0.50, max_memory = 4000000000"
 	if got != want {
@@ -40,13 +40,13 @@ func TestClassWorkloadDDL(t *testing.T) {
 	}
 
 	// Recall carries an explicit priority so it yields to search for the same core.
-	got = classWorkloadDDL(QueryRecallWorkload, "", 25, 25, recallPriority, budget)
+	got = classWorkloadDDL(QueryRecallWorkload, 25, 25, recallPriority, budget)
 	if !strings.Contains(got, "priority = 1") || !strings.Contains(got, "max_memory = 2000000000") {
 		t.Errorf("recall DDL missing priority or memory share: %q", got)
 	}
 
 	// A disabled share is omitted, not written as zero, which would forbid all work.
-	got = classWorkloadDDL(QuerySearchWorkload, "", 0, 50, 0, budget)
+	got = classWorkloadDDL(QuerySearchWorkload, 0, 50, 0, budget)
 	if strings.Contains(got, "max_concurrent_threads_ratio_to_cores") {
 		t.Errorf("cpu share of 0 must be omitted, got %q", got)
 	}
@@ -55,15 +55,27 @@ func TestClassWorkloadDDL(t *testing.T) {
 	}
 
 	// An unknown memory budget cannot be turned into a byte count, so it is omitted.
-	got = classWorkloadDDL(QuerySearchWorkload, "", 50, 50, 0, 0)
+	got = classWorkloadDDL(QuerySearchWorkload, 50, 50, 0, 0)
 	if strings.Contains(got, "max_memory") {
 		t.Errorf("memory limit must be omitted when the budget is unknown, got %q", got)
 	}
+}
 
-	// Cluster mode: ON CLUSTER sits after the name, before IN/SETTINGS.
-	got = classWorkloadDDL(QueryRecallWorkload, " ON CLUSTER 'bifract'", 25, 0, 1, budget)
-	if !strings.Contains(got, "WORKLOAD bifract_recall ON CLUSTER 'bifract' IN bifract SETTINGS") {
-		t.Errorf("unexpected cluster DDL clause order: %q", got)
+// Workload DDL must never carry ON CLUSTER. Keeper replicates workload entities
+// itself (workload_zookeeper_path, set by the bundled ClickHouseInstallation) and
+// ClickHouse rejects the clause with code 80, INCORRECT_QUERY. Because the failure is
+// only logged, an ON CLUSTER regression does not break startup -- it silently leaves
+// every clustered deployment with no query CPU or memory ceiling at all. Cluster-wide
+// application is handled by execWorkloadDDL running the statement on each node.
+func TestWorkloadDDLNeverUsesOnCluster(t *testing.T) {
+	stmts := []string{
+		classWorkloadDDL(QuerySearchWorkload, 50, 50, 0, 8_000_000_000),
+		classWorkloadDDL(QueryRecallWorkload, 25, 25, recallPriority, 8_000_000_000),
+	}
+	for _, s := range stmts {
+		if strings.Contains(strings.ToUpper(s), "ON CLUSTER") {
+			t.Errorf("workload DDL must not use ON CLUSTER (ClickHouse code 80): %q", s)
+		}
 	}
 }
 

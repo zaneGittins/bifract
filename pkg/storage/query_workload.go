@@ -68,6 +68,10 @@ const (
 	// recallPriority puts recall behind search when both want the same core.
 	// Lower value wins in ClickHouse, and search is left at the default 0.
 	recallPriority = 1
+
+	// workloadDDLTimeout bounds one workload statement on one node. These are
+	// metadata-only, so a slow one means the node is in trouble.
+	workloadDDLTimeout = 30 * time.Second
 )
 
 // WorkloadLimits is the per-class resource budget, as percentages of each node's
@@ -131,17 +135,12 @@ func (c *ClickHouseClient) ReconcileQueryWorkloads(ctx context.Context, limits W
 		limits = clamped
 	}
 
-	onCluster := ""
-	if c.IsCluster() {
-		onCluster = " ON CLUSTER '" + EscCHStr(c.Cluster) + "'"
-	}
-
 	searchOn := limits.SearchCPUPercent > 0 || limits.SearchMemoryPercent > 0
 	recallOn := limits.RecallCPUPercent > 0 || limits.RecallMemoryPercent > 0
 
 	if !searchOn && !recallOn {
 		c.setActiveWorkloads(nil)
-		if err := c.dropWorkloadTree(ctx, onCluster); err != nil {
+		if err := c.dropWorkloadTree(ctx); err != nil {
 			return err
 		}
 		log.Printf("[ClickHouse] Query resource limits disabled; all query classes run unscheduled")
@@ -150,14 +149,14 @@ func (c *ClickHouseClient) ReconcileQueryWorkloads(ctx context.Context, limits W
 
 	// Resources first: a workload referencing an absent resource is not scheduled.
 	if limits.SearchCPUPercent > 0 || limits.RecallCPUPercent > 0 {
-		if err := c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE RESOURCE IF NOT EXISTS %s%s (MASTER THREAD, WORKER THREAD)", QueryCPUResource, onCluster)); err != nil {
+		if err := c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE RESOURCE IF NOT EXISTS %s (MASTER THREAD, WORKER THREAD)", QueryCPUResource)); err != nil {
 			c.setActiveWorkloads(nil)
 			return fmt.Errorf("create cpu resource: %w", err)
 		}
 	}
 	var memBudget int64
 	if limits.SearchMemoryPercent > 0 || limits.RecallMemoryPercent > 0 {
-		if err := c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE RESOURCE IF NOT EXISTS %s%s (MEMORY RESERVATION)", QueryMemoryResource, onCluster)); err != nil {
+		if err := c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE RESOURCE IF NOT EXISTS %s (MEMORY RESERVATION)", QueryMemoryResource)); err != nil {
 			c.setActiveWorkloads(nil)
 			return fmt.Errorf("create memory resource: %w", err)
 		}
@@ -172,7 +171,7 @@ func (c *ClickHouseClient) ReconcileQueryWorkloads(ctx context.Context, limits W
 		memBudget = budget
 	}
 
-	if err := c.ensureRootWorkload(ctx, onCluster); err != nil {
+	if err := c.ensureRootWorkload(ctx); err != nil {
 		c.setActiveWorkloads(nil)
 		return err
 	}
@@ -189,12 +188,12 @@ func (c *ClickHouseClient) ReconcileQueryWorkloads(ctx context.Context, limits W
 	}
 	for _, cl := range classes {
 		if !cl.on {
-			if err := c.execWorkloadDDL(ctx, fmt.Sprintf("DROP WORKLOAD IF EXISTS %s%s", cl.name, onCluster)); err != nil {
+			if err := c.execWorkloadDDL(ctx, fmt.Sprintf("DROP WORKLOAD IF EXISTS %s", cl.name)); err != nil {
 				return fmt.Errorf("drop %s workload: %w", cl.name, err)
 			}
 			continue
 		}
-		ddl := classWorkloadDDL(cl.name, onCluster, cl.cpu, cl.mem, cl.priority, memBudget)
+		ddl := classWorkloadDDL(cl.name, cl.cpu, cl.mem, cl.priority, memBudget)
 		if err := c.execWorkloadDDL(ctx, ddl); err != nil {
 			c.setActiveWorkloads(nil)
 			return fmt.Errorf("create %s workload: %w", cl.name, err)
@@ -212,7 +211,7 @@ func (c *ClickHouseClient) ReconcileQueryWorkloads(ctx context.Context, limits W
 // ensureRootWorkload creates the tree root. ClickHouse allows only one root and
 // refuses both a second root and re-parenting an existing one, so an existing root
 // of ours is dropped and rebuilt rather than moved.
-func (c *ClickHouseClient) ensureRootWorkload(ctx context.Context, onCluster string) error {
+func (c *ClickHouseClient) ensureRootWorkload(ctx context.Context) error {
 	root, err := c.existingWorkloadRoot(ctx)
 	if err != nil {
 		return fmt.Errorf("read workload hierarchy: %w", err)
@@ -223,22 +222,22 @@ func (c *ClickHouseClient) ensureRootWorkload(ctx context.Context, onCluster str
 	case root == QuerySearchWorkload || root == QueryRecallWorkload:
 		// One of ours sitting at the root from the pre-tree layout. Rebuild rather
 		// than nest the tree under a leaf; children must be dropped first.
-		if err := c.dropWorkloadTree(ctx, onCluster); err != nil {
+		if err := c.dropWorkloadTree(ctx); err != nil {
 			return err
 		}
 	default:
 		// An operator defined their own root; hang our tree beneath it rather than
 		// fighting over the single root slot.
-		return c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE OR REPLACE WORKLOAD %s%s IN %s", QueryRootWorkload, onCluster, root))
+		return c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE OR REPLACE WORKLOAD %s IN %s", QueryRootWorkload, root))
 	}
-	return c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE OR REPLACE WORKLOAD %s%s", QueryRootWorkload, onCluster))
+	return c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE OR REPLACE WORKLOAD %s", QueryRootWorkload))
 }
 
 // dropWorkloadTree removes our workloads, children before parents (ClickHouse
 // refuses to drop a workload that still has children).
-func (c *ClickHouseClient) dropWorkloadTree(ctx context.Context, onCluster string) error {
+func (c *ClickHouseClient) dropWorkloadTree(ctx context.Context) error {
 	for _, name := range []string{QuerySearchWorkload, QueryRecallWorkload, QueryRootWorkload} {
-		if err := c.execWorkloadDDL(ctx, fmt.Sprintf("DROP WORKLOAD IF EXISTS %s%s", name, onCluster)); err != nil {
+		if err := c.execWorkloadDDL(ctx, fmt.Sprintf("DROP WORKLOAD IF EXISTS %s", name)); err != nil {
 			return fmt.Errorf("drop workload %s: %w", name, err)
 		}
 	}
@@ -248,7 +247,7 @@ func (c *ClickHouseClient) dropWorkloadTree(ctx context.Context, onCluster strin
 // classWorkloadDDL builds the CREATE OR REPLACE statement for one class. A share of
 // 0 omits that limit rather than setting it to zero, leaving the resource unbounded
 // for the class. memBudget is the node's ClickHouse memory budget in bytes.
-func classWorkloadDDL(name, onCluster string, cpuPercent, memPercent, priority int, memBudget int64) string {
+func classWorkloadDDL(name string, cpuPercent, memPercent, priority int, memBudget int64) string {
 	var settings []string
 	if cpuPercent > 0 {
 		settings = append(settings, fmt.Sprintf("max_concurrent_threads_ratio_to_cores = %.2f", float64(cpuPercent)/100))
@@ -259,8 +258,8 @@ func classWorkloadDDL(name, onCluster string, cpuPercent, memPercent, priority i
 	if priority != 0 {
 		settings = append(settings, fmt.Sprintf("priority = %d", priority))
 	}
-	return fmt.Sprintf("CREATE OR REPLACE WORKLOAD %s%s IN %s SETTINGS %s",
-		name, onCluster, QueryRootWorkload, strings.Join(settings, ", "))
+	return fmt.Sprintf("CREATE OR REPLACE WORKLOAD %s IN %s SETTINGS %s",
+		name, QueryRootWorkload, strings.Join(settings, ", "))
 }
 
 func percentLabel(percent int) string {
@@ -307,10 +306,42 @@ func (c *ClickHouseClient) existingWorkloadRoot(ctx context.Context) (string, er
 	return name, nil
 }
 
+// execWorkloadDDL applies one workload statement to every node.
+//
+// ON CLUSTER is deliberately never used. The bundled ClickHouseInstallation sets
+// workload_zookeeper_path, which makes Keeper replicate workload entities itself, and
+// ClickHouse then rejects the clause outright:
+//
+//	Code: 80. ON CLUSTER is not allowed because workload entities are replicated
+//	automatically. (INCORRECT_QUERY)
+//
+// That failure is only logged, so every cluster silently ran with no query limits at
+// all. Executing the statement directly on each node is correct under either storage
+// mode: with Keeper-backed entities the first node's write propagates and the rest are
+// idempotent no-ops (every statement here is IF NOT EXISTS, OR REPLACE, or IF EXISTS),
+// and with node-local entities each node genuinely needs its own copy.
 func (c *ClickHouseClient) execWorkloadDDL(ctx context.Context, stmt string) error {
-	sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	return c.conn.Exec(sctx, stmt)
+	if !c.IsCluster() {
+		sctx, cancel := context.WithTimeout(ctx, workloadDDLTimeout)
+		defer cancel()
+		return c.conn.Exec(sctx, stmt)
+	}
+
+	pool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+	for _, addr := range c.addrs {
+		conn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, pool)
+		if err != nil {
+			return fmt.Errorf("connect to %s: %w", addr, err)
+		}
+		sctx, cancel := context.WithTimeout(ctx, workloadDDLTimeout)
+		execErr := conn.Exec(sctx, stmt)
+		cancel()
+		conn.Close()
+		if execErr != nil {
+			return fmt.Errorf("on %s: %w", addr, execErr)
+		}
+	}
+	return nil
 }
 
 // setActiveWorkloads records which workloads are provisioned. Queries are tagged

@@ -1,0 +1,5 @@
+<clickhouse>
+    <!-- Matches the bundled ClickHouseInstallation: Keeper replicates workload
+         entities, which is what makes ON CLUSTER illegal for them (code 80). -->
+    <workload_zookeeper_path>/clickhouse/workload/definitions.sql</workload_zookeeper_path>
+</clickhouse>

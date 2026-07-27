@@ -115,6 +115,24 @@ func TestParseProvenanceReconnect(t *testing.T) {
 	}
 }
 
+func TestParseProvenancePeers(t *testing.T) {
+	if p, _ := ParseProvenanceParams(pgrCmd(`start="W1"`)); p.MaxPeers != DefaultReconnectPeers {
+		t.Errorf("peers should default to %d, got %d", DefaultReconnectPeers, p.MaxPeers)
+	}
+	if p, _ := ParseProvenanceParams(pgrCmd(`start="W1"`, "peers=200")); p.MaxPeers != 200 {
+		t.Errorf("peers=200 should parse, got %d", p.MaxPeers)
+	}
+	if p, _ := ParseProvenanceParams(pgrCmd(`start="W1"`, "peers=99999")); p.MaxPeers != maxReconnectPeersArg {
+		t.Errorf("peers should clamp to %d, got %d", maxReconnectPeersArg, p.MaxPeers)
+	}
+	// Junk and zero must fall back to the default, never to "unbounded".
+	for _, bad := range []string{"peers=0", "peers=-5", "peers=abc"} {
+		if p, _ := ParseProvenanceParams(pgrCmd(`start="W1"`, bad)); p.MaxPeers != DefaultReconnectPeers {
+			t.Errorf("%q should keep the default, got %d", bad, p.MaxPeers)
+		}
+	}
+}
+
 func reconOpts() QueryOptions {
 	o := QueryOptions{ProcLineageTable: "proc_lineage", ProcFreqTable: "proc_freq", FractalID: "f1"}
 	return o

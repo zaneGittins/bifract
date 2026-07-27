@@ -49,3 +49,17 @@ pgr(start="{GUID}") | pgraph()
 ### Anomaly scoring
 
 Every action gets an `anomaly_score` from 0 to 1, where 1 is never-seen-before and 0 is ubiquitous across your environment. Rare behavior surfaces; common noise fades. Scoring also follows the chain, so a sequence of individually-common steps (a classic living-off-the-land pattern) adds up and stands out even when no single step looks unusual on its own.
+
+### Reconnection
+
+`pgr()` also pulls in **other** process trees that share a rare artifact with the one you seeded: a file this tree wrote that another tree then executed, or the same rare external IP or domain touched by both. That is how lateral spread shows up without you hunting for it. Only artifacts that are rare across your fleet bridge, so shared CDNs, resolvers, and update servers do not reconnect everything.
+
+Each reconnected peer arrives as its own tree on the canvas, so the number admitted is capped at the 50 strongest bridges (a peer reached through several rare artifacts ranks above one reached through a single IP). Tune it with `peers=`:
+
+```
+pgr(start="{GUID}", peers=200) | pgraph()
+```
+
+Use `reconnect=false` to show only the seeded tree.
+
+The graph's **reconnections** stat counts linked process pairs, and reads `50 of 312` when the view is showing the strongest ones. Hovering it reports how many distinct bridges (shared artifacts) are behind those pairs, which is usually the smaller and more useful number: one rare domain touched by twenty processes is one bridge, not twenty.

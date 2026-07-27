@@ -86,7 +86,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 				}
 				log.Printf("[pgr] reconnection lookup failed: %v", qErr)
 			} else {
-				peers := parseReconnectPeers(reconRows)
+				peers := rankAndCapReconnectPeers(parseReconnectPeers(reconRows), p.MaxPeers)
 				combined = h.expandReconnectionPeers(ctx, guids, peers, opts)
 				// Reconnection owns its bridge edges (AppendReconnectionEdges), so emit every
 				// peer: the emit logic decides shape (net/dns converge on the object node,
@@ -507,6 +507,75 @@ func parseReconnectPeers(rows []map[string]interface{}) []parser.ReconnectPeer {
 		peers = append(peers, pe)
 	}
 	return peers
+}
+
+// reconPeerArtifact is the shared object a peer row bridges on: the node id for net/dns, the
+// path for file. Injection/access rows carry neither, so they key on the peer itself (one
+// bridge each).
+func reconPeerArtifact(pe parser.ReconnectPeer) string {
+	switch {
+	case pe.ObjectID != "":
+		return pe.ObjectID
+	case pe.Label != "":
+		return pe.ReconType + "\x00" + pe.Label
+	}
+	return pe.ReconType + "\x00" + pe.PeerGUID
+}
+
+// rankAndCapReconnectPeers admits at most maxPeers DISTINCT peer processes, keeping every row
+// of the ones it admits. This is the structural cap: only the top reconnectMaxExpand peers get
+// expanded into subtrees, so every other admitted peer lands in the graph parentless -- its own
+// root, its own tree. Uncapped, the per-type SQL limit allows 200 peers x 5 recon types = 1,000
+// extra trees, which is unreadable regardless of how the count is displayed.
+//
+// Rank is by how many DISTINCT rare artifacts a peer shares with the tree: a peer reached
+// through three rare IOCs is a far stronger bridge than one reached through a single IP. That
+// signal is free from the rows themselves and is the only discriminator available here --
+// ReconnectPeer.Anomaly is a per-type constant (file 1.0 > access 0.9 > net/dns 0.85), so it
+// only orders recon types, and on its own leaves the choice of WHICH 50 net peers to keep as
+// GUID-alphabetical. Ties fall back to anomaly, then guid, so the ordering stays deterministic.
+func rankAndCapReconnectPeers(peers []parser.ReconnectPeer, maxPeers int) []parser.ReconnectPeer {
+	if maxPeers <= 0 {
+		maxPeers = parser.DefaultReconnectPeers
+	}
+	artifacts := map[string]map[string]bool{}
+	best := map[string]float64{}
+	order := make([]string, 0, len(peers))
+	for _, pe := range peers {
+		if _, ok := artifacts[pe.PeerGUID]; !ok {
+			order = append(order, pe.PeerGUID)
+			artifacts[pe.PeerGUID] = map[string]bool{}
+		}
+		artifacts[pe.PeerGUID][reconPeerArtifact(pe)] = true
+		if pe.Anomaly > best[pe.PeerGUID] {
+			best[pe.PeerGUID] = pe.Anomaly
+		}
+	}
+	if len(order) <= maxPeers {
+		return peers
+	}
+	sort.Slice(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		if len(artifacts[a]) != len(artifacts[b]) {
+			return len(artifacts[a]) > len(artifacts[b])
+		}
+		if best[a] != best[b] {
+			return best[a] > best[b]
+		}
+		return a < b
+	})
+	keep := make(map[string]bool, maxPeers)
+	for _, g := range order[:maxPeers] {
+		keep[g] = true
+	}
+	log.Printf("[pgr] reconnection admitted %d of %d peer processes (peers=%d)", maxPeers, len(order), maxPeers)
+	out := peers[:0:0]
+	for _, pe := range peers {
+		if keep[pe.PeerGUID] {
+			out = append(out, pe)
+		}
+	}
+	return out
 }
 
 // expandReconnectionPeers ranks peers by bridge severity and traverses a shallow descendant
