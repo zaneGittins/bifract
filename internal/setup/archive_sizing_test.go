@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/apache/iceberg-go/table/compaction"
 )
 
 // parseQty is parseK8sQuantityBytes with a test-visible failure, so a typo in a
@@ -499,4 +501,53 @@ func readFile(t *testing.T, parts ...string) string {
 		t.Fatalf("read %v: %v", parts, err)
 	}
 	return string(b)
+}
+
+// measuredParquetRatio is uncompressed-heap bytes (what ArchiveRollBytes counts,
+// see archive.approxSize) per byte of Parquet on disk. MEASURED on a production
+// security-log workload: a 256MiB roll produced 128,245,384-byte files.
+//
+// It is one workload's number, not a constant of nature. Verbose JSON compresses
+// harder and would push every profile's output down proportionally, so this is
+// the assumption to re-check if the small-file backlog ever reappears -- see the
+// ArchiveRollBytes field comment.
+const measuredParquetRatio = 268435456.0 / 128245384.0
+
+// Compaction treats any file below MinFileSizeBytes as a candidate, so a profile
+// whose roll produces sub-floor Parquet makes 100% of its archive permanent
+// backlog. That is the failure this sizing exists to prevent, and it is invisible
+// until a deployment has run for weeks, so pin it here.
+//
+// Dev and X-Small are deliberately exempt: clearing the floor needs a roll of
+// ~804MiB, and the memory that implies is not justified at 1-50 GB/day where the
+// file and manifest counts stay small enough for compaction to keep up easily.
+func TestProductionProfilesClearCompactionFloor(t *testing.T) {
+	cfg := compaction.DefaultConfig()
+	target, floor := cfg.TargetFileSizeBytes, cfg.MinFileSizeBytes
+
+	exempt := map[string]bool{"Dev": true, "X-Small": true}
+	for _, p := range sizeProfiles {
+		t.Run(p.Name, func(t *testing.T) {
+			compressed := float64(p.ArchiveRollBytes) / measuredParquetRatio
+
+			// WriteRecords splits output at the target, so a roll larger than the
+			// target lands N full files plus a trailing remainder. Only the
+			// remainder can fall below the floor.
+			full := int64(compressed) / target
+			remainder := int64(compressed) - full*target
+			undersized := remainder > 0 && remainder < floor
+
+			if exempt[p.Name] {
+				if !undersized {
+					t.Logf("now clears the floor (%d bytes); it can be removed from the exempt list", remainder)
+				}
+				return
+			}
+			if undersized {
+				t.Errorf("roll %d produces %d full file(s) + a %d byte remainder, below the %d byte floor: "+
+					"every remainder becomes a permanent compaction candidate",
+					p.ArchiveRollBytes, full, remainder, floor)
+			}
+		})
+	}
 }

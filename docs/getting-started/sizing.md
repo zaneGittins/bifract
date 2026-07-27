@@ -18,7 +18,37 @@ Bifract on Kubernetes scales by **sharding** ClickHouse. Each shard is a **singl
 | Large | ~500 GB-2 TB/day | 3 | 32 vCPU / 64GB | 16 / 28 | 28Gi / 56Gi |
 | X-Large | ~2-10 TB/day | 6 | 32 vCPU / 64GB | 16 / 28 | 28Gi / 56Gi |
 
-All CPU/memory values shown as request / limit. The **Node (per shard)** column is the worker node that hosts a ClickHouse shard pod; the ClickHouse container is sized to take the bulk of it. The recommended baseline for **500 GB/day** is **3 shards at 32 vCPU / 64GB per node**. Full resource details for all components (Bifract, PostgreSQL, Caddy, LiteLLM, Keeper) are defined in the generated manifests.
+All CPU/memory values shown as request / limit. The **Node (per shard)** column is the worker node that hosts a ClickHouse shard pod; the ClickHouse container is sized to take the bulk of it. The recommended baseline for **500 GB/day** is **3 shards at 32 vCPU / 64GB per node**.
+
+### Capacity for everything else
+
+The shard nodes above hold ClickHouse and little else. Everything else needs its own
+capacity: the app tier, the ingest tier and its archiver sidecar, archive maintenance,
+PostgreSQL, Caddy and LiteLLM.
+
+| Profile | Non-ClickHouse CPU (req/lim) | Non-ClickHouse memory (req/lim) |
+|---|---|---|
+| Dev | 3 / 8 | 5Gi / 10Gi |
+| X-Small | 3 / 10 | 5Gi / 14Gi |
+| Small | 4 / 14 | 10Gi / 20Gi |
+| Medium | 5 / 18 | 12Gi / 30Gi |
+| Large | 9 / 24 | 18Gi / 44Gi |
+| X-Large | 14 / 40 | 28Gi / 84Gi |
+
+Requests decide whether pods schedule; limits are the burst ceiling. Size a node pool
+for at least the request column with room to spare, since a cluster provisioned only
+for the shard nodes cannot place these pods. Figures are for a single ingest replica;
+add the ingest pod's own figures again for each additional replica.
+
+Two components dominate and are worth knowing individually. The **ingest pod** carries
+both the ingest container and the archiver sidecar, and is the largest single pod
+outside ClickHouse (Large: 5Gi requested, up to 16Gi; X-Large: 9Gi up to 32Gi). Its
+memory is driven by `ARCHIVE_MAX_PENDING_BYTES`, the buffer the archiver accumulates
+before rolling Parquet, so raising the roll thresholds raises this pod. **Archive
+maintenance** is sized separately from the app tier because compaction decodes Parquet
+row groups into Arrow, and its memory limit also sets compaction's parallelism.
+
+Full per-component resources are in the generated manifests.
 
 ## Storage
 
