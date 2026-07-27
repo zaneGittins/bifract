@@ -1,0 +1,67 @@
+name: LimaCharlie EDR - Injection
+description: >-
+  Maps LimaCharlie's Windows process-to-process events (REMOTE_PROCESS_HANDLE,
+  NEW_REMOTE_THREAD) onto Bifract's process_access and remote_thread contract. These
+  events carry a third atom, routing.target, for the process being acted on, and both
+  categories key off source_process_guid rather than process_guid.
+
+transforms:
+  - flatten_full
+
+field_mappings:
+  - sources: [routing_parent]
+    target: source_process_guid
+  - sources: [routing_target]
+    target: target_process_guid
+  - sources: [routing_this]
+    target: event_atom
+
+  - sources: [routing_hostname]
+    target: computer_name
+  - sources: [routing_sid]
+    target: sensor_id
+  - sources: [routing_event_type]
+    target: event_type
+
+  - sources: [event_SOURCE_FILE_PATH]
+    target: image
+  - sources: [event_SOURCE_COMMAND_LINE]
+    target: commandline
+  - sources: [event_SOURCE_HASH]
+    target: hash
+  - sources: [event_SOURCE_USER_NAME]
+    target: user
+  - sources: [event_SOURCE_PROCESS_ID]
+    target: process_id
+  - sources: [event_SOURCE_PARENT_ATOM]
+    target: parent_process_guid
+
+  - sources: [event_TARGET_FILE_PATH]
+    target: target_image
+  - sources: [event_TARGET_COMMAND_LINE]
+    target: target_commandline
+  - sources: [event_TARGET_HASH]
+    target: target_hash
+  - sources: [event_TARGET_USER_NAME]
+    target: target_user
+  - sources: [event_TARGET_PROCESS_ID]
+    target: target_process_id
+
+  - sources: [event_ACCESS_FLAGS]
+    target: access_flags
+  - sources: [event_THREAD_ID]
+    target: thread_id
+
+value_mappings:
+  - from_field: event_type
+    to_field: bifract_category
+    map:
+      REMOTE_PROCESS_HANDLE: process_access
+      NEW_REMOTE_THREAD: remote_thread
+
+timestamp_fields:
+  - field: routing_event_time
+    format: unixmilli
+
+# Both categories are off by default in pgr():
+#   pgr(start="{ATOM}", include="remote_thread,process_access")

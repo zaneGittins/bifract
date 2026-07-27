@@ -1,0 +1,119 @@
+name: Sysmon
+description: >-
+  Maps Windows Sysmon events onto Bifract's normalized field contract, including
+  bifract_category, which gates proc_lineage, proc_freq and process_edges and therefore
+  everything pgr() can traverse.
+
+transforms: []
+
+field_mappings:
+  # Common
+  - sources: [EventID]
+    target: event_id
+  - sources: [Computer]
+    target: computer_name
+  - sources: [User]
+    target: user
+
+  # Image. Events 1/3/11/22 carry Image; events 8/10 carry SourceImage instead, and pgr
+  # reads fields.image as the acting process for those too. No event carries both.
+  - sources: [Image, SourceImage]
+    target: image
+  - sources: [TargetImage]
+    target: target_image
+  - sources: [OriginalFileName]
+    target: original_file_name
+  - sources: [Hashes]
+    target: hash
+
+  # Process identity. proc_lineage_mv reads fields.parent_process_guid, not parent_guid.
+  - sources: [ProcessGuid]
+    target: process_guid
+  - sources: [ParentProcessGuid]
+    target: parent_process_guid
+  - sources: [ParentImage]
+    target: parent_image
+  - sources: [CommandLine]
+    target: commandline
+  - sources: [ParentCommandLine]
+    target: parent_commandline
+
+  # Injection and access. Sysmon uses "Guid" casing on event 8 and "GUID" on event 10;
+  # both spellings must land on the same target or those branches silently emit nothing.
+  - sources: [SourceProcessGuid, SourceProcessGUID]
+    target: source_process_guid
+  - sources: [TargetProcessGuid, TargetProcessGUID]
+    target: target_process_guid
+
+  # File
+  - sources: [TargetFilename]
+    target: target_file
+
+  # Network
+  - sources: [SourceIp]
+    target: src_ip
+  - sources: [SourcePort]
+    target: src_port
+  - sources: [DestinationIp]
+    target: dst_ip
+  - sources: [DestinationPort]
+    target: dst_port
+  - sources: [Protocol]
+    target: proto
+
+  # DNS
+  - sources: [QueryName]
+    target: query
+
+  # Registry (Sysmon 12/13/14). Sigma rules reference these names, and the same mapping
+  # drives both ingestion and Sigma field translation.
+  - sources: [TargetObject]
+    target: target_object
+  - sources: [Details]
+    target: details
+  - sources: [EventType]
+    target: event_type
+  - sources: [NewName]
+    target: new_name
+
+  # Image load (Sysmon 7)
+  - sources: [ImageLoaded]
+    target: image_loaded
+  - sources: [Signed]
+    target: signed
+  - sources: [Signature]
+    target: signature
+  - sources: [SignatureStatus]
+    target: signature_status
+
+  # Named pipes (Sysmon 17/18)
+  - sources: [PipeName]
+    target: pipe_name
+
+# Runs after field_mappings, so from_field is the already-renamed key. Additive: event_id
+# is preserved. Any EventID not listed leaves bifract_category unset, which is correct,
+# an unmapped event should not be claimed by a category.
+value_mappings:
+  - from_field: event_id
+    to_field: bifract_category
+    map:
+      "1": process_creation
+      "3": network_connect
+      "6": driver_load
+      "7": image_load
+      "8": remote_thread
+      "10": process_access
+      "11": file_write
+      "12": registry_event
+      "13": registry_event
+      "14": registry_event
+      "15": create_stream_hash
+      "17": pipe_created
+      "18": pipe_created
+      "22": dns_query
+      "23": file_delete
+      "26": file_delete
+
+timestamp_fields:
+  - field: UtcTime
+    format: "2006-01-02 15:04:05.000"

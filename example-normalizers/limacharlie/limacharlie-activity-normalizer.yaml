@@ -1,0 +1,47 @@
+name: LimaCharlie EDR - Activity
+description: >-
+  Maps LimaCharlie NEW_DOCUMENT, DNS_REQUEST and TERMINATE_PROCESS onto Bifract's
+  normalized field contract. On these events routing.parent is the acting process, and
+  event.FILE_PATH is the file that was written rather than the process image.
+
+transforms:
+  - flatten_full
+
+field_mappings:
+  - sources: [routing_parent]
+    target: process_guid
+  - sources: [routing_this]
+    target: event_atom
+
+  - sources: [routing_hostname]
+    target: computer_name
+  - sources: [routing_sid]
+    target: sensor_id
+  - sources: [routing_event_type]
+    target: event_type
+
+  - sources: [event_FILE_PATH]
+    target: target_file
+  - sources: [event_HASH]
+    target: hash
+  - sources: [event_PROCESS_ID]
+    target: process_id
+  - sources: [event_PARENT_PROCESS_ID]
+    target: parent_process_id
+
+  - sources: [event_DOMAIN_NAME]
+    target: query
+  - sources: [event_IP_ADDRESS]
+    target: query_result
+
+value_mappings:
+  - from_field: event_type
+    to_field: bifract_category
+    map:
+      NEW_DOCUMENT: file_write
+      DNS_REQUEST: dns_query
+      TERMINATE_PROCESS: process_terminated
+
+timestamp_fields:
+  - field: routing_event_time
+    format: unixmilli

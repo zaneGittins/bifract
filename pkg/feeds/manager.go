@@ -250,6 +250,13 @@ func (m *Manager) UpdateSyncStatus(ctx context.Context, id, status string, ruleC
 	return err
 }
 
+// SetSyncStatus updates only the status, leaving last_synced_at and the rule count from
+// the previous successful sync intact. Used to publish in-progress state.
+func (m *Manager) SetSyncStatus(ctx context.Context, id, status string) error {
+	_, err := m.pg.Exec(ctx, `UPDATE alert_feeds SET last_sync_status = $1 WHERE id = $2`, status, id)
+	return err
+}
+
 // GetDecryptedToken retrieves and decrypts the auth token for a feed.
 func (m *Manager) GetDecryptedToken(ctx context.Context, id string) (string, error) {
 	var encToken string

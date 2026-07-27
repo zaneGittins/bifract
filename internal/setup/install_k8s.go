@@ -49,7 +49,15 @@ type SizeProfile struct {
 	CaddyShipper    ResourceProfile
 	LiteLLM         ResourceProfile
 	IngestQueueSize int
-	IngestWorkers   int
+
+	// IngestWorkers is how many inserts run against ClickHouse concurrently per ingest pod.
+	// ClickHouse inserts are CPU-bound building skip indexes, not disk-bound (measured on a
+	// 3-shard Large cluster: 684ms CPU vs 12ms disk per insert, OSIOWaitTime 0), so ingest
+	// throughput scales with concurrency until the shard CPUs saturate. These track the CPU
+	// actually provisioned per shard: too low and ClickHouse sits idle while ingest plateaus
+	// below target, which looks like a platform limit but is only a concurrency limit.
+	// Large (32) is measured: raising it from 8 moved 6,800 -> 8,966 events/sec, no other change.
+	IngestWorkers int
 
 	// ArchiveMaintainByteBudget caps how many bytes one compaction pass rewrites
 	// (BIFRACT_ARCHIVE_MAINTAIN_BYTE_BUDGET). It is pass-wide, split across all
@@ -110,7 +118,7 @@ var sizeProfiles = []SizeProfile{
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:                   ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
 		IngestQueueSize:           200,
-		IngestWorkers:             4,
+		IngestWorkers:             8,
 		ArchiveMaintainByteBudget: 2 << 30,
 		SpoolPVCSizeGB:            10,
 	},
@@ -127,7 +135,7 @@ var sizeProfiles = []SizeProfile{
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:                   ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		IngestQueueSize:           300,
-		IngestWorkers:             6,
+		IngestWorkers:             12,
 		ArchiveMaintainByteBudget: 4 << 30,
 		SpoolPVCSizeGB:            20,
 	},
@@ -144,7 +152,7 @@ var sizeProfiles = []SizeProfile{
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:                   ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		IngestQueueSize:           500,
-		IngestWorkers:             8,
+		IngestWorkers:             24,
 		ArchiveMaintainByteBudget: 8 << 30,
 		SpoolPVCSizeGB:            32,
 	},
@@ -161,7 +169,7 @@ var sizeProfiles = []SizeProfile{
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
 		LiteLLM:                   ResourceProfile{"500m", "1", "1Gi", "1Gi"},
 		IngestQueueSize:           1000,
-		IngestWorkers:             8,
+		IngestWorkers:             32,
 		ArchiveMaintainByteBudget: 32 << 30,
 		SpoolPVCSizeGB:            64,
 	},
@@ -178,7 +186,7 @@ var sizeProfiles = []SizeProfile{
 		CaddyShipper:              ResourceProfile{"10m", "200m", "32Mi", "128Mi"},
 		LiteLLM:                   ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		IngestQueueSize:           2000,
-		IngestWorkers:             16,
+		IngestWorkers:             48,
 		ArchiveMaintainByteBudget: 96 << 30,
 		SpoolPVCSizeGB:            128,
 	},
@@ -898,7 +906,15 @@ type k8sTemplateData struct {
 
 	// IngestQueueSize and IngestWorkers tune the bifract ingest queue.
 	IngestQueueSize int
-	IngestWorkers   int
+
+	// IngestWorkers is how many inserts run against ClickHouse concurrently per ingest pod.
+	// ClickHouse inserts are CPU-bound building skip indexes, not disk-bound (measured on a
+	// 3-shard Large cluster: 684ms CPU vs 12ms disk per insert, OSIOWaitTime 0), so ingest
+	// throughput scales with concurrency until the shard CPUs saturate. These track the CPU
+	// actually provisioned per shard: too low and ClickHouse sits idle while ingest plateaus
+	// below target, which looks like a platform limit but is only a concurrency limit.
+	// Large (32) is measured: raising it from 8 moved 6,800 -> 8,966 events/sec, no other change.
+	IngestWorkers int
 	// IngestReplicas is the replica count for the independently-scalable ingest tier.
 	IngestReplicas int
 

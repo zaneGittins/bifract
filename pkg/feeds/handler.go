@@ -208,16 +208,14 @@ func (h *Handler) HandleSyncFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.syncer.SyncFeed(r.Context(), feed)
-	if err != nil {
-		log.Printf("[Feeds] Failed to sync feed %s: %v", id, err)
-		h.manager.UpdateSyncStatus(r.Context(), id, "error: "+err.Error(), 0)
-		h.respond(w, http.StatusInternalServerError, nil, "Feed sync failed")
+	// Detached from the request: a full re-translation of a large Sigma repo runs well past
+	// the 60s HTTP timeout, and a cancelled request used to leave the sync half-applied.
+	// Progress is reported through the feed's sync status.
+	if !h.syncer.StartManualSync(feed) {
+		h.respond(w, http.StatusConflict, nil, "A sync is already running for this feed")
 		return
 	}
-
-	h.manager.UpdateSyncStatus(r.Context(), id, "success", result.Added+result.Updated+result.Skipped)
-	h.respond(w, http.StatusOK, result, "")
+	h.respond(w, http.StatusAccepted, nil, "")
 }
 
 // HandleGetFeedAlerts returns all alerts for a specific feed (authenticated).

@@ -4,7 +4,18 @@ metadata:
   name: bifract
   namespace: bifract
 spec:
-  replicas: 2
+  # The maxmind PVC below is ReadWriteOnce by default, which a cloud block-storage class
+  # can only attach to one node. Two consequences, both of which surface as a stuck pod on
+  # a first install:
+  #   - replicas must stay at 1 unless MaxmindPVCAccessMode is set to ReadWriteMany (an
+  #     RWX class such as azurefile-csi, EFS, or NFS). With RWO, a second replica lands on
+  #     another node and sits in ContainerCreating with a Multi-Attach error forever.
+  #   - the strategy must be Recreate. RollingUpdate starts the new pod before terminating
+  #     the old one, so the new pod waits on a volume the old pod still holds and the
+  #     rollout deadlocks on every upgrade.
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: bifract

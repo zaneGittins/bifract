@@ -864,6 +864,9 @@ const AlertFeeds = {
         if (!feed.enabled) {
             return '<span class="sync-status sync-disabled">Disabled</span>';
         }
+        if (feed.last_sync_status === 'syncing') {
+            return '<span class="sync-status sync-running">Syncing</span>';
+        }
         if (!feed.last_synced_at) {
             return '<span class="sync-status sync-pending">Pending</span>';
         }
@@ -1077,25 +1080,54 @@ const AlertFeeds = {
         }
 
         try {
-            const data = await HttpUtils.safeFetch(`/api/v1/feeds/${feedId}/sync`, { method: 'POST' });
-            const result = data.data;
-            let msg = 'Sync complete';
-            if (result) {
-                msg += `: ${result.added || 0} added, ${result.updated || 0} updated, ${result.deleted || 0} deleted`;
-                if (result.skipped) msg += `, ${result.skipped} skipped`;
-            }
-            Toast.show(msg, 'success');
+            // The server runs the sync detached and reports progress through the feed's
+            // status, since a full re-translation of a large repo outlives any request.
+            await HttpUtils.safeFetch(`/api/v1/feeds/${feedId}/sync`, { method: 'POST' });
+            Toast.show('Sync started', 'info');
             await this.loadFeeds();
             this.renderFeedsManagement();
-            this.loadFeedAlerts();
+            this.pollSyncStatus(feedId);
         } catch (err) {
             console.error('[AlertFeeds] Sync failed:', err);
-            Toast.show('Sync failed: ' + err.message, 'error');
+            if (/already running/i.test(err.message)) {
+                Toast.show(err.message, 'info');
+                this.pollSyncStatus(feedId);
+            } else {
+                Toast.show('Sync failed: ' + err.message, 'error');
+            }
         } finally {
             if (btn) {
                 btn.disabled = false;
                 btn.classList.remove('spinning');
             }
+        }
+    },
+
+    // Refreshes the feeds table until the given feed leaves the "syncing" state.
+    async pollSyncStatus(feedId) {
+        if (this._syncPolls?.has(feedId)) return;
+        (this._syncPolls ||= new Set()).add(feedId);
+
+        const deadline = Date.now() + 30 * 60 * 1000;
+        try {
+            while (Date.now() < deadline) {
+                await new Promise(r => setTimeout(r, 3000));
+                await this.loadFeeds();
+                const feed = this.feeds.find(f => f.id === feedId);
+                if (!feed) return;
+                this.renderFeedsManagement();
+                if (feed.last_sync_status === 'syncing') continue;
+
+                if (feed.last_sync_status === 'success') {
+                    Toast.show(`Sync complete: ${feed.last_sync_rule_count || 0} rules`, 'success');
+                    this.loadFeedAlerts();
+                } else {
+                    Toast.show('Sync failed: ' + (feed.last_sync_status || 'unknown error'), 'error');
+                }
+                return;
+            }
+        } finally {
+            this._syncPolls.delete(feedId);
         }
     },
 

@@ -1,0 +1,68 @@
+name: LimaCharlie EDR - Network
+description: >-
+  Maps LimaCharlie NETWORK_CONNECTIONS, NEW_TCP4_CONNECTION and CODE_IDENTITY onto
+  Bifract's normalized field contract. On these events routing.parent is the acting
+  process, and event.FILE_PATH is that process's image.
+
+transforms:
+  - flatten_full
+
+field_mappings:
+  - sources: [routing_parent]
+    target: process_guid
+  - sources: [routing_this]
+    target: event_atom
+
+  - sources: [routing_hostname]
+    target: computer_name
+  - sources: [routing_sid]
+    target: sensor_id
+  - sources: [routing_event_type]
+    target: event_type
+  - sources: [event_USER_NAME]
+    target: user
+
+  - sources: [event_FILE_PATH]
+    target: image
+  - sources: [event_COMMAND_LINE]
+    target: commandline
+  - sources: [event_HASH]
+    target: hash
+  - sources: [event_PROCESS_ID]
+    target: process_id
+
+  # NETWORK_CONNECTIONS carries an array of connections; index 0 builds the edge.
+  - sources: [event_NETWORK_ACTIVITY_0_DESTINATION_IP_ADDRESS]
+    target: dst_ip
+  - sources: [event_NETWORK_ACTIVITY_0_DESTINATION_PORT]
+    target: dst_port
+  - sources: [event_NETWORK_ACTIVITY_0_SOURCE_IP_ADDRESS]
+    target: src_ip
+  - sources: [event_NETWORK_ACTIVITY_0_SOURCE_PORT]
+    target: src_port
+  - sources: [event_NETWORK_ACTIVITY_0_PROTOCOL]
+    target: proto
+
+  # NEW_TCP4_CONNECTION is one row per connection.
+  - sources: [event_DESTINATION_IP_ADDRESS]
+    target: dst_ip
+  - sources: [event_DESTINATION_PORT]
+    target: dst_port
+  - sources: [event_SOURCE_IP_ADDRESS]
+    target: src_ip
+  - sources: [event_SOURCE_PORT]
+    target: src_port
+  - sources: [event_PROTOCOL]
+    target: proto
+
+value_mappings:
+  - from_field: event_type
+    to_field: bifract_category
+    map:
+      NETWORK_CONNECTIONS: network_connect
+      NEW_TCP4_CONNECTION: network_connect
+      CODE_IDENTITY: image_load
+
+timestamp_fields:
+  - field: routing_event_time
+    format: unixmilli

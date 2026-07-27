@@ -1,0 +1,15 @@
+<clickhouse>
+    <remote_servers>
+        <bftest>
+            <shard><internal_replication>true</internal_replication>
+                <replica><host>ch1</host><port>9000</port></replica>
+            </shard>
+            <shard><internal_replication>true</internal_replication>
+                <replica><host>ch2</host><port>9000</port></replica>
+            </shard>
+        </bftest>
+    </remote_servers>
+    <zookeeper>
+        <node><host>zk</host><port>2181</port></node>
+    </zookeeper>
+</clickhouse>

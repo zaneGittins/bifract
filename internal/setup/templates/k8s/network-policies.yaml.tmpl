@@ -138,14 +138,23 @@ spec:
               app: bifract-ingest
       ports:
         - port: 9000
+        # 9001 is what system.clusters advertises, and the app dials shards directly on it
+        # for point lookups (GetLogFieldsByIDDirect). Without it every such lookup burns a
+        # full TCP dial timeout before falling back to the distributed table.
+        - port: 9001
         - port: 8123
-    # Inter-node replication and keeper connections
+    # Inter-node replication, distributed queries, and keeper connections.
+    # 9001 is the port the official operator publishes in remote_servers (verify with
+    # `SELECT port FROM system.clusters`), so distributed queries fan out over it, not
+    # 9000. Omitting it makes every cross-shard query time out while single-shard
+    # queries succeed, which surfaces as shards reporting degraded.
     - from:
         - podSelector:
             matchLabels:
               app.kubernetes.io/instance: bifract-ch-clickhouse
       ports:
         - port: 9000
+        - port: 9001
         - port: 9009
         - port: 8123
 ---

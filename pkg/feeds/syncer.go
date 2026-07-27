@@ -75,6 +75,15 @@ func meetsMinStatus(ruleStatus, minStatus string) bool {
 	return statusOrder[strings.ToLower(ruleStatus)] >= statusOrder[strings.ToLower(minStatus)]
 }
 
+// feedSyncTimeout bounds a single feed's sync. A full re-translation of a large Sigma
+// repo (a TranslatorVersion bump invalidates every rule hash) runs into the thousands of
+// rules, far past the 60s HTTP timeout, so manual syncs run detached from the request.
+const feedSyncTimeout = 30 * time.Minute
+
+// maxSyncErrors caps the errors retained per sync. Without it a systemic failure records
+// one string per rule, which then goes into the feed's status column.
+const maxSyncErrors = 50
+
 // Syncer runs background scheduled syncs for all alert feeds.
 type Syncer struct {
 	manager           *Manager
@@ -83,6 +92,9 @@ type Syncer struct {
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
+
+	mu       sync.Mutex
+	inFlight map[string]bool // feed IDs currently syncing
 }
 
 // NewSyncer creates a new feed syncer.
@@ -92,7 +104,89 @@ func NewSyncer(manager *Manager, alertManager *alerts.Manager, normalizerManager
 		alertManager:      alertManager,
 		normalizerManager: normalizerManager,
 		stopCh:            make(chan struct{}),
+		inFlight:          make(map[string]bool),
 	}
+}
+
+// acquire marks a feed as syncing, returning false if a sync is already running for it.
+// Manual and scheduled syncs of the same feed would otherwise race: both clone the repo
+// and both run the delete pass against their own partial view.
+func (s *Syncer) acquire(feedID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inFlight[feedID] {
+		return false
+	}
+	s.inFlight[feedID] = true
+	return true
+}
+
+func (s *Syncer) release(feedID string) {
+	s.mu.Lock()
+	delete(s.inFlight, feedID)
+	s.mu.Unlock()
+}
+
+// shouldRunDeletePass reports whether the retained paths are a trustworthy picture of the
+// repo, and if not, why. DeleteFeedAlertsNotIn reads an empty keep-list as "delete every
+// alert in this feed", so a sync that did not see the whole repo must not run it: the
+// failure mode is silent loss of every alert the feed owns, not a stale alert.
+//
+// Retaining nothing is only suspicious alongside errors. A clean run that retains nothing
+// means every rule fell below the feed's min level or status, and pruning them is exactly
+// what was asked for.
+func shouldRunDeletePass(incomplete bool, listed, retained, errCount int) (bool, string) {
+	if incomplete {
+		return false, "sync did not complete"
+	}
+	if listed > 0 && retained == 0 && errCount > 0 {
+		return false, fmt.Sprintf("%d rules listed, none retained, %d errors", listed, errCount)
+	}
+	return true, ""
+}
+
+// syncContext bounds a sync by feedSyncTimeout and cancels it on shutdown, so Stop() does
+// not wait out a sync that may still have half an hour to run.
+func (s *Syncer) syncContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), feedSyncTimeout)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-s.stopCh:
+			cancel()
+		case <-done:
+		}
+	}()
+	return ctx, func() {
+		close(done)
+		cancel()
+	}
+}
+
+// StartManualSync runs a sync in the background, detached from the caller's context, and
+// records the outcome in the feed's sync status. Returns false if one is already running.
+func (s *Syncer) StartManualSync(feed *Feed) bool {
+	if !s.acquire(feed.ID) {
+		return false
+	}
+	s.manager.SetSyncStatus(context.Background(), feed.ID, "syncing")
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer s.release(feed.ID)
+		ctx, cancel := s.syncContext()
+		defer cancel()
+		result, err := s.SyncFeed(ctx, feed)
+		if err != nil {
+			log.Printf("[Feeds] Manual sync failed for %q: %v", feed.Name, err)
+			s.manager.UpdateSyncStatus(context.Background(), feed.ID, fmt.Sprintf("error: %v", err), 0)
+			return
+		}
+		log.Printf("[Feeds] Manual sync completed for %q: +%d ~%d -%d =%d (errors: %d)",
+			feed.Name, result.Added, result.Updated, result.Deleted, result.Skipped, len(result.Errors))
+		s.manager.UpdateSyncStatus(context.Background(), feed.ID, "success", result.Added+result.Updated+result.Skipped)
+	}()
+	return true
 }
 
 // Start launches the background sync ticker (checks every minute).
@@ -125,10 +219,9 @@ func (s *Syncer) Stop() {
 
 // checkAndSync checks all enabled feeds and syncs those that are due.
 func (s *Syncer) checkAndSync() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	feeds, err := s.manager.ListAllEnabled(ctx)
+	listCtx, listCancel := context.WithTimeout(context.Background(), time.Minute)
+	feeds, err := s.manager.ListAllEnabled(listCtx)
+	listCancel()
 	if err != nil {
 		log.Printf("[Feeds] Failed to list enabled feeds: %v", err)
 		return
@@ -136,18 +229,28 @@ func (s *Syncer) checkAndSync() {
 
 	now := time.Now()
 	for _, feed := range feeds {
-		if s.isDue(feed, now) {
-			log.Printf("[Feeds] Syncing feed %q (schedule: %s)", feed.Name, feed.SyncSchedule)
-			result, err := s.SyncFeed(ctx, feed)
-			if err != nil {
-				log.Printf("[Feeds] Sync failed for %q: %v", feed.Name, err)
-				s.manager.UpdateSyncStatus(ctx, feed.ID, fmt.Sprintf("error: %v", err), 0)
-			} else {
-				log.Printf("[Feeds] Sync completed for %q: +%d ~%d -%d =%d (errors: %d)",
-					feed.Name, result.Added, result.Updated, result.Deleted, result.Skipped, len(result.Errors))
-				s.manager.UpdateSyncStatus(ctx, feed.ID, "success", result.Added+result.Updated+result.Skipped)
-			}
+		if !s.isDue(feed, now) {
+			continue
 		}
+		if !s.acquire(feed.ID) {
+			log.Printf("[Feeds] Skipping %q: a sync is already running", feed.Name)
+			continue
+		}
+		log.Printf("[Feeds] Syncing feed %q (schedule: %s)", feed.Name, feed.SyncSchedule)
+		// Each feed gets its own budget. A single shared deadline let one large repo
+		// consume it and leave every feed behind it unsynced.
+		ctx, cancel := s.syncContext()
+		result, err := s.SyncFeed(ctx, feed)
+		cancel()
+		s.release(feed.ID)
+		if err != nil {
+			log.Printf("[Feeds] Sync failed for %q: %v", feed.Name, err)
+			s.manager.UpdateSyncStatus(context.Background(), feed.ID, fmt.Sprintf("error: %v", err), 0)
+			continue
+		}
+		log.Printf("[Feeds] Sync completed for %q: +%d ~%d -%d =%d (errors: %d)",
+			feed.Name, result.Added, result.Updated, result.Deleted, result.Skipped, len(result.Errors))
+		s.manager.UpdateSyncStatus(context.Background(), feed.ID, "success", result.Added+result.Updated+result.Skipped)
 	}
 }
 
@@ -204,13 +307,34 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 		feed.CreatedBy = "admin"
 	}
 
-	// Track which paths we found (for deletion pass)
+	// Paths the delete pass must keep. A path is retained whenever this sync could not
+	// establish that the rule is gone, so an error never turns into a deletion; only the
+	// min-level/min-status filters below deliberately omit a path.
 	foundPaths := make([]string, 0, len(yamlFiles))
+	errCount := 0
+	recordErr := func(format string, args ...interface{}) {
+		errCount++
+		if len(result.Errors) < maxSyncErrors {
+			result.Errors = append(result.Errors, fmt.Sprintf(format, args...))
+		}
+	}
+
+	// True when the loop did not visit every file, which makes foundPaths an incomplete
+	// picture of the repo and the delete pass unsafe to run.
+	incomplete := false
 
 	for _, filePath := range yamlFiles {
+		if ctx.Err() != nil {
+			incomplete = true
+			recordErr("sync stopped after %d/%d rules: %v", len(foundPaths), len(yamlFiles), ctx.Err())
+			break
+		}
+
 		content, err := ReadFile(repoDir, filePath)
 		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: read error: %v", filePath, err))
+			// Keep the path: a rule we could not read is not a rule we know was removed.
+			recordErr("%s: read error: %v", filePath, err)
+			foundPaths = append(foundPaths, filePath)
 			continue
 		}
 
@@ -241,7 +365,7 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 			// Content changed - re-parse and update
 			name, description, queryString, alertType, level, status, labels, references, parseErr := s.parseRule(string(content), fieldMapper)
 			if parseErr != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("%s: parse error: %v", filePath, parseErr))
+				recordErr("%s: parse error: %v", filePath, parseErr)
 				foundPaths = append(foundPaths, filePath)
 				continue
 			}
@@ -253,7 +377,7 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 
 			err = s.alertManager.UpdateFeedAlert(ctx, existing.ID, name, description, queryString, alertType, mapLevelToSeverity(level), labels, references, hash, feed.CreatedBy, feed.FractalID, feed.PrismID)
 			if err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("%s: update error: %v", filePath, err))
+				recordErr("%s: update error: %v", filePath, err)
 			} else {
 				result.Updated++
 			}
@@ -261,10 +385,13 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 			continue
 		}
 
-		// New alert - parse and create
+		// New alert - parse and create. A path that fails to parse is still kept: when the
+		// lookup above failed transiently rather than genuinely finding nothing, dropping it
+		// here would delete a working alert.
 		name, description, queryString, alertType, level, status, labels, references, parseErr := s.parseRule(string(content), fieldMapper)
 		if parseErr != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: parse error: %v", filePath, parseErr))
+			recordErr("%s: parse error: %v", filePath, parseErr)
+			foundPaths = append(foundPaths, filePath)
 			continue
 		}
 
@@ -276,19 +403,26 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 		_, err = s.alertManager.CreateFeedAlert(ctx, name, description, queryString, alertType, mapLevelToSeverity(level),
 			labels, references, feed.ID, filePath, hash, feed.FractalID, feed.PrismID, feed.CreatedBy)
 		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: create error: %v", filePath, err))
+			recordErr("%s: create error: %v", filePath, err)
 		} else {
 			result.Added++
 		}
 		foundPaths = append(foundPaths, filePath)
 	}
 
-	// Delete alerts for rules no longer in the repo
-	deleted, err := s.alertManager.DeleteFeedAlertsNotIn(ctx, feed.ID, foundPaths)
-	if err != nil {
-		result.Errors = append(result.Errors, fmt.Sprintf("delete pass: %v", err))
+	if ok, reason := shouldRunDeletePass(incomplete, len(yamlFiles), len(foundPaths), errCount); !ok {
+		log.Printf("[Feeds] Skipping delete pass for %q: %s", feed.Name, reason)
 	} else {
-		result.Deleted = deleted
+		deleted, delErr := s.alertManager.DeleteFeedAlertsNotIn(ctx, feed.ID, foundPaths)
+		if delErr != nil {
+			recordErr("delete pass: %v", delErr)
+		} else {
+			result.Deleted = deleted
+		}
+	}
+
+	if errCount > len(result.Errors) {
+		result.Errors = append(result.Errors, fmt.Sprintf("... and %d more errors", errCount-len(result.Errors)))
 	}
 
 	// Refresh alert engine cache once after all changes

@@ -1,0 +1,22 @@
+services:
+  zk:
+    image: zookeeper:3.9
+    environment: { ZOO_4LW_COMMANDS_WHITELIST: "*" }
+  ch1:
+    image: clickhouse/clickhouse-server:26.6.2.81-alpine
+    depends_on: [zk]
+    environment: { CLICKHOUSE_PASSWORD: bifract }
+    ports: ["19001:9000"]
+    volumes:
+      - ./cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+      - ./m1.xml:/etc/clickhouse-server/config.d/macros.xml:ro
+    ulimits: { nofile: { soft: 262144, hard: 262144 } }
+  ch2:
+    image: clickhouse/clickhouse-server:26.6.2.81-alpine
+    depends_on: [zk]
+    environment: { CLICKHOUSE_PASSWORD: bifract }
+    ports: ["19002:9000"]
+    volumes:
+      - ./cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+      - ./m2.xml:/etc/clickhouse-server/config.d/macros.xml:ro
+    ulimits: { nofile: { soft: 262144, hard: 262144 } }

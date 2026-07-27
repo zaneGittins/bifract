@@ -333,180 +333,28 @@ type LogEntry struct {
 
 // Initialize ensures the ClickHouse schema is current.
 //
-// Fresh install (logs table absent): runs the full init SQL then marks all
-// migrations as baseline so subsequent restarts skip them entirely.
+// Single-node: a fresh install (logs table absent) runs the full init SQL and stamps
+// every migration as applied; an upgrade applies only unapplied numbered migrations.
 //
-// Upgrade (logs table present):
-//   - Single-node: applies only unapplied numbered migrations; skips init SQL.
-//   - Cluster: spawns a goroutine that connects to each shard directly and
-//     applies only its pending migrations, avoiding ON CLUSTER timeouts during
-//     rolling restarts. Distributed table creation runs idempotently each time.
+// Cluster: see initializeCluster. Every decision is made per shard.
 func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migrations embed.FS, migrationsDir string) error {
-	var count uint64
-	if err := c.conn.QueryRow(ctx, `SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = 'logs'`).Scan(&count); err != nil {
+	if c.IsCluster() {
+		return c.initializeCluster(ctx, sql, migrations, migrationsDir)
+	}
+
+	hasLogs, err := chTableExists(ctx, c.conn, "logs")
+	if err != nil {
 		return fmt.Errorf("failed to check clickhouse initialization: %w", err)
 	}
-	tableExists := count > 0
 
-	if !tableExists {
-		// Fresh install: apply full init SQL, then create distributed tables and
-		// mark all migrations as baseline so upgrades only run future deltas.
-		for _, stmt := range splitClickHouseSQL(sql) {
-			stmt = c.InjectOnCluster(stmt)
-			stmt = c.RewriteEngine(stmt)
-			if err := c.conn.Exec(ctx, stmt); err != nil {
-				return fmt.Errorf("failed to execute clickhouse init statement: %w\nstatement: %s", err, stmt)
-			}
+	if !hasLogs {
+		if err := runInitSQLOnConn(ctx, c.conn, sql, nil); err != nil {
+			return err
 		}
-		if c.IsCluster() {
-			distSQL := fmt.Sprintf(
-				"CREATE TABLE IF NOT EXISTS logs_distributed%s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
-				c.OnClusterSQL(), EscCHStr(c.Cluster),
-			)
-			if err := c.conn.Exec(ctx, distSQL); err != nil {
-				return fmt.Errorf("failed to create distributed table: %w\nstatement: %s", err, distSQL)
-			}
-			histDistSQL := fmt.Sprintf(
-				"CREATE TABLE IF NOT EXISTS logs_histogram_distributed%s AS logs_histogram ENGINE = Distributed('%s', currentDatabase(), 'logs_histogram', rand())",
-				c.OnClusterSQL(), EscCHStr(c.Cluster),
-			)
-			if err := c.conn.Exec(ctx, histDistSQL); err != nil {
-				return fmt.Errorf("failed to create histogram distributed table: %w\nstatement: %s", err, histDistSQL)
-			}
-			hotDistSQL := fmt.Sprintf(
-				"CREATE TABLE IF NOT EXISTS logs_hot_distributed%s AS logs_hot ENGINE = Distributed('%s', currentDatabase(), 'logs_hot', rand())",
-				c.OnClusterSQL(), EscCHStr(c.Cluster),
-			)
-			if err := c.conn.Exec(ctx, hotDistSQL); err != nil {
-				return fmt.Errorf("failed to create hot distributed table: %w\nstatement: %s", err, hotDistSQL)
-			}
-			procDistSQL := fmt.Sprintf(
-				"CREATE TABLE IF NOT EXISTS proc_lineage_distributed%s AS proc_lineage ENGINE = Distributed('%s', currentDatabase(), 'proc_lineage', rand())",
-				c.OnClusterSQL(), EscCHStr(c.Cluster),
-			)
-			if err := c.conn.Exec(ctx, procDistSQL); err != nil {
-				return fmt.Errorf("failed to create proc_lineage distributed table: %w\nstatement: %s", err, procDistSQL)
-			}
-			freqDistSQL := fmt.Sprintf(
-				"CREATE TABLE IF NOT EXISTS proc_freq_distributed%s AS proc_freq ENGINE = Distributed('%s', currentDatabase(), 'proc_freq', rand())",
-				c.OnClusterSQL(), EscCHStr(c.Cluster),
-			)
-			if err := c.conn.Exec(ctx, freqDistSQL); err != nil {
-				return fmt.Errorf("failed to create proc_freq distributed table: %w\nstatement: %s", err, freqDistSQL)
-			}
-			rawDistSQL := fmt.Sprintf(
-				"CREATE TABLE IF NOT EXISTS logs_raw_distributed%s AS logs_raw ENGINE = Distributed('%s', currentDatabase(), 'logs_raw', rand())",
-				c.OnClusterSQL(), EscCHStr(c.Cluster),
-			)
-			if err := c.conn.Exec(ctx, rawDistSQL); err != nil {
-				return fmt.Errorf("failed to create logs_raw distributed table: %w\nstatement: %s", err, rawDistSQL)
-			}
+		if err := setClickHouseMigrationsBaseline(ctx, c.conn, nil, migrations, migrationsDir, 0); err != nil {
+			return err
 		}
-		setClickHouseMigrationsBaseline(ctx, c.conn, c.RewriteEngine, migrations, migrationsDir)
 		c.markSchemaReady()
-		return nil
-	}
-
-	if c.IsCluster() {
-		// Cluster upgrade: apply only pending migrations to each shard individually.
-		// ON CLUSTER can timeout when shards are restarting; per-shard direct
-		// connections are reliable. Distributed table creation is idempotent.
-		distSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS logs_distributed AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
-			EscCHStr(c.Cluster),
-		)
-		histDistSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS logs_histogram_distributed AS logs_histogram ENGINE = Distributed('%s', currentDatabase(), 'logs_histogram', rand())",
-			EscCHStr(c.Cluster),
-		)
-		hotDistSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS logs_hot_distributed AS logs_hot ENGINE = Distributed('%s', currentDatabase(), 'logs_hot', rand())",
-			EscCHStr(c.Cluster),
-		)
-		procDistSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS proc_lineage_distributed AS proc_lineage ENGINE = Distributed('%s', currentDatabase(), 'proc_lineage', rand())",
-			EscCHStr(c.Cluster),
-		)
-		freqDistSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS proc_freq_distributed AS proc_freq ENGINE = Distributed('%s', currentDatabase(), 'proc_freq', rand())",
-			EscCHStr(c.Cluster),
-		)
-		edgeDistSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS process_edges_distributed AS process_edges ENGINE = Distributed('%s', currentDatabase(), 'process_edges', rand())",
-			EscCHStr(c.Cluster),
-		)
-		rawDistSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS logs_raw_distributed AS logs_raw ENGINE = Distributed('%s', currentDatabase(), 'logs_raw', rand())",
-			EscCHStr(c.Cluster),
-		)
-		go func() {
-			initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
-
-			// Consistency gate: only apply migrations when every shard is reachable, so a
-			// migration is never applied to a subset of shards (which would leave the
-			// cluster on divergent schemas). If any shard is down we skip the apply this
-			// cycle; it self-heals on the next pod restart once all shards are back.
-			// Distributed table creation and column reconciliation below still run per
-			// reachable node, since they are idempotent and metadata-only.
-			shardsOK := true
-			if err := ensureAllShardsReachable(ctx, c.addrs, c.Database, c.User, c.Password, initPool); err != nil {
-				shardsOK = false
-				log.Printf("Skipping cluster migration apply (self-heals on next restart): %v", err)
-			}
-
-			for _, addr := range c.addrs {
-				hostConn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, initPool)
-				if err != nil {
-					log.Printf("Warning: cluster migration sync to %s failed: %v", addr, err)
-					continue
-				}
-				if shardsOK {
-					n, err := runMigrationsOnConn(ctx, hostConn, c.RewriteEngine, true, migrations, migrationsDir)
-					if err != nil {
-						log.Printf("Warning: migration sync on %s: %v", addr, err)
-					} else if n > 0 {
-						log.Printf("Applied %d ClickHouse migration(s) to shard %s", n, addr)
-					}
-				}
-				for _, stmt := range []string{distSQL, histDistSQL, hotDistSQL, procDistSQL, freqDistSQL, edgeDistSQL, rawDistSQL} {
-					stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
-					hostConn.Exec(stmtCtx, stmt)
-					stmtCancel()
-				}
-				// Distributed tables are created "AS <local>" and do not inherit
-				// later ALTER ADD COLUMN, so reconcile any columns a migration
-				// added to the local table onto the Distributed variants.
-				for _, pair := range [][2]string{
-					{"logs_distributed", "logs"},
-					{"logs_histogram_distributed", "logs_histogram"},
-					{"logs_hot_distributed", "logs_hot"},
-					{"proc_lineage_distributed", "proc_lineage"},
-					{"proc_freq_distributed", "proc_freq"},
-					{"process_edges_distributed", "process_edges"},
-					{"logs_raw_distributed", "logs_raw"},
-				} {
-					syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
-					if err := syncDistributedColumns(syncCtx, hostConn, c.Database, pair[0], pair[1]); err != nil {
-						log.Printf("Warning: column sync %s on %s: %v", pair[0], addr, err)
-					}
-					syncCancel()
-				}
-				// syncDistributedColumns only adds/modifies columns; it never drops. After
-				// migration 013 removes raw_log from the local logs/logs_hot tables, the
-				// Distributed variants still carry it, and an INSERT through a Distributed
-				// table forwards its columns to the local table (which no longer has raw_log).
-				// Drop it explicitly so the two stay in lockstep. Runs after sync so it is
-				// the final word (sync would otherwise re-add it while the local drop lags).
-				for _, dt := range []string{"logs_distributed", "logs_hot_distributed"} {
-					dropCtx, dropCancel := context.WithTimeout(ctx, 30*time.Second)
-					hostConn.Exec(dropCtx, "ALTER TABLE "+dt+" DROP COLUMN IF EXISTS raw_log")
-					dropCancel()
-				}
-				hostConn.Close()
-			}
-			log.Printf("Cluster schema sync complete")
-			c.markSchemaReady()
-		}()
 		return nil
 	}
 
@@ -515,7 +363,6 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 	// not turn into a pod CrashLoopBackOff. Per-statement progress means each retry
 	// resumes where the last left off rather than repeating completed work.
 	var n int
-	var err error
 	backoff := 5 * time.Second
 	for attempt := 1; attempt <= migrationMaxAttempts; attempt++ {
 		n, err = runMigrationsOnConn(ctx, c.conn, nil, false, migrations, migrationsDir)
@@ -540,6 +387,241 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 	}
 	c.markSchemaReady()
 	return nil
+}
+
+// shardSchemaState is one shard's provisioning status, read from that shard directly.
+type shardSchemaState struct {
+	addr         string
+	reachable    bool
+	hasLogs      bool
+	migrationMax uint32
+}
+
+// initializeCluster provisions every shard independently.
+//
+// A cluster is not a single thing to initialize: each shard has its own local tables and
+// its own _bifract_migrations (the replica path is keyed by {shard}), so "is this a fresh
+// install?" and "which migrations are applied?" have per-shard answers. Deciding once from
+// the load-balanced connection answers for whichever node the driver picked and silently
+// leaves the rest unprovisioned, which stays invisible until a query fans out.
+//
+// ON CLUSTER is avoided throughout: it queues DDL through Keeper and times out on a
+// cluster that is still coming up, which is the very situation that produces a
+// half-provisioned cluster. The same idempotent DDL run directly on each host reaches the
+// same end state without the queue.
+func (c *ClickHouseClient) initializeCluster(ctx context.Context, sql string, migrations embed.FS, migrationsDir string) error {
+	pool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+	states := c.probeShards(ctx, pool)
+
+	needsSchema, anyReachable := false, false
+	var refMax uint32
+	for _, st := range states {
+		if !st.reachable {
+			continue
+		}
+		anyReachable = true
+		if !st.hasLogs {
+			needsSchema = true
+		}
+		if st.migrationMax > refMax {
+			refMax = st.migrationMax
+		}
+	}
+	// Never report the schema ready off an all-unreachable probe: that would let the
+	// server start serving against a cluster whose state was never established.
+	if !anyReachable {
+		return fmt.Errorf("no ClickHouse shard reachable for schema initialization")
+	}
+
+	// A shard with no schema breaks reads and the ingest pool's health check as soon as the
+	// write LB routes to it, so provision synchronously and fail loudly: the pod restarts
+	// and retries, which is self-healing. When every shard already has a schema this is an
+	// upgrade, so run it in the background where a slow migration cannot become a
+	// CrashLoopBackOff.
+	if needsSchema {
+		if err := c.syncShardSchemas(ctx, states, refMax, sql, migrations, migrationsDir, pool); err != nil {
+			return err
+		}
+		log.Printf("Cluster schema sync complete")
+		c.markSchemaReady()
+		return nil
+	}
+
+	go func() {
+		if err := c.syncShardSchemas(ctx, states, refMax, sql, migrations, migrationsDir, pool); err != nil {
+			log.Printf("Warning: cluster schema sync: %v", err)
+		}
+		log.Printf("Cluster schema sync complete")
+		c.markSchemaReady()
+	}()
+	return nil
+}
+
+// probeShards reports each shard's schema state. An unreachable shard is marked and
+// skipped rather than failing the probe, so one node being briefly down during a rolling
+// restart does not stop the others from being repaired.
+func (c *ClickHouseClient) probeShards(ctx context.Context, pool ClickHousePoolConfig) []shardSchemaState {
+	states := make([]shardSchemaState, 0, len(c.addrs))
+	for _, addr := range c.addrs {
+		st := shardSchemaState{addr: addr}
+		conn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, pool)
+		if err != nil {
+			log.Printf("Warning: schema probe of %s failed: %v", addr, err)
+			states = append(states, st)
+			continue
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		hasLogs, err := chTableExists(probeCtx, conn, "logs")
+		if err != nil {
+			log.Printf("Warning: schema probe of %s failed: %v", addr, err)
+			cancel()
+			conn.Close()
+			states = append(states, st)
+			continue
+		}
+		st.reachable = true
+		st.hasLogs = hasLogs
+		// A missing _bifract_migrations table and an empty one mean the same thing here:
+		// nothing recorded on this shard.
+		var maxNum uint32
+		if err := conn.QueryRow(probeCtx, "SELECT max(number) FROM logs._bifract_migrations").Scan(&maxNum); err == nil {
+			st.migrationMax = maxNum
+		}
+		cancel()
+		conn.Close()
+		states = append(states, st)
+	}
+	return states
+}
+
+// syncShardSchemas brings each shard to the current schema and creates the Distributed
+// tables on it. Safe to re-run: every branch is idempotent.
+func (c *ClickHouseClient) syncShardSchemas(ctx context.Context, states []shardSchemaState, refMax uint32, sql string, migrations embed.FS, migrationsDir string, pool ClickHousePoolConfig) error {
+	// Migrations apply only when every shard is reachable, so one is never applied to a
+	// subset and left divergent. Schema repair and Distributed table creation are
+	// per-node and idempotent, so they still run.
+	shardsOK := true
+	if err := ensureAllShardsReachable(ctx, c.addrs, c.Database, c.User, c.Password, pool); err != nil {
+		shardsOK = false
+		log.Printf("Skipping cluster migration apply (self-heals on next restart): %v", err)
+	}
+
+	distStmts := c.distributedTableDDL()
+
+	for _, st := range states {
+		if !st.reachable {
+			continue
+		}
+		conn, err := openClickHouseConn([]string{st.addr}, c.Database, c.User, c.Password, pool)
+		if err != nil {
+			log.Printf("Warning: cluster schema sync to %s failed: %v", st.addr, err)
+			continue
+		}
+
+		switch {
+		case !st.hasLogs:
+			// No schema on this shard. Provision it from the init SQL, then stamp the
+			// migrations that schema already embodies. Fatal on failure: a cluster serving
+			// with a shard missing returns short results rather than an error.
+			log.Printf("Provisioning schema on shard %s", st.addr)
+			if err := runInitSQLOnConn(ctx, conn, sql, c.RewriteEngine); err != nil {
+				conn.Close()
+				return fmt.Errorf("provision schema on %s: %w", st.addr, err)
+			}
+			if err := setClickHouseMigrationsBaseline(ctx, conn, c.RewriteEngine, migrations, migrationsDir, 0); err != nil {
+				conn.Close()
+				return fmt.Errorf("baseline migrations on %s: %w", st.addr, err)
+			}
+		case st.migrationMax == 0 && refMax > 0:
+			// Schema present but nothing recorded here, while a sibling shard has records:
+			// this shard was provisioned by the init SQL and only the stamp was missed.
+			// Replaying history against an already-current schema does not work (004 selects
+			// raw_log, which 013 removed), so record the sibling's level instead.
+			log.Printf("Stamping shard %s through migration %d (schema present, none recorded)", st.addr, refMax)
+			if err := setClickHouseMigrationsBaseline(ctx, conn, c.RewriteEngine, migrations, migrationsDir, refMax); err != nil {
+				log.Printf("Warning: stamp migrations on %s: %v", st.addr, err)
+			}
+		case shardsOK:
+			n, err := runMigrationsOnConn(ctx, conn, c.RewriteEngine, true, migrations, migrationsDir)
+			if err != nil {
+				log.Printf("Warning: migration sync on %s: %v", st.addr, err)
+			} else if n > 0 {
+				log.Printf("Applied %d ClickHouse migration(s) to shard %s", n, st.addr)
+			}
+		}
+
+		for _, stmt := range distStmts {
+			stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
+			conn.Exec(stmtCtx, stmt)
+			stmtCancel()
+		}
+		// Distributed tables are created "AS <local>" and do not inherit later
+		// ALTER ADD COLUMN, so reconcile any columns a migration added to the local table
+		// onto the Distributed variants.
+		for _, pair := range [][2]string{
+			{"logs_distributed", "logs"},
+			{"logs_histogram_distributed", "logs_histogram"},
+			{"logs_hot_distributed", "logs_hot"},
+			{"proc_lineage_distributed", "proc_lineage"},
+			{"proc_freq_distributed", "proc_freq"},
+			{"process_edges_distributed", "process_edges"},
+			{"logs_raw_distributed", "logs_raw"},
+		} {
+			syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
+			if err := syncDistributedColumns(syncCtx, conn, c.Database, pair[0], pair[1]); err != nil {
+				log.Printf("Warning: column sync %s on %s: %v", pair[0], st.addr, err)
+			}
+			syncCancel()
+		}
+		// syncDistributedColumns only adds/modifies columns; it never drops. After migration
+		// 013 removes raw_log from the local logs/logs_hot tables, the Distributed variants
+		// still carry it, and an INSERT through a Distributed table forwards its columns to
+		// the local table (which no longer has raw_log). Drop it explicitly so the two stay
+		// in lockstep. Runs after sync so it is the final word.
+		for _, dt := range []string{"logs_distributed", "logs_hot_distributed"} {
+			dropCtx, dropCancel := context.WithTimeout(ctx, 30*time.Second)
+			conn.Exec(dropCtx, "ALTER TABLE "+dt+" DROP COLUMN IF EXISTS raw_log")
+			dropCancel()
+		}
+		conn.Close()
+	}
+	return nil
+}
+
+// distributedTableDDL returns the idempotent CREATE for every Distributed table, to be
+// run directly on each host. These cannot live in the init SQL because they need the
+// cluster name, which is only known to the running server.
+func (c *ClickHouseClient) distributedTableDDL() []string {
+	locals := []string{"logs", "logs_histogram", "logs_hot", "proc_lineage", "proc_freq", "process_edges", "logs_raw"}
+	stmts := make([]string, 0, len(locals))
+	for _, t := range locals {
+		stmts = append(stmts, fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS %s_distributed AS %s ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
+			t, t, EscCHStr(c.Cluster), t))
+	}
+	return stmts
+}
+
+// runInitSQLOnConn applies the init schema to one connection. Every statement is
+// idempotent, so this is safe to re-run against a partially provisioned shard.
+func runInitSQLOnConn(ctx context.Context, conn driver.Conn, sql string, transformStmt func(string) string) error {
+	for _, stmt := range splitClickHouseSQL(sql) {
+		if transformStmt != nil {
+			stmt = transformStmt(stmt)
+		}
+		if err := conn.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("failed to execute clickhouse init statement: %w\nstatement: %s", err, stmt)
+		}
+	}
+	return nil
+}
+
+// chTableExists reports whether a table exists in the connection's current database.
+func chTableExists(ctx context.Context, conn driver.Conn, table string) (bool, error) {
+	var count uint64
+	err := conn.QueryRow(ctx,
+		"SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = ?", table).Scan(&count)
+	return count > 0, err
 }
 
 // syncDistributedColumns brings a Distributed table's column definitions in line
@@ -733,22 +815,11 @@ func loadCompletedSteps(ctx context.Context, conn driver.Conn, number int) (map[
 	return done, rows.Err()
 }
 
-// recordCompletedStep marks one statement of a migration file as applied.
-func recordCompletedStep(ctx context.Context, conn driver.Conn, number, statementIndex int, name string) error {
-	record := fmt.Sprintf("INSERT INTO logs._bifract_migration_steps (number, statement_index, name) VALUES (%d, %d, '%s')",
-		number, statementIndex, strings.ReplaceAll(name, "'", "''"))
-	return conn.Exec(ctx, record)
-}
-
-// runMigrationsOnConn applies pending ClickHouse migrations via conn.
-// transformStmt, if non-nil, is applied to each DDL statement before execution
-// (used in cluster mode to rewrite engine names to their Replicated variants).
-// clusterMode runs DDL with alter_sync=0/mutations_sync=0 so an ALTER does not
-// block on a restarting replica (the Replicated engine still propagates via Keeper).
-// Progress is recorded per statement, so a statement that fails or times out does not
-// force the file's already-applied statements to re-run on the next restart.
-// Returns the number of migrations applied.
-func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt func(string) string, clusterMode bool, migrations embed.FS, migrationsDir string) (int, error) {
+// createMigrationBookkeeping creates the migration tracking tables. Both are created on
+// every path, including the baseline stamp: a shard's table count is the cheapest way to
+// spot a half-provisioned cluster, and it is only comparable across shards when every
+// shard carries the same set regardless of how it was provisioned.
+func createMigrationBookkeeping(ctx context.Context, conn driver.Conn, transformStmt func(string) string) error {
 	const createMigrationsTable = `CREATE TABLE IF NOT EXISTS logs._bifract_migrations (
 		number UInt32,
 		name String,
@@ -771,8 +842,30 @@ func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt fu
 			ddl = transformStmt(ddl)
 		}
 		if err := conn.Exec(ctx, ddl); err != nil {
-			return 0, fmt.Errorf("create migration bookkeeping table: %w", err)
+			return fmt.Errorf("create migration bookkeeping table: %w", err)
 		}
+	}
+	return nil
+}
+
+// recordCompletedStep marks one statement of a migration file as applied.
+func recordCompletedStep(ctx context.Context, conn driver.Conn, number, statementIndex int, name string) error {
+	record := fmt.Sprintf("INSERT INTO logs._bifract_migration_steps (number, statement_index, name) VALUES (%d, %d, '%s')",
+		number, statementIndex, strings.ReplaceAll(name, "'", "''"))
+	return conn.Exec(ctx, record)
+}
+
+// runMigrationsOnConn applies pending ClickHouse migrations via conn.
+// transformStmt, if non-nil, is applied to each DDL statement before execution
+// (used in cluster mode to rewrite engine names to their Replicated variants).
+// clusterMode runs DDL with alter_sync=0/mutations_sync=0 so an ALTER does not
+// block on a restarting replica (the Replicated engine still propagates via Keeper).
+// Progress is recorded per statement, so a statement that fails or times out does not
+// force the file's already-applied statements to re-run on the next restart.
+// Returns the number of migrations applied.
+func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt func(string) string, clusterMode bool, migrations embed.FS, migrationsDir string) (int, error) {
+	if err := createMigrationBookkeeping(ctx, conn, transformStmt); err != nil {
+		return 0, err
 	}
 
 	var maxApplied uint32
@@ -871,38 +964,33 @@ func ensureAllShardsReachable(ctx context.Context, addrs []string, database, use
 	return nil
 }
 
-// setClickHouseMigrationsBaseline marks all known migrations as applied without
-// running them. Called after a fresh install where init-clickhouse.sql already
-// created the full schema, so subsequent restarts skip all current migrations.
-func setClickHouseMigrationsBaseline(ctx context.Context, conn driver.Conn, transformStmt func(string) string, migrations embed.FS, migrationsDir string) {
-	const createMigrationsTable = `CREATE TABLE IF NOT EXISTS logs._bifract_migrations (
-		number UInt32,
-		name String,
-		applied_at DateTime DEFAULT now()
-	) ENGINE = ReplacingMergeTree()
-	ORDER BY number`
-
-	tableSQL := createMigrationsTable
-	if transformStmt != nil {
-		tableSQL = transformStmt(tableSQL)
-	}
-	if err := conn.Exec(ctx, tableSQL); err != nil {
-		log.Printf("Warning: could not create migrations table for baseline: %v", err)
-		return
+// setClickHouseMigrationsBaseline marks migrations as applied without running them, for
+// a connection whose schema came from the init SQL rather than from the migration files.
+// upTo bounds the highest number recorded; 0 records all of them.
+//
+// This must be applied to every shard. The migrations table is Replicated per {shard}, so
+// stamping one node leaves the others reporting max(number) = 0, and they then replay
+// history against an already-current schema on the next restart.
+func setClickHouseMigrationsBaseline(ctx context.Context, conn driver.Conn, transformStmt func(string) string, migrations embed.FS, migrationsDir string, upTo uint32) error {
+	if err := createMigrationBookkeeping(ctx, conn, transformStmt); err != nil {
+		return err
 	}
 
 	allMigrations, err := loadClickHouseMigrations(migrations, migrationsDir)
 	if err != nil {
-		log.Printf("Warning: could not load migrations for baseline: %v", err)
-		return
+		return fmt.Errorf("load migrations for baseline: %w", err)
 	}
 	for _, m := range allMigrations {
+		if upTo > 0 && uint32(m.number) > upTo {
+			continue
+		}
 		record := fmt.Sprintf("INSERT INTO logs._bifract_migrations (number, name) VALUES (%d, '%s')",
 			m.number, strings.ReplaceAll(m.name, "'", "''"))
 		if err := conn.Exec(ctx, record); err != nil {
-			log.Printf("Warning: could not record baseline migration %s: %v", m.name, err)
+			return fmt.Errorf("record baseline migration %s: %w", m.name, err)
 		}
 	}
+	return nil
 }
 
 // splitSQLOnTopLevelSemicolons splits sql into segments on ';' characters that are not
@@ -1081,22 +1169,27 @@ func newClickHouseClusterClient(hosts []string, port int, database, user, passwo
 		}
 	}
 	if createDB {
-		// In cluster mode the target database may not exist yet (the operator
-		// doesn't pre-create it). Connect to "default" first and ensure the
-		// database is created locally. ON CLUSTER is omitted to avoid timeout on
-		// slow/initializing clusters; table replication via ReplicatedMergeTree
-		// and Keeper/ZooKeeper handles cluster-wide synchronization.
-		bootstrap, err := openClickHouseConn(addrs, "default", user, password, pool)
-		if err != nil {
-			return nil, fmt.Errorf("bootstrap connection: %w", err)
-		}
-		createDBStmt := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s",
-			EscCHStr(database))
-		if execErr := bootstrap.Exec(context.Background(), createDBStmt); execErr != nil {
+		// In cluster mode the target database may not exist yet (the operator doesn't
+		// pre-create it). ON CLUSTER is deliberately avoided here: it queues distributed
+		// DDL through Keeper and times out on a still-initializing cluster.
+		//
+		// Create it on EVERY host instead. A single bootstrap connection would let the
+		// driver pick one address and provision only that node, leaving the rest without
+		// the database. Nothing surfaces until a query fans out to a missing node, and
+		// because schema init records itself in _bifract_migrations, later restarts skip
+		// the repair. The result is a cluster that is silently half-provisioned.
+		createDBStmt := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", EscCHStr(database))
+		for _, addr := range addrs {
+			bootstrap, err := openClickHouseConn([]string{addr}, "default", user, password, pool)
+			if err != nil {
+				return nil, fmt.Errorf("bootstrap connection to %s: %w", addr, err)
+			}
+			execErr := bootstrap.Exec(context.Background(), createDBStmt)
 			bootstrap.Close()
-			return nil, fmt.Errorf("create database %s: %w", database, execErr)
+			if execErr != nil {
+				return nil, fmt.Errorf("create database %s on %s: %w", database, addr, execErr)
+			}
 		}
-		bootstrap.Close()
 	}
 
 	conn, err := openClickHouseConn(addrs, database, user, password, pool)

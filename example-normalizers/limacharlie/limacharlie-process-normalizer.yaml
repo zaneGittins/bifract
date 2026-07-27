@@ -1,0 +1,49 @@
+name: LimaCharlie EDR - Process
+description: >-
+  Maps LimaCharlie NEW_PROCESS and EXISTING_PROCESS onto Bifract's normalized field
+  contract. On these events routing.this is the process itself, so it owns process_guid.
+
+transforms:
+  - flatten_full
+
+field_mappings:
+  - sources: [routing_this]
+    target: process_guid
+  - sources: [routing_parent]
+    target: parent_process_guid
+
+  - sources: [routing_hostname]
+    target: computer_name
+  - sources: [routing_sid]
+    target: sensor_id
+  - sources: [routing_event_type]
+    target: event_type
+  - sources: [event_USER_NAME]
+    target: user
+
+  - sources: [event_FILE_PATH]
+    target: image
+  - sources: [event_COMMAND_LINE]
+    target: commandline
+  - sources: [event_HASH]
+    target: hash
+  - sources: [event_PROCESS_ID]
+    target: process_id
+
+  - sources: [event_PARENT_FILE_PATH]
+    target: parent_image
+  - sources: [event_PARENT_COMMAND_LINE]
+    target: parent_commandline
+  - sources: [event_PARENT_PROCESS_ID]
+    target: parent_process_id
+
+value_mappings:
+  - from_field: event_type
+    to_field: bifract_category
+    map:
+      NEW_PROCESS: process_creation
+      EXISTING_PROCESS: process_creation
+
+timestamp_fields:
+  - field: routing_event_time
+    format: unixmilli
