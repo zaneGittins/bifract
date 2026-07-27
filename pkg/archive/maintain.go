@@ -413,9 +413,16 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 	return stats, nil
 }
 
-// maintainMaxConsecutiveGroupFailures bounds how many groups in a row may fail
-// before compactTable gives up on the table for this pass.
-const maintainMaxConsecutiveGroupFailures = 3
+// maintainMaxConsecutiveCommitFailures bounds how many batch commits in a row
+// may fail before compactTable gives up on the table for this pass.
+const maintainMaxConsecutiveCommitFailures = 3
+
+// maintainMaxGroupsPerCommit bounds a single rewrite commit's blast radius. The
+// commit's manifest scan is amortised across the batch, so bigger is cheaper per
+// group, but a lost race discards the whole batch's commit attempt and its output
+// files become orphans if the retries then run out. This caps that exposure while
+// still collapsing the common budget-sized batch into one scan.
+const maintainMaxGroupsPerCommit = 16
 
 // tableDeadline returns when the current table must stop compacting so the
 // tables after it still get a turn. Splits the pass's remaining time evenly
@@ -505,54 +512,98 @@ func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 		name, len(plan.Groups), candidateBytes, largestGroup, budget, opts.ScanConcurrency,
 		time.Until(deadline).Round(time.Second))
 
-	// Groups are walked lazily rather than pre-selected into a fixed slice: a
-	// failed group does NOT debit the budget, so the pass moves on and spends it
-	// on groups that can actually commit. Pre-selecting meant one permanently
-	// failing group at the head of a budget-sized selection consumed the table's
-	// entire turn, every pass, while the hundreds of groups behind it were never
-	// attempted. The first group is always attempted even if it alone exceeds
-	// budget, so a budget smaller than one group cannot stall the table forever;
-	// that is safe because compaction.Analyze bin-packs to TargetFileSizeBytes,
-	// so a group is bounded by file size and never by partition size.
+	// Groups are rewritten into a BATCH and committed together, because the
+	// commit -- not the rewrite -- is what compaction costs. iceberg-go's rewrite
+	// commit walks every manifest entry in the table to find the ones referencing
+	// the replaced files (overwriteFiles.existingManifests), so its cost is
+	// O(files in table) and is paid in full per commit no matter how little the
+	// commit changes. Measured on a 96GB/184-group table that is ~5m30s a commit
+	// against ~10s to rewrite a 512MB group: committing per group spent 97% of
+	// every attempt re-scanning manifests. Batching amortises one scan across
+	// many groups, and just as importantly means the race against the archiver's
+	// concurrent appends has to be won once per batch instead of once per group.
+	//
+	// A failed rewrite skips its group without debiting the budget so the batch
+	// moves on. The first group of the pass is always attempted even if it alone
+	// exceeds budget, so a budget smaller than one group cannot stall the table
+	// forever; that is safe because compaction.Analyze bin-packs to
+	// TargetFileSizeBytes, so a group is bounded by file size, never by partition
+	// size.
 	res := compactResult{candidateBytes: candidateBytes}
 	var spent int64
-	var attempted, consecutiveFailures int
-	for _, g := range plan.Groups {
-		if attempted > 0 && spent+g.TotalSizeBytes > budget {
-			break
-		}
+	var consecutiveFailures int
+	for i := 0; i < len(plan.Groups); {
 		// Per-table deadline: without it one backlog-heavy table consumes the whole
 		// pass and every table after it in iteration order is never even loaded,
 		// which is why timed-out passes reported a fraction of the real footprint.
 		if !time.Now().Before(deadline) {
-			log.Printf("[Maintain] compact %s: table time budget spent after %d group(s); leaving the rest for the next pass", name, attempted)
+			log.Printf("[Maintain] compact %s: table time budget spent, %d bytes committed; leaving the rest for the next pass", name, spent)
 			break
 		}
-		// A table failing group after group is systematically broken (bad
+		// A table failing commit after commit is systematically broken (bad
 		// credentials, unreadable files), not unlucky. Give up on it rather than
-		// burning the table's whole turn rewriting groups that cannot commit.
-		if consecutiveFailures >= maintainMaxConsecutiveGroupFailures {
-			log.Printf("[Maintain] compact %s: %d consecutive group failures; skipping the rest of this table", name, consecutiveFailures)
+		// burning the table's whole turn.
+		if consecutiveFailures >= maintainMaxConsecutiveCommitFailures {
+			log.Printf("[Maintain] compact %s: %d consecutive commit failures; skipping the rest of this table", name, consecutiveFailures)
 			break
 		}
-		attempted++
-
-		group := icetable.CompactionTaskGroup{
-			PartitionKey:   g.PartitionKey,
-			Tasks:          g.Tasks,
-			TotalSizeBytes: g.TotalSizeBytes,
+		if spent > 0 && spent >= budget {
+			break
 		}
-		updated, err := compactGroup(ctx, c, ident, tbl, group, opts)
+
+		var batch []icetable.CompactionGroupResult
+		var batchBytes int64
+		for ; i < len(plan.Groups); i++ {
+			g := plan.Groups[i]
+			first := spent == 0 && len(batch) == 0
+			if !first {
+				if spent+batchBytes+g.TotalSizeBytes > budget {
+					break
+				}
+				if len(batch) >= maintainMaxGroupsPerCommit {
+					break
+				}
+				// Stop growing the batch once out of time, but still commit what has
+				// already been rewritten: abandoning it would waste the rewrites and
+				// leave their output as orphans.
+				if !time.Now().Before(deadline) {
+					break
+				}
+			}
+
+			gr, err := icetable.ExecuteCompactionGroup(ctx, tbl, icetable.CompactionTaskGroup{
+				PartitionKey:   g.PartitionKey,
+				Tasks:          g.Tasks,
+				TotalSizeBytes: g.TotalSizeBytes,
+			}, icetable.WithCompactionScanConcurrency(opts.ScanConcurrency))
+			if err != nil {
+				log.Printf("[Maintain] compact %s: rewrite group %s: %v", name, g.PartitionKey, err)
+				res.failedGroups++
+				continue
+			}
+			if len(gr.NewDataFiles) == 0 {
+				continue
+			}
+			batch = append(batch, gr)
+			batchBytes += g.TotalSizeBytes
+		}
+
+		if len(batch) == 0 {
+			break
+		}
+
+		log.Printf("[Maintain] compact %s: committing %d group(s)/%d bytes in one rewrite", name, len(batch), batchBytes)
+		updated, err := commitCompaction(ctx, c, ident, tbl, batch, opts)
 		tbl = updated
 		if err != nil {
-			log.Printf("[Maintain] compact %s: group %s: %v", name, g.PartitionKey, err)
-			res.failedGroups++
+			log.Printf("[Maintain] compact %s: commit of %d group(s): %v", name, len(batch), err)
+			res.failedGroups += len(batch)
 			consecutiveFailures++
 			continue
 		}
 		consecutiveFailures = 0
-		res.compactedBytes += g.TotalSizeBytes
-		spent += g.TotalSizeBytes
+		res.compactedBytes += batchBytes
+		spent += batchBytes
 	}
 	return res, nil
 }
@@ -576,47 +627,37 @@ func isOpenPartitionGroup(g compaction.Group, today iceberg.Date) bool {
 	return ok && d >= today
 }
 
-// compactGroup rewrites and commits a single compaction group.
+// commitCompaction stages every already-rewritten group in ONE rewrite snapshot
+// and commits it, retrying only the commit.
 //
-// The rewrite runs ONCE, up front, via ExecuteCompactionGroup; only the commit
-// is retried. This split is the whole point: the rewrite is minutes of object
-// storage I/O, the commit is a metadata write, and retrying them together (what
-// Transaction.RewriteDataFiles does) means a table under continuous append can
-// never win. On a busy fractal the archiver commits every few minutes while a
-// ~500MB rewrite takes ~9, so every attempt lost the branch-head assertion and
-// the pass compacted nothing, forever, while leaking each discarded rewrite's
-// output as orphan files. Retrying just the commit shrinks the race window from
-// the rewrite duration to a single metadata write.
+// Batching is the point. iceberg-go's rewrite commit walks every manifest entry
+// in the table to find those referencing the replaced files
+// (overwriteFiles.existingManifests), so a commit costs O(files in table)
+// regardless of how few files it changes. Committing per group therefore paid
+// that scan once per group; measured on a 96GB table it was ~5m30s per commit
+// against ~10s to rewrite a group. One scan per batch is the difference between
+// compaction keeping up and not.
 //
-// The retry is needed at all because iceberg-go's own Table.doCommit retry loop
-// (which does refresh-and-replay properly) is gated on
-// errors.Is(err, icetable.ErrCommitFailed), and the conflict this hits in
-// production is a bare, unwrapped error from the shared pre-commit
-// Requirement.Validate() check in catalog/internal: `requirement failed: branch
-// "main" has changed: ...`. That never satisfies the gate, so doCommit returns
-// on the first conflict without ever retrying.
+// Retrying only the commit matters for a second reason: iceberg-go's own
+// Table.doCommit retry loop is gated on errors.Is(err, icetable.ErrCommitFailed),
+// and the conflict this hits in production is a bare, unwrapped error from the
+// pre-commit Requirement.Validate() check in catalog/internal ("requirement
+// failed: branch \"main\" has changed: ..."). That never satisfies the gate, so
+// doCommit returns on the first conflict without ever retrying.
 //
-// Each attempt re-stages the already-written output files against a freshly
-// loaded table. That is safe because the output Parquet is immutable and already
-// durable in object storage, and re-staging goes through NewRewrite/ApplyResult
-// so the rewrite conflict validator still runs against the fresh state (it
-// rejects the commit if a concurrent snapshot dropped delete files over the
-// files being replaced).
+// Each attempt re-stages the same output files against a freshly loaded table.
+// That is safe because the output Parquet is immutable and already durable in
+// object storage, and re-staging goes through NewRewrite/ApplyResult so the
+// rewrite conflict validator still runs against the fresh state.
 //
 // Always returns the freshest table handle available -- even on final failure --
 // so the caller carries forward whatever this call last reloaded rather than
-// starting the next group from an already-known-stale table.
-func compactGroup(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, group icetable.CompactionTaskGroup, opts MaintainOptions) (*icetable.Table, error) {
-	name := ident[len(ident)-1]
-
-	res, err := icetable.ExecuteCompactionGroup(ctx, tbl, group,
-		icetable.WithCompactionScanConcurrency(opts.ScanConcurrency))
-	if err != nil {
-		return tbl, err
-	}
-	if len(res.NewDataFiles) == 0 {
+// starting from an already-known-stale table.
+func commitCompaction(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, results []icetable.CompactionGroupResult, opts MaintainOptions) (*icetable.Table, error) {
+	if len(results) == 0 {
 		return tbl, nil
 	}
+	name := ident[len(ident)-1]
 
 	retries := opts.CommitRetries
 	if retries < 1 {
@@ -624,8 +665,15 @@ func compactGroup(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 	}
 	var lastErr error
 	for attempt := 0; attempt < retries; attempt++ {
+		// A fresh transaction and builder per attempt: RewriteFiles.Commit is
+		// single-shot, and the requirements have to be rebuilt from the reloaded
+		// table or the retry re-submits the same stale branch assertion.
 		tx := tbl.NewTransaction()
-		err := tx.NewRewrite(nil).ApplyResult(res).Commit(ctx)
+		rw := tx.NewRewrite(nil)
+		for _, r := range results {
+			rw = rw.ApplyResult(r)
+		}
+		err := rw.Commit(ctx)
 		if err == nil {
 			var updated *icetable.Table
 			if updated, err = tx.Commit(ctx); err == nil {
@@ -641,8 +689,8 @@ func compactGroup(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 		if attempt == retries-1 {
 			break
 		}
-		log.Printf("[Maintain] compact %s: lost commit race with concurrent append, re-staging rewrite (%d/%d)",
-			name, attempt+1, retries)
+		log.Printf("[Maintain] compact %s: lost commit race with concurrent append, re-staging %d group(s) (%d/%d)",
+			name, len(results), attempt+1, retries)
 		if !sleep(ctx, maintainCommitConflictBackoff) {
 			return tbl, ctx.Err()
 		}

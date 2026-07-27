@@ -22,7 +22,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
+	icetable "github.com/apache/iceberg-go/table"
+	"github.com/apache/iceberg-go/table/compaction"
 
 	"bifract/pkg/objstore"
 	"bifract/pkg/storage"
@@ -247,4 +250,88 @@ func TestMaintainReportsDeadline(t *testing.T) {
 	if _, err := cat.Maintain(ctx, DefaultMaintainOptions()); err == nil {
 		t.Fatal("Maintain returned nil for a pass that never had time to run; a timeout would be recorded as 'ok'")
 	}
+}
+
+// snapshotCount reports how many snapshots a table currently has. One rewrite
+// commit adds exactly one, which makes it the direct measure of how many commits
+// a compaction pass performed.
+func snapshotCount(t *testing.T, cat *Catalog, ident icetable.Identifier) int {
+	t.Helper()
+	tbl, err := cat.cat.LoadTable(context.Background(), ident)
+	if err != nil {
+		t.Fatalf("load table: %v", err)
+	}
+	return len(tbl.Metadata().Snapshots())
+}
+
+// TestCompactionBatchesGroupsIntoOneCommit is the regression test for the cost
+// model. A rewrite commit walks every manifest entry in the table, so it costs
+// O(files in table) no matter how little it changes; committing one group at a
+// time paid that scan per group and was measured at ~5m30s each on a real 96GB
+// table against ~10s to rewrite a group. Many groups, one commit.
+//
+// Snapshot count is the assertion because it is not a proxy: each rewrite commit
+// adds exactly one snapshot, so "8 groups compacted, 1 new snapshot" is direct
+// evidence the batch went in as a unit.
+func TestCompactionBatchesGroupsIntoOneCommit(t *testing.T) {
+	cat := newArchiveTestCatalog(t)
+	fractalID := fmt.Sprintf("batch-%d", time.Now().UnixNano())
+
+	// Enough files to plan several groups: MinInputFiles is 5 per group and
+	// Analyze bin-packs to ~512MB, so this seeds multiple full groups.
+	const seedBatches = 24
+	for seq := range seedBatches {
+		if err := appendBatch(t, cat, fractalID, 4000, seq); err != nil {
+			t.Fatalf("seed append %d: %v", seq, err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	ident := catalog.ToIdentifier(Namespace, tableName(fractalID))
+	tbl, err := cat.cat.LoadTable(ctx, ident)
+	if err != nil {
+		t.Fatalf("load table: %v", err)
+	}
+
+	plan, err := compaction.Analyze(ctx, tbl, compaction.DefaultConfig())
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	open := iceberg.Date(epochDay(time.Now()))
+	var sealed int
+	for _, g := range plan.Groups {
+		if !isOpenPartitionGroup(g, open) {
+			sealed++
+		}
+	}
+	if sealed < 2 {
+		t.Fatalf("harness seeded only %d compactable group(s); batching cannot be observed with fewer than 2", sealed)
+	}
+
+	before := snapshotCount(t, cat, ident)
+
+	opts := DefaultMaintainOptions()
+	opts.ScanConcurrency = 1
+	// Budget generous enough that every sealed group fits in one batch.
+	opts.ByteBudget = 32 << 30
+
+	res, err := compactTable(ctx, cat, ident, tbl, opts.ByteBudget, time.Now().Add(4*time.Minute), opts)
+	if err != nil {
+		t.Fatalf("compactTable: %v", err)
+	}
+	if res.failedGroups > 0 {
+		t.Fatalf("%d group(s) failed with no concurrent writer at all", res.failedGroups)
+	}
+	if res.compactedBytes == 0 {
+		t.Fatal("nothing compacted")
+	}
+
+	commits := snapshotCount(t, cat, ident) - before
+	if commits != 1 {
+		t.Errorf("compacted %d sealed group(s) in %d commit(s), want 1: the batch is not being committed as a unit",
+			sealed, commits)
+	}
+	t.Logf("compacted %d sealed group(s)/%d bytes in %d commit(s)", sealed, res.compactedBytes, commits)
 }
