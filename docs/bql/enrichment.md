@@ -41,6 +41,32 @@ Combine with other pipeline stages:
   | groupBy(department, function=count())
 ```
 
+## model_lookup()
+
+Enrich rows with the baseline an analytics [model](../features/models.md) has built, so a query can score each event against learned history.
+
+```
+* | model_lookup(model="rare_parent_child", key=[parent_image, image])
+```
+
+### Parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `model` | Yes | Name of an active model in this fractal |
+| `key` | Yes | Log fields matched against the model's key, in order |
+
+The key shape depends on the model type:
+
+| Model type | `key=` |
+|---|---|
+| `rarity` | `[partition_key, value_key]` |
+| `first_seen` | `[entity]` |
+| `volume_baseline` | `[entity]` |
+| `beacon`, `long_connection` | `[src_ip, dst_ip, dst_port]` |
+
+Rows with no match in the model are kept with empty enrichment columns, so a "never seen before" event is itself a signal. Enrichment columns can be filtered and aggregated like any other field.
+
 ## comment()
 
 Filter logs to only those that have comments. Optionally narrow by tag labels or keyword search in comment text.
@@ -89,5 +115,5 @@ Keyword AND at least one matching tag.
 
 ```
 * | comment(tags=incident) | groupby(src_ip, function=count())
-* | comment() | table(timestamp, raw_log, src_ip)
+* | comment() | table(timestamp, norm_log, src_ip)
 ```

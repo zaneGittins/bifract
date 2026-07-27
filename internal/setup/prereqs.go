@@ -7,11 +7,11 @@ import (
 )
 
 type PrereqResult struct {
-	DockerOK  bool
-	ComposeOK bool
-	DockerVer string
+	DockerOK   bool
+	ComposeOK  bool
+	DockerVer  string
 	ComposeVer string
-	Errors    []string
+	Errors     []string
 }
 
 func CheckPrereqs() PrereqResult {

@@ -305,6 +305,14 @@ type k8sSettings struct {
 	// archiveMaintainResources preserves a deliberately-sized maintainer across
 	// regeneration, but only above minArchiveMaintainMemLimit -- see the parse.
 	archiveMaintainResources ResourceProfile
+	// archiverResources preserves a deliberately-sized archiver sidecar, subject
+	// to the same inherited-breakage floor -- see minArchiverMemLimit.
+	archiverResources ResourceProfile
+	// archiverResourcesRaw is what the manifest actually said, inherited or not.
+	// archiverProfileFor uses it as the never-downsize floor: the sidecar's limit
+	// has to keep covering the buffer the install is already configured to hold,
+	// whatever the chosen profile says.
+	archiverResourcesRaw ResourceProfile
 }
 
 // legacyFlatMaintainByteBudget is the compaction byte budget every install
@@ -413,6 +421,41 @@ func parseK8sSecrets(path string) (map[string]string, error) {
 // than slowed. See SizeProfile.ArchiveMaintain.
 const minArchiveMaintainMemLimit = 4 << 30
 
+// minArchiverMemLimit is the smallest archiver sidecar memory limit treated as a
+// deliberate choice on upgrade. Unlike the maintainer, an inherited Bifract
+// limit is not categorically broken here, just unrelated to the roll thresholds,
+// so this floor is only a guard against a limit too small to hold even the
+// smallest profile's pending buffer plus the Parquet encode of a roll.
+const minArchiverMemLimit = 1 << 30
+
+// preservedArchiverResources decides whether an existing install's archiver
+// sidecar sizing is an operator decision worth carrying across regeneration, or
+// inherited wiring that should give way to the size profile. Returns the zero
+// profile for the latter, which is what makes buildK8sConfigFromExisting fall
+// back to SizeProfile.Archiver.
+//
+// The inheritance test needs no heuristic. The pre-fix code rendered ArchiverRes
+// FROM SizeProfile.Bifract, so on an untouched install the sidecar and the app
+// tier carry byte-identical resources; an exact match is therefore proof of
+// inheritance, not a guess. Getting this wrong is costly in both directions:
+// preserve the inherited value and no existing install ever adopts the archiver
+// profile, discard a real one and an operator's sizing is silently reverted on
+// every upgrade.
+func preservedArchiverResources(parsed, bifract ResourceProfile) ResourceProfile {
+	if resourceProfileEmpty(parsed) {
+		return ResourceProfile{}
+	}
+	if !resourceProfileEmpty(bifract) && parsed == bifract {
+		return ResourceProfile{}
+	}
+	// A limit too small to hold even the smallest profile's pending buffer is a
+	// sizing error to correct, not a decision to preserve.
+	if parseK8sQuantityBytes(parsed.MemLimit) < minArchiverMemLimit {
+		return ResourceProfile{}
+	}
+	return parsed
+}
+
 // parseK8sQuantityBytes converts a Kubernetes memory quantity ("512Mi", "8Gi",
 // "2G", or plain bytes) to bytes, returning 0 when it cannot be parsed. Only the
 // memory suffixes k8s actually emits here are handled; an unrecognized one reads
@@ -496,6 +539,8 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 		if v := extractValue(content, `(?m)^\s*replicas:\s*(\d+)`); v != "" {
 			s.ingestReplicas, _ = strconv.Atoi(v)
 		}
+		s.archiverResourcesRaw = extractResources(content, "bifract-archiver")
+		s.archiverResources = preservedArchiverResources(s.archiverResourcesRaw, s.bifractResources)
 		if idx := strings.Index(content, "volumeClaimTemplates:"); idx != -1 {
 			claimDoc := content[idx:]
 			if v := extractValue(claimDoc, `storage:\s*(\d+)Ti`); v != "" {

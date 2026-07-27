@@ -33,9 +33,11 @@ func upgradeConn(t *testing.T, database string) interface {
 
 // TestUpgradeFromV002 replays the real v0.0.2 -> current path.
 func TestUpgradeFromV002(t *testing.T) {
-	v002SQL, err := os.ReadFile(os.Getenv("V002_INIT"))
+	// Pinned copy of db/init-clickhouse.sql as of tag v0.0.2, so the test does not depend
+	// on git history being present.
+	v002SQL, err := os.ReadFile("testdata/v002-init-clickhouse.sql")
 	if err != nil {
-		t.Fatalf("read v0.0.2 init SQL (set V002_INIT): %v", err)
+		t.Fatalf("read v0.0.2 init SQL: %v", err)
 	}
 
 	root, err := openClickHouseConn([]string{upgradeAddr}, "default", "default", "bifract",

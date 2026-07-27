@@ -13,15 +13,30 @@ Navigate to **Dashboards** within a fractal or prism. Click **Create** and provi
 Each widget is a self-contained panel with:
 
 - **Title** - descriptive label
-- **Query** - a BQL query
-- **Chart type** - `table`, `piechart`, `barchart`, or `graph`
+- **Query** - a BQL query. The visualization is chosen by the query's final command, so `| piechart()`, `| timechart(...)`, `| mesh(...)` and so on each render as that chart; a query with no visualization command renders as a table
 - **Layout** - position and size on the 12-column grid (drag to rearrange and resize)
+
+Available chart types are `table`, `piechart`, `barchart`, `timechart`, `singleval`, `histogram`, `heatmap`, `graph`, `mesh`, `pgraph`, and `worldmap`. See [Visualizations](../bql/visualizations.md).
 
 Widget results are cached so the dashboard loads quickly on return visits.
 
-## Time Range
+## Time Range & Auto-Refresh
 
 A dashboard-level time range applies to all widgets. Options include preset ranges (1h, 24h, 7d, 30d) or a custom start/end.
+
+A dashboard can also be set to refresh on an interval, which re-executes its widgets in the background so a wallboard stays current without anyone reloading the page.
+
+## Pivots & Drilldowns
+
+A widget can be configured so clicking a table cell, chart segment, or data point passes that row through to another dashboard or to a search. This turns a summary dashboard into an investigation entry point without duplicating queries.
+
+## Shared Links
+
+A dashboard can be published as a read-only link that needs no login, for wallboards and status screens. Shared links serve **cached results only** and never execute BQL, so an exposed link cannot be used to run queries against your logs. The feature is off by default globally and must be enabled by an admin before any link can be created; individual links can be revoked at any time.
+
+## Real-Time Collaboration
+
+Dashboards and notebooks stream updates over SSE, so edits by one user appear for everyone viewing the same document, along with presence indicators showing who else is on it.
 
 ## Variables
 

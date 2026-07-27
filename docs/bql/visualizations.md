@@ -21,7 +21,30 @@
 * | graph(child=process_guid, parent=parent_process_guid, limit=200)
 ```
 
-Both `child=` and `parent=` are required. Max limit is 500.
+Both `child=` and `parent=` are required. Default limit 100, max 500.
+
+## Mesh (Network View)
+
+Renders a force-directed graph of source-to-destination relationships. Where `graph()` draws a hierarchy, `mesh()` draws a many-to-many network, which suits traffic, authentication, and peer-to-peer data.
+
+```
+* | mesh(src=src_ip, dst=dst_ip)
+* | mesh(src=src_ip, dst=dst_ip, weight=_count, directed=true, limit=300)
+* | mesh(src=user, dst=computer_name, color=department, labels=user)
+```
+
+### Parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `src` | Yes | Field for source nodes |
+| `dst` | Yes | Field for destination nodes |
+| `weight` | No | Field controlling edge thickness (default: `_count`) |
+| `size` | No | Field summed per node to control node size (default: `_count`, falling back to node degree) |
+| `color` | No | Coloring mode. Default `auto`: by IP subnet when nodes look like IPs, else by degree. Also `subnet` (or `subnet/16`), `degree`, `role`, or a field name (top-8 palette) |
+| `labels` | No | Comma-separated fields to display as node labels |
+| `directed` | No | Draw src-to-dst arrows (default: `false`) |
+| `limit` | No | Max edges to render (default: 100, max: 500) |
 
 ## Single Value
 

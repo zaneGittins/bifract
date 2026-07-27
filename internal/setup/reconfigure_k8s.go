@@ -216,6 +216,47 @@ func fallbackProfile(parsed, fallback ResourceProfile) ResourceProfile {
 	return parsed
 }
 
+// inferSizeProfile identifies which shipped size profile an existing install was
+// created from, by matching its parsed ClickHouse resources and shard count.
+//
+// This exists because the fallback for every unparsed field used to be
+// sizeProfiles[0] (Dev) regardless of how large the install actually is. For
+// resources that is merely wrong; for the archiver it is dangerous, because the
+// sidecar's memory limit has to cover the buffer its ARCHIVE_MAX_PENDING_BYTES
+// tells it to accumulate, and handing a Large install Dev's 1Gi limit against a
+// 4GiB buffer is an OOMKill loop rather than a smaller deployment.
+//
+// ClickHouse resources are the discriminator because they are distinct per
+// profile, and the shard count separates Large from X-Large, which share them.
+// No match means hand-tuned resources, where no profile may be assumed.
+func inferSizeProfile(chResources ResourceProfile, chShards int) (SizeProfile, bool) {
+	if resourceProfileEmpty(chResources) {
+		return SizeProfile{}, false
+	}
+	for _, p := range sizeProfiles {
+		if p.ClickHouse == chResources && p.CHShards == chShards {
+			return p, true
+		}
+	}
+	return SizeProfile{}, false
+}
+
+// archiverProfileFor picks the archiver sidecar's resources on regeneration,
+// with one hard rule: never downsize. The sidecar's memory limit must cover the
+// buffer it is configured to accumulate, so when the chosen profile's limit is
+// below what the install already had, the existing value wins. That keeps a
+// wrongly-inferred (or unavailable) profile from turning an upgrade into an
+// OOMKill loop; too much headroom only wastes a reservation.
+func archiverProfileFor(chosen, parsed ResourceProfile) ResourceProfile {
+	if resourceProfileEmpty(parsed) {
+		return chosen
+	}
+	if parseK8sQuantityBytes(chosen.MemLimit) < parseK8sQuantityBytes(parsed.MemLimit) {
+		return parsed
+	}
+	return chosen
+}
+
 // fallbackInt returns a if non-zero, otherwise b.
 func fallbackInt(a, b int) int {
 	if a > 0 {
@@ -235,8 +276,29 @@ func fallbackInt64(a, b int64) int64 {
 // buildK8sConfigFromExisting constructs a K8sConfig from parsed secrets and settings.
 // Shared between upgrade and reconfigure flows.
 func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings *k8sSettings) *K8sConfig {
-	// Use Dev as fallback when resources couldn't be parsed from manifests.
+	// Fallback for anything that could not be parsed from the manifests: the
+	// profile this install was actually created from, not Dev. See
+	// inferSizeProfile -- a Dev-sized fallback on a large install is not a
+	// conservative guess, it is an under-provision.
 	fb := sizeProfiles[0]
+	inferred, profileKnown := inferSizeProfile(settings.chResources, settings.chShards)
+	if profileKnown {
+		fb = inferred
+	}
+
+	// Archive roll thresholds are seeded from the inferred profile so an existing
+	// install adopts sizing matched to its scale instead of staying on the
+	// archiver's flat code defaults, which are Dev-sized and leave anything larger
+	// writing Parquet below compaction's optimal-file floor forever. An operator's
+	// explicit secret still wins (see defaultUserSecretBytes).
+	//
+	// Only when the profile is actually known. Guessing here would seed Dev's
+	// thresholds onto a hand-tuned large install, which is smaller than the code
+	// default it replaced -- the exact regression this is meant to fix.
+	var rollBytes, maxPendingBytes int64
+	if profileKnown {
+		rollBytes, maxPendingBytes = fb.ArchiveRollBytes, fb.ArchiveMaxPendingBytes
+	}
 
 	// Warn for each component falling back to defaults.
 	type componentCheck struct {
@@ -264,6 +326,7 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 			CHKeeper:        fallbackProfile(settings.chKeeperResources, fb.CHKeeper),
 			Bifract:         fallbackProfile(settings.bifractResources, fb.Bifract),
 			ArchiveMaintain: fallbackProfile(settings.archiveMaintainResources, fb.ArchiveMaintain),
+			Archiver:        archiverProfileFor(fallbackProfile(settings.archiverResources, fb.Archiver), settings.archiverResourcesRaw),
 			Postgres:        fallbackProfile(settings.postgresResources, fb.Postgres),
 			Caddy:           fallbackProfile(settings.caddyResources, fb.Caddy),
 			CaddyShipper:    fallbackProfile(settings.caddyShipperResources, fb.CaddyShipper),
@@ -271,6 +334,9 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 			IngestQueueSize: fallbackInt(settings.ingestQueueSize, fb.IngestQueueSize),
 			IngestWorkers:   fallbackInt(settings.ingestWorkers, fb.IngestWorkers),
 			SpoolPVCSizeGB:  fallbackInt(settings.spoolPVCSizeGB, fb.SpoolPVCSizeGB),
+
+			ArchiveRollBytes:       rollBytes,
+			ArchiveMaxPendingBytes: maxPendingBytes,
 		},
 		CHShards:            settings.chShards,
 		CHStorageGB:         settings.chStorageGB,
@@ -330,37 +396,38 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 
 	// User-configured secrets
 	cfg.UserSecrets = map[string]string{
-		"LITELLM_API_KEY":         secrets["LITELLM_API_KEY"],
-		"S3_ENDPOINT":             secrets["S3_ENDPOINT"],
-		"S3_BUCKET":               secrets["S3_BUCKET"],
-		"S3_ACCESS_KEY":           secrets["S3_ACCESS_KEY"],
-		"S3_SECRET_KEY":           secrets["S3_SECRET_KEY"],
-		"S3_REGION":               secrets["S3_REGION"],
-		"ARCHIVE_ENABLED":         secrets["ARCHIVE_ENABLED"],
-		"ARCHIVE_BACKEND":         secrets["ARCHIVE_BACKEND"],
-		"ARCHIVE_PREFIX":          secrets["ARCHIVE_PREFIX"],
-		"ARCHIVE_SPOOL_MAX_BYTES": secrets["ARCHIVE_SPOOL_MAX_BYTES"],
-		"ARCHIVE_ROLL_BYTES":      secrets["ARCHIVE_ROLL_BYTES"],
-		"ARCHIVE_ROLL_INTERVAL":   secrets["ARCHIVE_ROLL_INTERVAL"],
-		"ARCHIVE_S3_ENDPOINT":     secrets["ARCHIVE_S3_ENDPOINT"],
-		"ARCHIVE_S3_BUCKET":       secrets["ARCHIVE_S3_BUCKET"],
-		"ARCHIVE_S3_REGION":       secrets["ARCHIVE_S3_REGION"],
-		"ARCHIVE_S3_ACCESS_KEY":   secrets["ARCHIVE_S3_ACCESS_KEY"],
-		"ARCHIVE_S3_SECRET_KEY":   secrets["ARCHIVE_S3_SECRET_KEY"],
-		"ARCHIVE_AZURE_ACCOUNT":   secrets["ARCHIVE_AZURE_ACCOUNT"],
-		"ARCHIVE_AZURE_KEY":       secrets["ARCHIVE_AZURE_KEY"],
-		"ARCHIVE_AZURE_CONTAINER": secrets["ARCHIVE_AZURE_CONTAINER"],
-		"ARCHIVE_AZURE_ENDPOINT":  secrets["ARCHIVE_AZURE_ENDPOINT"],
-		"MAXMIND_LICENSE_KEY":     secrets["MAXMIND_LICENSE_KEY"],
-		"MAXMIND_ACCOUNT_ID":      secrets["MAXMIND_ACCOUNT_ID"],
-		"OIDC_ISSUER_URL":         secrets["OIDC_ISSUER_URL"],
-		"OIDC_CLIENT_ID":          secrets["OIDC_CLIENT_ID"],
-		"OIDC_CLIENT_SECRET":      secrets["OIDC_CLIENT_SECRET"],
-		"OIDC_REDIRECT_URL":       secrets["OIDC_REDIRECT_URL"],
-		"OIDC_SCOPES":             secrets["OIDC_SCOPES"],
-		"OIDC_DEFAULT_ROLE":       secrets["OIDC_DEFAULT_ROLE"],
-		"OIDC_ALLOWED_DOMAINS":    secrets["OIDC_ALLOWED_DOMAINS"],
-		"OIDC_BUTTON_TEXT":        secrets["OIDC_BUTTON_TEXT"],
+		"LITELLM_API_KEY":           secrets["LITELLM_API_KEY"],
+		"S3_ENDPOINT":               secrets["S3_ENDPOINT"],
+		"S3_BUCKET":                 secrets["S3_BUCKET"],
+		"S3_ACCESS_KEY":             secrets["S3_ACCESS_KEY"],
+		"S3_SECRET_KEY":             secrets["S3_SECRET_KEY"],
+		"S3_REGION":                 secrets["S3_REGION"],
+		"ARCHIVE_ENABLED":           secrets["ARCHIVE_ENABLED"],
+		"ARCHIVE_BACKEND":           secrets["ARCHIVE_BACKEND"],
+		"ARCHIVE_PREFIX":            secrets["ARCHIVE_PREFIX"],
+		"ARCHIVE_SPOOL_MAX_BYTES":   secrets["ARCHIVE_SPOOL_MAX_BYTES"],
+		"ARCHIVE_ROLL_BYTES":        secrets["ARCHIVE_ROLL_BYTES"],
+		"ARCHIVE_MAX_PENDING_BYTES": secrets["ARCHIVE_MAX_PENDING_BYTES"],
+		"ARCHIVE_ROLL_INTERVAL":     secrets["ARCHIVE_ROLL_INTERVAL"],
+		"ARCHIVE_S3_ENDPOINT":       secrets["ARCHIVE_S3_ENDPOINT"],
+		"ARCHIVE_S3_BUCKET":         secrets["ARCHIVE_S3_BUCKET"],
+		"ARCHIVE_S3_REGION":         secrets["ARCHIVE_S3_REGION"],
+		"ARCHIVE_S3_ACCESS_KEY":     secrets["ARCHIVE_S3_ACCESS_KEY"],
+		"ARCHIVE_S3_SECRET_KEY":     secrets["ARCHIVE_S3_SECRET_KEY"],
+		"ARCHIVE_AZURE_ACCOUNT":     secrets["ARCHIVE_AZURE_ACCOUNT"],
+		"ARCHIVE_AZURE_KEY":         secrets["ARCHIVE_AZURE_KEY"],
+		"ARCHIVE_AZURE_CONTAINER":   secrets["ARCHIVE_AZURE_CONTAINER"],
+		"ARCHIVE_AZURE_ENDPOINT":    secrets["ARCHIVE_AZURE_ENDPOINT"],
+		"MAXMIND_LICENSE_KEY":       secrets["MAXMIND_LICENSE_KEY"],
+		"MAXMIND_ACCOUNT_ID":        secrets["MAXMIND_ACCOUNT_ID"],
+		"OIDC_ISSUER_URL":           secrets["OIDC_ISSUER_URL"],
+		"OIDC_CLIENT_ID":            secrets["OIDC_CLIENT_ID"],
+		"OIDC_CLIENT_SECRET":        secrets["OIDC_CLIENT_SECRET"],
+		"OIDC_REDIRECT_URL":         secrets["OIDC_REDIRECT_URL"],
+		"OIDC_SCOPES":               secrets["OIDC_SCOPES"],
+		"OIDC_DEFAULT_ROLE":         secrets["OIDC_DEFAULT_ROLE"],
+		"OIDC_ALLOWED_DOMAINS":      secrets["OIDC_ALLOWED_DOMAINS"],
+		"OIDC_BUTTON_TEXT":          secrets["OIDC_BUTTON_TEXT"],
 	}
 
 	// Preserve user-customized maxmind PVC settings

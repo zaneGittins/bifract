@@ -11,7 +11,7 @@ Quotas are configured per fractal from **[Fractal] > Manage > Lifecycle**.
 | **Quota (GB)** | Maximum raw log storage for this fractal. Leave blank for unlimited. |
 | **Action** | What happens when the quota is reached: `Reject` or `Rollover`. |
 
-The quota applies to the raw log bytes stored in ClickHouse. Compressed on-disk size will be smaller, but the quota tracks uncompressed bytes for simplicity.
+Quota usage is estimated from ClickHouse part metadata, not by scanning logs, so checking it is cheap and always reflects the real table.
 
 
 ## Enforcement Modes
@@ -26,8 +26,10 @@ This mode is the default and is suitable when you want to preserve existing logs
 
 ### Rollover
 
-New logs are always accepted. After a successful insert, if estimated usage exceeds the quota, Bifract asynchronously deletes the oldest logs until usage is back at 80% of the quota. This provides headroom before the next deletion is triggered.
+New logs are always accepted. A background sweep runs once a minute, and for any rollover fractal over its quota it drops the oldest data until usage is back at 80% of the quota. This provides headroom before the next trim is triggered.
 
-Rollover uses the ClickHouse primary key `(fractal_id, timestamp, log_id)` for an index-efficient scan to find the cutoff timestamp, then performs a lightweight delete of all logs at or before that point.
+Rollover drops whole ClickHouse **partitions** (one fractal-day each), which is a near-instant metadata operation rather than a row-level mutation. Because it works a day at a time, actual usage after a trim can sit noticeably below the 80% target when a fractal has few, large days.
+
+Usage is read fresh from ClickHouse part metadata on every sweep, so the trim is self-correcting and needs no running total. In a multi-replica deployment a Postgres advisory lock ensures exactly one app pod runs the sweep at a time.
 
 This mode is suitable for long-running streams where recent data is most valuable and you want zero rejection of incoming traffic.

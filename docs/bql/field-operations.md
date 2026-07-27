@@ -67,7 +67,7 @@ A branch can run several pipe commands. Field assignments and per-row transforms
 
 ```
 case {
-  level=error | sev := "high" | regex(field=raw_log, pattern="code=(?<code>[0-9]+)") ;
+  level=error | sev := "high" | regex(field=norm_log, pattern="code=(?<code>[0-9]+)") ;
   * | sev := "low"
 }
 ```
@@ -91,8 +91,10 @@ Structural commands (`groupby`, `sort`, `limit`, `join`, `chain`, window functio
 ### Regex Extraction
 
 ```
-* | regex("(\d+\.\d+\.\d+\.\d+)", field=raw_log)
+* | regex("(\d+\.\d+\.\d+\.\d+)", field=norm_log)
 ```
+
+`field=` defaults to `norm_log`, the canonical normalized event text. `raw_log` is not addressable from BQL: it is a demoted, 7-day troubleshooting column stored in a separate table.
 
 Named captures extract to individual fields:
 
@@ -105,7 +107,7 @@ This creates a field called `executable_name` from the named capture group.
 ### Replace
 
 ```
-* | replace("password=\S+", "password=***", raw_log)
+* | replace("password=\S+", "password=***", norm_log)
 ```
 
 ### Concat
@@ -138,7 +140,7 @@ Returns the string length of a field as `_len`:
 
 ### Log Size
 
-Returns the byte size of a log as `_size`. With no argument it measures the original event (`raw_log`); pass a field to size that column instead. Useful for diagnosing log growth by summing or aggregating sizes:
+Returns the byte size of a log as `_size`. With no argument it measures the whole normalized event (`norm_log`); pass a field to size that column instead. Useful for diagnosing log growth by summing or aggregating sizes:
 
 ```
 * | logSize() | sort(_size, desc)
@@ -150,12 +152,17 @@ Sizes are computed at query time via ClickHouse `byteSize()` (estimated uncompre
 
 ### Levenshtein Distance
 
-Calculates the Damerau-Levenshtein edit distance between two fields or values as `_distance`:
+Calculates the Damerau-Levenshtein edit distance between two fields as `_distance`:
 
 ```
-* | levenshtein(user, "admin")
 * | levenshtein(src_host, dst_host)
-* | levenshtein(process_name, "svchost.exe") | _distance < 3
+* | levenshtein(user, expected_user) | _distance < 3
+```
+
+Both arguments are resolved as log fields. To compare against a fixed string, materialize it first with an assignment:
+
+```
+* | baseline := "svchost.exe" | levenshtein(process_name, baseline) | _distance < 3
 ```
 
 Useful for detecting typosquatting, lookalike process names, or fuzzy matching.
@@ -175,12 +182,11 @@ Decodes a base64-encoded field as `_decoded`. Returns empty string on invalid in
 Splits a field by a delimiter and returns the Nth element (1-indexed) as `_split`:
 
 ```
-* | split(image, "\\", -1)
 * | split(path, "/", 2)
 * | split(email, "@", 2) | groupby(_split, function=count())
 ```
 
-Use index `-1` to get the last element.
+The index must be a positive integer.
 
 ### Substring
 

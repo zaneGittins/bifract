@@ -32,7 +32,7 @@ Count non-null values of a specific field, or use `unique=true` for distinct cou
 * | stdDev(response_time)
 ```
 
-Returns p50, p75, p99 for `percentile()`.
+`percentile()` always returns the p50, p75, and p99 triple; the percentile is not configurable.
 
 ## Median and MAD
 

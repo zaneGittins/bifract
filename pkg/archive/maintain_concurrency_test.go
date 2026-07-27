@@ -1,8 +1,10 @@
 package archive
 
 import (
+	"context"
 	"os"
 	"testing"
+	"time"
 )
 
 // Compaction's file-decode fan-out is its dominant memory term. It used to be a
@@ -71,4 +73,44 @@ func TestMaintainMemoryUndersized(t *testing.T) {
 	if limit := processMemoryLimit(); limit == 0 && undersized {
 		t.Error("reported undersized with no memory limit set")
 	}
+}
+
+// A backlog-heavy table used to consume the entire pass, leaving every table
+// after it in iteration order unvisited (and so unmeasured, which is why timed
+// out passes reported a fraction of the real footprint). These pin the split.
+func TestTableDeadline(t *testing.T) {
+	t.Run("splits remaining pass time across unvisited tables", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+		defer cancel()
+
+		got := time.Until(tableDeadline(ctx, 6))
+		if got < 9*time.Minute || got > 10*time.Minute {
+			t.Errorf("share of a 60m pass across 6 tables = %s, want ~10m", got.Round(time.Second))
+		}
+	})
+
+	t.Run("last table may use all remaining time", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+		defer cancel()
+
+		got := time.Until(tableDeadline(ctx, 1))
+		if got < 59*time.Minute {
+			t.Errorf("share for the final table = %s, want ~60m", got.Round(time.Second))
+		}
+	})
+
+	t.Run("an unbounded pass imposes no per-table bound", func(t *testing.T) {
+		if got := tableDeadline(context.Background(), 6); time.Until(got) < 24*time.Hour {
+			t.Errorf("deadline without a pass deadline = %s, want effectively unbounded", got)
+		}
+	})
+
+	t.Run("a nonsense table count never divides by zero", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+		defer cancel()
+
+		if got := time.Until(tableDeadline(ctx, 0)); got < 59*time.Minute {
+			t.Errorf("share with a zero table count = %s, want ~60m", got.Round(time.Second))
+		}
+	})
 }

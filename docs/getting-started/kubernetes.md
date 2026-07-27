@@ -20,7 +20,7 @@ graph TB
 
     subgraph k8s ["Kubernetes Cluster (bifract namespace)"]
         caddy["Caddy (LoadBalancer)<br/><small>Reverse Proxy + TLS + Log Shipper</small>"]
-        app["Bifract App x2<br/><small>UI + Query + Alerts</small>"]
+        app["Bifract App x1<br/><small>UI + Query + Alerts</small>"]
         ingest["Bifract Ingest x1<br/><small>Ingestion (independently scalable)</small>"]
         litellm["LiteLLM<br/><small>AI Proxy</small>"]
         pg[("PostgreSQL<br/><small>StatefulSet</small>")]
@@ -123,10 +123,14 @@ You should see:
 - 1 PostgreSQL pod
 - 1 ClickHouse Keeper pod (managed by the operator via `KeeperCluster`)
 - 1 ClickHouse pod per shard (managed by the operator via `ClickHouseCluster`; single replica each)
-- 2 Bifract app pods
-- 1 Bifract ingest pod (independently scalable)
+- 1 Bifract app pod
+- 1 Bifract ingest pod (a StatefulSet, independently scalable)
+- 1 Bifract archive maintainer pod (singleton; idle until archiving is enabled)
 - 1 Caddy pod (with a log shipper sidecar)
 - 1 LiteLLM pod
+
+!!! note "The app tier runs a single replica"
+    The app pod mounts the MaxMind PVC, which defaults to `ReadWriteOnce`. A second replica would land on another node and stall with a multi-attach error, so `replicas` stays at 1 and the update strategy is `Recreate`. Scale the ingest tier instead, which is what handles ingest volume. To run more than one app replica, set the MaxMind PVC to an RWX storage class (for example `azurefile-csi`, EFS, or NFS) first.
 
 ClickHouse and Keeper pods may take a minute as the operator creates and configures them.
 

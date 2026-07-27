@@ -26,7 +26,9 @@ Authorization: Bearer bifract_<key>
 X-API-Key: bifract_<key>
 ```
 
-API keys are scoped to a specific fractal and have granular permissions. See [API Keys](../administration/ingest-tokens.md) for details.
+API keys are scoped to a specific fractal (or prism) and have granular permissions. See [API Keys](../administration/ingest-tokens.md) for details.
+
+Ingest tokens are a separate credential (`bifract_ingest_` prefix) and are only valid on the ingestion endpoints. See [Ingestion](ingestion.md).
 
 **Create API key:**
 

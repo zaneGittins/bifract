@@ -9,7 +9,10 @@ Select specific columns to display:
 * | groupBy(image, function=count()) | table(image, _count)
 ```
 
-Aggregations are projected under their generated alias, not the function name: `count()` produces `_count`, `sum(bytes)` produces `sum_bytes`. Reference that alias in `table()`, `sort()`, and post-aggregation filters.
+Aggregations are projected under a fixed generated alias, not the function name and not the field name: `count()` produces `_count`, `sum(bytes)` produces `_sum`, `avg(x)` produces `_avg`, `min`/`max` produce `_min`/`_max`. Reference that alias in `table()`, `sort()`, and post-aggregation filters, or set your own with `as=`.
+
+!!! warning "Referencing a wrong alias fails silently"
+    An unknown name is treated as a log field, not an error. `| sum_bytes > 1000` compiles to a filter on a `sum_bytes` log field that does not exist, so the query runs and returns nothing useful. Use `_sum`, or name the column yourself: `function=sum(bytes, as=sum_bytes)`.
 
 Note the difference between the two ways to combine `groupBy` with `count()`:
 
@@ -52,7 +55,7 @@ Filter on computed or aggregated fields after a pipeline stage:
 
 ```
 * | groupBy(image, function=count()) | _count > 100
-* | groupBy(user, function=sum(bytes)) | sum_bytes >= 1000000
+* | groupBy(user, function=sum(bytes)) | _sum >= 1000000
 ```
 
 You can also add bare string or regex filters after the initial pipeline to further narrow results:

@@ -22,6 +22,7 @@ POST   /api/v1/webhooks/{id}/test  (admin)
 | `timeout_seconds` | int | Request timeout (default: 30) |
 | `retry_count` | int | Retry attempts with exponential backoff (default: 3) |
 | `include_alert_link` | bool | Include a UI link to the alert results (default: `true`) |
+| `enabled` | bool | Whether the webhook fires (default: `true`) |
 
 ## Alert webhook payload
 
@@ -33,6 +34,7 @@ When an alert fires, each configured webhook receives:
   "original_name": "Security Alert for {{src_ip}}",
   "alert_id": "uuid",
   "description": "Detects suspicious login patterns",
+  "severity": "high",
   "labels": ["sigma:high", "product:windows"],
   "triggered_at": "2026-03-01T12:34:56Z",
   "query_string": "event_id=4625 | count() > 10",
@@ -48,6 +50,7 @@ When an alert fires, each configured webhook receives:
 |-------|-------------|
 | `alert_name` | Resolved name (field templates like `{{src_ip}}` are replaced with values from the first result) |
 | `original_name` | Only present if the name contained templates |
+| `severity` | The alert's configured severity |
 | `results` | All matching log records from the evaluation window |
 | `match_count` | Number of results |
 | `alert_link` | Shareable UI link (only if `include_alert_link` is enabled and `BIFRACT_BASE_URL` is set) |

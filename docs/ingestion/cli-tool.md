@@ -39,7 +39,7 @@ bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--url`, `-u` | `http://localhost:8080` | Bifract server URL |
+| `--url`, `-u` | `http://localhost:8443` | Bifract server URL |
 | `--token`, `-t` | (required) | Ingest token |
 | `--batch-size`, `-b` | auto (5000) | Logs per batch |
 | `--workers`, `-w` | auto (CPU cores) | Concurrent upload workers |

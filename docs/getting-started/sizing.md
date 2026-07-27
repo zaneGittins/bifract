@@ -88,9 +88,10 @@ concurrently. ClickHouse inserts are **CPU-bound building skip indexes**, not di
 (measured: 684 ms CPU versus 12 ms disk per insert), so throughput scales with concurrent
 inserts until the shard CPUs are saturated.
 
-The profile default suits the smaller tiers. On Medium and above, where each shard node has 24
-to 32 vCPU, the default leaves most of that CPU idle. Raising it from 8 to 32 on a 3-shard
-Large cluster moved sustained ingest from 6,800 to 8,966 events/sec with no other change:
+Each profile sets its own default (Dev 4, X-Small 8, Small 12, Medium 24, Large 32, X-Large 48),
+sized against that profile's shard CPU. Raise it only if you have moved off the profile default
+or your event shape is unusually cheap to index. Going from 8 to 32 on a 3-shard Large cluster
+moved sustained ingest from 6,800 to 8,966 events/sec with no other change:
 
 ```bash
 kubectl -n bifract set env statefulset/bifract-ingest BIFRACT_INGEST_WORKERS=32

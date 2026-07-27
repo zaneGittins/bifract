@@ -48,10 +48,22 @@ Authorization: Bearer bifract_<key>
 | `sql` | Generated SQL (BQL queries only) |
 | `field_order` | Column display order |
 | `is_aggregated` | True if query used aggregation |
-| `chart_type` | `"piechart"`, `"barchart"`, `"graph"`, or empty |
+| `chart_type` | The visualization the query asked for: `"piechart"`, `"barchart"`, `"timechart"`, `"singleval"`, `"histogram"`, `"heatmap"`, `"graph"`, `"mesh"`, `"pgraph"`, `"worldmap"`, or empty for a table |
 | `limit_hit` | `"search"`, `"bloom"`, `"truncated"`, or empty |
 
-Queries time out after 60 seconds by default (configurable in Settings). Responses exceeding ~50MB are truncated to 1000 rows.
+Queries time out after 60 seconds by default (configurable in **Admin > Settings**). Responses exceeding ~50MB are truncated to 1000 rows.
+
+## Related endpoints
+
+```
+POST /api/v1/query/stream       Server-sent-events variant; rows stream as they arrive
+POST /api/v1/query/validate     Parse-check a query without running it
+POST /api/v1/query/fieldstats   Value distribution for a field across the result set
+GET  /api/v1/query/reference    Full BQL command reference (JSON)
+GET  /api/v1/query/fields       Schema field catalog
+```
+
+`POST /api/v1/query/validate` returns an `error_pos` rune span for the offending text, which is what the in-app editor uses to underline syntax errors.
 
 ## Recent Logs
 
@@ -59,4 +71,10 @@ Queries time out after 60 seconds by default (configurable in Settings). Respons
 GET /api/v1/logs/recent
 ```
 
-Returns up to 50 recent logs for the selected fractal. Useful for exploring available fields.
+Returns up to 50 recent logs from the last 24 hours for the selected fractal. Useful for exploring available fields.
+
+```
+GET  /api/v1/logs/histogram        Per-minute event counts for the selected range
+GET  /api/v1/logs/fields           Field names present in the fractal
+POST /api/v1/logs/by-timestamp     Fetch a single log's full detail
+```

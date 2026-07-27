@@ -17,6 +17,13 @@ GET    /api/v1/notebooks/ai-status
 POST   /api/v1/notebooks/generate-from-comments
 POST   /api/v1/notebooks/import
 GET    /api/v1/notebooks/{id}/export
+PUT    /api/v1/notebooks/{id}/sections/{section_id}/results
+PUT    /api/v1/notebooks/{id}/variables
+GET    /api/v1/notebooks/{id}/tags
+
+GET    /api/v1/notebooks/{id}/events      SSE stream of live edits
+GET    /api/v1/notebooks/{id}/presence
+POST   /api/v1/notebooks/{id}/presence
 ```
 
 `POST /api/v1/notebooks/generate-from-comments` accepts `{"tag": "...", "attack_chain": false}` and creates a notebook from all comments with that tag. Set `attack_chain` to `true` to generate a MITRE ATT&CK tactic breakdown instead of a plain AI summary. If a notebook named "Notebook: {tag}" already exists in the fractal, it is replaced.

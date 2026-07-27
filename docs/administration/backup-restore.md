@@ -161,7 +161,9 @@ Both log a resume point as each ingest day completes. If a run is interrupted, r
 
 ### Maintenance
 
-Compaction, snapshot expiry, and cleanup run as a singleton `maintain` pass (a k8s CronJob, or `bifract-archiver maintain`). It is mandatory at high volume to keep the number of Parquet files and Iceberg snapshots bounded.
+Compaction, snapshot expiry, and cleanup run continuously in a dedicated singleton service (`bifract-archiver maintain-loop`), deployed as the `bifract-archiver-maintain` compose service or the `bifract-archive-maintain` Deployment on Kubernetes. It runs scheduled passes on a timer (`BIFRACT_ARCHIVE_MAINTAIN_INTERVAL`, default `1h`) and a Postgres advisory lock guarantees only one pass runs at a time. This is mandatory at high volume to keep the number of Parquet files and Iceberg snapshots bounded.
+
+`bifract-archiver maintain` runs a single pass and exits, for ad-hoc or manual invocation.
 
 ## Disaster Recovery
 
@@ -180,11 +182,11 @@ Practical consequences at **Large** (500 GB–2 TB/day) and **X-Large**:
 
 - Restoring 90 days is a **days-to-weeks** operation, not an overnight one.
 - The hot store may not physically hold it. Shard disks are usually sized for the retention window, not full history.
-- Rows older than 7 days arrive without `raw_log` (it carries a 7-day column TTL), so deep restores return normalized fields only.
+- Rows older than 7 days arrive without `raw_log`. It lives in a separate `logs_raw` table with a 7-day TTL and is not addressable from BQL anyway, so deep restores return normalized fields only. This does not affect search: `norm_log` and the typed JSON fields are what queries read.
 
 Plan DR around the window you actually need online:
 
 1. **Restore the recent operational window** (days, not months) to get search, alerting, and dashboards working again. This is what restore is designed for and it completes in a practical timeframe.
-2. **Query the deep history in place with Recall** (*Search → Recall*), which reads Iceberg directly and never writes to ClickHouse, so it has no merge cost and no retention ceiling.
+2. **Query the deep history in place with Recall** (the fractal's **Recall** tab), which reads Iceberg directly and never writes to ClickHouse, so it has no merge cost and no retention ceiling.
 
 Restore the narrowest window that meets the need. If you are reaching for a multi-month restore to answer an investigative question, Recall is almost certainly the better tool.

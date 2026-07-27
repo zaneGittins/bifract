@@ -9,14 +9,28 @@ Analytics **Models** turn a BQL query into a continuously-maintained detection b
 | **Rarity** | How unusual is a value within its group? | Partition key (group by), value key, min sample size |
 | **First / Last Seen** | When was an entity first and last observed? | One or more key fields |
 | **Volume Baseline** | Does an entity's volume deviate from its own history? | Entity fields, time bucket (hour/day), min history |
+| **Beacon** | Is this pair talking on a suspiciously regular interval? | `src_ip`, `dst_ip`, `dst_port` |
+| **Long Connection** | Is this pair holding an unusually long-lived session? | `src_ip`, `dst_ip`, `dst_port` |
 
 Volume Baseline scores the latest **complete** time bucket against the entity's own median using a modified z-score (3.5 is the standard cutoff); the current incomplete bucket is excluded.
+
+Beacon and Long Connection are network models. They maintain rolling per-connection state and score it on a schedule, applying a prevalence modifier so a pattern seen across many hosts scores lower than the same pattern on one.
+
+## Using a Model in Queries
+
+Any model can be read from BQL with `model_lookup()`, which joins the model's baseline onto matching rows so you can filter or aggregate on it:
+
+```
+* | model_lookup(model="rare_parent_child", key=[parent_image, image])
+```
+
+See [Enrichment](../bql/enrichment.md#model_lookup) for the key shape each model type expects.
 
 ## Building a Model
 
 The editor is a split panel:
 
-- **Left - source query.** Write a BQL filter to narrow which logs feed the model, and use `regex()` to pull fields out of the raw log. Run it against a time range to preview matching logs and the fields you extracted.
+- **Left - source query.** Write a BQL filter to narrow which logs feed the model, and use `regex()` to pull fields out of `norm_log` (the normalized event text) or a specific field. Run it against a time range to preview matching logs and the fields you extracted. `raw_log` cannot be an extraction source: it is only retained for 7 days, while model state is long-lived.
 - **Right - shape and alert.** Pick the model type, map its keys to extracted or base fields, and optionally attach an alert.
 
 Models capture new logs from the moment they are created. They do **not** retroactively process history until you seed it (see below).

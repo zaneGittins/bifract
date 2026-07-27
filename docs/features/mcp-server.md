@@ -98,6 +98,26 @@ The API key is scoped to a single fractal. All queries, alerts, and comments are
 | `list_comments` | View all comments in the fractal |
 | `list_saved_queries` | Browse saved BQL queries for common patterns |
 
+### Notebooks
+
+| Tool | Description |
+|------|-------------|
+| `list_notebooks` | List notebooks in the fractal |
+| `get_notebook` | Read a notebook and all its sections |
+| `create_notebook` | Create a new notebook |
+| `add_notebook_section` | Append a markdown or query section to a notebook |
+
+### Instruction Libraries
+
+| Tool | Description |
+|------|-------------|
+| `list_instruction_libraries` | List available instruction libraries |
+| `get_instruction_library` | Read a library and its page structure |
+| `read_instruction_page` | Read a single page's content |
+| `create_instruction_library` | Create a new library |
+| `create_instruction_page` | Add a page to a library |
+| `update_instruction_page` | Edit an existing page |
+
 ## Example Prompts
 
 Once configured, ask Claude Code things like:
@@ -113,7 +133,7 @@ Once configured, ask Claude Code things like:
 
 1. Log in to your Bifract instance
 2. Navigate to the fractal you want to query
-3. Go to **Settings > API Keys**
+3. Go to **Manage > Access > API Keys**
 4. Create a new key with at least `query` permission
 5. For alert management, also enable `alert_manage`
 6. Copy the generated key (starts with `bifract_`)

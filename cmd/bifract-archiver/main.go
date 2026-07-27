@@ -266,15 +266,20 @@ func maintainLoopCmd() {
 				continue
 			}
 			log.Printf("maintain-loop: starting pass: %s", reason)
+			passStart := time.Now()
 			// Log and continue: a transient failure (object-store blip, lost commit
 			// race, disabled toggle) must not kill the loop. The outcome is already
 			// persisted by runMaintainOnce for the admin panel.
 			if err := runMaintainOnce(ctx, cfg, db); err != nil {
 				log.Printf("maintain-loop: pass failed: %v", err)
 			}
-			// Reset the scheduled clock after any pass (manual or scheduled) so a
-			// Run now also defers the next scheduled pass by a full interval.
-			lastRun = time.Now()
+			// Anchored to when the pass STARTED, not when it finished, so the cadence
+			// is the interval rather than interval plus pass duration. Finishing-time
+			// anchoring turned an hourly schedule into one pass every 1h55m once
+			// passes started running to their 55m timeout. A pass that overruns the
+			// interval simply makes the next one due immediately, which is the same
+			// behaviour as a CronJob with concurrencyPolicy Forbid.
+			lastRun = passStart
 		}
 	}
 }
@@ -406,8 +411,13 @@ func runMaintainOnce(parent context.Context, cfg archive.Config, db *sql.DB) err
 	stats, err := cat.Maintain(ctx, opts)
 	if err != nil {
 		// parent, not ctx: on a timeout ctx is already cancelled, and the whole
-		// point of the outcome write is to record that fact.
-		_ = archive.WriteMaintainOutcome(parent, db, maintainFailureOutcome(ctx, err), err)
+		// point of the outcome write is to record that fact. The stats go with it
+		// because a pass abandoned at its deadline still did real work.
+		_ = archive.WriteMaintainStatusOutcome(parent, db, stats, maintainFailureOutcome(ctx, err), err)
+		// Deliberately no WriteFootprint here: a truncated pass only summed the
+		// tables it reached, so publishing it would overwrite the real archive size
+		// with a fraction of it. That is why a timed-out pass used to report a
+		// footprint that had apparently collapsed overnight.
 		return fmt.Errorf("maintain: %w", err)
 	}
 	if err := archive.WriteMaintainStatus(parent, db, stats); err != nil {

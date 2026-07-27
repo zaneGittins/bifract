@@ -4,7 +4,7 @@ Normalizers transform field names and extract timestamps during log ingestion. T
 
 ## Creating a Normalizer
 
-Admins manage normalizers from **Settings > Normalizers**.
+Admins manage normalizers from the top-level **Normalizers** tab.
 
 - **Name** and optional **Description**
 - **Transforms** - ordered list of field name transformations

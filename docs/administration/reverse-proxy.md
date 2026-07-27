@@ -85,7 +85,7 @@ When `mtls-app` is selected during installation, bifract automatically:
 
 To generate additional client certificates, use either the UI or the CLI:
 
-**UI (recommended)**: Go to **Settings > Users** and click the **Cert** button next to any user. You will be prompted for a password to protect the `.p12` file, which is then downloaded directly in your browser. The Cert button only appears when `mtls-app` mode is active.
+**UI (recommended)**: Go to **Admin > Users** and click the **Cert** button next to any user. You will be prompted for a password to protect the `.p12` file, which is then downloaded directly in your browser. The Cert button only appears when `mtls-app` mode is active.
 
 **CLI**:
 ```bash

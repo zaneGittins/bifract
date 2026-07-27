@@ -4,7 +4,7 @@ The provenance graph (`pgr()`) reconstructs what a suspicious process did and cu
 
 ## Enabling it
 
-Provenance requires baselines built from your endpoint logs, so it is **off by default**. An admin turns it on under **Settings > Endpoint Behavioral Analytics**.
+Provenance requires baselines built from your endpoint logs, so it is **off by default**. An admin turns it on under **Admin > Settings > Features > Endpoint behavioral analytics**.
 
 When enabled, Bifract maintains two lightweight baselines as logs arrive: process lineage (who spawned whom) and behavior frequency (how common each file, IP, and domain is across your fleet). These run on every ingested log, so leave the toggle off unless you use these features. When you re-enable it, baselines resume from that point forward.
 
@@ -23,13 +23,20 @@ Every event should also carry `computer_name` (the host) and an event `timestamp
 | `file_write` | Files a process wrote | `process_guid`, `image`, `target_file`, `computer_name` |
 | `network_connect` | Outbound network destinations | `process_guid`, `image`, `dst_ip`, `computer_name` |
 | `dns_query` | Domains a process resolved | `process_guid`, `image`, `query`, `computer_name` |
-| `remote_thread` | Process injection edges | `source_process_guid`, `target_process_guid`, `image`, `target_image`, `computer_name` |
-| `process_access` | Handle-access edges | `source_process_guid`, `target_process_guid`, `image`, `target_image`, `computer_name` |
+| `remote_thread` | Process injection edges (opt-in, see below) | `source_process_guid`, `target_process_guid`, `image`, `target_image`, `computer_name` |
+| `process_access` | Handle-access edges (opt-in, see below) | `source_process_guid`, `target_process_guid`, `image`, `target_image`, `computer_name` |
+
+!!! note "Injection edges are opt-in"
+    `pgr()` generates `file_write`, `net_connect`, and `dns_query` leaves by default. `remote_thread` and `process_access` are **not** generated unless you ask for them, because they key off `source_process_guid`, which has no skip index: including them forces an unindexed full-window scan per branch. Request them explicitly when you need them:
+
+    ```
+    pgr(start="{GUID}", include="remote_thread,process_access") | pgraph()
+    ```
 
 !!! tip "Optional fields"
     `user` (on `process_creation`) is shown in a process's detail panel, and `query_results` (on `dns_query`) lets reconnection match resolved IPs as well as domains. Neither is required for the graph to build.
 
-These map directly to Sysmon events: `process_creation` = 1, `network_connect` = 3, `dns_query` = 22, `file_write` = 11, `create_remote_thread` = 8, `process_access` = 10.
+These map directly to Sysmon events: `process_creation` = 1, `network_connect` = 3, `dns_query` = 22, `file_write` = 11, `remote_thread` = 8 (Sysmon CreateRemoteThread), `process_access` = 10.
 
 ## Using it
 

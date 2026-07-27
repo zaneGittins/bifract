@@ -31,6 +31,13 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # Build-tagged tests are excluded from `go test ./...` and `go vet ./...`, so nothing
+      # else compiles them. Without this they rot silently and are only discovered broken
+      # the next time someone runs them by hand. Compiles only; the docker fixtures these
+      # need are described in test/chcluster/README.md.
+      - name: Vet tagged tests
+        run: go vet -tags chcluster,chupgrade ./pkg/storage/
+
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 

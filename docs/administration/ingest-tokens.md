@@ -2,9 +2,9 @@
 
 There are two types of API keys: generic keys and ingest tokens.
 
-Ingest tokens authenticate external log senders and are scoped to a single fractal. They use the prefix `bifract_ingest_`.
+Ingest tokens authenticate external log senders and are scoped to a single fractal. They use the prefix `bifract_ingest_` and are managed from the fractal's **Ingest** tab. Every fractal gets a default ingest token when it is created.
 
-Admins manage generic API keys from the **API Keys** tab within a fractal's settings. See the [API Reference](../api/authentication.md) for endpoint details.
+Generic API keys authenticate programmatic access to the query, comment, alert, notebook, and dashboard APIs. They use the prefix `bifract_` and are managed from **[Fractal] > Manage > Access > API Keys** (or **[Prism] > Manage > Access** for prism-scoped keys). See the [API Reference](../api/authentication.md) for endpoint details.
 
 - **Create key**: Provide a name, optional description, expiration, and permissions. The full key value is shown only once at creation. Store it securely.
 - **Toggle key**: Enable or disable a key without deleting it.

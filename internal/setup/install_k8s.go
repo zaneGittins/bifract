@@ -44,6 +44,13 @@ type SizeProfile struct {
 	// also what MaintainScanConcurrency divides to pick its parallelism, so these
 	// limits set compaction throughput as well as its ceiling.
 	ArchiveMaintain ResourceProfile
+	// Archiver sizes the archiver drain-loop sidecar in the ingest pod. Like
+	// ArchiveMaintain it is deliberately NOT the Bifract profile: the archiver's
+	// memory is dominated by ArchiveMaxPendingBytes, the log entries it holds in
+	// heap waiting to be rolled into Parquet, which has nothing to do with what an
+	// HTTP server needs. Borrowing Bifract gave a Large install 8Gi by coincidence
+	// and a Dev install 1Gi, neither related to the roll thresholds below.
+	Archiver        ResourceProfile
 	Postgres        ResourceProfile
 	Caddy           ResourceProfile
 	CaddyShipper    ResourceProfile
@@ -71,6 +78,31 @@ type SizeProfile struct {
 	// the headroom is cheap insurance against a lower-than-assumed ratio.
 	ArchiveMaintainByteBudget int64
 
+	// ArchiveRollBytes is the PER-FRACTAL threshold at which the archiver commits
+	// a fractal's buffer to Parquet (BIFRACT_ARCHIVE_ROLL_BYTES), and
+	// ArchiveMaxPendingBytes caps the archiver's TOTAL in-memory buffer across all
+	// fractals (BIFRACT_ARCHIVE_MAX_PENDING_BYTES).
+	//
+	// Both are UNCOMPRESSED in-heap bytes (see archive.approxSize), while
+	// compaction judges files by their COMPRESSED on-disk size. That unit mismatch
+	// is the whole reason these are profile-scaled rather than one constant: a
+	// threshold that looks generous in heap can still write Parquet below
+	// iceberg-go's optimal-file floor (75% of a 512MB target = 384MB), and every
+	// file below that floor is a compaction candidate the moment it lands. A Large
+	// install left at the old flat 256MB default wrote ~65-130MB files, so 100% of
+	// its archive was permanently backlog and compaction could never converge.
+	//
+	// Sized on a ~3x uncompressed-to-Parquet ratio, which is the one number here
+	// estimated rather than measured -- it varies with log shape, so verify
+	// against real output before assuming it. ArchiveMaxPendingBytes is held at 4x
+	// ArchiveRollBytes so several busy fractals can buffer concurrently without
+	// the cap forcing an early, undersized commit, and the Archiver profile's
+	// memory limit covers ArchiveMaxPendingBytes + 2x ArchiveRollBytes (the
+	// buffer, plus the Arrow copy and Parquet encode of the fractal being flushed)
+	// with ~30% GC headroom.
+	ArchiveRollBytes       int64
+	ArchiveMaxPendingBytes int64
+
 	// SpoolPVCSizeGB is the per-ingest-pod durable archive-spool PVC size. The
 	// spool is fsync-before-ack and pod-local; on a StatefulSet each pod keeps its
 	// own PVC so a rolling update or eviction never drops un-archived batches. It
@@ -82,6 +114,17 @@ type SizeProfile struct {
 	// Roughly 1-2h of per-pod ingest at the top of each band; the spool is
 	// uncompressed and carries raw_log, so shrink these if raw_log leaves the archive.
 	SpoolPVCSizeGB int
+}
+
+// defaultUserSecretBytes writes v into secrets[key] only when the operator has
+// not set one and v is a real value. Both guards matter: an explicit choice must
+// survive regeneration, and the zero-valued "custom" profile built from parsed
+// manifests must not blank a key that the deployment is already relying on.
+func defaultUserSecretBytes(secrets map[string]string, key string, v int64) {
+	if v <= 0 || secrets[key] != "" {
+		return
+	}
+	secrets[key] = strconv.FormatInt(v, 10)
 }
 
 // sizeProfiles are anchored on ~500 GB/day = 3 shards at 32 vCPU / 64GB per node.
@@ -96,6 +139,7 @@ var sizeProfiles = []SizeProfile{
 		CHKeeper:                  ResourceProfile{"250m", "500m", "256Mi", "512Mi"},
 		Bifract:                   ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 		ArchiveMaintain:           ResourceProfile{"250m", "2", "2Gi", "4Gi"},
+		Archiver:                  ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		Postgres:                  ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 		Caddy:                     ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
@@ -103,6 +147,8 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           100,
 		IngestWorkers:             4,
 		ArchiveMaintainByteBudget: 1 << 30,
+		ArchiveRollBytes:          128 << 20,
+		ArchiveMaxPendingBytes:    512 << 20,
 		SpoolPVCSizeGB:            10,
 	},
 	{
@@ -113,6 +159,7 @@ var sizeProfiles = []SizeProfile{
 		CHKeeper:                  ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		Bifract:                   ResourceProfile{"500m", "2", "512Mi", "2Gi"},
 		ArchiveMaintain:           ResourceProfile{"250m", "2", "2Gi", "4Gi"},
+		Archiver:                  ResourceProfile{"250m", "1", "768Mi", "2Gi"},
 		Postgres:                  ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 		Caddy:                     ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
@@ -120,6 +167,8 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           200,
 		IngestWorkers:             8,
 		ArchiveMaintainByteBudget: 2 << 30,
+		ArchiveRollBytes:          256 << 20,
+		ArchiveMaxPendingBytes:    1 << 30,
 		SpoolPVCSizeGB:            10,
 	},
 	{
@@ -130,6 +179,7 @@ var sizeProfiles = []SizeProfile{
 		CHKeeper:                  ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		Bifract:                   ResourceProfile{"1", "2", "1Gi", "2Gi"},
 		ArchiveMaintain:           ResourceProfile{"500m", "2", "3Gi", "5Gi"},
+		Archiver:                  ResourceProfile{"500m", "2", "1Gi", "4Gi"},
 		Postgres:                  ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		Caddy:                     ResourceProfile{"200m", "1", "256Mi", "512Mi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
@@ -137,6 +187,8 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           300,
 		IngestWorkers:             12,
 		ArchiveMaintainByteBudget: 4 << 30,
+		ArchiveRollBytes:          512 << 20,
+		ArchiveMaxPendingBytes:    2 << 30,
 		SpoolPVCSizeGB:            20,
 	},
 	{
@@ -147,6 +199,7 @@ var sizeProfiles = []SizeProfile{
 		CHKeeper:                  ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		Bifract:                   ResourceProfile{"1", "4", "1Gi", "4Gi"},
 		ArchiveMaintain:           ResourceProfile{"500m", "3", "4Gi", "6Gi"},
+		Archiver:                  ResourceProfile{"500m", "2", "2Gi", "6Gi"},
 		Postgres:                  ResourceProfile{"500m", "2", "1Gi", "4Gi"},
 		Caddy:                     ResourceProfile{"250m", "1", "256Mi", "1Gi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
@@ -154,6 +207,8 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           500,
 		IngestWorkers:             24,
 		ArchiveMaintainByteBudget: 8 << 30,
+		ArchiveRollBytes:          768 << 20,
+		ArchiveMaxPendingBytes:    3 << 30,
 		SpoolPVCSizeGB:            32,
 	},
 	{
@@ -164,6 +219,7 @@ var sizeProfiles = []SizeProfile{
 		CHKeeper:                  ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		Bifract:                   ResourceProfile{"2", "4", "2Gi", "8Gi"},
 		ArchiveMaintain:           ResourceProfile{"1", "4", "6Gi", "8Gi"},
+		Archiver:                  ResourceProfile{"1", "4", "3Gi", "8Gi"},
 		Postgres:                  ResourceProfile{"1", "4", "2Gi", "8Gi"},
 		Caddy:                     ResourceProfile{"500m", "2", "512Mi", "1Gi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
@@ -171,6 +227,8 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           1000,
 		IngestWorkers:             32,
 		ArchiveMaintainByteBudget: 32 << 30,
+		ArchiveRollBytes:          1 << 30,
+		ArchiveMaxPendingBytes:    4 << 30,
 		SpoolPVCSizeGB:            64,
 	},
 	{
@@ -181,6 +239,7 @@ var sizeProfiles = []SizeProfile{
 		CHKeeper:                  ResourceProfile{"1", "2", "2Gi", "4Gi"},
 		Bifract:                   ResourceProfile{"4", "8", "4Gi", "16Gi"},
 		ArchiveMaintain:           ResourceProfile{"1", "6", "8Gi", "12Gi"},
+		Archiver:                  ResourceProfile{"1", "4", "4Gi", "12Gi"},
 		Postgres:                  ResourceProfile{"2", "4", "4Gi", "16Gi"},
 		Caddy:                     ResourceProfile{"1", "4", "1Gi", "2Gi"},
 		CaddyShipper:              ResourceProfile{"10m", "200m", "32Mi", "128Mi"},
@@ -188,6 +247,8 @@ var sizeProfiles = []SizeProfile{
 		IngestQueueSize:           2000,
 		IngestWorkers:             48,
 		ArchiveMaintainByteBudget: 96 << 30,
+		ArchiveRollBytes:          1536 << 20,
+		ArchiveMaxPendingBytes:    6 << 30,
 		SpoolPVCSizeGB:            128,
 	},
 }
@@ -1008,6 +1069,15 @@ func writeK8sManifests(cfg *K8sConfig) error {
 	if cfg.UserSecrets == nil {
 		cfg.UserSecrets = make(map[string]string)
 	}
+	// Seed the archive roll thresholds from the size profile so a fresh install
+	// gets values matched to its scale instead of the archiver's flat code
+	// defaults, which are Dev-sized and leave a large install writing Parquet
+	// below compaction's optimal-file floor forever. An operator-set value always
+	// wins, and a zero profile value (the "custom" profile that upgrade/reconfigure
+	// build from parsed manifests) writes nothing, so an existing install's
+	// behaviour is never changed underneath it.
+	defaultUserSecretBytes(cfg.UserSecrets, "ARCHIVE_ROLL_BYTES", cfg.SizeProfile.ArchiveRollBytes)
+	defaultUserSecretBytes(cfg.UserSecrets, "ARCHIVE_MAX_PENDING_BYTES", cfg.SizeProfile.ArchiveMaxPendingBytes)
 	// Derive ClickHouse memory settings from the CH pod memory limit. 80% of the
 	// limit leaves ~20% headroom for the OS and (reclaimable) page cache. The merge
 	// cap (25%) is schema-driven, not pod-size-driven -- see the CHMaxBytesToMerge
@@ -1075,14 +1145,12 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		CH:                           cfg.SizeProfile.ClickHouse,
 		CHKeeper:                     cfg.SizeProfile.CHKeeper,
 		BifractRes:                   cfg.SizeProfile.Bifract,
-		// The archive sidecar/maintenance mirrors the server's per-tier profile
-		// (comparable memory for Arrow/Iceberg roll buffers; adjust per deployment).
-		ArchiverRes:        cfg.SizeProfile.Bifract,
-		ArchiveMaintainRes: cfg.SizeProfile.ArchiveMaintain,
-		PostgresRes:        cfg.SizeProfile.Postgres,
-		CaddyRes:           cfg.SizeProfile.Caddy,
-		CaddyShipper:       cfg.SizeProfile.CaddyShipper,
-		LiteLLMRes:         cfg.SizeProfile.LiteLLM,
+		ArchiverRes:                  cfg.SizeProfile.Archiver,
+		ArchiveMaintainRes:           cfg.SizeProfile.ArchiveMaintain,
+		PostgresRes:                  cfg.SizeProfile.Postgres,
+		CaddyRes:                     cfg.SizeProfile.Caddy,
+		CaddyShipper:                 cfg.SizeProfile.CaddyShipper,
+		LiteLLMRes:                   cfg.SizeProfile.LiteLLM,
 	}
 
 	for _, m := range k8sManifests {

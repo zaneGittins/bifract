@@ -24,7 +24,7 @@ filter | command() | command()
 
 ```
 event_id=1
-| status=error
+status=error
 ```
 
 ### Regex match
@@ -116,7 +116,7 @@ Use `!cidr()` to exclude a range.
 
 ### Bare string search
 
-Searches `raw_log` for a substring or pattern.
+Searches `norm_log` (the canonical normalized event text) for a substring or pattern. `norm_log` carries an n-gram text index, so these searches prune granules rather than scanning every row.
 
 ```
 "authentication failed"
@@ -145,7 +145,7 @@ event_id=1 image=/powershell/i
 
 ## Variables
 
-Notebooks and dashboards support variables that act as placeholders in queries. Define variables in the variables bar, then reference them with `@` in any query:
+Search, notebooks, and dashboards support variables that act as placeholders in queries. Define variables in the variables bar, then reference them with `@` in any query:
 
 ```
 user=@target_user AND image=@process

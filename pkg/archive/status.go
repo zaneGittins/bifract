@@ -54,17 +54,32 @@ const maintainHistoryLimit = 50
 // here does not affect the pass's compaction/expiry results, which have
 // already committed to Iceberg by this point.
 func WriteMaintainStatus(ctx context.Context, db *sql.DB, stats MaintainStats) error {
+	return WriteMaintainStatusOutcome(ctx, db, stats, MaintainOutcomeOK, nil)
+}
+
+// WriteMaintainStatusOutcome persists a pass that ran and produced stats but did
+// not end cleanly -- today that means a pass abandoned at its deadline. It
+// records the partial stats alongside the real outcome rather than discarding
+// them: a timed-out pass still compacted, expired and measured whatever it
+// reached, and dropping that made a truncated pass indistinguishable in the
+// admin UI from a clean one. last_run_at advances because the pass did run.
+func WriteMaintainStatusOutcome(ctx context.Context, db *sql.DB, stats MaintainStats, outcome MaintainOutcome, cause error) error {
+	var errMsg any
+	if cause != nil {
+		errMsg = cause.Error()
+	}
 	if err := execStatusUpdate(ctx, db,
-		`UPDATE archive_maintain_status SET last_run_at = NOW(), last_attempt_at = NOW(), last_outcome = 'ok', last_error = NULL,
+		`UPDATE archive_maintain_status SET last_run_at = NOW(), last_attempt_at = NOW(), last_outcome = $11, last_error = $12,
 		 duration_ms = $1, tables_seen = $2, compacted = $3, groups_failed = $4, expired = $5, candidate_bytes = $6, compacted_bytes = $7,
 		 retention_tables = $8, retention_files = $9, orphans_deleted = $10
 		 WHERE id = 1`,
 		stats.Duration.Milliseconds(), stats.Tables, stats.Compacted, stats.GroupsFailed, stats.Expired,
 		stats.CandidateBytes, stats.CompactedBytes,
-		stats.RetentionTables, stats.RetentionFiles, stats.OrphansDeleted); err != nil {
+		stats.RetentionTables, stats.RetentionFiles, stats.OrphansDeleted,
+		string(outcome), errMsg); err != nil {
 		return err
 	}
-	return appendMaintainHistory(ctx, db, MaintainOutcomeOK, stats, nil)
+	return appendMaintainHistory(ctx, db, outcome, stats, cause)
 }
 
 // WriteMaintainOutcome records a non-successful maintain invocation -- a

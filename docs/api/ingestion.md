@@ -80,7 +80,7 @@ Returns an `ExportLogsServiceResponse` (empty on full success) using the same co
 | Environment variable | Default | Description |
 |---------------------|---------|-------------|
 | `BIFRACT_INGEST_WORKERS` | 4 | Worker goroutines inserting into ClickHouse |
-| `BIFRACT_INGEST_QUEUE_SIZE` | 500 | Pending batch slots (each slot = one request's logs) |
+| `BIFRACT_INGEST_QUEUE_SIZE` | 100 | Pending batch slots (each slot holds at most 5,000 logs) |
 | `BIFRACT_MAX_BODY_SIZE` | 209715200 | Max request body in bytes (200MB) |
 | `BIFRACT_INGEST_RATE_LIMIT` | 10000 | Sustained requests/second |
 | `BIFRACT_INGEST_RATE_BURST` | 20000 | Burst capacity |

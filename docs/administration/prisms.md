@@ -10,7 +10,7 @@ A prism is a virtual view across multiple fractals. Prisms do not store data the
 
 ## Creating a Prism
 
-Admins create prisms from **Settings > Fractals**. Provide a name and optional description, then add member fractals from the prism's manage page.
+Admins create prisms from the top-level **Fractals** tab. Provide a name and optional description, then add member fractals from the prism's **Manage > Members** page. A prism's **Manage > Access** tab carries its own permissions and API keys, independent of the member fractals.
 
 ## Managing Members
 
