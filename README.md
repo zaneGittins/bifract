@@ -12,6 +12,16 @@
 
 Bifract is a log platform for security teams, built on ClickHouse for high-volume storage and search. It pairs a pipe-based query language with behavioral baselines, process provenance, and collaborative investigation.
 
+## Quick Start
+
+The setup wizard installs Bifract on a single Linux host, handling SSL, passwords, Docker Compose, and database initialization:
+
+```bash
+curl -sfL https://docs.bifract.io/install.sh | sh
+```
+
+Read [the script](https://docs.bifract.io/install.sh) first if you'd rather. Upgrade an existing install with `sudo bifract --upgrade`. A single node covers most deployments; for multi-shard clusters see the [Kubernetes deployment guide](https://docs.bifract.io/getting-started/kubernetes/).
+
 ## Query
 
 BQL is pipe-based. Filter, then transform:
@@ -35,16 +45,6 @@ pgr(start="{63047898-ac75-6860-8a04-000000002502}") | pgraph()
 - **Alerting:** cursor-based evaluation so no logs are missed across restarts, with Sigma rules synced and converted from Git.
 - **Collaboration:** comment on individual logs, build investigation notebooks, publish dashboards to shared links.
 - **Archive:** every log written to object storage as Parquet with Iceberg metadata, searchable in place, restorable into ClickHouse.
-
-## Quick Start
-
-The Linux setup wizard handles SSL, passwords, Docker Compose, and database initialization:
-
-```bash
-curl -sfL https://docs.bifract.io/install.sh | sh
-```
-
-Read [the script](https://docs.bifract.io/install.sh) first if you'd rather. Upgrade an existing install with `sudo bifract --upgrade`. For Kubernetes, see the [deployment guide](https://docs.bifract.io/getting-started/kubernetes/).
 
 ## Status
 
