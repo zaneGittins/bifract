@@ -149,13 +149,20 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 -- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
 -- Querying this instead of raw logs reduces the recent-logs histogram from a
 -- 200M-row scan to ~1440 rows for a 24-hour window.
+--
+-- logs_histogram_mv (below) aggregates only within each incoming insert block, so every
+-- insert batch lands its own small part; SummingMergeTree reconciles duplicate
+-- (fractal_id, minute) keys on merge, not on insert. Under bursty ingest, part creation can
+-- outpace background merges and hit the parts_to_throw_insert default of 3000, rejecting
+-- inserts until merges catch up. The table stays tiny (tens of MB), so tolerating far more
+-- parts before throttling is low-risk.
 CREATE TABLE IF NOT EXISTS logs_histogram (
     fractal_id LowCardinality(String),
     minute     DateTime,
     cnt        UInt64
 ) ENGINE = SummingMergeTree(cnt)
 ORDER BY (fractal_id, minute)
-SETTINGS index_granularity = 256;
+SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000;
 
 -- Feeds logs_histogram from every insert into the local logs table.
 -- The MV writes to the local logs_histogram. The distributed table handles cross-shard reads.

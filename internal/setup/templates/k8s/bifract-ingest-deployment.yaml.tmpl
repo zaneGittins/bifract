@@ -107,6 +107,17 @@ spec:
               value: "{{.IngestQueueSize}}"
             - name: BIFRACT_INGEST_WORKERS
               value: "{{.IngestWorkers}}"
+            # Server-side insert coalescing: batches many small inserts into fewer,
+            # larger parts, which caps the per-minute part-creation rate on logs and
+            # its per-insert materialized views (logs_histogram in particular, whose
+            # tiny per-block parts otherwise outpace merges under bursty ingest and
+            # trip TOO_MANY_PARTS). wait_for_async_insert=1 (set in code) keeps the
+            # client blocked until flush, so a successful insert still means durably
+            # written and ingest acks/backpressure stay meaningful. Default-on for the
+            # multi-shard cluster path; docker (single-node, no Distributed engine)
+            # leaves it opt-in.
+            - name: BIFRACT_ASYNC_INSERT
+              value: "1"
             # Archive tee (dormant-but-present): the ingest tier is the sole spool
             # writer. Off = zero overhead; enable at runtime (admin UI or the secret).
             - name: BIFRACT_ARCHIVE_ENABLED
