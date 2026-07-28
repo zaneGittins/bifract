@@ -4637,6 +4637,16 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			},
 		},
 		{
+			name:  "bare string with dots escapes regex metacharacters for literal substring match",
+			query: `"contoso.com"`,
+			wantContain: []string{
+				`match(lower(norm_log), 'contoso\\.com')`,
+			},
+			wantNotContain: []string{
+				"'contoso.com'",
+			},
+		},
+		{
 			name:  "bare strings with OR get correct OR logic",
 			query: `"prod-billing-9" OR "prod-billing-10"`,
 			wantContain: []string{

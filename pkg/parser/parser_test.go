@@ -1295,12 +1295,12 @@ func TestSpecializedFunctions(t *testing.T) {
 		},
 		{
 			name:    "case function with field assignments",
-			query:   `event_id=1 | case { user=/gittinsz/ | status:="ok"; user=/noveloa/i | status:="ok2"; * | status := "nope"; } | groupby(status)`,
+			query:   `event_id=1 | case { user=/alice/ | status:="ok"; user=/bob/i | status:="ok2"; * | status := "nope"; } | groupby(status)`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "match(fields.`user`::String,") &&
-					containsSubstr([]string{sql}, "gittinsz") &&
-					containsSubstr([]string{sql}, "(?i)noveloa") &&
+					containsSubstr([]string{sql}, "alice") &&
+					containsSubstr([]string{sql}, "(?i)bob") &&
 					containsSubstr([]string{sql}, "AS status") &&
 					containsSubstr([]string{sql}, "GROUP BY")
 			},

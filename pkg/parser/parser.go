@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -1550,9 +1551,16 @@ func ParseQuery(query string) (*PipelineNode, error) {
 // common analyst workflow); explicit /regex/ literals keep their own casing and
 // are only case-insensitive when written with the /i flag. The flag is not
 // double-applied if already present.
+//
+// The literal is regexp.QuoteMeta-escaped before wrapping: a bare term is a literal
+// substring an analyst typed, not regex syntax, so unescaped metacharacters (most
+// commonly '.' in domains, IPs, file extensions, and version strings) would silently
+// change match semantics and defeat the norm_log_ngram_lc text index's granule
+// pruning (an unescaped '.' matches any character, breaking the literal into shorter
+// segments the ngram(3) tokenizer can't use for filtering).
 func caseInsensitiveSearch(value string) string {
 	if strings.HasPrefix(value, "(?i)") {
 		return value
 	}
-	return "(?i)" + value
+	return "(?i)" + regexp.QuoteMeta(value)
 }
