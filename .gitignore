@@ -17,6 +17,7 @@ go.work
 # Build output
 /bifract
 /bifract-server
+/bifract-archiver
 /cmd/bifract/bifract
 /cmd/bifract-server/bifract-server
 

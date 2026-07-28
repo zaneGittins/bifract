@@ -1478,60 +1478,6 @@ func main() {
 			})
 
 			// List recent restore jobs for the admin UI (newest first).
-			// Archive completeness: recent (fractal, ingest day) comparisons of
-			// hot-store vs archive row counts, gaps first. A gap means the hot store
-			// holds rows the archive never received (see pkg/archive/completeness.go);
-			// the reverse just means retention has aged those rows out of ClickHouse.
-			r.Get("/system/archive/completeness", func(w http.ResponseWriter, r *http.Request) {
-				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-					http.Error(w, "Admin access required", http.StatusForbidden)
-					return
-				}
-				gapsOnly := r.URL.Query().Get("gaps_only") == "true"
-				where := ""
-				if gapsOnly {
-					where = "WHERE c.ch_count > c.ice_count"
-				}
-				rows, err := pg.Query(r.Context(), `
-					SELECT c.fractal_id, COALESCE(f.name, ''), c.ingest_day, c.ch_count, c.ice_count, c.checked_at
-					FROM archive_completeness c
-					LEFT JOIN fractals f ON f.id::text = c.fractal_id `+where+`
-					ORDER BY (c.ch_count > c.ice_count) DESC, c.ingest_day DESC, f.name
-					LIMIT 200`)
-				if err != nil {
-					http.Error(w, "Failed to load completeness", http.StatusInternalServerError)
-					return
-				}
-				defer rows.Close()
-				days := make([]map[string]interface{}, 0, 64)
-				var totalGap int64
-				for rows.Next() {
-					var (
-						fid, fname      string
-						day, checkedAt  time.Time
-						chCount, iceCnt int64
-					)
-					if err := rows.Scan(&fid, &fname, &day, &chCount, &iceCnt, &checkedAt); err != nil {
-						continue
-					}
-					gap := int64(0)
-					if chCount > iceCnt {
-						gap = chCount - iceCnt
-						totalGap += gap
-					}
-					days = append(days, map[string]interface{}{
-						"fractal_id": fid, "fractal_name": fname,
-						"ingest_day": day.UTC().Format("2006-01-02"),
-						"ch_count":   chCount, "ice_count": iceCnt, "gap": gap,
-						"checked_at": checkedAt.UTC(),
-					})
-				}
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"success": true, "days": days, "total_gap": totalGap,
-				})
-			})
-
 			r.Get("/system/archive/restore", func(w http.ResponseWriter, r *http.Request) {
 				if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
 					http.Error(w, "Admin access required", http.StatusForbidden)

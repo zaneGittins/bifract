@@ -7,9 +7,9 @@ spec:
   # A StatefulSet (not a Deployment) so each ingest pod gets its own stable,
   # durable spool PVC via volumeClaimTemplates. The archive spool is the
   # fail-closed durability boundary (fsync before ack); on an emptyDir it was lost
-  # on every rolling update or eviction, silently punching a hole in the archive
-  # that only the completeness sweep could later detect. serviceName points at the
-  # headless Service below; routing still goes through the ClusterIP Service.
+  # on every rolling update or eviction, silently and undetectably punching a hole
+  # in the archive. serviceName points at the headless Service below; routing
+  # still goes through the ClusterIP Service.
   serviceName: bifract-ingest-headless
   # Parallel management: this tier is load-balanced and stateless apart from its
   # own spool, so pods start/scale together like a Deployment rather than waiting

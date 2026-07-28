@@ -82,14 +82,6 @@ spec:
               value: "0"
             - name: BIFRACT_ARCHIVE_ORPHAN_OLDER_THAN
               value: "72h"
-            # Sealed ingest days re-checked per pass for hot-store vs archive
-            # drift. 0 disables the sweep. Cost is fractals x days x 2 counts.
-            - name: BIFRACT_ARCHIVE_COMPLETENESS_DAYS
-              valueFrom:
-                secretKeyRef:
-                  name: bifract-secrets
-                  key: ARCHIVE_COMPLETENESS_DAYS
-                  optional: true
             - name: BIFRACT_ARCHIVE_DISK_PATH
               value: /var/lib/bifract/archive
             - name: BIFRACT_ARCHIVE_ENABLED
