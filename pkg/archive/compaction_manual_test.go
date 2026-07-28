@@ -314,8 +314,11 @@ func TestCompactionBatchesGroupsIntoOneCommit(t *testing.T) {
 
 	opts := DefaultMaintainOptions()
 	opts.ScanConcurrency = 1
-	// Budget generous enough that every sealed group fits in one batch.
+	// Budget and batch cap generous enough that every sealed group fits in one
+	// batch. The cap must be explicit here: the test process has no cgroup memory
+	// limit, and the unknown-limit fallback is deliberately one group.
 	opts.ByteBudget = 32 << 30
+	opts.MaxBatchBytes = 32 << 30
 
 	res, err := compactTable(ctx, cat, ident, tbl, opts.ByteBudget, time.Now().Add(4*time.Minute), opts)
 	if err != nil {
@@ -334,4 +337,67 @@ func TestCompactionBatchesGroupsIntoOneCommit(t *testing.T) {
 			sealed, commits)
 	}
 	t.Logf("compacted %d sealed group(s)/%d bytes in %d commit(s)", sealed, res.compactedBytes, commits)
+}
+
+// TestCompactionBatchSplitsAtMemoryCap is the other half of the batching
+// contract: MaxBatchBytes must actually bound what one commit carries. A
+// production Docker deployment at a 4g limit OOMKilled in a loop because the
+// batch grew to whatever the byte budget allowed (2.07GB -> 4.04GiB RSS), so an
+// unenforced cap is not a smaller optimisation, it is the crash coming back.
+func TestCompactionBatchSplitsAtMemoryCap(t *testing.T) {
+	cat := newArchiveTestCatalog(t)
+	fractalID := fmt.Sprintf("split-%d", time.Now().UnixNano())
+
+	const seedBatches = 24
+	for seq := range seedBatches {
+		if err := appendBatch(t, cat, fractalID, 4000, seq); err != nil {
+			t.Fatalf("seed append %d: %v", seq, err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	ident := catalog.ToIdentifier(Namespace, tableName(fractalID))
+	tbl, err := cat.cat.LoadTable(ctx, ident)
+	if err != nil {
+		t.Fatalf("load table: %v", err)
+	}
+
+	plan, err := compaction.Analyze(ctx, tbl, compaction.DefaultConfig())
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	open := iceberg.Date(epochDay(time.Now()))
+	var sealed int
+	for _, g := range plan.Groups {
+		if !isOpenPartitionGroup(g, open) {
+			sealed++
+		}
+	}
+	if sealed < 2 {
+		t.Fatalf("harness seeded only %d compactable group(s); a split cannot be observed with fewer than 2", sealed)
+	}
+
+	before := snapshotCount(t, cat, ident)
+
+	opts := DefaultMaintainOptions()
+	opts.ScanConcurrency = 1
+	opts.ByteBudget = 32 << 30
+	// Under one full group: each batch carries exactly one group via the
+	// always-attempt-the-first-group valve, so N sealed groups need N commits.
+	opts.MaxBatchBytes = 100 << 20
+
+	res, err := compactTable(ctx, cat, ident, tbl, opts.ByteBudget, time.Now().Add(4*time.Minute), opts)
+	if err != nil {
+		t.Fatalf("compactTable: %v", err)
+	}
+	if res.failedGroups > 0 {
+		t.Fatalf("%d group(s) failed with no concurrent writer", res.failedGroups)
+	}
+	commits := snapshotCount(t, cat, ident) - before
+	if commits != sealed {
+		t.Errorf("compacted %d sealed group(s) in %d commit(s), want %d: MaxBatchBytes is not bounding the batch",
+			sealed, commits, sealed)
+	}
+	t.Logf("cap %d bytes split %d group(s) into %d commit(s)", opts.MaxBatchBytes, sealed, commits)
 }

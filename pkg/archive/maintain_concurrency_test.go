@@ -114,3 +114,61 @@ func TestTableDeadline(t *testing.T) {
 		}
 	})
 }
+
+// Batch memory scales with batch bytes x scan concurrency (measured; see
+// maintainBatchMemoryNum). A fixed group-count cap therefore re-OOMs at every
+// memory limit -- more memory buys more workers, which multiplies right back --
+// which is exactly what happened at 4g and again at 8g on a production Docker
+// deployment. These pin the derivation and the invariant that matters.
+func TestMaxBatchBytesFor(t *testing.T) {
+	t.Run("predicted peak memory never exceeds the limit", func(t *testing.T) {
+		// The invariant, swept across realistic deployments: measured peak is
+		// ~2x batch bytes x concurrency, and the cap must keep that under the
+		// limit with headroom at every combination.
+		for _, memLimit := range []int64{2 << 30, 4 << 30, 5 << 30, 8 << 30, 16 << 30, 64 << 30} {
+			for cpus := 1; cpus <= 8; cpus++ {
+				conc := scanConcurrencyFor(memLimit, cpus)
+				cap := maxBatchBytesFor(memLimit, conc)
+				predicted := 2 * cap * int64(conc)
+				if predicted > memLimit {
+					t.Errorf("limit %d, concurrency %d: cap %d predicts %d bytes peak, over the limit",
+						memLimit, conc, cap, predicted)
+				}
+			}
+		}
+	})
+
+	t.Run("the production OOM is prevented", func(t *testing.T) {
+		// The 4g Docker deployment: GOMEMLIMIT 3.6GiB, concurrency 1. It batched
+		// 2.07GB and peaked at 4.04GiB. The cap must keep the batch below that.
+		cap := maxBatchBytesFor(3865470566, 1)
+		if cap >= 2070783013 {
+			t.Errorf("cap %d would have admitted the 2.07GB batch that OOMKilled a 4g deployment", cap)
+		}
+		// But not below one target-sized group, or batching is pointless where
+		// it is safe: 3.6GiB comfortably held a 1.05GB batch (1.52GiB peak).
+		if cap < 512<<20 {
+			t.Errorf("cap %d is below one target-sized group at a limit that measured 1.52GiB for two", cap)
+		}
+	})
+
+	t.Run("unknown limit falls back to one group, not unbounded", func(t *testing.T) {
+		if got := maxBatchBytesFor(0, 4); got != targetFileSizeBytes {
+			t.Errorf("cap with unknown limit = %d, want one target-sized group (%d)", got, int64(targetFileSizeBytes))
+		}
+	})
+
+	t.Run("more workers means smaller batches from the same pool", func(t *testing.T) {
+		one := maxBatchBytesFor(8<<30, 1)
+		two := maxBatchBytesFor(8<<30, 2)
+		if two >= one {
+			t.Errorf("cap at concurrency 2 (%d) should be under concurrency 1 (%d); they share one memory pool", two, one)
+		}
+	})
+
+	t.Run("a nonsense concurrency never divides by zero", func(t *testing.T) {
+		if got := maxBatchBytesFor(8<<30, 0); got <= 0 {
+			t.Errorf("cap with zero concurrency = %d, want positive", got)
+		}
+	})
+}

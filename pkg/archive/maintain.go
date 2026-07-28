@@ -47,6 +47,11 @@ type MaintainOptions struct {
 	// is the pass's dominant memory term (see MaintainScanConcurrency), so it is
 	// resolved once per pass and logged rather than left to a library default.
 	ScanConcurrency int
+	// MaxBatchBytes caps how many compressed bytes of rewritten groups a single
+	// commit may carry. Zero derives it from the process memory limit (see
+	// maxBatchBytesFor); it exists because batch size, not group size, is what a
+	// pass's peak memory scales with.
+	MaxBatchBytes int64
 }
 
 // DefaultMaintainOptions returns sensible defaults: keep ~7 days of snapshots,
@@ -80,6 +85,7 @@ func MaintainOptionsFromEnv() MaintainOptions {
 	opts.ByteBudget = getInt64("BIFRACT_ARCHIVE_MAINTAIN_BYTE_BUDGET", opts.ByteBudget)
 	opts.CommitRetries = getIntEnv("BIFRACT_ARCHIVE_MAINTAIN_COMMIT_RETRIES", opts.CommitRetries)
 	opts.OrphanOlderThan = getDuration("BIFRACT_ARCHIVE_ORPHAN_OLDER_THAN", opts.OrphanOlderThan)
+	opts.MaxBatchBytes = getInt64("BIFRACT_ARCHIVE_MAINTAIN_MAX_BATCH_BYTES", opts.MaxBatchBytes)
 	return opts
 }
 
@@ -300,11 +306,16 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 	if opts.ScanConcurrency < 1 {
 		opts.ScanConcurrency = MaintainScanConcurrency()
 	}
+	// Resolved after ScanConcurrency because the derivation divides by it: the
+	// two share one memory pool, so more workers means smaller batches.
+	if opts.MaxBatchBytes <= 0 {
+		opts.MaxBatchBytes = maxBatchBytesFor(processMemoryLimit(), opts.ScanConcurrency)
+	}
 	// Logged before any work: a pass killed by the OOM killer writes no outcome
 	// of its own, so this line is the only record that it started and of the
 	// settings it started with.
-	log.Printf("[Maintain] starting: scan concurrency %d, byte budget %d, memory limit %d, GOMAXPROCS %d",
-		opts.ScanConcurrency, opts.ByteBudget, processMemoryLimit(), runtime.GOMAXPROCS(0))
+	log.Printf("[Maintain] starting: scan concurrency %d, byte budget %d, batch cap %d, memory limit %d, GOMAXPROCS %d",
+		opts.ScanConcurrency, opts.ByteBudget, opts.MaxBatchBytes, processMemoryLimit(), runtime.GOMAXPROCS(0))
 	if undersized, limit, need := MaintainMemoryUndersized(); undersized {
 		log.Printf("[Maintain] WARNING: memory limit %d bytes is below the %d bytes a compaction pass needs; "+
 			"this pass will likely be killed before it finishes. Raise the maintainer's memory limit "+
@@ -424,6 +435,47 @@ const maintainMaxConsecutiveCommitFailures = 3
 // still collapsing the common budget-sized batch into one scan.
 const maintainMaxGroupsPerCommit = 16
 
+// maintainBatchMemoryNum/Den encode the measured relationship between a batch
+// and the pass's peak memory: RSS ~= 2x the batch's compressed bytes times the
+// scan concurrency. Three production data points, one Docker deployment,
+// 512MiB-target groups:
+//
+//	concurrency 1, 2.07GB batched -> 4.04 GiB peak RSS (OOMKilled at a 4g limit)
+//	concurrency 2, 2.07GB batched -> 8.03 GiB peak RSS
+//	concurrency 1, 1.05GB batched -> 1.52 GiB peak RSS
+//
+// The mechanism is partly empirical -- groups are rewritten sequentially, so
+// something (GC headroom under GOMEMLIMIT, buffers reachable from retained
+// results) keeps memory from being reclaimed between groups -- but the fit is
+// consistent across all three points and the cap below only needs the ceiling,
+// not the mechanism. Budgeted at 2.5x rather than the fitted 2x so ~20% of the
+// limit is headroom: cap = limit/(2.5*concurrency) means predicted peak
+// 2*cap*concurrency = 0.8*limit.
+const (
+	maintainBatchMemoryNum = 2
+	maintainBatchMemoryDen = 5
+)
+
+// maxBatchBytesFor derives the per-commit batch cap from the process memory
+// limit, the same way MaintainScanConcurrency derives its worker count. Peak
+// memory scales with batch bytes x concurrency (see maintainBatchMemoryNum), so
+// a fixed group-count cap re-OOMs at every limit: more memory buys more workers,
+// which multiplies right back. An unknown limit falls back to one target-sized
+// group, which is the pre-batching memory profile scanWorkerMemoryBudget was
+// measured against -- absence of a limit is not evidence of a large one.
+//
+// The floor of one group is deliberate and load-bearing: compactTable always
+// attempts the first group of a pass regardless of any cap, so the smallest
+// batch is one group and the worst case under a tiny limit is exactly the
+// pre-batching behavior, not a stall.
+func maxBatchBytesFor(memLimit int64, scanConcurrency int) int64 {
+	scanConcurrency = max(1, scanConcurrency)
+	if memLimit <= 0 {
+		return targetFileSizeBytes
+	}
+	return memLimit * maintainBatchMemoryNum / (maintainBatchMemoryDen * int64(scanConcurrency))
+}
+
 // tableDeadline returns when the current table must stop compacting so the
 // tables after it still get a turn. Splits the pass's remaining time evenly
 // across the tables not yet visited, mirroring how ByteBudget is shared. With no
@@ -479,6 +531,11 @@ type compactResult struct {
 // archiver's roll thresholds are large enough that written files clear
 // compaction's optimal-file floor.
 func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tbl *icetable.Table, budget int64, deadline time.Time, opts MaintainOptions) (compactResult, error) {
+	// Normally resolved by Maintain; re-derived here so a direct caller can never
+	// run with an unbounded (or zero, which would mean one-group) batch.
+	if opts.MaxBatchBytes <= 0 {
+		opts.MaxBatchBytes = maxBatchBytesFor(processMemoryLimit(), opts.ScanConcurrency)
+	}
 	plan, err := compaction.Analyze(ctx, tbl, compaction.DefaultConfig())
 	if err != nil {
 		return compactResult{}, err
@@ -555,9 +612,21 @@ func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 		var batchBytes int64
 		for ; i < len(plan.Groups); i++ {
 			g := plan.Groups[i]
-			first := spent == 0 && len(batch) == 0
-			if !first {
-				if spent+batchBytes+g.TotalSizeBytes > budget {
+			// Budget exempts only the very first group of the PASS, so a budget
+			// smaller than one group cannot stall the table forever.
+			if !(spent == 0 && len(batch) == 0) && spent+batchBytes+g.TotalSizeBytes > budget {
+				break
+			}
+			if len(batch) > 0 {
+				// The memory bound. Peak RSS tracks batch bytes x scan concurrency
+				// (see maintainBatchMemoryNum), so this -- not the group count -- is
+				// what keeps the pass inside its cgroup. It bounds a BATCH, so only a
+				// non-empty batch may refuse a group: a group alone in its own batch
+				// is exactly the pre-batching memory profile, which always fits. An
+				// exemption keyed on the pass instead (like budget's) deadlocks --
+				// after the first commit, a group over the cap could never start a
+				// new batch, and everything behind it would silently never compact.
+				if batchBytes+g.TotalSizeBytes > opts.MaxBatchBytes {
 					break
 				}
 				if len(batch) >= maintainMaxGroupsPerCommit {
@@ -565,7 +634,8 @@ func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 				}
 				// Stop growing the batch once out of time, but still commit what has
 				// already been rewritten: abandoning it would waste the rewrites and
-				// leave their output as orphans.
+				// leave their output as orphans. An empty batch past the deadline
+				// cannot happen: the outer loop checks it before building one.
 				if !time.Now().Before(deadline) {
 					break
 				}
