@@ -4578,7 +4578,7 @@ func TestBuildRegexMatchSQL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildRegexMatchSQL(tt.fieldRef, tt.pattern, tt.negate, false)
+			got := buildRegexMatchSQL(tt.fieldRef, tt.pattern, "", tt.negate, SourceHot)
 			for _, part := range tt.wantParts {
 				if !strings.Contains(got, part) {
 					t.Errorf("expected SQL to contain %q, got: %s", part, got)

@@ -137,9 +137,15 @@ func buildRecord(mem memory.Allocator, logs []storage.LogEntry) arrow.RecordBatc
 // marshalFields serializes a normalized field map to a flat JSON object string,
 // the archive's norm_log representation. Keys are emitted in sorted order
 // (encoding/json sorts map keys) for stable output; HTML escaping is disabled so
-// substring/regex free-text search over norm_log matches the raw characters (as
-// the hot store's toString(fields) does). All values are JSON strings; the JSON
-// `fields` column's type hints coerce them back to typed values on restore.
+// '<', '>' and '&' stay raw, matching the hot store's toString(fields). All values
+// are JSON strings; the JSON `fields` column's type hints coerce them back to
+// typed values on restore.
+//
+// This encoding is NOT byte-identical to the hot store: ClickHouse escapes '/' as
+// '\/' and encoding/json leaves it raw. Everything else agrees. BQL free-text
+// search compensates per source mode in escapeLiteralForNormLog
+// (pkg/parser/normlog_escape.go); changing the encoder here without updating that
+// silently breaks archive search for any term containing a slash.
 func marshalFields(m map[string]string) string {
 	if len(m) == 0 {
 		return "{}"

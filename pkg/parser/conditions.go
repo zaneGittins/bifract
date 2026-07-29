@@ -430,7 +430,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 
 	if cond.IsRegex {
 		negate := cond.Operator == "!="
-		return buildRegexMatchSQL(fieldRef, cond.Value, negate, isJSONField)
+		return buildRegexMatchSQL(fieldRef, cond.Value, cond.LiteralTerm, negate, sourceModeOf(registry))
 	}
 
 	if cond.Operator == "=~" || cond.Operator == "=^" || cond.Operator == "=$" {
@@ -440,11 +440,11 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 		}
 		switch cond.Operator {
 		case "=~":
-			return buildContainsAnySQL(fieldRef, values, cond.Negate)
+			return buildContainsAnySQL(fieldRef, values, cond.Negate, sourceModeOf(registry))
 		case "=^":
-			return buildStartsWithAnySQL(fieldRef, values, cond.Negate)
+			return buildStartsWithAnySQL(fieldRef, values, cond.Negate, sourceModeOf(registry))
 		case "=$":
-			return buildEndsWithAnySQL(fieldRef, values, cond.Negate)
+			return buildEndsWithAnySQL(fieldRef, values, cond.Negate, sourceModeOf(registry))
 		}
 	}
 

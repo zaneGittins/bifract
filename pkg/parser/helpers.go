@@ -717,7 +717,7 @@ func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string,
 		// hasToken(raw_log, 'http') = FALSE because the Bloom filter token is "https".
 		// False negatives are unacceptable; ClickHouse's built-in granule pruning for
 		// match() is sufficient. match() is called with the negate flag only.
-		sql = buildRegexMatchSQL(fieldRef, cond.Value, negate, false)
+		sql = buildRegexMatchSQL(fieldRef, cond.Value, cond.LiteralTerm, negate, sourceModeOf(registry))
 	} else if cond.Operator == "=~" || cond.Operator == "=^" || cond.Operator == "=$" {
 		values := cond.Values
 		if len(values) == 0 && cond.Value != "" {
@@ -725,11 +725,11 @@ func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string,
 		}
 		switch cond.Operator {
 		case "=~":
-			sql = buildContainsAnySQL(fieldRef, values, false)
+			sql = buildContainsAnySQL(fieldRef, values, false, sourceModeOf(registry))
 		case "=^":
-			sql = buildStartsWithAnySQL(fieldRef, values, false)
+			sql = buildStartsWithAnySQL(fieldRef, values, false, sourceModeOf(registry))
 		case "=$":
-			sql = buildEndsWithAnySQL(fieldRef, values, false)
+			sql = buildEndsWithAnySQL(fieldRef, values, false, sourceModeOf(registry))
 		}
 	} else if (cond.Operator == "=" || cond.Operator == "!=") && len(cond.Values) > 1 {
 		// Comma-separated equality list -> IN / NOT IN.
@@ -1201,7 +1201,8 @@ func buildIcebergEqualityListSQL(field string, values []string, negate bool, pro
 // Uses multiSearchAnyCaseInsensitive (Volnitsky/SIMD multi-pattern search), which is
 // significantly faster than equivalent regex alternation and is accelerated by text
 // (inverted) skip indexes when those are present on the target column.
-func buildContainsAnySQL(fieldRef string, values []string, negate bool) string {
+func buildContainsAnySQL(fieldRef string, values []string, negate bool, mode SourceMode) string {
+	values = normLogSearchValues(fieldRef, values, mode)
 	// multiSearchAnyCaseInsensitive rejects a bare Dynamic subcolumn. Cast raw
 	// JSON refs to ::String so a mixed-history (pre-type-hint) path still works;
 	// bloom_filter/set indexes do not accelerate substring search anyway, so no
@@ -1220,7 +1221,8 @@ func buildContainsAnySQL(fieldRef string, values []string, negate bool) string {
 
 // buildStartsWithAnySQL returns a case-insensitive prefix-match-any expression.
 // Uses startsWith(lower(field), lowered_term) which is accelerated by text indexes.
-func buildStartsWithAnySQL(fieldRef string, values []string, negate bool) string {
+func buildStartsWithAnySQL(fieldRef string, values []string, negate bool, mode SourceMode) string {
+	values = normLogSearchValues(fieldRef, values, mode)
 	parts := make([]string, len(values))
 	for i, v := range values {
 		parts[i] = fmt.Sprintf("startsWith(lower(%s), '%s')", fieldRef, escapeString(strings.ToLower(v)))
@@ -1239,7 +1241,8 @@ func buildStartsWithAnySQL(fieldRef string, values []string, negate bool) string
 
 // buildEndsWithAnySQL returns a case-insensitive suffix-match-any expression.
 // Uses endsWith(lower(field), lowered_term) which is accelerated by text indexes.
-func buildEndsWithAnySQL(fieldRef string, values []string, negate bool) string {
+func buildEndsWithAnySQL(fieldRef string, values []string, negate bool, mode SourceMode) string {
+	values = normLogSearchValues(fieldRef, values, mode)
 	parts := make([]string, len(values))
 	for i, v := range values {
 		parts[i] = fmt.Sprintf("endsWith(lower(%s), '%s')", fieldRef, escapeString(strings.ToLower(v)))
@@ -1271,8 +1274,8 @@ func buildEndsWithAnySQL(fieldRef string, values []string, negate bool) string {
 // token, but regex/substring search is not token-aligned (/http/ matches
 // "https://..." but hasToken(norm_log,'http') = FALSE), which would cause false
 // negatives. The text index prunes match() automatically and correctly.
-func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, _ bool) string {
-	matchExpr := buildMatchExpr(fieldRef, pattern)
+func buildRegexMatchSQL(fieldRef string, pattern string, literal string, negate bool, mode SourceMode) string {
+	matchExpr := buildMatchExpr(fieldRef, pattern, literal, mode)
 	if negate {
 		return "NOT " + matchExpr
 	}
@@ -1281,7 +1284,16 @@ func buildRegexMatchSQL(fieldRef string, pattern string, negate bool, _ bool) st
 
 // buildMatchExpr builds the match() call, routing case-insensitive norm_log
 // searches through lower(norm_log) so the n-gram text index can be used.
-func buildMatchExpr(fieldRef, pattern string) string {
+//
+// A bare-term search carries literal (the analyst's raw text) and its pattern is
+// rebuilt here rather than at parse time: norm_log stores JSON-serialized text
+// and the hot and archive stores escape it differently, so the pattern cannot be
+// finalized until the source mode is known. User-authored /regex/ literals carry
+// no literal and pass through untouched -- their escaping is the author's.
+func buildMatchExpr(fieldRef, pattern, literal string, mode SourceMode) string {
+	if fieldRef == normLogColumn && literal != "" {
+		pattern = normLogLiteralPattern(literal, mode)
+	}
 	if fieldRef == normLogColumn && strings.HasPrefix(pattern, caseInsensitiveFlag) {
 		if lowered, ok := lowerRegexForLowercasedColumn(pattern[len(caseInsensitiveFlag):]); ok {
 			return fmt.Sprintf("match(lower(%s), %s)", normLogColumn, escapeRegexForClickHouse(lowered))

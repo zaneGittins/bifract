@@ -17,11 +17,16 @@ type FilterNode struct {
 func (f FilterNode) Type() string { return "filter" }
 
 type ConditionNode struct {
-	Field       string
-	Operator    string // "=", "!=", "~" (regex), "=~", "=^", "=$"
-	Value       string
-	Values      []string // multi-value list for =~, =^, =$ operators
-	IsRegex     bool
+	Field    string
+	Operator string // "=", "!=", "~" (regex), "=~", "=^", "=$"
+	Value    string
+	Values   []string // multi-value list for =~, =^, =$ operators
+	IsRegex  bool
+	// LiteralTerm holds the unmodified analyst-typed text of a bare-term search,
+	// which Value stores only in already-regex-escaped form. norm_log serializes
+	// differently per source mode, so the final pattern is built at translation
+	// time (where the mode is known) from this literal.
+	LiteralTerm string
 	Negate      bool
 	Logic       string // "AND", "OR", ""
 	GroupID     int    // Tracks parenthetical grouping for SQL generation
@@ -53,8 +58,10 @@ type HavingCondition struct {
 	Value    string
 	Values   []string // multi-value list for =~, =^, =$ operators
 	IsRegex  bool
-	Logic    string // "AND", "OR", ""
-	GroupID  int    // Conditions with the same non-zero GroupID are parenthesized together
+	// LiteralTerm mirrors ConditionNode.LiteralTerm for bare-term searches.
+	LiteralTerm string
+	Logic       string // "AND", "OR", ""
+	GroupID     int    // Conditions with the same non-zero GroupID are parenthesized together
 
 	// Compound node support for arbitrary nesting depth.
 	// When IsCompound is true, Children holds the sub-expression tree and
@@ -218,10 +225,11 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 					operator = "!="
 				}
 				having := &HavingCondition{
-					Field:    normLogColumn,
-					Operator: operator,
-					Value:    caseInsensitiveSearch(p.current().Value),
-					IsRegex:  true,
+					Field:       normLogColumn,
+					Operator:    operator,
+					Value:       caseInsensitiveSearch(p.current().Value),
+					LiteralTerm: p.current().Value,
+					IsRegex:     true,
 				}
 				p.advance()
 				pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
@@ -462,12 +470,13 @@ func (p *Parser) parseConditionsWithPrecedence(minPrecedence int) ([]ConditionNo
 		} else if p.current().Type == TokenString {
 			// Bare string always searches raw_log
 			cond := &ConditionNode{
-				Field:    normLogColumn,
-				Operator: "~",
-				Value:    caseInsensitiveSearch(p.current().Value),
-				IsRegex:  true,
-				Negate:   negate,
-				GroupID:  0,
+				Field:       normLogColumn,
+				Operator:    "~",
+				Value:       caseInsensitiveSearch(p.current().Value),
+				LiteralTerm: p.current().Value,
+				IsRegex:     true,
+				Negate:      negate,
+				GroupID:     0,
 			}
 			p.advance()
 			currentConditions = []ConditionNode{*cond}
@@ -1033,10 +1042,11 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 				operator = "!="
 			}
 			cond := HavingCondition{
-				Field:    normLogColumn,
-				Operator: operator,
-				Value:    caseInsensitiveSearch(p.current().Value),
-				IsRegex:  true,
+				Field:       normLogColumn,
+				Operator:    operator,
+				Value:       caseInsensitiveSearch(p.current().Value),
+				LiteralTerm: p.current().Value,
+				IsRegex:     true,
 			}
 			p.advance()
 			currentConditions = []HavingCondition{cond}

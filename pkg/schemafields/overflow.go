@@ -142,17 +142,92 @@ type overflowField struct {
 	Rows uint64
 }
 
+// overflowWindowDays are the sample windows tried in order. Recency comes from a
+// time predicate rather than ORDER BY (see detect), so a window that is too narrow
+// simply yields a thin sample; widen until the sample is usable. An install whose
+// newest data is older than the widest window has no current schema to assess, so
+// the sweep reports nothing rather than scanning history.
+var overflowWindowDays = []int{1, 7, 30}
+
+// overflowMinSample is the row count below which a window is considered too thin
+// and the next wider one is tried.
+const overflowMinSample = 200
+
 // detect samples the JSON column for paths held in shared storage.
+//
+// Two properties of this query are load-bearing and easy to undo by accident:
+//
+//  1. JSONSharedDataPaths(fields) is evaluated directly against the table scan.
+//     Materializing `fields` through an intermediate step (notably ORDER BY inside
+//     the subquery) re-serializes the JSON into a new block, and shared-data
+//     allocation is then recomputed for that block rather than read from the part.
+//     The paths reported become an artifact of the query plan: measured against a
+//     fixture whose parts truly overflowed `extra2`/`extra3`, the ordered form
+//     reported five unrelated names.
+//
+//  2. Recency comes from a timestamp predicate, which prunes partitions. The
+//     previous `ORDER BY timestamp DESC LIMIT n` forced a reverse-order merge over
+//     every part, opening the wide JSON column in each: 248k rows read for a 2k
+//     limit, 1.14 GiB peak, over the 512 MiB budget, so the sweep never completed.
+//     The predicate form measured 794 KiB and 7 ms on the same data.
 func (m *OverflowMonitor) detect(ctx context.Context) ([]overflowField, error) {
+	for i, days := range overflowWindowDays {
+		last := i == len(overflowWindowDays)-1
+		// Widen on a thin sample, never on a clean one: "sampled plenty of recent
+		// rows, found no overflow" is the healthy answer and must terminate here,
+		// or a healthy install would escalate every sweep and stale overflow from
+		// weeks ago would resurface as if it were current.
+		sampled, err := m.sampleSize(ctx, days)
+		if err != nil {
+			return nil, err
+		}
+		if sampled < overflowMinSample && !last {
+			continue
+		}
+		if sampled == 0 {
+			return nil, nil // no recent data: nothing to assess
+		}
+		return m.detectWindow(ctx, days)
+	}
+	return nil, nil
+}
+
+// windowPredicate bounds a sample to the trailing `days` of data. The window is
+// anchored at the newest log so an install that stopped ingesting still assesses
+// its own most recent data, but clamped to now() so a single future-dated
+// timestamp (parsed timestamps are untrusted user data) cannot push the window
+// past every real row.
+func (m *OverflowMonitor) windowPredicate(days int) string {
+	return fmt.Sprintf("timestamp >= least((SELECT max(timestamp) FROM %s), now64(3)) - INTERVAL %d DAY",
+		m.ch.ReadTable(), days)
+}
+
+// sampleSize reports how many rows the window would contribute, without touching
+// the JSON column, so a thin window is cheap to detect.
+func (m *OverflowMonitor) sampleSize(ctx context.Context, days int) (uint64, error) {
+	sql := fmt.Sprintf("SELECT count() AS n FROM (SELECT 1 FROM %s WHERE %s LIMIT %d)",
+		m.ch.ReadTable(), m.windowPredicate(days), overflowSampleSize())
+	rows, err := m.ch.QueryLowPriorityBounded(ctx, sql, overflowMaxMemoryBytes())
+	if err != nil {
+		return 0, fmt.Errorf("sample size (%dd window): %w", days, err)
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return asUint64(rows[0]["n"]), nil
+}
+
+// detectWindow runs the shared-data path sample over the trailing `days` of data.
+func (m *OverflowMonitor) detectWindow(ctx context.Context, days int) ([]overflowField, error) {
 	sql := fmt.Sprintf(`SELECT p AS field_name, count() AS rows_seen
-FROM (SELECT fields FROM %s ORDER BY timestamp DESC LIMIT %d)
-ARRAY JOIN JSONSharedDataPaths(fields) AS p
+FROM (SELECT JSONSharedDataPaths(fields) AS paths FROM %s WHERE %s LIMIT %d)
+ARRAY JOIN paths AS p
 GROUP BY p ORDER BY rows_seen DESC LIMIT 200`,
-		m.ch.ReadTable(), overflowSampleSize())
+		m.ch.ReadTable(), m.windowPredicate(days), overflowSampleSize())
 
 	rows, err := m.ch.QueryLowPriorityBounded(ctx, sql, overflowMaxMemoryBytes())
 	if err != nil {
-		return nil, fmt.Errorf("shared-data path query: %w", err)
+		return nil, fmt.Errorf("shared-data path query (%dd window): %w", days, err)
 	}
 	out := make([]overflowField, 0, len(rows))
 	for _, r := range rows {
