@@ -137,6 +137,12 @@ func RunClickHouseMigrations(docker *DockerOps, user, password string) (int, err
 	}
 	maxApplied := parseMaxNumber(out)
 
+	if n, err := stampProvisionedClickHouseSchema(docker, user, password, migrations, maxApplied); err != nil {
+		return 0, err
+	} else if n > maxApplied {
+		maxApplied = n
+	}
+
 	applied := 0
 	for _, m := range migrations {
 		if m.Number <= maxApplied {
@@ -161,6 +167,40 @@ func RunClickHouseMigrations(docker *DockerOps, user, password string) (int, err
 		applied++
 	}
 	return applied, nil
+}
+
+// stampProvisionedClickHouseSchema records the level an existing schema already embodies
+// when the migration table lags behind it, and returns the new level. A schema provisioned
+// from init-clickhouse.sql outside the migration runner carries no stamp, and replaying
+// history against it fails (004 and 012 project raw_log, which 013 dropped). The absence of
+// logs.raw_log on an existing logs table is the marker. Mirrors stampProvisionedSchema in
+// pkg/storage, which does the same for the app at startup.
+func stampProvisionedClickHouseSchema(docker *DockerOps, user, password string, migrations []Migration, maxApplied int) (int, error) {
+	if maxApplied >= dbpkg.RawLogSplitMigration {
+		return maxApplied, nil
+	}
+	out, err := docker.ExecClickHouse(user, password,
+		"SELECT count() FROM system.tables WHERE database = 'logs' AND name = 'logs';")
+	if err != nil || parseMaxNumber(out) == 0 {
+		return maxApplied, nil
+	}
+	out, err = docker.ExecClickHouse(user, password,
+		"SELECT count() FROM system.columns WHERE database = 'logs' AND table = 'logs' AND name = 'raw_log';")
+	if err != nil || parseMaxNumber(out) != 0 {
+		return maxApplied, nil
+	}
+
+	for _, m := range migrations {
+		if m.Number <= maxApplied || m.Number > dbpkg.RawLogSplitMigration {
+			continue
+		}
+		safeName := strings.ReplaceAll(m.Name, "'", "''")
+		record := fmt.Sprintf("INSERT INTO logs._bifract_migrations (number, name) VALUES (%d, '%s');", m.Number, safeName)
+		if _, err := docker.ExecClickHouse(user, password, record); err != nil {
+			return maxApplied, fmt.Errorf("stamp migration %s: %w", m.Name, err)
+		}
+	}
+	return dbpkg.RawLogSplitMigration, nil
 }
 
 // SetMigrationBaseline marks the initial migration as applied without running it.

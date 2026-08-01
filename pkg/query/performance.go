@@ -238,15 +238,21 @@ func (mc *MetricsCollector) checkMetricBaseline(ctx context.Context, metric, lab
 	// so fresh deployments don't fire on startup noise.
 	var dayCount int
 	if err := mc.pg.QueryRow(ctx,
-		`SELECT count(DISTINCT date_trunc('day', bucket)) FROM system_metrics
-		 WHERE metric = $1 AND bucket > now() - interval '7 days'`, metric).Scan(&dayCount); err != nil || dayCount < baselineMinDays {
+		`SELECT count(DISTINCT date_trunc('day', ts)) FROM system_metrics
+		 WHERE metric = $1 AND ts > now() - interval '7 days'`, metric).Scan(&dayCount); err != nil {
+		log.Printf("[MetricsCollector] baseline history query failed for %s: %v", metric, err)
+		return
+	} else if dayCount < baselineMinDays {
 		return
 	}
 
 	var rolling sql.NullFloat64
 	if err := mc.pg.QueryRow(ctx,
 		`SELECT avg(value) FROM system_metrics
-		 WHERE metric = $1 AND bucket > now() - interval '30 minutes'`, metric).Scan(&rolling); err != nil || !rolling.Valid || rolling.Float64 <= 0 {
+		 WHERE metric = $1 AND ts > now() - interval '30 minutes'`, metric).Scan(&rolling); err != nil {
+		log.Printf("[MetricsCollector] rolling average query failed for %s: %v", metric, err)
+		return
+	} else if !rolling.Valid || rolling.Float64 <= 0 {
 		return
 	}
 
@@ -256,8 +262,11 @@ func (mc *MetricsCollector) checkMetricBaseline(ctx context.Context, metric, lab
 	if err := mc.pg.QueryRow(ctx,
 		`SELECT avg(value) FROM system_metrics
 		 WHERE metric = $1
-		   AND EXTRACT(hour FROM bucket) = EXTRACT(hour FROM now())
-		   AND bucket BETWEEN now() - interval '7 days' AND now() - interval '30 minutes'`, metric).Scan(&baseline); err != nil || !baseline.Valid || baseline.Float64 <= 0 {
+		   AND EXTRACT(hour FROM ts) = EXTRACT(hour FROM now())
+		   AND ts BETWEEN now() - interval '7 days' AND now() - interval '30 minutes'`, metric).Scan(&baseline); err != nil {
+		log.Printf("[MetricsCollector] baseline average query failed for %s: %v", metric, err)
+		return
+	} else if !baseline.Valid || baseline.Float64 <= 0 {
 		return
 	}
 

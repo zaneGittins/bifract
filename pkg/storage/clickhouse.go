@@ -19,6 +19,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
+	dbsql "bifract/db"
 )
 
 type ClickHouseClient struct {
@@ -358,6 +360,14 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 		return nil
 	}
 
+	// A schema that came from the init SQL rather than the migration runner carries no
+	// (or a truncated) migration record, and replaying history against it fails. Stamp
+	// what it demonstrably already embodies before running anything. The cluster path
+	// does the same using a sibling shard's recorded level.
+	if err := stampProvisionedSchema(ctx, c.conn, migrations, migrationsDir); err != nil {
+		return err
+	}
+
 	// Single-node upgrade: apply only pending migrations. Retry with backoff so a
 	// transient failure (ClickHouse still warming up, a briefly slow statement) does
 	// not turn into a pod CrashLoopBackOff. Per-statement progress means each retry
@@ -614,6 +624,40 @@ func runInitSQLOnConn(ctx context.Context, conn driver.Conn, sql string, transfo
 		}
 	}
 	return nil
+}
+
+// stampProvisionedSchema records the migration level an existing schema already embodies
+// when the migration table lags behind it. That happens whenever init-clickhouse.sql
+// provisioned the database outside the migration runner (an older installer mounted it into
+// the ClickHouse container's docker-entrypoint-initdb.d), leaving a current schema with no
+// stamp. The absence of logs.raw_log is the marker: migration 013 dropped it, and 004/012
+// project it, so replaying from there fails with code 47.
+func stampProvisionedSchema(ctx context.Context, conn driver.Conn, migrations embed.FS, migrationsDir string) error {
+	if err := createMigrationBookkeeping(ctx, conn, nil); err != nil {
+		return err
+	}
+	var maxApplied uint32
+	if err := conn.QueryRow(ctx, "SELECT max(number) FROM logs._bifract_migrations").Scan(&maxApplied); err != nil {
+		return fmt.Errorf("query migration state: %w", err)
+	}
+	if maxApplied >= dbsql.RawLogSplitMigration {
+		return nil
+	}
+	hasRawLog, err := chColumnExists(ctx, conn, "logs", "raw_log")
+	if err != nil || hasRawLog {
+		return err
+	}
+	log.Printf("ClickHouse schema is past migration %d but only %d is recorded (provisioned from init SQL); stamping baseline",
+		dbsql.RawLogSplitMigration, maxApplied)
+	return setClickHouseMigrationsBaseline(ctx, conn, nil, migrations, migrationsDir, dbsql.RawLogSplitMigration)
+}
+
+func chColumnExists(ctx context.Context, conn driver.Conn, table, column string) (bool, error) {
+	var count uint64
+	err := conn.QueryRow(ctx,
+		"SELECT count() FROM system.columns WHERE database = currentDatabase() AND table = ? AND name = ?",
+		table, column).Scan(&count)
+	return count > 0, err
 }
 
 // chTableExists reports whether a table exists in the connection's current database.

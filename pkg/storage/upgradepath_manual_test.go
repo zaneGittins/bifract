@@ -19,6 +19,21 @@ import (
 
 const upgradeAddr = "localhost:19010"
 
+// highestMigrationNumber is the head of db/migrations/clickhouse.
+func highestMigrationNumber() (uint32, error) {
+	all, err := loadClickHouseMigrations(dbsql.ClickHouseMigrations, dbsql.ClickHouseMigrationsDir)
+	if err != nil {
+		return 0, err
+	}
+	var max uint32
+	for _, m := range all {
+		if uint32(m.number) > max {
+			max = uint32(m.number)
+		}
+	}
+	return max, nil
+}
+
 func upgradeConn(t *testing.T, database string) interface {
 	Exec(context.Context, string, ...interface{}) error
 } {
@@ -87,12 +102,17 @@ func TestUpgradeFromV002(t *testing.T) {
 	if err := conn.QueryRow(ctx, "SELECT max(number) FROM logs._bifract_migrations").Scan(&maxNum); err != nil {
 		t.Fatalf("read state: %v", err)
 	}
-	if maxNum != 13 {
-		t.Errorf("ended at migration %d, want 13", maxNum)
+	want, err := highestMigrationNumber()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	if maxNum != want {
+		t.Errorf("ended at migration %d, want %d", maxNum, want)
 	}
 
-	// raw_log must be gone from logs (013) and logs_raw must exist.
-	for _, tbl := range []string{"logs_raw", "logs_hot", "proc_lineage", "proc_freq", "process_edges"} {
+	// raw_log must be gone from logs (013) and logs_raw must exist. logs_histogram was added
+	// to the init SQL after v0.0.2, so only migration 014 can supply it here.
+	for _, tbl := range []string{"logs_raw", "logs_hot", "logs_histogram", "proc_lineage", "proc_freq", "process_edges"} {
 		ok, err := chTableExists(ctx, conn, tbl)
 		if err != nil || !ok {
 			t.Errorf("%s missing after upgrade (err=%v)", tbl, err)

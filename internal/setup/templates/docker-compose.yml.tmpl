@@ -49,9 +49,12 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:26.6.2.81-alpine
     container_name: bifract-clickhouse
+    # No init.sql mount: the app owns the ClickHouse schema. Provisioning it here left
+    # the schema current but _bifract_migrations empty, so the app took its upgrade path
+    # and replayed history against an already-current schema (004 projects raw_log, which
+    # 013 removed). k8s and the dev compose have always let the app provision.
     volumes:
       - clickhouse-data:/var/lib/clickhouse
-      - ./db/init-clickhouse.sql:/docker-entrypoint-initdb.d/init.sql:ro
     environment:
       CLICKHOUSE_DB: logs
       CLICKHOUSE_USER: default
