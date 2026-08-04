@@ -243,6 +243,46 @@ async def test_add_comment_does_not_duplicate_the_ai_tag():
     assert seen["tags"] == ["AI-Generated"]
 
 
+async def test_add_tag_posts_trimmed_ids_to_the_bulk_endpoint():
+    seen = {}
+
+    def capture(request):
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"success": True, "data": {"updated": 2}})
+
+    stub(capture)
+    result = await call("add_tag", {"comment_ids": [" a ", "b", ""], "tag": " IR-Test "})
+    assert seen["path"].endswith("/comments/bulk-add-tag")
+    assert seen["body"] == {"comment_ids": ["a", "b"], "tag": "IR-Test"}
+    assert "updated" in result
+
+
+async def test_remove_tag_posts_to_the_bulk_remove_endpoint():
+    seen = {}
+
+    def capture(request):
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"success": True, "data": {"updated": 1}})
+
+    stub(capture)
+    await call("remove_tag", {"comment_ids": ["a"], "tag": "IR-Test"})
+    assert seen["path"].endswith("/comments/bulk-remove-tag")
+    assert seen["body"] == {"comment_ids": ["a"], "tag": "IR-Test"}
+
+
+async def test_tag_tools_reject_bad_input_without_calling_the_api():
+    def capture(request):
+        raise AssertionError("should not reach the API")
+
+    stub(capture)
+    assert (await call("add_tag", {"comment_ids": [], "tag": "IR-Test"})).startswith("Error:")
+    assert (await call("add_tag", {"comment_ids": ["a"], "tag": "  "})).startswith("Error:")
+    assert (await call("remove_tag", {"comment_ids": ["a"], "tag": "x" * 101})).startswith("Error:")
+    assert (await call("add_tag", {"comment_ids": ["a"] * 501, "tag": "t"})).startswith("Error:")
+
+
 async def test_add_notebook_section_appends_after_existing_sections():
     seen = {}
 

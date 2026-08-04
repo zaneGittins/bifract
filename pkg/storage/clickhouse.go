@@ -1499,6 +1499,22 @@ func getenvFloat(key string, def float64) float64 {
 }
 
 func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) error {
+	if err := c.InsertLogsInto(ctx, c.WriteTable(), logs); err != nil {
+		return err
+	}
+
+	// logs table is the source of truth; raw_log is a 7-day troubleshooting copy. Insert
+	// it best-effort so a logs_raw failure never fails or blocks ingestion.
+	c.insertRawLogs(ctx, logs)
+
+	return nil
+}
+
+// InsertLogsInto writes entries into an arbitrary logs-shaped table. The rule tester
+// uses it to populate a scratch clone of `logs` so a detection test never writes to the
+// real table. It does not touch logs_raw: that side table has no scratch counterpart,
+// and BQL text search resolves against norm_log rather than raw_log.
+func (c *ClickHouseClient) InsertLogsInto(ctx context.Context, table string, logs []LogEntry) error {
 	if len(logs) == 0 {
 		return nil
 	}
@@ -1508,10 +1524,10 @@ func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) erro
 		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(c.insertSettings))
 	}
 
-	// raw_log is omitted: it lives in the separate logs_raw table (best-effort insert
-	// below). norm_log is a ClickHouse DEFAULT toString(fields) column, auto-populated at
-	// insert. normalizer carries the "name@version" stamp.
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.WriteTable()+" (timestamp, log_id, fields, fractal_id, ingest_timestamp, normalizer)")
+	// raw_log is omitted: it lives in the separate logs_raw table. norm_log is a
+	// ClickHouse DEFAULT toString(fields) column, auto-populated at insert. normalizer
+	// carries the "name@version" stamp.
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+table+" (timestamp, log_id, fields, fractal_id, ingest_timestamp, normalizer)")
 	if err != nil {
 		return fmt.Errorf("failed to prepare batch: %w", err)
 	}
@@ -1537,10 +1553,6 @@ func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) erro
 	if err := batch.Send(); err != nil {
 		return fmt.Errorf("failed to send batch: %w", err)
 	}
-
-	// logs table is the source of truth; raw_log is a 7-day troubleshooting copy. Insert
-	// it best-effort so a logs_raw failure never fails or blocks ingestion.
-	c.insertRawLogs(ctx, logs)
 
 	return nil
 }
@@ -1749,7 +1761,7 @@ func (c *ClickHouseClient) QueryStream(ctx context.Context, queryID, query strin
 	// Recall's workload tag rides the ctx marker (see RecallContext). It is the only
 	// enforcement an archive scan has, since max_bytes_to_read does not apply to
 	// iceberg table functions.
-	if s := c.applyWorkload(ctx, nil); s != nil {
+	if s := c.applyQuerySettings(ctx, nil); s != nil {
 		opts = append(opts, clickhouse.WithSettings(s))
 	}
 	opts = append(opts, clickhouse.WithProgress(func(p *clickhouse.Progress) {
@@ -1792,6 +1804,39 @@ func (c *ClickHouseClient) ExecWithID(ctx context.Context, queryID, query string
 	return c.Exec(ctx, query)
 }
 
+// KillQuery interrupts a running query by id. initial_query_id is matched as well
+// so a distributed query's per-shard parts die with their initiator, and the kill
+// is issued ON CLUSTER because system.processes is per-node: a query started
+// through the load balancer is not necessarily running on the node this
+// connection lands on.
+func (c *ClickHouseClient) KillQuery(ctx context.Context, queryID string) error {
+	if queryID == "" {
+		return nil
+	}
+	id := EscCHStr(queryID)
+	return c.killWhere(ctx, fmt.Sprintf("query_id = '%s' OR initial_query_id = '%s'", id, id))
+}
+
+// KillQueryPrefix interrupts every running query whose id starts with prefix. One
+// user search issues several ClickHouse queries (result windows, histogram chunks),
+// all sharing a per-request id prefix, so abandoning the search kills all of them
+// in a single statement.
+func (c *ClickHouseClient) KillQueryPrefix(ctx context.Context, prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	p := EscCHStr(prefix)
+	return c.killWhere(ctx, fmt.Sprintf("startsWith(query_id, '%s') OR startsWith(initial_query_id, '%s')", p, p))
+}
+
+// killWhere issues an asynchronous KILL QUERY. Asynchronous is deliberate: a query
+// stuck in an uninterruptible section (an object-storage read, for instance) would
+// otherwise block the caller until it returns. Killing an id that already finished
+// matches nothing and is not an error.
+func (c *ClickHouseClient) killWhere(ctx context.Context, where string) error {
+	return c.conn.Exec(ctx, fmt.Sprintf("KILL QUERY%s WHERE %s ASYNC", c.OnClusterSQL(), where))
+}
+
 // maxGeneratedQuerySize raises ClickHouse's max_query_size (default 256KB) for the query paths
 // that carry machine-generated SQL. pgr()'s scoring/reconnection SQL repeats the (bounded) process
 // guid IN-list across its edge branches and inlines reconnection edges as literals, so a midsize
@@ -1808,7 +1853,7 @@ func (c *ClickHouseClient) QueryLowPriority(ctx context.Context, query string) (
 	// replaces the context's settings wholesale, so a second call would drop the
 	// priority set here. Dashboard widgets arrive tagged; alerts and field stats,
 	// which also use this helper, do not.
-	settings := c.applyWorkload(ctx, clickhouse.Settings{
+	settings := c.applyQuerySettings(ctx, clickhouse.Settings{
 		"priority":       5,
 		"max_query_size": maxGeneratedQuerySize,
 	})
@@ -1877,13 +1922,13 @@ func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[strin
 // the context's settings map wholesale, which would drop the budgets that
 // QueryProvenance and QueryLowPriority put there.
 func (c *ClickHouseClient) QueryUserSearch(ctx context.Context, query string) ([]map[string]interface{}, error) {
-	return c.query(ctx, query, c.applyWorkload(ctx, nil))
+	return c.query(ctx, query, c.applyQuerySettings(ctx, nil))
 }
 
 // QueryUserSearchWithID is QueryUserSearch with a fixed query_id for profiling.
 func (c *ClickHouseClient) QueryUserSearchWithID(ctx context.Context, queryID, query string) ([]map[string]interface{}, error) {
 	ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(queryID))
-	return c.query(ctx, query, c.applyWorkload(ctx, nil))
+	return c.query(ctx, query, c.applyQuerySettings(ctx, nil))
 }
 
 func (c *ClickHouseClient) query(ctx context.Context, query string, settings clickhouse.Settings) ([]map[string]interface{}, error) {
@@ -2083,7 +2128,7 @@ func (c *ClickHouseClient) StreamQuery(ctx context.Context, queryID, query strin
 	// it with code 62. Bounded worst case, safe headroom, no effect on ordinary search SQL.
 	// Shared with model preview/scoring, so the workload tag rides the ctx marker
 	// rather than the call site, and merges into the settings built here.
-	streamSettings := c.applyWorkload(ctx, clickhouse.Settings{"max_query_size": maxGeneratedQuerySize})
+	streamSettings := c.applyQuerySettings(ctx, clickhouse.Settings{"max_query_size": maxGeneratedQuerySize})
 	opts := []clickhouse.QueryOption{clickhouse.WithSettings(streamSettings)}
 	if onProgress != nil {
 		var readSoFar uint64
@@ -2272,6 +2317,10 @@ func (c *ClickHouseClient) typeHintFieldSet(ctx context.Context) map[string]bool
 		return c.typeHintFields
 	}
 	set := make(map[string]bool)
+	if c.conn == nil {
+		c.typeHintFields = set
+		return set
+	}
 	var typ string
 	// c.Database (not currentDatabase()) is the logs DB; the pool's session database
 	// may be "default".

@@ -138,6 +138,30 @@ func reconOpts() QueryOptions {
 	return o
 }
 
+// An ancestor whose own process_creation is outside the window has no row of its own, but every
+// child's creation event names it. The spawn branch must carry that image out as parent_label, and
+// every UNION branch must project the column so the shapes still line up.
+func TestScoringSQLCarriesParentLabel(t *testing.T) {
+	opts := reconOpts()
+	opts.MaxRows = 100
+	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, map[string]bool{"file_write": true, "remote_thread": true}, false, 10, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, "parent_image AS parent_label") {
+		t.Error("spawn branch must emit the parent image as parent_label")
+	}
+	if n := strings.Count(sql, "AS parent_label"); n < 3 { // spawn + leaf + p2p branch
+		t.Errorf("every edge branch must project parent_label, got %d", n)
+	}
+	if !strings.Contains(sql, "any(ev.parent_label) AS parent_label") {
+		t.Error("edge aggregation must keep parent_label")
+	}
+	if !strings.Contains(sql, "proc_user, host, parent_label FROM (") {
+		t.Error("parent_label must reach the final projection")
+	}
+}
+
 func TestBuildReconnectionSQL(t *testing.T) {
 	p := ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{}}
 	sql, err := BuildReconnectionSQL([]string{"g1", "g2"}, p, 100, 50, reconOpts())
@@ -187,6 +211,27 @@ func TestAppendReconnectionEdges(t *testing.T) {
 	// injection target is not emitted as a literal edge
 	if strings.Contains(out, "'victim'") {
 		t.Error("injection/access peer must not be emitted (pass-2 owns it)")
+	}
+}
+
+// A reconnected peer is usually not expanded into a subtree, so its bridge edge is the only place
+// its identity can come from: the peer's own connection/lookup event names the image, and that
+// must ride out as parent_label or the node renders as a bare guid.
+func TestAppendReconnectionEdgesCarriesPeerImage(t *testing.T) {
+	peers := []ReconnectPeer{
+		{ReconType: "net", PeerGUID: "peer", SrcGUID: "tree", ObjectID: "net:1.2.3.4", Label: "1.2.3.4", Anomaly: 0.85, PeerImage: "c:\\windows\\evil.exe"},
+	}
+	out := AppendReconnectionEdges("SELECT 1", peers)
+	if !strings.Contains(out, "'c:\\\\windows\\\\evil.exe' AS parent_label") {
+		t.Errorf("peer edge must carry the peer image as parent_label, got: %s", out)
+	}
+	// The tree-side edge's parent is an in-tree process with its own row; it must not be relabeled.
+	treeEdge := out[strings.Index(out, "'tree' AS parent"):]
+	if end := strings.Index(treeEdge, " UNION ALL "); end > 0 {
+		treeEdge = treeEdge[:end]
+	}
+	if !strings.Contains(treeEdge, "'' AS parent_label") {
+		t.Errorf("tree-side edge should leave parent_label empty, got: %s", treeEdge)
 	}
 }
 

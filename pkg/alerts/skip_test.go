@@ -35,9 +35,9 @@ func TestShouldSkipAlert(t *testing.T) {
 		want  bool
 		about string
 	}{
-		{"new data after cursor", newEngine(true, now.Add(-1 * time.Minute)), alert(nil), false,
+		{"new data after cursor", newEngine(true, now.Add(-1*time.Minute)), alert(nil), false,
 			"data arrived after the cursor: must evaluate"},
-		{"no new data", newEngine(true, now.Add(-5 * time.Minute)), alert(nil), true,
+		{"no new data", newEngine(true, now.Add(-5*time.Minute)), alert(nil), true,
 			"newest data predates the cursor: safe to skip"},
 		{"fractal absent from hot", newEngine(true, time.Time{}), alert(nil), true,
 			"fresh map, cursor inside hot window, no rows: genuinely idle"},
@@ -49,13 +49,13 @@ func TestShouldSkipAlert(t *testing.T) {
 		{"never evaluated", newEngine(true, time.Time{}),
 			alert(func(a *Alert) { a.LastEvaluatedAt = time.Time{} }), false,
 			"zero cursor must always run"},
-		{"scheduled alert", newEngine(true, now.Add(-5 * time.Minute)),
+		{"scheduled alert", newEngine(true, now.Add(-5*time.Minute)),
 			alert(func(a *Alert) { a.AlertType = "scheduled" }), false,
 			"cron alerts may assert on absence of data"},
-		{"prism alert", newEngine(true, now.Add(-5 * time.Minute)),
+		{"prism alert", newEngine(true, now.Add(-5*time.Minute)),
 			alert(func(a *Alert) { a.PrismID = "p1" }), false,
 			"prism spans fractals: skip logic does not apply"},
-		{"no fractal", newEngine(true, now.Add(-5 * time.Minute)),
+		{"no fractal", newEngine(true, now.Add(-5*time.Minute)),
 			alert(func(a *Alert) { a.FractalID = "" }), false,
 			"unscoped alert cannot be matched against the map"},
 	}

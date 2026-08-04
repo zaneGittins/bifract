@@ -1,6 +1,7 @@
 package query
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -10,7 +11,7 @@ func spawnRow(parent, child string) map[string]interface{} {
 	return map[string]interface{}{
 		"parent": parent, "child": child, "label": "", "event_type": "spawn",
 		"anomaly_score": 0.5, "log_id": "l", "timestamp": "t", "fractal_id": "f",
-		"command_line": "", "proc_user": "", "host": "h",
+		"command_line": "", "proc_user": "", "host": "h", "parent_label": "p.exe",
 	}
 }
 
@@ -18,7 +19,7 @@ func leafRow(parent, child string, score float64) map[string]interface{} {
 	return map[string]interface{}{
 		"parent": parent, "child": child, "label": "x", "event_type": "net_connect",
 		"anomaly_score": score, "log_id": "l", "timestamp": "t", "fractal_id": "f",
-		"command_line": "", "proc_user": "", "host": "h",
+		"command_line": "", "proc_user": "", "host": "h", "parent_label": "",
 	}
 }
 
@@ -36,8 +37,9 @@ func TestEmitLiteralEdgeSource_AliasesOnlyOnFirstMember(t *testing.T) {
 		t.Fatal("small set should not overflow")
 	}
 	// Every column name must appear exactly once (only the first UNION member aliases them).
+	// Matched with a word boundary so "AS parent" does not also count "AS parent_label".
 	for _, c := range provenanceColumns {
-		if n := strings.Count(sql, " AS "+c); n != 1 {
+		if n := len(regexp.MustCompile(` AS `+c+`\b`).FindAllString(sql, -1)); n != 1 {
 			t.Errorf("column %q aliased %d times, want exactly 1 (aliases only on first UNION member)", c, n)
 		}
 	}

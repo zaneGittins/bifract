@@ -39,20 +39,25 @@ const AlertFeeds = {
         }
     },
 
+    // Every sub-tab view is listed here so adding one cannot leave a stale panel
+    // visible behind another tab.
+    SUB_TAB_VIEWS: ['alertsView', 'feedAlertsView', 'alertEditorView', 'actionsManageView', 'attackCoverageView'],
+
+    activateSubTab(name, visibleViewId) {
+        document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
+        document.querySelector(`.alerts-sub-tab[data-subtab="${name}"]`)?.classList.add('active');
+
+        for (const id of this.SUB_TAB_VIEWS) {
+            const el = document.getElementById(id);
+            if (el) el.style.display = id === visibleViewId ? 'block' : 'none';
+        }
+        if (visibleViewId !== 'attackCoverageView') window.AttackCoverage?.hide();
+    },
+
     showManualAlerts() {
         window.App?.pushSubPath('');
         this.closeDetailsPanel(true);
-        document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
-        document.querySelector('.alerts-sub-tab[data-subtab="manual"]')?.classList.add('active');
-
-        const alertsView = document.getElementById('alertsView');
-        const feedAlertsView = document.getElementById('feedAlertsView');
-        const alertEditorView = document.getElementById('alertEditorView');
-        const actionsManageView = document.getElementById('actionsManageView');
-        if (alertsView) alertsView.style.display = 'block';
-        if (feedAlertsView) feedAlertsView.style.display = 'none';
-        if (alertEditorView) alertEditorView.style.display = 'none';
-        if (actionsManageView) actionsManageView.style.display = 'none';
+        this.activateSubTab('manual', 'alertsView');
 
         if (window.Alerts) {
             Alerts.closeActionDrawer?.();
@@ -64,17 +69,7 @@ const AlertFeeds = {
 
     showFeedAlertsTab() {
         window.App?.pushSubPath('feeds');
-        document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
-        document.querySelector('.alerts-sub-tab[data-subtab="feeds"]')?.classList.add('active');
-
-        const alertsView = document.getElementById('alertsView');
-        const feedAlertsView = document.getElementById('feedAlertsView');
-        const alertEditorView = document.getElementById('alertEditorView');
-        const actionsManageView = document.getElementById('actionsManageView');
-        if (alertsView) alertsView.style.display = 'none';
-        if (feedAlertsView) feedAlertsView.style.display = 'block';
-        if (alertEditorView) alertEditorView.style.display = 'none';
-        if (actionsManageView) actionsManageView.style.display = 'none';
+        this.activateSubTab('feeds', 'feedAlertsView');
 
         if (window.Alerts) {
             Alerts.closeActionDrawer?.();
@@ -87,23 +82,27 @@ const AlertFeeds = {
 
     showActionsTab() {
         window.App?.pushSubPath('actions');
-        document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
-        document.querySelector('.alerts-sub-tab[data-subtab="actions"]')?.classList.add('active');
-
-        const alertsView = document.getElementById('alertsView');
-        const feedAlertsView = document.getElementById('feedAlertsView');
-        const alertEditorView = document.getElementById('alertEditorView');
-        const actionsManageView = document.getElementById('actionsManageView');
-        if (alertsView) alertsView.style.display = 'none';
-        if (feedAlertsView) feedAlertsView.style.display = 'none';
-        if (alertEditorView) alertEditorView.style.display = 'none';
-        if (actionsManageView) actionsManageView.style.display = 'block';
+        this.activateSubTab('actions', 'actionsManageView');
 
         if (window.Alerts) {
             Alerts.closeAlertPanel();
             Alerts.editingFeedAlert = false;
             Alerts.loadAllActions();
         }
+    },
+
+    showCoverageTab() {
+        window.App?.pushSubPath('coverage');
+        this.closeDetailsPanel(true);
+        this.activateSubTab('coverage', 'attackCoverageView');
+
+        if (window.Alerts) {
+            Alerts.closeActionDrawer?.();
+            Alerts.closeAlertPanel();
+            Alerts.editingFeedAlert = false;
+        }
+
+        window.AttackCoverage?.show();
     },
 
     setupEventListeners() {

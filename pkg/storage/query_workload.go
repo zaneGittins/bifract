@@ -387,17 +387,52 @@ func contextWorkload(ctx context.Context) string {
 	return name
 }
 
-// applyWorkload adds the workload tag to settings when ctx is marked and that
-// workload is provisioned. Callers pass the settings map they were going to send
-// anyway, since clickhouse-go's WithSettings replaces rather than merges.
-func (c *ClickHouseClient) applyWorkload(ctx context.Context, settings clickhouse.Settings) clickhouse.Settings {
+// budgetKey carries a server-side execution ceiling for a query.
+type budgetKey struct{}
+
+// QueryBudgetContext attaches a server-side execution ceiling, in seconds, to
+// every query run on ctx. A Go context deadline only stops the client reading:
+// ClickHouse keeps executing the abandoned query, which is how a search the user
+// gave up on lingers in system.processes burning CPU. max_execution_time is
+// enforced by the server itself, so the scan dies even if this process does.
+//
+// clickhouse-go derives max_execution_time from a context deadline on its own, but
+// only for queries that already carry settings -- a plain query on a deadline'd
+// context (an unprovisioned search workload is enough to produce one) reaches
+// ClickHouse with no ceiling at all. Setting it explicitly closes that gap.
+func QueryBudgetContext(ctx context.Context, seconds int) context.Context {
+	if seconds <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, budgetKey{}, seconds)
+}
+
+// contextQueryBudget returns the execution ceiling ctx carries, or 0.
+func contextQueryBudget(ctx context.Context) int {
+	sec, _ := ctx.Value(budgetKey{}).(int)
+	return sec
+}
+
+// applyQuerySettings adds the settings ctx implies -- the workload tag when it is
+// marked and that workload is provisioned, and the execution ceiling when one was
+// attached. Callers pass the settings map they were going to send anyway, since
+// clickhouse-go's WithSettings replaces rather than merges.
+func (c *ClickHouseClient) applyQuerySettings(ctx context.Context, settings clickhouse.Settings) clickhouse.Settings {
 	name := contextWorkload(ctx)
-	if name == "" || !c.workloadActive(name) {
+	tag := name != "" && c.workloadActive(name)
+	budget := contextQueryBudget(ctx)
+	if !tag && budget <= 0 {
 		return settings
 	}
 	if settings == nil {
 		settings = clickhouse.Settings{}
 	}
-	settings["workload"] = name
+	if tag {
+		settings["workload"] = name
+	}
+	if budget > 0 {
+		settings["max_execution_time"] = budget
+		settings["timeout_overflow_mode"] = "throw"
+	}
 	return settings
 }

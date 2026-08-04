@@ -32,6 +32,7 @@
     <link rel="stylesheet" href="/static/ingestTokens.css">
     <link rel="stylesheet" href="/static/instructionLibraries.css">
     <link rel="stylesheet" href="/static/schemaFields.css">
+    <link rel="stylesheet" href="/static/attackCoverage.css">
     <link rel="stylesheet" href="/static/fonts/fonts.css">
 </head>
 <body>
@@ -2102,7 +2103,11 @@
             <button class="alerts-sub-tab active" data-subtab="manual" onclick="AlertFeeds.showManualAlerts()">Alerts</button>
             <button class="alerts-sub-tab" data-subtab="feeds" onclick="AlertFeeds.showFeedAlertsTab()">Feeds</button>
             <button class="alerts-sub-tab" data-subtab="actions" onclick="AlertFeeds.showActionsTab()">Actions</button>
+            <button class="alerts-sub-tab" data-subtab="coverage" onclick="AlertFeeds.showCoverageTab()">Coverage</button>
         </div>
+
+        <!-- MITRE ATT&CK Coverage View (rendered by attackCoverage.js) -->
+        <div id="attackCoverageView" class="auth-required" style="display: none;"></div>
 
         <!-- Manual Alerts View (existing) -->
         <div id="alertsView" class="auth-required" style="display: none;">
@@ -3963,6 +3968,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/performance.js"></script>
     <script src="/static/alerts.js"></script>
     <script src="/static/alertFeeds.js"></script>
+    <script src="/static/attackCoverage.js"></script>
     <script src="/static/charts.js"></script>
     <script src="/static/format-panel.js"></script>
     <script src="/static/notebooks.js"></script>

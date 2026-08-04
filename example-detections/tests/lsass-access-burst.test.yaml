@@ -1,0 +1,86 @@
+rule: ../rules/lsass-access-burst.yml
+normalizer: ../../example-normalizers/sysmon-normalizer.yaml
+
+cases:
+  # Three accesses from one image reach the threshold. Each case is scoped to its own
+  # synthetic fractal, so the counts here cannot be inflated by any other case.
+  - name: three lsass accesses from one process
+    expect: match
+    count: 1
+    logs:
+      - EventID: 10
+        UtcTime: "2026-08-03 09:15:01.100"
+        Computer: SRV-DC-01
+        SourceImage: C:\Users\Public\rundll32.exe
+        TargetImage: C:\Windows\System32\lsass.exe
+        GrantedAccess: "0x1410"
+      - EventID: 10
+        UtcTime: "2026-08-03 09:15:01.640"
+        Computer: SRV-DC-01
+        SourceImage: C:\Users\Public\rundll32.exe
+        TargetImage: C:\Windows\System32\lsass.exe
+        GrantedAccess: "0x1410"
+      - EventID: 10
+        UtcTime: "2026-08-03 09:15:02.310"
+        Computer: SRV-DC-01
+        SourceImage: C:\Users\Public\rundll32.exe
+        TargetImage: C:\Windows\System32\lsass.exe
+        GrantedAccess: "0x1fffff"
+
+  # Two is under the threshold. This is the assertion an offline filter-only matcher
+  # could never make.
+  - name: two lsass accesses stay below the threshold
+    expect: no_match
+    logs:
+      - EventID: 10
+        UtcTime: "2026-08-03 09:20:11.000"
+        Computer: SRV-DC-01
+        SourceImage: C:\Program Files\Vendor\agent.exe
+        TargetImage: C:\Windows\System32\lsass.exe
+        GrantedAccess: "0x1410"
+      - EventID: 10
+        UtcTime: "2026-08-03 09:20:14.000"
+        Computer: SRV-DC-01
+        SourceImage: C:\Program Files\Vendor\agent.exe
+        TargetImage: C:\Windows\System32\lsass.exe
+        GrantedAccess: "0x1410"
+
+  # Three accesses spread across three different images: no single image reaches the
+  # threshold, so the grouping must keep them apart.
+  - name: three accesses from three different images
+    expect: no_match
+    logs:
+      - EventID: 10
+        UtcTime: "2026-08-03 09:31:00.000"
+        Computer: SRV-DC-01
+        SourceImage: C:\Program Files\A\a.exe
+        TargetImage: C:\Windows\System32\lsass.exe
+      - EventID: 10
+        UtcTime: "2026-08-03 09:31:05.000"
+        Computer: SRV-DC-01
+        SourceImage: C:\Program Files\B\b.exe
+        TargetImage: C:\Windows\System32\lsass.exe
+      - EventID: 10
+        UtcTime: "2026-08-03 09:31:09.000"
+        Computer: SRV-DC-01
+        SourceImage: C:\Program Files\C\c.exe
+        TargetImage: C:\Windows\System32\lsass.exe
+
+  - name: accesses to a non-lsass target
+    expect: no_match
+    logs:
+      - EventID: 10
+        UtcTime: "2026-08-03 09:40:00.000"
+        Computer: SRV-DC-01
+        SourceImage: C:\Users\Public\rundll32.exe
+        TargetImage: C:\Windows\explorer.exe
+      - EventID: 10
+        UtcTime: "2026-08-03 09:40:02.000"
+        Computer: SRV-DC-01
+        SourceImage: C:\Users\Public\rundll32.exe
+        TargetImage: C:\Windows\explorer.exe
+      - EventID: 10
+        UtcTime: "2026-08-03 09:40:04.000"
+        Computer: SRV-DC-01
+        SourceImage: C:\Users\Public\rundll32.exe
+        TargetImage: C:\Windows\explorer.exe

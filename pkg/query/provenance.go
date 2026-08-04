@@ -17,7 +17,10 @@ import (
 // provenanceColumns are the flat columns the pgr() scored edge list exposes. pgr() is a source
 // command (parser/source_command.go): it is resolved into a SQL subquery source and these
 // resolve as bare columns for any downstream BQL (filter/aggregate/sort/table/pgraph).
-var provenanceColumns = []string{"parent", "child", "label", "event_type", "anomaly_score", "log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host"}
+// parent_label is the parent node's image, emitted only where the parent may have no row of its
+// own (a spawn row's out-of-range ancestor, a reconnected peer) so the viz can name it instead of
+// showing a bare guid.
+var provenanceColumns = []string{"parent", "child", "label", "event_type", "anomaly_score", "log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host", "parent_label"}
 
 // provenanceNumericColumns is the subset of provenanceColumns that are already numeric in the
 // subquery (so downstream numeric comparisons must not string-coerce them).
@@ -25,7 +28,7 @@ var provenanceNumericColumns = []string{"anomaly_score"}
 
 // provenanceEmptyScoreSQL yields zero rows with the pgr output shape, so a query over an empty
 // tree behaves correctly (count() -> 0, etc.) without special-casing every caller.
-const provenanceEmptyScoreSQL = "SELECT '' AS parent, '' AS child, '' AS label, '' AS event_type, toFloat64(0) AS anomaly_score, '' AS log_id, '' AS timestamp, '' AS fractal_id, '' AS command_line, '' AS proc_user, '' AS host WHERE 1 = 0"
+const provenanceEmptyScoreSQL = "SELECT '' AS parent, '' AS child, '' AS label, '' AS event_type, toFloat64(0) AS anomaly_score, '' AS log_id, '' AS timestamp, '' AS fractal_id, '' AS command_line, '' AS proc_user, '' AS host, '' AS parent_label WHERE 1 = 0"
 
 // provenanceScoreSQL runs pass 1 (tree traversal, collect guids) and returns the pass-2
 // scored-edge SQL, which becomes the query's subquery source. Returns a zero-row stub when the

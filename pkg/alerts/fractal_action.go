@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"bifract/pkg/storage"
@@ -17,29 +18,29 @@ type FractalActionClient struct {
 
 // FractalAction represents a "send to fractal" action configuration
 type FractalAction struct {
-	ID                 string            `json:"id"`
-	Name               string            `json:"name"`
-	Description        string            `json:"description"`
-	TargetFractalID    string            `json:"target_fractal_id"`
-	PreserveTimestamp  bool              `json:"preserve_timestamp"`
-	AddAlertContext    bool              `json:"add_alert_context"`
-	FieldMappings      map[string]string `json:"field_mappings"`
-	MaxLogsPerTrigger  int               `json:"max_logs_per_trigger"`
-	Enabled            bool              `json:"enabled"`
-	FractalID          string            `json:"fractal_id,omitempty"`
-	PrismID            string            `json:"prism_id,omitempty"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Description       string            `json:"description"`
+	TargetFractalID   string            `json:"target_fractal_id"`
+	PreserveTimestamp bool              `json:"preserve_timestamp"`
+	AddAlertContext   bool              `json:"add_alert_context"`
+	FieldMappings     map[string]string `json:"field_mappings"`
+	MaxLogsPerTrigger int               `json:"max_logs_per_trigger"`
+	Enabled           bool              `json:"enabled"`
+	FractalID         string            `json:"fractal_id,omitempty"`
+	PrismID           string            `json:"prism_id,omitempty"`
 }
 
 // FractalResult represents the outcome of sending logs to a fractal
 type FractalResult struct {
-	FractalActionID    string        `json:"fractal_action_id"`
-	FractalActionName  string        `json:"fractal_action_name"`
-	TargetFractalID    string        `json:"target_fractal_id"`
-	Success            bool          `json:"success"`
-	LogsSent           int           `json:"logs_sent"`
-	ResponseTime       time.Duration `json:"response_time"`
-	Error              string        `json:"error,omitempty"`
-	ExecutedAt         time.Time     `json:"executed_at"`
+	FractalActionID   string        `json:"fractal_action_id"`
+	FractalActionName string        `json:"fractal_action_name"`
+	TargetFractalID   string        `json:"target_fractal_id"`
+	Success           bool          `json:"success"`
+	LogsSent          int           `json:"logs_sent"`
+	ResponseTime      time.Duration `json:"response_time"`
+	Error             string        `json:"error,omitempty"`
+	ExecutedAt        time.Time     `json:"executed_at"`
 }
 
 // NewFractalActionClient creates a new fractal action client
@@ -69,7 +70,7 @@ func (f *FractalActionClient) Send(ctx context.Context, action FractalAction, al
 	}
 
 	// Transform logs for ingestion into target fractal
-	logEntries, err := f.transformLogsForFractal(action, alert, resolvedName, logsToSend)
+	logEntries, err := f.transformLogsForFractal(ctx, action, alert, resolvedName, logsToSend)
 	if err != nil {
 		result.Error = fmt.Sprintf("Failed to transform logs: %v", err)
 		result.ResponseTime = time.Since(start)
@@ -92,38 +93,14 @@ func (f *FractalActionClient) Send(ctx context.Context, action FractalAction, al
 }
 
 // transformLogsForFractal converts query results into log entries for the target fractal
-func (f *FractalActionClient) transformLogsForFractal(action FractalAction, alert *Alert, resolvedName string, results []map[string]interface{}) ([]storage.LogEntry, error) {
+func (f *FractalActionClient) transformLogsForFractal(ctx context.Context, action FractalAction, alert *Alert, resolvedName string, results []map[string]interface{}) ([]storage.LogEntry, error) {
 	var logEntries []storage.LogEntry
 
 	// Get source fractal name
 	sourceFractalName := f.getFractalName(alert.FractalID)
 
 	for _, result := range results {
-		// Create a copy of the original log data to preserve all fields
-		logData := make(map[string]interface{})
-
-		// Copy all original fields, extracting nested fields from 'fields' map
-		for key, value := range result {
-			if key == "fields" {
-				// Extract nested fields and promote them to top level
-				// Try both map[string]interface{} and map[string]string
-				if fieldsMap, ok := value.(map[string]interface{}); ok {
-					for fieldKey, fieldValue := range fieldsMap {
-						logData[fieldKey] = fieldValue
-					}
-				} else if fieldsMap, ok := value.(map[string]string); ok {
-					for fieldKey, fieldValue := range fieldsMap {
-						logData[fieldKey] = fieldValue
-					}
-				} else {
-					// If fields isn't a map, keep it as-is
-					logData[key] = value
-				}
-			} else {
-				// Copy other top-level fields as-is
-				logData[key] = value
-			}
-		}
+		logData := f.mergeRowFields(ctx, result)
 
 		// Preserve the original log_id before it gets replaced by the
 		// new entry's log_id so consumers can trace back to the source.
@@ -153,7 +130,7 @@ func (f *FractalActionClient) transformLogsForFractal(action FractalAction, aler
 		// Create base log entry with the complete JSON
 		logEntry := storage.LogEntry{
 			RawLog:    string(logJSON),
-			Timestamp: time.Now(),     // Default to current time
+			Timestamp: time.Now(), // Default to current time
 			FractalID: action.TargetFractalID,
 			Fields:    make(map[string]string),
 		}
@@ -175,32 +152,16 @@ func (f *FractalActionClient) transformLogsForFractal(action FractalAction, aler
 
 		// Populate Fields map with all log data for indexing/searching
 		for key, value := range logData {
-			// Preserve the original format for better searching
-			switch v := value.(type) {
-			case string:
-				logEntry.Fields[key] = v
-			case int, int8, int16, int32, int64:
-				logEntry.Fields[key] = fmt.Sprintf("%d", v)
-			case uint, uint8, uint16, uint32, uint64:
-				logEntry.Fields[key] = fmt.Sprintf("%d", v)
-			case float32, float64:
-				logEntry.Fields[key] = fmt.Sprintf("%g", v)
-			case bool:
-				if v {
-					logEntry.Fields[key] = "true"
-				} else {
-					logEntry.Fields[key] = "false"
-				}
-			default:
-				logEntry.Fields[key] = fmt.Sprintf("%v", v)
-			}
+			logEntry.Fields[key] = fieldString(value)
 		}
 
-		// Apply field mappings if configured (can override existing fields)
+		// Apply field mappings if configured (can override existing fields).
+		// Sourced from logData, not the raw row, so a mapping can name any
+		// hydrated field and not just the ones the query projected.
 		if len(action.FieldMappings) > 0 {
 			for sourceField, targetField := range action.FieldMappings {
-				if value, exists := result[sourceField]; exists {
-					logEntry.Fields[targetField] = fmt.Sprintf("%v", value)
+				if value, exists := logData[sourceField]; exists {
+					logEntry.Fields[targetField] = fieldString(value)
 				}
 			}
 		}
@@ -211,8 +172,84 @@ func (f *FractalActionClient) transformLogsForFractal(action FractalAction, aler
 	return logEntries, nil
 }
 
+// mergeRowFields flattens a query result row into forwardable log data.
+//
+// The nested field map is overlaid first so top-level columns always win, which
+// matches the precedence in ResolveTemplateName and dictionaries.getLogField. It
+// also matters for correctness: a field the alert filtered on is projected
+// top-level as a String cast, while parseLogFields drops declared type hints the
+// log did not carry, so top-level-wins keeps those values exactly as they were
+// before hydration existed.
+//
+// A row carrying norm_log as a raw string instead of a parsed map comes from an
+// unpruned projection (a pipeline command). Parsing it here costs no query and
+// makes forwarded logs the same shape either way.
+func (f *FractalActionClient) mergeRowFields(ctx context.Context, row map[string]interface{}) map[string]interface{} {
+	logData := make(map[string]interface{}, len(row))
+
+	switch nested := row["fields"].(type) {
+	case map[string]interface{}:
+		for k, v := range nested {
+			logData[k] = v
+		}
+	case map[string]string:
+		for k, v := range nested {
+			logData[k] = v
+		}
+	}
+	if normLog, ok := row["norm_log"].(string); ok && normLog != "" && f.ch != nil {
+		for k, v := range f.ch.ParseLogFields(ctx, normLog) {
+			logData[k] = v
+		}
+	}
+
+	for key, value := range row {
+		if key == "fields" || key == "norm_log" {
+			continue
+		}
+		logData[key] = value
+	}
+	return logData
+}
+
+// fieldString renders a log value for the indexed Fields map. Hydrated rows carry
+// native JSON types, so this has to cover more than the String casts the pruned
+// projection produced: %g would turn a nanosecond epoch into "1.7e+18", and %v
+// would render a nested object as "map[a:1]".
+func fieldString(value interface{}) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	case int, int8, int16, int32, int64:
+		return fmt.Sprintf("%d", v)
+	case uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprintf("%d", v)
+	case float32:
+		return strconv.FormatFloat(float64(v), 'f', -1, 32)
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case map[string]interface{}, []interface{}:
+		if b, err := json.Marshal(v); err == nil {
+			return string(b)
+		}
+		return fmt.Sprintf("%v", v)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
 // getFractalName looks up the fractal name by ID
 func (f *FractalActionClient) getFractalName(fractalID string) string {
+	if f.pg == nil {
+		return fractalID
+	}
 	var fractalName string
 	query := "SELECT name FROM fractals WHERE id = $1"
 

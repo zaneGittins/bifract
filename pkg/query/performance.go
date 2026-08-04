@@ -326,7 +326,14 @@ func (h *PerformanceHandler) HandleProcesses(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	sql := `SELECT
+	// Cluster: system.processes is per node, so a query started through the load
+	// balancer is invisible from any other node. Read every replica and label the
+	// rows with the node they are running on.
+	source := "system.processes"
+	if h.db.IsCluster() {
+		source = fmt.Sprintf("clusterAllReplicas('%s', system.processes)", escCHStr(h.db.Cluster))
+	}
+	sql := fmt.Sprintf(`SELECT
 		query_id,
 		user,
 		query,
@@ -336,11 +343,13 @@ func (h *PerformanceHandler) HandleProcesses(w http.ResponseWriter, r *http.Requ
 		total_rows_approx,
 		memory_usage,
 		peak_memory_usage,
+		toUInt64(is_cancelled) AS is_cancelled,
+		hostName() AS node,
 		formatReadableSize(memory_usage) AS memory_readable,
 		formatReadableSize(read_bytes) AS read_readable
-	FROM system.processes
+	FROM %s
 	WHERE is_initial_query = 1
-	ORDER BY elapsed DESC`
+	ORDER BY elapsed DESC`, source)
 
 	results, err := h.db.Query(r.Context(), sql)
 	if err != nil {
@@ -378,9 +387,10 @@ func (h *PerformanceHandler) HandleKillQuery(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Sanitize: query_id should be a UUID-like string
+	// Sanitize: ids are hex/UUID-like, optionally with a Bifract prefix
+	// (bif-search-<uuid>-h3), so letters, digits, dashes and underscores only.
 	for _, c := range queryID {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '-') {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_') {
 			respondJSON(w, http.StatusBadRequest, map[string]interface{}{
 				"success": false,
 				"error":   "Invalid query_id format",
@@ -389,8 +399,10 @@ func (h *PerformanceHandler) HandleKillQuery(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	killSQL := fmt.Sprintf("KILL QUERY WHERE query_id = '%s'", queryID)
-	err := h.db.Exec(r.Context(), killSQL)
+	// KillQuery also matches initial_query_id and, on a cluster, runs on every node:
+	// killing only the row the admin clicked leaves the distributed sub-queries it
+	// spawned running, which is why killed queries appeared not to die.
+	err := h.db.KillQuery(r.Context(), queryID)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"success": false,

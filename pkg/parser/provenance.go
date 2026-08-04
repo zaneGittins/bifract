@@ -315,11 +315,18 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, opts Qu
 	aPath := func(col string) string { return abstractExpr(col, AbstractPath) }
 
 	// Each edge SELECT yields: src_node, dst_node, label, event_type, fkey_src, fkey_tgt, log_id,
-	// timestamp, fractal_id, host -- log_id + timestamp + fractal_id are the columns the standard
-	// log-detail fetch (/logs/fields) needs, in a normal search row's shape.
+	// timestamp, fractal_id, host, parent_label -- log_id + timestamp + fractal_id are the columns
+	// the standard log-detail fetch (/logs/fields) needs, in a normal search row's shape.
+	//
+	// parent_label carries the PARENT node's image for rows whose parent may have no row of its own
+	// in the result. A spawn row's parent_guid is only a tree node when its OWN process_creation is
+	// in range; when it is not, the child's event still names it (proc_lineage.parent_image), so the
+	// ancestor renders as its image instead of a bare guid. Empty on the other branches, whose
+	// parents are always in-tree processes that carry their own spawn row.
 	spawnEdges := fmt.Sprintf(
 		"SELECT parent_guid AS src_node, process_guid AS dst_node, image AS label, 'spawn' AS event_type, "+
-			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, computer_name AS host FROM %s FINAL WHERE process_guid IN (%s)%s",
+			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, computer_name AS host, "+
+			"parent_image AS parent_label FROM %s FINAL WHERE process_guid IN (%s)%s",
 		aPath("parent_image"), aPath("image"), procLineage, inList, frac())
 
 	// Leaf edges (file/net/dns) come from the process_edges rollup keyed by
@@ -352,7 +359,7 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, opts Qu
 		}
 		leafEdges = fmt.Sprintf(
 			"SELECT process_guid AS src_node, dst_node, label, event_type, fkey_src, fkey_tgt, log_id, "+
-				"toString(timestamp) AS timestamp, fractal_id, computer_name AS host "+
+				"toString(timestamp) AS timestamp, fractal_id, computer_name AS host, '' AS parent_label "+
 				"FROM %s WHERE %s%s AND process_guid IN (%s) AND event_type IN (%s)",
 			edgeTable, edgeFrac, userWin, inList, strings.Join(leafTypes, ", "))
 	}
@@ -363,7 +370,7 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, opts Qu
 	p2pEdges := func(category, eventType string) string {
 		return fmt.Sprintf(
 			"SELECT fields.source_process_guid::String AS src_node, fields.target_process_guid::String AS dst_node, "+
-				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host "+
+				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host, '' AS parent_label "+
 				"FROM %[3]s WHERE %[4]s%[5]s AND fields.source_process_guid::String IN (%[6]s) "+
 				"AND fields.bifract_category = '%[8]s' AND fields.image::String != '' AND fields.target_image::String != '' "+
 				"AND fields.target_process_guid::String != ''",
@@ -489,7 +496,8 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	// are already one-per-process (proc_lineage FINAL). argMax/max keep a consistent latest
 	// (log_id,timestamp) pair for the detail lookup.
 	edgesAgg := fmt.Sprintf("SELECT src_node, dst_node, any(ev.label) AS label, event_type, any(ev.fkey_src) AS fkey_src, "+
-		"any(ev.fkey_tgt) AS fkey_tgt, argMax(ev.log_id, ev.timestamp) AS log_id, max(ev.timestamp) AS timestamp, any(ev.fractal_id) AS fractal_id, any(ev.host) AS host "+
+		"any(ev.fkey_tgt) AS fkey_tgt, argMax(ev.log_id, ev.timestamp) AS log_id, max(ev.timestamp) AS timestamp, any(ev.fractal_id) AS fractal_id, any(ev.host) AS host, "+
+		"any(ev.parent_label) AS parent_label "+
 		"FROM (%s) AS ev GROUP BY src_node, dst_node, event_type", edges)
 
 	// Anomaly = greatest of two rarity signals (non-spawn edges):
@@ -535,13 +543,13 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 		partitionBy = "(event_type = 'spawn'), parent" // per-process leaf cap
 		capN, applyCap = diffusePerProcLeaves, true
 	}
-	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user, host FROM (")
-	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user, host")
+	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user, host, parent_label FROM (")
+	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user, host, parent_label")
 	if applyCap {
 		b.WriteString(fmt.Sprintf(", row_number() OVER (PARTITION BY %s ORDER BY anomaly_score DESC) AS _rn", partitionBy))
 	}
 	b.WriteString(" FROM (")
-	b.WriteString("SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.log_id AS log_id, e.timestamp AS timestamp, e.fractal_id AS fractal_id, e.host AS host, coalesce(pm.command_line, '') AS command_line, coalesce(pm.proc_user, '') AS proc_user, ")
+	b.WriteString("SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.log_id AS log_id, e.timestamp AS timestamp, e.fractal_id AS fractal_id, e.host AS host, e.parent_label AS parent_label, coalesce(pm.command_line, '') AS command_line, coalesce(pm.proc_user, '') AS proc_user, ")
 	b.WriteString(anomExpr)
 	b.WriteString(fmt.Sprintf("FROM (%s) AS e ", edgesAgg))
 	b.WriteString("LEFT JOIN fe ON fe.src_image = e.fkey_src AND fe.event_type = e.event_type AND fe.target_norm = e.fkey_tgt ")
@@ -801,13 +809,19 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, totalHosts, totalI
 //   - file: one edge -- writer -> executor (the file path in Label; no object node).
 //   - injection/access: none (pass-2 owns source->target); peer is expansion-only.
 // Edges are deduped by (parent, child, event_type). Every value is escaped.
+//
+// The peer -> object edge carries the peer's image in parent_label. Only the top few peers are
+// expanded into real subtrees, so most peers reach the graph through this edge alone and have no
+// process_creation row of their own to name them -- but the very event that formed the bridge (the
+// peer's connection / lookup) does name the image, so the node renders as its image rather than a
+// bare guid.
 func AppendReconnectionEdges(pass2SQL string, peers []ReconnectPeer) string {
-	const cols = "parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user, host"
+	const cols = "parent, child, label, event_type, anomaly_score, log_id, timestamp, fractal_id, command_line, proc_user, host, parent_label"
 	base := "SELECT " + cols + " FROM (" + pass2SQL + ")"
 
 	seen := map[string]bool{}
 	var lits []string
-	emit := func(parent, child, label, eventType string, anomaly float64, logID, ts, fractal, host string) {
+	emit := func(parent, child, label, eventType string, anomaly float64, logID, ts, fractal, host, parentLabel string) {
 		if parent == "" || child == "" {
 			return
 		}
@@ -818,19 +832,19 @@ func AppendReconnectionEdges(pass2SQL string, peers []ReconnectPeer) string {
 		seen[key] = true
 		lits = append(lits, fmt.Sprintf(
 			"SELECT '%s' AS parent, '%s' AS child, '%s' AS label, '%s' AS event_type, toFloat64(%s) AS anomaly_score, "+
-				"'%s' AS log_id, '%s' AS timestamp, '%s' AS fractal_id, '' AS command_line, '' AS proc_user, '%s' AS host",
+				"'%s' AS log_id, '%s' AS timestamp, '%s' AS fractal_id, '' AS command_line, '' AS proc_user, '%s' AS host, '%s' AS parent_label",
 			escapeString(parent), escapeString(child), escapeString(label), escapeString(eventType),
-			strconv.FormatFloat(anomaly, 'f', 4, 64), escapeString(logID), escapeString(ts), escapeString(fractal), escapeString(host)))
+			strconv.FormatFloat(anomaly, 'f', 4, 64), escapeString(logID), escapeString(ts), escapeString(fractal), escapeString(host), escapeString(parentLabel)))
 	}
 
 	for _, pe := range peers {
 		et := "reconnect_" + pe.ReconType
 		switch {
 		case pe.ObjectID != "": // net/dns: converge both endpoints on the shared object node
-			emit(pe.SrcGUID, pe.ObjectID, pe.Label, et, pe.Anomaly, "", "", "", "")
-			emit(pe.PeerGUID, pe.ObjectID, pe.Label, et, pe.Anomaly, pe.PeerLogID, pe.PeerTS, pe.PeerFractal, pe.PeerHost)
+			emit(pe.SrcGUID, pe.ObjectID, pe.Label, et, pe.Anomaly, "", "", "", "", "")
+			emit(pe.PeerGUID, pe.ObjectID, pe.Label, et, pe.Anomaly, pe.PeerLogID, pe.PeerTS, pe.PeerFractal, pe.PeerHost, pe.PeerImage)
 		case pe.ReconType == "file" && pe.SrcGUID != "": // file: writer -> executor
-			emit(pe.SrcGUID, pe.PeerGUID, pe.Label, et, pe.Anomaly, pe.PeerLogID, pe.PeerTS, pe.PeerFractal, pe.PeerHost)
+			emit(pe.SrcGUID, pe.PeerGUID, pe.Label, et, pe.Anomaly, pe.PeerLogID, pe.PeerTS, pe.PeerFractal, pe.PeerHost, "")
 		}
 		// injection/access: skip (pass-2 owns the source->target edge)
 	}

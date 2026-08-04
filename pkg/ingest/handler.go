@@ -5,8 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -14,7 +14,6 @@ import (
 
 	"bifract/pkg/ingesttokens"
 	"bifract/pkg/normalizers"
-	"bifract/pkg/settings"
 	"bifract/pkg/storage"
 )
 
@@ -80,15 +79,11 @@ func (h *IngestHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce body size limit
-	bodyReader := r.Body
-	if h.maxBodySize > 0 {
-		bodyReader = http.MaxBytesReader(w, r.Body, h.maxBodySize)
-	}
+	defer r.Body.Close()
 
-	body, err := io.ReadAll(bodyReader)
+	body, err := readRequestBody(w, r, h.maxBodySize)
 	if err != nil {
-		if err.Error() == "http: request body too large" {
+		if errors.Is(err, errBodyTooLarge) {
 			respondJSON(w, http.StatusRequestEntityTooLarge, IngestResponse{
 				Success: false,
 				Error:   fmt.Sprintf("Request body exceeds %d byte limit", h.maxBodySize),
@@ -101,7 +96,6 @@ func (h *IngestHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer r.Body.Close()
 
 	logs, err := h.parseLogsWithToken(body, tokenData)
 	if err != nil {
@@ -230,7 +224,7 @@ func (h *IngestHandler) parseJSONLogsWithConfig(data []byte, norm *normalizers.C
 	var jsonArray []map[string]interface{}
 	if err := json.Unmarshal(data, &jsonArray); err == nil {
 		for _, obj := range jsonArray {
-			log, err := h.parseLogObjectWithConfig(obj, norm, tsFields)
+			log, err := BuildLogEntry(obj, norm, tsFields)
 			if err != nil {
 				continue
 			}
@@ -242,7 +236,7 @@ func (h *IngestHandler) parseJSONLogsWithConfig(data []byte, norm *normalizers.C
 	// Try to parse as single JSON object
 	var jsonObj map[string]interface{}
 	if err := json.Unmarshal(data, &jsonObj); err == nil {
-		log, err := h.parseLogObjectWithConfig(jsonObj, norm, tsFields)
+		log, err := BuildLogEntry(jsonObj, norm, tsFields)
 		if err != nil {
 			return nil, err
 		}
@@ -265,7 +259,7 @@ func (h *IngestHandler) parseJSONLogsWithConfig(data []byte, norm *normalizers.C
 			continue
 		}
 
-		log, err := h.parseLogObjectWithConfig(obj, norm, tsFields)
+		log, err := BuildLogEntry(obj, norm, tsFields)
 		if err != nil {
 			continue
 		}
@@ -277,39 +271,6 @@ func (h *IngestHandler) parseJSONLogsWithConfig(data []byte, norm *normalizers.C
 	}
 
 	return nil, fmt.Errorf("unable to parse logs: not valid JSON array, object, or NDJSON")
-}
-
-func (h *IngestHandler) parseLogObjectWithConfig(obj map[string]interface{}, norm *normalizers.CompiledNormalizer, tsFields []ingesttokens.TsField) (storage.LogEntry, error) {
-	entry := storage.LogEntry{}
-
-	rawBytes, err := json.Marshal(obj)
-	if err != nil {
-		return entry, fmt.Errorf("failed to marshal raw log: %w", err)
-	}
-	entry.RawLog = string(rawBytes)
-
-	// Build flat fields without any structural transforms.
-	built := normalizers.BuildFieldsWithNested(obj)
-	entry.Fields = built.Fields
-
-	// Apply normalizer transforms (flatten, snake_case, lowercase, etc.)
-	if norm != nil {
-		entry.Fields = norm.ApplyTransformsWithNested(entry.Fields, built.NestedKeys)
-	}
-	entry.Normalizer = norm.Stamp()
-
-	ingestTime := time.Now()
-	entry.Timestamp = h.extractTimestamp(entry.Fields, tsFields, norm)
-
-	if entry.Timestamp.IsZero() {
-		entry.Timestamp = ingestTime
-	}
-
-	entry.IngestTimestamp = ingestTime
-	entry.Fields["ingesttimestamp"] = ingestTime.Format(time.RFC3339Nano)
-	entry.LogID = storage.GenerateLogID(entry.Timestamp, entry.RawLog)
-
-	return entry, nil
 }
 
 // parseKVLogs parses key=value formatted logs.
@@ -338,7 +299,7 @@ func (h *IngestHandler) parseKVLogs(data []byte, token *ingesttokens.ValidatedTo
 		entry.Normalizer = token.Normalizer.Stamp()
 
 		ingestTime := time.Now()
-		entry.Timestamp = h.extractTimestamp(entry.Fields, token.TimestampFields, token.Normalizer)
+		entry.Timestamp = ExtractTimestamp(entry.Fields, token.TimestampFields, token.Normalizer)
 		if entry.Timestamp.IsZero() {
 			entry.Timestamp = ingestTime
 		}
@@ -413,165 +374,6 @@ func (h *IngestHandler) parseKVLine(line string, fields map[string]string) {
 
 		fields[key] = value
 	}
-}
-
-
-
-
-// extractTimestamp tries per-token fields, then normalizer fields, then global settings, then common field names.
-func (h *IngestHandler) extractTimestamp(fields map[string]string, tsFields []ingesttokens.TsField, norm *normalizers.CompiledNormalizer) time.Time {
-	// Try per-token configured timestamp fields first
-	for _, tsField := range tsFields {
-		if val, ok := fields[tsField.Field]; ok && val != "" {
-			if ts := h.parseTimestampWithFormat(val, tsField.Format); !ts.IsZero() {
-				return ts
-			}
-		}
-	}
-
-	// Try normalizer's timestamp fields
-	if len(tsFields) == 0 && norm != nil && len(norm.TimestampFields) > 0 {
-		for _, tsField := range norm.TimestampFields {
-			if val, ok := fields[tsField.Field]; ok && val != "" {
-				if ts := h.parseTimestampWithFormat(val, tsField.Format); !ts.IsZero() {
-					return ts
-				}
-			}
-		}
-	}
-
-	// Fall back to global settings if neither token nor normalizer had fields
-	if len(tsFields) == 0 && (norm == nil || len(norm.TimestampFields) == 0) {
-		globalTsFields := settings.Get().TimestampFields
-		for _, tsField := range globalTsFields {
-			if val, ok := fields[tsField.Field]; ok && val != "" {
-				if ts := h.parseTimestampWithFormat(val, tsField.Format); !ts.IsZero() {
-					return ts
-				}
-			}
-		}
-	}
-
-	// Last resort: try common field names with auto-detection
-	fallbackFields := []string{"timestamp", "@timestamp", "time", "ts", "_time"}
-	for _, field := range fallbackFields {
-		if val, ok := fields[field]; ok && val != "" {
-			if ts := h.parseTimestamp(val); !ts.IsZero() {
-				return ts
-			}
-		}
-	}
-
-	return time.Time{}
-}
-
-func (h *IngestHandler) parseTimestampWithFormat(val interface{}, format string) time.Time {
-	switch v := val.(type) {
-	case string:
-		switch format {
-		case "unix":
-			var seconds int64
-			if _, err := fmt.Sscanf(v, "%d", &seconds); err == nil {
-				return time.Unix(seconds, 0)
-			}
-		case "unixmilli", "unixmillis", "unixms":
-			var millis int64
-			if _, err := fmt.Sscanf(v, "%d", &millis); err == nil {
-				return time.Unix(0, millis*int64(time.Millisecond))
-			}
-		case "unixmicro", "unixmicros", "unixμs":
-			var micros int64
-			if _, err := fmt.Sscanf(v, "%d", &micros); err == nil {
-				return time.Unix(0, micros*int64(time.Microsecond))
-			}
-		case "unixnano", "unixnanos", "unixns":
-			var nanos int64
-			if _, err := fmt.Sscanf(v, "%d", &nanos); err == nil {
-				return time.Unix(0, nanos)
-			}
-		default:
-			if t, err := time.Parse(format, v); err == nil {
-				return t
-			}
-		}
-
-	case float64:
-		switch format {
-		case "unix":
-			return time.Unix(int64(v), 0)
-		case "unixmilli", "unixmillis", "unixms":
-			return time.Unix(0, int64(v)*int64(time.Millisecond))
-		case "unixmicro", "unixmicros", "unixμs":
-			return time.Unix(0, int64(v)*int64(time.Microsecond))
-		case "unixnano", "unixnanos", "unixns":
-			return time.Unix(0, int64(v))
-		default:
-			if v > 1e12 {
-				return time.Unix(0, int64(v)*int64(time.Millisecond))
-			}
-			return time.Unix(int64(v), 0)
-		}
-
-	case int64:
-		switch format {
-		case "unix":
-			return time.Unix(v, 0)
-		case "unixmilli", "unixmillis", "unixms":
-			return time.Unix(0, v*int64(time.Millisecond))
-		case "unixmicro", "unixmicros", "unixμs":
-			return time.Unix(0, v*int64(time.Microsecond))
-		case "unixnano", "unixnanos", "unixns":
-			return time.Unix(0, v)
-		default:
-			if v > 1e12 {
-				return time.Unix(0, v*int64(time.Millisecond))
-			}
-			return time.Unix(v, 0)
-		}
-	}
-
-	return time.Time{}
-}
-
-func (h *IngestHandler) parseTimestamp(val interface{}) time.Time {
-	switch v := val.(type) {
-	case string:
-		formats := []string{
-			time.RFC3339,
-			time.RFC3339Nano,
-			"2006-01-02T15:04:05.999999999Z07:00",
-			"2006-01-02T15:04:05.000Z07:00",
-			"2006-01-02T15:04:05.000Z",
-			"2006-01-02T15:04:05Z",
-			"2006-01-02 15:04:05",
-			"2006-01-02 15:04:05.000",
-			"2006-01-02 15:04:05.000 -07:00",
-		}
-
-		for _, format := range formats {
-			if t, err := time.Parse(format, v); err == nil {
-				return t
-			}
-		}
-
-	case float64:
-		if v > 1e15 {
-			return time.Unix(0, int64(v)*int64(time.Microsecond))
-		} else if v > 1e12 {
-			return time.Unix(0, int64(v)*int64(time.Millisecond))
-		}
-		return time.Unix(int64(v), 0)
-
-	case int64:
-		if v > 1e15 {
-			return time.Unix(0, v*int64(time.Microsecond))
-		} else if v > 1e12 {
-			return time.Unix(0, v*int64(time.Millisecond))
-		}
-		return time.Unix(v, 0)
-	}
-
-	return time.Time{}
 }
 
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {

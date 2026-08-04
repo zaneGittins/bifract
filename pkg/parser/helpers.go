@@ -1467,6 +1467,39 @@ func groupableCast(ref string) string {
 	return ref
 }
 
+// lenientDateTime coerces an arbitrary log field into a DateTime64 without ever
+// aborting the query. Time-bearing fields arrive in every shape: ISO8601 with or
+// without fractional seconds or a zone, "YYYY-MM-DD hh:mm:ss", epoch
+// seconds/millis/micros/nanos, and empty on rows where the field is simply
+// absent. A bare toDateTime() throws code 41 (CANNOT_PARSE_DATETIME) on the
+// first value it dislikes and kills the whole search, so parse best-effort and
+// let unparseable values fall out as NULL. Callers must render the result
+// NULL-safe (see timeFormatExpr).
+func lenientDateTime(ref string) string {
+	s := ref
+	if !strings.HasSuffix(s, "::String") {
+		s = fmt.Sprintf("toString(%s)", ref)
+	}
+	return fmt.Sprintf("multiIf("+
+		"match(%[1]s, '^[0-9]{19}$'), toDateTime64(toFloat64(%[1]s) / 1000000000, 3, 'UTC'), "+
+		"match(%[1]s, '^[0-9]{16}$'), toDateTime64(toFloat64(%[1]s) / 1000000, 3, 'UTC'), "+
+		"match(%[1]s, '^[0-9]{13}$'), toDateTime64(toFloat64(%[1]s) / 1000, 3, 'UTC'), "+
+		"parseDateTime64BestEffortOrNull(%[1]s, 3, 'UTC'))", s)
+}
+
+// timeFormatExpr renders formatDateTime for a strftime-style field. The base
+// timestamp column formats directly; any other field goes through the lenient
+// coercion, and its NULL (unparseable) result is collapsed to an empty string so
+// the row still comes back with a blank time. A Nullable(String) projection would
+// also break the generic row scanner, which reads String columns into a *string.
+func timeFormatExpr(field, chFormat, timezone string, registry *FieldRegistry) string {
+	if field == "timestamp" {
+		return fmt.Sprintf("formatDateTime(timestamp, '%s', '%s')", escapeString(chFormat), escapeString(timezone))
+	}
+	return fmt.Sprintf("ifNull(formatDateTime(%s, '%s', '%s'), '')",
+		lenientDateTime(resolveFieldRef(field, registry)), escapeString(chFormat), escapeString(timezone))
+}
+
 // numericCast wraps a resolved field reference for use inside aggregate
 // functions. Fields that are already numeric (FieldKindAssignment, e.g.
 // length(), levenshtein()) use toFloat64; string-typed fields use

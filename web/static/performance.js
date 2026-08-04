@@ -1578,7 +1578,12 @@ const Performance = {
             html += `<td class="perf-query-cell">${this.escapeHtml(queryText)}</td>`;
             html += `<td>${readRows}</td>`;
             html += `<td>${memReadable}</td>`;
-            html += `<td><button class="btn-kill-query" onclick="event.stopPropagation();Performance.killQuery('${queryId}')">Kill</button></td>`;
+            // A cancelled query stops at its next interruptible point, which can take
+            // a while inside a long read; say so rather than offering Kill again.
+            const cancelled = Number(p.is_cancelled || 0) > 0;
+            html += cancelled
+                ? '<td><span class="perf-kill-pending">Stopping</span></td>'
+                : `<td><button class="btn-kill-query" onclick="event.stopPropagation();Performance.killQuery('${queryId}')">Kill</button></td>`;
             html += '</tr>';
         });
 

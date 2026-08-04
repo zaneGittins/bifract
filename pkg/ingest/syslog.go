@@ -66,7 +66,7 @@ func (h *IngestHandler) parseSyslogLogs(data []byte, token *ingesttokens.Validat
 		entry.Normalizer = token.Normalizer.Stamp()
 
 		ingestTime := time.Now()
-		entry.Timestamp = h.extractTimestamp(entry.Fields, token.TimestampFields, token.Normalizer)
+		entry.Timestamp = ExtractTimestamp(entry.Fields, token.TimestampFields, token.Normalizer)
 		if entry.Timestamp.IsZero() {
 			entry.Timestamp = ingestTime
 		}

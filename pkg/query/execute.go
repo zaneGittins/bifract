@@ -222,8 +222,12 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 	queryStart := time.Now()
 	qctx := ctx
 	if queryTimeoutSec := settings.Get().QueryTimeoutSeconds; queryTimeoutSec > 0 {
+		// The ceiling rides the context so ClickHouse enforces it itself: a widget
+		// whose viewer closed the tab would otherwise keep scanning after this
+		// process stopped reading (see QueryBudgetContext).
 		var cancel context.CancelFunc
-		qctx, cancel = context.WithTimeout(ctx, time.Duration(queryTimeoutSec)*time.Second)
+		qctx, cancel = context.WithTimeout(storage.QueryBudgetContext(ctx, queryTimeoutSec),
+			time.Duration(queryTimeoutSec)*time.Second)
 		defer cancel()
 	}
 	rows, err := h.db.QueryLowPriority(qctx, sql)

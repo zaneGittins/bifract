@@ -1,0 +1,18 @@
+# Native Bifract alert: the queryString is BQL, so unlike a Sigma rule it can
+# aggregate. This one only fires on the third access, which is the kind of rule
+# that can only be tested by running it against real storage.
+name: Repeated LSASS Process Access
+description: >-
+  One process opening a handle to lsass.exe three or more times in the alert window.
+  Single accesses are routine; a burst from one image suggests credential dumping.
+alertType: event
+severity: high
+labels:
+  - credential-access
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+queryString: 'bifract_category="process_access" AND target_image=~lsass.exe | groupBy(image, function=count()) | _count >= 3'
+enabled: true
+throttleTimeSeconds: 0
+throttleField: ""
+actionNames: []

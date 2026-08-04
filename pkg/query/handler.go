@@ -24,6 +24,8 @@ import (
 	"bifract/pkg/rbac"
 	"bifract/pkg/settings"
 	"bifract/pkg/storage"
+
+	"github.com/google/uuid"
 )
 
 type QueryHandler struct {
@@ -38,6 +40,45 @@ type QueryHandler struct {
 	auditFractalID    string
 	auditOnce         sync.Once
 	geoIPEnabled      bool
+}
+
+// newSearchID returns the ClickHouse query_id prefix for one search request.
+// Every query the request issues (result windows, histogram chunks) carries an id
+// built from this prefix, so an abandoned search can be killed server-side.
+func newSearchID() string {
+	return "bif-search-" + uuid.NewString()
+}
+
+// searchContext builds the context a search's ClickHouse queries run on: tagged as
+// an interactive user search (CPU/memory limits) and carrying the query timeout
+// both as a Go deadline and as a ClickHouse-enforced ceiling. A Go deadline alone
+// only stops this process reading; the server keeps scanning what nobody is
+// listening to.
+func searchContext(parent context.Context, timeoutSec int) (context.Context, context.CancelFunc) {
+	ctx := storage.UserSearchContext(parent)
+	if timeoutSec <= 0 {
+		return context.WithCancel(ctx)
+	}
+	ctx = storage.QueryBudgetContext(ctx, timeoutSec)
+	return context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+}
+
+// abandonSearch kills every ClickHouse query the search issued. Without it an
+// abandoned scan (client gone, request timed out, histogram dropped once the
+// results were in) keeps running unowned, which is how the admin activity view
+// fills with queries nobody is waiting for. Detached: nothing in the response
+// depends on it, and on a cluster the kill travels through the DDL queue.
+func (h *QueryHandler) abandonSearch(searchID string) {
+	if h.db == nil || searchID == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := h.db.KillQueryPrefix(ctx, searchID); err != nil {
+			log.Printf("[QueryHandler] Failed to kill abandoned search %s: %v", searchID, err)
+		}
+	}()
 }
 
 // SetGeoIPEnabled enables or disables lookupIP() GeoIP enrichment in queries.
@@ -1183,27 +1224,26 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	histBucketCount := prep.histBucketCount
 	var err error
 
-	// Generate a stable query_id when profiling is requested so we can
-	// correlate this run with system.query_log entries afterward.
-	var profileQueryID string
-	if req.Profile {
-		profileQueryID = fmt.Sprintf("bif-prof-%d", time.Now().UnixNano())
-	}
+	// Every ClickHouse query this request issues is identified by the search id, so
+	// profiling can correlate it with system.query_log and anything abandoned can
+	// be killed server-side.
+	searchID := newSearchID()
+	mainQueryID := searchID + "-main"
 
 	// Execute main query (and histogram if needed) with timeout
 	queryStart := time.Now()
 
-	queryTimeoutSec := settings.Get().QueryTimeoutSeconds
-	// Marked as a user search so the search CPU/memory limits apply (see ReconcileQueryWorkload).
-	searchCtx := storage.UserSearchContext(r.Context())
-	var queryCtx context.Context
-	var cancel context.CancelFunc
-	if queryTimeoutSec > 0 {
-		queryCtx, cancel = context.WithTimeout(searchCtx, time.Duration(queryTimeoutSec)*time.Second)
-	} else {
-		queryCtx, cancel = context.WithCancel(searchCtx)
-	}
-	defer cancel()
+	queryCtx, cancel := searchContext(r.Context(), settings.Get().QueryTimeoutSeconds)
+	// A query left running server-side is the expensive kind of leak: cancel the
+	// client side first, then kill anything that outlived the request.
+	searchClean := true
+	defer func() {
+		abandoned := !searchClean || queryCtx.Err() != nil
+		cancel()
+		if abandoned {
+			h.abandonSearch(searchID)
+		}
+	}()
 
 	type mainResult struct {
 		rows []map[string]interface{}
@@ -1223,19 +1263,13 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	histCh := make(chan histResult, 1)
 
 	go func() {
-		var raw []map[string]interface{}
-		var qErr error
-		if profileQueryID != "" {
-			raw, qErr = h.db.QueryUserSearchWithID(queryCtx, profileQueryID, sql)
-		} else {
-			raw, qErr = h.db.QueryUserSearch(queryCtx, sql)
-		}
+		raw, qErr := h.db.QueryUserSearchWithID(queryCtx, mainQueryID, sql)
 		mainCh <- mainResult{rows: raw, err: qErr}
 	}()
 
 	if needsHistogram {
 		go func() {
-			raw, qErr := h.db.QueryUserSearch(histCtx, histogramSQL)
+			raw, qErr := h.db.QueryUserSearchWithID(histCtx, searchID+"-hist", histogramSQL)
 			histCh <- histResult{rows: raw, err: qErr}
 		}()
 	}
@@ -1252,6 +1286,9 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		case histRes = <-histCh:
 		case <-time.After(500 * time.Millisecond):
 			histCancel()
+			// Dropped, not finished: the scan is still running server-side and
+			// nothing is left to consume it, so the request must kill it.
+			searchClean = false
 			needsHistogram = false
 		}
 	}
@@ -1321,8 +1358,8 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 	// Collect per-shard profiling data when requested (before any early returns).
 	var profileData *ProfileData
-	if profileQueryID != "" && err == nil {
-		profileData = h.fetchProfileData(profileQueryID)
+	if req.Profile && err == nil {
+		profileData = h.fetchProfileData(mainQueryID)
 	}
 
 	// Check if result set is too large for efficient JSON handling
@@ -1557,17 +1594,18 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	queryTimeoutSec := settings.Get().QueryTimeoutSeconds
-	// Marked as a user search so the search CPU/memory limits apply (see ReconcileQueryWorkload).
-	searchCtx := storage.UserSearchContext(r.Context())
-	var queryCtx context.Context
-	var cancel context.CancelFunc
-	if queryTimeoutSec > 0 {
-		queryCtx, cancel = context.WithTimeout(searchCtx, time.Duration(queryTimeoutSec)*time.Second)
-	} else {
-		queryCtx, cancel = context.WithCancel(searchCtx)
-	}
-	defer cancel()
+	// Every ClickHouse query this request issues carries an id built from the search
+	// id, so whatever is still running when the request ends -- the common case is a
+	// client that navigated away mid-scan -- gets killed instead of running unowned.
+	searchID := newSearchID()
+	searchClean := false
+	queryCtx, cancel := searchContext(r.Context(), settings.Get().QueryTimeoutSeconds)
+	defer func() {
+		cancel()
+		if !searchClean {
+			h.abandonSearch(searchID)
+		}
+	}()
 
 	// Histogram (non-aggregated, first page only). The main query stops at the row
 	// limit after scanning only the newest window, while the histogram must count
@@ -1591,7 +1629,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 					log.Printf("[QueryHandler] Streaming histogram SQL failed (non-critical): %v", sqlErr)
 					return
 				}
-				rows, qErr := h.db.QueryUserSearch(queryCtx, chunkSQL)
+				rows, qErr := h.db.QueryUserSearchWithID(queryCtx, fmt.Sprintf("%s-h%d", searchID, i), chunkSQL)
 				if qErr != nil {
 					// Keep whatever earlier chunks already delivered; the client
 					// renders it as a partial histogram rather than losing it.
@@ -1782,6 +1820,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			}
 
 			firstWindow := true
+			windowIdx := 0
 			for !clientGone && count < prep.queryMaxRows && windowEnd.After(prep.startTime) {
 				windowStart := windowEnd.Add(-windowDuration)
 				if windowStart.Before(prep.startTime) {
@@ -1812,7 +1851,8 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 					emitExecError(sqlErr)
 					return
 				}
-				streamErr := h.db.StreamQuery(queryCtx, "", windowSQL, onRow, onProgress)
+				streamErr := h.db.StreamQuery(queryCtx, fmt.Sprintf("%s-w%d", searchID, windowIdx), windowSQL, onRow, onProgress)
+				windowIdx++
 				flushBatch()
 				if clientGone || r.Context().Err() != nil {
 					return
@@ -1836,7 +1876,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 				}
 			}
 		} else {
-			streamErr := h.db.StreamQuery(queryCtx, "", prep.sql, onRow, onProgress)
+			streamErr := h.db.StreamQuery(queryCtx, searchID+"-main", prep.sql, onRow, onProgress)
 			flushBatch()
 			if clientGone || r.Context().Err() != nil {
 				return
@@ -1866,7 +1906,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			}
 		}
 	} else {
-		rows, qErr := h.db.QueryUserSearch(queryCtx, prep.sql)
+		rows, qErr := h.db.QueryUserSearchWithID(queryCtx, searchID+"-main", prep.sql)
 		if qErr != nil {
 			if r.Context().Err() != nil {
 				return
@@ -1923,7 +1963,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 
 	// Rows are delivered; let the remaining histogram chunks finish on the still
 	// open stream instead of discarding a scan the client is waiting on.
-	drainHistogram(true)
+	searchClean = drainHistogram(true) && histDone
 	if !histComplete {
 		// The scan stopped early (error or timeout). Say so, so the client stops
 		// waiting and marks the uncounted span as unscanned rather than as zero.

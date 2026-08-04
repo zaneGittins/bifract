@@ -157,6 +157,8 @@ add_comment(log_id="...", text="...", tags=["IR-Rundll32"])
 | `add_comment` | Annotate a log entry with findings or notes |
 | `list_comments` | View all comments in the fractal |
 | `list_comment_tags` | Find the `IR-<Name>` tag for an investigation already under way |
+| `add_tag` | Add a tag to existing comments, to group them into one investigation |
+| `remove_tag` | Remove a tag from existing comments |
 | `get_log_comments` | Read the comments on one log entry |
 | `list_saved_queries` | Browse saved BQL queries for common patterns |
 

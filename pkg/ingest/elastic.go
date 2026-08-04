@@ -3,14 +3,12 @@ package ingest
 import (
 	"bufio"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"bifract/pkg/ingesttokens"
@@ -72,32 +70,17 @@ func (h *ElasticBulkHandler) HandleBulk(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Enforce body size limit
-	bodyReader := io.Reader(r.Body)
-	if h.handler.maxBodySize > 0 {
-		bodyReader = http.MaxBytesReader(w, r.Body, h.handler.maxBodySize)
-	}
+	defer r.Body.Close()
 
-	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
-		gr, err := gzip.NewReader(bodyReader)
-		if err != nil {
-			respondElasticError(w, http.StatusBadRequest, "Failed to decompress gzip request body")
-			return
-		}
-		defer gr.Close()
-		bodyReader = gr
-	}
-
-	body, err := io.ReadAll(bodyReader)
+	body, err := readRequestBody(w, r, h.handler.maxBodySize)
 	if err != nil {
-		if err.Error() == "http: request body too large" {
+		if errors.Is(err, errBodyTooLarge) {
 			respondElasticError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("Request body exceeds %d byte limit", h.handler.maxBodySize))
 			return
 		}
 		respondElasticError(w, http.StatusBadRequest, "Failed to read request body")
 		return
 	}
-	defer r.Body.Close()
 
 	logs, items, err := h.parseBulkRequest(body, tokenData.Normalizer, tokenData.TimestampFields)
 	if err != nil {
@@ -231,7 +214,7 @@ func (h *ElasticBulkHandler) parseBulkRequest(data []byte, norm *normalizers.Com
 			continue
 		}
 
-		logEntry, err := h.handler.parseLogObjectWithConfig(doc, norm, tsFields)
+		logEntry, err := BuildLogEntry(doc, norm, tsFields)
 		if err != nil {
 			item := ElasticBulkItem{}
 			if actionType == "index" {

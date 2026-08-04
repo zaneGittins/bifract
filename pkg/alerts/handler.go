@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
+	"github.com/go-chi/chi/v5"
 )
 
 // Handler provides HTTP endpoints for alert and webhook management

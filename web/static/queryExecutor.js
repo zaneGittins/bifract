@@ -3018,7 +3018,7 @@ const QueryExecutor = {
             const byImage = new Map();
             kids.forEach(c => {
                 if (structural(c)) return;
-                const img = m.procLabel.get(c) || c;
+                const img = m.labelOf(c);
                 if (!byImage.has(img)) byImage.set(img, []);
                 byImage.get(img).push(c);
             });
@@ -3080,13 +3080,21 @@ const QueryExecutor = {
         return 'process';
     },
     _pgLeafNoun(type) { return type === 'file' ? 'files' : type === 'net' ? 'connections' : type === 'dns' ? 'domains' : type; },
+    // Why a node has no process_creation row of its own, and where its name came from if we have one.
+    _pgGhostNote(guid) {
+        const m = this._pgModel;
+        return (m && m.labelDerived(guid))
+            ? 'no process creation in these results; image taken from an event that named this process'
+            : 'missing process creation (not in the selected time range)';
+    },
     _pgShort(s) { s = String(s == null ? '' : s); const b = s.split(/[\\/]/).pop() || s; return b.length > 26 ? b.slice(0, 26) + '…' : b; },
 
     // Parse pgr rows into a model both views consume. Process->process edges (spawn, and the
     // remote_thread/process_access interactions) form the tree; file/net/dns edges are grouped
     // per (process, type) so they can be collapsed.
     _pgBuildModel(rows) {
-        const procLabel = new Map();     // guid -> image label
+        const procLabel = new Map();     // guid -> image label (from the process's OWN creation row)
+        const procLabelHint = new Map(); // guid -> image named by ANOTHER process's event (parent_label)
         const spawnKids = new Map();     // parent guid -> [child guid]
         const interactions = new Map();  // src guid -> [{target,type,anomaly,label,info}]
         const leafGroups = new Map();    // parent guid -> {file:[],net:[],dns:[]} of {id,label,anomaly,info}
@@ -3112,6 +3120,11 @@ const QueryExecutor = {
             const anomaly = parseFloat(r.anomaly_score);
             const info = r.log_id ? { log_id: r.log_id, timestamp: r.timestamp, fractal_id: r.fractal_id, _shard_num: r._shard_num } : null;
             const ctype = this._pgTypeOf(r.child);
+            // parent_label names the PARENT process when it may have no row of its own: an ancestor
+            // whose process_creation is out of range, or a reconnected peer that was never expanded
+            // into a subtree. Kept as a HINT, never overwriting a label from the process's own
+            // creation row (row order is not guaranteed, and the hint can be an abstracted path).
+            if (r.parent && r.parent_label && !procLabelHint.has(r.parent)) procLabelHint.set(r.parent, r.parent_label);
             if (r.host) { // host rides each row: process rows carry the child's host, leaf rows the parent's
                 if (ctype === 'process') { if (!procHost.get(r.child)) procHost.set(r.child, r.host); }
                 else if (r.parent && !procHost.get(r.parent)) procHost.set(r.parent, r.host);
@@ -3282,7 +3295,13 @@ const QueryExecutor = {
         interactions.forEach(list => list.forEach(it => { if (it.recon) bridgeN++; }));
         const linkStats = { pairs: pairSeen.size, pairTotal: pairSeen.size + pairOver.size, bridges: bridgeN, capped: pairOver.size > 0, scanCapped: pairScanCapped };
 
-        return { procLabel, spawnKids, interactions, leafGroups, leafOwners, leafMeta, sharedLeaves, linkedLeaves, linkInfo, linkStats,
+        // labelOf is the single naming rule for a process node: its own creation row wins, then the
+        // image another process's event attributed to it, and only then the bare guid. labelDerived
+        // says the name came from that second source, so the UI can be honest about where it is from.
+        const labelOf = (g) => procLabel.get(g) || procLabelHint.get(g) || g;
+        const labelDerived = (g) => !procLabel.get(g) && !!procLabelHint.get(g);
+
+        return { procLabel, procLabelHint, labelOf, labelDerived, spawnKids, interactions, leafGroups, leafOwners, leafMeta, sharedLeaves, linkedLeaves, linkInfo, linkStats,
             logInfoById, anomalyByNode, procMeta, procTime, procHost, procSet, roots, rootOf, homeRoot, externalProcs, ghostProcs };
     },
 
@@ -3391,7 +3410,7 @@ const QueryExecutor = {
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-focus"></span>Start (queried)</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ext"></span>Reconnected peer (other tree)</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-agg"></span>Collapsed similar processes (&times;N)</div>
-                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ghost"></span>Missing creation (parent not in time range)</div>
+                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ghost"></span>Missing creation (name from another event)</div>
                     <div class="pg-legend-title">Edges</div>
                     <div class="pg-legend-row"><span class="pg-legend-line pg-ll-spawn"></span>Spawned</div>
                     <div class="pg-legend-row"><span class="pg-legend-line pg-ll-recon"></span>Reconnection (shared IP / domain / dropped file) &mdash; hover either end to reveal</div>
@@ -3722,7 +3741,7 @@ const QueryExecutor = {
                     `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(ag.image))}</span><span class="pg-node-sub"><span class="pg-agg-count" title="${ag.count} collapsed">×${ag.count}</span></span></span></div>`;
                 return;
             }
-            const name = m.procLabel.get(id) || id;
+            const name = m.labelOf(id);
             const a = m.anomalyByNode.get(id);
             const grp = m.leafGroups.get(id) || { file: [], net: [], dns: [] };
             // Shared (cross-tree) leaves are represented by the reconnection LINK, so they drop
@@ -3757,10 +3776,11 @@ const QueryExecutor = {
             const homeHost = this._pgFocus && m.procHost ? m.procHost.get(this._pgFocus) : null;
             const hostLabel = (ext && host && (!homeHost || host !== homeHost)) ? `<span class="pg-node-host" title="host">${esc(host)}</span>` : '';
             // A ghost keeps its place as the connecting parent but reads as a data gap: a hollow
-            // (outlined, unfilled) hex and the raw guid (all we know). The "why" lives in the tooltip
-            // and the legend, not a per-node label (which was noisy on a big tree).
+            // (outlined, unfilled) hex. It is still NAMED whenever another process's event carries
+            // its image (see labelOf); only a node nothing named at all falls back to the raw guid.
+            // The "why" lives in the tooltip and the legend, not a per-node label (noisy on a big tree).
             const cls = `pg-node pg-sev-${sevOf(a)}${id === this._pgFocus ? ' pg-focus' : ''}${isCol ? ' pg-collapsed' : ''}${ext ? ' pg-node-external' : ''}${ghost ? ' pg-node-ghost' : ''}`;
-            nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${ghost ? '\nmissing process creation (not in the selected time range)' : ''}${host ? '\nhost: ' + esc(String(host)) : ''}${ext ? '\nreconnected from another tree' : ''}\nclick to inspect · right-click for actions">` +
+            nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${ghost ? '\n' + this._pgGhostNote(id) : ''}${host ? '\nhost: ' + esc(String(host)) : ''}${ext ? '\nreconnected from another tree' : ''}\nclick to inspect · right-click for actions">` +
                 `<span class="pg-hexwrap"><span class="pg-hex">${ICON.proc}</span>${toggle}</span>` +
                 `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(name))}</span>${hostLabel}${sub}</span></div>`;
         });
@@ -3936,7 +3956,7 @@ const QueryExecutor = {
         const host = this._pgGraphHost; if (!host) return;
         this._pgCloseContextMenu();
         const esc = Utils.escapeHtml, m = this._pgModel;
-        const name = (m && m.procLabel.get(guid)) || guid;
+        const name = (m && m.labelOf(guid)) || guid;
         const menu = document.createElement('div');
         menu.className = 'pg-ctxmenu';
         menu.innerHTML =
@@ -4009,7 +4029,7 @@ const QueryExecutor = {
             const key = g + '\x00' + l.peerGuid;
             let pr = pairs.get(key);
             if (!pr) {
-                pr = { a: g, b: l.peerGuid, nameA: this._pgShort(m.procLabel.get(g) || g), nameB: this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid), host: l.peerHost, crossHost: !!l.crossHost, iocs: [] };
+                pr = { a: g, b: l.peerGuid, nameA: this._pgShort(m.labelOf(g)), nameB: this._pgShort(m.labelOf(l.peerGuid)), host: l.peerHost, crossHost: !!l.crossHost, iocs: [] };
                 pairs.set(key, pr);
             }
             if (l.crossHost) pr.crossHost = true;
@@ -4059,7 +4079,7 @@ const QueryExecutor = {
         const esc = Utils.escapeHtml;
         const min = this._pgMinAnomaly || 0;
         const passT = (a) => isNaN(a) || a >= min;
-        const proc = m.procLabel.get(guid) || guid;
+        const proc = m.labelOf(guid);
         const openDrawer = (heading, count, body, bind) => {
             drawer.innerHTML = `<div class="pg-drawer-head"><div class="pg-drawer-title"><span class="pg-drawer-heading">${esc(heading)}</span>` +
                 `<span class="pg-drawer-proc" title="${esc(String(proc))}">${esc(this._pgShort(proc))}</span></div>` +
@@ -4080,7 +4100,7 @@ const QueryExecutor = {
             const byPeer = new Map();
             ((m.linkInfo && m.linkInfo.get(guid)) || []).forEach(l => {
                 let pr = byPeer.get(l.peerGuid);
-                if (!pr) { pr = { peerGuid: l.peerGuid, name: this._pgShort(m.procLabel.get(l.peerGuid) || l.peerGuid), host: l.peerHost, crossHost: !!l.crossHost, iocs: [] }; byPeer.set(l.peerGuid, pr); }
+                if (!pr) { pr = { peerGuid: l.peerGuid, name: this._pgShort(m.labelOf(l.peerGuid)), host: l.peerHost, crossHost: !!l.crossHost, iocs: [] }; byPeer.set(l.peerGuid, pr); }
                 if (l.crossHost) pr.crossHost = true;
                 pr.iocs.push({ type: l.type, label: l.label, info: l.info });
             });
@@ -4166,7 +4186,7 @@ const QueryExecutor = {
         const drawer = host && host.querySelector('.pg-drawer');
         if (!drawer) return;
         const esc = Utils.escapeHtml;
-        const name = m.procLabel.get(guid) || guid;
+        const name = m.labelOf(guid);
         const a = m.anomalyByNode.get(guid);
         const meta = m.procMeta.get(guid) || {};
         const info = m.logInfoById.get(guid) || null;
@@ -4185,7 +4205,7 @@ const QueryExecutor = {
         const timeStr = t != null ? new Date(t).toISOString().replace('T', ' ').replace('Z', ' UTC') : '';
         // Instant process-centric summary straight from the model, so the drawer is never empty while
         // the full field set loads.
-        const instant = kv('command line', meta.cmd) + kv('image', name) + kv('user', meta.user) +
+        const instant = kv('command line', meta.cmd) + kv(m.labelDerived(guid) ? 'image (from a linked event)' : 'image', name) + kv('user', meta.user) +
             kv('host', m.procHost && m.procHost.get(guid)) + kv('time', timeStr);
         // The process guid rides in the header as a subtle id; clicking it opens the complete raw log
         // (no more Full log button). Static (non-clickable) when there's no source log.
@@ -4259,7 +4279,7 @@ const QueryExecutor = {
         qi.dispatchEvent(new Event('input', { bubbles: true }));
         const btn = document.getElementById('executeBtn');
         if (btn) setTimeout(() => btn.click(), 0);
-        if (window.Toast) Toast.show('Analyzing from ' + this._pgShort(this._pgModel.procLabel.get(guid) || guid), 'info');
+        if (window.Toast) Toast.show('Analyzing from ' + this._pgShort(this._pgModel.labelOf(guid)), 'info');
     },
 
     // Minimap: node dots + a viewport rectangle, in the canvas coordinate space, click/drag to pan.
@@ -4361,7 +4381,7 @@ const QueryExecutor = {
         const fInter = (guid) => (m.interactions.get(guid) || []).filter(it => passT(it.anomaly));
         const mLeaf = (x) => !term || String(x.label || '').toLowerCase().includes(term);
         const mInter = (it) => !term || String(it.label || it.target).toLowerCase().includes(term);
-        const mNode = (guid) => !term || String(m.procLabel.get(guid) || guid).toLowerCase().includes(term);
+        const mNode = (guid) => !term || String(m.labelOf(guid)).toLowerCase().includes(term);
         const subMatch = new Map();
         const computeMatch = (guid, path) => {
             if (subMatch.has(guid)) return subMatch.get(guid);
@@ -4461,8 +4481,8 @@ const QueryExecutor = {
             const ghost = m.ghostProcs && m.ghostProcs.has(guid);
             // Ghost rows read as a data gap via the muted mono name + row style (see legend), not a
             // per-row text tag. The tooltip still explains on hover.
-            const nameTitle = ghost ? 'missing process creation (not in the selected time range): ' + (m.procLabel.get(guid) || guid) : (m.procLabel.get(guid) || guid);
-            const nameCell = `<span class="pg-name-wrap"><span class="pg-name" title="${esc(nameTitle)}">${hl(m.procLabel.get(guid) || guid)}${cyc ? ' <em class="pg-muted">(cycle)</em>' : ''}${descHtml}</span>${subline}</span>`;
+            const nameTitle = ghost ? this._pgGhostNote(guid) + ': ' + m.labelOf(guid) : m.labelOf(guid);
+            const nameCell = `<span class="pg-name-wrap"><span class="pg-name" title="${esc(nameTitle)}">${hl(m.labelOf(guid))}${cyc ? ' <em class="pg-muted">(cycle)</em>' : ''}${descHtml}</span>${subline}</span>`;
             // Time (absolute-aware) + gap since parent.
             const t = m.procTime.get(guid);
             const pt = parentGuid != null ? m.procTime.get(parentGuid) : null;
@@ -4511,7 +4531,7 @@ const QueryExecutor = {
             });
             leafItems.forEach(({ t, x }) => leafChildRow(childAnc.concat([false]), ++idx === total, t, x));
             linkItems.forEach(l => {
-                const peerName = m.procLabel.get(l.peerGuid) || l.peerGuid;
+                const peerName = m.labelOf(l.peerGuid);
                 const licon = ICON[l.type] || ICON.link;
                 const kindTxt = l.type === 'file' ? 'dropped & ran' : l.type === 'net' ? 'shared IP' : l.type === 'dns' ? 'shared domain' : 'shared';
                 // Decluttered: the type icon conveys the relationship (globe=domain, arrow=IP, doc=file),

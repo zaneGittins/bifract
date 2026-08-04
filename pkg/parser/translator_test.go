@@ -3364,11 +3364,34 @@ func TestCoalesceFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "formatDateTime(toDateTime(fields.`created_at`::String)") {
+		if !strings.Contains(result.SQL, "fields.`created_at`::String") {
 			t.Errorf("Expected custom field ref, got: %s", result.SQL)
 		}
 		if !strings.Contains(result.SQL, "'US/Eastern'") {
 			t.Errorf("Expected US/Eastern timezone, got: %s", result.SQL)
+		}
+	})
+
+	// A time-bearing log field is an arbitrary string: ISO8601, epoch millis, or
+	// absent. Strict toDateTime() threw code 41 on the first value it disliked and
+	// failed the entire search, so the coercion must stay best-effort and NULL-safe.
+	t.Run("strftime on a custom field parses leniently", func(t *testing.T) {
+		pipeline, err := ParseQuery(`* | strftime("%Y-%m-%d", field=Time)`)
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if strings.Contains(result.SQL, "toDateTime(fields.") {
+			t.Errorf("Strict toDateTime() on a JSON field aborts the query on unparseable values: %s", result.SQL)
+		}
+		if !strings.Contains(result.SQL, "parseDateTime64BestEffortOrNull(fields.`Time`::String, 3, 'UTC')") {
+			t.Errorf("Expected best-effort parse of the custom field, got: %s", result.SQL)
+		}
+		if !strings.Contains(result.SQL, "ifNull(formatDateTime(") {
+			t.Errorf("Expected NULL-safe formatted output, got: %s", result.SQL)
 		}
 	})
 }
@@ -4921,6 +4944,39 @@ func TestAlertAutoProjection(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAlertProjectionContractForHydration pins the two properties the alert
+// engine's hydration step depends on: the pruned projection never reads norm_log
+// (which is the whole point -- it would be paid on every tick by every alert),
+// and it always carries log_id and fractal_id so the refetch on trigger has a key.
+func TestAlertProjectionContractForHydration(t *testing.T) {
+	opts := QueryOptions{
+		StartTime:          time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:            time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:            10000,
+		UseIngestTimestamp: true,
+	}
+	pipeline, err := ParseQuery(`event_id="4624"`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	sql, err := TranslateToSQL(pipeline, opts)
+	if err != nil {
+		t.Fatalf("translate error: %v", err)
+	}
+	selectClause := sql
+	if i := strings.Index(sql, " FROM "); i > 0 {
+		selectClause = sql[:i]
+	}
+	if strings.Contains(selectClause, "norm_log") {
+		t.Errorf("pruned alert projection must not read norm_log\ngot: %s", selectClause)
+	}
+	for _, col := range []string{"log_id", "fractal_id"} {
+		if !strings.Contains(selectClause, col) {
+			t.Errorf("pruned alert projection must carry %s for hydration\ngot: %s", col, selectClause)
+		}
 	}
 }
 

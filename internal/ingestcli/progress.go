@@ -154,7 +154,26 @@ func (m ProgressModel) renderLiveStatus() string {
 		))
 	}
 
+	// Surface the reason immediately: a climbing error count with no message
+	// gives no way to tell a bad token from an oversized batch.
+	if last := m.stats.LastError(); last != "" {
+		b.WriteString(fmt.Sprintf("  %s %s\n",
+			ErrorStyle.Render("last error:"),
+			DimStyle.Render(truncate(last, m.width-16))))
+	}
+
 	return b.String()
+}
+
+func truncate(s string, max int) string {
+	if max < 12 {
+		max = 12
+	}
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
 }
 
 func (m ProgressModel) renderSummary() string {
@@ -223,6 +242,17 @@ func (m ProgressModel) renderSummary() string {
 		summary.WriteString(fmt.Sprintf("  %s  %s",
 			DimStyle.Render("~"),
 			fmt.Sprintf("Rate:        %s logs/sec", ValueStyle.Render(fmt.Sprintf("%.0f", float64(sent)/elapsed.Seconds())))))
+	}
+
+	// Without this, a failed run reports a count and no cause.
+	if breakdown := m.stats.ErrorBreakdown(); len(breakdown) > 0 {
+		summary.WriteString("\n\n" + BoldStyle.Render("  Failures") + "\n")
+		for _, e := range breakdown {
+			summary.WriteString(fmt.Sprintf("  %s  %s %s\n",
+				ErrorStyle.Render("x"),
+				ValueStyle.Render(fmt.Sprintf("%8s logs", formatNumber(e.Logs))),
+				DimStyle.Render(truncate(e.Message, 70))))
+		}
 	}
 
 	b.WriteString(border.Render(summary.String()))

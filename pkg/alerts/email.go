@@ -16,14 +16,14 @@ import (
 
 // EmailAction represents an email notification endpoint configuration
 type EmailAction struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
 	Recipients      []string `json:"recipients"`
-	SubjectTemplate string `json:"subject_template"`
-	BodyTemplate    string `json:"body_template"`
-	Enabled         bool   `json:"enabled"`
-	FractalID       string `json:"fractal_id,omitempty"`
-	PrismID         string `json:"prism_id,omitempty"`
+	SubjectTemplate string   `json:"subject_template"`
+	BodyTemplate    string   `json:"body_template"`
+	Enabled         bool     `json:"enabled"`
+	FractalID       string   `json:"fractal_id,omitempty"`
+	PrismID         string   `json:"prism_id,omitempty"`
 }
 
 // EmailResult tracks the outcome of an email delivery attempt

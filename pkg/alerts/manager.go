@@ -7,13 +7,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
-	"github.com/robfig/cron/v3"
-	"gopkg.in/yaml.v3"
+	"bifract/pkg/attack"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/parser"
 	"bifract/pkg/sigma"
 	"bifract/pkg/storage"
+	"github.com/lib/pq"
+	"github.com/robfig/cron/v3"
+	"gopkg.in/yaml.v3"
 )
 
 // Manager handles CRUD operations and YAML import/export for alerts and webhooks
@@ -69,44 +70,44 @@ type YAMLAlert struct {
 
 // AlertCreateRequest represents a request to create a new alert
 type AlertCreateRequest struct {
-	Name                  string   `json:"name"`
-	Description           string   `json:"description"`
-	QueryString           string   `json:"query_string"`
-	AlertType             string   `json:"alert_type"`
-	WebhookActionIDs      []string `json:"webhook_action_ids"`
-	FractalActionIDs      []string `json:"fractal_action_ids"`
-	DictionaryActionIDs   []string `json:"dictionary_action_ids"`
-	EmailActionIDs        []string `json:"email_action_ids"`
-	Labels                []string `json:"labels"`
-	References            []string `json:"references"`
-	Severity              string   `json:"severity"`
-	Enabled               bool     `json:"enabled"`
-	ThrottleTimeSeconds   int      `json:"throttle_time_seconds"`
-	ThrottleField         string   `json:"throttle_field"`
-	WindowDuration        *int     `json:"window_duration,omitempty"`
-	ScheduleCron          *string  `json:"schedule_cron,omitempty"`
-	QueryWindowSeconds    *int     `json:"query_window_seconds,omitempty"`
+	Name                string   `json:"name"`
+	Description         string   `json:"description"`
+	QueryString         string   `json:"query_string"`
+	AlertType           string   `json:"alert_type"`
+	WebhookActionIDs    []string `json:"webhook_action_ids"`
+	FractalActionIDs    []string `json:"fractal_action_ids"`
+	DictionaryActionIDs []string `json:"dictionary_action_ids"`
+	EmailActionIDs      []string `json:"email_action_ids"`
+	Labels              []string `json:"labels"`
+	References          []string `json:"references"`
+	Severity            string   `json:"severity"`
+	Enabled             bool     `json:"enabled"`
+	ThrottleTimeSeconds int      `json:"throttle_time_seconds"`
+	ThrottleField       string   `json:"throttle_field"`
+	WindowDuration      *int     `json:"window_duration,omitempty"`
+	ScheduleCron        *string  `json:"schedule_cron,omitempty"`
+	QueryWindowSeconds  *int     `json:"query_window_seconds,omitempty"`
 }
 
 // AlertUpdateRequest represents a request to update an existing alert
 type AlertUpdateRequest struct {
-	Name                  string   `json:"name"`
-	Description           string   `json:"description"`
-	QueryString           string   `json:"query_string"`
-	AlertType             string   `json:"alert_type"`
-	WebhookActionIDs      []string `json:"webhook_action_ids"`
-	FractalActionIDs      []string `json:"fractal_action_ids"`
-	DictionaryActionIDs   []string `json:"dictionary_action_ids"`
-	EmailActionIDs        []string `json:"email_action_ids"`
-	Labels                []string `json:"labels"`
-	References            []string `json:"references"`
-	Severity              string   `json:"severity"`
-	Enabled               bool     `json:"enabled"`
-	ThrottleTimeSeconds   int      `json:"throttle_time_seconds"`
-	ThrottleField         string   `json:"throttle_field"`
-	WindowDuration        *int     `json:"window_duration,omitempty"`
-	ScheduleCron          *string  `json:"schedule_cron,omitempty"`
-	QueryWindowSeconds    *int     `json:"query_window_seconds,omitempty"`
+	Name                string   `json:"name"`
+	Description         string   `json:"description"`
+	QueryString         string   `json:"query_string"`
+	AlertType           string   `json:"alert_type"`
+	WebhookActionIDs    []string `json:"webhook_action_ids"`
+	FractalActionIDs    []string `json:"fractal_action_ids"`
+	DictionaryActionIDs []string `json:"dictionary_action_ids"`
+	EmailActionIDs      []string `json:"email_action_ids"`
+	Labels              []string `json:"labels"`
+	References          []string `json:"references"`
+	Severity            string   `json:"severity"`
+	Enabled             bool     `json:"enabled"`
+	ThrottleTimeSeconds int      `json:"throttle_time_seconds"`
+	ThrottleField       string   `json:"throttle_field"`
+	WindowDuration      *int     `json:"window_duration,omitempty"`
+	ScheduleCron        *string  `json:"schedule_cron,omitempty"`
+	QueryWindowSeconds  *int     `json:"query_window_seconds,omitempty"`
 }
 
 // EmailActionCreateRequest represents a request to create a new email action
@@ -157,26 +158,26 @@ type WebhookUpdateRequest struct {
 
 // FractalActionCreateRequest represents a request to create a new fractal action
 type FractalActionCreateRequest struct {
-	Name               string            `json:"name"`
-	Description        string            `json:"description"`
-	TargetFractalID    string            `json:"target_fractal_id"`
-	PreserveTimestamp  bool              `json:"preserve_timestamp"`
-	AddAlertContext    bool              `json:"add_alert_context"`
-	FieldMappings      map[string]string `json:"field_mappings"`
-	MaxLogsPerTrigger  int               `json:"max_logs_per_trigger"`
-	Enabled            bool              `json:"enabled"`
+	Name              string            `json:"name"`
+	Description       string            `json:"description"`
+	TargetFractalID   string            `json:"target_fractal_id"`
+	PreserveTimestamp bool              `json:"preserve_timestamp"`
+	AddAlertContext   bool              `json:"add_alert_context"`
+	FieldMappings     map[string]string `json:"field_mappings"`
+	MaxLogsPerTrigger int               `json:"max_logs_per_trigger"`
+	Enabled           bool              `json:"enabled"`
 }
 
 // FractalActionUpdateRequest represents a request to update an existing fractal action
 type FractalActionUpdateRequest struct {
-	Name               string            `json:"name"`
-	Description        string            `json:"description"`
-	TargetFractalID    string            `json:"target_fractal_id"`
-	PreserveTimestamp  bool              `json:"preserve_timestamp"`
-	AddAlertContext    bool              `json:"add_alert_context"`
-	FieldMappings      map[string]string `json:"field_mappings"`
-	MaxLogsPerTrigger  int               `json:"max_logs_per_trigger"`
-	Enabled            bool              `json:"enabled"`
+	Name              string            `json:"name"`
+	Description       string            `json:"description"`
+	TargetFractalID   string            `json:"target_fractal_id"`
+	PreserveTimestamp bool              `json:"preserve_timestamp"`
+	AddAlertContext   bool              `json:"add_alert_context"`
+	FieldMappings     map[string]string `json:"field_mappings"`
+	MaxLogsPerTrigger int               `json:"max_logs_per_trigger"`
+	Enabled           bool              `json:"enabled"`
 }
 
 // NewManager creates a new alert manager
@@ -293,7 +294,7 @@ func (m *Manager) importSigmaRule(ctx context.Context, yamlContent string, creat
 	}
 
 	// Map Sigma metadata to alert fields
-	labels := sigmaLabels(rule)
+	labels := sigma.BuildLabels(rule)
 	description := sigmaDescription(rule)
 
 	// Check if alert with same title already exists
@@ -341,23 +342,6 @@ func sigmaSeverity(level string) string {
 	default:
 		return "medium"
 	}
-}
-
-func sigmaLabels(rule *sigma.SigmaRule) []string {
-	var labels []string
-	if rule.Level != "" {
-		labels = append(labels, "sigma:"+rule.Level)
-	}
-	for _, tag := range rule.Tags {
-		labels = append(labels, tag)
-	}
-	if rule.LogSource.Product != "" {
-		labels = append(labels, "product:"+rule.LogSource.Product)
-	}
-	if rule.LogSource.Category != "" {
-		labels = append(labels, "category:"+rule.LogSource.Category)
-	}
-	return labels
 }
 
 func sigmaDescription(rule *sigma.SigmaRule) string {
@@ -971,6 +955,45 @@ func (m *Manager) ListAlerts(ctx context.Context, enabledOnly bool, fractalID, p
 	}
 
 	return alerts, nil
+}
+
+// ListCoverageRows returns the narrow projection of every alert in scope that the
+// ATT&CK coverage map needs, feed alerts included.
+//
+// ListAlerts is deliberately not reused: it json_aggs four action tables per row
+// and excludes feed alerts, and feed alerts are the bulk of ATT&CK-tagged rules.
+func (m *Manager) ListCoverageRows(ctx context.Context, fractalID, prismID string) ([]attack.RuleRow, error) {
+	query := `
+		SELECT a.id, a.name, COALESCE(a.severity, 'medium'), a.enabled, a.labels,
+		       COALESCE(a.feed_id::text, ''), COALESCE(f.name, '')
+		FROM alerts a
+		LEFT JOIN alert_feeds f ON f.id = a.feed_id
+	`
+	var args []interface{}
+	if prismID != "" {
+		query += " WHERE a.prism_id = $1"
+		args = append(args, prismID)
+	} else if fractalID != "" {
+		query += " WHERE a.fractal_id = $1"
+		args = append(args, fractalID)
+	}
+	query += " ORDER BY a.name"
+
+	rows, err := m.pg.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list coverage rows: %w", err)
+	}
+	defer rows.Close()
+
+	var out []attack.RuleRow
+	for rows.Next() {
+		var r attack.RuleRow
+		if err := rows.Scan(&r.ID, &r.Name, &r.Severity, &r.Enabled, pq.Array(&r.Labels), &r.FeedID, &r.FeedName); err != nil {
+			return nil, fmt.Errorf("failed to scan coverage row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // DeleteAlert removes an alert and its associations

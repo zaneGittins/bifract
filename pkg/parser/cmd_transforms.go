@@ -28,12 +28,7 @@ func (h *strftimeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 		}
 	}
 	if formatStr != "" {
-		chFmt := convertTimeFormat(formatStr)
-		src := "timestamp"
-		if field != "timestamp" {
-			src = fmt.Sprintf("toDateTime(%s)", resolveFieldRef(field, ctx.Registry))
-		}
-		expr := fmt.Sprintf("formatDateTime(%s, '%s', '%s')", src, escapeString(chFmt), escapeString(timezone))
+		expr := timeFormatExpr(field, convertTimeFormat(formatStr), timezone, ctx.Registry)
 		ctx.Registry.Register(alias, FieldKindPerRow, expr, ctx.CmdIndex)
 	} else {
 		ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
@@ -68,19 +63,9 @@ func (h *strftimeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return fmt.Errorf("strftime(): invalid alias: %w", err)
 	}
-	chFormat := convertTimeFormat(formatStr)
-	var expr string
-	if field == "timestamp" {
-		expr = fmt.Sprintf("formatDateTime(timestamp, '%s', '%s') AS %s", escapeString(chFormat), escapeString(timezone), safeAlias)
-	} else {
-		expr = fmt.Sprintf("formatDateTime(toDateTime(%s), '%s', '%s') AS %s", resolveFieldRef(field, ctx.Registry), escapeString(chFormat), escapeString(timezone), safeAlias)
-	}
-	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
-	src := "timestamp"
-	if field != "timestamp" {
-		src = fmt.Sprintf("toDateTime(%s)", resolveFieldRef(field, ctx.Registry))
-	}
-	ctx.Registry.SetResolveExpr(safeAlias, fmt.Sprintf("formatDateTime(%s, '%s', '%s')", src, escapeString(chFormat), escapeString(timezone)))
+	formatted := timeFormatExpr(field, convertTimeFormat(formatStr), timezone, ctx.Registry)
+	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", formatted, safeAlias)})
+	ctx.Registry.SetResolveExpr(safeAlias, formatted)
 	return nil
 }
 

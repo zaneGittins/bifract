@@ -1,0 +1,26 @@
+title: Certutil Download From URL
+id: 9a1b7c42-3f5e-4d18-9c2a-6b0e5d3f8a71
+status: experimental
+description: >-
+  Detects certutil.exe being used to download a remote file. certutil is a signed
+  Microsoft binary, so attackers use it to stage payloads without dropping tooling.
+references:
+  - https://lolbas-project.github.io/lolbas/Binaries/Certutil/
+author: Bifract
+date: 2026/08/03
+tags:
+  - attack.command_and_control
+  - attack.t1105
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\certutil.exe'
+    CommandLine|contains:
+      - 'urlcache'
+      - 'verifyctl'
+  condition: selection
+falsepositives:
+  - Administrative scripts that refresh the CRL cache
+level: high

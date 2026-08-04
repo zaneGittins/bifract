@@ -85,20 +85,20 @@ func TestApplyWorkloadTagging(t *testing.T) {
 	c := &ClickHouseClient{}
 	c.setActiveWorkloads(map[string]bool{QuerySearchWorkload: true, QueryRecallWorkload: true})
 
-	if got := c.applyWorkload(context.Background(), nil); got != nil {
+	if got := c.applyQuerySettings(context.Background(), nil); got != nil {
 		t.Errorf("unmarked context must not be tagged, got %v", got)
 	}
 
-	if got := c.applyWorkload(UserSearchContext(context.Background()), nil); got["workload"] != QuerySearchWorkload {
+	if got := c.applyQuerySettings(UserSearchContext(context.Background()), nil); got["workload"] != QuerySearchWorkload {
 		t.Errorf("search context should carry the search workload, got %v", got)
 	}
-	if got := c.applyWorkload(RecallContext(context.Background()), nil); got["workload"] != QueryRecallWorkload {
+	if got := c.applyQuerySettings(RecallContext(context.Background()), nil); got["workload"] != QueryRecallWorkload {
 		t.Errorf("recall context should carry the recall workload, got %v", got)
 	}
 
 	// Existing settings must survive: clickhouse-go replaces the settings map
 	// wholesale, so dropping a caller's budget here would silently unbound it.
-	got := c.applyWorkload(UserSearchContext(context.Background()), clickhouse.Settings{"max_query_size": 42})
+	got := c.applyQuerySettings(UserSearchContext(context.Background()), clickhouse.Settings{"max_query_size": 42})
 	if got["max_query_size"] != 42 || got["workload"] != QuerySearchWorkload {
 		t.Errorf("expected merged settings, got %v", got)
 	}
@@ -106,14 +106,38 @@ func TestApplyWorkloadTagging(t *testing.T) {
 	// A class that is disabled or failed to provision is not tagged, even though
 	// its sibling is: recall off must not silently borrow search's budget.
 	c.setActiveWorkloads(map[string]bool{QuerySearchWorkload: true})
-	if got := c.applyWorkload(RecallContext(context.Background()), nil); got != nil {
+	if got := c.applyQuerySettings(RecallContext(context.Background()), nil); got != nil {
 		t.Errorf("unprovisioned class must not tag, got %v", got)
 	}
 
 	// Nothing provisioned at all: back to pre-workload behavior.
 	c.setActiveWorkloads(nil)
-	if got := c.applyWorkload(UserSearchContext(context.Background()), nil); got != nil {
+	if got := c.applyQuerySettings(UserSearchContext(context.Background()), nil); got != nil {
 		t.Errorf("inactive workloads must not tag, got %v", got)
+	}
+}
+
+// The execution ceiling must reach ClickHouse whether or not a workload is
+// provisioned: without it an abandoned query keeps scanning server-side, and an
+// unprovisioned workload is exactly the case where no settings were sent at all.
+func TestApplyQuerySettingsBudget(t *testing.T) {
+	c := &ClickHouseClient{}
+	c.setActiveWorkloads(nil)
+
+	ctx := QueryBudgetContext(UserSearchContext(context.Background()), 60)
+	got := c.applyQuerySettings(ctx, nil)
+	if got["max_execution_time"] != 60 || got["timeout_overflow_mode"] != "throw" {
+		t.Errorf("expected a server-enforced ceiling, got %v", got)
+	}
+
+	c.setActiveWorkloads(map[string]bool{QuerySearchWorkload: true})
+	got = c.applyQuerySettings(ctx, clickhouse.Settings{"max_query_size": 42})
+	if got["max_execution_time"] != 60 || got["workload"] != QuerySearchWorkload || got["max_query_size"] != 42 {
+		t.Errorf("ceiling, tag, and caller settings must coexist, got %v", got)
+	}
+
+	if got := c.applyQuerySettings(QueryBudgetContext(context.Background(), 0), nil); got != nil {
+		t.Errorf("no budget and no workload must send no settings, got %v", got)
 	}
 }
 

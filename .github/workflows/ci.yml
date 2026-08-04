@@ -38,6 +38,17 @@ jobs:
       - name: Vet tagged tests
         run: go vet -tags chcluster,chupgrade ./pkg/storage/
 
+      # Same reasoning as above: the rule tester's ClickHouse-backed test is
+      # build-tagged, so nothing else compiles it. Run it with
+      # BIFRACT_TEST_CLICKHOUSE=host:port against any ClickHouse.
+      - name: Vet rule tester integration test
+        run: go vet -tags ruletestch ./internal/ruletest/
+
+      # The shipped example detections are what users copy. Linting them needs no
+      # database and catches a rule that stops translating.
+      - name: Lint example detections
+        run: go run ./cmd/bifract --test --lint ./example-detections/
+
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 

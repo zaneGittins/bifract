@@ -3,6 +3,7 @@ package feeds
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -254,6 +255,14 @@ func (s *Syncer) checkAndSync() {
 	}
 }
 
+// TranslateError marks a rule that parsed cleanly but could not be expressed in
+// BQL. Distinguishing it from a parse failure matters: it means the rule exists
+// and the translator is the gap, which is a different piece of work.
+type TranslateError struct{ err error }
+
+func (e *TranslateError) Error() string { return "translate Sigma rule: " + e.err.Error() }
+func (e *TranslateError) Unwrap() error { return e.err }
+
 // isDue returns true if a feed is due for sync based on its schedule and last sync time.
 func (s *Syncer) isDue(feed *Feed, now time.Time) bool {
 	interval := ScheduleInterval(feed.SyncSchedule)
@@ -323,6 +332,15 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 	// picture of the repo and the delete pass unsafe to run.
 	incomplete := false
 
+	// Every rule the repository offers, imported or not, so the ATT&CK gap list can
+	// answer "what exists for this technique that we are not running, and why not".
+	catalog := make([]CatalogEntry, 0, len(yamlFiles))
+	catalogPaths := make([]string, 0, len(yamlFiles))
+	record := func(e CatalogEntry) {
+		catalog = append(catalog, e)
+		catalogPaths = append(catalogPaths, e.Path)
+	}
+
 	for _, filePath := range yamlFiles {
 		if ctx.Err() != nil {
 			incomplete = true
@@ -333,8 +351,10 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 		content, err := ReadFile(repoDir, filePath)
 		if err != nil {
 			// Keep the path: a rule we could not read is not a rule we know was removed.
+			// Its catalog row is left untouched for the same reason.
 			recordErr("%s: read error: %v", filePath, err)
 			foundPaths = append(foundPaths, filePath)
+			catalogPaths = append(catalogPaths, filePath)
 			continue
 		}
 
@@ -345,69 +365,98 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 		h.Write([]byte(sigma.TranslatorVersion))
 		hash := fmt.Sprintf("%x", h.Sum(nil))
 
+		// Metadata is read before any translation so a rule Bifract cannot express
+		// in BQL still lands in the catalog with its ATT&CK tags intact. It also
+		// lets the unchanged-rule path re-check the level/status filters without
+		// paying for a translate.
+		entry := CatalogEntry{Path: filePath, RuleHash: hash}
+		meta, metaErr := parseRuleMetadata(string(content))
+		if metaErr != nil {
+			entry.SkipReason = SkipParseError
+			entry.SkipDetail = metaErr.Error()
+			record(entry)
+			recordErr("%s: parse error: %v", filePath, metaErr)
+			foundPaths = append(foundPaths, filePath)
+			continue
+		}
+		entry.Title, entry.Level, entry.Status, entry.Tags = meta.Title, meta.Level, meta.Status, meta.Tags
+
+		// Rules below the feed's thresholds are catalogued but not imported, and
+		// their path is deliberately left out of foundPaths so the delete pass
+		// removes any alert a previous, looser threshold created.
+		if !meetsMinLevel(meta.Level, feed.MinLevel) {
+			entry.SkipReason = SkipMinLevel
+			entry.SkipDetail = fmt.Sprintf("level %q is below the feed minimum %q", meta.Level, feed.MinLevel)
+			record(entry)
+			continue
+		}
+		if !meetsMinStatus(meta.Status, feed.MinStatus) {
+			entry.SkipReason = SkipMinStatus
+			entry.SkipDetail = fmt.Sprintf("status %q is below the feed minimum %q", meta.Status, feed.MinStatus)
+			record(entry)
+			continue
+		}
+
 		// Check if this alert already exists
 		existing, existErr := s.alertManager.GetFeedAlertByPath(ctx, feed.ID, filePath)
 
-		if existErr == nil && existing != nil {
-			// Alert exists - check if content changed
-			if existing.FeedRuleHash == hash {
-				// Hash unchanged but filters may have changed - check if rule still qualifies
-				_, _, _, _, level, status, _, _, levelErr := s.parseRule(string(content), fieldMapper)
-				if levelErr == nil && (!meetsMinLevel(level, feed.MinLevel) || !meetsMinStatus(status, feed.MinStatus)) {
-					// Rule no longer meets filters, will be cleaned up by delete pass
-					continue
-				}
-				result.Skipped++
-				foundPaths = append(foundPaths, filePath)
-				continue
-			}
-
-			// Content changed - re-parse and update
-			name, description, queryString, alertType, level, status, labels, references, parseErr := s.parseRule(string(content), fieldMapper)
-			if parseErr != nil {
-				recordErr("%s: parse error: %v", filePath, parseErr)
-				foundPaths = append(foundPaths, filePath)
-				continue
-			}
-
-			// If rule no longer meets filters, let delete pass clean it up
-			if !meetsMinLevel(level, feed.MinLevel) || !meetsMinStatus(status, feed.MinStatus) {
-				continue
-			}
-
-			err = s.alertManager.UpdateFeedAlert(ctx, existing.ID, name, description, queryString, alertType, mapLevelToSeverity(level), labels, references, hash, feed.CreatedBy, feed.FractalID, feed.PrismID)
-			if err != nil {
-				recordErr("%s: update error: %v", filePath, err)
-			} else {
-				result.Updated++
-			}
+		if existErr == nil && existing != nil && existing.FeedRuleHash == hash {
+			entry.Imported = true
+			record(entry)
+			result.Skipped++
 			foundPaths = append(foundPaths, filePath)
 			continue
 		}
 
-		// New alert - parse and create. A path that fails to parse is still kept: when the
-		// lookup above failed transiently rather than genuinely finding nothing, dropping it
-		// here would delete a working alert.
-		name, description, queryString, alertType, level, status, labels, references, parseErr := s.parseRule(string(content), fieldMapper)
+		// Content changed, or the alert does not exist yet. A path that fails to
+		// translate is still kept: when the lookup above failed transiently rather
+		// than genuinely finding nothing, dropping it would delete a working alert.
+		name, description, queryString, alertType, level, _, labels, references, parseErr := s.parseRule(string(content), fieldMapper)
 		if parseErr != nil {
+			var translateErr *TranslateError
+			if errors.As(parseErr, &translateErr) {
+				entry.SkipReason = SkipTranslateError
+			} else {
+				entry.SkipReason = SkipParseError
+			}
+			entry.SkipDetail = parseErr.Error()
+			record(entry)
 			recordErr("%s: parse error: %v", filePath, parseErr)
 			foundPaths = append(foundPaths, filePath)
 			continue
 		}
 
-		// Skip rules below the minimum severity level or status threshold
-		if !meetsMinLevel(level, feed.MinLevel) || !meetsMinStatus(status, feed.MinStatus) {
-			continue
+		if existErr == nil && existing != nil {
+			err = s.alertManager.UpdateFeedAlert(ctx, existing.ID, name, description, queryString, alertType, mapLevelToSeverity(level), labels, references, hash, feed.CreatedBy, feed.FractalID, feed.PrismID)
+			if err != nil {
+				recordErr("%s: update error: %v", filePath, err)
+				entry.SkipReason = SkipCreateError
+				entry.SkipDetail = err.Error()
+			} else {
+				entry.Imported = true
+				result.Updated++
+			}
+		} else {
+			_, err = s.alertManager.CreateFeedAlert(ctx, name, description, queryString, alertType, mapLevelToSeverity(level),
+				labels, references, feed.ID, filePath, hash, feed.FractalID, feed.PrismID, feed.CreatedBy)
+			if err != nil {
+				recordErr("%s: create error: %v", filePath, err)
+				entry.SkipReason = SkipCreateError
+				entry.SkipDetail = err.Error()
+			} else {
+				entry.Imported = true
+				result.Added++
+			}
 		}
 
-		_, err = s.alertManager.CreateFeedAlert(ctx, name, description, queryString, alertType, mapLevelToSeverity(level),
-			labels, references, feed.ID, filePath, hash, feed.FractalID, feed.PrismID, feed.CreatedBy)
-		if err != nil {
-			recordErr("%s: create error: %v", filePath, err)
-		} else {
-			result.Added++
-		}
+		record(entry)
 		foundPaths = append(foundPaths, filePath)
+	}
+
+	if err := s.manager.UpsertCatalog(ctx, feed.ID, catalog); err != nil {
+		// A stale catalog degrades the gap list; it must not fail the sync that
+		// actually imported the rules.
+		log.Printf("[Feeds] Catalog upsert failed for %q: %v", feed.Name, err)
 	}
 
 	if ok, reason := shouldRunDeletePass(incomplete, len(yamlFiles), len(foundPaths), errCount); !ok {
@@ -418,6 +467,11 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 			recordErr("delete pass: %v", delErr)
 		} else {
 			result.Deleted = deleted
+		}
+		// The catalog keeps filter-skipped paths that foundPaths omits, so it is
+		// pruned against its own list.
+		if _, delErr := s.manager.DeleteCatalogNotIn(ctx, feed.ID, catalogPaths); delErr != nil {
+			log.Printf("[Feeds] Catalog prune failed for %q: %v", feed.Name, delErr)
 		}
 	}
 
@@ -454,7 +508,7 @@ func (s *Syncer) parseSigmaRule(content string, fieldMapper func(string) string)
 
 	queryString, err = sigma.Translate(rule, fieldMapper)
 	if err != nil {
-		return "", "", "", "", "", "", nil, nil, fmt.Errorf("translate Sigma rule: %w", err)
+		return "", "", "", "", "", "", nil, nil, &TranslateError{err: err}
 	}
 
 	level = rule.Level
@@ -480,22 +534,7 @@ func (s *Syncer) parseSigmaRule(content string, fieldMapper func(string) string)
 	}
 	description = strings.Join(descParts, "\n")
 
-	// Build labels
-	if rule.Level != "" {
-		labels = append(labels, "sigma:"+rule.Level)
-	}
-	if rule.Status != "" {
-		labels = append(labels, "status:"+rule.Status)
-	}
-	for _, tag := range rule.Tags {
-		labels = append(labels, tag)
-	}
-	if rule.LogSource.Product != "" {
-		labels = append(labels, "product:"+rule.LogSource.Product)
-	}
-	if rule.LogSource.Category != "" {
-		labels = append(labels, "category:"+rule.LogSource.Category)
-	}
+	labels = sigma.BuildLabels(rule)
 
 	return name, description, queryString, alertType, level, status, labels, references, nil
 }

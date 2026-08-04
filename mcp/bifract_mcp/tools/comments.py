@@ -2,8 +2,23 @@
 
 from .. import http
 from ..app import as_json, tool
+from ..http import BifractError
 
 AI_TAG = "AI-Generated"
+MAX_TAG_LEN = 100
+MAX_BULK_COMMENTS = 500
+
+
+def _validate_bulk(comment_ids: list[str], tag: str) -> tuple[list[str], str]:
+    """Apply the server's bulk-tag limits locally so a bad call fails without a round trip."""
+    tag = tag.strip()
+    if not tag or len(tag) > MAX_TAG_LEN:
+        raise BifractError(f"Tag must be 1-{MAX_TAG_LEN} characters")
+
+    ids = [cid.strip() for cid in (comment_ids or []) if cid and cid.strip()]
+    if not ids or len(ids) > MAX_BULK_COMMENTS:
+        raise BifractError(f"Must provide 1-{MAX_BULK_COMMENTS} comment IDs")
+    return ids, tag
 
 
 @tool
@@ -57,6 +72,44 @@ async def list_comment_tags() -> str:
         The tags currently applied to comments.
     """
     return as_json(await http.get("/comments/tags"))
+
+
+@tool
+async def add_tag(comment_ids: list[str], tag: str) -> str:
+    """
+    Add a tag to existing comments.
+
+    Use this to pull comments that were written separately into one investigation:
+    tag each with the same IR-<OneWord> tag. Comment ids come from list_comments or
+    get_log_comments (the `id` field), not the log_id.
+
+    Args:
+        comment_ids: Ids of the comments to tag (1-500).
+        tag: The tag to add; a comment that already has it is left unchanged.
+
+    Returns:
+        The number of comments updated.
+    """
+    ids, tag = _validate_bulk(comment_ids, tag)
+    body = {"comment_ids": ids, "tag": tag}
+    return as_json(await http.post("/comments/bulk-add-tag", body))
+
+
+@tool
+async def remove_tag(comment_ids: list[str], tag: str) -> str:
+    """
+    Remove a tag from existing comments.
+
+    Args:
+        comment_ids: Ids of the comments to untag (1-500).
+        tag: The tag to remove; a comment without it is left unchanged.
+
+    Returns:
+        The number of comments updated.
+    """
+    ids, tag = _validate_bulk(comment_ids, tag)
+    body = {"comment_ids": ids, "tag": tag}
+    return as_json(await http.post("/comments/bulk-remove-tag", body))
 
 
 @tool

@@ -25,8 +25,8 @@ type WebhookAction struct {
 	URL              string            `json:"url"`
 	Method           string            `json:"method"`
 	Headers          map[string]string `json:"headers"`
-	AuthType         string            `json:"auth_type"`      // 'none', 'bearer', 'basic'
-	AuthConfig       map[string]string `json:"auth_config"`    // Contains auth-specific config
+	AuthType         string            `json:"auth_type"`   // 'none', 'bearer', 'basic'
+	AuthConfig       map[string]string `json:"auth_config"` // Contains auth-specific config
 	TimeoutSecs      int               `json:"timeout_seconds"`
 	RetryCount       int               `json:"retry_count"`
 	IncludeAlertLink bool              `json:"include_alert_link"`

@@ -106,13 +106,15 @@ func CountLogs(path string) (int64, error) {
 	}
 }
 
+// countLines counts newlines exactly. Extrapolating from a leading sample
+// skews badly when line sizes vary (a 870MB Hayabusa export estimated 115K
+// lines against an actual 300K), and a full scan of it costs only ~130ms.
 func countLines(path string) (int64, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, err
 	}
-	fileSize := info.Size()
-	if fileSize == 0 {
+	if info.Size() == 0 {
 		return 0, nil
 	}
 
@@ -122,38 +124,28 @@ func countLines(path string) (int64, error) {
 	}
 	defer f.Close()
 
-	// For small files (<= 2MB), count exactly.
-	const sampleSize = 2 * 1024 * 1024
-	if fileSize <= sampleSize {
-		var count int64
-		buf := make([]byte, sampleSize)
-		for {
-			n, err := f.Read(buf)
+	var count int64
+	var last byte
+	buf := make([]byte, 4*1024*1024)
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
 			count += int64(bytes.Count(buf[:n], []byte{'\n'}))
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return 0, err
-			}
+			last = buf[n-1]
 		}
-		return count, nil
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, err
+		}
 	}
 
-	// For large files, sample the first 2MB and estimate from file size.
-	buf := make([]byte, sampleSize)
-	n, err := io.ReadFull(f, buf)
-	if err != nil && err != io.ErrUnexpectedEOF {
-		return 0, err
+	// A final line without a trailing newline still counts.
+	if last != '\n' {
+		count++
 	}
-
-	lines := int64(bytes.Count(buf[:n], []byte{'\n'}))
-	if lines == 0 {
-		return 1, nil
-	}
-
-	avgBytesPerLine := float64(n) / float64(lines)
-	return int64(float64(fileSize) / avgBytesPerLine), nil
+	return count, nil
 }
 
 func countCSVRows(path string) (int64, error) {
@@ -166,6 +158,43 @@ func countCSVRows(path string) (int64, error) {
 		count--
 	}
 	return count, nil
+}
+
+// maxBatchBytes caps the raw payload of one batch. A log count alone is not
+// enough: 5,000 Hayabusa records is a 15MB request, too coarse to retry.
+const maxBatchBytes = 4 << 20
+
+// batcher flushes on whichever limit trips first, log count or raw bytes.
+type batcher struct {
+	ch        chan<- Batch
+	batchSize int
+	logs      []map[string]interface{}
+	bytes     int
+}
+
+func newBatcher(ch chan<- Batch, batchSize int) *batcher {
+	return &batcher{
+		ch:        ch,
+		batchSize: batchSize,
+		logs:      make([]map[string]interface{}, 0, batchSize),
+	}
+}
+
+func (b *batcher) add(log map[string]interface{}, size int) {
+	b.logs = append(b.logs, log)
+	b.bytes += size
+	if len(b.logs) >= b.batchSize || b.bytes >= maxBatchBytes {
+		b.flush()
+	}
+}
+
+func (b *batcher) flush() {
+	if len(b.logs) == 0 {
+		return
+	}
+	b.ch <- Batch{Logs: b.logs}
+	b.logs = make([]map[string]interface{}, 0, b.batchSize)
+	b.bytes = 0
 }
 
 // ReadFile reads a file and sends log batches to the channel.
@@ -204,12 +233,14 @@ func readNDJSON(path string, batchSize, limit int, batchCh chan<- Batch, stats *
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 4*1024*1024), 16*1024*1024)
 
-	batch := make([]map[string]interface{}, 0, batchSize)
+	b := newBatcher(batchCh, batchSize)
 	count := 0
 
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+		// Unmarshal straight off the scanner's buffer: json.Unmarshal copies
+		// every string it stores, so nothing outlives the next Scan.
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
 			continue
 		}
 
@@ -218,24 +249,17 @@ func readNDJSON(path string, batchSize, limit int, batchCh chan<- Batch, stats *
 		}
 
 		var log map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &log); err != nil {
+		if err := json.Unmarshal(line, &log); err != nil {
 			stats.Errors.Add(1)
 			continue
 		}
 
 		log["bifract_ingest_path"] = path
-		batch = append(batch, log)
+		b.add(log, len(line))
 		count++
-
-		if len(batch) >= batchSize {
-			batchCh <- Batch{Logs: batch}
-			batch = make([]map[string]interface{}, 0, batchSize)
-		}
 	}
 
-	if len(batch) > 0 {
-		batchCh <- Batch{Logs: batch}
-	}
+	b.flush()
 
 	return scanner.Err()
 }
@@ -258,7 +282,7 @@ func readJSONArray(path string, batchSize, limit int, batchCh chan<- Batch, stat
 		return fmt.Errorf("expected JSON array, got %v", t)
 	}
 
-	batch := make([]map[string]interface{}, 0, batchSize)
+	b := newBatcher(batchCh, batchSize)
 	count := 0
 
 	for dec.More() {
@@ -266,25 +290,26 @@ func readJSONArray(path string, batchSize, limit int, batchCh chan<- Batch, stat
 			break
 		}
 
+		// RawMessage first so the batcher gets a real byte size. A failure here
+		// desyncs the decoder, so stop rather than spin on the same bad bytes.
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			b.flush()
+			return fmt.Errorf("malformed JSON after %d logs: %w", count, err)
+		}
+
 		var log map[string]interface{}
-		if err := dec.Decode(&log); err != nil {
+		if err := json.Unmarshal(raw, &log); err != nil {
 			stats.Errors.Add(1)
 			continue
 		}
 
 		log["bifract_ingest_path"] = path
-		batch = append(batch, log)
+		b.add(log, len(raw))
 		count++
-
-		if len(batch) >= batchSize {
-			batchCh <- Batch{Logs: batch}
-			batch = make([]map[string]interface{}, 0, batchSize)
-		}
 	}
 
-	if len(batch) > 0 {
-		batchCh <- Batch{Logs: batch}
-	}
+	b.flush()
 
 	return nil
 }
@@ -333,7 +358,7 @@ func readCSV(path string, batchSize, limit int, batchCh chan<- Batch, stats *Sta
 		headers[i] = strings.ReplaceAll(strings.TrimSpace(h), " ", "_")
 	}
 
-	batch := make([]map[string]interface{}, 0, batchSize)
+	b := newBatcher(batchCh, batchSize)
 	count := 0
 
 	for {
@@ -351,25 +376,20 @@ func readCSV(path string, batchSize, limit int, batchCh chan<- Batch, stats *Sta
 		}
 
 		log := make(map[string]interface{}, len(headers)+1)
+		size := 0
 		for i, header := range headers {
 			if i < len(record) {
 				log[header] = record[i]
+				size += len(header) + len(record[i])
 			}
 		}
 
 		log["bifract_ingest_path"] = path
-		batch = append(batch, log)
+		b.add(log, size)
 		count++
-
-		if len(batch) >= batchSize {
-			batchCh <- Batch{Logs: batch}
-			batch = make([]map[string]interface{}, 0, batchSize)
-		}
 	}
 
-	if len(batch) > 0 {
-		batchCh <- Batch{Logs: batch}
-	}
+	b.flush()
 
 	return nil
 }

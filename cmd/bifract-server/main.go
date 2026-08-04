@@ -2043,6 +2043,15 @@ func main() {
 				r.Post("/alerts/import", alertHandler.HandleImportYAML)
 				r.Post("/alerts/batch-toggle", alertHandler.HandleBatchToggleAlerts)
 				r.Get("/alerts/{id}/executions", alertHandler.HandleGetExecutions)
+
+				// MITRE ATT&CK coverage, derived from the attack.* labels rules
+				// already carry. Read-only, scoped to the session's fractal/prism.
+				r.Get("/attack/matrix", alertHandler.HandleAttackMatrix)
+				r.Get("/attack/coverage", alertHandler.HandleAttackCoverage)
+				r.Get("/attack/techniques/{id}/rules", alertHandler.HandleAttackTechniqueRules)
+				r.Get("/attack/techniques/{id}/gap", alertHandler.HandleAttackTechniqueGap)
+				r.Get("/attack/gaps", alertHandler.HandleAttackGaps)
+				r.Get("/attack/layer", alertHandler.HandleAttackLayer)
 			})
 
 			// Webhook management

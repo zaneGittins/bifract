@@ -160,6 +160,9 @@ const App = {
         if (window.AlertFeeds) {
             AlertFeeds.init();
         }
+        if (window.AttackCoverage) {
+            AttackCoverage.init();
+        }
 
         if (window.Notifications) {
             Notifications.init();
@@ -1079,6 +1082,11 @@ const App = {
             if (window.AlertFeeds) {
                 AlertFeeds.closeDetailsPanel(true);
             }
+            // The coverage drawer is position:fixed, so it must be closed rather
+            // than left to disappear with its container.
+            if (window.AttackCoverage) {
+                AttackCoverage.hide();
+            }
         }
 
         // Hide all fractal view tab contents
@@ -1239,18 +1247,18 @@ const App = {
                         (!subPath && document.querySelector('.alerts-sub-tab.active')?.dataset.subtab === 'feeds');
                     const showActions = subPath === 'actions' ||
                         (!subPath && document.querySelector('.alerts-sub-tab.active')?.dataset.subtab === 'actions');
+                    const showCoverage = subPath === 'coverage' ||
+                        (!subPath && document.querySelector('.alerts-sub-tab.active')?.dataset.subtab === 'coverage');
 
-                    if (showActions) {
+                    if (showCoverage) {
+                        if (window.AlertFeeds) AlertFeeds.showCoverageTab();
+                    } else if (showActions) {
                         if (window.AlertFeeds) AlertFeeds.showActionsTab();
                     } else if (showFeeds) {
-                        document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
-                        document.querySelector('.alerts-sub-tab[data-subtab="feeds"]')?.classList.add('active');
-                        if (feedAlertsView) feedAlertsView.style.display = 'block';
+                        AlertFeeds?.activateSubTab('feeds', 'feedAlertsView');
                         if (window.AlertFeeds) AlertFeeds.show(subPath === 'feeds' ? '' : subPath);
                     } else {
-                        document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
-                        document.querySelector('.alerts-sub-tab[data-subtab="manual"]')?.classList.add('active');
-                        if (alertsView) alertsView.style.display = 'block';
+                        AlertFeeds?.activateSubTab('manual', 'alertsView');
                         const alertSubPath = (subPath && subPath !== 'manual') ? subPath : '';
                         if (window.Alerts) Alerts.show(alertSubPath);
                     }
