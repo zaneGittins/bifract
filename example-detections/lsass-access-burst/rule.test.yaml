@@ -1,11 +1,13 @@
-rule: ../rules/lsass-access-burst.yml
+rule: rule.yml
 normalizer: ../../example-normalizers/sysmon-normalizer.yaml
 
 cases:
-  # Three accesses from one image reach the threshold. Each case is scoped to its own
-  # synthetic fractal, so the counts here cannot be inflated by any other case.
+  # A threshold rule only fires when it sees several events at once, so every case
+  # here sets `together: true`. Each case still gets its own synthetic fractal, so the
+  # counts cannot be inflated by any other case.
   - name: three lsass accesses from one process
     expect: match
+    together: true
     count: 1
     logs:
       - EventID: 10
@@ -31,6 +33,7 @@ cases:
   # could never make.
   - name: two lsass accesses stay below the threshold
     expect: no_match
+    together: true
     logs:
       - EventID: 10
         UtcTime: "2026-08-03 09:20:11.000"
@@ -49,6 +52,7 @@ cases:
   # threshold, so the grouping must keep them apart.
   - name: three accesses from three different images
     expect: no_match
+    together: true
     logs:
       - EventID: 10
         UtcTime: "2026-08-03 09:31:00.000"
@@ -68,6 +72,7 @@ cases:
 
   - name: accesses to a non-lsass target
     expect: no_match
+    together: true
     logs:
       - EventID: 10
         UtcTime: "2026-08-03 09:40:00.000"

@@ -1,8 +1,10 @@
 # Testing Detection Rules
 
-`bifract --test` runs a detection rule against sample logs and checks whether it fires.
-Commit your rules, your sample logs and the verdict you expect, and a broken detection
-fails the build instead of quietly going dark in production.
+`bifract --test` runs a detection rule against sample logs and tells you whether it fires.
+
+You give it a rule, some events, and the verdict you expect. It reports pass or fail. Use it
+while writing a rule to check your logic against a captured event, or wire it into a pipeline
+to catch regressions; see [CI/CD setup](#cicd-setup) for the latter.
 
 It works on both rule formats Bifract understands:
 
@@ -34,8 +36,8 @@ contaminate one another's results, and a threshold rule counts only its own case
 # Run every test in a directory. Starts a throwaway ClickHouse if none is given.
 bifract --test ./detections/
 
-# Check one rule against one file of logs.
-bifract --test rules/certutil.yml --logs samples/evt.json --expect match
+# Check one rule against one file of events, without a test file.
+bifract --test detections/certutil-download/rule.yml --logs captured.json --expect match
 
 # Validate that every rule translates and parses. No ClickHouse needed.
 bifract --test --lint ./detections/
@@ -45,25 +47,56 @@ Exit codes: `0` all passed, `1` one or more failed, `2` could not run.
 
 ## Laying out a detection repo
 
+Give each detection a folder holding its rule, its test, and its sample events:
+
 ```
 detections/
-  normalizers/
-    sysmon.yaml                  # exported from Settings -> Normalizers
-  rules/
-    certutil-download.yml
-  tests/
-    certutil-download.test.yaml
-    samples/
-      certutil-verifyctl.json
+├── normalizers/
+│   └── sysmon.yaml                 # exported from Settings -> Normalizers
+├── certutil-download/
+│   ├── rule.yml                    # the Sigma rule or Bifract alert
+│   ├── rule.test.yaml              # what must and must not fire
+│   ├── true-positives.ndjson       # raw events, no test data in them
+│   └── benign.ndjson
+└── lsass-access-burst/
+    ├── rule.yml
+    └── rule.test.yaml              # events written inline instead
 ```
 
-Any file ending in `.test.yaml` is a test. Paths inside it resolve relative to the test file,
-so the tree can be moved or vendored wholesale.
+Adding a detection is adding a folder. `example-detections/` in the Bifract repo is laid out
+this way and is a working starting point.
+
+### How files are found
+
+You never name test files on the command line. Point `--test` at a directory and it walks the
+whole tree, running every file whose name ends in `.test.yaml` (or `.test.yml`):
+
+```bash
+bifract --test ./detections/     # finds both rule.test.yaml files above
+```
+
+Each spec then points at its own rule, normalizer and event files by **path relative to the
+spec itself**, which is why a detection folder is self-contained and can be moved or vendored
+without edits.
+
+The nesting is up to you: discovery is a recursive suffix match, so grouping detections by
+platform, team or ATT&CK tactic works just as well.
+
+### The event files hold only events
+
+A `.json` or `.ndjson` file is raw captured telemetry with nothing test-specific in it, so you
+can drop an export straight in. The expected verdict lives in the `.test.yaml` beside it:
+
+```yaml
+cases:
+  - {name: real attacks, expect: match,    logFile: true-positives.ndjson}
+  - {name: benign usage, expect: no_match, logFile: benign.ndjson}
+```
 
 ## Test file format
 
 ```yaml
-rule: ../rules/certutil-download.yml
+rule: rule.yml
 normalizer: ../normalizers/sysmon.yaml
 
 cases:
@@ -81,17 +114,15 @@ cases:
       Image: C:\Windows\System32\certutil.exe
       CommandLine: certutil.exe -encode payload.bin payload.b64
 
-  - name: from a sample file
+  # Every event in the file must fire.
+  - name: all known download variants fire
     expect: match
-    logFile: samples/certutil-verifyctl.json
+    logFile: true-positives.ndjson
 
-  - name: three accesses reach the threshold
-    expect: match
-    count: 1
-    logs:
-      - {EventID: 10, SourceImage: C:\a.exe, TargetImage: C:\Windows\System32\lsass.exe}
-      - {EventID: 10, SourceImage: C:\a.exe, TargetImage: C:\Windows\System32\lsass.exe}
-      - {EventID: 10, SourceImage: C:\a.exe, TargetImage: C:\Windows\System32\lsass.exe}
+  # No event in the file may fire.
+  - name: no benign certutil usage fires
+    expect: no_match
+    logFile: benign.ndjson
 ```
 
 | Field | Meaning |
@@ -101,38 +132,21 @@ cases:
 | `cases[].name` | Case name, shown in output and in CI reports. Required. |
 | `cases[].expect` | `match` or `no_match`. Required. |
 | `cases[].log` | One log, inline. |
-| `cases[].logs` | Several logs, inline. Use for threshold rules. |
-| `cases[].logFile` | Logs from a file: JSON array, single JSON object, or NDJSON. |
-| `cases[].each` | Evaluate every log independently. See below. |
-| `cases[].count` | Assert an exact number of result rows rather than just "any". |
+| `cases[].logs` | Several logs, inline. |
+| `cases[].logFile` | Events from a file: JSON array, single JSON object, or NDJSON. |
+| `cases[].together` | Judge the logs as one batch. Needed by threshold rules. |
+| `cases[].count` | Assert an exact number of result rows. Requires `together`. |
 
 Set exactly one of `log`, `logs` or `logFile` per case.
 
-## Corpora: `each: true`
+## A case is all-or-nothing
 
-By default a case presents all its logs to the rule **together**, as one batch, and the
-case matches if the rule returns any row. That is what threshold rules need: three LSASS
-accesses only cross the threshold when the rule sees all three at once.
+Every log in a case is judged **on its own**, and the case passes only if all of them meet
+the expectation. A file of ten events with `expect: match` means all ten must fire; one with
+`expect: no_match` means none of them may. So the usual shape is one file per verdict and a
+case per file, as above.
 
-It is the wrong semantics for a corpus. Given twenty true positives in one case,
-`expect: match` would pass as soon as *one* of them fired, hiding the other nineteen.
-
-`each: true` evaluates every log on its own, in its own fractal, and the case passes only
-if every log meets the expectation:
-
-```yaml
-  - name: every known true positive fires
-    expect: match
-    each: true
-    logFile: samples/certutil-true-positives.ndjson
-
-  - name: no benign certutil usage fires
-    expect: no_match
-    each: true
-    logFile: samples/certutil-benign.ndjson
-```
-
-Output reports the ratio, and failures name the offending log:
+Output reports the ratio, and a failure names the log that broke:
 
 ```
   PASS every known true positive fires (4/4 logs matched)
@@ -140,13 +154,37 @@ Output reports the ratio, and failures name the offending log:
        log 2: expected the rule to trigger, but it returned no rows
 ```
 
-This is the pattern to reach for when curating detections: one file of attacks that must
-fire, one file of benign activity that must not, both asserted log by log. Add a new false
-positive to the benign file and the build tells you the moment a rule change starts
-flagging it.
+Add a newly discovered false positive to the benign file, and you will know the moment a
+rule change starts flagging it.
 
-Do not use `each` with threshold rules, whose logs must be seen together. It is also
-mutually exclusive with `count`, which is rejected at load time.
+## Threshold rules: `together: true`
+
+Some rules only fire when they see several events at once. The LSASS example counts three
+accesses from the same process, so judging each access alone would never reach the
+threshold.
+
+`together: true` presents the case's logs to the rule as a single batch instead:
+
+```yaml
+  - name: three lsass accesses from one process
+    expect: match
+    together: true
+    logs:
+      - {EventID: 10, SourceImage: C:\a.exe, TargetImage: C:\Windows\System32\lsass.exe}
+      - {EventID: 10, SourceImage: C:\a.exe, TargetImage: C:\Windows\System32\lsass.exe}
+      - {EventID: 10, SourceImage: C:\a.exe, TargetImage: C:\Windows\System32\lsass.exe}
+
+  - name: two accesses stay below the threshold
+    expect: no_match
+    together: true
+    logs:
+      - {EventID: 10, SourceImage: C:\b.exe, TargetImage: C:\Windows\System32\lsass.exe}
+      - {EventID: 10, SourceImage: C:\b.exe, TargetImage: C:\Windows\System32\lsass.exe}
+```
+
+With `together`, the rule runs once over the whole set, so `expect: match` means the set as
+a whole triggered. `count` describes that single run's row count and therefore requires
+`together`; using it without is rejected when the spec loads.
 
 ## Always pass the right normalizer
 
@@ -242,7 +280,8 @@ jobs:
 ```
 
 Service containers are Linux-only on GitHub Actions. The tester provisions the Bifract schema
-itself, so the service needs no initialization.
+itself, so the service needs no initialization, and it waits for ClickHouse to accept queries
+before running, so the `--health-cmd` options above are belt-and-braces rather than required.
 
 ## GitLab CI
 

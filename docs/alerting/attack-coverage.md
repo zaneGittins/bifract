@@ -73,10 +73,11 @@ Deprecated techniques are excluded from every denominator.
 
 | Control | Effect |
 |---|---|
-| Search | Dims non-matching cells and expands any sub-technique group holding a match |
+| Search | Dims non-matching cells and expands any sub-technique group holding a match. Matches technique IDs too, which are not printed on the cells |
 | All techniques / Gaps only / Covered only | Narrows the grid to what you are working on |
-| Colour by | Rule count, enabled rules, or highest severity. "Enabled rules" is how you find coverage that exists but is switched off |
-| Severity / Platform / Feed / Enabled only | Filters the rules that count, and the platform filter narrows the technique universe so the percentage stays honest |
+| Colour | Rule count, enabled rules, or highest severity. "Enabled rules" is how you find coverage that exists but is switched off |
+| Filters | Severity, platform, source and enabled-only, folded into one control with a badge showing how many are active. The platform filter narrows the technique universe too, so the percentage stays honest |
+| Sub-techniques | Expands every sub-technique group at once |
 | Export layer | Downloads your coverage as an ATT&CK Navigator layer (see below) |
 
 ## Export layer

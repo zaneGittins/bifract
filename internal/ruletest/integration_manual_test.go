@@ -93,7 +93,7 @@ func TestWrongExpectationFails(t *testing.T) {
 	b := backendForTest(t)
 
 	spec := &Spec{
-		Rule: "../../example-detections/rules/certutil-download.yml",
+		Rule: "../../example-detections/certutil-download/rule.yml",
 		Path: "synthetic",
 		Cases: []Case{{
 			Name:        "benign certutil must not match, but we assert it does",
@@ -111,6 +111,13 @@ func TestWrongExpectationFails(t *testing.T) {
 	summary, err := Run(context.Background(), b, []SpecLoad{{Path: spec.Path, Spec: spec}}, opts)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Check for a spec error first. Without this, a broken rule path reports zero
+	// failures and the assertion below misreads that as the comparison being wrong.
+	for _, sr := range summary.Specs {
+		if sr.Error != "" {
+			t.Fatalf("spec did not load: %s", sr.Error)
+		}
 	}
 	if summary.Failed != 1 {
 		t.Fatalf("expected exactly 1 failure, got %d failed / %d passed", summary.Failed, summary.Passed)

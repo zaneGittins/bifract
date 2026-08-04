@@ -3,7 +3,6 @@ package ruletest
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -196,62 +195,97 @@ cases:
 	}
 }
 
+// Discovery is a recursive suffix match, which is what lets a repo group detections
+// however it likes (folder per detection, by platform, by tactic).
 func TestDiscoverSpecs(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "a.test.yaml", "x")
-	writeFile(t, dir, "nested/b.test.yaml", "x")
-	writeFile(t, dir, "rules/c.yml", "x")
+	writeFile(t, dir, "certutil-download/rule.test.yaml", "x")
+	writeFile(t, dir, "deep/nested/tree/c.test.yml", "x")
+	// Not specs: the rules, the events and unrelated files must all be ignored.
+	writeFile(t, dir, "certutil-download/rule.yml", "x")
+	writeFile(t, dir, "certutil-download/true-positives.ndjson", "x")
+	writeFile(t, dir, "normalizers/sysmon.yaml", "x")
 	writeFile(t, dir, "notes.md", "x")
 
 	found, err := DiscoverSpecs([]string{dir})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(found) != 2 {
-		t.Fatalf("found %v, want 2 spec files", found)
+	if len(found) != 3 {
+		t.Fatalf("found %v, want 3 spec files", found)
 	}
 	for _, f := range found {
-		if !strings.HasSuffix(f, SpecSuffix) {
+		if !IsSpecFile(f) {
 			t.Errorf("discovered non-spec file %q", f)
 		}
 	}
 }
 
-func TestEachRejectsCount(t *testing.T) {
+// A .yml-spelled spec must not be silently skipped: a repo on that convention would
+// otherwise run zero tests and report success.
+func TestIsSpecFile(t *testing.T) {
+	for _, name := range []string{"a.test.yaml", "a.test.yml", "certutil-download/rule.test.yaml"} {
+		if !IsSpecFile(name) {
+			t.Errorf("IsSpecFile(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"rule.yml", "rule.yaml", "events.ndjson", "a.tests.yaml", "readme.md"} {
+		if IsSpecFile(name) {
+			t.Errorf("IsSpecFile(%q) = true, want false", name)
+		}
+	}
+}
+
+// count describes a single query's row count, so it only means something when the
+// logs are batched.
+func TestCountRequiresTogether(t *testing.T) {
 	dir := t.TempDir()
 	p := writeFile(t, dir, "x.test.yaml", `
 rule: r.yml
 cases:
   - name: c
     expect: match
-    each: true
     count: 2
     logs: [{a: 1}, {b: 2}]
 `)
 	if _, err := LoadSpec(p); err == nil {
-		t.Fatal("LoadSpec accepted each + count; want an error")
+		t.Fatal("LoadSpec accepted count without together; want an error")
+	}
+
+	ok := writeFile(t, dir, "y.test.yaml", `
+rule: r.yml
+cases:
+  - name: c
+    expect: match
+    together: true
+    count: 2
+    logs: [{a: 1}, {b: 2}]
+`)
+	if _, err := LoadSpec(ok); err != nil {
+		t.Fatalf("LoadSpec rejected count with together: %v", err)
 	}
 }
 
-// each: true must produce one independently scoped unit per log; the default must
-// keep them together as a single unit.
+// By default each log is judged on its own, so every log must meet the expectation.
+// together: true collapses them into a single batched evaluation.
 func TestBuildUnitsGrouping(t *testing.T) {
 	logs := []map[string]interface{}{{"a": "1"}, {"a": "2"}, {"a": "3"}}
 
-	together, err := buildUnits(&Case{logs: logs}, nil)
+	batched, err := buildUnits(&Case{Together: true, logs: logs}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(together) != 1 || len(together[0].entries) != 3 {
-		t.Fatalf("default grouping = %d units; want 1 unit of 3 entries", len(together))
+	if len(batched) != 1 || len(batched[0].entries) != 3 {
+		t.Fatalf("together grouping = %d units; want 1 unit of 3 entries", len(batched))
 	}
 
-	split, err := buildUnits(&Case{Each: true, logs: logs}, nil)
+	split, err := buildUnits(&Case{logs: logs}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(split) != 3 {
-		t.Fatalf("each grouping = %d units; want 3", len(split))
+		t.Fatalf("default grouping = %d units; want 3", len(split))
 	}
 
 	seen := map[string]bool{}

@@ -145,26 +145,44 @@ const AttackCoverage = {
                         <option value="covered">Covered only</option>
                     </select>
                     <select id="atkColorBy" class="atk-select" title="What the cell colour encodes">
-                        <option value="count">Colour: rule count</option>
-                        <option value="enabled">Colour: enabled rules</option>
-                        <option value="severity">Colour: highest severity</option>
+                        <option value="count">Rule count</option>
+                        <option value="enabled">Enabled rules</option>
+                        <option value="severity">Highest severity</option>
                     </select>
-                    <select id="atkSeverity" class="atk-select">
-                        <option value="">All severities</option>
-                        <option value="critical">Critical</option>
-                        <option value="high">High</option>
-                        <option value="medium">Medium</option>
-                        <option value="low">Low</option>
-                        <option value="info">Info</option>
-                    </select>
-                    <select id="atkPlatform" class="atk-select">
-                        <option value="">All platforms</option>
-                    </select>
-                    <select id="atkFeed" class="atk-select">
-                        <option value="">All rules</option>
-                        <option value="none">Manual rules only</option>
-                    </select>
-                    <label class="atk-toggle"><input type="checkbox" id="atkEnabledOnly" /> Enabled only</label>
+
+                    <!-- Scope filters are occasional, so they fold into one control
+                         rather than spending four slots in the toolbar. -->
+                    <div class="atk-filters">
+                        <button type="button" class="atk-select atk-filters-btn" id="atkFiltersBtn" aria-expanded="false">
+                            Filters<span class="atk-filters-count" id="atkFiltersCount"></span>
+                        </button>
+                        <div class="atk-filters-menu" id="atkFiltersMenu">
+                            <label class="atk-field">Severity
+                                <select id="atkSeverity" class="atk-select">
+                                    <option value="">All severities</option>
+                                    <option value="critical">Critical</option>
+                                    <option value="high">High</option>
+                                    <option value="medium">Medium</option>
+                                    <option value="low">Low</option>
+                                    <option value="info">Info</option>
+                                </select>
+                            </label>
+                            <label class="atk-field">Platform
+                                <select id="atkPlatform" class="atk-select">
+                                    <option value="">All platforms</option>
+                                </select>
+                            </label>
+                            <label class="atk-field">Source
+                                <select id="atkFeed" class="atk-select">
+                                    <option value="">All rules</option>
+                                    <option value="none">Manual rules only</option>
+                                </select>
+                            </label>
+                            <label class="atk-toggle"><input type="checkbox" id="atkEnabledOnly" /> Enabled rules only</label>
+                            <button type="button" class="atk-filters-clear" id="atkFiltersClear">Clear filters</button>
+                        </div>
+                    </div>
+
                     <label class="atk-toggle"><input type="checkbox" id="atkShowSubs" /> Sub-techniques</label>
                     <div class="atk-controls-end">
                         <div class="atk-legend" id="atkLegend"></div>
@@ -243,18 +261,22 @@ const AttackCoverage = {
         });
         on('atkSeverity', 'change', (e) => {
             this.filters.severity = e.target.value;
+            this.updateFilterCount();
             this.scheduleReload();
         });
         on('atkPlatform', 'change', (e) => {
             this.filters.platform = e.target.value;
+            this.updateFilterCount();
             this.scheduleReload();
         });
         on('atkFeed', 'change', (e) => {
             this.filters.feedId = e.target.value;
+            this.updateFilterCount();
             this.scheduleReload();
         });
         on('atkEnabledOnly', 'change', (e) => {
             this.filters.enabledOnly = e.target.checked;
+            this.updateFilterCount();
             this.scheduleReload();
         });
         on('atkShowSubs', 'change', (e) => {
@@ -265,11 +287,52 @@ const AttackCoverage = {
         on('atkDrawerClose', 'click', () => this.closeDrawer());
         on('atkDrawerScrim', 'click', () => this.closeDrawer());
 
+        on('atkFiltersBtn', 'click', (e) => {
+            e.stopPropagation();
+            this.toggleFilters();
+        });
+        on('atkFiltersMenu', 'click', (e) => e.stopPropagation());
+        on('atkFiltersClear', 'click', () => {
+            Object.assign(this.filters, { severity: '', platform: '', feedId: '', enabledOnly: false });
+            document.getElementById('atkSeverity').value = '';
+            document.getElementById('atkPlatform').value = '';
+            document.getElementById('atkFeed').value = '';
+            document.getElementById('atkEnabledOnly').checked = false;
+            this.updateFilterCount();
+            this.scheduleReload();
+        });
+        document.addEventListener('click', () => this.toggleFilters(false));
+
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && document.getElementById('atkDrawer')?.classList.contains('open')) {
+            if (e.key !== 'Escape') return;
+            if (document.getElementById('atkFiltersMenu')?.classList.contains('open')) {
+                this.toggleFilters(false);
+                return;
+            }
+            if (document.getElementById('atkDrawer')?.classList.contains('open')) {
                 this.closeDrawer();
             }
         });
+    },
+
+    toggleFilters(force) {
+        const menu = document.getElementById('atkFiltersMenu');
+        const btn = document.getElementById('atkFiltersBtn');
+        if (!menu || !btn) return;
+        const open = force === undefined ? !menu.classList.contains('open') : force;
+        menu.classList.toggle('open', open);
+        btn.classList.toggle('atk-active', open);
+        btn.setAttribute('aria-expanded', String(open));
+    },
+
+    // The badge is the only sign a hidden filter is narrowing the numbers, so it
+    // must never be out of step with the actual state.
+    updateFilterCount() {
+        const n = ['severity', 'platform', 'feedId'].filter(k => this.filters[k]).length
+            + (this.filters.enabledOnly ? 1 : 0);
+        const badge = document.getElementById('atkFiltersCount');
+        if (badge) badge.textContent = n ? String(n) : '';
+        document.getElementById('atkFiltersBtn')?.classList.toggle('atk-filtered', n > 0);
     },
 
     populatePlatformFilter() {
@@ -293,6 +356,7 @@ const AttackCoverage = {
                 feeds.map(f => `<option value="${Utils.escapeHtml(f.id)}">${Utils.escapeHtml(f.name)}</option>`).join('');
             select.value = feeds.some(f => f.id === current) || current === 'none' ? current : '';
             this.filters.feedId = select.value;
+            this.updateFilterCount();
         } catch {
             // A missing feed list is not fatal: the rest of the map still works.
         }
@@ -368,6 +432,28 @@ const AttackCoverage = {
         grid.innerHTML = '';
         grid.appendChild(frag);
         this.built = true;
+
+        this.fitColumns();
+        if (!this.resizeObserver) {
+            this.resizeObserver = new ResizeObserver(() => this.fitColumns());
+            const wrap = document.querySelector('.atk-matrix-wrap');
+            if (wrap) this.resizeObserver.observe(wrap);
+        }
+    },
+
+    // Sizes columns so the whole kill chain fits the available width, down to a
+    // floor where the names stop being readable. Below that the matrix scrolls
+    // rather than shrinking into unreadability.
+    fitColumns() {
+        const wrap = document.querySelector('.atk-matrix-wrap');
+        const grid = document.getElementById('atkMatrix');
+        const columns = this.matrix?.tactics?.length;
+        if (!wrap || !grid || !columns || !wrap.clientWidth) return;
+
+        const gaps = columns - 1;          // 1px grid gap between columns
+        const available = wrap.clientWidth - gaps - 2;
+        const min = Math.max(90, Math.floor(available / columns));
+        grid.style.setProperty('--atk-col-min', min + 'px');
     },
 
     // A technique can sit in more than one tactic column, so cells are tracked as
@@ -385,13 +471,15 @@ const AttackCoverage = {
                </span>`
             : '';
 
+        // No ID row: it costs a full line on every one of ~700 cells, which is most
+        // of why the matrix would not fit on screen. The ID lives in the tooltip,
+        // the drawer, and the search index instead.
         btn.innerHTML = `
             <div class="atk-cell-top">
                 ${chevron}
-                <span class="atk-cell-name">${Utils.escapeHtml(tech.name)}</span>
+                <span class="atk-cell-name">${Utils.escapeHtml(tech.name)}<span class="atk-cell-subs" data-meta></span></span>
                 <span class="atk-badge" data-badge></span>
             </div>
-            <div class="atk-cell-meta" data-meta>${Utils.escapeHtml(tech.id)}</div>
         `;
 
         btn.addEventListener('click', (e) => {
@@ -468,9 +556,8 @@ const AttackCoverage = {
 
                 const meta = el.querySelector('[data-meta]');
                 if (meta) {
-                    let text = id;
-                    if (cell && cell.subs_total > 0) text += ` · ${cell.subs_covered || 0}/${cell.subs_total} sub`;
-                    meta.textContent = text;
+                    meta.textContent = cell && cell.subs_total > 0
+                        ? ` (${cell.subs_covered || 0}/${cell.subs_total})` : '';
                 }
             }
         }
@@ -575,38 +662,39 @@ const AttackCoverage = {
             ? (s.retired_tags || []).slice(0, 4).join(', ')
             : 'Every ATT&CK tag resolves';
 
+        // One compact row rather than five cards: the matrix is what the page is
+        // for, and the strip was spending 130px of vertical on numbers that read
+        // fine at a glance.
         el.innerHTML = `
-            ${this.statCard('Coverage', `${s.leaf_covered}/${s.leaf_total}`,
-                `${leafPct}% of ATT&CK v${s.matrix_version || ''}`,
+            ${this.stat('Coverage', `${s.leaf_covered}/${s.leaf_total}`, `${leafPct}%`,
                 'Detectable units covered: every sub-technique, plus every technique that has none. Nothing is inherited, so a rule on a parent does not credit its sub-techniques. This is the number that does not flatter.',
                 leafPct)}
-            ${this.statCard('Techniques touched', `${s.techniques_covered}/${s.techniques_total}`,
-                `${pct}% have at least one rule`,
-                'Top-level techniques with at least one rule mapped to them OR to any one of their sub-techniques. Reads far higher than Coverage because a technique with 14 sub-techniques and 1 covered still scores a full point. Useful for breadth, not for depth.',
-                pct)}
-            ${this.statCard('Weakest tactic', weak[0] || '-',
-                weakStats ? `${weakRatio} covered · ${weakSub}` : weakSub,
-                'The tactic columns with the lowest share of their detectable units covered.')}
-            ${this.statCard('Rules mapped', `${s.rules_mapped}/${s.rules_total}`,
-                `${s.rules_unmapped} rule(s) carry no technique tag`,
+            ${this.stat('Touched', `${s.techniques_covered}/${s.techniques_total}`, `${pct}%`,
+                'Top-level techniques with at least one rule mapped to them OR to any one of their sub-techniques. Reads far higher than Coverage because a technique with 14 sub-techniques and 1 covered still scores a full point. Useful for breadth, not depth.')}
+            ${this.stat('Weakest', weak[0] || '-', weakRatio,
+                weakStats ? `Lowest share of detectable units covered. Then ${weakSub.replace(/^then /, '')}.`
+                          : 'The tactic with the lowest share of its detectable units covered.')}
+            ${this.stat('Rules mapped', `${s.rules_mapped}/${s.rules_total}`,
+                s.rules_unmapped ? `${s.rules_unmapped} untagged` : '',
                 'Rules carrying at least one attack.tNNNN tag. The rest are invisible to this map: they either have no ATT&CK tag at all, or name only a tactic, which does not say which technique they detect.',
                 null, s.rules_unmapped > 0)}
-            ${this.statCard('Broken ATT&CK tags', String(broken), brokenSub,
+            ${this.stat('Broken tags', String(broken), broken ? brokenSub : '',
                 'Rules tagged with a technique ID that does not exist in this ATT&CK version and has no replacement, usually a typo or a technique MITRE removed outright. Retired IDs that DO have a replacement are resolved automatically and are not counted here.',
                 null, broken > 0)}
+            <span class="atk-stat-version" title="Embedded ATT&CK Enterprise matrix version">ATT&CK v${Utils.escapeHtml(s.matrix_version || '')}</span>
         `;
     },
 
-    statCard(label, value, sub, tip = '', meterPct = null, warn = false) {
+    stat(label, value, note, tip = '', meterPct = null, warn = false) {
         const meter = meterPct === null ? '' :
-            `<div class="atk-meter"><div class="atk-meter-fill" style="width:${meterPct}%"></div></div>`;
+            `<span class="atk-meter"><span class="atk-meter-fill" style="width:${meterPct}%"></span></span>`;
         return `
-            <div class="atk-stat" title="${Utils.escapeHtml(tip || sub)}">
-                <div class="atk-stat-label">${Utils.escapeHtml(label)}</div>
-                <div class="atk-stat-value${warn ? ' atk-warn' : ''}">${Utils.escapeHtml(value)}</div>
-                <div class="atk-stat-sub">${Utils.escapeHtml(sub)}</div>
+            <span class="atk-stat" title="${Utils.escapeHtml(tip)}">
+                <span class="atk-stat-label">${Utils.escapeHtml(label)}</span>
+                <span class="atk-stat-value${warn ? ' atk-warn' : ''}">${Utils.escapeHtml(value)}</span>
+                ${note ? `<span class="atk-stat-note">${Utils.escapeHtml(note)}</span>` : ''}
                 ${meter}
-            </div>
+            </span>
         `;
     },
 

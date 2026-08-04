@@ -201,7 +201,7 @@ func runLint(opts *Options) error {
 	// resolve raw Sigma field names (Image rather than image) and wrongly pass.
 	covered := make(map[string]bool)
 	for _, f := range files {
-		if !strings.HasSuffix(f, SpecSuffix) {
+		if !IsSpecFile(f) {
 			continue
 		}
 		spec, err := LoadSpec(f)
@@ -228,7 +228,7 @@ func runLint(opts *Options) error {
 	}
 
 	for _, f := range files {
-		if strings.HasSuffix(f, SpecSuffix) || covered[filepath.Clean(f)] {
+		if IsSpecFile(f) || covered[filepath.Clean(f)] {
 			continue
 		}
 		rule, err := LoadRule(f, norm)

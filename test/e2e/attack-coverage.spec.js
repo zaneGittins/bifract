@@ -88,11 +88,13 @@ test.describe('ATT&CK coverage', () => {
   test('search narrows to the matching technique', async ({ page }) => {
     await openCoverage(page);
 
+    // The ID is not printed on the cell (it costs a line on all ~700 of them), so
+    // search still has to match on it.
     await page.locator('#atkSearch').fill('T1543');
     const undimmed = page.locator('#atkMatrix .atk-cell:not(.atk-dim)');
     await expect.poll(() => undimmed.count()).toBeGreaterThan(0);
-    for (const text of await undimmed.locator('.atk-cell-meta').allTextContents()) {
-      expect(text).toContain('T1543');
+    for (const id of await undimmed.evaluateAll(els => els.map(e => e.dataset.tid))) {
+      expect(id).toContain('T1543');
     }
   });
 

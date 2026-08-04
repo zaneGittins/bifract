@@ -63,8 +63,8 @@ type Summary struct {
 func (s *Summary) OK() bool { return s.Failed == 0 && s.Errored == 0 }
 
 // preparedCase is a case with its logs already normalized and scoped to a fractal.
-// A case is normally one unit (all its logs presented to the rule together). With
-// `each: true` it becomes one unit per log, evaluated independently.
+// A case is normally one unit per log, each judged independently. With
+// `together: true` all its logs collapse into a single unit.
 type preparedCase struct {
 	spec  *Spec
 	def   *Case
@@ -213,7 +213,6 @@ func evaluate(ctx context.Context, b *Backend, rule *Rule, pc preparedCase, wind
 		Rule:   rule.Name,
 		Case:   pc.def.Name,
 		Expect: pc.def.Expectation(),
-		Each:   pc.def.Each,
 		Units:  len(pc.units),
 	}
 
@@ -258,7 +257,7 @@ func evaluate(ctx context.Context, b *Backend, rule *Rule, pc preparedCase, wind
 	res.Matched = res.UnitsMatched > 0
 	res.Passed = len(failures) == 0
 	if !res.Passed {
-		// Cap the detail so a large corpus reports usefully rather than flooding.
+		// Cap the detail so a case with many logs reports usefully rather than flooding.
 		const maxShown = 5
 		shown := failures
 		if len(shown) > maxShown {
@@ -309,15 +308,19 @@ func verdict(c *Case, matched bool, rows int) (bool, string) {
 // buildUnits normalizes a case's logs through the real ingest path and groups them
 // into independently evaluated units, each in its own synthetic fractal so units
 // cannot see each other's data.
+//
+// One unit per log by default, so every log must meet the expectation on its own.
+// `together: true` collapses them into a single unit for threshold rules.
 func buildUnits(c *Case, norm *normalizers.CompiledNormalizer) ([]caseUnit, error) {
 	logs := c.ResolvedLogs()
 
-	if !c.Each {
-		entries, err := normalizeLogs(logs, norm, uuid.NewString())
+	if c.Together {
+		fractalID := uuid.NewString()
+		entries, err := normalizeLogs(logs, norm, fractalID)
 		if err != nil {
 			return nil, err
 		}
-		return []caseUnit{{fractalID: entries[0].FractalID, entries: entries}}, nil
+		return []caseUnit{{fractalID: fractalID, entries: entries}}, nil
 	}
 
 	units := make([]caseUnit, 0, len(logs))
@@ -327,11 +330,12 @@ func buildUnits(c *Case, norm *normalizers.CompiledNormalizer) ([]caseUnit, erro
 		if err != nil {
 			return nil, err
 		}
-		units = append(units, caseUnit{
-			fractalID: fractalID,
-			label:     fmt.Sprintf("log %d", i+1),
-			entries:   entries,
-		})
+		u := caseUnit{fractalID: fractalID, entries: entries}
+		// Only label when there is more than one, so a single-log case reads cleanly.
+		if len(logs) > 1 {
+			u.label = fmt.Sprintf("log %d", i+1)
+		}
+		units = append(units, u)
 	}
 	return units, nil
 }

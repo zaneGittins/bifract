@@ -36,39 +36,45 @@
     gap: 1rem;
 }
 
+/* A single strip rather than a row of cards. The matrix is what the page is for,
+   and five cards were spending 130px of vertical on numbers that read fine inline. */
 .atk-summary {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-    gap: 0.75rem;
-}
-
-.atk-stat {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1.5rem;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 8px;
-    padding: 0.85rem 1rem;
+    padding: 0.5rem 0.85rem;
+}
+
+.atk-stat {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4rem;
     min-width: 0;
 }
 
 .atk-stat-label {
-    font-size: 0.7rem;
+    font-size: 0.66rem;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-muted);
-    margin-bottom: 0.35rem;
+    white-space: nowrap;
 }
 
 .atk-stat-value {
-    font-size: 1.5rem;
+    font-size: 0.95rem;
     font-weight: 600;
     color: var(--text-primary);
-    line-height: 1.1;
+    white-space: nowrap;
 }
 
-.atk-stat-sub {
-    margin-top: 0.3rem;
-    font-size: 0.75rem;
+.atk-stat-note {
+    font-size: 0.72rem;
     color: var(--text-secondary);
+    max-width: 190px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -76,15 +82,27 @@
 
 .atk-stat-value.atk-warn { color: var(--warning); }
 
+.atk-stat-version {
+    margin-left: auto;
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+}
+
+/* Inline meter: the headline ratio keeps a visual read without a card to sit in. */
 .atk-meter {
-    margin-top: 0.5rem;
+    display: inline-block;
+    width: 52px;
     height: 4px;
     border-radius: 2px;
     background: var(--bg-tertiary);
     overflow: hidden;
+    vertical-align: middle;
 }
 
 .atk-meter-fill {
+    display: block;
     height: 100%;
     background: var(--accent-primary);
     border-radius: 2px;
@@ -125,6 +143,79 @@
     outline: none;
     border-color: var(--accent-primary);
 }
+
+/* Occasional scope filters live behind one control. The badge is the only sign a
+   hidden filter is narrowing the numbers, so it is always shown when one is set. */
+.atk-filters { position: relative; }
+
+.atk-filters-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    cursor: pointer;
+}
+
+.atk-filters-btn.atk-active,
+.atk-filters-btn.atk-filtered { border-color: var(--accent-primary); }
+
+.atk-filters-count {
+    display: none;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 3px;
+    border-radius: 8px;
+    background: var(--accent-primary);
+    color: #fff;
+    font-size: 0.62rem;
+    font-weight: 600;
+    line-height: 15px;
+    text-align: center;
+}
+
+.atk-filters-btn.atk-filtered .atk-filters-count { display: inline-block; }
+
+.atk-filters-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 900;
+    min-width: 210px;
+    flex-direction: column;
+    gap: 0.6rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: var(--shadow-lg);
+    padding: 0.75rem;
+}
+
+.atk-filters-menu.open { display: flex; }
+
+.atk-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+}
+
+.atk-field .atk-select { width: 100%; }
+
+.atk-filters-clear {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent-primary);
+    font-family: var(--font-main);
+    font-size: 0.75rem;
+    text-align: left;
+    cursor: pointer;
+}
+
+.atk-filters-clear:hover { text-decoration: underline; }
 
 .atk-toggle {
     display: inline-flex;
@@ -228,10 +319,14 @@
     max-height: calc(100vh - 300px);
 }
 
+/* --atk-col-min is set by fitColumns() so all 15 tactic columns land on screen at
+   whatever width is available, down to a legibility floor. Seeing the whole kill
+   chain at once is the entire point of the matrix; a fixed column width trades
+   that away on any laptop narrower than the author's. */
 .atk-matrix {
     display: grid;
     grid-auto-flow: column;
-    grid-auto-columns: minmax(168px, 1fr);
+    grid-auto-columns: minmax(var(--atk-col-min, 112px), 1fr);
     align-items: start;
     gap: 1px;
     background: var(--border-color);
@@ -251,19 +346,19 @@
     z-index: 2;
     background: var(--bg-tertiary);
     border-bottom: 1px solid var(--border-color);
-    padding: 0.6rem 0.55rem 0.5rem;
+    padding: 0.4rem 0.4rem 0.35rem;
 }
 
 .atk-col-name {
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     font-weight: 600;
     color: var(--text-primary);
-    line-height: 1.25;
+    line-height: 1.2;
 }
 
 .atk-col-count {
-    margin-top: 0.15rem;
-    font-size: 0.7rem;
+    margin-top: 0.1rem;
+    font-size: 0.64rem;
     color: var(--text-secondary);
     font-family: var(--font-mono);
 }
@@ -271,7 +366,7 @@
 /* The generous top-level count, kept visible but subordinate to the leaf ratio
    above it. */
 .atk-col-sub {
-    font-size: 0.62rem;
+    font-size: 0.58rem;
     color: var(--text-muted);
     font-family: var(--font-mono);
 }
@@ -279,8 +374,8 @@
 .atk-col-body {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    padding: 2px;
+    gap: 1px;
+    padding: 1px;
 }
 
 /* ---- Cells ---- */
@@ -290,13 +385,13 @@
     width: 100%;
     text-align: left;
     font-family: var(--font-main);
-    font-size: 0.72rem;
-    line-height: 1.25;
+    font-size: 0.68rem;
+    line-height: 1.2;
     color: var(--text-secondary);
     background: var(--atk-gap-bg);
     border: 1px dashed var(--atk-gap-border);
-    border-radius: 4px;
-    padding: 0.35rem 0.4rem;
+    border-radius: 3px;
+    padding: 0.25rem 0.3rem;
     cursor: pointer;
     transition: var(--transition);
     min-width: 0;
@@ -349,7 +444,7 @@
 .atk-cell-top {
     display: flex;
     align-items: flex-start;
-    gap: 0.3rem;
+    gap: 0.2rem;
 }
 
 .atk-cell-name {
@@ -357,17 +452,29 @@
     min-width: 0;
     overflow: hidden;
     display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
     -webkit-box-orient: vertical;
+    /* break-word, not anywhere: only split a word that cannot fit on its own line.
+       "anywhere" chops every name mid-word once columns get narrow. */
+    overflow-wrap: break-word;
+}
+
+/* Sub-technique progress rides inline after the name, the way Navigator does it,
+   rather than claiming a line of its own on every cell. */
+.atk-cell-subs {
+    font-family: var(--font-mono);
+    font-size: 0.58rem;
+    opacity: 0.7;
+    white-space: nowrap;
 }
 
 .atk-badge {
     flex-shrink: 0;
     font-family: var(--font-mono);
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     font-weight: 600;
-    padding: 0 0.25rem;
+    padding: 0 0.2rem;
     border-radius: 3px;
     background: var(--overlay-light);
 }
@@ -390,13 +497,6 @@
 .atk-sub-toggle:hover { opacity: 1; }
 .atk-sub-toggle svg { transition: transform 0.15s ease; }
 .atk-cell.atk-open .atk-sub-toggle svg { transform: rotate(90deg); }
-
-.atk-cell-meta {
-    margin-top: 0.15rem;
-    font-family: var(--font-mono);
-    font-size: 0.6rem;
-    opacity: 0.72;
-}
 
 .atk-subs {
     display: none;

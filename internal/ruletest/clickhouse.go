@@ -23,6 +23,10 @@ const ClickHouseImage = "clickhouse/clickhouse-server:26.6.2.81-alpine"
 // logsDatabase is the database the schema lives in (see db/init-clickhouse.sql).
 const logsDatabase = "logs"
 
+// readyTimeout bounds the wait for ClickHouse to accept queries. Generous because a
+// first-time container start includes provisioning and a server restart.
+const readyTimeout = 90 * time.Second
+
 // Target identifies the ClickHouse the tester should use.
 type Target struct {
 	Host     string
@@ -83,6 +87,15 @@ func Connect(ctx context.Context, target *Target, verbose bool) (*Backend, error
 		}
 		b.container = started.id
 		target = &started.target
+	}
+
+	// Wait for readiness even when the endpoint was supplied. A ClickHouse doing
+	// first-time init runs a temporary server to apply its entrypoint scripts and then
+	// restarts, so an endpoint that answers once can still reset the next connection.
+	// Retrying here means CI does not depend on getting a healthcheck exactly right.
+	if err := waitReady(ctx, *target, readyTimeout, verbose); err != nil {
+		b.teardownContainer()
+		return nil, err
 	}
 
 	if err := ensureDatabase(ctx, *target); err != nil {
@@ -196,8 +209,9 @@ type startedContainer struct {
 	target Target
 }
 
-// startContainer runs a throwaway ClickHouse and waits for it to accept queries. The
-// container is started with --rm so a hard kill of the tester still cleans up.
+// startContainer runs a throwaway ClickHouse. Readiness is awaited by Connect, which
+// does it for supplied endpoints too. The container uses --rm so a hard kill of the
+// tester still cleans up.
 func startContainer(ctx context.Context, verbose bool) (*startedContainer, error) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return nil, fmt.Errorf("no --clickhouse endpoint given and docker is not available; " +
@@ -228,12 +242,7 @@ func startContainer(ctx context.Context, verbose bool) (*startedContainer, error
 	}
 	id := strings.TrimSpace(string(out))
 
-	sc := &startedContainer{id: id, target: target}
-	if err := waitReady(ctx, target, 90*time.Second, verbose); err != nil {
-		_ = exec.Command("docker", "rm", "-f", id).Run()
-		return nil, err
-	}
-	return sc, nil
+	return &startedContainer{id: id, target: target}, nil
 }
 
 func (b *Backend) teardownContainer() {

@@ -13,9 +13,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// SpecSuffix identifies a rule test file. Anything else in a detection tree
-// (the rules themselves, normalizers, raw samples) is ignored by discovery.
+// SpecSuffix is the canonical rule test file suffix, used in help and error text.
 const SpecSuffix = ".test.yaml"
+
+// specSuffixes are all suffixes discovery recognizes. Both YAML spellings are
+// accepted: a repo that standardizes on .yml would otherwise find zero tests and
+// report success, which is the worst way for a detection gate to fail.
+var specSuffixes = []string{".test.yaml", ".test.yml"}
+
+// IsSpecFile reports whether a filename is a rule test spec. Everything else in a
+// detection tree (rules, normalizers, raw event samples) is ignored by discovery.
+func IsSpecFile(name string) bool {
+	for _, s := range specSuffixes {
+		if strings.HasSuffix(name, s) {
+			return true
+		}
+	}
+	return false
+}
 
 // Expectation is what a case asserts about the rule's verdict.
 type Expectation string
@@ -48,12 +63,13 @@ type Case struct {
 	Logs    []map[string]interface{} `yaml:"logs"`
 	LogFile string                   `yaml:"logFile"`
 
-	// Each evaluates every log on its own instead of presenting them to the rule as
-	// one batch. Use it to assert a whole corpus: with it, "expect: match" means every
-	// log fires, rather than the default "at least one of them fires".
+	// Together presents the case's logs to the rule as one batch rather than
+	// evaluating each on its own. Threshold and correlation rules need it, since they
+	// only fire when the rule sees several events at once.
 	//
-	// Leave it off for threshold rules, which need their logs seen together.
-	Each bool `yaml:"each"`
+	// By default every log is judged independently and the case passes only if all of
+	// them meet the expectation.
+	Together bool `yaml:"together"`
 
 	expectation Expectation
 	logs        []map[string]interface{}
@@ -91,7 +107,7 @@ func DiscoverSpecs(paths []string) ([]string, error) {
 			if err != nil {
 				return err
 			}
-			if fi.IsDir() || !strings.HasSuffix(fi.Name(), SpecSuffix) {
+			if fi.IsDir() || !IsSpecFile(fi.Name()) {
 				return nil
 			}
 			abs, _ := filepath.Abs(path)
@@ -157,9 +173,9 @@ func LoadSpec(path string) (*Spec, error) {
 			if exp == ExpectNoMatch && *c.Count != 0 {
 				return nil, fmt.Errorf("%s: case %q: count is meaningless with expect: no_match", path, c.Name)
 			}
-			if c.Each {
-				return nil, fmt.Errorf("%s: case %q: count and each are mutually exclusive "+
-					"(each runs one query per log, so a single row count has no meaning)", path, c.Name)
+			if !c.Together {
+				return nil, fmt.Errorf("%s: case %q: count requires 'together: true' "+
+					"(logs are judged one at a time by default, so a single row count has no meaning)", path, c.Name)
 			}
 		}
 

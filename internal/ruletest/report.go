@@ -104,11 +104,11 @@ func writeExplain(w io.Writer, c CaseResult) {
 }
 
 func verdictNote(c CaseResult) string {
-	if c.Each {
-		if c.Expect == ExpectMatch {
-			return fmt.Sprintf("(%d/%d logs matched)", c.UnitsMatched, c.Units)
-		}
-		return fmt.Sprintf("(0/%d logs matched)", c.Units)
+	// Multiple independently judged logs: report the ratio, which is the assertion
+	// that actually held. A single unit reports rows, which is more informative for
+	// a batched threshold case.
+	if c.Units > 1 {
+		return fmt.Sprintf("(%d/%d logs matched)", c.UnitsMatched, c.Units)
 	}
 	if c.Expect == ExpectMatch {
 		return fmt.Sprintf("(%d row(s))", c.Rows)
