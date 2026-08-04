@@ -21,6 +21,14 @@ async function openCoverage(page) {
   await expect(page.locator('#atkMatrix .atk-column').first()).toBeVisible({ timeout: 15000 });
 }
 
+// The gap list ships collapsed, so anything asserting against its rows opens it.
+async function expandGaps(page) {
+  const toggle = page.locator('#atkGapsToggle');
+  await toggle.waitFor({ timeout: 20000 });
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+  await page.locator('#atkGaps .atk-gap').first().waitFor();
+}
+
 test.describe('ATT&CK coverage', () => {
   test('renders every tactic column in kill-chain order', async ({ page }) => {
     await openCoverage(page);
@@ -99,6 +107,71 @@ test.describe('ATT&CK coverage', () => {
 
     await page.keyboard.press('Escape');
     await expect(page.locator('#atkDrawer')).not.toHaveClass(/open/);
+  });
+
+  test('the gap list is collapsed until asked for', async ({ page }) => {
+    await openCoverage(page);
+
+    // The matrix is the view; an always-open 25-row list under it would push the
+    // grid off screen on every visit.
+    const toggle = page.locator('#atkGapsToggle');
+    await expect(toggle).toBeVisible({ timeout: 20000 });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('#atkGaps .atk-gap').first()).toBeHidden();
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('#atkGaps .atk-gap').first()).toBeVisible();
+
+    // The choice sticks across a reload, so an operator who works from the gap list
+    // is not re-collapsing it every visit.
+    await page.reload();
+    await page.locator('#atkGaps .atk-gap').first().waitFor({ timeout: 20000 });
+    await expect(page.locator('#atkGapsToggle')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  test('gap list ranks techniques with rules waiting in a feed', async ({ page }) => {
+    await openCoverage(page);
+    await expandGaps(page);
+
+    const gaps = page.locator('#atkGaps .atk-gap');
+    await expect(gaps.first()).toBeVisible();
+
+    // Ranking puts the actionable ones first. A gap with nothing available carries
+    // no badge at all, so the counts read as a non-increasing run ending in zeros.
+    const counts = await gaps.evaluateAll(rows => rows.map(r =>
+      Number(r.querySelector('.atk-gap-action')?.textContent.match(/^(\d+)/)?.[1] || 0)));
+    for (let i = 1; i < counts.length; i++) expect(counts[i]).toBeLessThanOrEqual(counts[i - 1]);
+
+    // Every listed technique must genuinely be uncovered.
+    for (const id of await gaps.locator('.atk-gap-id').allTextContents()) {
+      const cell = page.locator(`#atkMatrix .atk-cell[data-tid="${id}"]`).first();
+      if (await cell.count()) await expect(cell).not.toHaveAttribute('data-heat', /\d/);
+    }
+  });
+
+  test('an uncovered technique drawer explains what is available and why', async ({ page }) => {
+    await openCoverage(page);
+    await expandGaps(page);
+
+    const top = page.locator('#atkGaps .atk-gap').first();
+    await expect(top).toBeVisible();
+    const badge = top.locator('.atk-gap-action');
+    const available = await badge.count()
+      ? Number((await badge.textContent()).match(/^(\d+)/)?.[1] || 0) : 0;
+    test.skip(available === 0, 'no feed candidates in this deployment');
+
+    await top.click();
+    await expect(page.locator('#atkDrawer')).toHaveClass(/open/);
+    await expect(page.locator('#atkDrawerBody .atk-candidate').first()).toBeVisible({ timeout: 15000 });
+
+    // A candidate is useless without the reason it is not running.
+    const meta = await page.locator('#atkDrawerBody .atk-candidate-meta').first().textContent();
+    expect(meta).toMatch(/threshold|translated|parsed|import/);
+
+    // An uncovered technique shows no covering rules but does point at telemetry.
+    await expect(page.locator('#atkDrawerBody .atk-rule')).toHaveCount(0);
+    await expect(page.locator('#atkDrawerBody .atk-note').first()).toBeVisible();
   });
 
   test('the matrix scrolls inside its own box, not the page', async ({ page }) => {

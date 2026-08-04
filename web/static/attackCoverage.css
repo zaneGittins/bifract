@@ -136,7 +136,50 @@
     user-select: none;
 }
 
-.atk-toggle input { cursor: pointer; }
+/* Matches the checkbox treatment used by the alerts table (css/03-auth-comments.css):
+   the browser default renders as a bright white square that fights the dark theme. */
+.atk-toggle input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 15px;
+    height: 15px;
+    border: 1.5px solid var(--border-color);
+    border-radius: 3px;
+    background: var(--bg-primary);
+    cursor: pointer;
+    position: relative;
+    flex-shrink: 0;
+    vertical-align: middle;
+    margin: 0;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.atk-toggle:hover input[type="checkbox"],
+.atk-toggle input[type="checkbox"]:hover {
+    border-color: var(--accent-primary);
+}
+
+.atk-toggle input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+}
+
+.atk-toggle input[type="checkbox"]:checked {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+.atk-toggle input[type="checkbox"]:checked::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 4px;
+    height: 8px;
+    border: solid #fff;
+    border-width: 0 1.5px 1.5px 0;
+    transform: rotate(45deg);
+}
 
 /* ---- Legend ---- */
 
@@ -221,6 +264,14 @@
 .atk-col-count {
     margin-top: 0.15rem;
     font-size: 0.7rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+
+/* The generous top-level count, kept visible but subordinate to the leaf ratio
+   above it. */
+.atk-col-sub {
+    font-size: 0.62rem;
     color: var(--text-muted);
     font-family: var(--font-mono);
 }
@@ -371,6 +422,180 @@
 }
 
 .atk-cell.atk-hidden { display: none; }
+
+/* ---- Gap list ---- */
+
+.atk-gaps:empty { display: none; }
+
+/* Collapsed by default: the matrix is the view, and an always-open list under it
+   pushes the grid off screen for a question most visits are not asking. */
+.atk-gaps-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    text-align: left;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 0.6rem 0.75rem;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-family: var(--font-main);
+    transition: var(--transition);
+}
+
+.atk-gaps-toggle:hover { background: var(--bg-hover); }
+.atk-gaps-toggle svg {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+}
+.atk-gaps-toggle.atk-open svg { transform: rotate(90deg); }
+.atk-gaps-toggle.atk-open { border-radius: 8px 8px 0 0; border-bottom-color: transparent; }
+
+.atk-gaps-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.atk-gaps-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.atk-gaps-list {
+    display: none;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 2px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    padding: 4px;
+}
+
+.atk-gaps-list.atk-open { display: grid; }
+
+.atk-gap {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    min-width: 0;
+    text-align: left;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 0.45rem 0.6rem;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-family: var(--font-main);
+    transition: var(--transition);
+}
+
+.atk-gap:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent-primary);
+}
+
+.atk-gap-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+}
+
+.atk-gap-name {
+    font-size: 0.8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.atk-gap-detail {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.atk-gap-side {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.1rem;
+    max-width: 45%;
+}
+
+.atk-gap-id {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--text-muted);
+}
+
+.atk-gap-tactics {
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Shown only when there is something to act on. With no feed synced every row
+   would otherwise repeat the same "needs a new rule" badge, which is noise;
+   its absence carries the same information. */
+.atk-gap-action {
+    font-size: 0.66rem;
+    font-weight: 600;
+    padding: 0.05rem 0.4rem;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--success) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+.atk-candidate {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0.45rem 0.6rem;
+    margin-bottom: 0.35rem;
+}
+
+.atk-candidate-top {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.atk-candidate-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.78rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+}
+
+.atk-candidate-meta {
+    margin-top: 0.2rem;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+}
+
+@media (max-width: 900px) {
+    .atk-gap-tactics { display: none; }
+}
 
 /* ---- Tooltip ---- */
 

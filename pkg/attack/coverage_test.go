@@ -161,6 +161,79 @@ func TestSummaryDenominatorsExcludeDeprecated(t *testing.T) {
 	}
 }
 
+// Leaf coverage is the number an operator will quote in a meeting, so it must not
+// credit a parent for one covered child.
+func TestLeafCoverageDoesNotInheritFromParent(t *testing.T) {
+	m := MustGet()
+
+	// T1543 has several sub-techniques; covering exactly one must move the leaf
+	// count by exactly one, while the generous technique count jumps to a full 1/1.
+	cov := m.Compute([]RuleRow{
+		rule("a", "high", true, "attack.t1543.003"),
+	}, Filter{})
+
+	subs := 0
+	for _, sub := range m.SubTechniques("T1543") {
+		if m.InScope(sub, Filter{}) {
+			subs++
+		}
+	}
+	if subs < 2 {
+		t.Skip("T1543 has too few sub-techniques for this to be meaningful")
+	}
+
+	persistence := cov.Summary.PerTactic["persistence"]
+	if persistence.Covered != 1 {
+		t.Errorf("techniques covered = %d, want 1 (the generous count)", persistence.Covered)
+	}
+	if persistence.LeafCovered != 1 {
+		t.Errorf("leaf covered = %d, want exactly 1, not the whole T1543 group", persistence.LeafCovered)
+	}
+	if persistence.LeafTotal <= persistence.Total {
+		t.Errorf("leaf total %d should exceed the %d top-level techniques", persistence.LeafTotal, persistence.Total)
+	}
+
+	// A rule on the parent alone covers no leaf: it does not say which of the
+	// sub-techniques it catches.
+	parentOnly := m.Compute([]RuleRow{
+		rule("a", "high", true, "attack.t1543"),
+	}, Filter{})
+	if got := parentOnly.Summary.PerTactic["persistence"].LeafCovered; got != 0 {
+		t.Errorf("parent-only tag covered %d leaves, want 0", got)
+	}
+	if got := parentOnly.Summary.PerTactic["persistence"].Covered; got != 1 {
+		t.Errorf("parent-only tag covered %d techniques, want 1", got)
+	}
+}
+
+// Every technique is a leaf or has leaves, exactly once, so the global leaf total
+// must equal the sub-techniques plus the childless techniques.
+func TestLeafTotalsAreConsistent(t *testing.T) {
+	m := MustGet()
+	cov := m.Compute(nil, Filter{})
+
+	childless := 0
+	for i := range m.Techniques {
+		tech := &m.Techniques[i]
+		if tech.Sub || !m.InScope(tech, Filter{}) {
+			continue
+		}
+		if !m.hasInScopeSubs(tech.ID, Filter{}) {
+			childless++
+		}
+	}
+
+	want := cov.Summary.SubTechniquesTotal + childless
+	if cov.Summary.LeafTotal != want {
+		t.Errorf("leaf_total = %d, want %d (%d sub-techniques + %d childless techniques)",
+			cov.Summary.LeafTotal, want, cov.Summary.SubTechniquesTotal, childless)
+	}
+	if cov.Summary.LeafTotal <= cov.Summary.TechniquesTotal {
+		t.Errorf("leaf_total %d should exceed techniques_total %d",
+			cov.Summary.LeafTotal, cov.Summary.TechniquesTotal)
+	}
+}
+
 func TestPerTacticSummary(t *testing.T) {
 	m := MustGet()
 

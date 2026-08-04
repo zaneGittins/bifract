@@ -15,6 +15,7 @@ const AttackCoverage = {
     built: false,
     loadGen: 0,
     reloadTimer: null,
+    autoExpanded: new Set(),
     selectedId: null,
 
     filters: {
@@ -42,9 +43,12 @@ const AttackCoverage = {
         this.coverage = null;
         this.built = false;
         this.cells.clear();
+        this.autoExpanded.clear();
         this.closeDrawer();
         const grid = document.getElementById('atkMatrix');
         if (grid) grid.innerHTML = '';
+        const gaps = document.getElementById('atkGaps');
+        if (gaps) gaps.innerHTML = '';
         const view = document.getElementById('attackCoverageView');
         if (view && view.style.display !== 'none') this.show();
     },
@@ -164,7 +168,7 @@ const AttackCoverage = {
                     <label class="atk-toggle"><input type="checkbox" id="atkShowSubs" /> Sub-techniques</label>
                     <div class="atk-controls-end">
                         <div class="atk-legend" id="atkLegend"></div>
-                        <button class="btn-secondary btn-sm" id="atkExportBtn" title="Download as an ATT&amp;CK Navigator layer">Export layer</button>
+                        <button class="btn-secondary btn-sm" id="atkExportBtn" title="Download this coverage as an ATT&amp;CK Navigator layer (.json) to open at mitre-attack.github.io/attack-navigator, share with people who do not have Bifract access, or diff against another tool's coverage">Export layer</button>
                     </div>
                 </div>
 
@@ -339,6 +343,7 @@ const AttackCoverage = {
             head.innerHTML = `
                 <div class="atk-col-name">${Utils.escapeHtml(tactic.name)}</div>
                 <div class="atk-col-count" data-tactic-count="${Utils.escapeHtml(tactic.short)}">-</div>
+                <div class="atk-col-sub" data-tactic-tech="${Utils.escapeHtml(tactic.short)}"></div>
                 <div class="atk-meter"><div class="atk-meter-fill" data-tactic-meter="${Utils.escapeHtml(tactic.short)}" style="width:0%"></div></div>
             `;
             column.appendChild(head);
@@ -474,15 +479,33 @@ const AttackCoverage = {
         this.applyClientFilters();
     },
 
+    // The header leads with leaf coverage (every sub-technique, plus every
+    // technique that has none). The top-level count is shown underneath because
+    // it credits a whole technique for a single covered child, which reads far
+    // higher than the detections actually written.
     paintTacticHeaders() {
         const per = this.coverage?.summary?.per_tactic || {};
         for (const tactic of this.matrix.tactics) {
-            const stats = per[tactic.short] || { total: 0, covered: 0 };
-            const pct = stats.total ? Math.round((stats.covered / stats.total) * 100) : 0;
+            const s = per[tactic.short] || { total: 0, covered: 0, leaf_total: 0, leaf_covered: 0 };
+            const leafPct = s.leaf_total ? Math.round((s.leaf_covered / s.leaf_total) * 100) : 0;
+            const techPct = s.total ? Math.round((s.covered / s.total) * 100) : 0;
+
             const label = document.querySelector(`[data-tactic-count="${tactic.short}"]`);
-            if (label) label.textContent = `${stats.covered}/${stats.total} · ${pct}%`;
+            if (label) label.textContent = `${s.leaf_covered}/${s.leaf_total} · ${leafPct}%`;
+
+            const sub = document.querySelector(`[data-tactic-tech="${tactic.short}"]`);
+            if (sub) sub.textContent = `${s.covered}/${s.total} techniques`;
+
             const meter = document.querySelector(`[data-tactic-meter="${tactic.short}"]`);
-            if (meter) meter.style.width = pct + '%';
+            if (meter) meter.style.width = leafPct + '%';
+
+            const head = label?.closest('.atk-col-head');
+            if (head) {
+                head.title =
+                    `${tactic.name}\n` +
+                    `${s.leaf_covered}/${s.leaf_total} (${leafPct}%) detectable units covered — every sub-technique, plus techniques that have none. Nothing is inherited.\n` +
+                    `${s.covered}/${s.total} (${techPct}%) top-level techniques have at least one rule somewhere under them.`;
+            }
         }
     },
 
@@ -514,13 +537,19 @@ const AttackCoverage = {
             }
         }
 
-        if (term || mode !== 'all') {
-            for (const wrap of expand) {
-                wrap.classList.add('atk-open');
-                wrap.previousElementSibling?.classList.add('atk-open');
-            }
-        } else if (!this.filters.showSubs) {
-            this.toggleAllSubs(false);
+        // Only groups this function opened are closed again when the filter clears.
+        // Collapsing everything would undo whatever the operator expanded by hand.
+        const narrowing = Boolean(term) || mode !== 'all';
+        for (const wrap of this.autoExpanded) {
+            if (narrowing && expand.has(wrap)) continue;
+            wrap.classList.remove('atk-open');
+            wrap.previousElementSibling?.classList.remove('atk-open');
+        }
+        this.autoExpanded = narrowing ? expand : new Set();
+
+        for (const wrap of this.autoExpanded) {
+            wrap.classList.add('atk-open');
+            wrap.previousElementSibling?.classList.add('atk-open');
         }
     },
 
@@ -534,29 +563,48 @@ const AttackCoverage = {
         if (!el || !s) return;
 
         const pct = s.techniques_total ? Math.round((s.techniques_covered / s.techniques_total) * 100) : 0;
-        const subPct = s.subtechniques_total ? Math.round((s.subtechniques_covered / s.subtechniques_total) * 100) : 0;
+        const leafPct = s.leaf_total ? Math.round((s.leaf_covered / s.leaf_total) * 100) : 0;
         const tacticName = (short) => this.matrix.tactics.find(t => t.short === short)?.name || short;
         const weak = (s.weakest_tactics || []).map(tacticName);
         const weakStats = s.per_tactic?.[(s.weakest_tactics || [])[0]];
+        const weakRatio = weakStats ? `${weakStats.leaf_covered}/${weakStats.leaf_total}` : '';
         const weakSub = weak.length > 1 ? 'then ' + weak.slice(1).join(', ') : 'No tactic data';
 
+        const broken = s.rules_retired_tag || 0;
+        const brokenSub = broken > 0
+            ? (s.retired_tags || []).slice(0, 4).join(', ')
+            : 'Every ATT&CK tag resolves';
+
         el.innerHTML = `
-            ${this.statCard('Technique coverage', `${s.techniques_covered}/${s.techniques_total}`, `${pct}% of ATT&CK v${s.matrix_version || ''}`, pct)}
-            ${this.statCard('Sub-technique coverage', `${s.subtechniques_covered}/${s.subtechniques_total}`, `${subPct}% covered directly`, subPct)}
-            ${this.statCard('Weakest tactic', weak[0] || '-', weakStats ? `${weakStats.covered}/${weakStats.total} covered · ${weakSub}` : weakSub)}
-            ${this.statCard('Rules mapped', `${s.rules_mapped}/${s.rules_total}`, `${s.rules_unmapped} rule(s) carry no technique tag`, null, s.rules_unmapped > 0)}
-            ${this.statCard('Retired tags', String(s.rules_retired_tag || 0), (s.retired_tags || []).slice(0, 4).join(', ') || 'None', null, (s.rules_retired_tag || 0) > 0)}
+            ${this.statCard('Coverage', `${s.leaf_covered}/${s.leaf_total}`,
+                `${leafPct}% of ATT&CK v${s.matrix_version || ''}`,
+                'Detectable units covered: every sub-technique, plus every technique that has none. Nothing is inherited, so a rule on a parent does not credit its sub-techniques. This is the number that does not flatter.',
+                leafPct)}
+            ${this.statCard('Techniques touched', `${s.techniques_covered}/${s.techniques_total}`,
+                `${pct}% have at least one rule`,
+                'Top-level techniques with at least one rule mapped to them OR to any one of their sub-techniques. Reads far higher than Coverage because a technique with 14 sub-techniques and 1 covered still scores a full point. Useful for breadth, not for depth.',
+                pct)}
+            ${this.statCard('Weakest tactic', weak[0] || '-',
+                weakStats ? `${weakRatio} covered · ${weakSub}` : weakSub,
+                'The tactic columns with the lowest share of their detectable units covered.')}
+            ${this.statCard('Rules mapped', `${s.rules_mapped}/${s.rules_total}`,
+                `${s.rules_unmapped} rule(s) carry no technique tag`,
+                'Rules carrying at least one attack.tNNNN tag. The rest are invisible to this map: they either have no ATT&CK tag at all, or name only a tactic, which does not say which technique they detect.',
+                null, s.rules_unmapped > 0)}
+            ${this.statCard('Broken ATT&CK tags', String(broken), brokenSub,
+                'Rules tagged with a technique ID that does not exist in this ATT&CK version and has no replacement, usually a typo or a technique MITRE removed outright. Retired IDs that DO have a replacement are resolved automatically and are not counted here.',
+                null, broken > 0)}
         `;
     },
 
-    statCard(label, value, sub, meterPct = null, warn = false) {
+    statCard(label, value, sub, tip = '', meterPct = null, warn = false) {
         const meter = meterPct === null ? '' :
             `<div class="atk-meter"><div class="atk-meter-fill" style="width:${meterPct}%"></div></div>`;
         return `
-            <div class="atk-stat">
+            <div class="atk-stat" title="${Utils.escapeHtml(tip || sub)}">
                 <div class="atk-stat-label">${Utils.escapeHtml(label)}</div>
                 <div class="atk-stat-value${warn ? ' atk-warn' : ''}">${Utils.escapeHtml(value)}</div>
-                <div class="atk-stat-sub" title="${Utils.escapeHtml(sub)}">${Utils.escapeHtml(sub)}</div>
+                <div class="atk-stat-sub">${Utils.escapeHtml(sub)}</div>
                 ${meter}
             </div>
         `;
@@ -574,9 +622,18 @@ const AttackCoverage = {
         create_error: 'failed to import',
     },
 
+    GAPS_OPEN_KEY: 'bifract-attack-gaps-open',
+
+    gapsOpen() {
+        return localStorage.getItem(this.GAPS_OPEN_KEY) === 'true';
+    },
+
     // Ranks uncovered techniques by what can actually be done about them today.
     // "No coverage" is a fact; "SigmaHQ has 12 rules for this, all filtered out by
     // min_level" is a decision.
+    //
+    // Collapsed by default: the matrix is the view, and a 25-row list under it
+    // pushes the grid off screen for a question most visits are not asking.
     renderGaps(data) {
         const el = document.getElementById('atkGaps');
         if (!el) return;
@@ -587,19 +644,31 @@ const AttackCoverage = {
             return;
         }
 
-        const hint = data.catalog_populated
-            ? `${data.candidate_rules} rule(s) in your feeds are not imported.`
-            : 'Sync a feed to see which of its rules could close these gaps.';
+        const actionable = gaps.filter(g => g.available > 0).length;
+        const summary = data.catalog_populated
+            ? `${data.uncovered_total} uncovered · ${actionable} closable with rules already in your feeds`
+            : `${data.uncovered_total} uncovered · sync a feed to see which of its rules could close them`;
 
+        const open = this.gapsOpen();
         el.innerHTML = `
-            <div class="atk-gaps-head">
-                <h3>Top gaps</h3>
-                <span class="atk-gaps-hint">${data.uncovered_total} uncovered technique(s). ${Utils.escapeHtml(hint)}</span>
-            </div>
-            <div class="atk-gaps-list">
+            <button class="atk-gaps-toggle${open ? ' atk-open' : ''}" id="atkGapsToggle" aria-expanded="${open}">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M9 6l6 6-6 6"/></svg>
+                <span class="atk-gaps-title">Top gaps</span>
+                <span class="atk-gaps-hint">${Utils.escapeHtml(summary)}</span>
+            </button>
+            <div class="atk-gaps-list${open ? ' atk-open' : ''}" id="atkGapsList">
                 ${gaps.map(g => this.gapRow(g)).join('')}
             </div>
         `;
+
+        document.getElementById('atkGapsToggle')?.addEventListener('click', (e) => {
+            const list = document.getElementById('atkGapsList');
+            const next = !list.classList.contains('atk-open');
+            list.classList.toggle('atk-open', next);
+            e.currentTarget.classList.toggle('atk-open', next);
+            e.currentTarget.setAttribute('aria-expanded', String(next));
+            localStorage.setItem(this.GAPS_OPEN_KEY, String(next));
+        });
 
         el.querySelectorAll('.atk-gap').forEach(row => {
             row.addEventListener('click', () => this.openDrawer(row.dataset.tid));
@@ -609,29 +678,31 @@ const AttackCoverage = {
     gapRow(gap) {
         const tacticNames = (gap.tactics || [])
             .map(short => this.matrix.tactics.find(t => t.short === short)?.name || short)
-            .join(', ');
-
-        const reasons = Object.entries(gap.by_reason || {})
-            .map(([reason, n]) => `${n} ${this.SKIP_REASONS[reason] || reason}`)
             .join(' · ');
 
+        // With no feed synced every row would otherwise repeat "Needs a new rule".
+        // The badge is shown only when there is something to act on; its absence is
+        // the same information without 25 copies of it.
         const action = gap.available > 0
-            ? `<span class="atk-gap-action">${gap.available} rule(s) available</span>`
-            : '<span class="atk-gap-action atk-gap-build">Needs a new rule</span>';
+            ? `<span class="atk-gap-action">${gap.available} available</span>`
+            : '';
 
         const detail = gap.available > 0
-            ? reasons
-            : ((gap.log_sources || []).slice(0, 3).join(', ') || 'No telemetry guidance from MITRE');
+            ? Object.entries(gap.by_reason || {})
+                .map(([reason, n]) => `${n} ${this.SKIP_REASONS[reason] || reason}`).join(' · ')
+            : ((gap.log_sources || []).slice(0, 3).join(' · ') || 'No telemetry guidance from MITRE');
 
         return `
             <button class="atk-gap" data-tid="${Utils.escapeHtml(gap.technique_id)}">
-                <span class="atk-gap-id">${Utils.escapeHtml(gap.technique_id)}</span>
                 <span class="atk-gap-main">
                     <span class="atk-gap-name">${Utils.escapeHtml(gap.name)}</span>
                     <span class="atk-gap-detail">${Utils.escapeHtml(detail)}</span>
                 </span>
-                <span class="atk-gap-tactics">${Utils.escapeHtml(tacticNames)}</span>
-                ${action}
+                <span class="atk-gap-side">
+                    ${action}
+                    <span class="atk-gap-id">${Utils.escapeHtml(gap.technique_id)}</span>
+                    <span class="atk-gap-tactics">${Utils.escapeHtml(tacticNames)}</span>
+                </span>
             </button>
         `;
     },

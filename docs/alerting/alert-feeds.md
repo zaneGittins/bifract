@@ -14,6 +14,9 @@ Admins manage feeds from **Alerts > Feeds** within a fractal.
 
 Each feed alert is linked to its source file. Editing a feed alert creates a manual copy, leaving the original feed-managed version intact.
 
+Every sync also catalogs the rules it did **not** import and why, which is what
+[ATT&CK Coverage](attack-coverage.md) uses to turn a gap into a decision.
+
 ## Log Source Scoping
 
 A Sigma rule declares the event type it targets in its `logsource` block. Bifract translates

@@ -135,9 +135,10 @@ func computeGaps(matrix *attack.Matrix, cov *attack.Coverage, candidates []Candi
 			gap.Candidates = append(gap.Candidates, c)
 		}
 
-		// Uncovered techniques with nothing available are still gaps, but they rank
-		// below the ones that can be closed today.
-		gap.Score = gap.Available*10 + len(gap.LogSources)
+		// Rules waiting in a feed dominate the ranking: those gaps can be closed
+		// today. MITRE's telemetry breadth only breaks ties, so it is bounded well
+		// below one available rule and can never reorder across that boundary.
+		gap.Score = gap.Available*1000 + min(len(gap.LogSources), 999)
 		sortCandidates(gap.Candidates)
 		if len(gap.Candidates) > maxCandidatesPerGap {
 			gap.Candidates = gap.Candidates[:maxCandidatesPerGap]

@@ -59,31 +59,45 @@ type TechniqueCoverage struct {
 	SubsTotal   int `json:"subs_total,omitempty"`
 }
 
-// TacticSummary is a matrix column header: covered top-level techniques out of
-// the total in that column.
+// TacticSummary is one matrix column, counted two ways.
+//
+// Total/Covered count top-level techniques, where a technique counts as covered
+// if any rule maps to it OR to any one of its sub-techniques. That is the
+// generous reading: a technique with 14 sub-techniques and one covered scores a
+// full point.
+//
+// LeafTotal/LeafCovered count the units you actually write a detection against:
+// every sub-technique, plus every technique that has none. Nothing is inherited,
+// so it cannot flatter. This is the number the column header leads with.
 type TacticSummary struct {
 	Total       int `json:"total"`
 	Covered     int `json:"covered"`
 	SubsTotal   int `json:"subs_total"`
 	SubsCovered int `json:"subs_covered"`
+	LeafTotal   int `json:"leaf_total"`
+	LeafCovered int `json:"leaf_covered"`
 	RuleCount   int `json:"rule_count"`
 }
 
 // Summary is the headline strip above the matrix.
 type Summary struct {
-	MatrixVersion        string                   `json:"matrix_version"`
-	TechniquesTotal      int                      `json:"techniques_total"`
-	TechniquesCovered    int                      `json:"techniques_covered"`
-	SubTechniquesTotal   int                      `json:"subtechniques_total"`
-	SubTechniquesCovered int                      `json:"subtechniques_covered"`
-	PerTactic            map[string]TacticSummary `json:"per_tactic"`
-	RulesTotal           int                      `json:"rules_total"`
-	RulesMapped          int                      `json:"rules_mapped"`
-	RulesUnmapped        int                      `json:"rules_unmapped"`
-	RulesTacticOnly      int                      `json:"rules_tactic_only"`
-	RulesRetiredTag      int                      `json:"rules_retired_tag"`
-	RetiredTags          []string                 `json:"retired_tags,omitempty"`
-	WeakestTactics       []string                 `json:"weakest_tactics,omitempty"`
+	MatrixVersion        string `json:"matrix_version"`
+	TechniquesTotal      int    `json:"techniques_total"`
+	TechniquesCovered    int    `json:"techniques_covered"`
+	SubTechniquesTotal   int    `json:"subtechniques_total"`
+	SubTechniquesCovered int    `json:"subtechniques_covered"`
+	// Leaf* counts detectable units (every sub-technique, plus every technique
+	// without any) rather than crediting a parent for one covered child.
+	LeafTotal       int                      `json:"leaf_total"`
+	LeafCovered     int                      `json:"leaf_covered"`
+	PerTactic       map[string]TacticSummary `json:"per_tactic"`
+	RulesTotal      int                      `json:"rules_total"`
+	RulesMapped     int                      `json:"rules_mapped"`
+	RulesUnmapped   int                      `json:"rules_unmapped"`
+	RulesTacticOnly int                      `json:"rules_tactic_only"`
+	RulesRetiredTag int                      `json:"rules_retired_tag"`
+	RetiredTags     []string                 `json:"retired_tags,omitempty"`
+	WeakestTactics  []string                 `json:"weakest_tactics,omitempty"`
 }
 
 // Coverage is the full aggregation returned to the UI.
@@ -230,6 +244,20 @@ func (m *Matrix) summarize(cov *Coverage, f Filter) {
 			ts.SubsTotal += subsTotal
 			ts.SubsCovered += subsCovered
 
+			// A technique with sub-techniques contributes those as its leaves; one
+			// without is a leaf itself. Parent-only coverage is deliberately not
+			// spread across a parent's sub-techniques: a rule tagged attack.t1547
+			// does not tell us which of the 14 autostart mechanisms it catches.
+			if subsTotal > 0 {
+				ts.LeafTotal += subsTotal
+				ts.LeafCovered += subsCovered
+			} else {
+				ts.LeafTotal++
+				if cell != nil && cell.Total > 0 {
+					ts.LeafCovered++
+				}
+			}
+
 			if cell != nil {
 				cell.SubsTotal = subsTotal
 				cell.SubsCovered = subsCovered
@@ -260,8 +288,10 @@ func (m *Matrix) summarize(cov *Coverage, f Filter) {
 		cell := cov.Techniques[tech.ID]
 		if tech.Sub {
 			cov.Summary.SubTechniquesTotal++
+			cov.Summary.LeafTotal++
 			if cell != nil && cell.Direct > 0 {
 				cov.Summary.SubTechniquesCovered++
+				cov.Summary.LeafCovered++
 			}
 			continue
 		}
@@ -269,9 +299,28 @@ func (m *Matrix) summarize(cov *Coverage, f Filter) {
 		if cell != nil && cell.Total > 0 {
 			cov.Summary.TechniquesCovered++
 		}
+		// Only a technique with no sub-techniques is a leaf in its own right.
+		if !m.hasInScopeSubs(tech.ID, f) {
+			cov.Summary.LeafTotal++
+			if cell != nil && cell.Total > 0 {
+				cov.Summary.LeafCovered++
+			}
+		}
 	}
 
 	cov.Summary.WeakestTactics = weakest(cov.Summary.PerTactic, 3)
+}
+
+// hasInScopeSubs reports whether a technique has any sub-technique that survives
+// the current filter. Under a platform filter a technique's sub-techniques can
+// all drop out, at which point the parent becomes a leaf.
+func (m *Matrix) hasInScopeSubs(id string, f Filter) bool {
+	for _, sub := range m.subsOf[id] {
+		if m.InScope(sub, f) {
+			return true
+		}
+	}
+	return false
 }
 
 // InScope excludes deprecated techniques from every denominator and applies the
@@ -300,10 +349,12 @@ func weakest(per map[string]TacticSummary, n int) []string {
 	}
 	entries := make([]entry, 0, len(per))
 	for short, ts := range per {
-		if ts.Total == 0 {
+		if ts.LeafTotal == 0 {
 			continue
 		}
-		entries = append(entries, entry{short, float64(ts.Covered) / float64(ts.Total)})
+		// Ranked on leaf coverage: the generous count would name whichever tactic
+		// happens to have the fewest parent techniques, not the weakest one.
+		entries = append(entries, entry{short, float64(ts.LeafCovered) / float64(ts.LeafTotal)})
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].ratio != entries[j].ratio {

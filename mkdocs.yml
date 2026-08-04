@@ -80,6 +80,7 @@ nav:
   - Alerting:
     - Alerts: alerting/alerts.md
     - Alert Feeds: alerting/alert-feeds.md
+    - ATT&CK Coverage: alerting/attack-coverage.md
     - Testing Rules: alerting/testing-rules.md
   - Features:
     - Models: features/models.md
