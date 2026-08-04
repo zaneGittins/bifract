@@ -1,0 +1,5 @@
+[
+  {"EventID":10,"UtcTime":"2026-08-03 09:31:00.000","Computer":"SRV-DC-01","SourceImage":"C:\\Program Files\\A\\a.exe","TargetImage":"C:\\Windows\\System32\\lsass.exe"},
+  {"EventID":10,"UtcTime":"2026-08-03 09:31:05.000","Computer":"SRV-DC-01","SourceImage":"C:\\Program Files\\B\\b.exe","TargetImage":"C:\\Windows\\System32\\lsass.exe"},
+  {"EventID":10,"UtcTime":"2026-08-03 09:31:09.000","Computer":"SRV-DC-01","SourceImage":"C:\\Program Files\\C\\c.exe","TargetImage":"C:\\Windows\\System32\\lsass.exe"}
+]

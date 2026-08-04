@@ -53,15 +53,17 @@ type Spec struct {
 	Path string `yaml:"-"`
 }
 
-// Case is a single assertion: these logs, against that rule, must (or must not)
-// trigger.
+// Case is a single assertion: the events in one file, against that rule, must (or
+// must not) trigger.
+//
+// Events always come from a file rather than being written inline. Real telemetry is
+// JSON, so a file can hold a raw export verbatim; inline YAML would mean retyping it
+// under different quoting rules and different scalar types.
 type Case struct {
-	Name    string                   `yaml:"name"`
-	Expect  string                   `yaml:"expect"`
-	Count   *int                     `yaml:"count"`
-	Log     map[string]interface{}   `yaml:"log"`
-	Logs    []map[string]interface{} `yaml:"logs"`
-	LogFile string                   `yaml:"logFile"`
+	Name    string `yaml:"name"`
+	Expect  string `yaml:"expect"`
+	Count   *int   `yaml:"count"`
+	LogFile string `yaml:"logFile"`
 
 	// Together presents the case's logs to the rule as one batch rather than
 	// evaluating each on its own. Threshold and correlation rules need it, since they
@@ -205,73 +207,26 @@ func parseExpectation(s string) (Expectation, error) {
 	}
 }
 
-// resolveCaseLogs collects the case's logs from exactly one of log/logs/logFile.
+// resolveCaseLogs reads the case's events from its file. Decoding straight from JSON
+// means the values reaching the normalizer are byte-for-byte what an ingested event
+// would produce, with no conversion step that could alter them.
 func resolveCaseLogs(dir string, c *Case) ([]map[string]interface{}, error) {
-	sources := 0
-	if c.Log != nil {
-		sources++
-	}
-	if c.Logs != nil {
-		sources++
-	}
-	if c.LogFile != "" {
-		sources++
+	if strings.TrimSpace(c.LogFile) == "" {
+		return nil, fmt.Errorf("missing required field 'logFile'")
 	}
 
-	switch sources {
-	case 0:
-		return nil, fmt.Errorf("no logs: set one of 'log', 'logs' or 'logFile'")
-	case 1:
-	default:
-		return nil, fmt.Errorf("set only one of 'log', 'logs' or 'logFile'")
-	}
-
-	var logs []map[string]interface{}
-	switch {
-	case c.Log != nil:
-		logs = []map[string]interface{}{c.Log}
-	case c.Logs != nil:
-		logs = c.Logs
-	default:
-		data, err := os.ReadFile(resolveRelative(dir, c.LogFile))
-		if err != nil {
-			return nil, err
-		}
-		logs, err = ParseLogFile(data)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", c.LogFile, err)
-		}
-	}
-
-	if len(logs) == 0 {
-		return nil, fmt.Errorf("no logs found")
-	}
-
-	// Round-trip through JSON so inline YAML logs carry exactly the Go types an
-	// HTTP-ingested log would (numbers as float64, etc). Without this a YAML int
-	// and a JSON number could stringify differently and a test would disagree with
-	// production for reasons that have nothing to do with the rule.
-	out := make([]map[string]interface{}, 0, len(logs))
-	for i, l := range logs {
-		normalized, err := jsonRoundTrip(l)
-		if err != nil {
-			return nil, fmt.Errorf("log %d: %w", i+1, err)
-		}
-		out = append(out, normalized)
-	}
-	return out, nil
-}
-
-func jsonRoundTrip(obj map[string]interface{}) (map[string]interface{}, error) {
-	encoded, err := json.Marshal(obj)
+	data, err := os.ReadFile(resolveRelative(dir, c.LogFile))
 	if err != nil {
 		return nil, err
 	}
-	var out map[string]interface{}
-	if err := json.Unmarshal(encoded, &out); err != nil {
-		return nil, err
+	logs, err := ParseLogFile(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", c.LogFile, err)
 	}
-	return out, nil
+	if len(logs) == 0 {
+		return nil, fmt.Errorf("%s: no events found", c.LogFile)
+	}
+	return logs, nil
 }
 
 // ParseLogFile accepts the same shapes the ingest endpoint does: a JSON array, a

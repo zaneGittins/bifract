@@ -47,12 +47,13 @@ func TestParseExpectation(t *testing.T) {
 func TestLoadSpecResolvesRelativePaths(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "rules/r.yml", "name: x\nqueryString: '*'\n")
+	writeFile(t, dir, "tests/events.json", `{"a":1}`)
 	spec := writeFile(t, dir, "tests/a.test.yaml", `
 rule: ../rules/r.yml
 cases:
   - name: c1
     expect: match
-    log: {a: 1}
+    logFile: events.json
 `)
 
 	s, err := LoadSpec(spec)
@@ -67,7 +68,7 @@ cases:
 		t.Fatalf("unexpected cases: %+v", s.Cases)
 	}
 	if got := len(s.Cases[0].ResolvedLogs()); got != 1 {
-		t.Errorf("resolved %d logs, want 1", got)
+		t.Errorf("resolved %d events, want 1", got)
 	}
 }
 
@@ -77,43 +78,52 @@ func TestLoadSpecRejectsBadInput(t *testing.T) {
 cases:
   - name: c
     expect: match
-    log: {a: 1}
+    logFile: e.json
 `,
 		"no cases": "rule: r.yml\ncases: []\n",
 		"unnamed case": `
 rule: r.yml
 cases:
   - expect: match
-    log: {a: 1}
+    logFile: e.json
 `,
-		"no logs": `
+		"missing logFile": `
 rule: r.yml
 cases:
   - name: c
     expect: match
 `,
-		"two log sources": `
+		// Inline events were removed deliberately; a spec still using them must fail
+		// loudly rather than silently run zero events.
+		"inline log": `
 rule: r.yml
 cases:
   - name: c
     expect: match
     log: {a: 1}
-    logs: [{b: 2}]
+`,
+		"inline logs": `
+rule: r.yml
+cases:
+  - name: c
+    expect: match
+    logs: [{a: 1}]
 `,
 		"count with no_match": `
 rule: r.yml
 cases:
   - name: c
     expect: no_match
+    together: true
     count: 3
-    log: {a: 1}
+    logFile: e.json
 `,
 		"unknown field": `
 rule: r.yml
 cases:
   - name: c
     expect: match
-    log: {a: 1}
+    logFile: e.json
     expectt: match
 `,
 	}
@@ -121,6 +131,7 @@ cases:
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
+			writeFile(t, dir, "e.json", `{"a":1}`)
 			p := writeFile(t, dir, "x.test.yaml", body)
 			if _, err := LoadSpec(p); err == nil {
 				t.Fatal("LoadSpec succeeded; want an error")
@@ -159,21 +170,17 @@ func TestParseLogFileShapes(t *testing.T) {
 	}
 }
 
-// Inline YAML logs must reach the normalizer with the same Go types a JSON body
-// would produce, or a test can disagree with production over value formatting
-// rather than over the rule.
-func TestInlineLogsAreJSONTyped(t *testing.T) {
+// Events are decoded straight from JSON, so they reach the normalizer with exactly
+// the Go types an HTTP-ingested event would have.
+func TestEventsAreJSONTyped(t *testing.T) {
 	dir := t.TempDir()
+	writeFile(t, dir, "e.json", `{"EventID":1,"Ratio":1.5,"Flag":true,"Name":"certutil.exe"}`)
 	p := writeFile(t, dir, "x.test.yaml", `
 rule: r.yml
 cases:
   - name: c
     expect: match
-    log:
-      EventID: 1
-      Ratio: 1.5
-      Flag: true
-      Name: certutil.exe
+    logFile: e.json
 `)
 	s, err := LoadSpec(p)
 	if err != nil {
@@ -195,8 +202,6 @@ cases:
 	}
 }
 
-// Discovery is a recursive suffix match, which is what lets a repo group detections
-// however it likes (folder per detection, by platform, by tactic).
 func TestDiscoverSpecs(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "a.test.yaml", "x")
@@ -204,7 +209,7 @@ func TestDiscoverSpecs(t *testing.T) {
 	writeFile(t, dir, "deep/nested/tree/c.test.yml", "x")
 	// Not specs: the rules, the events and unrelated files must all be ignored.
 	writeFile(t, dir, "certutil-download/rule.yml", "x")
-	writeFile(t, dir, "certutil-download/true-positives.ndjson", "x")
+	writeFile(t, dir, "certutil-download/true-positives.json", "x")
 	writeFile(t, dir, "normalizers/sysmon.yaml", "x")
 	writeFile(t, dir, "notes.md", "x")
 
@@ -230,7 +235,7 @@ func TestIsSpecFile(t *testing.T) {
 			t.Errorf("IsSpecFile(%q) = false, want true", name)
 		}
 	}
-	for _, name := range []string{"rule.yml", "rule.yaml", "events.ndjson", "a.tests.yaml", "readme.md"} {
+	for _, name := range []string{"rule.yml", "rule.yaml", "events.json", "a.tests.yaml", "readme.md"} {
 		if IsSpecFile(name) {
 			t.Errorf("IsSpecFile(%q) = true, want false", name)
 		}
@@ -241,13 +246,15 @@ func TestIsSpecFile(t *testing.T) {
 // logs are batched.
 func TestCountRequiresTogether(t *testing.T) {
 	dir := t.TempDir()
+	writeFile(t, dir, "e.json", "{\"a\":1}\n{\"b\":2}\n")
+
 	p := writeFile(t, dir, "x.test.yaml", `
 rule: r.yml
 cases:
   - name: c
     expect: match
     count: 2
-    logs: [{a: 1}, {b: 2}]
+    logFile: e.json
 `)
 	if _, err := LoadSpec(p); err == nil {
 		t.Fatal("LoadSpec accepted count without together; want an error")
@@ -260,7 +267,7 @@ cases:
     expect: match
     together: true
     count: 2
-    logs: [{a: 1}, {b: 2}]
+    logFile: e.json
 `)
 	if _, err := LoadSpec(ok); err != nil {
 		t.Fatalf("LoadSpec rejected count with together: %v", err)

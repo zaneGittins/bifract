@@ -139,13 +139,7 @@ func adHocSpec(opts *Options) (*Spec, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", lp, err)
 		}
-		for i, l := range parsed {
-			normalized, err := jsonRoundTrip(l)
-			if err != nil {
-				return nil, fmt.Errorf("%s: log %d: %w", lp, i+1, err)
-			}
-			logs = append(logs, normalized)
-		}
+		logs = append(logs, parsed...)
 	}
 	if len(logs) == 0 {
 		return nil, fmt.Errorf("no logs found in %s", strings.Join(opts.LogPaths, ", "))

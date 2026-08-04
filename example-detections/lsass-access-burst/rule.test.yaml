@@ -1,91 +1,31 @@
 rule: rule.yml
 normalizer: ../../example-normalizers/sysmon-normalizer.yaml
 
+# A threshold rule only fires when it sees several events at once, so every case sets
+# `together: true`. Each case is still scoped to its own synthetic fractal, so the
+# counts cannot be inflated by any other case.
 cases:
-  # A threshold rule only fires when it sees several events at once, so every case
-  # here sets `together: true`. Each case still gets its own synthetic fractal, so the
-  # counts cannot be inflated by any other case.
-  - name: three lsass accesses from one process
+  - name: three accesses from one process trip the threshold
     expect: match
     together: true
     count: 1
-    logs:
-      - EventID: 10
-        UtcTime: "2026-08-03 09:15:01.100"
-        Computer: SRV-DC-01
-        SourceImage: C:\Users\Public\rundll32.exe
-        TargetImage: C:\Windows\System32\lsass.exe
-        GrantedAccess: "0x1410"
-      - EventID: 10
-        UtcTime: "2026-08-03 09:15:01.640"
-        Computer: SRV-DC-01
-        SourceImage: C:\Users\Public\rundll32.exe
-        TargetImage: C:\Windows\System32\lsass.exe
-        GrantedAccess: "0x1410"
-      - EventID: 10
-        UtcTime: "2026-08-03 09:15:02.310"
-        Computer: SRV-DC-01
-        SourceImage: C:\Users\Public\rundll32.exe
-        TargetImage: C:\Windows\System32\lsass.exe
-        GrantedAccess: "0x1fffff"
+    logFile: three-accesses-one-process.json
 
   # Two is under the threshold. This is the assertion an offline filter-only matcher
   # could never make.
-  - name: two lsass accesses stay below the threshold
+  - name: two accesses stay below the threshold
     expect: no_match
     together: true
-    logs:
-      - EventID: 10
-        UtcTime: "2026-08-03 09:20:11.000"
-        Computer: SRV-DC-01
-        SourceImage: C:\Program Files\Vendor\agent.exe
-        TargetImage: C:\Windows\System32\lsass.exe
-        GrantedAccess: "0x1410"
-      - EventID: 10
-        UtcTime: "2026-08-03 09:20:14.000"
-        Computer: SRV-DC-01
-        SourceImage: C:\Program Files\Vendor\agent.exe
-        TargetImage: C:\Windows\System32\lsass.exe
-        GrantedAccess: "0x1410"
+    logFile: two-accesses-below-threshold.json
 
-  # Three accesses spread across three different images: no single image reaches the
-  # threshold, so the grouping must keep them apart.
-  - name: three accesses from three different images
+  # Three accesses spread across three images: no single image reaches the threshold,
+  # so the grouping must keep them apart.
+  - name: three accesses from three different processes
     expect: no_match
     together: true
-    logs:
-      - EventID: 10
-        UtcTime: "2026-08-03 09:31:00.000"
-        Computer: SRV-DC-01
-        SourceImage: C:\Program Files\A\a.exe
-        TargetImage: C:\Windows\System32\lsass.exe
-      - EventID: 10
-        UtcTime: "2026-08-03 09:31:05.000"
-        Computer: SRV-DC-01
-        SourceImage: C:\Program Files\B\b.exe
-        TargetImage: C:\Windows\System32\lsass.exe
-      - EventID: 10
-        UtcTime: "2026-08-03 09:31:09.000"
-        Computer: SRV-DC-01
-        SourceImage: C:\Program Files\C\c.exe
-        TargetImage: C:\Windows\System32\lsass.exe
+    logFile: three-accesses-three-processes.json
 
-  - name: accesses to a non-lsass target
+  - name: repeated accesses to a non-lsass target
     expect: no_match
     together: true
-    logs:
-      - EventID: 10
-        UtcTime: "2026-08-03 09:40:00.000"
-        Computer: SRV-DC-01
-        SourceImage: C:\Users\Public\rundll32.exe
-        TargetImage: C:\Windows\explorer.exe
-      - EventID: 10
-        UtcTime: "2026-08-03 09:40:02.000"
-        Computer: SRV-DC-01
-        SourceImage: C:\Users\Public\rundll32.exe
-        TargetImage: C:\Windows\explorer.exe
-      - EventID: 10
-        UtcTime: "2026-08-03 09:40:04.000"
-        Computer: SRV-DC-01
-        SourceImage: C:\Users\Public\rundll32.exe
-        TargetImage: C:\Windows\explorer.exe
+    logFile: three-accesses-other-target.json

@@ -1,0 +1,5 @@
+[
+  {"EventID":10,"UtcTime":"2026-08-03 09:15:01.100","Computer":"SRV-DC-01","SourceImage":"C:\\Users\\Public\\rundll32.exe","TargetImage":"C:\\Windows\\System32\\lsass.exe","GrantedAccess":"0x1410"},
+  {"EventID":10,"UtcTime":"2026-08-03 09:15:01.640","Computer":"SRV-DC-01","SourceImage":"C:\\Users\\Public\\rundll32.exe","TargetImage":"C:\\Windows\\System32\\lsass.exe","GrantedAccess":"0x1410"},
+  {"EventID":10,"UtcTime":"2026-08-03 09:15:02.310","Computer":"SRV-DC-01","SourceImage":"C:\\Users\\Public\\rundll32.exe","TargetImage":"C:\\Windows\\System32\\lsass.exe","GrantedAccess":"0x1fffff"}
+]

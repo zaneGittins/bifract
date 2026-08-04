@@ -1,0 +1,5 @@
+[
+  {"EventID":10,"UtcTime":"2026-08-03 09:40:00.000","Computer":"SRV-DC-01","SourceImage":"C:\\Users\\Public\\rundll32.exe","TargetImage":"C:\\Windows\\explorer.exe"},
+  {"EventID":10,"UtcTime":"2026-08-03 09:40:02.000","Computer":"SRV-DC-01","SourceImage":"C:\\Users\\Public\\rundll32.exe","TargetImage":"C:\\Windows\\explorer.exe"},
+  {"EventID":10,"UtcTime":"2026-08-03 09:40:04.000","Computer":"SRV-DC-01","SourceImage":"C:\\Users\\Public\\rundll32.exe","TargetImage":"C:\\Windows\\explorer.exe"}
+]
