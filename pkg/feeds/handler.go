@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 
 	"bifract/pkg/alerts"
 	"bifract/pkg/fractals"
@@ -276,7 +277,10 @@ func (h *Handler) HandleDisableAllAlerts(w http.ResponseWriter, r *http.Request)
 	h.respond(w, http.StatusOK, nil, "")
 }
 
-// HandleListAllFeedAlerts returns all feed alerts for the current fractal or prism (authenticated).
+// HandleListAllFeedAlerts returns one page of feed alerts for the current
+// fractal or prism (authenticated). Filtering, sorting and paging all happen in
+// Postgres: a feed can hold thousands of rules and the full set is far too
+// large to ship to the browser on every visit.
 func (h *Handler) HandleListAllFeedAlerts(w http.ResponseWriter, r *http.Request) {
 	if h.getCurrentUser(r) == nil {
 		h.respond(w, http.StatusUnauthorized, nil, "authentication required")
@@ -289,11 +293,53 @@ func (h *Handler) HandleListAllFeedAlerts(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	alertsList, err := h.alertManager.ListAllFeedAlerts(r.Context(), fractalID, prismID)
+	q := parseFeedAlertQuery(r, fractalID, prismID)
+	page, err := h.alertManager.ListFeedAlertsPage(r.Context(), q)
 	if err != nil {
-		log.Printf("[Feeds] Failed to list all feed alerts: %v", err)
+		log.Printf("[Feeds] Failed to list feed alerts: %v", err)
 		h.respond(w, http.StatusInternalServerError, nil, "Failed to load feed alerts")
 		return
 	}
-	h.respond(w, http.StatusOK, alertsList, "")
+
+	if r.URL.Query().Get("facets") == "1" {
+		facets, err := h.alertManager.FeedAlertFacetsFor(r.Context(), fractalID, prismID)
+		if err != nil {
+			log.Printf("[Feeds] Failed to load feed alert facets: %v", err)
+			h.respond(w, http.StatusInternalServerError, nil, "Failed to load feed alerts")
+			return
+		}
+		page.Facets = facets
+	}
+
+	h.respond(w, http.StatusOK, page, "")
+}
+
+// parseFeedAlertQuery reads the table's filter/sort/page state off the URL.
+// "all" is the UI's unset sentinel for every dropdown.
+func parseFeedAlertQuery(r *http.Request, fractalID, prismID string) alerts.FeedAlertQuery {
+	v := r.URL.Query()
+	unset := func(key string) string {
+		val := v.Get(key)
+		if val == "all" {
+			return ""
+		}
+		return val
+	}
+
+	limit, _ := strconv.Atoi(v.Get("limit"))
+	offset, _ := strconv.Atoi(v.Get("offset"))
+
+	return alerts.FeedAlertQuery{
+		FractalID: fractalID,
+		PrismID:   prismID,
+		Search:    v.Get("search"),
+		Status:    unset("status"),
+		FeedID:    unset("feed_id"),
+		Severity:  unset("severity"),
+		Label:     unset("label"),
+		Sort:      v.Get("sort"),
+		Dir:       v.Get("dir"),
+		Limit:     limit,
+		Offset:    offset,
+	}
 }

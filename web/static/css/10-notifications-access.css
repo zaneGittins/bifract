@@ -968,31 +968,32 @@
     font-size: 0.8rem;
 }
 
-/* Feed Form */
-.feed-form-panel {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    margin-bottom: 1rem;
+/* Feed Form modal */
+.feed-form-modal {
+    width: 620px;
+    max-width: 95vw;
+    display: flex;
+    flex-direction: column;
+    max-height: 88vh;
     overflow: hidden;
 }
 
-.feed-form-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid var(--border-color);
-    background: var(--bg-tertiary);
-}
-
-.feed-form-header h3 {
-    margin: 0;
-    font-size: 0.9rem;
-}
-
 .feed-form-body {
-    padding: 1rem;
+    padding: 1.25rem;
+    overflow-y: auto;
+}
+
+.feed-form-body .form-group {
+    margin-bottom: 0.85rem;
+}
+
+.feed-form-modal .modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0;
+    padding: 0.85rem 1.25rem;
+    border-top: 1px solid var(--border-color);
 }
 
 .form-row-2col {

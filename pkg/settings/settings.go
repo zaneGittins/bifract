@@ -48,8 +48,8 @@ type Settings struct {
 	// QueryCPUPercent is the share of each ClickHouse node's cores interactive user
 	// searches may use, so one expensive search cannot starve ingestion. 0 = uncapped.
 	QueryCPUPercent int `json:"query_cpu_percent"`
-	// QueryMemoryPercent is the share of each ClickHouse node's memory budget that
-	// running searches may reserve in total. 0 = uncapped.
+	// QueryMemoryPercent is the share of each ClickHouse node's memory budget any one
+	// interactive search may use before it is failed. 0 = uncapped.
 	QueryMemoryPercent int `json:"query_memory_percent"`
 	// Recall (archive scan) shares, scheduled behind interactive search.
 	RecallCPUPercent    int `json:"recall_cpu_percent"`

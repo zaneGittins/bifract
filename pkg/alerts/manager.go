@@ -694,7 +694,8 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 	query := `
 		SELECT a.id, a.name, COALESCE(a.description, ''), a.query_string, COALESCE(a.alert_type, 'event'), a.enabled,
 		       COALESCE(a.throttle_time_seconds, 0), COALESCE(a.throttle_field, ''), a.labels, a."references",
-		       COALESCE(a.severity, 'medium'), COALESCE(a.fractal_id::text, ''),
+		       COALESCE(a.severity, 'medium'), COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''),
+		       COALESCE(a.feed_id::text, ''), COALESCE(a.feed_rule_path, ''),
 		       COALESCE(a.created_by, ''), COALESCE(a.updated_by, ''), a.created_at, a.updated_at, a.last_triggered,
 		       COALESCE(a.disabled_reason, ''), COALESCE(a.window_duration, 0),
 		       COALESCE(a.schedule_cron, ''), COALESCE(a.query_window_seconds, 0),
@@ -745,6 +746,7 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 		WHERE a.id = $1
 		GROUP BY a.id, a.name, a.description, a.query_string, a.alert_type, a.enabled,
 		         a.throttle_time_seconds, a.throttle_field, a.labels, a."references", a.severity, a.fractal_id,
+		         a.prism_id, a.feed_id, a.feed_rule_path,
 		         a.created_by, a.updated_by, a.created_at, a.updated_at, a.last_triggered,
 		         a.disabled_reason, a.window_duration, a.schedule_cron, a.query_window_seconds
 	`
@@ -757,7 +759,8 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 	err := m.pg.QueryRow(ctx, query, alertID).Scan(
 		&alert.ID, &alert.Name, &alert.Description, &alert.QueryString, &alert.AlertType,
 		&alert.Enabled, &alert.ThrottleTimeSeconds, &alert.ThrottleField,
-		pq.Array(&alert.Labels), pq.Array(&alert.References), &alert.Severity, &alert.FractalID, &alert.CreatedBy, &alert.UpdatedBy,
+		pq.Array(&alert.Labels), pq.Array(&alert.References), &alert.Severity, &alert.FractalID, &alert.PrismID,
+		&alert.FeedID, &alert.FeedRulePath, &alert.CreatedBy, &alert.UpdatedBy,
 		&alert.CreatedAt, &alert.UpdatedAt,
 		&alert.LastTriggered, &alert.DisabledReason, &alert.WindowDuration,
 		&alert.ScheduleCron, &alert.QueryWindowSeconds,
@@ -1978,61 +1981,6 @@ func (m *Manager) ListFeedAlerts(ctx context.Context, feedID string) ([]*Alert, 
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan feed alert: %w", err)
-		}
-		alerts = append(alerts, &a)
-	}
-	return alerts, nil
-}
-
-// ListAllFeedAlerts returns all feed alerts for a fractal or prism (across all feeds).
-func (m *Manager) ListAllFeedAlerts(ctx context.Context, fractalID, prismID string) ([]*Alert, error) {
-	var whereClause string
-	var arg interface{}
-	if prismID != "" {
-		whereClause = "a.prism_id = $1"
-		arg = prismID
-	} else {
-		whereClause = "a.fractal_id = $1"
-		arg = fractalID
-	}
-
-	query := fmt.Sprintf(`
-		SELECT a.id, a.name, a.description, a.query_string, COALESCE(a.alert_type, 'event'), a.enabled,
-		       a.labels, a."references", COALESCE(a.severity, 'medium'), COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''),
-		       COALESCE(a.feed_id::text, ''), COALESCE(a.feed_rule_path, ''), COALESCE(a.feed_rule_hash, ''),
-		       COALESCE(a.created_by, ''), a.created_at, a.updated_at, COALESCE(a.disabled_reason, ''),
-		       a.last_triggered,
-		       a.last_execution_time_ms,
-		       COALESCE(f.name, '') as feed_name
-		FROM alerts a
-		LEFT JOIN alert_feeds f ON a.feed_id = f.id
-		WHERE %s AND a.feed_id IS NOT NULL
-		ORDER BY f.name, a.name
-	`, whereClause)
-	rows, err := m.pg.Query(ctx, query, arg)
-	if err != nil {
-		return nil, fmt.Errorf("list all feed alerts: %w", err)
-	}
-	defer rows.Close()
-
-	var alerts []*Alert
-	for rows.Next() {
-		var a Alert
-		var feedName string
-		err := rows.Scan(
-			&a.ID, &a.Name, &a.Description, &a.QueryString, &a.AlertType, &a.Enabled,
-			pq.Array(&a.Labels), pq.Array(&a.References), &a.Severity, &a.FractalID, &a.PrismID,
-			&a.FeedID, &a.FeedRulePath, &a.FeedRuleHash,
-			&a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.DisabledReason,
-			&a.LastTriggered, &a.LastExecutionTimeMs,
-			&feedName,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("scan feed alert: %w", err)
-		}
-		// Store feed name in labels for UI display
-		if feedName != "" {
-			a.Labels = append([]string{"feed:" + feedName}, a.Labels...)
 		}
 		alerts = append(alerts, &a)
 	}

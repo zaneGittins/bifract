@@ -29,35 +29,37 @@ func TestClampQueryLimitPercent(t *testing.T) {
 }
 
 func TestClassWorkloadDDL(t *testing.T) {
-	const budget = int64(8_000_000_000)
-
-	// Search: both limits, default priority, nested under the tree root.
-	got := classWorkloadDDL(QuerySearchWorkload, 50, 50, 0, budget)
+	// Search: CPU share only, default priority, nested under the tree root.
+	got := classWorkloadDDL(QuerySearchWorkload, 50, 0)
 	want := "CREATE OR REPLACE WORKLOAD bifract_search IN bifract SETTINGS " +
-		"max_concurrent_threads_ratio_to_cores = 0.50, max_memory = 4000000000"
+		"max_concurrent_threads_ratio_to_cores = 0.50"
 	if got != want {
 		t.Errorf("search DDL =\n%q\nwant\n%q", got, want)
 	}
 
 	// Recall carries an explicit priority so it yields to search for the same core.
-	got = classWorkloadDDL(QueryRecallWorkload, 25, 25, recallPriority, budget)
-	if !strings.Contains(got, "priority = 1") || !strings.Contains(got, "max_memory = 2000000000") {
-		t.Errorf("recall DDL missing priority or memory share: %q", got)
+	got = classWorkloadDDL(QueryRecallWorkload, 25, recallPriority)
+	if !strings.Contains(got, "priority = 1") || !strings.Contains(got, "= 0.25") {
+		t.Errorf("recall DDL missing priority or cpu share: %q", got)
 	}
+}
 
-	// A disabled share is omitted, not written as zero, which would forbid all work.
-	got = classWorkloadDDL(QuerySearchWorkload, 0, 50, 0, budget)
-	if strings.Contains(got, "max_concurrent_threads_ratio_to_cores") {
-		t.Errorf("cpu share of 0 must be omitted, got %q", got)
+// max_memory is what engages ClickHouse's MEMORY RESERVATION scheduler, whose
+// syncWithMemoryTracker can park a query on a condition variable that KILL QUERY
+// cannot break: an increase sized against an allocated_size that a concurrent
+// in-flight decrease then lowers leaves the waiter permanently short, with no path
+// to re-request. The query sits in system.processes as "Stopping" until ClickHouse
+// restarts, holding its reservation and a connection thread. Memory is capped per
+// query with max_memory_usage instead, so no workload DDL may name max_memory.
+func TestWorkloadDDLNeverSetsMaxMemory(t *testing.T) {
+	stmts := []string{
+		classWorkloadDDL(QuerySearchWorkload, 50, 0),
+		classWorkloadDDL(QueryRecallWorkload, 25, recallPriority),
 	}
-	if !strings.Contains(got, "max_memory") {
-		t.Errorf("memory share should still be present, got %q", got)
-	}
-
-	// An unknown memory budget cannot be turned into a byte count, so it is omitted.
-	got = classWorkloadDDL(QuerySearchWorkload, 50, 50, 0, 0)
-	if strings.Contains(got, "max_memory") {
-		t.Errorf("memory limit must be omitted when the budget is unknown, got %q", got)
+	for _, s := range stmts {
+		if strings.Contains(s, "max_memory") {
+			t.Errorf("workload DDL must not set max_memory (reservation deadlock): %q", s)
+		}
 	}
 }
 
@@ -69,8 +71,8 @@ func TestClassWorkloadDDL(t *testing.T) {
 // application is handled by execWorkloadDDL running the statement on each node.
 func TestWorkloadDDLNeverUsesOnCluster(t *testing.T) {
 	stmts := []string{
-		classWorkloadDDL(QuerySearchWorkload, 50, 50, 0, 8_000_000_000),
-		classWorkloadDDL(QueryRecallWorkload, 25, 25, recallPriority, 8_000_000_000),
+		classWorkloadDDL(QuerySearchWorkload, 50, 0),
+		classWorkloadDDL(QueryRecallWorkload, 25, recallPriority),
 	}
 	for _, s := range stmts {
 		if strings.Contains(strings.ToUpper(s), "ON CLUSTER") {
@@ -138,6 +140,41 @@ func TestApplyQuerySettingsBudget(t *testing.T) {
 
 	if got := c.applyQuerySettings(QueryBudgetContext(context.Background(), 0), nil); got != nil {
 		t.Errorf("no budget and no workload must send no settings, got %v", got)
+	}
+}
+
+// The per-query memory ceiling is enforced by the server, not the scheduler, so it
+// must reach ClickHouse for the marked class whether or not that class's CPU
+// workload is provisioned -- an unprovisioned workload is exactly the case where a
+// search would otherwise run with no memory ceiling at all.
+func TestApplyQuerySettingsMemoryCap(t *testing.T) {
+	c := &ClickHouseClient{}
+	c.setQueryMemoryCaps(map[string]int64{QuerySearchWorkload: 4_000_000_000})
+	c.setActiveWorkloads(nil)
+
+	got := c.applyQuerySettings(UserSearchContext(context.Background()), nil)
+	if got["max_memory_usage"] != int64(4_000_000_000) {
+		t.Errorf("search must carry its memory ceiling without a workload, got %v", got)
+	}
+	if _, tagged := got["workload"]; tagged {
+		t.Errorf("an unprovisioned workload must not be tagged, got %v", got)
+	}
+
+	// A class with no ceiling of its own must not borrow another's.
+	if got := c.applyQuerySettings(RecallContext(context.Background()), nil); got != nil {
+		t.Errorf("uncapped class must send no settings, got %v", got)
+	}
+
+	// Untagged work (ingestion, alerting, merges) is never capped.
+	if got := c.applyQuerySettings(context.Background(), nil); got != nil {
+		t.Errorf("unmarked context must not be capped, got %v", got)
+	}
+
+	// Ceiling, tag, and caller settings coexist once the workload is provisioned.
+	c.setActiveWorkloads(map[string]bool{QuerySearchWorkload: true})
+	got = c.applyQuerySettings(UserSearchContext(context.Background()), clickhouse.Settings{"max_query_size": 42})
+	if got["max_memory_usage"] != int64(4_000_000_000) || got["workload"] != QuerySearchWorkload || got["max_query_size"] != 42 {
+		t.Errorf("expected merged settings, got %v", got)
 	}
 }
 

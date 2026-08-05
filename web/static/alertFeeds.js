@@ -1,18 +1,22 @@
 // Alert Feeds module - manages feed-sourced alerts and feed configuration
+// Feed alerts are paged, filtered and sorted server-side: a single Sigma feed can
+// hold thousands of rules, so the browser only ever holds the visible page.
 const AlertFeeds = {
     feeds: [],
-    feedAlerts: [],
-    filteredAlerts: [],
+    alertRows: [],      // current page of rows
+    total: 0,           // rows matching the active filters
+    unfiltered: 0,      // all feed alerts in scope
+    facetLabels: [],
+    facetFeeds: [],
     currentSubTab: 'feed-alerts',
     alertsPage: 1,
     alertsPerPage: 25,
     sortColumn: null,   // current sort column key
     sortDirection: null, // 'asc' or 'desc'
+    _fetchSeq: 0,       // drops responses that a newer request has superseded
 
     // Known severity levels in priority order (used for extraction from labels)
     severityLevels: ['critical', 'high', 'medium', 'low', 'informational'],
-    // Numeric severity for sorting (higher = more severe)
-    severityRank: { critical: 5, high: 4, medium: 3, low: 2, informational: 1 },
 
     init() {
         this.setupEventListeners();
@@ -23,8 +27,11 @@ const AlertFeeds = {
 
     onFractalChange() {
         this.feeds = [];
-        this.feedAlerts = [];
-        this.filteredAlerts = [];
+        this.alertRows = [];
+        this.total = 0;
+        this.unfiltered = 0;
+        this.facetLabels = [];
+        this.facetFeeds = [];
         this.alertsPage = 1;
         // Clear rendered DOM unconditionally so the previous scope's feeds
         // and feed alerts never flash into view on tab re-entry.
@@ -111,12 +118,10 @@ const AlertFeeds = {
 
     async show(subPath = '') {
         this.closeDetailsPanel(true);
-        await this.loadFeeds();
-        await this.loadFeedAlerts();
-        if (subPath) {
-            const alert = this.feedAlerts?.find(a => a.id === subPath);
-            if (alert) this.showDetailsPanel(alert);
-        }
+        // Feeds and the first page are independent; overlapping them halves the
+        // time to first paint on a cold tab.
+        await Promise.all([this.loadFeeds(), this.loadFeedAlerts()]);
+        if (subPath) this.viewFeedAlert(subPath);
     },
 
     toggleFeedManagement() {
@@ -167,17 +172,6 @@ const AlertFeeds = {
         });
     },
 
-    // Build sorted unique label list from all feed alerts (for the filter dropdown)
-    buildLabelOptions() {
-        const labels = new Set();
-        for (const a of this.feedAlerts) {
-            for (const l of this.getDisplayLabels(a)) {
-                labels.add(l);
-            }
-        }
-        return [...labels].sort();
-    },
-
     // ============================
     // Feed CRUD
     // ============================
@@ -195,23 +189,69 @@ const AlertFeeds = {
         }
     },
 
-    async loadFeedAlerts() {
+    // Current filter state, straight off the toolbar controls.
+    currentFilter() {
+        return {
+            search: document.getElementById('feedAlertSearch')?.value.trim() || '',
+            status: document.getElementById('feedAlertStatusFilter')?.value || 'all',
+            feed_id: document.getElementById('feedAlertFeedFilter')?.value || 'all',
+            severity: document.getElementById('feedAlertSeverityFilter')?.value || 'all',
+            label: document.getElementById('feedAlertLabelFilter')?.value || 'all',
+        };
+    },
+
+    hasActiveFilter(f = this.currentFilter()) {
+        return !!f.search || f.status !== 'all' || f.feed_id !== 'all'
+            || f.severity !== 'all' || f.label !== 'all';
+    },
+
+    // Fetches the current page. Facets (label/feed dropdowns) are only requested
+    // when the underlying set can have changed, so paging stays a single query.
+    async loadFeedAlerts({ facets = true, showLoading = true } = {}) {
         const container = document.getElementById('feedAlertsList');
         if (!container) return;
 
-        container.innerHTML = '<div class="loading">Loading feed alerts...</div>';
+        if (showLoading && !container.innerHTML) {
+            container.innerHTML = '<div class="loading">Loading feed alerts...</div>';
+        }
 
+        const filter = this.currentFilter();
+        const params = new URLSearchParams({
+            ...filter,
+            limit: String(this.alertsPerPage),
+            offset: String((this.alertsPage - 1) * this.alertsPerPage),
+        });
+        if (this.sortColumn) {
+            params.set('sort', this.sortColumn);
+            params.set('dir', this.sortDirection || 'asc');
+        }
+        if (facets) params.set('facets', '1');
+
+        const seq = ++this._fetchSeq;
         const token = window.FractalContext?.scopeToken?.();
         try {
-            const data = await HttpUtils.safeFetch('/api/v1/alerts/feed');
-            if (window.FractalContext?.isScopeStale?.(token)) return;
-            this.feedAlerts = data.data || [];
-            this.filteredAlerts = this.feedAlerts;
-            this.alertsPage = 1;
-            this.populateLabelFilter();
-            this.filterFeedAlerts();
+            const data = await HttpUtils.safeFetch('/api/v1/alerts/feed?' + params.toString());
+            if (seq !== this._fetchSeq || window.FractalContext?.isScopeStale?.(token)) return;
+
+            const page = data.data || {};
+            this.alertRows = page.alerts || [];
+            this.total = page.total || 0;
+            // The set can shrink under us (bulk toggle, sync); land back on a real page.
+            if (this.alertRows.length === 0 && this.total > 0 && this.alertsPage > 1) {
+                this.alertsPage = Math.max(1, Math.ceil(this.total / this.alertsPerPage));
+                return this.loadFeedAlerts({ facets, showLoading: false });
+            }
+            if (page.facets) {
+                this.facetLabels = page.facets.labels || [];
+                this.facetFeeds = page.facets.feeds || [];
+                this.unfiltered = page.facets.unfiltered || 0;
+                this.populateLabelFilter();
+                this.populateFeedFilter();
+            }
+            this.renderFeedAlerts();
+            this.updateBulkButtons();
         } catch (err) {
-            if (window.FractalContext?.isScopeStale?.(token)) return;
+            if (seq !== this._fetchSeq || window.FractalContext?.isScopeStale?.(token)) return;
             console.error('[AlertFeeds] Failed to load feed alerts:', err);
             container.innerHTML = '<div class="error">Failed to load feed alerts: ' + Utils.escapeHtml(err.message) + '</div>';
         }
@@ -221,47 +261,13 @@ const AlertFeeds = {
     // Filtering
     // ============================
 
+    // Debounced so typing in the search box issues one query, not one per keystroke.
     filterFeedAlerts() {
-        const search = (document.getElementById('feedAlertSearch')?.value || '').toLowerCase();
-        const statusFilter = document.getElementById('feedAlertStatusFilter')?.value || 'all';
-        const feedFilter = document.getElementById('feedAlertFeedFilter')?.value || 'all';
-        const severityFilter = document.getElementById('feedAlertSeverityFilter')?.value || 'all';
-        const labelFilter = document.getElementById('feedAlertLabelFilter')?.value || 'all';
-
-        this.filteredAlerts = this.feedAlerts.filter(a => {
-            // Text search
-            if (search && !a.name.toLowerCase().includes(search)
-                && !(a.feed_rule_path || '').toLowerCase().includes(search)
-                && !(a.description || '').toLowerCase().includes(search)
-                && !(a.query_string || '').toLowerCase().includes(search)) return false;
-
-            // Status
-            if (statusFilter === 'enabled' && !a.enabled) return false;
-            if (statusFilter === 'disabled' && a.enabled) return false;
-
-            // Feed
-            if (feedFilter !== 'all' && a.feed_id !== feedFilter) return false;
-
-            // Severity
-            if (severityFilter !== 'all') {
-                const sev = this.getAlertSeverity(a);
-                if (sev !== severityFilter) return false;
-            }
-
-            // Label
-            if (labelFilter !== 'all') {
-                const labels = this.getDisplayLabels(a);
-                if (!labels.includes(labelFilter)) return false;
-            }
-
-            return true;
-        });
-
-        this.alertsPage = 1;
-        this.applySorting();
-        this.populateFeedFilter();
-        this.renderFeedAlerts();
-        this.updateBulkButtons();
+        clearTimeout(this._filterTimer);
+        this._filterTimer = setTimeout(() => {
+            this.alertsPage = 1;
+            this.loadFeedAlerts({ facets: false, showLoading: false });
+        }, 200);
     },
 
     // ============================
@@ -281,44 +287,20 @@ const AlertFeeds = {
             this.sortColumn = column;
             this.sortDirection = 'asc';
         }
-        this.applySorting();
-        this.renderFeedAlerts();
-    },
-
-    applySorting() {
-        if (!this.sortColumn) return;
-
-        const col = this.sortColumn;
-        const dir = this.sortDirection === 'asc' ? 1 : -1;
-
-        this.filteredAlerts.sort((a, b) => {
-            let va, vb;
-            switch (col) {
-                case 'name':
-                    va = a.name.toLowerCase();
-                    vb = b.name.toLowerCase();
-                    return va < vb ? -dir : va > vb ? dir : 0;
-                case 'severity':
-                    va = this.severityRank[this.getAlertSeverity(a)] || 0;
-                    vb = this.severityRank[this.getAlertSeverity(b)] || 0;
-                    return (va - vb) * dir;
-                case 'exec_time':
-                    va = a.last_execution_time_ms ?? -1;
-                    vb = b.last_execution_time_ms ?? -1;
-                    return (va - vb) * dir;
-                case 'last_triggered':
-                    va = a.last_triggered ? new Date(a.last_triggered).getTime() : 0;
-                    vb = b.last_triggered ? new Date(b.last_triggered).getTime() : 0;
-                    return (va - vb) * dir;
-                default:
-                    return 0;
-            }
-        });
+        this.alertsPage = 1;
+        this.loadFeedAlerts({ facets: false, showLoading: false });
     },
 
     sortIndicator(column) {
         if (this.sortColumn !== column) return '';
         return this.sortDirection === 'asc' ? ' &#9650;' : ' &#9660;';
+    },
+
+    // Applies a filter change immediately (clicks, unlike typing, need no debounce).
+    applyFilterNow() {
+        clearTimeout(this._filterTimer);
+        this.alertsPage = 1;
+        this.loadFeedAlerts({ facets: false, showLoading: false });
     },
 
     // Set a label filter programmatically (called when clicking a label pill)
@@ -338,27 +320,19 @@ const AlertFeeds = {
             }
             select.value = label;
         }
-        this.filterFeedAlerts();
+        this.applyFilterNow();
     },
 
     // Set severity filter programmatically (called when clicking a severity badge)
     setSeverityFilter(level) {
         const select = document.getElementById('feedAlertSeverityFilter');
         if (select) select.value = level;
-        this.filterFeedAlerts();
+        this.applyFilterNow();
     },
 
     // Show/hide bulk buttons when any filter is active
     updateBulkButtons() {
-        const search = (document.getElementById('feedAlertSearch')?.value || '').trim();
-        const statusFilter = document.getElementById('feedAlertStatusFilter')?.value || 'all';
-        const feedFilter = document.getElementById('feedAlertFeedFilter')?.value || 'all';
-        const severityFilter = document.getElementById('feedAlertSeverityFilter')?.value || 'all';
-        const labelFilter = document.getElementById('feedAlertLabelFilter')?.value || 'all';
-
-        const hasFilter = search || statusFilter !== 'all' || feedFilter !== 'all'
-            || severityFilter !== 'all' || labelFilter !== 'all';
-
+        const hasFilter = this.hasActiveFilter();
         const enableBtn = document.getElementById('feedBulkEnableBtn');
         const disableBtn = document.getElementById('feedBulkDisableBtn');
         if (enableBtn) enableBtn.style.display = hasFilter ? '' : 'none';
@@ -374,19 +348,14 @@ const AlertFeeds = {
         if (!select) return;
 
         const currentVal = select.value;
-        const feedIds = new Set(this.feedAlerts.map(a => a.feed_id));
-
-        if (select.dataset.feedCount === String(feedIds.size)) return;
-        select.dataset.feedCount = String(feedIds.size);
-
         let html = '<option value="all">All Feeds</option>';
-        for (const feed of this.feeds) {
-            if (feedIds.has(feed.id)) {
-                html += `<option value="${feed.id}">${Utils.escapeHtml(feed.name)}</option>`;
-            }
+        for (const feed of this.facetFeeds) {
+            html += `<option value="${Utils.escapeHtml(feed.id)}">${Utils.escapeHtml(feed.name || 'Unknown')} (${feed.count})</option>`;
         }
         select.innerHTML = html;
-        select.value = currentVal || 'all';
+        // A feed can disappear between syncs; fall back rather than silently
+        // leaving the select on a value the server no longer knows.
+        select.value = [...select.options].some(o => o.value === currentVal) ? currentVal : 'all';
     },
 
     populateLabelFilter() {
@@ -394,14 +363,12 @@ const AlertFeeds = {
         if (!select) return;
 
         const currentVal = select.value;
-        const labels = this.buildLabelOptions();
-
         let html = '<option value="all">All Labels</option>';
-        for (const label of labels) {
+        for (const label of this.facetLabels) {
             html += `<option value="${Utils.escapeHtml(label)}">${Utils.escapeHtml(label)}</option>`;
         }
         select.innerHTML = html;
-        select.value = currentVal || 'all';
+        select.value = [...select.options].some(o => o.value === currentVal) ? currentVal : 'all';
     },
 
     // ============================
@@ -412,32 +379,28 @@ const AlertFeeds = {
         const container = document.getElementById('feedAlertsList');
         if (!container) return;
 
-        if (this.filteredAlerts.length === 0) {
+        if (this.alertRows.length === 0) {
+            const filtered = this.hasActiveFilter();
             container.innerHTML = `
                 <div class="alerts-table-container">
                     <div class="empty-state">
-                        <p>No feed alerts found.</p>
-                        <p class="empty-hint">Configure feeds in the "Manage Feeds" tab to sync alerts from git repositories.</p>
+                        <p>No feed alerts ${filtered ? 'match these filters' : 'found'}.</p>
+                        <p class="empty-hint">${filtered
+                            ? 'Clear or widen the filters above to see more.'
+                            : 'Configure feeds in the "Manage Feeds" tab to sync alerts from git repositories.'}</p>
                     </div>
                 </div>`;
             return;
         }
 
-        const totalPages = Math.max(1, Math.ceil(this.filteredAlerts.length / this.alertsPerPage));
-        if (this.alertsPage > totalPages) this.alertsPage = totalPages;
-        const start = (this.alertsPage - 1) * this.alertsPerPage;
-        const pageAlerts = this.filteredAlerts.slice(start, start + this.alertsPerPage);
-
-        // Build feed name lookup
-        const feedNames = {};
-        for (const f of this.feeds) feedNames[f.id] = f.name;
+        const pageAlerts = this.alertRows;
 
         let html = `
             <div class="alerts-table-container">
                 <div class="alerts-table-header">
                     <div class="alerts-count">
-                        Showing ${pageAlerts.length} of ${this.filteredAlerts.length} alerts
-                        ${this.filteredAlerts.length !== this.feedAlerts.length ? ` (filtered from ${this.feedAlerts.length} total)` : ''}
+                        Showing ${pageAlerts.length} of ${this.total} alerts
+                        ${this.hasActiveFilter() && this.unfiltered ? ` (filtered from ${this.unfiltered} total)` : ''}
                     </div>
                     <div class="alerts-page-size">
                         <label>Show:</label>
@@ -476,7 +439,7 @@ const AlertFeeds = {
                 : '-';
             const runTimeClass = alert.last_execution_time_ms != null && alert.last_execution_time_ms >= 3000
                 ? 'alert-run-time-slow' : '';
-            const feedName = feedNames[alert.feed_id] || alert.feed_name || 'Unknown';
+            const feedName = alert.feed_name || 'Unknown';
             const severity = this.getAlertSeverity(alert);
             const displayLabels = this.getDisplayLabels(alert);
 
@@ -543,13 +506,12 @@ const AlertFeeds = {
     },
 
     renderPagination() {
-        const total = this.filteredAlerts.length;
-        const totalPages = Math.max(1, Math.ceil(total / this.alertsPerPage));
+        const totalPages = Math.max(1, Math.ceil(this.total / this.alertsPerPage));
 
         return `
             <div class="alerts-pagination">
                 <button class="btn-secondary btn-sm" ${this.alertsPage <= 1 ? 'disabled' : ''} onclick="AlertFeeds.feedAlertsPrevPage()">Previous</button>
-                <span class="pagination-info">Page ${this.alertsPage} of ${totalPages} (${total} alerts)</span>
+                <span class="pagination-info">Page ${this.alertsPage} of ${totalPages} (${this.total} alerts)</span>
                 <button class="btn-secondary btn-sm" ${this.alertsPage >= totalPages ? 'disabled' : ''} onclick="AlertFeeds.feedAlertsNextPage()">Next</button>
             </div>`;
     },
@@ -557,21 +519,20 @@ const AlertFeeds = {
     changePageSize(size) {
         this.alertsPerPage = parseInt(size, 10) || 25;
         this.alertsPage = 1;
-        this.renderFeedAlerts();
+        this.loadFeedAlerts({ facets: false, showLoading: false });
     },
 
     feedAlertsPrevPage() {
         if (this.alertsPage > 1) {
             this.alertsPage--;
-            this.renderFeedAlerts();
+            this.loadFeedAlerts({ facets: false, showLoading: false });
         }
     },
 
     feedAlertsNextPage() {
-        const totalPages = Math.ceil(this.filteredAlerts.length / this.alertsPerPage);
-        if (this.alertsPage < totalPages) {
+        if (this.alertsPage < Math.ceil(this.total / this.alertsPerPage)) {
             this.alertsPage++;
-            this.renderFeedAlerts();
+            this.loadFeedAlerts({ facets: false, showLoading: false });
         }
     },
 
@@ -597,30 +558,30 @@ const AlertFeeds = {
     // Bulk enable/disable (filtered)
     // ============================
 
+    // The client holds one page, so bulk actions send the filter and let the
+    // server resolve the full matching set.
     async bulkEnableFiltered() {
-        const ids = this.filteredAlerts.map(a => a.id);
-        if (ids.length === 0) return;
-        if (!confirm(`Enable ${ids.length} filtered alert${ids.length !== 1 ? 's' : ''}?`)) return;
-        await this.batchToggle(ids, true);
+        if (this.total === 0) return;
+        if (!confirm(`Enable ${this.total} filtered alert${this.total !== 1 ? 's' : ''}?`)) return;
+        await this.batchToggleFiltered(true);
     },
 
     async bulkDisableFiltered() {
-        const ids = this.filteredAlerts.map(a => a.id);
-        if (ids.length === 0) return;
-        if (!confirm(`Disable ${ids.length} filtered alert${ids.length !== 1 ? 's' : ''}?`)) return;
-        await this.batchToggle(ids, false);
+        if (this.total === 0) return;
+        if (!confirm(`Disable ${this.total} filtered alert${this.total !== 1 ? 's' : ''}?`)) return;
+        await this.batchToggleFiltered(false);
     },
 
-    async batchToggle(alertIds, enabled) {
+    async batchToggleFiltered(enabled) {
         try {
             const data = await HttpUtils.safeFetch('/api/v1/alerts/feed/batch-toggle', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ alert_ids: alertIds, enabled })
+                body: JSON.stringify({ enabled, filter: this.currentFilter() })
             });
-            const count = data.data?.toggled || alertIds.length;
+            const count = data.data?.toggled ?? this.total;
             Toast.show(`${count} alert${count !== 1 ? 's' : ''} ${enabled ? 'enabled' : 'disabled'}`, 'success');
-            await this.loadFeedAlerts();
+            await this.loadFeedAlerts({ showLoading: false });
         } catch (err) {
             console.error('[AlertFeeds] Batch toggle failed:', err);
             Toast.show('Failed: ' + err.message, 'error');
@@ -631,10 +592,17 @@ const AlertFeeds = {
     // Details panel
     // ============================
 
-    viewFeedAlert(alertId) {
-        const alert = this.feedAlerts.find(a => a.id === alertId);
-        if (!alert) return;
-        this.showDetailsPanel(alert);
+    // The table row is a trimmed projection; the panel needs the full alert
+    // (query, references, rule path), so it is fetched on open.
+    async viewFeedAlert(alertId) {
+        try {
+            const data = await HttpUtils.safeFetch(`/api/v1/alerts/${alertId}`);
+            const alert = data.data?.alert;
+            if (alert) this.showDetailsPanel(alert);
+        } catch (err) {
+            console.error('[AlertFeeds] Failed to load alert:', err);
+            Toast.show('Failed to load alert: ' + err.message, 'error');
+        }
     },
 
     showDetailsPanel(alert) {
@@ -788,6 +756,12 @@ const AlertFeeds = {
         const newState = !alert.enabled;
         await this.toggleFeedAlert(alert.id, newState);
         alert.enabled = newState;
+        alert.disabled_reason = '';
+        const row = this.alertRows.find(r => r.id === alert.id);
+        if (row) {
+            row.enabled = newState;
+            row.disabled_reason = '';
+        }
         this.showDetailsPanel(alert);
         this.renderFeedAlerts();
     },
@@ -886,8 +860,7 @@ const AlertFeeds = {
     },
 
     async showFeedForm(feed) {
-        const container = document.getElementById('feedFormContainer');
-        if (!container) return;
+        this.closeFeedForm();
 
         let normalizers = [];
         try {
@@ -898,11 +871,14 @@ const AlertFeeds = {
         const isEdit = !!feed;
         const title = isEdit ? 'Edit Feed' : 'Create Feed';
 
-        container.innerHTML = `
-            <div class="feed-form-panel">
-                <div class="feed-form-header">
+        const overlay = document.createElement('div');
+        overlay.id = 'feedFormModal';
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+            <div class="modal-content feed-form-modal">
+                <div class="modal-header">
                     <h3>${title}</h3>
-                    <button class="btn-secondary btn-sm" onclick="AlertFeeds.closeFeedForm()">Cancel</button>
+                    <button class="modal-close" onclick="AlertFeeds.closeFeedForm()" aria-label="Close">&#x2715;</button>
                 </div>
                 <div class="feed-form-body">
                     <div class="form-row-2col">
@@ -983,22 +959,26 @@ const AlertFeeds = {
                             Enabled
                         </label>
                     </div>
-                    <div class="form-actions">
-                        <button class="btn-primary" onclick="AlertFeeds.saveFeed(${isEdit ? `'${feed.id}'` : 'null'})">${isEdit ? 'Update Feed' : 'Create Feed'}</button>
-                        <button class="btn-secondary" onclick="AlertFeeds.closeFeedForm()">Cancel</button>
-                    </div>
                     <div id="feedFormError" class="error-message" style="display:none;"></div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-secondary" onclick="AlertFeeds.closeFeedForm()">Cancel</button>
+                    <button class="btn-primary" onclick="AlertFeeds.saveFeed(${isEdit ? `'${feed.id}'` : 'null'})">${isEdit ? 'Update Feed' : 'Create Feed'}</button>
                 </div>
             </div>`;
 
-        container.style.display = 'block';
+        document.body.appendChild(overlay);
+        overlay.addEventListener('click', e => { if (e.target === overlay) this.closeFeedForm(); });
+        this._feedFormEscHandler = e => { if (e.key === 'Escape') this.closeFeedForm(); };
+        document.addEventListener('keydown', this._feedFormEscHandler);
+        document.getElementById('feedFormName')?.focus();
     },
 
     closeFeedForm() {
-        const container = document.getElementById('feedFormContainer');
-        if (container) {
-            container.style.display = 'none';
-            container.innerHTML = '';
+        document.getElementById('feedFormModal')?.remove();
+        if (this._feedFormEscHandler) {
+            document.removeEventListener('keydown', this._feedFormEscHandler);
+            this._feedFormEscHandler = null;
         }
     },
 

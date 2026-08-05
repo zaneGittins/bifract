@@ -738,7 +738,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="queryMemoryPercentSettings" class="sp-row-label">Search memory share</label>
-                                        <p class="sp-row-desc">Share of each ClickHouse node's memory budget that running searches may reserve in total. A search that would exceed it is cancelled instead of pressuring the server.</p>
+                                        <p class="sp-row-desc">Most of each ClickHouse node's memory budget any one search may use. A search that would exceed it is cancelled instead of pressuring the server.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="queryMemoryPercentSettings" class="setting-select">
@@ -853,7 +853,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="recallMemoryPercentSettings" class="sp-row-label">Recall memory share</label>
-                                        <p class="sp-row-desc">Share of each ClickHouse node's memory budget that running Recall searches may reserve in total. This is the only enforced ceiling on an archive scan, since ClickHouse cannot apply a byte limit to Iceberg reads once a scan is running.</p>
+                                        <p class="sp-row-desc">Most of each ClickHouse node's memory budget any one Recall search may use. This is the only enforced ceiling on an archive scan, since ClickHouse cannot apply a byte limit to Iceberg reads once a scan is running.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="recallMemoryPercentSettings" class="setting-select">
@@ -2145,15 +2145,15 @@
                 <div id="feedAlertsListView">
                     <div class="alerts-filters">
                         <input type="text" id="feedAlertSearch" class="alerts-search" placeholder="Search feed alerts..." oninput="AlertFeeds.filterFeedAlerts()" />
-                        <select id="feedAlertStatusFilter" class="alerts-filter-select" onchange="AlertFeeds.filterFeedAlerts()">
+                        <select id="feedAlertStatusFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
                             <option value="all">All Alerts</option>
                             <option value="enabled">Enabled Only</option>
                             <option value="disabled">Disabled Only</option>
                         </select>
-                        <select id="feedAlertFeedFilter" class="alerts-filter-select" onchange="AlertFeeds.filterFeedAlerts()">
+                        <select id="feedAlertFeedFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
                             <option value="all">All Feeds</option>
                         </select>
-                        <select id="feedAlertSeverityFilter" class="alerts-filter-select" onchange="AlertFeeds.filterFeedAlerts()">
+                        <select id="feedAlertSeverityFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
                             <option value="all">All Severities</option>
                             <option value="critical">Critical</option>
                             <option value="high">High</option>
@@ -2161,7 +2161,7 @@
                             <option value="low">Low</option>
                             <option value="informational">Informational</option>
                         </select>
-                        <select id="feedAlertLabelFilter" class="alerts-filter-select" onchange="AlertFeeds.filterFeedAlerts()">
+                        <select id="feedAlertLabelFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
                             <option value="all">All Labels</option>
                         </select>
                         <button id="feedBulkEnableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="AlertFeeds.bulkEnableFiltered()">Enable Filtered</button>
@@ -2179,7 +2179,6 @@
                             <span class="feeds-manage-title">Feed Sources</span>
                             <button class="btn-primary btn-sm" onclick="AlertFeeds.showCreateFeedForm()">+ Add Feed</button>
                         </div>
-                        <div id="feedFormContainer" style="display: none;"></div>
                         <div id="feedManageList"></div>
                     </div>
 

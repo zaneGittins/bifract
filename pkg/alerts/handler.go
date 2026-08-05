@@ -1187,30 +1187,10 @@ func (h *Handler) HandleDuplicateAlert(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, alert)
 }
 
-// HandleListFeedAlerts returns all feed alerts for the current fractal (viewer+).
-func (h *Handler) HandleListFeedAlerts(w http.ResponseWriter, r *http.Request) {
-	if !h.requireRole(w, r, rbac.RoleViewer) {
-		return
-	}
-
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Alerts] Failed to get scope for feed alerts: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to load feed alerts")
-		return
-	}
-
-	alerts, err := h.manager.ListAllFeedAlerts(r.Context(), fractalID, prismID)
-	if err != nil {
-		log.Printf("[Alerts] Failed to list feed alerts: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to load feed alerts")
-		return
-	}
-
-	h.respondSuccess(w, alerts)
-}
-
-// HandleBatchToggleFeedAlerts enables or disables a set of feed alerts by ID.
+// HandleBatchToggleFeedAlerts enables or disables feed alerts, addressed either
+// by explicit ID or by the same filter the table is showing. The client only
+// holds one page of IDs, so "Enable Filtered" sends the filter and lets Postgres
+// resolve the set.
 func (h *Handler) HandleBatchToggleFeedAlerts(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRole(w, r, rbac.RoleAnalyst) {
 		return
@@ -1220,21 +1200,57 @@ func (h *Handler) HandleBatchToggleFeedAlerts(w http.ResponseWriter, r *http.Req
 	var req struct {
 		AlertIDs []string `json:"alert_ids"`
 		Enabled  bool     `json:"enabled"`
+		Filter   *struct {
+			Search   string `json:"search"`
+			Status   string `json:"status"`
+			FeedID   string `json:"feed_id"`
+			Severity string `json:"severity"`
+			Label    string `json:"label"`
+		} `json:"filter"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if len(req.AlertIDs) == 0 {
-		h.respondError(w, http.StatusBadRequest, "alert_ids required")
+
+	var count int
+	var err error
+	switch {
+	case req.Filter != nil:
+		fractalID, prismID, scopeErr := h.getScope(r)
+		if scopeErr != nil {
+			log.Printf("[Alerts] Failed to get scope for feed alert batch toggle: %v", scopeErr)
+			h.respondError(w, http.StatusInternalServerError, "Failed to update feed alerts")
+			return
+		}
+		if fractalID == "" && prismID == "" {
+			h.respondError(w, http.StatusBadRequest, "no fractal or prism selected")
+			return
+		}
+		unset := func(v string) string {
+			if v == "all" {
+				return ""
+			}
+			return v
+		}
+		count, err = h.manager.BatchToggleFeedAlertsFiltered(r.Context(), FeedAlertQuery{
+			FractalID: fractalID,
+			PrismID:   prismID,
+			Search:    req.Filter.Search,
+			Status:    unset(req.Filter.Status),
+			FeedID:    unset(req.Filter.FeedID),
+			Severity:  unset(req.Filter.Severity),
+			Label:     unset(req.Filter.Label),
+		}, req.Enabled, user)
+	case len(req.AlertIDs) == 0:
+		h.respondError(w, http.StatusBadRequest, "alert_ids or filter required")
 		return
-	}
-	if len(req.AlertIDs) > 5000 {
+	case len(req.AlertIDs) > 5000:
 		h.respondError(w, http.StatusBadRequest, "too many alert IDs (max 5000)")
 		return
+	default:
+		count, err = h.manager.BatchToggleFeedAlerts(r.Context(), req.AlertIDs, req.Enabled, user)
 	}
-
-	count, err := h.manager.BatchToggleFeedAlerts(r.Context(), req.AlertIDs, req.Enabled, user)
 	if err != nil {
 		log.Printf("[Alerts] Failed to batch toggle feed alerts: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to update feed alerts")

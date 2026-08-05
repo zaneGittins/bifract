@@ -68,6 +68,16 @@ type ClickHouseClient struct {
 	// so a failed or disabled reconcile leaves them unscheduled rather than naming
 	// a workload that does not exist.
 	activeWorkloads atomic.Pointer[map[string]bool]
+
+	// queryMemoryCaps holds each class's per-query max_memory_usage in bytes. Memory
+	// is capped per query rather than through the workload tree; see
+	// ReconcileQueryWorkloads for why.
+	queryMemoryCaps atomic.Pointer[map[string]int64]
+
+	// queryConns holds the per-class ClickHouse connection, keyed by workload name, so
+	// a class's memory share can be enforced across everything it is running at once
+	// (see query_identity.go). A class with no entry runs on conn.
+	queryConns atomic.Pointer[map[string]*queryIdentity]
 }
 
 // markSchemaReady signals that Initialize's schema work is complete (idempotent).
@@ -1447,6 +1457,7 @@ func (c *ClickHouseClient) ClusterServerStats(ctx context.Context) (*ClusterServ
 }
 
 func (c *ClickHouseClient) Close() error {
+	c.closeQueryIdentities()
 	return c.conn.Close()
 }
 
@@ -1773,7 +1784,7 @@ func (c *ClickHouseClient) QueryStream(ctx context.Context, queryID, query strin
 	}))
 	ctx = clickhouse.Context(ctx, opts...)
 
-	rows, err := c.conn.Query(ctx, query)
+	rows, err := c.connFor(ctx).Query(ctx, query)
 	if err != nil {
 		return stats(), fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -1935,7 +1946,7 @@ func (c *ClickHouseClient) query(ctx context.Context, query string, settings cli
 	if len(settings) > 0 {
 		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(settings))
 	}
-	rows, err := c.conn.Query(ctx, query)
+	rows, err := c.connFor(ctx).Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -2143,7 +2154,7 @@ func (c *ClickHouseClient) StreamQuery(ctx context.Context, queryID, query strin
 	}
 	ctx = clickhouse.Context(ctx, opts...)
 
-	rows, err := c.conn.Query(ctx, query)
+	rows, err := c.connFor(ctx).Query(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to execute query: %w", err)
 	}

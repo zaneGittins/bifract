@@ -11,13 +11,15 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
-// Query classes that cost the cluster real CPU and memory run under their own
-// ClickHouse workload, so no one class can consume the machine and starve
-// ingestion. Only queries explicitly tagged with a workload are scheduled:
-// everything else (inserts, merges, mutations, alert evaluation) resolves to the
-// 'default' workload, which is deliberately never created, and ClickHouse leaves
-// unknown workloads unscheduled while throw_on_unknown_workload is false (the
-// server default).
+// Query classes that cost the cluster real CPU and memory are limited so no one
+// class can consume the machine and starve ingestion. CPU is scheduled through a
+// ClickHouse workload; memory is capped per query with max_memory_usage.
+//
+// Only queries explicitly tagged with a workload are scheduled: everything else
+// (inserts, merges, mutations, alert evaluation) resolves to the 'default'
+// workload, which is deliberately never created, and ClickHouse leaves unknown
+// workloads unscheduled while throw_on_unknown_workload is false (the server
+// default).
 //
 // The workloads form a tree because ClickHouse permits exactly one root. The root
 // carries no limits of its own; it exists so the classes are siblings that share
@@ -31,10 +33,13 @@ const (
 	QuerySearchWorkload = "bifract_search"
 	QueryRecallWorkload = "bifract_recall"
 
-	// QueryCPUResource and QueryMemoryResource are the scheduled resources. They are
-	// global and may be shared with operator-defined workloads, so they are created
-	// but never dropped.
-	QueryCPUResource    = "cpu"
+	// QueryCPUResource is the scheduled resource. It is global and may be shared with
+	// operator-defined workloads, so it is created but never dropped.
+	QueryCPUResource = "cpu"
+
+	// QueryMemoryResource is the MEMORY RESERVATION resource earlier builds created to
+	// back the workloads' max_memory. It is now dropped on sight; see
+	// dropMemoryReservationResource.
 	QueryMemoryResource = "memory"
 
 	// Default shares of each node's cores and ClickHouse memory budget.
@@ -50,13 +55,11 @@ const (
 	// a sliver of the machine.
 	MinQueryLimitPercent = 10
 
-	// MaxCombinedQueryMemoryPercent is the most of a node's ClickHouse memory budget
-	// that all query classes together may reserve, leaving the remainder for the work
-	// this whole mechanism exists to protect: inserts, their materialized-view
-	// cascade, merges and mutations. Without it the per-class shares are independent
-	// caps that can sum past 100% (search 90 + recall 75 reserves 165% of the budget),
-	// and queries alone could exhaust the server, which is the merge/insert collapse
-	// this is meant to prevent.
+	// MaxCombinedQueryMemoryPercent bounds what the query classes' ceilings may add up
+	// to, leaving the remainder for the work this whole mechanism exists to protect:
+	// inserts, their materialized-view cascade, merges and mutations. The shares are
+	// per-query ceilings rather than reservations, so this is a sanity bound on how
+	// much of the node one search may claim, not an allocation.
 	//
 	// CPU is deliberately not bounded this way. Merges run unscheduled, so they keep
 	// competing for cores at the OS level regardless of how many slots queries hold
@@ -112,15 +115,16 @@ func ClampCombinedMemory(limits WorkloadLimits) (WorkloadLimits, bool) {
 	return limits, true
 }
 
-// ReconcileQueryWorkloads provisions the workload tree from the admin's shares.
-// Idempotent, so it runs at startup and again whenever a share changes; ClickHouse
-// has no ALTER WORKLOAD, so updates are applied with CREATE OR REPLACE and take
-// effect for the next query.
+// ReconcileQueryWorkloads provisions the CPU workload tree and the per-query memory
+// ceilings from the admin's shares. Idempotent, so it runs at startup and again
+// whenever a share changes; ClickHouse has no ALTER WORKLOAD, so updates are applied
+// with CREATE OR REPLACE and take effect for the next query.
 //
-// A class with both shares at 0 is dropped rather than created, which returns that
-// class to unscheduled (pre-workload) behavior. The resources are left in place:
-// they are global, an operator may have their own workloads scheduling against
-// them, and an unreferenced resource constrains nothing.
+// A class whose CPU share is 0 has its workload dropped rather than created, which
+// returns that class to unscheduled (pre-workload) behavior. Its memory ceiling is
+// independent and still applies. The cpu resource is left in place: it is global, an
+// operator may have their own workloads scheduling against it, and an unreferenced
+// resource constrains nothing.
 //
 // Failure is not fatal to querying. When provisioning does not succeed the client
 // stops tagging, so queries run exactly as they did before this existed.
@@ -135,40 +139,50 @@ func (c *ClickHouseClient) ReconcileQueryWorkloads(ctx context.Context, limits W
 		limits = clamped
 	}
 
-	searchOn := limits.SearchCPUPercent > 0 || limits.SearchMemoryPercent > 0
-	recallOn := limits.RecallCPUPercent > 0 || limits.RecallMemoryPercent > 0
+	// Memory ceilings are per query and independent of the workload tree, so they are
+	// resolved first and apply even to a class whose CPU share is off. The share is an
+	// absolute byte count derived from the server's own budget rather than asked of the
+	// admin: the same percentage then means the same thing on a laptop and a 48GB node.
+	memCaps := map[string]int64{}
+	if limits.SearchMemoryPercent > 0 || limits.RecallMemoryPercent > 0 {
+		budget, err := c.serverMemoryBudget(ctx)
+		if err != nil {
+			c.setQueryMemoryCaps(nil)
+			c.setActiveWorkloads(nil)
+			return err
+		}
+		if limits.SearchMemoryPercent > 0 {
+			memCaps[QuerySearchWorkload] = budget / 100 * int64(limits.SearchMemoryPercent)
+		}
+		if limits.RecallMemoryPercent > 0 {
+			memCaps[QueryRecallWorkload] = budget / 100 * int64(limits.RecallMemoryPercent)
+		}
+	}
+	c.setQueryMemoryCaps(memCaps)
+
+	// The per-query ceiling above bounds one search; the class identity bounds every
+	// search at once. Both carry the same byte count, which together reproduce what the
+	// workload's max_memory was meant to do.
+	c.reconcileQueryIdentities(ctx, memCaps)
+
+	searchOn := limits.SearchCPUPercent > 0
+	recallOn := limits.RecallCPUPercent > 0
 
 	if !searchOn && !recallOn {
 		c.setActiveWorkloads(nil)
 		if err := c.dropWorkloadTree(ctx); err != nil {
 			return err
 		}
-		log.Printf("[ClickHouse] Query resource limits disabled; all query classes run unscheduled")
+		c.dropMemoryReservationResource(ctx)
+		log.Printf("[ClickHouse] Query CPU limits disabled; all query classes run unscheduled (memory: search %s, recall %s)",
+			percentLabel(limits.SearchMemoryPercent), percentLabel(limits.RecallMemoryPercent))
 		return nil
 	}
 
-	// Resources first: a workload referencing an absent resource is not scheduled.
-	if limits.SearchCPUPercent > 0 || limits.RecallCPUPercent > 0 {
-		if err := c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE RESOURCE IF NOT EXISTS %s (MASTER THREAD, WORKER THREAD)", QueryCPUResource)); err != nil {
-			c.setActiveWorkloads(nil)
-			return fmt.Errorf("create cpu resource: %w", err)
-		}
-	}
-	var memBudget int64
-	if limits.SearchMemoryPercent > 0 || limits.RecallMemoryPercent > 0 {
-		if err := c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE RESOURCE IF NOT EXISTS %s (MEMORY RESERVATION)", QueryMemoryResource)); err != nil {
-			c.setActiveWorkloads(nil)
-			return fmt.Errorf("create memory resource: %w", err)
-		}
-		// max_memory is an absolute byte count, so it is derived from the server's own
-		// budget rather than asked of the admin: the same percentage then means the
-		// same thing on a laptop and on a 48GB node.
-		budget, err := c.serverMemoryBudget(ctx)
-		if err != nil {
-			c.setActiveWorkloads(nil)
-			return err
-		}
-		memBudget = budget
+	// Resource first: a workload referencing an absent resource is not scheduled.
+	if err := c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE RESOURCE IF NOT EXISTS %s (MASTER THREAD, WORKER THREAD)", QueryCPUResource)); err != nil {
+		c.setActiveWorkloads(nil)
+		return fmt.Errorf("create cpu resource: %w", err)
 	}
 
 	if err := c.ensureRootWorkload(ctx); err != nil {
@@ -179,12 +193,12 @@ func (c *ClickHouseClient) ReconcileQueryWorkloads(ctx context.Context, limits W
 	active := map[string]bool{}
 	classes := []struct {
 		name     string
-		cpu, mem int
+		cpu      int
 		priority int
 		on       bool
 	}{
-		{QuerySearchWorkload, limits.SearchCPUPercent, limits.SearchMemoryPercent, 0, searchOn},
-		{QueryRecallWorkload, limits.RecallCPUPercent, limits.RecallMemoryPercent, recallPriority, recallOn},
+		{QuerySearchWorkload, limits.SearchCPUPercent, 0, searchOn},
+		{QueryRecallWorkload, limits.RecallCPUPercent, recallPriority, recallOn},
 	}
 	for _, cl := range classes {
 		if !cl.on {
@@ -193,8 +207,7 @@ func (c *ClickHouseClient) ReconcileQueryWorkloads(ctx context.Context, limits W
 			}
 			continue
 		}
-		ddl := classWorkloadDDL(cl.name, cl.cpu, cl.mem, cl.priority, memBudget)
-		if err := c.execWorkloadDDL(ctx, ddl); err != nil {
+		if err := c.execWorkloadDDL(ctx, classWorkloadDDL(cl.name, cl.cpu, cl.priority)); err != nil {
 			c.setActiveWorkloads(nil)
 			return fmt.Errorf("create %s workload: %w", cl.name, err)
 		}
@@ -202,10 +215,32 @@ func (c *ClickHouseClient) ReconcileQueryWorkloads(ctx context.Context, limits W
 	}
 
 	c.setActiveWorkloads(active)
+	// Only once no workload still names max_memory, or the DROP is refused.
+	c.dropMemoryReservationResource(ctx)
 	log.Printf("[ClickHouse] Query limits per node: search CPU %s / memory %s, recall CPU %s / memory %s",
 		percentLabel(limits.SearchCPUPercent), percentLabel(limits.SearchMemoryPercent),
 		percentLabel(limits.RecallCPUPercent), percentLabel(limits.RecallMemoryPercent))
 	return nil
+}
+
+// dropMemoryReservationResource removes the MEMORY RESERVATION resource that earlier
+// builds created to back the workloads' max_memory. It is dropped rather than left
+// unreferenced because ClickHouse builds a MemoryReservation for every query whose
+// workload resolves a link in that resource, whether or not any workload sets
+// max_memory. MemoryReservation::syncWithMemoryTracker can then deadlock: an increase
+// sized against an allocated_size that a concurrent in-flight decrease afterwards
+// lowers leaves the waiter permanently short of its target, with no path to re-request.
+// Its wait has no timeout and breaks only on the scheduler's own kill, never on the
+// query's cancellation flag, so KILL QUERY cannot free it -- the query sits in
+// system.processes as "Stopping" forever, holding its reservation and a connection
+// thread until ClickHouse restarts. Verified unfixed as of 26.6.2.81 and master.
+//
+// Best effort: an operator's own workloads may still reference the resource, and
+// failing to drop it must not take query limits down with it.
+func (c *ClickHouseClient) dropMemoryReservationResource(ctx context.Context) {
+	if err := c.execWorkloadDDL(ctx, fmt.Sprintf("DROP RESOURCE IF EXISTS %s", QueryMemoryResource)); err != nil {
+		log.Printf("[ClickHouse] Could not drop the %s resource (queries may still hit the reservation deadlock): %v", QueryMemoryResource, err)
+	}
 }
 
 // ensureRootWorkload creates the tree root. ClickHouse allows only one root and
@@ -244,17 +279,14 @@ func (c *ClickHouseClient) dropWorkloadTree(ctx context.Context) error {
 	return nil
 }
 
-// classWorkloadDDL builds the CREATE OR REPLACE statement for one class. A share of
-// 0 omits that limit rather than setting it to zero, leaving the resource unbounded
-// for the class. memBudget is the node's ClickHouse memory budget in bytes.
-func classWorkloadDDL(name string, cpuPercent, memPercent, priority int, memBudget int64) string {
-	var settings []string
-	if cpuPercent > 0 {
-		settings = append(settings, fmt.Sprintf("max_concurrent_threads_ratio_to_cores = %.2f", float64(cpuPercent)/100))
-	}
-	if memPercent > 0 && memBudget > 0 {
-		settings = append(settings, fmt.Sprintf("max_memory = %d", memBudget/100*int64(memPercent)))
-	}
+// classWorkloadDDL builds the CREATE OR REPLACE statement for one class. Callers only
+// reach here with a CPU share above 0, so the settings list is never empty.
+//
+// max_memory is deliberately absent: it is what engages the MEMORY RESERVATION
+// scheduler, whose deadlock is described on dropMemoryReservationResource. Memory is
+// capped per query with max_memory_usage in applyQuerySettings instead.
+func classWorkloadDDL(name string, cpuPercent, priority int) string {
+	settings := []string{fmt.Sprintf("max_concurrent_threads_ratio_to_cores = %.2f", float64(cpuPercent)/100)}
 	if priority != 0 {
 		settings = append(settings, fmt.Sprintf("priority = %d", priority))
 	}
@@ -359,6 +391,21 @@ func (c *ClickHouseClient) workloadActive(name string) bool {
 	return (*m)[name]
 }
 
+// setQueryMemoryCaps records each class's per-query memory ceiling in bytes.
+func (c *ClickHouseClient) setQueryMemoryCaps(caps map[string]int64) {
+	c.queryMemoryCaps.Store(&caps)
+}
+
+// queryMemoryCap returns the class's per-query memory ceiling in bytes, or 0 when it
+// is uncapped or reconcile has not succeeded.
+func (c *ClickHouseClient) queryMemoryCap(name string) int64 {
+	m := c.queryMemoryCaps.Load()
+	if m == nil || *m == nil {
+		return 0
+	}
+	return (*m)[name]
+}
+
 // workloadKey marks a context as belonging to a scheduled query class.
 type workloadKey struct{}
 
@@ -414,14 +461,22 @@ func contextQueryBudget(ctx context.Context) int {
 }
 
 // applyQuerySettings adds the settings ctx implies -- the workload tag when it is
-// marked and that workload is provisioned, and the execution ceiling when one was
-// attached. Callers pass the settings map they were going to send anyway, since
-// clickhouse-go's WithSettings replaces rather than merges.
+// marked and that workload is provisioned, the class's per-query memory ceiling, and
+// the execution ceiling when one was attached. Callers pass the settings map they were
+// going to send anyway, since clickhouse-go's WithSettings replaces rather than merges.
+//
+// The memory ceiling does not depend on the workload being provisioned: it is enforced
+// by the server per query, not by the scheduler, so it still holds for a class whose
+// CPU share is off or whose workload DDL failed.
 func (c *ClickHouseClient) applyQuerySettings(ctx context.Context, settings clickhouse.Settings) clickhouse.Settings {
 	name := contextWorkload(ctx)
 	tag := name != "" && c.workloadActive(name)
+	var memCap int64
+	if name != "" {
+		memCap = c.queryMemoryCap(name)
+	}
 	budget := contextQueryBudget(ctx)
-	if !tag && budget <= 0 {
+	if !tag && budget <= 0 && memCap <= 0 {
 		return settings
 	}
 	if settings == nil {
@@ -429,6 +484,9 @@ func (c *ClickHouseClient) applyQuerySettings(ctx context.Context, settings clic
 	}
 	if tag {
 		settings["workload"] = name
+	}
+	if memCap > 0 {
+		settings["max_memory_usage"] = memCap
 	}
 	if budget > 0 {
 		settings["max_execution_time"] = budget

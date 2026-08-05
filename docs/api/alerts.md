@@ -42,7 +42,27 @@ POST             /api/v1/feeds/{id}/sync
 GET              /api/v1/feeds/{id}/alerts
 POST             /api/v1/feeds/{id}/alerts/enable-all
 POST             /api/v1/feeds/{id}/alerts/disable-all
-GET              /api/v1/alerts/feed                 All feed-sourced alerts
+GET              /api/v1/alerts/feed                 Feed-sourced alerts (paginated)
 POST             /api/v1/alerts/feed/batch-toggle
 POST             /api/v1/alerts/{id}/toggle-feed
 ```
+
+`GET /api/v1/alerts/feed` filters, sorts and pages in Postgres. Query parameters:
+
+| Param | Values |
+| --- | --- |
+| `search` | matches name, description, rule path or query |
+| `status` | `all`, `enabled`, `disabled` |
+| `feed_id` | `all` or a feed UUID |
+| `severity` | `all` or a Sigma level (`critical`...`informational`) |
+| `label` | `all` or an exact label |
+| `sort` / `dir` | `name`, `severity`, `exec_time`, `last_triggered` / `asc`, `desc` |
+| `limit` / `offset` | page size (max 500, default 25) and row offset |
+| `facets` | `1` to also return label/feed dropdown options and the unfiltered total |
+
+Rows are a trimmed projection (no `query_string` or `references`); fetch
+`GET /api/v1/alerts/{id}` for the full alert.
+
+`POST /api/v1/alerts/feed/batch-toggle` accepts either `alert_ids` (max 5000) or a
+`filter` object using the same fields as above, which toggles every matching alert
+in the current scope.
