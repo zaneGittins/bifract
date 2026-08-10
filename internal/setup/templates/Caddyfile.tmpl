@@ -103,6 +103,12 @@
 	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
 {{- end}}
 
+	# This listener is the internet-facing one; strip the same headers as :443.
+	header {
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
 	request_body {
 		max_size 200MiB
 	}

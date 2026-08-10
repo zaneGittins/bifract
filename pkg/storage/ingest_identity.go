@@ -31,6 +31,7 @@ var ingestPGGrants = []string{
 // No-op when password is empty (the ingest tier then falls back to the app DB user).
 func (c *PostgresClient) EnsureIngestRole(ctx context.Context, password string) error {
 	if password == "" {
+		log.Printf("[Postgres] WARNING: BIFRACT_INGEST_POSTGRES_PASSWORD is empty; skipping %q provisioning. The ingest tier cannot authenticate until it is set.", IngestPGRole)
 		return nil
 	}
 	pw := strings.ReplaceAll(password, "'", "''")
@@ -154,6 +155,7 @@ func reconcileMVSecurityOnConn(ctx context.Context, conn driver.Conn) (int, erro
 // (CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 in docker; access_management on the k8s CHI).
 func (c *ClickHouseClient) EnsureIngestUser(ctx context.Context, password string) error {
 	if password == "" {
+		log.Printf("[ClickHouse] WARNING: BIFRACT_INGEST_CLICKHOUSE_PASSWORD is empty; skipping %q provisioning. The ingest tier cannot authenticate until it is set.", IngestCHUser)
 		return nil
 	}
 	onCluster := ""
