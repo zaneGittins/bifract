@@ -115,6 +115,17 @@ func (f *FractalActionClient) transformLogsForFractal(ctx context.Context, actio
 				logData["alert_template_name"] = alert.Name
 			}
 			logData["alert_id"] = alert.ID
+			logData["alert_severity"] = alert.Severity
+			// The rule's labels carry its attack.* tags (Sigma imports keep them
+			// verbatim). Without them a forwarded detection is invisible to
+			// mitre(), which is the difference between "what we can detect" and
+			// "what fired" being comparable or not. Encoded as a JSON array string,
+			// the same shape every other detection source ships tags in.
+			if len(alert.Labels) > 0 {
+				if labels, err := json.Marshal(alert.Labels); err == nil {
+					logData["alert_labels"] = string(labels)
+				}
+			}
 			logData["source_fractal"] = sourceFractalName
 			logData["forwarded_at"] = time.Now().Format(time.RFC3339)
 			logData["fractal_action_id"] = action.ID

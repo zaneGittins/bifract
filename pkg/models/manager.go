@@ -263,7 +263,7 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 		 VALUES ($1, $2, $3, $4, $5, '', '', 'rebuilding', $6, $7)
 		 RETURNING id`,
 		fractalID, req.Name, req.Description, string(req.ModelType),
-		string(defJSON), req.AlertMode, createdBy).Scan(&id)
+		string(defJSON), req.AlertMode, storage.NullableUser(createdBy)).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("insert model: %w", err)
 	}

@@ -160,7 +160,7 @@ func (m *Manager) CreateConversation(ctx context.Context, fractalID, prismID, ti
 		INSERT INTO chat_conversations (fractal_id, prism_id, title, created_by)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), title, COALESCE(created_by, ''), created_at, updated_at
-	`, fractalIDPtr, prismIDPtr, title, username).Scan(
+	`, fractalIDPtr, prismIDPtr, title, storage.NullableUser(username)).Scan(
 		&conv.ID, &conv.FractalID, &conv.PrismID, &conv.Title, &conv.CreatedBy, &conv.CreatedAt, &conv.UpdatedAt,
 	)
 	if err != nil {
@@ -275,7 +275,7 @@ func (m *Manager) CreateInstruction(ctx context.Context, fractalID, name, conten
 		INSERT INTO chat_instructions (fractal_id, name, content, is_default, created_by)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, fractal_id, name, content, is_default, COALESCE(created_by, ''), created_at, updated_at
-	`, fractalID, name, content, isDefault, username).Scan(
+	`, fractalID, name, content, isDefault, storage.NullableUser(username)).Scan(
 		&inst.ID, &inst.FractalID, &inst.Name, &inst.Content, &inst.IsDefault, &inst.CreatedBy, &inst.CreatedAt, &inst.UpdatedAt,
 	)
 	return inst, err

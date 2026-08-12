@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"bifract/pkg/auth"
 	"bifract/pkg/storage"
 )
 
@@ -111,6 +112,10 @@ func (h *Handler) HandleCount(w http.ResponseWriter, r *http.Request) {
 // HandleMarkRead upserts notification_reads for the current user, setting
 // last_read_at = NOW(). POST /api/v1/notifications/read
 func (h *Handler) HandleMarkRead(w http.ResponseWriter, r *http.Request) {
+	if auth.IsAPIKey(r.Context()) {
+		h.respondError(w, http.StatusForbidden, "read state is per-user and not available for API key authentication")
+		return
+	}
 	user, ok := r.Context().Value("user").(*storage.User)
 	if !ok || user == nil {
 		h.respondError(w, http.StatusUnauthorized, "authentication required")

@@ -447,7 +447,7 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 	`
 	err = tx.QueryRow(ctx, query,
 		req.Name, req.Description, req.QueryString, alertType, req.Enabled,
-		req.ThrottleTimeSeconds, req.ThrottleField, pq.Array(req.Labels), pq.Array(req.References), severity, createdBy, fractalIDPtr, prismIDPtr, req.WindowDuration,
+		req.ThrottleTimeSeconds, req.ThrottleField, pq.Array(req.Labels), pq.Array(req.References), severity, storage.NullableUser(createdBy), fractalIDPtr, prismIDPtr, req.WindowDuration,
 		req.ScheduleCron, req.QueryWindowSeconds,
 	).Scan(&alertID)
 	if err != nil {
@@ -602,7 +602,7 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 	result, err := tx.Exec(ctx, query,
 		alertID, req.Name, req.Description, req.QueryString, req.Enabled,
 		req.ThrottleTimeSeconds, req.ThrottleField, pq.Array(req.Labels),
-		pq.Array(req.References), severity, username, alertType, req.WindowDuration,
+		pq.Array(req.References), severity, storage.NullableUser(username), alertType, req.WindowDuration,
 		req.ScheduleCron, req.QueryWindowSeconds,
 	)
 	if err != nil {
@@ -1324,7 +1324,7 @@ func (m *Manager) CreateWebhookAction(ctx context.Context, req WebhookCreateRequ
 
 	err := m.pg.QueryRow(ctx, query,
 		req.Name, req.URL, req.Method, string(headersJSON), req.AuthType,
-		string(authConfigJSON), req.TimeoutSeconds, req.RetryCount, includeAlertLink, req.Enabled, createdBy,
+		string(authConfigJSON), req.TimeoutSeconds, req.RetryCount, includeAlertLink, req.Enabled, storage.NullableUser(createdBy),
 		nullableID(fractalID), nullableID(prismID),
 	).Scan(&webhookID)
 	if err != nil {
@@ -1607,7 +1607,7 @@ func (m *Manager) CreateFractalAction(ctx context.Context, req FractalActionCrea
 	err = m.pg.QueryRow(ctx, query,
 		req.Name, req.Description, req.TargetFractalID, req.PreserveTimestamp,
 		req.AddAlertContext, string(fieldMappingsJSON), req.MaxLogsPerTrigger,
-		req.Enabled, createdBy,
+		req.Enabled, storage.NullableUser(createdBy),
 		nullableID(fractalID), nullableID(prismID),
 	).Scan(&fractalActionID, &createdAt, &updatedAt)
 
@@ -1849,7 +1849,7 @@ func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryS
 	var alertID string
 	err = m.pg.QueryRow(ctx, query,
 		name, description, queryString, alertType, severity, pq.Array(labels), pq.Array(references),
-		createdBy, fractalIDPtr, prismIDPtr, feedID, rulePath, ruleHash,
+		storage.NullableUser(createdBy), fractalIDPtr, prismIDPtr, feedID, rulePath, ruleHash,
 	).Scan(&alertID)
 	if err != nil {
 		return nil, fmt.Errorf("create feed alert: %w", err)
@@ -1898,7 +1898,7 @@ func (m *Manager) UpdateFeedAlert(ctx context.Context, alertID, name, descriptio
 		    fractal_id = $11, prism_id = $12
 		WHERE id = $1 AND feed_id IS NOT NULL
 	`, alertID, name, description, queryString, alertType, severity,
-		pq.Array(labels), pq.Array(references), ruleHash, updatedBy,
+		pq.Array(labels), pq.Array(references), ruleHash, storage.NullableUser(updatedBy),
 		fractalIDPtr, prismIDPtr)
 	if err != nil {
 		return fmt.Errorf("update feed alert: %w", err)
@@ -1996,7 +1996,7 @@ func (m *Manager) EnableFeedAlerts(ctx context.Context, feedID string, enabled b
 		`UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '',
 		    last_evaluated_at = CASE WHEN $1 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END
 		 WHERE feed_id = $3`,
-		enabled, updatedBy, feedID)
+		enabled, storage.NullableUser(updatedBy), feedID)
 	if err != nil {
 		return fmt.Errorf("toggle feed alerts: %w", err)
 	}
@@ -2011,7 +2011,7 @@ func (m *Manager) ToggleFeedAlert(ctx context.Context, alertID string, enabled b
 		`UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '',
 		    last_evaluated_at = CASE WHEN $1 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END
 		 WHERE id = $3 AND feed_id IS NOT NULL`,
-		enabled, updatedBy, alertID)
+		enabled, storage.NullableUser(updatedBy), alertID)
 	if err != nil {
 		return fmt.Errorf("toggle feed alert: %w", err)
 	}
@@ -2033,7 +2033,7 @@ func (m *Manager) BatchToggleAlerts(ctx context.Context, alertIDs []string, enab
 		`UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '',
 		    last_evaluated_at = CASE WHEN $1 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END
 		 WHERE id = ANY($3) AND feed_id IS NULL`,
-		enabled, updatedBy, pq.Array(alertIDs))
+		enabled, storage.NullableUser(updatedBy), pq.Array(alertIDs))
 	if err != nil {
 		return 0, fmt.Errorf("batch toggle alerts: %w", err)
 	}
@@ -2052,7 +2052,7 @@ func (m *Manager) BatchToggleFeedAlerts(ctx context.Context, alertIDs []string, 
 		`UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '',
 		    last_evaluated_at = CASE WHEN $1 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END
 		 WHERE id = ANY($3) AND feed_id IS NOT NULL`,
-		enabled, updatedBy, pq.Array(alertIDs))
+		enabled, storage.NullableUser(updatedBy), pq.Array(alertIDs))
 	if err != nil {
 		return 0, fmt.Errorf("batch toggle feed alerts: %w", err)
 	}
@@ -2118,7 +2118,7 @@ func (m *Manager) CreateEmailAction(ctx context.Context, req EmailActionCreateRe
 	err := m.pg.QueryRow(ctx,
 		`INSERT INTO email_actions (name, recipients, subject_template, body_template, enabled, created_by, fractal_id, prism_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-		req.Name, pq.Array(req.Recipients), req.SubjectTemplate, req.BodyTemplate, req.Enabled, createdBy,
+		req.Name, pq.Array(req.Recipients), req.SubjectTemplate, req.BodyTemplate, req.Enabled, storage.NullableUser(createdBy),
 		nullableID(fractalID), nullableID(prismID),
 	).Scan(&id)
 	if err != nil {

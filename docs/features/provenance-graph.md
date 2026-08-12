@@ -46,6 +46,14 @@ Run `pgr()` seeded on a process, then pipe to `pgraph()` to visualize:
 pgr(start="{GUID}") | pgraph()
 ```
 
+`pgraph()` also renders a plain process tree from `ptg()`:
+
+```
+ptg(start="{GUID}") | pgraph()
+```
+
+That is the same canvas with process creation only: no anomaly scoring, no file/network/DNS activity, and no reconnection, since `ptg()` reads the process-lineage table alone. Use it when you want the spawn tree quickly, or when behavioral analytics is off; use `pgr()` when you want to know which parts of that tree are unusual.
+
 ### Anomaly scoring
 
 Every action gets an `anomaly_score` from 0 to 1, where 1 is never-seen-before and 0 is ubiquitous across your environment. Rare behavior surfaces; common noise fades. Scoring also follows the chain, so a sequence of individually-common steps (a classic living-off-the-land pattern) adds up and stands out even when no single step looks unusual on its own.

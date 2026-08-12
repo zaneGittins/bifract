@@ -159,3 +159,45 @@ func TestTransformLogsForFractalCarriesHydratedFields(t *testing.T) {
 		t.Error("PreserveTimestamp did not carry the row timestamp")
 	}
 }
+
+// A forwarded detection has to carry the rule's own attack.* tags, or mitre()
+// sees Bifract-native detections as untagged noise while it maps every external
+// EDR's detections fine.
+func TestTransformLogsForFractalCarriesAlertLabels(t *testing.T) {
+	f := &FractalActionClient{}
+	rows := []map[string]interface{}{{
+		"timestamp": "2026-08-03 10:00:00.000",
+		"log_id":    "src-1",
+	}}
+	alert := &Alert{
+		ID:       "a1",
+		Name:     "Encoded PowerShell",
+		Severity: "high",
+		Labels:   []string{"attack.t1059.001", "attack.execution", "product:windows"},
+	}
+
+	entries, err := f.transformLogsForFractal(context.Background(),
+		FractalAction{TargetFractalID: "f2", AddAlertContext: true}, alert, alert.Name, rows)
+	if err != nil {
+		t.Fatalf("transform failed: %v", err)
+	}
+
+	got := entries[0].Fields["alert_labels"]
+	want := `["attack.t1059.001","attack.execution","product:windows"]`
+	if got != want {
+		t.Errorf("alert_labels = %q, want %q", got, want)
+	}
+	if entries[0].Fields["alert_severity"] != "high" {
+		t.Errorf("alert_severity = %q, want high", entries[0].Fields["alert_severity"])
+	}
+
+	// Without alert context the forwarded log stays exactly as it was.
+	plain, err := f.transformLogsForFractal(context.Background(),
+		FractalAction{TargetFractalID: "f2"}, alert, alert.Name, rows)
+	if err != nil {
+		t.Fatalf("transform failed: %v", err)
+	}
+	if _, ok := plain[0].Fields["alert_labels"]; ok {
+		t.Error("alert_labels leaked into a forward with alert context disabled")
+	}
+}

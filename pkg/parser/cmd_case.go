@@ -41,7 +41,7 @@ var caseDisallowedCommands = map[string]string{
 	"heatmap": "heatmap", "singleval": "singleval", "histogram": "histogram",
 	"modifiedzscore": "modifiedzscore", "modifiedz": "modifiedzscore", "mzscore": "modifiedzscore",
 	"madoutlier": "madoutlier", "outlier": "madoutlier", "model_lookup": "model_lookup",
-	"timechart": "timechart",
+	"timechart": "timechart", "mitre": "mitre", "attack": "mitre",
 }
 
 // caseSel is a harvested (alias, expression) pair from a branch segment.

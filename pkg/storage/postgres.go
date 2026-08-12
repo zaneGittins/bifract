@@ -1540,7 +1540,7 @@ func (c *PostgresClient) InsertNotebook(ctx context.Context, notebook Notebook) 
 		INSERT INTO notebooks (name, description, time_range_type, time_range_start, time_range_end, max_results_per_section, fractal_id, prism_id, variables, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
 		RETURNING id, name, description, time_range_type, time_range_start, time_range_end, max_results_per_section, fractal_id, prism_id, COALESCE(variables, '[]'), COALESCE(created_by, ''), created_at, updated_at
-	`, notebook.Name, notebook.Description, notebook.TimeRangeType, notebook.TimeRangeStart, notebook.TimeRangeEnd, notebook.MaxResultsPerSection, fractalIDPtr, prismIDPtr, string(varsJSON), notebook.CreatedBy).Scan(
+	`, notebook.Name, notebook.Description, notebook.TimeRangeType, notebook.TimeRangeStart, notebook.TimeRangeEnd, notebook.MaxResultsPerSection, fractalIDPtr, prismIDPtr, string(varsJSON), NullableUser(notebook.CreatedBy)).Scan(
 		&newNotebook.ID,
 		&newNotebook.Name,
 		&newNotebook.Description,
@@ -2374,7 +2374,7 @@ func (c *PostgresClient) InsertDashboard(ctx context.Context, d Dashboard) (*Das
 		INSERT INTO dashboards (name, description, time_range_type, time_range_start, time_range_end, fractal_id, prism_id, variables, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
 		RETURNING id, name, description, time_range_type, time_range_start, time_range_end, fractal_id, prism_id, COALESCE(variables, '[]'), COALESCE(created_by, ''), created_at, updated_at
-	`, d.Name, d.Description, d.TimeRangeType, d.TimeRangeStart, d.TimeRangeEnd, fractalIDPtr, prismIDPtr, string(varsJSON), d.CreatedBy).Scan(
+	`, d.Name, d.Description, d.TimeRangeType, d.TimeRangeStart, d.TimeRangeEnd, fractalIDPtr, prismIDPtr, string(varsJSON), NullableUser(d.CreatedBy)).Scan(
 		&nd.ID, &nd.Name, &nd.Description, &nd.TimeRangeType, &nd.TimeRangeStart, &nd.TimeRangeEnd,
 		&scanFractalID, &scanPrismID, &nd.Variables, &nd.CreatedBy, &nd.CreatedAt, &nd.UpdatedAt,
 	)

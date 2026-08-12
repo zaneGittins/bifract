@@ -898,3 +898,91 @@ body.atk-drawer-open { overflow: hidden; }
     .atk-matrix { grid-auto-columns: minmax(150px, 1fr); }
     .atk-matrix-wrap { max-height: none; }
 }
+
+/* ---- Observed matrix (query results: `| mitre()`) ---- */
+
+/* The query page already spends vertical on the query bar and timeline, so the
+   grid claims what is left rather than the coverage page's budget. */
+.mtr-view { padding-top: 0.25rem; }
+.mtr-matrix-wrap { max-height: calc(100vh - 360px); }
+
+.mtr-hidden { display: none !important; }
+
+/* Dashboard widget / notebook section: the panel owns the height, so the grid
+   fills it and scrolls inside rather than measuring itself against the viewport. */
+.mtr-embedded { gap: 0.5rem; }
+.mtr-embedded .mtr-matrix-wrap { max-height: none; }
+.mtr-embedded .atk-summary { padding: 0.35rem 0.6rem; gap: 0.4rem 1rem; }
+.mtr-embedded .atk-controls { gap: 0.4rem; }
+
+.mtr-scan-note {
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    max-width: 22rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Neutral variant: these notes state a fact about the data, not a warning. */
+.atk-note.mtr-note { border-left-color: var(--border-color); }
+
+.mtr-drawer-metric {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+}
+
+.mtr-metric-value {
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    line-height: 1;
+}
+
+.mtr-metric-label {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    flex: 1;
+}
+
+.mtr-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.22rem 0;
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+}
+
+.mtr-bar-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mtr-bar-track {
+    flex: 0 0 5rem;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.mtr-bar-fill {
+    display: block;
+    height: 100%;
+    background: var(--atk-heat-4);
+}
+
+.mtr-bar-count {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}

@@ -722,10 +722,15 @@ const QueryExecutor = {
             piechart: 'Pie Chart', barchart: 'Bar Chart', graph: 'Graph', mesh: 'Mesh Network',
             pgraph: 'Provenance Graph',
             singleval: 'Single Value', timechart: 'Time Chart', histogram: 'Histogram',
-            heatmap: 'Heat Map', worldmap: 'World Map',
+            heatmap: 'Heat Map', worldmap: 'World Map', mitre: 'ATT&CK Matrix',
         };
         const outputLabel = document.getElementById('outputTypeLabel');
-        if (outputLabel) outputLabel.textContent = outputTypeLabels[this.chartType] || 'Table';
+        if (outputLabel) {
+            // pgraph() renders either pgr()'s scored provenance or ptg()'s plain spawn tree.
+            const label = (this.chartType === 'pgraph' && this.chartConfig.scored === false)
+                ? 'Process Tree' : outputTypeLabels[this.chartType];
+            outputLabel.textContent = label || 'Table';
+        }
 
         // Rows arrive pre-sorted (timestamp DESC) during a stream; block column
         // sorting until done so a mid-stream re-sort can't scramble partial data.
@@ -1215,6 +1220,14 @@ const QueryExecutor = {
         if (!resultsTable) return;
 
         if (!results || results.length === 0) {
+            // The ATT&CK matrix is the one chart whose empty result is itself the
+            // answer ("nothing here is tagged"), and it needs to say which field it
+            // read to say it. Every other chart falls through to "No results found".
+            if (this.chartType === 'mitre') {
+                resultsTable.innerHTML = '';
+                this.renderChart([]);
+                return;
+            }
             resultsTable.innerHTML = '<div class="no-results">No results found</div>';
             if (chartContainer) chartContainer.style.display = 'none';
             return;
@@ -1228,6 +1241,7 @@ const QueryExecutor = {
 
         // Hide chart container and show table for normal results
         if (chartContainer) chartContainer.style.display = 'none';
+        if (typeof BifractMitreMatrix !== 'undefined') BifractMitreMatrix.destroy(chartContainer?.querySelector('.mtr-host'));
         resultsTable.style.display = 'block';
 
         // Use field order from backend if available (to overcome ClickHouse JSON alphabetization)
@@ -2091,6 +2105,16 @@ const QueryExecutor = {
             this._heatmapTooltip = null;
         }
 
+        // The ATT&CK matrix parks a drawer and tooltip on <body>, so switching away
+        // from it has to tear those down, not just drop the grid.
+        if (this.chartType !== 'mitre') {
+            const mtrHost = chartContainer.querySelector('.mtr-host');
+            // Release the view (resize observer, drawer ownership) before the host
+            // goes, or the teardown has nothing left to find.
+            if (typeof BifractMitreMatrix !== 'undefined') BifractMitreMatrix.destroy(mtrHost);
+            mtrHost?.remove();
+        }
+
         // Restore canvas/network divs if destroyed by a previous singleval render
         if (!chartCanvas) {
             chartCanvas = document.createElement('canvas');
@@ -2154,7 +2178,56 @@ const QueryExecutor = {
             this.renderHeatmap(results);
         } else if (this.chartType === 'worldmap') {
             this.renderWorldMap(results);
+        } else if (this.chartType === 'mitre') {
+            this.renderMitreMatrix(results);
         }
+    },
+
+    // mitre(): the ATT&CK matrix of what the matched events touched. The rows are
+    // already (tag, count) pairs, so the renderer only resolves tags against the
+    // embedded matrix and paints. Clicking a technique pivots the query to the
+    // events carrying its tags.
+    renderMitreMatrix(results) {
+        const chartContainer = document.getElementById('chartContainer');
+        if (!chartContainer || typeof BifractMitreMatrix === 'undefined') return;
+
+        const chartCanvas = document.getElementById('resultsChart');
+        if (chartCanvas) chartCanvas.style.display = 'none';
+        const networkDiv = document.getElementById('networkGraph');
+        if (networkDiv) networkDiv.style.display = 'none';
+
+        let host = chartContainer.querySelector('.mtr-host');
+        if (!host) {
+            host = document.createElement('div');
+            host.className = 'mtr-host';
+            chartContainer.appendChild(host);
+        }
+
+        BifractMitreMatrix.render(host, {
+            rows: results || [],
+            config: this.chartConfig || {},
+            onDrill: (tags) => this.drillMitreTechnique(tags),
+        });
+    },
+
+    // Replaces the trailing mitre() with a contains-any filter on the same field,
+    // so the drill-down inherits the query's existing scope and time range.
+    drillMitreTechnique(tags) {
+        const qi = document.getElementById('queryInput');
+        if (!qi || !tags || !tags.length) return;
+
+        const field = (this.chartConfig && this.chartConfig.tagField) || 'norm_log';
+        const cur = this.currentQuery || qi.value || '';
+        // Everything from mitre() onward operates on aggregated tag rows, so the
+        // drill keeps only the event-level part of the query in front of it.
+        const cut = cur.search(/\|\s*(?:mitre|attack)\s*\(/i);
+        const base = (cut >= 0 ? cur.slice(0, cut) : cur).trim().replace(/\|\s*$/, '').trim();
+        // Tags are matched by the extractor's own character class, so they carry no
+        // BQL metacharacters and need no quoting in a contains-any term list.
+        qi.value = `${base || '*'} | ${field}=~${tags.join(',')}`;
+        qi.dispatchEvent(new Event('input', { bubbles: true }));
+        const btn = document.getElementById('executeBtn');
+        if (btn) setTimeout(() => btn.click(), 0);
     },
 
     renderPieChart(results) {
@@ -2891,6 +2964,10 @@ const QueryExecutor = {
         // Must be set BEFORE the model/fanout are built -- both classify nodes relative to it
         // (home vs external tree; focus is never collapsed into an aggregate).
         this._pgFocus = (this.chartConfig && this.chartConfig.focus) || null;
+        // ptg() | pgraph() is a plain process tree: spawn edges only, no baseline, no
+        // reconnection. Its rows carry no anomaly_score, so the anomaly chrome (legend,
+        // pills, relative shading) is suppressed rather than shown as a column of blanks.
+        this._pgScored = !(this.chartConfig && this.chartConfig.scored === false);
         this._pgModel = this._pgBuildModel((results || []).slice(0, limit));
         this._pgComputeSevScale();      // adaptive absolute/relative anomaly shading for this graph
         this._pgExpandedAggs = new Set(); // fan-out aggregate nodes the user expanded
@@ -3353,6 +3430,7 @@ const QueryExecutor = {
         bar = document.createElement('div');
         bar.className = 'graph-toolbar';
         const m = this._pgModel;
+        const scored = this._pgScored !== false;
         const procN = m.procSet.size, isTable = this._pgView === 'table';
         const hostN = m.procHost ? new Set(Array.from(m.procHost.values()).filter(Boolean)).size : 0;
         // Triage summary: cross-tree reconnections, rare (>=0.7) behaviors, and the peak anomaly,
@@ -3399,22 +3477,23 @@ const QueryExecutor = {
                 </div>
             </div>
             <div class="graph-controls pg-common-controls">
-                <button class="toolbar-icon-btn" id="pgCopyIocBtn" title="Copy IOCs (IPs, domains, files) to clipboard"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+                ${scored ? `<button class="toolbar-icon-btn" id="pgCopyIocBtn" title="Copy IOCs (IPs, domains, files) to clipboard"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>` : ''}
                 <button class="toolbar-icon-btn" id="pgLegendBtn" title="Legend"><span class="pg-legend-q">?</span></button>
                 <div class="pg-legend" hidden>
-                    <div class="pg-legend-title">Anomaly</div>
+                    ${scored ? `<div class="pg-legend-title">Anomaly</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-high"></span>High (rare / suspicious)</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-med"></span>Elevated</div>
-                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-low"></span>Common</div>
+                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-low"></span>Common</div>` : ''}
                     <div class="pg-legend-title">Nodes</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-focus"></span>Start (queried)</div>
-                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ext"></span>Reconnected peer (other tree)</div>
+                    ${scored ? `<div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ext"></span>Reconnected peer (other tree)</div>` : ''}
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-agg"></span>Collapsed similar processes (&times;N)</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ghost"></span>Missing creation (name from another event)</div>
                     <div class="pg-legend-title">Edges</div>
                     <div class="pg-legend-row"><span class="pg-legend-line pg-ll-spawn"></span>Spawned</div>
-                    <div class="pg-legend-row"><span class="pg-legend-line pg-ll-recon"></span>Reconnection (shared IP / domain / dropped file) &mdash; hover either end to reveal</div>
-                    <div class="pg-legend-note">Chips on a node count its files / connections / DNS / links.</div>
+                    ${scored ? `<div class="pg-legend-row"><span class="pg-legend-line pg-ll-recon"></span>Reconnection (shared IP / domain / dropped file) &mdash; hover either end to reveal</div>
+                    <div class="pg-legend-note">Chips on a node count its files / connections / DNS / links.</div>`
+                        : `<div class="pg-legend-note">Process creation only &mdash; ptg() has no file / network / DNS activity or anomaly scoring. Use pgr() for those.</div>`}
                 </div>
             </div>
             <div class="graph-controls pg-graph-controls"${isTable ? ' style="display:none"' : ''}>
@@ -4403,7 +4482,9 @@ const QueryExecutor = {
             return h;
         };
         const anomalyPill = (a) => {
-            if (isNaN(a)) return '<span class="pg-anom-spacer"></span>';
+            // The spacer keeps pills aligned in a scored graph; an unscored one (ptg) has no
+            // pill column at all, so reserving the gutter on every row would just be dead space.
+            if (isNaN(a)) return this._pgScored === false ? '' : '<span class="pg-anom-spacer"></span>';
             const cls = this._pgSev(a);
             return `<span class="pg-anom pg-anom-${cls}" title="anomaly ${a.toFixed(2)}">${a.toFixed(2)}</span>`;
         };
@@ -4561,7 +4642,8 @@ const QueryExecutor = {
         roots.forEach((r, i) => walk(r, [], i === roots.length - 1, null));
 
         // Sticky column header labelling the right-hand metadata columns (activity chips / Δt / score).
-        const treeHead = rows.length ? `<div class="pg-tree-head"><span class="pg-th-name">Process</span><span class="pg-th pg-th-act">Activity</span><span class="pg-th pg-th-dt">Time</span><span class="pg-th pg-th-score">Anomaly</span></div>` : '';
+        const treeHead = rows.length ? `<div class="pg-tree-head"><span class="pg-th-name">Process</span><span class="pg-th pg-th-act">Activity</span><span class="pg-th pg-th-dt">Time</span>` +
+            `${this._pgScored === false ? '' : '<span class="pg-th pg-th-score">Anomaly</span>'}</div>` : '';
         container.innerHTML = `<div class="pg-tree-scroll" role="tree" tabindex="0">${treeHead}${rows.join('') || '<div class="pg-empty">No processes in this graph.</div>'}</div>`;
         const scroll = container.querySelector('.pg-tree-scroll');
         container.querySelectorAll('.pg-chev[data-guid]').forEach(btn => btn.addEventListener('click', (e) => {

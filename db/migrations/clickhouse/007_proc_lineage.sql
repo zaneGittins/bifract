@@ -33,7 +33,8 @@ SETTINGS index_granularity = 8192;
 -- Populates proc_lineage from process-create events, keyed on the normalized
 -- bifract_category taxonomy field (Phase A; bifract_ prefix avoids collision with
 -- source-set "category"). ::String is safe whether or not the type hint is applied yet.
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_lineage_mv TO proc_lineage AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_lineage_mv TO proc_lineage
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     timestamp,

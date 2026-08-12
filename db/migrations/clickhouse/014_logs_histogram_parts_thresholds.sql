@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS logs_histogram (
 ORDER BY (fractal_id, minute)
 SETTINGS index_granularity = 256;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS logs_histogram_mv TO logs_histogram AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS logs_histogram_mv TO logs_histogram
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     toStartOfMinute(timestamp) AS minute,

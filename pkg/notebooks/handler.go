@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/sse"
@@ -73,7 +74,11 @@ func (h *NotebookHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update presence in DB so polling-based clients also see this user.
-	_ = h.pg.UpdateNotebookPresence(r.Context(), notebookID, user.Username)
+	// notebook_presence.username is a foreign key, so machine principals (which
+	// have no users row) stay out of it; SSE still works for them.
+	if !auth.IsAPIKey(r.Context()) {
+		_ = h.pg.UpdateNotebookPresence(r.Context(), notebookID, user.Username)
+	}
 
 	room := "notebook:" + notebookID
 
@@ -90,7 +95,9 @@ func (h *NotebookHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Clean up presence in DB and notify remaining clients.
-	_ = h.pg.DeleteNotebookPresence(context.Background(), notebookID, user.Username)
+	if !auth.IsAPIKey(r.Context()) {
+		_ = h.pg.DeleteNotebookPresence(context.Background(), notebookID, user.Username)
+	}
 
 	h.sseHub.Broadcast(room, sse.Event{
 		Type: sse.PresenceLeft,
@@ -348,7 +355,7 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 		TimeRangeStart:       req.TimeRangeStart,
 		TimeRangeEnd:         req.TimeRangeEnd,
 		MaxResultsPerSection: req.MaxResultsPerSection,
-		CreatedBy:            user.Username,
+		CreatedBy:            auth.AttributionUsername(r.Context()),
 	}
 	if prismID, ok := r.Context().Value("selected_prism").(string); ok && prismID != "" {
 		notebook.PrismID = prismID
@@ -996,6 +1003,12 @@ func (h *NotebookHandler) HandleUpdateSectionResults(w http.ResponseWriter, r *h
 
 // HandleUpdatePresence updates user presence for a notebook
 func (h *NotebookHandler) HandleUpdatePresence(w http.ResponseWriter, r *http.Request) {
+	if auth.IsAPIKey(r.Context()) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "presence is per-user and not available for API key authentication"})
+		return
+	}
 	user := r.Context().Value("user").(*storage.User)
 	notebookID := chi.URLParam(r, "id")
 
@@ -1717,7 +1730,7 @@ func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Re
 		TimeRangeType:        imported.TimeRange,
 		MaxResultsPerSection: imported.MaxResults,
 		Variables:            varsJSON,
-		CreatedBy:            user.Username,
+		CreatedBy:            auth.AttributionUsername(r.Context()),
 	}
 	if selectedPrism != "" {
 		nb.PrismID = selectedPrism
@@ -1858,7 +1871,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		Description:          fmt.Sprintf("Auto-generated from comments tagged \"%s\"", req.Tag),
 		TimeRangeType:        "all",
 		MaxResultsPerSection: 1000,
-		CreatedBy:            user.Username,
+		CreatedBy:            auth.AttributionUsername(r.Context()),
 	}
 	if selectedPrism != "" {
 		notebook.PrismID = selectedPrism

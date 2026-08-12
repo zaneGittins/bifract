@@ -298,6 +298,18 @@ func procLineageFractalCond(opts QueryOptions, prefix string) string {
 	return ""
 }
 
+var procTreeFieldOrder = []string{"timestamp", "process_guid", "parent_guid", "image", "parent_image", "commandline", "computer_name", "_depth", "_path"}
+
+// ptg() projected into pgr()'s edge shape for pgraph(). Column names, order, and expressions
+// mirror provenance spawn rows (see pkg/query/provenance.go) so pgraph stays a single-shape
+// renderer. command_line is capped like pgr's; proc_user is empty because proc_lineage carries
+// no user column and ptg() deliberately does not join logs to get one.
+const procTreePgraphCols = "parent_guid AS parent, process_guid AS child, image AS label, 'spawn' AS event_type, " +
+	"log_id, toString(timestamp) AS timestamp, fractal_id, substring(commandline, 1, 300) AS command_line, " +
+	"'' AS proc_user, computer_name AS host, parent_image AS parent_label"
+
+var procTreePgraphFieldOrder = []string{"parent", "child", "label", "event_type", "log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host", "parent_label"}
+
 // buildProcessTreeSQL generates a recursive CTE for ptg() over the flat proc_lineage
 // table (MV-backed process lineage): the fast replacement for dfs/bfs-on-logs for process
 // trees. Unlike buildTraversalSQL it uses bare columns (no fields.* JSON access, no
@@ -350,9 +362,11 @@ func buildProcessTreeSQL(
 	}
 	havingConditions = safeHaving
 
-	const dataCols = "timestamp, log_id, process_guid, parent_guid, image, parent_image, commandline, computer_name"
-	const dataColsL = "l.timestamp, l.log_id, l.process_guid, l.parent_guid, l.image, l.parent_image, l.commandline, l.computer_name"
-	const unionCols = "timestamp, log_id, process_guid, parent_guid, image, parent_image, commandline, computer_name, _depth, _path"
+	// fractal_id rides the CTE (it is not shown in the table projection) because the pgraph
+	// projection below needs it for the node click -> log detail fetch.
+	const dataCols = "timestamp, log_id, fractal_id, process_guid, parent_guid, image, parent_image, commandline, computer_name"
+	const dataColsL = "l.timestamp, l.log_id, l.fractal_id, l.process_guid, l.parent_guid, l.image, l.parent_image, l.commandline, l.computer_name"
+	const unionCols = "timestamp, log_id, fractal_id, process_guid, parent_guid, image, parent_image, commandline, computer_name, _depth, _path"
 	const finalCols = "formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') AS timestamp, process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, toString(_depth) AS _depth, _path"
 
 	// One recursive CTE body per direction. forward = descendants (join children on
@@ -394,10 +408,25 @@ func buildProcessTreeSQL(
 		inner += " WHERE " + strings.Join(havingConditions, " AND ")
 	}
 
+	// pgraph() renders the pgr() edge shape, so a `ptg() | pgraph()` tree is projected into
+	// those same columns: every row is one spawn edge (parent_guid -> process_guid). There is
+	// no anomaly_score column -- proc_lineage carries no baseline, and pgraph treats a missing
+	// score as unscored -- and no leaf/reconnection edges: a ptg graph is process creation only.
+	outCols, fieldOrder := finalCols, procTreeFieldOrder
+	if chartType == "pgraph" {
+		outCols = procTreePgraphCols
+		fieldOrder = procTreePgraphFieldOrder
+		if chartConfig == nil {
+			chartConfig = map[string]interface{}{}
+		}
+		chartConfig["focus"] = startValue // center/highlight the seed process, as pgr() does
+		chartConfig["scored"] = false     // hide the anomaly chrome: these edges carry no score
+	}
+
 	var sql strings.Builder
 	sql.WriteString(withClause)
 	sql.WriteString("SELECT ")
-	sql.WriteString(finalCols)
+	sql.WriteString(outCols)
 	sql.WriteString(" FROM (")
 	sql.WriteString(inner)
 	sql.WriteString(") ORDER BY _path ASC")
@@ -412,7 +441,7 @@ func buildProcessTreeSQL(
 
 	return &TranslationResult{
 		SQL:          finalSQL,
-		FieldOrder:   []string{"timestamp", "process_guid", "parent_guid", "image", "parent_image", "commandline", "computer_name", "_depth", "_path"},
+		FieldOrder:   fieldOrder,
 		IsAggregated: false,
 		ChartType:    chartType,
 		ChartConfig:  chartConfig,

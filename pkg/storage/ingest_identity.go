@@ -133,18 +133,26 @@ func reconcileMVSecurityOnConn(ctx context.Context, conn driver.Conn) (int, erro
 		return 0, err
 	}
 
+	// Convert every view even if one fails. Returning on the first error would leave the
+	// remaining views on INVOKER, and a single missed view is enough to fail every insert
+	// with code 497 and drive the retry-duplication path.
 	converted := 0
+	var firstErr error
 	for _, name := range names {
 		stmt := fmt.Sprintf("ALTER TABLE `%s` MODIFY SQL SECURITY DEFINER DEFINER = default", name)
 		sctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		execErr := conn.Exec(sctx, stmt)
 		cancel()
 		if execErr != nil {
-			return converted, fmt.Errorf("alter %s security: %w", name, execErr)
+			log.Printf("Warning: could not convert materialized view %q to DEFINER: %v", name, execErr)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("alter %s security: %w", name, execErr)
+			}
+			continue
 		}
 		converted++
 	}
-	return converted, nil
+	return converted, firstErr
 }
 
 // EnsureIngestUser creates/updates the least-privilege ClickHouse ingest user and its

@@ -199,13 +199,15 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// For API key auth, attribute the comment to the key's creator (a real
-	// user in the DB) rather than the synthetic "apikey_<id>" username.
-	author := user.Username
-	if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
-		if keyData, ok := r.Context().Value("api_key").(*auth.ValidatedAPIKey); ok && keyData.CreatedBy != "" {
-			author = keyData.CreatedBy
-		}
+	// comments.author is NOT NULL and references users(username), so an API key
+	// posts as its creator. A key whose creator was deleted has nobody to
+	// attribute to and is refused rather than left to fail on the constraint.
+	author := auth.AttributionUsername(r.Context())
+	if author == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "This API key has no owning user to attribute the comment to"})
+		return
 	}
 
 	// Create comment scoped to fractal or prism

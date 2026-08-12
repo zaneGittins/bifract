@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/lib/pq"
 
+	"bifract/pkg/auth"
 	"bifract/pkg/bqlvars"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
@@ -390,7 +391,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO saved_queries (name, query_text, description, tags, variables, visibility, fractal_id, prism_id, created_by, time_range, custom_start, custom_end, relative_n, relative_unit)
 		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id, name, query_text, COALESCE(description, ''), tags, COALESCE(variables, '[]'), COALESCE(visibility, 'shared'), COALESCE(use_count, 0), COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`,
-		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), variables, visibility, fractalIDPtr, prismIDPtr, username, trArg, csArg, ceArg, rnArg, ruArg,
+		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), variables, visibility, fractalIDPtr, prismIDPtr, storage.NullableUser(auth.AttributionUsername(r.Context())), trArg, csArg, ceArg, rnArg, ruArg,
 	).Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags), &sq.Variables, &sq.Visibility, &sq.UseCount,
 		&sq.FractalID, &sq.PrismID, &sq.CreatedBy, &sq.CreatedAt, &sq.UpdatedAt)
 
@@ -606,6 +607,10 @@ func (h *Handler) HandleMarkUsed(w http.ResponseWriter, r *http.Request) {
 
 // HandleFavorite pins a saved query for the current user (per-user).
 func (h *Handler) HandleFavorite(w http.ResponseWriter, r *http.Request) {
+	if auth.IsAPIKey(r.Context()) {
+		h.respondError(w, http.StatusForbidden, "favorites are per-user and not available for API key authentication")
+		return
+	}
 	username := h.getCurrentUser(r)
 	if username == "" {
 		h.respondError(w, http.StatusUnauthorized, "authentication required")
@@ -650,6 +655,10 @@ func (h *Handler) HandleFavorite(w http.ResponseWriter, r *http.Request) {
 
 // HandleUnfavorite removes the current user's pin on a saved query.
 func (h *Handler) HandleUnfavorite(w http.ResponseWriter, r *http.Request) {
+	if auth.IsAPIKey(r.Context()) {
+		h.respondError(w, http.StatusForbidden, "favorites are per-user and not available for API key authentication")
+		return
+	}
 	username := h.getCurrentUser(r)
 	if username == "" {
 		h.respondError(w, http.StatusUnauthorized, "authentication required")

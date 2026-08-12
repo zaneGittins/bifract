@@ -9,10 +9,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
+	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // Handler provides HTTP endpoints for dictionary management.
@@ -82,7 +84,7 @@ func (h *Handler) HandleCreateDictionary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	username := h.getCurrentUser(r)
+	username := auth.AttributionUsername(r.Context())
 	dict, err := h.manager.CreateDictionary(r.Context(), fractalID, prismID, req.Name, req.Description, req.KeyColumn, req.Columns, username, req.IsGlobal)
 	if err != nil {
 		log.Printf("[Dictionaries] Failed to create dictionary: %v", err)
@@ -466,7 +468,7 @@ func (h *Handler) HandleCreateDictionaryAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	username := h.getCurrentUser(r)
+	username := auth.AttributionUsername(r.Context())
 	action, err := h.manager.CreateDictionaryAction(r.Context(), req.Name, req.Description,
 		req.DictionaryName, req.MaxLogsPerTrigger, req.Enabled, username, fractalID, prismID)
 	if err != nil {

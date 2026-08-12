@@ -182,7 +182,7 @@ func (m *Manager) CreateDictionary(ctx context.Context, fractalID, prismID, name
 	err = m.pg.QueryRow(ctx,
 		`INSERT INTO dictionaries (name, description, fractal_id, prism_id, key_column, columns, is_global, created_by)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-		name, description, fractalIDPtr, prismIDPtr, keyColumn, colsJSON, isGlobal, createdBy).Scan(&id)
+		name, description, fractalIDPtr, prismIDPtr, keyColumn, colsJSON, isGlobal, storage.NullableUser(createdBy)).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert dictionary: %w", err)
 	}
@@ -928,7 +928,7 @@ func (m *Manager) CreateDictionaryAction(ctx context.Context, name, description,
 	err := m.pg.QueryRow(ctx,
 		`INSERT INTO dictionary_actions (name, description, dictionary_name, max_logs_per_trigger, enabled, created_by, fractal_id, prism_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-		name, description, dictName, maxLogs, enabled, createdBy, fPtr, pPtr).Scan(&id)
+		name, description, dictName, maxLogs, enabled, storage.NullableUser(createdBy), fPtr, pPtr).Scan(&id)
 	if err != nil {
 		return nil, err
 	}

@@ -254,7 +254,7 @@ func (m *Manager) CreateLibrary(ctx context.Context, req CreateLibraryRequest, f
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id
 	`, name, req.Description, req.IsDefault, fID, pID,
-		source, req.RepoURL, branch, req.Path, authToken, schedule, createdBy).Scan(&id)
+		source, req.RepoURL, branch, req.Path, authToken, schedule, storage.NullableUser(createdBy)).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_il_name_scope") {
 			return nil, fmt.Errorf("a library named %q already exists in this scope", name)
@@ -475,7 +475,7 @@ func (m *Manager) CreatePage(ctx context.Context, libraryID string, req CreatePa
 		INSERT INTO instruction_pages (library_id, name, description, content, always_include, sort_order, folder_id, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id
-	`, libraryID, name, req.Description, req.Content, req.AlwaysInclude, req.SortOrder, req.FolderID, createdBy).Scan(&id)
+	`, libraryID, name, req.Description, req.Content, req.AlwaysInclude, req.SortOrder, req.FolderID, storage.NullableUser(createdBy)).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "ip_unique_name") {
 			return nil, fmt.Errorf("a page named %q already exists in this library", name)
@@ -540,7 +540,7 @@ func (m *Manager) CreateFolder(ctx context.Context, libraryID, name, createdBy s
 	err := m.pg.QueryRow(ctx, `
 		INSERT INTO instruction_folders (library_id, name, sort_order, created_by)
 		VALUES ($1, $2, $3, $4) RETURNING id
-	`, libraryID, name, nextOrder, createdBy).Scan(&id)
+	`, libraryID, name, nextOrder, storage.NullableUser(createdBy)).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("create folder: %w", err)
 	}

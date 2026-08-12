@@ -2206,17 +2206,22 @@ func main() {
 			r.Delete("/query-history", queryHistoryHandler.HandleClear)
 			r.Delete("/query-history/{id}", queryHistoryHandler.HandleDelete)
 
-			// Chat
-			r.Get("/chat/conversations", chatHandler.HandleListConversations)
-			r.Post("/chat/conversations", chatHandler.HandleCreateConversation)
-			r.Patch("/chat/conversations/{id}", chatHandler.HandleRenameConversation)
-			r.Delete("/chat/conversations/{id}", chatHandler.HandleDeleteConversation)
-			r.Get("/chat/conversations/{id}/messages", chatHandler.HandleGetMessages)
-			r.Delete("/chat/conversations/{id}/messages", chatHandler.HandleClearMessages)
-			r.Post("/chat/conversations/{id}/stream", chatHandler.HandleStream)
-			r.Patch("/chat/conversations/{id}/libraries", chatHandler.HandleSetConversationLibraries)
-			r.Get("/chat/conversations/{id}/libraries", chatHandler.HandleGetConversationLibraries)
-			r.Delete("/chat/conversations", chatHandler.HandleDeleteAllConversations)
+			// Chat. Conversations are private per-user state keyed on a real
+			// users row, so they are session-only; instructions are fractal
+			// config and stay open to keys.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.DenyAPIKey("chat"))
+				r.Get("/chat/conversations", chatHandler.HandleListConversations)
+				r.Post("/chat/conversations", chatHandler.HandleCreateConversation)
+				r.Patch("/chat/conversations/{id}", chatHandler.HandleRenameConversation)
+				r.Delete("/chat/conversations/{id}", chatHandler.HandleDeleteConversation)
+				r.Get("/chat/conversations/{id}/messages", chatHandler.HandleGetMessages)
+				r.Delete("/chat/conversations/{id}/messages", chatHandler.HandleClearMessages)
+				r.Post("/chat/conversations/{id}/stream", chatHandler.HandleStream)
+				r.Patch("/chat/conversations/{id}/libraries", chatHandler.HandleSetConversationLibraries)
+				r.Get("/chat/conversations/{id}/libraries", chatHandler.HandleGetConversationLibraries)
+				r.Delete("/chat/conversations", chatHandler.HandleDeleteAllConversations)
+			})
 			r.Get("/chat/instructions", chatHandler.HandleListInstructions)
 			r.Post("/chat/instructions", chatHandler.HandleCreateInstruction)
 			r.Put("/chat/instructions/{instructionId}", chatHandler.HandleUpdateInstruction)

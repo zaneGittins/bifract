@@ -1645,6 +1645,25 @@ const Notebooks = {
             return heatmapHtml;
         }
 
+        if (chartType === 'mitre') {
+            const mitreId = `mitre-${chartId}`;
+            const mitreHtml = `
+                <div class="chart-container" style="margin: 0; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; background: var(--bg-secondary);">
+                    <div id="${mitreId}" class="mtr-host" style="max-height: 600px; overflow: auto;"></div>
+                </div>
+            `;
+            setTimeout(() => {
+                const el = document.getElementById(mitreId);
+                // embedded: a notebook reads top-down, so it opens on what fired.
+                if (el && window.BifractMitreMatrix) BifractMitreMatrix.render(el, {
+                    rows: results.results || [],
+                    config: results.chart_config || {},
+                    embedded: true
+                });
+            }, 500);
+            return mitreHtml;
+        }
+
         if (chartType === 'worldmap') {
             const mapId = `map-${chartId}`;
             const mapHtml = `

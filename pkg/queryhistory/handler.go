@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
@@ -216,6 +217,10 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleRecord(w http.ResponseWriter, r *http.Request) {
+	if auth.IsAPIKey(r.Context()) {
+		h.respondError(w, http.StatusForbidden, "query history is per-user and not available for API key authentication")
+		return
+	}
 	username := h.getCurrentUser(r)
 	if username == "" {
 		h.respondError(w, http.StatusUnauthorized, "authentication required")

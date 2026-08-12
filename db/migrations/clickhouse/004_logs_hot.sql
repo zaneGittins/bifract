@@ -42,7 +42,8 @@ ORDER BY (fractal_id, ingest_timestamp, log_id)
 TTL toDateTime(ingest_timestamp) + INTERVAL 4 HOUR DELETE
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS logs_hot_mv TO logs_hot AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS logs_hot_mv TO logs_hot
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     timestamp,
     raw_log,

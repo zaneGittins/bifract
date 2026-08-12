@@ -1498,6 +1498,67 @@ func TestPTGFunction(t *testing.T) {
 		}
 	})
 
+	t.Run("pgraph() projects the pgr edge shape", func(t *testing.T) {
+		pipeline, err := ParseQuery(`ptg(start="ABC") | pgraph()`)
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("translate failed: %v", err)
+		}
+		if result.ChartType != "pgraph" {
+			t.Errorf("expected ChartType pgraph, got %q", result.ChartType)
+		}
+		for _, want := range []string{
+			"parent_guid AS parent", "process_guid AS child", "image AS label",
+			"'spawn' AS event_type", "fractal_id", "parent_image AS parent_label",
+			"substring(commandline, 1, 300) AS command_line",
+		} {
+			if !strings.Contains(result.SQL, want) {
+				t.Errorf("expected %q in SQL, got: %s", want, result.SQL)
+			}
+		}
+		// No baseline exists for a ptg tree: the graph must render unscored, not all-zero.
+		if strings.Contains(result.SQL, "anomaly_score") {
+			t.Errorf("ptg() | pgraph() must not emit an anomaly_score, got: %s", result.SQL)
+		}
+		if result.ChartConfig["focus"] != "ABC" {
+			t.Errorf("expected focus on the seed guid, got %v", result.ChartConfig["focus"])
+		}
+		if result.ChartConfig["scored"] != false {
+			t.Errorf("expected scored=false, got %v", result.ChartConfig["scored"])
+		}
+		want := []string{"parent", "child", "label", "event_type", "log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host", "parent_label"}
+		if strings.Join(result.FieldOrder, ",") != strings.Join(want, ",") {
+			t.Errorf("expected pgr field order %v, got %v", want, result.FieldOrder)
+		}
+	})
+
+	t.Run("pgraph() keeps _depth pruning and fractal scoping", func(t *testing.T) {
+		sql := translate(t, `ptg(start="ABC", direction=forward) | _depth <= 3 | pgraph()`)
+		if !strings.Contains(sql, "WHERE _depth <= 3") {
+			t.Errorf("expected inner _depth filter, got: %s", sql)
+		}
+		if !strings.Contains(sql, "fractal_id = 'test-fractal'") {
+			t.Errorf("expected fractal scoping, got: %s", sql)
+		}
+	})
+
+	t.Run("table output keeps the ptg columns", func(t *testing.T) {
+		pipeline, _ := ParseQuery(`ptg(start="ABC")`)
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("translate failed: %v", err)
+		}
+		if strings.Contains(result.SQL, "AS parent_label") {
+			t.Errorf("plain ptg() must not use the pgraph projection, got: %s", result.SQL)
+		}
+		if result.FieldOrder[1] != "process_guid" {
+			t.Errorf("expected ptg field order, got %v", result.FieldOrder)
+		}
+	})
+
 	t.Run("drops logs fields.* pre-filters (flat table, v1 scoping)", func(t *testing.T) {
 		sql := translate(t, `image="cmd.exe" | ptg(start="ABC")`)
 		if strings.Contains(sql, "fields.") {

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/sse"
@@ -78,7 +79,11 @@ func (h *DashboardHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		GravatarInitial: user.GravatarInitial,
 	}
 
-	_ = h.pg.UpdateDashboardPresence(r.Context(), dashboardID, user.Username)
+	// dashboard_presence.username is a foreign key, so machine principals (which
+	// have no users row) stay out of it; SSE still works for them.
+	if !auth.IsAPIKey(r.Context()) {
+		_ = h.pg.UpdateDashboardPresence(r.Context(), dashboardID, user.Username)
+	}
 
 	room := "dashboard:" + dashboardID
 
@@ -93,7 +98,9 @@ func (h *DashboardHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Clean up presence in DB and notify remaining clients.
-	_ = h.pg.DeleteDashboardPresence(context.Background(), dashboardID, user.Username)
+	if !auth.IsAPIKey(r.Context()) {
+		_ = h.pg.DeleteDashboardPresence(context.Background(), dashboardID, user.Username)
+	}
 
 	h.sseHub.Broadcast(room, sse.Event{
 		Type: sse.PresenceLeft,
@@ -281,7 +288,7 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 		TimeRangeType:  req.TimeRangeType,
 		TimeRangeStart: req.TimeRangeStart,
 		TimeRangeEnd:   req.TimeRangeEnd,
-		CreatedBy:      user.Username,
+		CreatedBy:      auth.AttributionUsername(r.Context()),
 	}
 	if prismID, ok := r.Context().Value("selected_prism").(string); ok && prismID != "" {
 		d.PrismID = prismID
@@ -573,6 +580,10 @@ func (h *DashboardHandler) getSelectedFractal(r *http.Request) (string, error) {
 }
 
 func (h *DashboardHandler) HandleUpdatePresence(w http.ResponseWriter, r *http.Request) {
+	if auth.IsAPIKey(r.Context()) {
+		jsonError(w, "presence is per-user and not available for API key authentication")
+		return
+	}
 	id := chi.URLParam(r, "id")
 	user, _ := r.Context().Value("user").(*storage.User)
 	if user == nil {
@@ -924,7 +935,7 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 		Description:   imported.Description,
 		TimeRangeType: imported.TimeRange,
 		Variables:     varsJSON,
-		CreatedBy:     user.Username,
+		CreatedBy:     auth.AttributionUsername(r.Context()),
 	}
 	if selectedPrism != "" {
 		d.PrismID = selectedPrism

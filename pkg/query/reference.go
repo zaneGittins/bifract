@@ -957,20 +957,38 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			{
 				Name:        "pgraph",
 				Category:    "Visualization",
-				Description: "Renders a pgr() provenance graph: processes are boxes, files ellipses, network destinations diamonds, and DNS domains triangles. Edges are colored by anomaly_score (red = high, orange = elevated, muted = common) and injection/handle-access edges are dashed. Click any node to open its originating log. Reads pgr()'s fixed output columns, so it takes no field arguments -- only an optional limit=. Without pgraph(), pgr() returns the scored edge table (for export, an LLM, or further piping).",
+				Description: "Renders a process map from pgr() or ptg(). With pgr(): processes are boxes, files ellipses, network destinations diamonds, and DNS domains triangles; edges are colored by anomaly_score (red = high, orange = elevated, muted = common) and injection/handle-access edges are dashed. With ptg(): the same map, process creation only -- no anomaly scoring, no file/network/DNS activity, no cross-tree reconnection -- the cheap way to look at a spawn tree. Click any node to open its originating log. Reads the source command's fixed output columns, so it takes no field arguments -- only an optional limit=. Without pgraph(), pgr()/ptg() return their rows as a table (for export, an LLM, or further piping).",
 				Syntax:      `| pgr(...) | pgraph(limit=N)`,
 				Parameters: []Param{
-					{Name: "limit", Type: "number", Required: false, Description: "Maximum number of edges to render (default: 500)"},
+					{Name: "limit", Type: "number", Required: false, Description: "Maximum number of edges to render (default: 3000)"},
 				},
 				Examples: []string{
 					`pgr(start="{GUID}") | pgraph()`,
 					`pgr(start="{GUID}", threshold=0.8) | pgraph(limit=300)`,
+						`ptg(start="{GUID}") | pgraph()`,
+				},
+			},
+			{
+				Name:        "mitre",
+				Category:    "Visualization",
+				Description: "Renders the events a query matched as a MITRE ATT&CK matrix, heat-mapped by how many events hit each technique. It reads the tags straight out of rule_tags by default, in whatever shape the source writes them: a JSON array string (`[\"attack.t1059.004\",\"attack.execution\"]`), a comma list, or a bare technique ID. Point it at another field with tags= (detect_mtd_tags for raw LimaCharlie detections, alert_labels for a Bifract alert forwarded into a fractal), or at tags=norm_log to scan the whole event when a source has not been normalized onto a tag field. Tactic-only tags are counted but never colour a technique cell, since they do not say which technique fired. Sub-technique hits roll up to their parent as inherited, and a retired technique ID is followed to its replacement. Add by=<field> to break each technique down by host, user, or rule in the detail drawer. This is an aggregation: it returns one row per tag, so it stays cheap over a very large match set. Export the result as an ATT&CK Navigator layer from the toolbar.",
+				Syntax:      "| mitre(tags=field, by=field, limit=N)",
+				Parameters: []Param{
+					{Name: "tags", Type: "string", Required: false, Description: "Field holding the ATT&CK tags (default: rule_tags). Use detect_mtd_tags for raw LimaCharlie detections, alert_labels for a forwarded Bifract alert, or norm_log to scan the whole event."},
+					{Name: "by", Type: "string", Required: false, Description: "Second dimension counted per technique (computer_name, user, rule_name), shown as the breakdown in the technique drawer."},
+					{Name: "limit", Type: "number", Required: false, Description: "Maximum rows (tag x by combinations) returned (default: 5000, max: 50000)"},
+				},
+				Examples: []string{
+					`computer_name="wks01.contoso.corp" | mitre()`,
+					`* | mitre(by=computer_name)`,
+					`* | mitre(tags=detect_mtd_tags, by=rule_name)`,
+					`alert_forwarded=true | mitre(tags=alert_labels, by=alert_name)`,
 				},
 			},
 			{
 				Name:        "ptg",
 				Category:    "Traversal",
-				Description: "Process Tree Graph: fast, MV-backed traversal of process lineage over the proc_lineage table (one row per process-create event). A drop-in replacement for dfs/bfs on process trees that does not OOM on large graphs or long timeframes, because each hop is a primary-key point lookup instead of a full scan of logs. Seed on a process_guid; direction selects descendants, ancestors, or both. Always returns process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, _depth, _path. Requires an EDR source normalized to bifract_category='process_creation'. Prune with a post-filter, e.g. `| _depth <= 3`. Pairs with graph() for visualization. NOTE: the tree is scoped ONLY by start=, the time range, and the fractal -- any filter placed before ptg() (e.g. computer_name=\"host\") is ignored. Set the query time range to cover the whole investigation window: proc_lineage is retained ~365 days, but ptg() only sees events within the selected time range, so a narrow range will silently omit older ancestors/descendants.",
+				Description: "Process Tree Graph: fast, MV-backed traversal of process lineage over the proc_lineage table (one row per process-create event). A drop-in replacement for dfs/bfs on process trees that does not OOM on large graphs or long timeframes, because each hop is a primary-key point lookup instead of a full scan of logs. Seed on a process_guid; direction selects descendants, ancestors, or both. Always returns process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, _depth, _path. Requires an EDR source normalized to bifract_category='process_creation'. Prune with a post-filter, e.g. `| _depth <= 3`. Pipe to pgraph() for the process map (spawn edges only: no anomaly scoring, no file/network/DNS activity, no reconnection -- use pgr() for those), or to graph() for a plain node-link tree. NOTE: the tree is scoped ONLY by start=, the time range, and the fractal -- any filter placed before ptg() (e.g. computer_name=\"host\") is ignored. Set the query time range to cover the whole investigation window: proc_lineage is retained ~365 days, but ptg() only sees events within the selected time range, so a narrow range will silently omit older ancestors/descendants.",
 				Syntax:      `| ptg(start="<process_guid>", depth=N, direction=forward|backward|both)`,
 				Parameters: []Param{
 					{Name: "start", Type: "string", Required: true, Description: "process_guid of the seed node"},
@@ -978,7 +996,8 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 					{Name: "direction", Type: "string", Required: false, Description: "forward = descendants, backward = ancestors, both = both (default: both)"},
 				},
 				Examples: []string{
-					`ptg(start="{GUID}") | graph(child=process_guid, parent=parent_guid, labels=image)`,
+					`ptg(start="{GUID}") | pgraph()`,
+						`ptg(start="{GUID}") | graph(child=process_guid, parent=parent_guid, labels=image)`,
 					`ptg(start="{GUID}", direction=backward, depth=20)`,
 					`ptg(start="{GUID}", direction=forward) | table(process_guid, image, commandline, _depth)`,
 				},

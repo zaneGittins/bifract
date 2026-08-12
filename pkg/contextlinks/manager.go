@@ -119,7 +119,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest, createdBy strin
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id, short_name, match_fields, validation_regex, context_link, redirect_warning, enabled, is_default, COALESCE(created_by, ''), created_at, updated_at`,
 		req.ShortName, pq.Array(req.MatchFields), req.ValidationRegex, req.ContextLink,
-		req.RedirectWarning, req.Enabled, createdBy).Scan(
+		req.RedirectWarning, req.Enabled, storage.NullableUser(createdBy)).Scan(
 		&cl.ID, &cl.ShortName, pq.Array(&cl.MatchFields),
 		&cl.ValidationRegex, &cl.ContextLink, &cl.RedirectWarning,
 		&cl.Enabled, &cl.IsDefault, &cl.CreatedBy, &createdAt, &updatedAt)

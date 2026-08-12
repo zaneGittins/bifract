@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"bifract/pkg/attack"
+	"bifract/pkg/auth"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
 
@@ -88,6 +90,11 @@ type publicDashboard struct {
 	TimeRangeType   string         `json:"time_range_type"`
 	RefreshInterval int            `json:"refresh_interval"`
 	Widgets         []publicWidget `json:"widgets"`
+	// AttackMatrix is the embedded MITRE matrix, sent only when a widget renders
+	// one. An anonymous viewer cannot call /attack/matrix (viewer+), and inlining
+	// it here beats opening a second public endpoint for what is public MITRE
+	// reference data. Absent for every dashboard without a mitre() panel.
+	AttackMatrix interface{} `json:"attack_matrix,omitempty"`
 }
 
 // stripJSONKeys removes the given top-level keys from a JSON object blob. Returns
@@ -121,8 +128,13 @@ func buildPublicDashboard(d *storage.Dashboard, widgets []storage.DashboardWidge
 		RefreshInterval: d.RefreshInterval,
 		Widgets:         make([]publicWidget, 0, len(widgets)),
 	}
+	needsAttack := false
 	for i := range widgets {
 		w := widgets[i]
+		results := stripJSONKeys(w.LastResults, "sql")
+		if resultChartType(results) == "mitre" {
+			needsAttack = true
+		}
 		pub.Widgets = append(pub.Widgets, publicWidget{
 			ID:             w.ID,
 			Title:          w.Title,
@@ -132,11 +144,34 @@ func buildPublicDashboard(d *storage.Dashboard, widgets []storage.DashboardWidge
 			PosY:           w.PosY,
 			Width:          w.Width,
 			Height:         w.Height,
-			Results:        stripJSONKeys(w.LastResults, "sql"),
+			Results:        results,
 			LastExecutedAt: w.LastExecutedAt,
 		})
 	}
+	if needsAttack {
+		// A corrupt embedded matrix is a build defect, not a reason to 500 an
+		// otherwise-fine wallboard: the panel says so itself when it is missing.
+		if m, err := attack.Get(); err == nil {
+			pub.AttackMatrix = m
+		}
+	}
 	return pub
+}
+
+// resultChartType reads chart_type out of a cached widget result blob. The
+// renderer keys off the cached result, not the widget's configured type, so this
+// must read the same field.
+func resultChartType(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var probe struct {
+		ChartType string `json:"chart_type"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return ""
+	}
+	return probe.ChartType
 }
 
 // ---- anonymous handler ----
@@ -249,14 +284,7 @@ func (h *DashboardHandler) HandleCreateSharedLink(w http.ResponseWriter, r *http
 		expiresAt = &t
 	}
 
-	// created_by must reference a real user row; synthetic API-key principals
-	// (apikey_<id>) have no users entry, so store NULL for them.
-	createdBy := ""
-	if authType, _ := r.Context().Value("auth_type").(string); authType != "api_key" {
-		if user, ok := r.Context().Value("user").(*storage.User); ok && user != nil {
-			createdBy = user.Username
-		}
-	}
+	createdBy := auth.AttributionUsername(r.Context())
 
 	full, hash, prefix, err := generateShareToken()
 	if err != nil {

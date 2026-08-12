@@ -7,9 +7,11 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
+	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
 	"bifract/pkg/storage"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // Handler provides HTTP endpoints for the chat system.
@@ -293,7 +295,7 @@ func (h *Handler) HandleCreateInstruction(w http.ResponseWriter, r *http.Request
 		h.respondError(w, http.StatusBadRequest, "Legacy instructions are not available in prism context. Use instruction libraries instead.")
 		return
 	}
-	username := h.getUsername(r)
+	username := auth.AttributionUsername(r.Context())
 
 	var req struct {
 		Name      string `json:"name"`
@@ -458,6 +460,11 @@ func (h *Handler) getScope(r *http.Request) (fractalID, prismID string, err erro
 	return "", "", fmt.Errorf("no fractal or prism selected")
 }
 
+// getUsername returns the session identity that owns chat state. Conversations
+// are private to their creator, so this stays the acting principal and is never
+// widened to the API key's creator. Conversation routes are closed to API keys
+// (see DenyAPIKey in main.go); only chat_instructions, which are fractal config
+// rather than personal state, take an attributed writer.
 func (h *Handler) getUsername(r *http.Request) string {
 	user, _ := r.Context().Value("user").(*storage.User)
 	if user != nil {

@@ -13,7 +13,8 @@
 -- Fix: 008 keyed the file MV off fields.artifact, but the normalized field is target_file,
 -- so file_write rows were effectively never written on installs that applied 008. Recreate it.
 DROP VIEW IF EXISTS proc_freq_file_mv;
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_file_mv TO proc_freq AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_file_mv TO proc_freq
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
@@ -27,7 +28,8 @@ WHERE fields.bifract_category = 'file_write' AND fields.image::String != '' AND 
 GROUP BY fractal_id, src_image, event_type, target_norm, day;
 
 -- remote_thread: actor (fields.image) creates a remote thread in target_image (Sysmon EID 8, injection).
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_rthread_mv TO proc_freq AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_rthread_mv TO proc_freq
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
@@ -41,7 +43,8 @@ WHERE fields.bifract_category = 'remote_thread' AND fields.image::String != '' A
 GROUP BY fractal_id, src_image, event_type, target_norm, day;
 
 -- process_access: actor (fields.image) opens a handle to target_image (Sysmon EID 10, e.g. LSASS access).
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_pacc_mv TO proc_freq AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_pacc_mv TO proc_freq
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
@@ -55,7 +58,8 @@ WHERE fields.bifract_category = 'process_access' AND fields.image::String != '' 
 GROUP BY fractal_id, src_image, event_type, target_norm, day;
 
 -- dns_query: image resolves a domain (Sysmon EID 22). target is the lowercased, root-dot-stripped query.
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_dns_mv TO proc_freq AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_dns_mv TO proc_freq
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,

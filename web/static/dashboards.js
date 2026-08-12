@@ -911,6 +911,25 @@ const Dashboards = {
             return heatmapHtml;
         }
 
+        if (chartType === 'mitre') {
+            const mitreId = `dmitre-${chartId}`;
+            const mitreHtml = `
+                <div class="chart-container" style="margin:0;padding:6px;background:var(--bg-secondary);border-radius:4px;height:calc(100% - 12px);box-sizing:border-box;position:relative;overflow:auto;">
+                    <div id="${mitreId}" class="mtr-host widget-visual-host" style="height:100%;"></div>
+                </div>
+            `;
+            setTimeout(() => {
+                const el = document.getElementById(mitreId);
+                // embedded: a wallboard panel opens on what fired, not on 700 empty cells.
+                if (el && window.BifractMitreMatrix) BifractMitreMatrix.render(el, {
+                    rows: results.results || [],
+                    config: results.chart_config || {},
+                    embedded: true
+                });
+            }, 300);
+            return mitreHtml;
+        }
+
         if (chartType === 'worldmap') {
             const mapId = `dmap-${chartId}`;
             const mapHtml = `

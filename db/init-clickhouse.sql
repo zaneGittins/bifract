@@ -166,7 +166,8 @@ SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_i
 
 -- Feeds logs_histogram from every insert into the local logs table.
 -- The MV writes to the local logs_histogram. The distributed table handles cross-shard reads.
-CREATE MATERIALIZED VIEW IF NOT EXISTS logs_histogram_mv TO logs_histogram AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS logs_histogram_mv TO logs_histogram
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     toStartOfMinute(timestamp) AS minute,
@@ -235,7 +236,8 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 -- Feeds logs_hot from every insert into the local logs table.
 -- The MV writes to local logs_hot on each shard — it fires per-shard when distributed
 -- writes land on local logs, so the distributed layer is never in the write path.
-CREATE MATERIALIZED VIEW IF NOT EXISTS logs_hot_mv TO logs_hot AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS logs_hot_mv TO logs_hot
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     timestamp,
     log_id,
@@ -283,7 +285,8 @@ SETTINGS index_granularity = 8192;
 
 -- Populates proc_lineage from process-create events, keyed on the normalized
 -- category (Phase A). ::String is safe whether or not the type hint is applied yet.
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_lineage_mv TO proc_lineage AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_lineage_mv TO proc_lineage
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     timestamp,
@@ -314,7 +317,8 @@ ORDER BY (fractal_id, src_image, event_type, target_norm, day)
 TTL day + INTERVAL 730 DAY
 SETTINGS index_granularity = 8192;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_spawn_mv TO proc_freq AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_spawn_mv TO proc_freq
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.parent_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
@@ -327,7 +331,8 @@ FROM logs
 WHERE fields.bifract_category = 'process_creation' AND fields.parent_image::String != '' AND fields.image::String != ''
 GROUP BY fractal_id, src_image, event_type, target_norm, day;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_file_mv TO proc_freq AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_file_mv TO proc_freq
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
@@ -340,7 +345,8 @@ FROM logs
 WHERE fields.bifract_category = 'file_write' AND fields.image::String != '' AND fields.target_file::String != ''
 GROUP BY fractal_id, src_image, event_type, target_norm, day;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_net_mv TO proc_freq AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_net_mv TO proc_freq
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
@@ -353,7 +359,8 @@ FROM logs
 WHERE fields.bifract_category = 'network_connect' AND fields.image::String != '' AND fields.dst_ip::String != ''
 GROUP BY fractal_id, src_image, event_type, target_norm, day;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_dns_mv TO proc_freq AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_dns_mv TO proc_freq
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
@@ -366,7 +373,8 @@ FROM logs
 WHERE fields.bifract_category = 'dns_query' AND fields.image::String != '' AND fields.query::String != ''
 GROUP BY fractal_id, src_image, event_type, target_norm, day;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_rthread_mv TO proc_freq AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_rthread_mv TO proc_freq
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
@@ -379,7 +387,8 @@ FROM logs
 WHERE fields.bifract_category = 'remote_thread' AND fields.image::String != '' AND fields.target_image::String != ''
 GROUP BY fractal_id, src_image, event_type, target_norm, day;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_pacc_mv TO proc_freq AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_pacc_mv TO proc_freq
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
@@ -421,7 +430,8 @@ SETTINGS index_granularity = 8192;
 -- Single MV feeding process_edges for the three default pgr leaf categories. One pass over each
 -- insert block (WHERE category IN (...)), per-category projection via multiIf. Abstraction regexes
 -- copied verbatim from the proc_freq MVs above -- keep them identical.
-CREATE MATERIALIZED VIEW IF NOT EXISTS process_edges_mv TO process_edges AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS process_edges_mv TO process_edges
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     fields.process_guid::String AS process_guid,

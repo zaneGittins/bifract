@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"bifract/pkg/storage"
+
 	"github.com/lib/pq"
 )
 
@@ -275,7 +277,7 @@ func (m *Manager) FeedAlertFacetsFor(ctx context.Context, fractalID, prismID str
 func (m *Manager) BatchToggleFeedAlertsFiltered(ctx context.Context, q FeedAlertQuery, enabled bool, updatedBy string) (int, error) {
 	b := &argBuilder{}
 	enabledArg := b.next(enabled)
-	updatedByArg := b.next(updatedBy)
+	updatedByArg := b.next(storage.NullableUser(updatedBy))
 	where := q.where(b)
 
 	result, err := m.pg.Exec(ctx, fmt.Sprintf(`

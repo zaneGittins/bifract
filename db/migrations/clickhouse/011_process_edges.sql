@@ -22,7 +22,8 @@ ORDER BY (fractal_id, process_guid, event_type, dst_node)
 TTL toDateTime(timestamp) + INTERVAL 730 DAY
 SETTINGS index_granularity = 8192;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS process_edges_mv TO process_edges AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS process_edges_mv TO process_edges
+DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     fields.process_guid::String AS process_guid,

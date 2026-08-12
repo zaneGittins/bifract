@@ -207,6 +207,22 @@ const SharedRender = {
             return html;
         }
 
+        if (chartType === 'mitre') {
+            const html = wrap(`<div id="${cid}" class="mtr-host" style="height:100%;overflow:auto;"></div>`);
+            setTimeout(() => {
+                const el = document.getElementById(cid);
+                // An anonymous viewer cannot fetch the matrix, so the shared payload
+                // carries it (see publicDashboard.attack_matrix).
+                if (el && window.BifractMitreMatrix) BifractMitreMatrix.render(el, {
+                    rows: results.results || [],
+                    config: results.chart_config || {},
+                    matrix: this.data && this.data.attack_matrix,
+                    embedded: true
+                });
+            }, 60);
+            return html;
+        }
+
         if (chartType === 'worldmap') {
             const html = wrap(`<div id="${cid}" class="worldmap-container" style="height:100%;"></div>`);
             setTimeout(() => {
