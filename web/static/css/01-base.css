@@ -971,6 +971,12 @@ body {
     z-index: 200;
 }
 
+/* Anchor to the button's right edge, for menus that sit near the viewport edge. */
+.toolbar-dropdown-menu.toolbar-dropdown-right {
+    left: auto;
+    right: 0;
+}
+
 .toolbar-menu-item {
     display: flex;
     align-items: center;

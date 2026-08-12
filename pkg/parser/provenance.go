@@ -257,8 +257,8 @@ func BuildProcessTreeHopSQL(frontier []string, forward bool, opts QueryOptions) 
 		quoted[i] = "'" + escapeString(g) + "'"
 	}
 	conds := []string{
-		fmt.Sprintf("timestamp >= '%s'", opts.StartTime.Format("2006-01-02 15:04:05")),
-		fmt.Sprintf("timestamp <= '%s'", opts.EndTime.Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("timestamp >= '%s'", chTimeLiteral(opts.StartTime)),
+		fmt.Sprintf("timestamp <= '%s'", chTimeLiteral(opts.EndTime)),
 	}
 	if fc := procLineageFractalCond(opts, ""); fc != "" {
 		conds = append(conds, fc)
@@ -295,8 +295,8 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, opts Qu
 	}
 	logs := opts.EffectiveTableName()
 
-	tsStart := opts.StartTime.Format("2006-01-02 15:04:05")
-	tsEnd := opts.EndTime.Format("2006-01-02 15:04:05")
+	tsStart := chTimeLiteral(opts.StartTime)
+	tsEnd := chTimeLiteral(opts.EndTime)
 	// The user's query window, applied to the process_guid-matched edge reads (file/net/dns rollup
 	// + p2p logs scan). No probe is needed anymore: the edge/p2p reads scope by guid, so the window
 	// only trims which of the tree's edges are in range, not the scan cost.
@@ -469,7 +469,7 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 
 	// pm reads process_creation logs by process_guid over the user's query window.
 	timeWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'",
-		opts.StartTime.Format("2006-01-02 15:04:05"), opts.EndTime.Format("2006-01-02 15:04:05"))
+		chTimeLiteral(opts.StartTime), chTimeLiteral(opts.EndTime))
 	fractal := procLineageFractalCond(opts, "")
 	frac := func() string {
 		if fractal == "" {
@@ -662,8 +662,8 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, totalHosts, totalI
 		procFreq = "proc_freq"
 	}
 
-	tsStart := opts.StartTime.Format("2006-01-02 15:04:05")
-	tsEnd := opts.EndTime.Format("2006-01-02 15:04:05")
+	tsStart := chTimeLiteral(opts.StartTime)
+	tsEnd := chTimeLiteral(opts.EndTime)
 	timeWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", tsStart, tsEnd)
 	fractal := procLineageFractalCond(opts, "")
 	fracAnd := ""

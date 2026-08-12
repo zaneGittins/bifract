@@ -277,47 +277,34 @@ func TestBooleanLogic(t *testing.T) {
 // stripping the time/fractal/ORDER BY boilerplate so tests can assert on the
 // exact logical structure.
 func extractWhere(sql string) string {
-	// The standard prefix ends with "AND " after the timestamp/fractal clauses.
-	// Find the last standard "AND " before user conditions by looking for the
-	// pattern after the timestamp range.
-	// ORDER BY may be inside the inner subquery or on the outer formatter SELECT
-	// (after the fix that lifts ORDER BY to the formatter outer for streaming).
-	// Prefer ") ORDER BY" so the closing subquery paren is not captured.
-	end := strings.Index(sql, ") ORDER BY")
-	if end < 0 {
-		end = strings.Index(sql, " ORDER BY")
-	}
+	// The user conditions run from the end of the timestamp/fractal boilerplate to
+	// the source layer's ORDER BY (or the close of the source subquery when the
+	// query has none).
+	end := strings.Index(sql, " ORDER BY")
 	if end < 0 {
 		end = len(sql)
 	}
 
-	// Find the end of boilerplate: after "AND fractal_id = '...'" or after timestamp range
-	// The WHERE clause has: timestamp >= ... AND timestamp <= ... [AND fractal_id = '...'] AND <user conditions>
-	// We want to strip everything up to and including the last boilerplate AND.
-	markers := []string{
-		"AND fractal_id = '' AND ",
-	}
-	for _, m := range markers {
-		if idx := strings.Index(sql, m); idx >= 0 {
-			return sql[idx+len(m) : end]
-		}
-	}
-	// If no fractal_id, look after timestamp range
-	tsMarker := "' AND "
-	idx := strings.Index(sql, "timestamp >=")
-	if idx >= 0 {
-		// Find second timestamp clause
-		secondTs := strings.Index(sql[idx:], "timestamp <=")
-		if secondTs >= 0 {
+	start := 0
+	if marker := "AND fractal_id = '' AND "; strings.Contains(sql, marker) {
+		start = strings.Index(sql, marker) + len(marker)
+	} else if idx := strings.Index(sql, "timestamp >="); idx >= 0 {
+		// Skip past the second timestamp clause.
+		if secondTs := strings.Index(sql[idx:], "timestamp <="); secondTs >= 0 {
 			afterSecondTs := idx + secondTs
-			closeQuote := strings.Index(sql[afterSecondTs:], tsMarker)
-			if closeQuote >= 0 {
-				start := afterSecondTs + closeQuote + len(tsMarker)
-				return sql[start:end]
+			if closeQuote := strings.Index(sql[afterSecondTs:], "' AND "); closeQuote >= 0 {
+				start = afterSecondTs + closeQuote + len("' AND ")
 			}
 		}
 	}
-	return sql[:end]
+
+	where := sql[start:end]
+	// When the WHERE is the last thing inside the source subquery, the slice picks
+	// up the paren that closes it.
+	if strings.HasSuffix(where, ")") && strings.Count(where, ")") > strings.Count(where, "(") {
+		where = where[:len(where)-1]
+	}
+	return where
 }
 
 func TestNOTGroupParentheses(t *testing.T) {

@@ -21,7 +21,6 @@ const QueryExecutor = {
     deferredShareLink: null, // Store share link data waiting for fractals to load
     deferredPollingInterval: null, // Interval for polling fractal availability
     isProcessingSharedQuery: false, // Flag to prevent clearing state during shared query processing
-    pendingActiveDays: null,        // Set before execute() to pass pre-computed days to the query handler (skips preflight)
 
     // Default element configuration for main search view
     elementConfig: {
@@ -379,11 +378,6 @@ const QueryExecutor = {
                 start: this.currentTimeRange.start,
                 end: this.currentTimeRange.end
             };
-            if (this.currentTimeRange.selective) requestBody.selective = true;
-            if (this.pendingActiveDays && this.pendingActiveDays.length) {
-                requestBody.active_days = this.pendingActiveDays;
-                this.pendingActiveDays = null;
-            }
             const _vars = this.variablesPayload();
             if (_vars) requestBody.variables = _vars;
 
@@ -732,6 +726,8 @@ const QueryExecutor = {
             outputLabel.textContent = label || 'Table';
         }
 
+        this.syncResultControls({ outputTypeOnly: true });
+
         // Rows arrive pre-sorted (timestamp DESC) during a stream; block column
         // sorting until done so a mid-stream re-sort can't scramble partial data.
         // The loading chrome itself is owned by the deferred indicator, not here.
@@ -847,18 +843,7 @@ const QueryExecutor = {
             elements.executionTime.style.display = 'inline';
         }
 
-        const exportBtn = document.getElementById('exportCsvBtn');
-        if (exportBtn && this.currentResults && this.currentResults.length > 0) {
-            exportBtn.style.display = 'inline-block';
-        }
-
-        const wrapBtn = document.getElementById('wrapToggleBtn');
-        if (wrapBtn && this.currentResults && this.currentResults.length > 0) {
-            wrapBtn.style.display = 'inline-block';
-            wrapBtn.classList.add('active');
-            const resultsTableEl = document.getElementById('resultsTable');
-            if (resultsTableEl) resultsTableEl.classList.add('table-wrap');
-        }
+        this.syncResultControls();
 
         this._updateLoadMoreButton(data.has_more);
 
@@ -1635,15 +1620,11 @@ const QueryExecutor = {
             }
         }
 
-        // Hide export CSV button when there's an error
-        const exportBtn = document.getElementById('exportCsvBtn');
-        if (exportBtn) {
-            exportBtn.style.display = 'none';
-        }
+        // Nothing rendered, so no result controls apply.
+        const exportWrap = document.getElementById('exportMenuWrap');
+        if (exportWrap) exportWrap.style.display = 'none';
         const wrapBtn = document.getElementById('wrapToggleBtn');
-        if (wrapBtn) {
-            wrapBtn.style.display = 'none';
-        }
+        if (wrapBtn) wrapBtn.style.display = 'none';
     },
 
     showQueryError(message, errorPos) {
@@ -1996,6 +1977,43 @@ const QueryExecutor = {
         return null;
     },
 
+    // Show only the results-header controls that apply to the current output type:
+    // charts replace the row table, so wrap has nothing to act on, and the fields
+    // rail reports statistics over raw events, which no chart or aggregation has.
+    // opts.outputTypeOnly runs mid-query, when the type is known but the previous
+    // result is still on screen: retire what the new type rules out, nothing else.
+    syncResultControls(opts = {}) {
+        const isChart = !!this.chartType;
+        const hasRows = !!(this.currentResults && this.currentResults.length > 0);
+        // Clearing the inline value restores each element's own display mode.
+        const show = (id, visible) => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = visible ? '' : 'none';
+        };
+
+        if (isChart || this.isAggregated) {
+            if (window.FieldStats && FieldStats.isOpen) FieldStats.close();
+            show('fieldsRailToggle', false);
+            if (isChart) show('wrapToggleBtn', false);
+        } else if (!opts.outputTypeOnly) {
+            show('fieldsRailToggle', true);
+        }
+        if (opts.outputTypeOnly) return;
+
+        show('exportMenuWrap', hasRows);
+        // PNG only for output types that paint into a canvas we can encode.
+        show('exportPngItem', hasRows && !!this._exportCanvas());
+        if (!isChart) show('wrapToggleBtn', hasRows);
+
+        // Row wrap defaults on for table results.
+        if (hasRows && !isChart) {
+            const wrapBtn = document.getElementById('wrapToggleBtn');
+            if (wrapBtn) wrapBtn.classList.add('active');
+            const resultsTableEl = document.getElementById('resultsTable');
+            if (resultsTableEl) resultsTableEl.classList.add('table-wrap');
+        }
+    },
+
     toggleWrap() {
         const container = document.getElementById('resultsTable');
         const btn = document.getElementById('wrapToggleBtn');
@@ -2013,60 +2031,143 @@ const QueryExecutor = {
         }
     },
 
+    _hasExportableRows() {
+        if (this.currentResults && this.currentResults.length > 0) return true;
+        Toast.show('No results to export', 'warning');
+        return false;
+    },
+
+    // Save a blob as bifract-results-<timestamp>.<ext>. Returns the filename, or
+    // null if the browser cannot download.
+    _downloadBlob(blob, ext) {
+        const link = document.createElement('a');
+        if (link.download === undefined) {
+            Toast.show('Downloads are not supported in this browser', 'error');
+            return null;
+        }
+        const timestamp = new Date().toISOString().slice(0, 19).replace(/[:]/g, '-');
+        const filename = `bifract-results-${timestamp}.${ext}`;
+        const url = URL.createObjectURL(blob);
+        link.href = url;
+        link.download = filename;
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        return filename;
+    },
+
     exportToCsv() {
-        if (!this.currentResults || this.currentResults.length === 0) {
-            Toast.show('No results to export', 'warning');
+        if (!this._hasExportableRows()) return;
+
+        try {
+            const fields = this.fieldOrder || Object.keys(this.currentResults[0]);
+            const cell = (value) => {
+                if (value === null || value === undefined) return '""';
+                const s = typeof value === 'object' ? JSON.stringify(value) : String(value);
+                return `"${s.replace(/"/g, '""')}"`;
+            };
+
+            let csv = fields.map(cell).join(',') + '\n';
+            for (const row of this.currentResults) {
+                csv += fields.map(f => cell(row[f])).join(',') + '\n';
+            }
+
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const filename = this._downloadBlob(blob, 'csv');
+            if (filename) Toast.show(`Exported ${this.currentResults.length} results to ${filename}`, 'success');
+        } catch (error) {
+            console.error('Export error:', error);
+            Toast.show('Failed to export CSV: ' + error.message, 'error');
+        }
+    },
+
+    // One JSON object per line. Nested values survive intact rather than being
+    // stringified into a CSV cell, and _all_fields is merged up so each line is
+    // the whole event instead of the projected columns plus an opaque blob.
+    exportToJsonl() {
+        if (!this._hasExportableRows()) return;
+
+        try {
+            const order = this.fieldOrder || [];
+            const lines = this.currentResults.map(row => {
+                let flat = row;
+                if (row._all_fields && typeof row._all_fields === 'object') {
+                    const { _all_fields, ...projected } = row;
+                    flat = { ..._all_fields, ...projected };
+                }
+                // Lead with the columns on screen, then everything else.
+                const out = {};
+                for (const f of order) if (f in flat) out[f] = flat[f];
+                for (const k of Object.keys(flat)) if (!(k in out)) out[k] = flat[k];
+                return JSON.stringify(out);
+            });
+
+            const blob = new Blob([lines.join('\n') + '\n'], { type: 'application/x-ndjson;charset=utf-8;' });
+            const filename = this._downloadBlob(blob, 'jsonl');
+            if (filename) Toast.show(`Exported ${this.currentResults.length} results to ${filename}`, 'success');
+        } catch (error) {
+            console.error('Export error:', error);
+            Toast.show('Failed to export JSON Lines: ' + error.message, 'error');
+        }
+    },
+
+    // The canvas backing the current chart, or null if this output type has none.
+    // mitre, pgraph and singleval are DOM, and worldmap's cross-origin Leaflet
+    // tiles taint its canvas so toDataURL/toBlob would throw a SecurityError.
+    _exportCanvas() {
+        const container = document.getElementById('chartContainer');
+        if (!container || container.style.display === 'none') return null;
+        switch (this.chartType) {
+            case 'piechart':
+                return container.querySelector('.pie-chart-wrapper canvas');
+            case 'barchart':
+            case 'timechart':
+            case 'histogram': {
+                const canvas = document.getElementById('resultsChart');
+                return canvas && canvas.style.display !== 'none' ? canvas : null;
+            }
+            case 'heatmap':
+                // First canvas is the painted grid; the second is the hover overlay.
+                return container.querySelector('.heatmap-container canvas');
+            case 'graph':
+            case 'mesh':
+                return container.querySelector('#networkGraph canvas');
+            default:
+                return null;
+        }
+    },
+
+    exportToPng() {
+        const source = this._exportCanvas();
+        if (!source) {
+            Toast.show('This output type cannot be exported as an image', 'warning');
             return;
         }
 
         try {
-            // Get field order from the last query or use the first result's keys
-            const fields = this.fieldOrder || Object.keys(this.currentResults[0]);
+            // Chart canvases are transparent, so composite onto the panel background
+            // or a dark-theme export is unreadable wherever it lands.
+            const out = document.createElement('canvas');
+            out.width = source.width;
+            out.height = source.height;
+            const ctx = out.getContext('2d');
+            ctx.fillStyle = ThemeManager.getCSSVar('--bg-secondary') || '#ffffff';
+            ctx.fillRect(0, 0, out.width, out.height);
+            ctx.drawImage(source, 0, 0);
 
-            // Create CSV header
-            let csvContent = fields.map(field => `"${field}"`).join(',') + '\n';
-
-            // Add CSV rows
-            this.currentResults.forEach(row => {
-                const values = fields.map(field => {
-                    let value = row[field];
-
-                    // Handle different data types
-                    if (value === null || value === undefined) {
-                        return '""';
-                    } else if (typeof value === 'object') {
-                        return `"${JSON.stringify(value).replace(/"/g, '""')}"`;
-                    } else {
-                        return `"${String(value).replace(/"/g, '""')}"`;
-                    }
-                });
-                csvContent += values.join(',') + '\n';
-            });
-
-            // Create and download file
-            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-            const link = document.createElement('a');
-            const timestamp = new Date().toISOString().slice(0, 19).replace(/[:]/g, '-');
-            const filename = `bifract-results-${timestamp}.csv`;
-
-            if (link.download !== undefined) {
-                const url = URL.createObjectURL(blob);
-                link.setAttribute('href', url);
-                link.setAttribute('download', filename);
-                link.style.visibility = 'hidden';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(url);
-
-                Toast.show(`Exported ${this.currentResults.length} results to ${filename}`, 'success');
-            } else {
-                Toast.show('CSV export not supported in this browser', 'error');
-            }
-
+            out.toBlob((blob) => {
+                if (!blob) {
+                    Toast.show('Failed to export image', 'error');
+                    return;
+                }
+                const filename = this._downloadBlob(blob, 'png');
+                if (filename) Toast.show(`Exported chart to ${filename}`, 'success');
+            }, 'image/png');
         } catch (error) {
             console.error('Export error:', error);
-            Toast.show('Failed to export CSV: ' + error.message, 'error');
+            Toast.show('Failed to export image: ' + error.message, 'error');
         }
     },
 

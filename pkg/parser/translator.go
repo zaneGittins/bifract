@@ -569,6 +569,14 @@ func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) string {
 	return strings.Join(helperPlan.SourceStage().Layer.Where, " AND ")
 }
 
+// chTimeLiteral renders a time as a ClickHouse datetime literal for comparison
+// against a DateTime64(3) column. Second precision silently excludes rows in the
+// sub-second remainder of the range end. Never use it for a plain DateTime column
+// (e.g. logs_histogram.minute): those reject a fractional literal with code 53.
+func chTimeLiteral(t time.Time) string {
+	return t.Format("2006-01-02 15:04:05.000")
+}
+
 // addBaseConditions adds time range and fractal isolation conditions.
 func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 	// A subquery source (pgr composition) is already scoped by time + fractal inside the
@@ -584,8 +592,8 @@ func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 		tsCol = "ingest_timestamp"
 	}
 	source.Layer.Where = append(source.Layer.Where,
-		fmt.Sprintf("%s >= '%s'", tsCol, opts.StartTime.Format("2006-01-02 15:04:05")),
-		fmt.Sprintf("%s <= '%s'", tsCol, opts.EndTime.Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("%s >= '%s'", tsCol, chTimeLiteral(opts.StartTime)),
+		fmt.Sprintf("%s <= '%s'", tsCol, chTimeLiteral(opts.EndTime)),
 	)
 
 	if len(opts.FractalIDs) > 0 {
@@ -699,7 +707,11 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		if len(opts.SourceOrderBy) > 0 {
 			activeStage.Layer.OrderBy = opts.SourceOrderBy
 		} else if activeStage.IsSource {
-			activeStage.Layer.OrderBy = []string{"timestamp DESC"}
+			// log_id breaks ties: it completes the logs sorting key (timestamp, log_id),
+			// so ClickHouse still reads in reverse key order, and without it the rows
+			// that survive the LIMIT at the boundary timestamp are arbitrary -- which
+			// also drifts the cursor page boundary between runs.
+			activeStage.Layer.OrderBy = []string{"timestamp DESC", "log_id DESC"}
 			defaultTimeOrder = true
 		}
 	}
@@ -736,29 +748,22 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		fieldOrder = dropHiddenDeferredFields(fieldOrder, plan)
 
 		// When formatters add a subquery wrapper AND the query uses the default
-		// timestamp-DESC order, lift ORDER BY and LIMIT to the formatter outer SELECT.
-		// With ORDER BY inside a subquery ClickHouse must fully materialize the inner
-		// sort before returning any rows; moving it to the outer level lets ClickHouse
-		// use its MergeTree streaming sort and return rows progressively to the driver.
-		// Join queries null out Formatters after this block, so only lift when
-		// formatters will actually be rendered around the source query.
+		// timestamp-DESC order, mirror ORDER BY and LIMIT onto the formatter outer
+		// SELECT so the final output stays ordered after projection.
 		//
-		// Exception: distributed queries (IncludeShardNum == cluster mode). Lifting
-		// LIMIT off the source means each shard returns ALL matching rows to the
-		// coordinator before the outer LIMIT fires, which transfers unbounded data.
-		// Keeping ORDER BY LIMIT in the source causes each shard to limit its own
-		// output first; the coordinator merge-sorts across shards and re-applies the
-		// outer LIMIT — correct and dramatically cheaper over the network.
-		// model_lookup (like join) nulls its formatters below so the join output
-		// columns survive; skip the ORDER BY/LIMIT lift here so the source keeps its
-		// own sort (the formatter wrapper that would have re-applied it is removed).
+		// The source keeps its own ORDER BY LIMIT. It must: the formatter projects
+		// toString(timestamp) AS timestamp, so an outer ORDER BY timestamp binds to
+		// that String alias rather than to the DateTime64 sorting key, which disables
+		// optimize_read_in_order and forces a full scan of the range no matter how
+		// small the LIMIT. Keeping the sort on the source lets ClickHouse read the
+		// MergeTree in reverse sorting-key order and stop at the LIMIT (measured on a
+		// 2M-row day: 130k rows read instead of 2M). On a cluster it also makes each
+		// shard limit its own output before the coordinator merge-sorts, rather than
+		// shipping every matching row. Join queries null out Formatters after this
+		// block, so only mirror when formatters will actually be rendered.
 		if defaultTimeOrder && len(plan.Formatters) > 0 && !plan.IsJoin && plan.ModelLookupSQL == "" {
 			plan.FormatterOrderBy = activeStage.Layer.OrderBy
 			plan.FormatterLimit = activeStage.Layer.Limit
-			if !ctx.Opts.IncludeShardNum {
-				activeStage.Layer.OrderBy = nil
-				activeStage.Layer.Limit = ""
-			}
 		}
 		// norm_log is the default content column (normalized fields). Strip it from the
 		// display order when the user has explicitly chosen columns via | table(...).

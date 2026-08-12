@@ -125,15 +125,13 @@ func (h *QueryHandler) SetRBACResolver(resolver *rbac.Resolver) {
 }
 
 type QueryRequest struct {
-	Query      string   `json:"query"`
-	QueryType  string   `json:"query_type,omitempty"`  // reserved, always treated as "bql"
-	Start      string   `json:"start,omitempty"`       // RFC3339 format
-	End        string   `json:"end,omitempty"`         // RFC3339 format
-	FractalID  string   `json:"fractal_id,omitempty"`  // Fractal ID for multi-tenant queries
-	Profile    bool     `json:"profile,omitempty"`     // collect per-shard profiling data via system.query_log
-	Cursor     string   `json:"cursor,omitempty"`      // opaque token for next-page cursor pagination
-	Selective  bool     `json:"selective,omitempty"`   // run active-days preflight and skip empty 8h windows
-	ActiveDays []string `json:"active_days,omitempty"` // pre-computed active days (YYYY-MM-DD); skips preflight when provided
+	Query     string `json:"query"`
+	QueryType string `json:"query_type,omitempty"` // reserved, always treated as "bql"
+	Start     string `json:"start,omitempty"`      // RFC3339 format
+	End       string `json:"end,omitempty"`        // RFC3339 format
+	FractalID string `json:"fractal_id,omitempty"` // Fractal ID for multi-tenant queries
+	Profile   bool   `json:"profile,omitempty"`    // collect per-shard profiling data via system.query_log
+	Cursor    string `json:"cursor,omitempty"`     // opaque token for next-page cursor pagination
 	// Variables carries the @name -> value bindings for query variables, as a
 	// JSON array of {"name","value"}. The server substitutes them into Query
 	// before parsing (empty value -> "*"), so the raw @var form is what the
@@ -469,48 +467,6 @@ func histogramRollupSQL(table string, opts parser.QueryOptions, start, end time.
 	return fmt.Sprintf(
 		"SELECT toStartOfInterval(minute, INTERVAL %d SECOND) AS bucket, sum(cnt) AS cnt FROM %s WHERE %s GROUP BY bucket ORDER BY bucket",
 		bucketSec, table, strings.Join(conds, " AND "),
-	)
-}
-
-// buildWindowSQL re-translates the query with a narrower time window and a
-// per-window row limit. Used by the windowed streaming path to issue 8-hour
-// chunks newest-first instead of one large distributed scan.
-func (p *preparedQuery) buildWindowSQL(windowStart, windowEnd time.Time, limit int) (string, error) {
-	opts := p.translationOpts
-	opts.StartTime = windowStart
-	opts.EndTime = windowEnd
-	opts.MaxRows = limit
-	result, err := parser.TranslateToSQLWithOrder(p.pipeline, opts)
-	if err != nil {
-		return "", err
-	}
-	sql := result.SQL
-	if !sqlLimitRE.MatchString(sql) {
-		if idx := strings.LastIndex(sql, " ORDER BY"); idx >= 0 {
-			if !strings.Contains(strings.ToUpper(sql[idx:]), "LOG_ID") {
-				sql += ", log_id DESC"
-			}
-		}
-		sql += fmt.Sprintf(" LIMIT %d", limit)
-	}
-	return sql, nil
-}
-
-// buildActiveDaysSQL returns a query that lists every calendar day containing at
-// least one log row for the given fractal/prism scope. Used by the selective
-// windowing path to skip 8-hour windows that have no data at all.
-func buildActiveDaysSQL(opts parser.QueryOptions) string {
-	var conds []string
-	conds = append(conds,
-		fmt.Sprintf("timestamp >= '%s'", opts.StartTime.Format("2006-01-02 15:04:05")),
-		fmt.Sprintf("timestamp <= '%s'", opts.EndTime.Format("2006-01-02 15:04:05")),
-	)
-	if scope := fractalScopeSQL(opts); scope != "" {
-		conds = append(conds, scope)
-	}
-	return fmt.Sprintf(
-		"SELECT DISTINCT toDate(timestamp) AS day FROM %s WHERE %s ORDER BY day DESC",
-		opts.EffectiveTableName(), strings.Join(conds, " AND "),
 	)
 }
 
@@ -1767,142 +1723,41 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			})
 		}
 
-		// For streamable queries spanning more than 8 hours, iterate 8-hour windows
-		// newest-first and stop as soon as the row cap is reached. This avoids
-		// issuing a single distributed scan over the full range: ClickHouse must
-		// scan every granule in the range regardless of LIMIT when non-primary-key
-		// filters (fractal_id, fields.*) are involved. Windowing lets the scan stop
-		// as soon as enough rows are found in recent data.
-		useWindowing := prep.req.Cursor == "" && !prep.appliedCursorPaging &&
-			prep.queryMaxRows > 0 && prep.endTime.Sub(prep.startTime) > 8*time.Hour
-
-		if useWindowing {
-			const windowDuration = 8 * time.Hour
-			windowEnd := prep.endTime
-			numWindows := int(math.Ceil(prep.endTime.Sub(prep.startTime).Hours() / 8))
-			log.Printf("[QueryHandler] Windowed streaming: %d x 8h windows over %s",
-				numWindows, prep.endTime.Sub(prep.startTime).Round(time.Minute))
-
-			// Selective mode: use pre-computed active days when provided by the
-			// caller (e.g. from model row data), otherwise run the cheap preflight
-			// query to discover which calendar days have data.
-			var activeDays map[string]bool
-			if len(prep.req.ActiveDays) > 0 {
-				activeDays = make(map[string]bool, len(prep.req.ActiveDays))
-				for _, d := range prep.req.ActiveDays {
-					if len(d) >= 10 {
-						activeDays[d[:10]] = true
-					}
-				}
-				log.Printf("[QueryHandler] Selective windowing: %d pre-computed active days", len(activeDays))
-			} else if prep.req.Selective {
-				activeDaySQL := buildActiveDaysSQL(prep.translationOpts)
-				if dayRows, dayErr := h.db.Query(queryCtx, activeDaySQL); dayErr != nil {
-					log.Printf("[QueryHandler] Active-days preflight failed (non-fatal): %v", dayErr)
-				} else if len(dayRows) > 0 {
-					activeDays = make(map[string]bool, len(dayRows))
-					for _, row := range dayRows {
-						switch v := row["day"].(type) {
-						case time.Time:
-							activeDays[v.UTC().Format("2006-01-02")] = true
-						case string:
-							// scanRowMap formats time.Time as "2006-01-02 15:04:05.000";
-							// take only the date portion.
-							if len(v) >= 10 {
-								activeDays[v[:10]] = true
-							}
-						}
-					}
-					log.Printf("[QueryHandler] Selective windowing: %d active days found", len(activeDays))
+		// One scan over the whole range, however many days it spans. The source
+		// carries ORDER BY timestamp DESC LIMIT, so ClickHouse reads the MergeTree in
+		// reverse sorting-key order and stops as soon as the limit is met; rows reach
+		// the client newest-first as they are produced. (This replaced a loop of 8-hour
+		// windows added when the generated SQL shadowed the sorting key with a String
+		// alias and so scanned the full range regardless of LIMIT -- see the ORDER BY
+		// note in translator.go. The loop cost a query round trip per window, dropped
+		// sub-second rows at each window boundary, and re-scoped join() subqueries to
+		// each window.)
+		streamErr := h.db.StreamQuery(queryCtx, searchID+"-main", prep.sql, onRow, onProgress)
+		flushBatch()
+		if clientGone || r.Context().Err() != nil {
+			return
+		}
+		if streamErr != nil && !errors.Is(streamErr, errStreamPageFull) && !errors.Is(streamErr, errStreamClient) {
+			if queryCtx.Err() == context.DeadlineExceeded {
+				writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
+			} else {
+				emitExecError(streamErr)
+			}
+			return
+		}
+		if prep.appliedCursorPaging {
+			if hasMoreOut && lastKept != nil {
+				if nc, encErr := encodeCursor(lastKept); encErr == nil {
+					nextCursorOut = nc
 				} else {
-					log.Printf("[QueryHandler] Selective windowing: preflight returned no days, skipping selective optimization")
+					hasMoreOut = false
 				}
 			}
-
-			firstWindow := true
-			windowIdx := 0
-			for !clientGone && count < prep.queryMaxRows && windowEnd.After(prep.startTime) {
-				windowStart := windowEnd.Add(-windowDuration)
-				if windowStart.Before(prep.startTime) {
-					windowStart = prep.startTime
-				}
-				// From window 2 onward subtract 1 second from the upper bound so that
-				// rows landing exactly on the 8-hour boundary are not returned twice.
-				// The format string is second-precision so 1s is the smallest unit that
-				// changes the rendered literal.
-				queryEnd := windowEnd
-				if !firstWindow {
-					queryEnd = windowEnd.Add(-time.Second)
-				}
-				firstWindow = false
-
-				// Selective: skip windows whose entire date range has no data.
-				if activeDays != nil {
-					d1 := windowStart.UTC().Format("2006-01-02")
-					d2 := queryEnd.UTC().Format("2006-01-02")
-					if !activeDays[d1] && !activeDays[d2] {
-						windowEnd = windowStart
-						continue
-					}
-				}
-
-				windowSQL, sqlErr := prep.buildWindowSQL(windowStart, queryEnd, prep.queryMaxRows-count)
-				if sqlErr != nil {
-					emitExecError(sqlErr)
-					return
-				}
-				streamErr := h.db.StreamQuery(queryCtx, fmt.Sprintf("%s-w%d", searchID, windowIdx), windowSQL, onRow, onProgress)
-				windowIdx++
-				flushBatch()
-				if clientGone || r.Context().Err() != nil {
-					return
-				}
-				if streamErr != nil && !errors.Is(streamErr, errStreamPageFull) && !errors.Is(streamErr, errStreamClient) {
-					if queryCtx.Err() == context.DeadlineExceeded {
-						writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
-					} else {
-						emitExecError(streamErr)
-					}
-					return
-				}
-				drainHistogram(false)
-				windowEnd = windowStart
-			}
-			if count >= prep.queryMaxRows {
-				if prep.isBloomQuery {
-					limitHitOut = "bloom"
-				} else {
-					limitHitOut = "search"
-				}
-			}
-		} else {
-			streamErr := h.db.StreamQuery(queryCtx, searchID+"-main", prep.sql, onRow, onProgress)
-			flushBatch()
-			if clientGone || r.Context().Err() != nil {
-				return
-			}
-			if streamErr != nil && !errors.Is(streamErr, errStreamPageFull) && !errors.Is(streamErr, errStreamClient) {
-				if queryCtx.Err() == context.DeadlineExceeded {
-					writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
-				} else {
-					emitExecError(streamErr)
-				}
-				return
-			}
-			if prep.appliedCursorPaging {
-				if hasMoreOut && lastKept != nil {
-					if nc, encErr := encodeCursor(lastKept); encErr == nil {
-						nextCursorOut = nc
-					} else {
-						hasMoreOut = false
-					}
-				}
-			} else if count == prep.queryMaxRows {
-				if prep.isBloomQuery {
-					limitHitOut = "bloom"
-				} else {
-					limitHitOut = "search"
-				}
+		} else if count == prep.queryMaxRows {
+			if prep.isBloomQuery {
+				limitHitOut = "bloom"
+			} else {
+				limitHitOut = "search"
 			}
 		}
 	} else {

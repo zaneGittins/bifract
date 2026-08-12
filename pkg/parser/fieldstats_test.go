@@ -27,8 +27,8 @@ func TestBuildFieldStatsSQL_ReusesFilterAndBounds(t *testing.T) {
 
 	// Time range + fractal scope from base conditions.
 	for _, want := range []string{
-		"timestamp >= '2026-07-01 00:00:00'",
-		"timestamp <= '2026-07-11 00:00:00'",
+		"timestamp >= '2026-07-01 00:00:00.000'",
+		"timestamp <= '2026-07-11 00:00:00.000'",
 		"fractal_id = 'f-123'",
 	} {
 		if !strings.Contains(sql, want) {

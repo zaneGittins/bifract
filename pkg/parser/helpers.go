@@ -332,8 +332,8 @@ func buildProcessTreeSQL(
 	// apply and are intentionally dropped (v1 scoping). Rebuilding from opts -- rather than
 	// reusing source.Layer.Where -- guarantees fractal isolation and prevents leaking
 	// logs-only columns (norm_log/raw_log/ingest_timestamp) that would crash the query.
-	tsStart := opts.StartTime.Format("2006-01-02 15:04:05")
-	tsEnd := opts.EndTime.Format("2006-01-02 15:04:05")
+	tsStart := chTimeLiteral(opts.StartTime)
+	tsEnd := chTimeLiteral(opts.EndTime)
 	baseConds := []string{
 		fmt.Sprintf("timestamp >= '%s'", tsStart),
 		fmt.Sprintf("timestamp <= '%s'", tsEnd),

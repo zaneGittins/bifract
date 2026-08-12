@@ -828,7 +828,6 @@ const AnalyticsModels = {
         }
 
         if (window.QueryExecutor) {
-            QueryExecutor.pendingActiveDays = sorted;
             setTimeout(() => QueryExecutor.execute(), 50);
         }
     },

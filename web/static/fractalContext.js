@@ -306,6 +306,7 @@ const FractalContext = {
             QueryExecutor.sortDirection = null;
             QueryExecutor.columnOrder = null;
             QueryExecutor.isAggregated = false;
+            QueryExecutor.chartType = '';
             QueryExecutor.currentFractalId = null;
         }
 
@@ -320,11 +321,8 @@ const FractalContext = {
             'pageInfo'
         ];
 
-        // Hide export CSV button
-        const exportBtn = document.getElementById('exportCsvBtn');
-        if (exportBtn) {
-            exportBtn.style.display = 'none';
-        }
+        // Reset the results-header controls to the empty state.
+        if (window.QueryExecutor) QueryExecutor.syncResultControls();
 
         elementsToReset.forEach(id => {
             const element = document.getElementById(id);

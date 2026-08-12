@@ -94,7 +94,48 @@ const (
 	// oscillation. Only evaluated when the archive spool is configured.
 	spoolPressureTrigger = 0.90
 	spoolPressureRelease = 0.70
+
+	// pressureReassert is how often an active backpressure condition rewrites
+	// its health notification. Notifications are pruned after 24h, so without
+	// this a multi-day outage would silently vanish from the notification list
+	// while it is still shedding logs.
+	pressureReassert = 4 * time.Hour
+	// criticalReassert is the reassert interval once a condition has escalated:
+	// data loss in progress deserves a more insistent reminder.
+	criticalReassert = time.Hour
+	// pressureEscalateAfter is how long a condition must stay active, while
+	// actually rejecting logs, before its notification escalates to critical.
+	// Rejecting logs is data loss, not a warning; an idle system under pressure
+	// drops nothing and stays at warning.
+	pressureEscalateAfter = 5 * time.Minute
 )
+
+// pressureState tracks one backpressure condition end to end: whether it is
+// active, since when, how many logs it has rejected, and the health
+// notification it owns.
+type pressureState struct {
+	label  string // log prefix, e.g. "Disk"
+	reason string // system-event reason, e.g. "disk_pressure"
+	notif  string // notification type, e.g. "ingest.disk_pressure"
+	title  string // notification title
+
+	active         atomic.Int64
+	highStreak     atomic.Int64 // consecutive polls above the trigger (CPU/memory)
+	sinceUnix      atomic.Int64
+	dropsActive    atomic.Int64 // logs rejected during the current activation
+	pendingDrops   atomic.Int64 // logs rejected since the last system-event flush
+	lastNotifyUnix atomic.Int64
+	critical       atomic.Bool
+	detail         atomic.Value // string: current human-readable value
+}
+
+func (p *pressureState) Active() bool { return p.active.Load() == 1 }
+
+// reject records n logs rejected because this condition is active.
+func (p *pressureState) reject(n int64) {
+	p.pendingDrops.Add(n)
+	p.dropsActive.Add(n)
+}
 
 // QueueMetrics tracks ingestion queue statistics
 type QueueMetrics struct {
@@ -160,45 +201,41 @@ type IngestQueue struct {
 	// the queue resets to healthy so Enqueue accepts traffic again.
 	lastFailureUnix atomic.Int64
 
-	// cpuPressure is 1 when ClickHouse CPU backpressure is active, 0 otherwise.
-	// Set by the background CPU monitor based on system.asynchronous_metrics.
-	cpuPressure   atomic.Int64
-	cpuHighStreak atomic.Int64 // consecutive polls above cpuPressureTrigger
-	// diskPressure is 1 when ClickHouse disk usage exceeds the high watermark.
-	// External ingestion is rejected while active; system fractals (audit,
-	// alerts, system) bypass this since they write directly via InsertLogs.
-	diskPressure atomic.Int64
-	// memPressure is 1 when ClickHouse memory (cgroup-aware) is near its limit.
-	// Set by the background monitor to shed ingest before an OOM-kill.
-	memPressure   atomic.Int64
-	memHighStreak atomic.Int64  // consecutive polls above memPressureTrigger
-	stop          chan struct{} // signals CPU/disk/memory monitor to exit
+	// Backpressure conditions, set by the background monitors. While any is
+	// active external ingestion is rejected; system fractals (audit, alerts,
+	// system) bypass this since they write directly via InsertLogs.
+	cpuState   pressureState // ClickHouse CPU, from system.asynchronous_metrics
+	memState   pressureState // ClickHouse memory, cgroup-aware
+	diskState  pressureState // ClickHouse disk usage
+	spoolState pressureState // archive spool disk usage
+
+	stop chan struct{} // signals CPU/disk/memory monitor to exit
 
 	// spool is the durable archive spool (nil unless the archive feature is
 	// provisioned). archiveEnabled gates the tee at runtime so a provisioned-
-	// but-disabled archive adds zero ingest overhead. spoolPressure is 1 when
-	// spool disk usage is near spoolMaxBytes (backpressure, like diskPressure).
+	// but-disabled archive adds zero ingest overhead.
 	spool          *spool.Writer
 	archiveEnabled atomic.Bool
-	spoolPressure  atomic.Int64
 	spoolMaxBytes  int64
 
 	// systemFractalID is set after startup to enable internal monitoring events.
 	systemFractalID atomic.Value // stores string
 
-	// Pending drop counts per reason, flushed as system events every 30s.
-	pendingDropsCPU   atomic.Int64
-	pendingDropsDisk  atomic.Int64
-	pendingDropsMem   atomic.Int64
+	// Drops from queue-depth backpressure (no monitor owns this one), flushed
+	// as system events every 30s alongside the per-condition counters.
 	pendingDropsQueue atomic.Int64
-	pendingDropsSpool atomic.Int64
 	lastDropFlushUnix atomic.Int64
+
+	// lastInsertErrNotify rate-limits the insert-failure notification so a
+	// failing ClickHouse cannot produce one Postgres write per failed batch.
+	lastInsertErrNotify atomic.Int64
 
 	notifWriter notifWriterIface
 }
 
 type notifWriterIface interface {
 	Write(notifType, severity, title, message string) error
+	WriteSustained(notifType, severity, title, message string, minInterval time.Duration) error
 }
 
 // partKey identifies a ClickHouse partition of the logs table, whose
@@ -349,11 +386,11 @@ func (q *IngestQueue) mdb() *storage.ClickHouseClient {
 // workers is the number of goroutines draining the queue.
 func NewIngestQueue(db *storage.ClickHouseClient, bufferSize, workers int) *IngestQueue {
 	q := &IngestQueue{
-		ch:           make(chan []storage.LogEntry, bufferSize),
-		db:           db,
-		workers:      workers,
-		bufSize:      bufferSize,
-		stop:         make(chan struct{}),
+		ch:      make(chan []storage.LogEntry, bufferSize),
+		db:      db,
+		workers: workers,
+		bufSize: bufferSize,
+		stop:    make(chan struct{}),
 		// Buffered by worker count so a ready bucket does not block the
 		// accumulator while every worker happens to be mid-insert.
 		flushCh:       make(chan *partBucket, workers),
@@ -363,6 +400,14 @@ func NewIngestQueue(db *storage.ClickHouseClient, bufferSize, workers int) *Inge
 		bufferBytes:   int64(envInt("BIFRACT_INGEST_BUFFER_BYTES", defaultBufferBytes)),
 		maxKeys:       envInt("BIFRACT_INGEST_MAX_KEYS", defaultMaxKeys),
 	}
+	q.cpuState = pressureState{label: "CPU", reason: "cpu_pressure",
+		notif: "ingest.cpu_pressure", title: "Ingest CPU Backpressure Active"}
+	q.memState = pressureState{label: "Memory", reason: "memory_pressure",
+		notif: "ingest.memory_pressure", title: "Ingest Memory Backpressure Active"}
+	q.diskState = pressureState{label: "Disk", reason: "disk_pressure",
+		notif: "ingest.disk_pressure", title: "Ingest Disk Backpressure Active"}
+	q.spoolState = pressureState{label: "Spool", reason: "spool_pressure",
+		notif: "ingest.spool_pressure", title: "Ingest Archive Spool Backpressure Active"}
 	for i := 0; i < workers; i++ {
 		q.wg.Add(1)
 		go q.worker(i)
@@ -405,38 +450,26 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 	}
 
 	// CPU backpressure: reject when ClickHouse CPU is saturated.
-	if q.cpuPressure.Load() == 1 {
-		n := int64(len(logs))
-		q.Metrics.QueueDrops.Add(n)
-		q.pendingDropsCPU.Add(n)
-		return false
+	if q.cpuState.Active() {
+		return q.rejectFor(&q.cpuState, logs)
 	}
 
 	// Memory backpressure: reject when ClickHouse is near its (cgroup) memory limit,
 	// so we stop feeding inserts before the kernel OOM-kills them.
-	if q.memPressure.Load() == 1 {
-		n := int64(len(logs))
-		q.Metrics.QueueDrops.Add(n)
-		q.pendingDropsMem.Add(n)
-		return false
+	if q.memState.Active() {
+		return q.rejectFor(&q.memState, logs)
 	}
 
 	// Disk backpressure: reject when ClickHouse disk is nearly full.
-	if q.diskPressure.Load() == 1 {
-		n := int64(len(logs))
-		q.Metrics.QueueDrops.Add(n)
-		q.pendingDropsDisk.Add(n)
-		return false
+	if q.diskState.Active() {
+		return q.rejectFor(&q.diskState, logs)
 	}
 
 	// Spool backpressure: when archiving is enabled and the durable spool is
 	// near capacity, reject early. Combined with the fail-closed tee below this
 	// guarantees we never ack a log we could not durably archive.
-	if q.spoolPressure.Load() == 1 {
-		n := int64(len(logs))
-		q.Metrics.QueueDrops.Add(n)
-		q.pendingDropsSpool.Add(n)
-		return false
+	if q.spoolState.Active() {
+		return q.rejectFor(&q.spoolState, logs)
 	}
 
 	// Accumulator memory backpressure: reject once buffered bytes exceed the
@@ -475,7 +508,9 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 			log.Printf("[Ingest Queue] spool append failed, rejecting batch: %v", err)
 			n := int64(len(logs))
 			q.Metrics.QueueDrops.Add(n)
-			q.pendingDropsSpool.Add(n)
+			// Counted against the spool condition for reporting only: this is a
+			// write failure, not the spool-capacity backpressure state.
+			q.spoolState.pendingDrops.Add(n)
 			return false
 		}
 	}
@@ -507,19 +542,19 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 	}
 }
 
+// rejectFor records a rejected batch against the condition that caused it and
+// returns false so the caller responds 429.
+func (q *IngestQueue) rejectFor(p *pressureState, logs []storage.LogEntry) bool {
+	n := int64(len(logs))
+	q.Metrics.QueueDrops.Add(n)
+	p.reject(n)
+	return false
+}
+
 // Healthy returns false when workers are unable to insert into ClickHouse
 // or when CPU or disk backpressure is active.
 func (q *IngestQueue) Healthy() bool {
-	if q.cpuPressure.Load() == 1 {
-		return false
-	}
-	if q.memPressure.Load() == 1 {
-		return false
-	}
-	if q.diskPressure.Load() == 1 {
-		return false
-	}
-	if q.spoolPressure.Load() == 1 {
+	if q.cpuState.Active() || q.memState.Active() || q.diskState.Active() || q.spoolState.Active() {
 		return false
 	}
 	if q.consecutiveFailures.Load() < unhealthyThreshold {
@@ -540,63 +575,33 @@ func (q *IngestQueue) monitorCPU() {
 		case <-ticker.C:
 			pct, err := q.queryClickHouseCPU()
 			if err != nil {
-				q.cpuHighStreak.Store(0)
+				q.cpuState.highStreak.Store(0)
 			} else if pct >= cpuPressureTrigger {
-				streak := q.cpuHighStreak.Add(1)
-				if streak >= cpuPressureSustainSamples && q.cpuPressure.Load() == 0 {
-					q.cpuPressure.Store(1)
-					log.Printf("[Ingest Queue] CPU backpressure ON (%.1f%%, sustained %ds)", pct, cpuPressureSustainSamples*int64(cpuPollInterval.Seconds()))
-					q.writeSystemEvent("ingest.backpressure.on", map[string]string{
-						"reason":    "cpu_pressure",
-						"value":     fmt.Sprintf("%.1f", pct),
-						"threshold": fmt.Sprintf("%.1f", cpuPressureTrigger),
-					})
-					if q.notifWriter != nil {
-						go q.notifWriter.Write("ingest.cpu_pressure", "warning",
-							"Ingest CPU Backpressure Active",
-							fmt.Sprintf("CPU at %.1f%% (threshold %.1f%%)", pct, cpuPressureTrigger))
-					}
+				if q.cpuState.highStreak.Add(1) >= cpuPressureSustainSamples {
+					q.raisePressure(&q.cpuState, fmt.Sprintf("%.1f", pct), fmt.Sprintf("%.1f", cpuPressureTrigger),
+						fmt.Sprintf("ClickHouse CPU at %.1f%% (threshold %.1f%%)", pct, cpuPressureTrigger))
 				}
 			} else {
-				q.cpuHighStreak.Store(0)
-				if pct < cpuPressureRelease && q.cpuPressure.Load() == 1 {
-					q.cpuPressure.Store(0)
-					log.Printf("[Ingest Queue] CPU backpressure OFF (%.1f%%)", pct)
-					q.writeSystemEvent("ingest.backpressure.off", map[string]string{
-						"reason": "cpu_pressure",
-						"value":  fmt.Sprintf("%.1f", pct),
-					})
+				q.cpuState.highStreak.Store(0)
+				if pct < cpuPressureRelease {
+					q.clearPressure(&q.cpuState, fmt.Sprintf("%.1f", pct))
 				}
 			}
 
-			diskPct, diskErr := q.queryClickHouseDisk()
-			if diskErr == nil {
-				if diskPct >= diskPressureTrigger && q.diskPressure.Load() == 0 {
-					q.diskPressure.Store(1)
-					log.Printf("[Ingest Queue] Disk backpressure ON (%.1f%% used)", diskPct)
-					q.writeSystemEvent("ingest.backpressure.on", map[string]string{
-						"reason":    "disk_pressure",
-						"value":     fmt.Sprintf("%.1f", diskPct),
-						"threshold": fmt.Sprintf("%.1f", diskPressureTrigger),
-					})
-					if q.notifWriter != nil {
-						go q.notifWriter.Write("ingest.disk_pressure", "warning",
-							"Ingest Disk Backpressure Active",
-							fmt.Sprintf("Disk at %.1f%% used (threshold %.1f%%)", diskPct, diskPressureTrigger))
-					}
-				} else if diskPct < diskPressureRelease && q.diskPressure.Load() == 1 {
-					q.diskPressure.Store(0)
-					log.Printf("[Ingest Queue] Disk backpressure OFF (%.1f%% used)", diskPct)
-					q.writeSystemEvent("ingest.backpressure.off", map[string]string{
-						"reason": "disk_pressure",
-						"value":  fmt.Sprintf("%.1f", diskPct),
-					})
+			if diskPct, diskErr := q.queryClickHouseDisk(); diskErr == nil {
+				if diskPct >= diskPressureTrigger {
+					q.raisePressure(&q.diskState, fmt.Sprintf("%.1f", diskPct), fmt.Sprintf("%.1f", diskPressureTrigger),
+						fmt.Sprintf("ClickHouse disk at %.1f%% used (threshold %.1f%%)", diskPct, diskPressureTrigger))
+				} else if diskPct < diskPressureRelease {
+					q.clearPressure(&q.diskState, fmt.Sprintf("%.1f", diskPct))
 				}
 			}
 
 			q.monitorMemory()
 
 			q.monitorSpool()
+
+			q.reassertPressure()
 
 			q.flushDropEvents()
 		}
@@ -615,27 +620,96 @@ func (q *IngestQueue) monitorSpool() {
 		return
 	}
 	frac := float64(used) / float64(q.spoolMaxBytes)
-	if frac >= spoolPressureTrigger && q.spoolPressure.Load() == 0 {
-		q.spoolPressure.Store(1)
-		log.Printf("[Ingest Queue] Spool backpressure ON (%.1f%% of %d bytes)", frac*100, q.spoolMaxBytes)
-		q.writeSystemEvent("ingest.backpressure.on", map[string]string{
-			"reason":    "spool_pressure",
-			"value":     fmt.Sprintf("%.1f", frac*100),
-			"threshold": fmt.Sprintf("%.1f", spoolPressureTrigger*100),
-		})
-		if q.notifWriter != nil {
-			go q.notifWriter.Write("ingest.spool_pressure", "warning",
-				"Ingest Archive Spool Backpressure Active",
-				fmt.Sprintf("Spool at %.1f%% of capacity", frac*100))
-		}
-	} else if frac < spoolPressureRelease && q.spoolPressure.Load() == 1 {
-		q.spoolPressure.Store(0)
-		log.Printf("[Ingest Queue] Spool backpressure OFF (%.1f%%)", frac*100)
-		q.writeSystemEvent("ingest.backpressure.off", map[string]string{
-			"reason": "spool_pressure",
-			"value":  fmt.Sprintf("%.1f", frac*100),
-		})
+	if frac >= spoolPressureTrigger {
+		q.raisePressure(&q.spoolState, fmt.Sprintf("%.1f", frac*100), fmt.Sprintf("%.1f", spoolPressureTrigger*100),
+			fmt.Sprintf("Archive spool at %.1f%% of its %dMB capacity", frac*100, q.spoolMaxBytes>>20))
+	} else if frac < spoolPressureRelease {
+		q.clearPressure(&q.spoolState, fmt.Sprintf("%.1f", frac*100))
 	}
+}
+
+// raisePressure activates a condition, or refreshes its detail text when it is
+// already active so reassertions report the current value. The system event and
+// the initial notification fire once, on the transition.
+func (q *IngestQueue) raisePressure(p *pressureState, value, threshold, detail string) {
+	p.detail.Store(detail)
+	if !p.active.CompareAndSwap(0, 1) {
+		return
+	}
+	p.sinceUnix.Store(time.Now().Unix())
+	p.dropsActive.Store(0)
+	p.critical.Store(false)
+	log.Printf("[Ingest Queue] %s backpressure ON (%s)", p.label, detail)
+	q.writeSystemEvent("ingest.backpressure.on", map[string]string{
+		"reason":    p.reason,
+		"value":     value,
+		"threshold": threshold,
+	})
+	q.notifyPressure(p, "warning")
+}
+
+// clearPressure deactivates a condition. One that escalated to critical (it was
+// actually rejecting logs) closes its notification out as an info-level
+// recovery, so the bell does not keep showing an outage that has ended.
+func (q *IngestQueue) clearPressure(p *pressureState, value string) {
+	if !p.active.CompareAndSwap(1, 0) {
+		return
+	}
+	log.Printf("[Ingest Queue] %s backpressure OFF (%s)", p.label, value)
+	q.writeSystemEvent("ingest.backpressure.off", map[string]string{
+		"reason": p.reason,
+		"value":  value,
+	})
+	if p.critical.Swap(false) && q.notifWriter != nil {
+		dropped := p.dropsActive.Load()
+		held := time.Since(time.Unix(p.sinceUnix.Load(), 0)).Round(time.Second)
+		go q.notifWriter.WriteSustained(p.notif, "info", p.title+": Recovered",
+			fmt.Sprintf("Ingest recovered after %s. %d log(s) were rejected while it was active.", held, dropped), 0)
+	}
+}
+
+// reassertPressure keeps notifications for still-active conditions current. It
+// escalates to critical once a condition has been rejecting logs for
+// pressureEscalateAfter, and rewrites the notification periodically so an
+// outage outliving the 24h retention window never leaves the list.
+func (q *IngestQueue) reassertPressure() {
+	if q.notifWriter == nil {
+		return
+	}
+	now := time.Now().Unix()
+	for _, p := range []*pressureState{&q.cpuState, &q.memState, &q.diskState, &q.spoolState} {
+		if !p.Active() {
+			continue
+		}
+		severity, interval := "warning", int64(pressureReassert.Seconds())
+		escalating := false
+		if p.dropsActive.Load() > 0 && now-p.sinceUnix.Load() >= int64(pressureEscalateAfter.Seconds()) {
+			severity, interval = "critical", int64(criticalReassert.Seconds())
+			escalating = !p.critical.Swap(true)
+		}
+		if escalating || now-p.lastNotifyUnix.Load() >= interval {
+			q.notifyPressure(p, severity)
+		}
+	}
+}
+
+// notifyPressure writes or refreshes the health notification for an active
+// condition at the given severity.
+func (q *IngestQueue) notifyPressure(p *pressureState, severity string) {
+	if q.notifWriter == nil {
+		return
+	}
+	detail, _ := p.detail.Load().(string)
+	title, interval := p.title, pressureReassert
+	if severity == "critical" {
+		title = p.title + ": Rejecting Logs"
+		interval = criticalReassert
+		held := time.Since(time.Unix(p.sinceUnix.Load(), 0)).Round(time.Minute)
+		detail = fmt.Sprintf("%s. %d log(s) rejected over the last %s; ingestion is returning 429.",
+			detail, p.dropsActive.Load(), held)
+	}
+	p.lastNotifyUnix.Store(time.Now().Unix())
+	go q.notifWriter.WriteSustained(p.notif, severity, title, detail, interval)
 }
 
 // monitorMemory sets/clears memPressure from ClickHouse's (cgroup-aware) memory
@@ -645,34 +719,18 @@ func (q *IngestQueue) monitorSpool() {
 func (q *IngestQueue) monitorMemory() {
 	pct, err := q.queryClickHouseMemory()
 	if err != nil {
-		q.memHighStreak.Store(0)
+		q.memState.highStreak.Store(0)
 		return
 	}
 	if pct >= memPressureTrigger {
-		streak := q.memHighStreak.Add(1)
-		if streak >= memPressureSustainSamples && q.memPressure.Load() == 0 {
-			q.memPressure.Store(1)
-			log.Printf("[Ingest Queue] Memory backpressure ON (%.1f%%, sustained %ds)", pct, memPressureSustainSamples*int64(cpuPollInterval.Seconds()))
-			q.writeSystemEvent("ingest.backpressure.on", map[string]string{
-				"reason":    "memory_pressure",
-				"value":     fmt.Sprintf("%.1f", pct),
-				"threshold": fmt.Sprintf("%.1f", memPressureTrigger),
-			})
-			if q.notifWriter != nil {
-				go q.notifWriter.Write("ingest.memory_pressure", "warning",
-					"Ingest Memory Backpressure Active",
-					fmt.Sprintf("Memory at %.1f%% (threshold %.1f%%)", pct, memPressureTrigger))
-			}
+		if q.memState.highStreak.Add(1) >= memPressureSustainSamples {
+			q.raisePressure(&q.memState, fmt.Sprintf("%.1f", pct), fmt.Sprintf("%.1f", memPressureTrigger),
+				fmt.Sprintf("ClickHouse memory at %.1f%% (threshold %.1f%%)", pct, memPressureTrigger))
 		}
 	} else {
-		q.memHighStreak.Store(0)
-		if pct < memPressureRelease && q.memPressure.Load() == 1 {
-			q.memPressure.Store(0)
-			log.Printf("[Ingest Queue] Memory backpressure OFF (%.1f%%)", pct)
-			q.writeSystemEvent("ingest.backpressure.off", map[string]string{
-				"reason": "memory_pressure",
-				"value":  fmt.Sprintf("%.1f", pct),
-			})
+		q.memState.highStreak.Store(0)
+		if pct < memPressureRelease {
+			q.clearPressure(&q.memState, fmt.Sprintf("%.1f", pct))
 		}
 	}
 }
@@ -905,23 +963,18 @@ func (q *IngestQueue) flushDropEvents() {
 		return
 	}
 	q.lastDropFlushUnix.Store(time.Now().Unix())
-	for _, rc := range []struct {
-		reason string
-		count  *atomic.Int64
-	}{
-		{"cpu_pressure", &q.pendingDropsCPU},
-		{"memory_pressure", &q.pendingDropsMem},
-		{"disk_pressure", &q.pendingDropsDisk},
-		{"queue_full", &q.pendingDropsQueue},
-		{"spool_pressure", &q.pendingDropsSpool},
-	} {
-		if n := rc.count.Swap(0); n > 0 {
+	emit := func(reason string, n int64) {
+		if n > 0 {
 			q.writeSystemEvent("ingest.drops", map[string]string{
-				"reason": rc.reason,
+				"reason": reason,
 				"count":  fmt.Sprintf("%d", n),
 			})
 		}
 	}
+	for _, p := range []*pressureState{&q.cpuState, &q.memState, &q.diskState, &q.spoolState} {
+		emit(p.reason, p.pendingDrops.Swap(0))
+	}
+	emit("queue_full", q.pendingDropsQueue.Swap(0))
 }
 
 // Shutdown closes the queue and waits for all workers to finish
@@ -966,10 +1019,10 @@ func (q *IngestQueue) InsertedTotal() int64       { return q.Metrics.Inserted.Lo
 func (q *IngestQueue) InsertErrorsTotal() int64   { return q.Metrics.InsertErrors.Load() }
 func (q *IngestQueue) QueueDropsTotal() int64     { return q.Metrics.QueueDrops.Load() }
 func (q *IngestQueue) RetriesTotal() int64        { return q.Metrics.Retries.Load() }
-func (q *IngestQueue) CPUPressure() bool          { return q.cpuPressure.Load() == 1 }
-func (q *IngestQueue) MemPressure() bool          { return q.memPressure.Load() == 1 }
-func (q *IngestQueue) DiskPressure() bool         { return q.diskPressure.Load() == 1 }
-func (q *IngestQueue) SpoolPressure() bool        { return q.spoolPressure.Load() == 1 }
+func (q *IngestQueue) CPUPressure() bool          { return q.cpuState.Active() }
+func (q *IngestQueue) MemPressure() bool          { return q.memState.Active() }
+func (q *IngestQueue) DiskPressure() bool         { return q.diskState.Active() }
+func (q *IngestQueue) SpoolPressure() bool        { return q.spoolState.Active() }
 func (q *IngestQueue) ConsecutiveFailures() int64 { return q.consecutiveFailures.Load() }
 
 // worker inserts ready partition buckets produced by the accumulator. Each
@@ -1035,10 +1088,18 @@ func (q *IngestQueue) worker(id int) {
 				"worker":     fmt.Sprintf("%d", id),
 				"batch_size": fmt.Sprintf("%d", len(buf)),
 			})
-			if failures == unhealthyThreshold && q.notifWriter != nil {
-				go q.notifWriter.Write("ingest.insert_errors", "critical",
-					"Ingest Insert Errors",
-					fmt.Sprintf("Worker %d: %d consecutive insert failures", id, unhealthyThreshold))
+			// Reassert while inserts keep failing so the notification cannot age
+			// out mid-outage, rate-limited so a failing ClickHouse does not cost
+			// one Postgres write per failed batch.
+			if failures >= unhealthyThreshold && q.notifWriter != nil {
+				now := time.Now().Unix()
+				if last := q.lastInsertErrNotify.Load(); now-last >= 60 &&
+					q.lastInsertErrNotify.CompareAndSwap(last, now) {
+					go q.notifWriter.WriteSustained("ingest.insert_errors", "critical",
+						"Ingest Insert Errors",
+						fmt.Sprintf("%d consecutive insert failures; ingestion is returning 429 and logs are being rejected", failures),
+						criticalReassert)
+				}
 			}
 		}
 

@@ -43,7 +43,7 @@ const TimePicker = {
         }
 
         if (type === 'all') {
-            return { start: new Date('2000-01-01T00:00:00Z').toISOString(), end: now.toISOString(), selective: true };
+            return { start: new Date('2000-01-01T00:00:00Z').toISOString(), end: now.toISOString() };
         }
 
         const ms = this._presetMs[type] || this._presetMs['24h'];

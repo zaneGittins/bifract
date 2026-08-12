@@ -1502,6 +1502,7 @@ const App = {
         // Queries is handled by QueryPalette (it owns its own button + popover).
         const defs = [
             { btnId: 'shareMenuBtn',   menuId: 'shareMenu',   wrapId: 'shareMenuWrap'   },
+            { btnId: 'exportMenuBtn',  menuId: 'exportMenu',  wrapId: 'exportMenuWrap'  },
         ];
 
         const closeAll = () => {
