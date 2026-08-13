@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/storage"
 )
 
 // maxDynamicPaths mirrors the max_dynamic_paths setting declared on logs.fields.
@@ -20,22 +19,10 @@ import (
 // the scarce resource the schema tab exists to manage.
 const maxDynamicPaths = 1024
 
-// insightsCacheTTL keeps the sampled ClickHouse aggregation off the request path
-// for repeat loads. Field distributions move slowly; a stale minute is harmless
-// and this makes tab navigation instant.
-const insightsCacheTTL = 60 * time.Second
-
-// insightsSampleSize bounds the aggregation to the newest N rows. Cost is a
-// function of the sample, not the table, so this stays flat whether the fractal
-// holds a million rows or a hundred billion.
-func insightsSampleSize() int {
-	if v := os.Getenv("BIFRACT_SCHEMA_INSIGHTS_SAMPLE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return 50000
-}
+// staleAfter is how far behind the last sweep may fall before the tab says so.
+// It is a multiple of the sweep interval rather than a fixed age, so raising the
+// interval does not make the page permanently claim to be stale.
+const staleAfter = 3
 
 // FieldInsight is what the sample says about one field.
 type FieldInsight struct {
@@ -78,6 +65,10 @@ const (
 type TopValue struct {
 	Value string `json:"value"`
 	Count uint64 `json:"count"`
+	// Approx marks a count that came from a bounded-memory estimator rather than
+	// an exact tally. It is set only for high-cardinality fields, where the top
+	// values are not a meaningful distribution anyway.
+	Approx bool `json:"approx,omitempty"`
 }
 
 // Field is one row of the schema table: what the data says, how it is
@@ -95,6 +86,12 @@ type Field struct {
 	Top              []TopValue `json:"top"`
 	Verdict          string     `json:"verdict"`
 	RecommendedIndex string     `json:"recommended_index"`
+	// BytesOnDisk is the field's compressed footprint across the parts the sweep
+	// inspected, read from ClickHouse part metadata. It is what makes "reserve or
+	// drop" answerable: capacity is one cost, storage is the other. ClickHouse
+	// accounts separately only for a type-hinted path's sub-column, so this is 0
+	// for a field that has not been reserved.
+	BytesOnDisk uint64 `json:"bytes_on_disk"`
 	// Addable is false for names ClickHouse can hold but Bifract cannot accept
 	// (hyphens, dots). Such a field still gets a row when it is overflowing:
 	// warning about a problem whose subject cannot be found is worse than
@@ -103,126 +100,46 @@ type Field struct {
 	Score   int  `json:"-"`
 }
 
-// Capacity describes how close the fractal is to exhausting its column budget.
+// Capacity describes how close the deployment is to exhausting the dynamic
+// column budget, read from part metadata rather than estimated from a sample.
 type Capacity struct {
+	// Limit is max_dynamic_paths: how many undeclared paths one part may give
+	// their own sub-column before the rest spill into shared storage.
 	Limit int `json:"limit"`
-	// InData is distinct field names observed in the sample. This measures the
-	// fields actually carrying values, which is the number an admin can act on.
-	// It is deliberately not the exact per-part dynamic-path allocation: that
-	// requires reading the JSON column (~10x the cost, and it scales with path
-	// count rather than rows). The precise allocation and the set of fields that
-	// have already spilled are reported by the background overflow check.
-	InData   int `json:"in_data"`
-	Reserved int `json:"reserved"` // type-hinted fields, which never spill
+	// DynamicUsed is the largest number of dynamic paths held by any single part,
+	// across every fractal. It is a per-part budget, so the worst part is the
+	// figure that matters, not the union of names across parts.
+	DynamicUsed int `json:"dynamic_used"`
+	// Reserved counts type-hinted fields. These always hold their own sub-column
+	// and sit OUTSIDE the budget, so reserving a field that is currently dynamic
+	// frees a slot rather than consuming one.
+	Reserved int `json:"reserved"`
 	// Overflowed are fields that have already lost their own column and are
-	// scanning every row. Measured by the background monitor, not this request.
+	// scanning every row.
 	Overflowed []OverflowField `json:"overflowed"`
 	CheckedAt  *time.Time      `json:"checked_at,omitempty"`
 }
 
-// Insights is the whole schema tab in one payload: one ClickHouse query plus a
-// few cheap Postgres reads, so the page renders from a single request.
+// Insights is the whole schema tab in one payload, read entirely from the
+// Postgres tables the background sweep writes. No ClickHouse query runs on the
+// request path, so the page renders at the same speed on an empty install and on
+// a cluster holding billions of rows, and cannot fail because a scan timed out.
 type Insights struct {
-	SampleSize  uint64   `json:"sample_size"`
-	Approximate bool     `json:"approximate"`
-	Capacity    Capacity `json:"capacity"`
+	SampleSize uint64   `json:"sample_size"`
+	Capacity   Capacity `json:"capacity"`
 	// Fields is every field the table shows: configured, unconfigured but seen in
 	// the data, and ignored. Sorted by verdict priority, so the head of the list
 	// is the worklist.
 	Fields []Field `json:"fields"`
-}
-
-type insightsCache struct {
-	mu   sync.Mutex
-	at   time.Time
-	data *Insights
-}
-
-// sampleFieldStats runs the same sampled aggregation the query page's Fields rail
-// uses, with an empty BQL filter so it covers everything recently ingested.
-//
-// Reusing parser.BuildFieldStatsSQL rather than hand-rolling the SQL is
-// deliberate: that builder encodes a subtle correctness rule (empty values are
-// excluded, because the typed sub-columns serialize as "" on every row and
-// counting raw keys would report every field as 100% present). Duplicating the
-// query here would duplicate that trap and let the two drift.
-func (h *Handler) sampleFieldStats(ctx context.Context) (map[string]FieldInsight, map[string][]TopValue, uint64, error) {
-	pipeline, err := parser.ParseQuery("")
-	if err != nil {
-		return nil, nil, 0, fmt.Errorf("build empty pipeline: %w", err)
-	}
-	sample := insightsSampleSize()
-	// TopN feeds the detail drawer's value distribution. The builder computes it
-	// either way, so asking for 5 instead of 1 costs nothing extra.
-	sql, err := parser.BuildFieldStatsSQL(pipeline, parser.QueryOptions{
-		StartTime: time.Now().Add(-insightsWindow()),
-		EndTime:   time.Now(),
-		MaxRows:   sample,
-	}, parser.FieldStatsParams{SampleSize: sample, TopN: 5})
-	if err != nil {
-		return nil, nil, 0, fmt.Errorf("build field stats sql: %w", err)
-	}
-	if sql == "" {
-		return nil, nil, 0, fmt.Errorf("field stats unsupported for this source")
-	}
-
-	rows, err := h.ch.QueryLowPriority(ctx, sql)
-	if err != nil {
-		return nil, nil, 0, fmt.Errorf("field stats query: %w", err)
-	}
-
-	stats := make(map[string]FieldInsight, len(rows))
-	tops := make(map[string][]TopValue, len(rows))
-	var sampleSize uint64
-	for _, row := range rows {
-		name, _ := row["key"].(string)
-		present := asUint64(row["present"])
-		if name == "__rows__" {
-			sampleSize = present // sentinel: exact rows scanned, the coverage denominator
-			continue
-		}
-		if name == "" {
-			continue
-		}
-		stats[name] = FieldInsight{
-			Name:        name,
-			Present:     present,
-			Cardinality: asUint64(row["cardinality"]),
-		}
-		if vals, ok := row["top_values"].([]string); ok {
-			counts, _ := row["top_counts"].([]uint64)
-			tv := make([]TopValue, 0, len(vals))
-			for i, v := range vals {
-				var c uint64
-				if i < len(counts) {
-					c = counts[i]
-				}
-				tv = append(tv, TopValue{Value: v, Count: c})
-			}
-			// groupArray order is not guaranteed; present count-desc.
-			sort.SliceStable(tv, func(a, b int) bool { return tv[a].Count > tv[b].Count })
-			tops[name] = tv
-		}
-	}
-	if sampleSize > 0 {
-		for name, s := range stats {
-			s.Coverage = float64(s.Present) / float64(sampleSize)
-			stats[name] = s
-		}
-	}
-	return stats, tops, sampleSize, nil
-}
-
-// insightsWindow bounds how far back the sample may reach. Without it, a fractal
-// that stopped ingesting would still report its long-dead field distribution as
-// current.
-func insightsWindow() time.Duration {
-	if v := os.Getenv("BIFRACT_SCHEMA_INSIGHTS_WINDOW_HOURS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return time.Duration(n) * time.Hour
-		}
-	}
-	return 7 * 24 * time.Hour
+	// TotalBytes is the on-disk size of the JSON field column across the inspected
+	// parts, the denominator for a field's share of storage.
+	TotalBytes uint64 `json:"total_bytes"`
+	Fractals   int    `json:"fractals"`
+	// ComputedAt is when the sweep last completed. Zero means it has not run yet,
+	// which the UI reports as measuring rather than as an empty schema.
+	ComputedAt   *time.Time `json:"computed_at,omitempty"`
+	Stale        bool       `json:"stale"`
+	IntervalSecs int        `json:"interval_secs"`
 }
 
 // FieldRef names one thing that queries a field. The detail drawer shows these
@@ -237,6 +154,11 @@ type FieldRef struct {
 // does not need all 200 listed to justify reserving it.
 const maxRefsPerField = 8
 
+// maxHistoryQueries bounds how many distinct historical queries are parsed for
+// the usage ranking. The most-run queries dominate the weighting anyway, and the
+// tail is one-off exploration that should not vote on schema decisions.
+const maxHistoryQueries = 5000
+
 type fieldUsage struct {
 	Weight int
 	Refs   []FieldRef
@@ -249,9 +171,13 @@ type fieldUsage struct {
 // it filters on pays its cost continuously rather than once. Saved queries are
 // weighted by actual use, and history by run count, so a query someone ran once
 // does not look like a query someone runs hourly.
-func (h *Handler) queryUsage(ctx context.Context) map[string]*fieldUsage {
+//
+// It runs in the background sweep, not on the request path: every row here is
+// BQL that has to be lexed and parsed, and history alone can hold tens of
+// thousands of them.
+func queryUsage(ctx context.Context, pg *storage.PostgresClient) map[string]*fieldUsage {
 	usage := map[string]*fieldUsage{}
-	if h.manager == nil || h.manager.pg == nil {
+	if pg == nil {
 		return usage
 	}
 
@@ -261,16 +187,23 @@ func (h *Handler) queryUsage(ctx context.Context) map[string]*fieldUsage {
 	}
 	// Each row yields (title, bql, weight). run_count/use_count multiply the
 	// weight so the text is parsed once per distinct query, not once per run.
+	// History is grouped by text and capped for the same reason: the same query
+	// re-run from different pages is one field reference, not many, and parsing
+	// is the expensive part.
 	sources := []src{
 		{`SELECT COALESCE(name,''), query_string, 5 FROM alerts WHERE enabled = true`, "alert"},
 		{`SELECT COALESCE(title,''), query_content, 2 FROM dashboard_widgets WHERE query_content <> ''`, "dashboard"},
 		{`SELECT COALESCE(name,''), query_text, GREATEST(COALESCE(use_count,1),1) FROM saved_queries`, "saved query"},
-		{`SELECT left(query_text,60), query_text, GREATEST(COALESCE(run_count,1),1) FROM query_history
-		  WHERE last_run_at > NOW() - INTERVAL '30 days'`, "recent query"},
+		{`SELECT left(query_text,60), query_text, LEAST(SUM(GREATEST(COALESCE(run_count,1),1))::int, 1000)
+		  FROM query_history
+		  WHERE last_run_at > NOW() - INTERVAL '30 days' AND query_text <> ''
+		  GROUP BY query_text
+		  ORDER BY 3 DESC
+		  LIMIT ` + strconv.Itoa(maxHistoryQueries), "recent query"},
 	}
 
 	for _, s := range sources {
-		rows, err := h.manager.pg.Query(ctx, s.sql)
+		rows, err := pg.Query(ctx, s.sql)
 		if err != nil {
 			// A missing or renamed table must not take the whole tab down; the
 			// remaining signals still produce a useful ranking.
@@ -467,14 +400,14 @@ func verdictFor(f Field, overflowed bool) string {
 
 // buildFields produces the unified table: one row per field, configured or not,
 // each with a verdict, sorted so the worklist is at the top.
-func buildFields(stats map[string]FieldInsight, tops map[string][]TopValue,
+func buildFields(measured map[string]*Field, sampledRows uint64,
 	usage map[string]*fieldUsage, configured map[string]IndexType,
 	custom map[string]SchemaField, ignored, overflowed map[string]bool) []Field {
 
 	// Union of what the data shows and what is configured: a reserved field
 	// absent from the sample still needs a row, or "unused" could never surface.
-	names := make(map[string]struct{}, len(stats)+len(configured))
-	for n := range stats {
+	names := make(map[string]struct{}, len(measured)+len(configured))
+	for n := range measured {
 		names[n] = struct{}{}
 	}
 	for n := range configured {
@@ -496,8 +429,20 @@ func buildFields(stats map[string]FieldInsight, tops map[string][]TopValue,
 			continue
 		}
 
-		f := Field{FieldInsight: stats[name], IndexType: string(IndexTypeNone), Addable: addable}
+		var f Field
+		if m := measured[name]; m != nil {
+			f = *m
+		}
+		f.IndexType, f.Addable = string(IndexTypeNone), addable
 		f.Name = name
+		// Coverage is computed here rather than stored, so it stays consistent
+		// with whatever set of fractals the last sweep managed to measure.
+		if sampledRows > 0 {
+			f.Coverage = float64(f.Present) / float64(sampledRows)
+			if f.Coverage > 1 {
+				f.Coverage = 1
+			}
+		}
 		if isConfigured {
 			f.IndexType = string(idx)
 			if c, ok := custom[name]; ok {
@@ -517,7 +462,7 @@ func buildFields(stats map[string]FieldInsight, tops map[string][]TopValue,
 		if f.Refs == nil {
 			f.Refs = []FieldRef{}
 		}
-		if f.Top = tops[name]; f.Top == nil {
+		if f.Top == nil {
 			f.Top = []TopValue{}
 		}
 		f.Queried = queriedBucket(f.QueryRefs)
@@ -560,19 +505,16 @@ func formatCount(n uint64) string {
 	}
 }
 
-// BuildInsights composes the sampled ClickHouse distribution with the Postgres
-// usage signals and the current configuration into the single payload the schema
-// tab renders from. Results are cached briefly so repeat tab loads are free.
+// BuildInsights composes the persisted sweep results with the current
+// configuration into the single payload the schema tab renders from.
+//
+// Every input is a Postgres read. The measurements it reports (distribution,
+// storage, capacity, usage) are produced by the background Sweeper, which is
+// what keeps this endpoint fast and, more importantly, incapable of failing
+// because ClickHouse is busy. A never-run sweep reports zero fields with a nil
+// ComputedAt, which the UI renders as measuring rather than as an empty schema.
 func (h *Handler) BuildInsights(ctx context.Context) (*Insights, error) {
-	h.insights.mu.Lock()
-	if h.insights.data != nil && time.Since(h.insights.at) < insightsCacheTTL {
-		cached := h.insights.data
-		h.insights.mu.Unlock()
-		return cached, nil
-	}
-	h.insights.mu.Unlock()
-
-	stats, tops, sampleSize, err := h.sampleFieldStats(ctx)
+	stats, err := loadStats(ctx, h.manager.pg)
 	if err != nil {
 		return nil, err
 	}
@@ -601,13 +543,15 @@ func (h *Handler) BuildInsights(ctx context.Context) (*Insights, error) {
 		customByName[f.FieldName] = f
 	}
 
-	usage := h.queryUsage(ctx)
+	usage, err := loadUsage(ctx, h.manager.pg)
+	if err != nil {
+		// Advisory ranking only; the rest of the payload is still worth rendering.
+		log.Printf("[SchemaFields] read usage: %v", err)
+		usage = map[string]*fieldUsage{}
+	}
 
-	// Overflow is measured by the background monitor, not here: it needs the JSON
-	// column, which costs ~10x the flat sample above and scales with path count.
 	overflowNames, checkedAt, err := listOverflow(ctx, h.manager.pg)
 	if err != nil {
-		// Advisory only; the rest of the payload is still worth rendering.
 		log.Printf("[SchemaFields] read overflow state: %v", err)
 	}
 	overflowed := make(map[string]bool, len(overflowNames))
@@ -615,40 +559,24 @@ func (h *Handler) BuildInsights(ctx context.Context) (*Insights, error) {
 		overflowed[o.Name] = true
 	}
 
-	// Distinct fields seen in the sample, plus any reserved field that did not
-	// appear (it still holds a column even when empty).
-	inData := len(stats)
-	for name := range configured {
-		if _, seen := stats[name]; !seen {
-			inData++
-		}
-	}
-
+	interval := sweepInterval()
 	out := &Insights{
-		SampleSize:  sampleSize,
-		Approximate: sampleSize >= uint64(insightsSampleSize()),
+		SampleSize: stats.SampledRows,
 		Capacity: Capacity{
-			Limit:      maxDynamicPaths,
-			InData:     inData,
-			Reserved:   len(configured),
-			Overflowed: overflowNames,
-			CheckedAt:  checkedAtPtr(checkedAt),
+			Limit:       maxDynamicPaths,
+			DynamicUsed: stats.MaxPaths,
+			Reserved:    len(configured),
+			Overflowed:  overflowNames,
+			CheckedAt:   checkedAtPtr(checkedAt),
 		},
-		Fields: buildFields(stats, tops, usage, configured, customByName, ignoredSet, overflowed),
+		Fields:       buildFields(stats.Fields, stats.SampledRows, usage, configured, customByName, ignoredSet, overflowed),
+		TotalBytes:   stats.TotalBytes,
+		Fractals:     stats.Fractals,
+		ComputedAt:   checkedAtPtr(stats.ComputedAt),
+		Stale:        !stats.ComputedAt.IsZero() && time.Since(stats.ComputedAt) > staleAfter*interval,
+		IntervalSecs: int(interval / time.Second),
 	}
-
-	h.insights.mu.Lock()
-	h.insights.data, h.insights.at = out, time.Now()
-	h.insights.mu.Unlock()
 	return out, nil
-}
-
-// invalidateInsights drops the cache so a field added or ignored is reflected on
-// the next load rather than up to a minute later.
-func (h *Handler) invalidateInsights() {
-	h.insights.mu.Lock()
-	h.insights.data = nil
-	h.insights.mu.Unlock()
 }
 
 // checkedAtPtr omits a never-run monitor from the payload rather than sending a

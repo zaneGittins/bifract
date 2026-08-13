@@ -1880,13 +1880,18 @@ func (c *ClickHouseClient) QueryLowPriority(ctx context.Context, query string) (
 // thing that grows large enough to threaten, or get selected to be sacrificed for, unrelated
 // background work like merges or mutations. Use for periodic introspection sweeps (schema
 // overflow detection) that must be safe to run under any server memory condition.
+// An execution ceiling attached with QueryBudgetContext is honored too, so a sweep
+// that stalls dies server-side rather than only on the client.
 func (c *ClickHouseClient) QueryLowPriorityBounded(ctx context.Context, query string, maxMemoryBytes int64) ([]map[string]interface{}, error) {
-	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
-		"priority":                            5,
-		"max_query_size":                      maxGeneratedQuerySize,
-		"max_memory_usage":                    maxMemoryBytes,
-		"memory_overcommit_ratio_denominator": 0,
-	}))
+	settings := c.applyQuerySettings(ctx, clickhouse.Settings{
+		"priority":       5,
+		"max_query_size": maxGeneratedQuerySize,
+	})
+	// Set after applyQuerySettings: this explicit budget is the point of the call
+	// and must win over any workload-derived ceiling.
+	settings["max_memory_usage"] = maxMemoryBytes
+	settings["memory_overcommit_ratio_denominator"] = 0
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(settings))
 	return c.Query(ctx, query)
 }
 

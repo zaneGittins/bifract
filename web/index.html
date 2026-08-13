@@ -865,6 +865,22 @@
                                         </select>
                                     </div>
                                 </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="schemaSweepIntervalSettings" class="sp-row-label">Schema measurement interval</label>
+                                        <p class="sp-row-desc">How often Bifract measures field coverage, storage, and column capacity for the Schema tab. The measurement samples a bounded slice of each fractal's recent logs, so its cost does not grow with how much data you hold. Shorter surfaces a newly ingested field sooner.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="schemaSweepIntervalSettings" class="setting-select">
+                                            <option value="5">Every 5 minutes</option>
+                                            <option value="15">Every 15 minutes</option>
+                                            <option value="30">Every 30 minutes</option>
+                                            <option value="60">Every hour</option>
+                                            <option value="360">Every 6 hours</option>
+                                        </select>
+                                    </div>
+                                </div>
                             </div>
                         </section>
 
@@ -1047,6 +1063,12 @@
                 <div id="schemaFieldsView" class="admin-only" style="display: none;">
                     <section class="settings-view-section">
                         <div class="schema-head">
+                            <!-- Measurements come from a background sweep, so the page says
+                                 when they were taken rather than implying they are live. -->
+                            <div class="schema-meta" id="schemaMeta">
+                                <span class="schema-meta-text" id="schemaMetaText"></span>
+                                <button class="schema-meta-refresh" id="schemaRefreshBtn" type="button">Refresh</button>
+                            </div>
                             <div class="schema-head-actions">
                                 <input type="file" id="schemaImportInput" accept=".yaml,.yml,text/yaml" style="display:none">
                                 <button id="schemaExportBtn" class="btn-secondary btn-sm">Export</button>
@@ -1057,13 +1079,13 @@
 
                         <!-- Capacity: slim strip, with a projected delta while rows are selected -->
                         <div class="schema-cap" id="schemaCapacity" hidden>
-                            <span class="schema-cap-fig"><b id="schemaCapUsed">0</b> / <span id="schemaCapLimit">1,024</span> columns</span>
+                            <span class="schema-cap-fig"><b id="schemaCapUsed">0</b> / <span id="schemaCapLimit">1,024</span> dynamic columns</span>
                             <span class="schema-cap-bar">
-                                <i class="schema-seg-res" id="schemaSegRes"></i>
                                 <i class="schema-seg-dyn" id="schemaSegDyn"></i>
                                 <i class="schema-seg-proj" id="schemaSegProj"></i>
                             </span>
                             <span class="schema-cap-fig" id="schemaCapProj"></span>
+                            <span class="schema-cap-fig" id="schemaCapReserved"></span>
                             <span class="schema-cap-warn" id="schemaCapWarn" hidden></span>
                         </div>
 
@@ -1108,6 +1130,7 @@
                                         <th class="schema-sortable" data-sort="name">Field<span class="schema-arr">&#8597;</span></th>
                                         <th class="schema-sortable" data-sort="coverage">In your logs<span class="schema-arr">&#8597;</span></th>
                                         <th class="schema-sortable" data-sort="cardinality">Uniques<span class="schema-arr">&#8597;</span></th>
+                                        <th class="schema-sortable" data-sort="bytes_on_disk">Size<span class="schema-arr">&#8597;</span></th>
                                         <th class="schema-sortable" data-sort="queried">Queried<span class="schema-arr">&#8597;</span></th>
                                         <th>Status</th>
                                         <th>Index</th>
@@ -1115,7 +1138,7 @@
                                     </tr>
                                 </thead>
                                 <tbody id="schemaTbody">
-                                    <tr><td colspan="8"><div class="loading">Loading schema fields...</div></td></tr>
+                                    <tr><td colspan="9"><div class="loading">Loading schema fields...</div></td></tr>
                                 </tbody>
                             </table>
                         </div>

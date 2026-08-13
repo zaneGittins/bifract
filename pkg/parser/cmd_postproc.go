@@ -150,7 +150,55 @@ func reverseOrderBy(order []string) []string {
 	return flipped
 }
 
-// dedupHandler handles dedup(field1, field2, ...) using LIMIT 1 BY
+// stageOutputs returns the column names a stage projects: its group keys plus
+// the aliases of its SELECT expressions. Group keys are still raw field
+// references at Execute time (assembleGroupBySelects rewrites them to aliases
+// later), so they are reduced to their field name.
+func stageOutputs(stage *QueryStage) map[string]bool {
+	outputs := make(map[string]bool)
+	for _, gf := range stage.Layer.GroupBy {
+		outputs[extractFieldName(gf)] = true
+	}
+	for _, sel := range stage.Layer.Selects {
+		if alias := strings.Trim(extractFieldAlias(sel.String()), "`"); alias != "" {
+			outputs[alias] = true
+		}
+	}
+	return outputs
+}
+
+// scanExprFor returns an expression for a computed field that is valid over the
+// raw scan, so a dedup on it can be pushed below an aggregation: the expression
+// the registry recorded for it, or failing that the one the stage's SELECT
+// computes it with. Empty when the field's value exists only as an output column
+// of the stage, which a scan-level LIMIT BY cannot reference.
+func scanExprFor(field string, ctx *CommandContext, stage *QueryStage) string {
+	if entry := ctx.Registry.Get(field); entry != nil && entry.ResolveAs != "" {
+		return ctx.Registry.Resolve(field)
+	}
+	for _, sel := range stage.Layer.Selects {
+		s := sel.String()
+		if strings.Trim(extractFieldAlias(s), "`") != field {
+			continue
+		}
+		if idx := strings.LastIndex(s, " AS "); idx != -1 {
+			return s[:idx]
+		}
+	}
+	return ""
+}
+
+// dedupHandler handles dedup(field1, field2, ...) using LIMIT 1 BY.
+//
+// Where the LIMIT BY lands depends on whether rows have been aggregated yet,
+// because ClickHouse evaluates LIMIT BY after GROUP BY:
+//
+//   - Before an aggregation, it must collapse the rows the aggregation will
+//     read, so it goes to ScanLimitBy and rendering wraps the scan in it.
+//     Written into the aggregating SELECT it would instead try to dedup the
+//     groups, using a key that SELECT does not produce (ClickHouse code 215).
+//   - After an aggregation, it dedups the result rows and belongs on that
+//     SELECT, keyed by an output column rather than the source field.
 type dedupHandler struct{}
 
 func (h *dedupHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
@@ -158,18 +206,49 @@ func (h *dedupHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		var dedupFields []string
-		for _, field := range cmd.Arguments {
-			if ctx.Registry.IsComputed(field) {
-				dedupFields = append(dedupFields, field)
-			} else {
-				// LIMIT BY is a grouping context: cast raw JSON subcolumns to
-				// ::String so Dynamic-stored paths don't trigger error 44.
-				dedupFields = append(dedupFields, groupableCast(ctx.Registry.fieldRef(field)))
+	if len(cmd.Arguments) == 0 {
+		return nil
+	}
+	stage := ctx.Plan.CurrentStage()
+	// Position in the pipeline, not Plan.IsAggregated: that flag is set during
+	// Declare by an aggregation anywhere in the pipeline, including one this
+	// dedup precedes.
+	firstAgg := firstAggregatingCommandIndex(ctx.Pipeline.Commands)
+	postAggregation := firstAgg < ctx.CmdIndex
+	// An aggregation still to come renders this dedup around the scan, where the
+	// stage's computed columns do not exist yet.
+	beforeAggregation := firstAgg < len(ctx.Pipeline.Commands) && !postAggregation
+	outputs := stageOutputs(stage)
+
+	var dedupFields []string
+	for _, field := range cmd.Arguments {
+		switch {
+		case postAggregation && outputs[field]:
+			dedupFields = append(dedupFields, field)
+		case postAggregation:
+			return fmt.Errorf("dedup(%s): %q is not produced by the preceding aggregation; dedup on a grouped field or move dedup() before the aggregation", strings.Join(cmd.Arguments, ", "), field)
+		case !ctx.Registry.IsComputed(field):
+			// LIMIT BY is a grouping context: cast raw JSON subcolumns to
+			// ::String so Dynamic-stored paths don't trigger error 44.
+			dedupFields = append(dedupFields, groupableCast(ctx.Registry.fieldRef(field)))
+		case !beforeAggregation:
+			// Rendered on the same SELECT that computes the column, so its alias
+			// resolves.
+			dedupFields = append(dedupFields, field)
+		default:
+			expr := scanExprFor(field, ctx, stage)
+			if expr == "" {
+				return fmt.Errorf("dedup(%s): %q is computed after the scan and cannot be deduplicated before an aggregation; dedup on a log field instead", strings.Join(cmd.Arguments, ", "), field)
 			}
+			dedupFields = append(dedupFields, expr)
 		}
-		ctx.Plan.CurrentStage().Layer.LimitBy = fmt.Sprintf("LIMIT 1 BY %s", strings.Join(dedupFields, ", "))
+	}
+
+	limitBy := fmt.Sprintf("LIMIT 1 BY %s", strings.Join(dedupFields, ", "))
+	if postAggregation {
+		stage.Layer.LimitBy = limitBy
+	} else {
+		stage.Layer.ScanLimitBy = limitBy
 	}
 	return nil
 }

@@ -435,11 +435,14 @@ func main() {
 		parser.SetCustomTypeHintedFields(custom)
 	})
 
-	// Watches for JSON paths that have spilled past max_dynamic_paths and lost
-	// their own column. Advisory-locked to one replica and deliberately off the
-	// request path: this is the one schema query that reads the JSON column, so
-	// it is far more expensive than the sampled stats the tab renders from.
-	schemafields.NewOverflowMonitor(db, pg, notifWriter).Start(context.Background())
+	// Measures the schema in the background: per-field distribution from a bounded
+	// sample, storage and column capacity from part metadata, query usage from
+	// saved BQL, and paths that have spilled past max_dynamic_paths. Advisory-locked
+	// to one replica. The schema tab reads only what this writes, so no schema
+	// query ever runs on a request.
+	schemaSweeper := schemafields.NewSweeper(db, pg, schemaFieldsManager, notifWriter)
+	schemaFieldsHandler.SetSweeper(schemaSweeper)
+	schemaSweeper.Start(context.Background())
 
 	alertEngine := alerts.NewEngineWithDicts(pg, db, dictionaryManager, alertBaseURL)
 	alertEngine.SetModelManager(modelManager)
@@ -2291,9 +2294,10 @@ func main() {
 			r.Post("/admin/schema-fields/reset", schemaFieldsHandler.HandleReset)
 			r.Get("/admin/schema-fields/export", schemaFieldsHandler.HandleExportYAML)
 			r.Post("/admin/schema-fields/import", schemaFieldsHandler.HandleImportYAML)
-			// Sampled field distribution, capacity, and ranked suggestions. One
-			// request renders the whole schema tab.
+			// Field distribution, storage, capacity, and ranked suggestions. One
+			// request renders the whole schema tab, entirely from Postgres.
 			r.Get("/admin/schema-fields/insights", schemaFieldsHandler.HandleInsights)
+			r.Post("/admin/schema-fields/refresh", schemaFieldsHandler.HandleRefresh)
 			r.Post("/admin/schema-fields/ignore/{name}", schemaFieldsHandler.HandleIgnore)
 			r.Delete("/admin/schema-fields/ignore/{name}", schemaFieldsHandler.HandleUnignore)
 

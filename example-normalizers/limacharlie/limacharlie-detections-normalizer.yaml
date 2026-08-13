@@ -1,0 +1,94 @@
+name: LimaCharlie - Detections
+description: >-
+  Maps LimaCharlie D&R detections (output --type detect) onto Bifract's normalized field
+  contract. A detection is not an event: it wraps the event that matched under
+  detect.event / detect.routing and adds its own identity, so under flatten_full every
+  telemetry key gains a detect_ prefix and none of the EDR normalizers can map it.
+  Detections span every event type, and LimaCharlie outputs filter by stream rather than
+  by wrapped event type, so one normalizer has to cover all of them.
+
+transforms:
+  - flatten_full
+
+field_mappings:
+  - sources: [source_rule]
+    target: rule_name
+  # Raw LimaCharlie keeps the rule's ATT&CK tags under detect.mtd. flatten_full leaves an
+  # array of scalars whole, so this lands as a JSON array string, which is the shape
+  # mitre() parses. Mapping it onto rule_tags is what makes bare mitre() work.
+  - sources: [rule_tags, detect_mtd_tags]
+    target: rule_tags
+  - sources: [detect_id]
+    target: detect_id
+  - sources: [link]
+    target: link
+  # A source key can only feed one target, so the rule identity comes from source_rule
+  # and cat (the detection name) renders as the log list message.
+  - sources: [cat]
+    target: message
+
+  # routing.parent, not routing.this: it is the only atom that always names a process
+  # present in proc_lineage. On a DNS or network detection routing.this is the event atom
+  # and would seed ptg()/pgr() with a guid that does not exist. The cost is that on
+  # NEW_PROCESS detections process_guid is the spawning parent, not the process itself.
+  - sources: [detect_routing_parent]
+    target: process_guid
+  - sources: [detect_routing_this]
+    target: event_atom
+
+  - sources: [detect_routing_hostname]
+    target: computer_name
+  - sources: [detect_routing_sid]
+    target: sensor_id
+  - sources: [detect_routing_event_type]
+    target: event_type
+  - sources: [detect_routing_ext_ip]
+    target: ext_ip
+
+  # YARA_DETECTION nests its process context under event.PROCESS instead of at the event
+  # root, so each process target carries both spellings. Only one is present per event.
+  - sources: [detect_event_RULE_NAME]
+    target: yara_rule
+  - sources: [detect_event_USER_NAME, detect_event_PROCESS_USER_NAME]
+    target: user
+  - sources: [detect_event_FILE_PATH, detect_event_PROCESS_FILE_PATH]
+    target: image
+  - sources: [detect_event_COMMAND_LINE, detect_event_PROCESS_COMMAND_LINE]
+    target: commandline
+  - sources: [detect_event_HASH, detect_event_PROCESS_HASH]
+    target: hash
+  - sources: [detect_event_PROCESS_ID, detect_event_PROCESS_PROCESS_ID]
+    target: process_id
+  - sources: [detect_event_PARENT_FILE_PATH, detect_event_PROCESS_PARENT_FILE_PATH]
+    target: parent_image
+  - sources: [detect_event_PARENT_COMMAND_LINE, detect_event_PROCESS_PARENT_COMMAND_LINE]
+    target: parent_commandline
+  - sources: [detect_event_PARENT_PROCESS_ID, detect_event_PROCESS_PARENT_PROCESS_ID]
+    target: parent_process_id
+
+  - sources: [detect_event_DOMAIN_NAME]
+    target: query
+  - sources: [detect_event_IP_ADDRESS]
+    target: query_result
+
+  - sources: [detect_event_DESTINATION_IP_ADDRESS, detect_event_NETWORK_ACTIVITY_0_DESTINATION_IP_ADDRESS]
+    target: dst_ip
+  - sources: [detect_event_DESTINATION_PORT, detect_event_NETWORK_ACTIVITY_0_DESTINATION_PORT]
+    target: dst_port
+  - sources: [detect_event_SOURCE_IP_ADDRESS, detect_event_NETWORK_ACTIVITY_0_SOURCE_IP_ADDRESS]
+    target: src_ip
+  - sources: [detect_event_SOURCE_PORT, detect_event_NETWORK_ACTIVITY_0_SOURCE_PORT]
+    target: src_port
+  - sources: [detect_event_PROTOCOL]
+    target: proto
+
+# bifract_category is deliberately unset. The matched event already reaches Bifract
+# through the telemetry outputs, so claiming a category here would enter the same event
+# into proc_lineage a second time and double-count it in ptg()/pgr(). Detections link
+# into the graph by process_guid instead.
+
+timestamp_fields:
+  - field: detect_routing_event_time
+    format: unixmilli
+  - field: gen_time
+    format: unixmilli

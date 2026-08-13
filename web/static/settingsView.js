@@ -55,7 +55,7 @@ const SettingsView = {
         // Set up system limits dropdowns
         ['alertTimeoutSettings', 'queryTimeoutSettings', 'queryCPUPercentSettings', 'queryMemoryPercentSettings', 'alertEvalIntervalSettings',
          'recallTimeoutSettings', 'recallMaxBytesSettings', 'recallConcurrencySettings',
-         'recallCPUPercentSettings', 'recallMemoryPercentSettings'].forEach(id => {
+         'recallCPUPercentSettings', 'recallMemoryPercentSettings', 'schemaSweepIntervalSettings'].forEach(id => {
             const select = document.getElementById(id);
             if (select) select.addEventListener('change', () => this.saveSettings(select));
         });
@@ -627,6 +627,10 @@ const SettingsView = {
                 if (recallConcurrencySelect) {
                     recallConcurrencySelect.value = String(data.settings.recall_concurrency || 5);
                 }
+                const schemaSweepSelect = document.getElementById('schemaSweepIntervalSettings');
+                if (schemaSweepSelect) {
+                    schemaSweepSelect.value = String(data.settings.schema_sweep_interval_minutes || 15);
+                }
                 const recallCPUSelect = document.getElementById('recallCPUPercentSettings');
                 if (recallCPUSelect) {
                     recallCPUSelect.value = String(data.settings.recall_cpu_percent ?? 25);
@@ -671,7 +675,8 @@ const SettingsView = {
                     recall_max_bytes_read: parseInt(document.getElementById('recallMaxBytesSettings')?.value || '0', 10),
                     recall_concurrency: parseInt(document.getElementById('recallConcurrencySettings')?.value || '5', 10),
                     recall_cpu_percent: parseInt(document.getElementById('recallCPUPercentSettings')?.value || '25', 10),
-                    recall_memory_percent: parseInt(document.getElementById('recallMemoryPercentSettings')?.value || '25', 10)
+                    recall_memory_percent: parseInt(document.getElementById('recallMemoryPercentSettings')?.value || '25', 10),
+                    schema_sweep_interval_minutes: parseInt(document.getElementById('schemaSweepIntervalSettings')?.value || '15', 10)
                 })
             });
 

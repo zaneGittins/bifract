@@ -1,5 +1,5 @@
 rule: rule.yml
-normalizer: ../../example-normalizers/sysmon-normalizer.yaml
+normalizer: ../../example-normalizers/sysmon/sysmon-normalizer.yaml
 
 # A threshold rule only fires when it sees several events at once, so every case sets
 # `together: true`. Each case is still scoped to its own synthetic fractal, so the

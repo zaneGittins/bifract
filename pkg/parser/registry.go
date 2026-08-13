@@ -221,6 +221,24 @@ func (r *FieldRegistry) IsPerRowOrAssignment(name string) bool {
 	return false
 }
 
+// IsRowLevel reports whether the field is known to hold a per-row value
+// (a base column, or a computed one such as strftime, lowercase, len, logSize)
+// rather than a per-group value. ClassifyKind is used so an aggregate or window
+// output carried into a later stage (re-registered as Assignment by
+// ScopeToOutputs) is not mistaken for a row-level value.
+//
+// Unregistered fields report false: a handler may have emitted an aggregate
+// select without registering it, and treating that as row-level would drop it.
+func (r *FieldRegistry) IsRowLevel(name string) bool {
+	if entry, ok := r.fields[name]; ok {
+		switch entry.ClassifyKind() {
+		case FieldKindPerRow, FieldKindAssignment, FieldKindBase:
+			return true
+		}
+	}
+	return false
+}
+
 // IsNumericComputed returns true if the field is an assignment-kind computed
 // field that already produces a numeric value (e.g. length(), levenshtein()).
 // These must not be wrapped with toFloat64OrNull (which requires String input).

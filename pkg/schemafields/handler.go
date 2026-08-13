@@ -25,7 +25,9 @@ type Handler struct {
 	ch            *storage.ClickHouseClient
 	onFieldChange func(map[string]bool) // called after create/reset so the parser can reload
 	reconcileMu   sync.Mutex            // serializes background ClickHouse DDL
-	insights      insightsCache         // short-lived cache for the sampled field distribution
+	// sweeper produces every measurement the insights payload reports. The
+	// handler only ever reads its results and, on request, asks it to run again.
+	sweeper *Sweeper
 }
 
 type apiResponse struct {
@@ -40,6 +42,9 @@ type apiResponse struct {
 func NewHandler(manager *Manager, ch *storage.ClickHouseClient, onFieldChange func(map[string]bool)) *Handler {
 	return &Handler{manager: manager, ch: ch, onFieldChange: onFieldChange}
 }
+
+// SetSweeper wires the background measurement the insights payload is read from.
+func (h *Handler) SetSweeper(s *Sweeper) { h.sweeper = s }
 
 // HandleList returns project defaults and user-defined custom fields.
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
@@ -119,13 +124,13 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		h.notifyFieldChange(custom)
 	}
 	h.reconcileAsync([]string{f.FieldName})
-	h.invalidateInsights()
 
 	h.respondSuccess(w, f)
 }
 
-// HandleInsights returns the sampled field distribution, capacity, and ranked
+// HandleInsights returns the field distribution, storage, capacity, and ranked
 // suggestions in one payload so the schema tab renders from a single request.
+// It reads only the tables the background sweep writes.
 func (h *Handler) HandleInsights(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {
 		return
@@ -133,11 +138,25 @@ func (h *Handler) HandleInsights(w http.ResponseWriter, r *http.Request) {
 	ins, err := h.BuildInsights(r.Context())
 	if err != nil {
 		log.Printf("[SchemaFields] insights: %v", err)
-		h.respondError(w, http.StatusInternalServerError,
-			"Could not read field statistics from ClickHouse")
+		h.respondError(w, http.StatusInternalServerError, "Could not read field statistics")
 		return
 	}
 	h.respondSuccess(w, ins)
+}
+
+// HandleRefresh asks the background sweep to re-measure now. It returns
+// immediately: the sweep takes as long as it takes, and the page picks up the
+// result on its next load rather than holding a request open for it.
+func (h *Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	if h.sweeper == nil {
+		h.respondError(w, http.StatusServiceUnavailable, "Schema measurement is not running")
+		return
+	}
+	h.sweeper.Refresh()
+	h.respondSuccess(w, map[string]string{"message": "Measuring schema"})
 }
 
 // HandleIgnore dismisses a suggested field.
@@ -150,7 +169,6 @@ func (h *Handler) HandleIgnore(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	h.invalidateInsights()
 	h.respondSuccess(w, map[string]string{"message": fmt.Sprintf("Field %q ignored", name)})
 }
 
@@ -164,7 +182,6 @@ func (h *Handler) HandleUnignore(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	h.invalidateInsights()
 	h.respondSuccess(w, map[string]string{"message": fmt.Sprintf("Field %q restored", name)})
 }
 
@@ -255,7 +272,6 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	// index type applies cleanly (the reconcile is additive and would otherwise keep
 	// the stale index). Serialized with reconciles so it can't race a concurrent add.
 	h.dropFieldIndexAsync(name)
-	h.invalidateInsights()
 	h.respondSuccess(w, map[string]string{"message": fmt.Sprintf("Field %q removed", name)})
 }
 
@@ -296,6 +312,16 @@ func (h *Handler) HandleReset(w http.ResponseWriter, r *http.Request) {
 	h.markFields(r.Context(), names, SyncStatusActive, "")
 
 	h.notifyFieldChange(custom)
+
+	// Every measurement described data that no longer exists. Clearing them
+	// keeps deleted fields from lingering on the tab until the next sweep, and
+	// the sweep is asked to run so the page refills rather than staying blank.
+	if err := clearStats(r.Context(), h.manager.pg); err != nil {
+		log.Printf("[SchemaFields] clear stats after reset: %v", err)
+	}
+	if h.sweeper != nil {
+		h.sweeper.Refresh()
+	}
 	h.respondSuccess(w, map[string]string{"message": "Schema reset complete. All log data has been deleted."})
 }
 

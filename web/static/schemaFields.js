@@ -5,19 +5,28 @@
 // than split into sections. That keeps the page a fixed height whether the
 // deployment has 30 fields or 1,000.
 //
-// Everything renders from a single /insights call. The endpoint samples recent
-// logs for coverage and cardinality, joins that with how often each field is
-// referenced by saved BQL, and returns one verdict per field.
+// Everything renders from a single /insights call, which is a pure Postgres read
+// of whatever the background schema sweep last measured: coverage, cardinality,
+// storage, column capacity, and how often each field is referenced by saved BQL.
+// Nothing on this page waits on ClickHouse, so it loads at the same speed on an
+// empty install and on a cluster holding billions of rows.
 const SchemaFields = {
     fields: [],
     capacity: null,
     sampleSize: 0,
+    totalBytes: 0,
+    fractals: 0,
+    computedAt: null,
+    stale: false,
+    intervalSecs: 0,
     selected: new Set(),
     page: 0,
     pageSize: 25,
     sortKey: 'verdict',
     sortDir: 1,
     _pollTimer: null,
+    _measureTimer: null,
+    _measureTries: 0,
 
     // Closed verdict set, in priority order. Rank doubles as the default sort,
     // so the top of the table is the worklist without a separate section.
@@ -57,6 +66,8 @@ const SchemaFields = {
             }
         });
 
+        document.getElementById('schemaRefreshBtn')?.addEventListener('click', () => this.refreshMeasurements());
+
         document.getElementById('schemaResetCancelBtn')?.addEventListener('click', () => this.closeResetModal());
         document.getElementById('schemaResetConfirmInput')?.addEventListener('input', e => this._onResetPhraseInput(e));
         document.getElementById('schemaResetDoBtn')?.addEventListener('click', () => this.executeReset());
@@ -76,26 +87,91 @@ const SchemaFields = {
             this.fields = d.fields || [];
             this.capacity = d.capacity || null;
             this.sampleSize = d.sample_size || 0;
+            this.totalBytes = d.total_bytes || 0;
+            this.fractals = d.fractals || 0;
+            this.computedAt = d.computed_at || null;
+            this.stale = !!d.stale;
+            this.intervalSecs = d.interval_secs || 0;
+            if (this._awaitingSince !== undefined && this.computedAt !== this._awaitingSince) {
+                this._awaitingSince = undefined;
+                this._measureTries = 0;
+                if (window.Toast) Toast.success('Schema measured', 'Field statistics and capacity are up to date.');
+            }
         } catch (err) {
             const tbody = document.getElementById('schemaTbody');
             if (tbody) {
-                tbody.innerHTML = `<tr><td colspan="8"><div class="schema-empty">
-                    Could not read field statistics from ClickHouse. ${this.escHtml(err.message)}</div></td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="9"><div class="schema-empty">
+                    Could not read field statistics. ${this.escHtml(err.message)}</div></td></tr>`;
             }
             return;
         }
         this.render();
         this._scheduleStatusPoll();
+        this._scheduleMeasurePoll();
     },
 
-    // Re-fetch while a field is still applying so its status resolves without a
-    // manual refresh. offsetParent is null while the tab is hidden, so polling
-    // stops when the user navigates away; show() resumes it.
+    _visible() {
+        return document.getElementById('mainSchemaTabContent')?.offsetParent !== null;
+    },
+
+    // Poll while a field is still applying so its status resolves without a manual
+    // refresh. This hits the plain field list, not /insights: sync status is
+    // configuration, and re-reading every measurement every few seconds to learn
+    // whether one ALTER finished is exactly the kind of load this redesign removes.
     _scheduleStatusPoll() {
         if (this._pollTimer) { clearTimeout(this._pollTimer); this._pollTimer = null; }
-        const pending = this.fields.some(f => f.sync_status === 'pending');
-        const visible = document.getElementById('mainSchemaTabContent')?.offsetParent !== null;
-        if (pending && visible) this._pollTimer = setTimeout(() => this.load(), 2500);
+        if (!this.fields.some(f => f.sync_status === 'pending') || !this._visible()) return;
+        this._pollTimer = setTimeout(() => this._pollSyncStatus(), 2500);
+    },
+
+    async _pollSyncStatus() {
+        try {
+            const res = await HttpUtils.safeFetch('/api/v1/admin/schema-fields');
+            const custom = new Map((res.data?.custom || []).map(f => [f.field_name, f]));
+            let changed = false;
+            this.fields.forEach(f => {
+                const c = custom.get(f.name);
+                if (!c) return;
+                if (f.sync_status !== c.sync_status || f.sync_error !== (c.sync_error || '')) {
+                    f.sync_status = c.sync_status;
+                    f.sync_error = c.sync_error || '';
+                    changed = true;
+                }
+            });
+            if (changed) this.render();
+        } catch (err) {
+            console.warn('schema sync poll failed:', err.message);
+        }
+        this._scheduleStatusPoll();
+    },
+
+    // Wait for a sweep that has been asked for, or has never run. Bounded: after
+    // maxTries the page stops asking rather than polling an install whose sweep is
+    // failing, and the freshness line still says what it knows.
+    _scheduleMeasurePoll() {
+        if (this._measureTimer) { clearTimeout(this._measureTimer); this._measureTimer = null; }
+        const waiting = !this.computedAt || this._awaitingSince !== undefined;
+        if (!waiting || !this._visible() || this._measureTries >= 30) return;
+        this._measureTries++;
+        this._measureTimer = setTimeout(() => this.load(), 8000);
+    },
+
+    // Ask the background sweep to re-measure. The request returns as soon as the
+    // sweep is queued; the page then polls for a newer measurement rather than
+    // holding a request open for a job that legitimately takes a while.
+    async refreshMeasurements() {
+        const btn = document.getElementById('schemaRefreshBtn');
+        try {
+            await HttpUtils.safeFetch('/api/v1/admin/schema-fields/refresh', { method: 'POST' });
+        } catch (err) {
+            if (window.Toast) Toast.error('Could not start measurement', err.message);
+            return;
+        }
+        this._awaitingSince = this.computedAt;
+        this._measureTries = 0;
+        if (btn) { btn.disabled = true; btn.textContent = 'Measuring...'; }
+        this._renderMeta();
+        this._scheduleMeasurePoll();
     },
 
     // ---- Derived state ------------------------------------------------------
@@ -148,9 +224,9 @@ const SchemaFields = {
         if (tbody) {
             tbody.innerHTML = slice.length
                 ? slice.map(f => this._row(f)).join('')
-                : `<tr><td colspan="8"><div class="schema-empty">${
-                    this.fields.length
-                        ? 'No fields match these filters.'
+                : `<tr><td colspan="9"><div class="schema-empty">${
+                    this.fields.length ? 'No fields match these filters.'
+                        : !this.computedAt ? 'Measuring your schema. Fields appear here once the first measurement completes.'
                         : 'No fields yet. Suggestions appear once Bifract has ingested enough data.'
                   }</div></td></tr>`;
         }
@@ -174,6 +250,59 @@ const SchemaFields = {
 
         this._renderBulk();
         this._renderCapacity();
+        this._renderMeta();
+    },
+
+    // States the page can be in, in one line: never measured, measuring now,
+    // measured recently, or overdue. Silence would read as "no fields exist".
+    _renderMeta() {
+        const el = document.getElementById('schemaMetaText');
+        const btn = document.getElementById('schemaRefreshBtn');
+        if (!el) return;
+
+        const measuring = this._awaitingSince !== undefined || !this.computedAt;
+        if (btn) {
+            btn.disabled = measuring;
+            btn.textContent = measuring ? 'Measuring...' : 'Refresh';
+        }
+
+        if (!this.computedAt) {
+            el.classList.remove('stale');
+            el.textContent = 'Measuring your schema. This runs in the background and appears here when it finishes.';
+            return;
+        }
+
+        const parts = [`Measured ${this._ago(this.computedAt)}`];
+        if (this.sampleSize) {
+            parts.push(`${this.sampleSize.toLocaleString()} logs sampled`
+                + (this.fractals > 1 ? ` across ${this.fractals} fractals` : ''));
+        }
+        if (this.totalBytes) parts.push(`${this._bytes(this.totalBytes)} of fields on disk`);
+        el.textContent = parts.join(' · ');
+        el.classList.toggle('stale', this.stale);
+        if (this.stale) {
+            el.title = 'The background measurement has not completed recently. Check the server logs.';
+        } else {
+            el.removeAttribute('title');
+        }
+    },
+
+    _ago(iso) {
+        const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+        if (secs < 90) return 'just now';
+        const mins = Math.round(secs / 60);
+        if (mins < 60) return `${mins} minutes ago`;
+        const hrs = Math.round(mins / 60);
+        if (hrs < 48) return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
+        return `${Math.round(hrs / 24)} days ago`;
+    },
+
+    _bytes(n) {
+        if (!n) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+        let i = 0;
+        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+        return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
     },
 
     _row(f) {
@@ -209,6 +338,7 @@ const SchemaFields = {
             <td class="schema-f">${name}</td>
             <td class="schema-n">${cov}</td>
             <td class="schema-n">${f.cardinality ? this._count(f.cardinality) : '<span class="schema-muted">—</span>'}</td>
+            <td class="schema-size">${f.bytes_on_disk ? this._bytes(f.bytes_on_disk) : '<span class="schema-muted">—</span>'}</td>
             <td>${f.queried ? this.QUERIED[f.queried] : '<span class="schema-muted">Never</span>'}</td>
             <td>${status}</td>
             <td>${idx}</td>
@@ -224,9 +354,23 @@ const SchemaFields = {
         if (!n) return;
         document.getElementById('schemaBulkN').textContent = `${n} field${n === 1 ? '' : 's'} selected`;
         const cap = this.capacity;
+        const freed = this._freedBySelection();
         document.getElementById('schemaBulkImpact').textContent = cap
-            ? `Capacity ${cap.in_data.toLocaleString()} → ${(cap.in_data + n).toLocaleString()} of ${cap.limit.toLocaleString()}`
+            ? `Dynamic columns ${cap.dynamic_used.toLocaleString()} → ${Math.max(cap.dynamic_used - freed, 0).toLocaleString()} of ${cap.limit.toLocaleString()}`
             : '';
+    },
+
+    // Reserving a field that is already in the data frees a dynamic slot rather
+    // than consuming one: a type-hinted path always gets its own sub-column and
+    // sits outside the max_dynamic_paths budget. A selected field absent from the
+    // data frees nothing, since it holds no dynamic path today.
+    _freedBySelection() {
+        let freed = 0;
+        this.selected.forEach(name => {
+            const f = this.fields.find(x => x.name === name);
+            if (f && f.present > 0 && !this.isReserved(f)) freed++;
+        });
+        return freed;
     },
 
     _renderCapacity() {
@@ -237,17 +381,25 @@ const SchemaFields = {
         box.hidden = false;
 
         const limit = cap.limit || 1024;
-        const reserved = cap.reserved || 0;
-        const used = Math.max(cap.in_data || 0, reserved);
+        const used = cap.dynamic_used || 0;
+        // The budget governs dynamic paths only. Reserved fields are reported
+        // beside the bar rather than inside it, because they are not competing
+        // for these slots.
+        const freed = Math.min(this._freedBySelection(), used);
         document.getElementById('schemaCapUsed').textContent = used.toLocaleString();
         document.getElementById('schemaCapLimit').textContent = limit.toLocaleString();
-        document.getElementById('schemaSegRes').style.width = `${Math.min(reserved / limit * 100, 100)}%`;
-        document.getElementById('schemaSegDyn').style.width = `${Math.min(Math.max(used - reserved, 0) / limit * 100, 100)}%`;
-        // Pending selection renders as a ghost segment, so the cost of the action
-        // is visible before committing to it.
-        document.getElementById('schemaSegProj').style.width = `${Math.min(this.selected.size / limit * 100, 100)}%`;
-        document.getElementById('schemaCapProj').innerHTML = this.selected.size
-            ? `<span class="schema-cap-proj">+${this.selected.size} pending</span>` : '';
+        document.getElementById('schemaSegDyn').style.width = `${Math.min((used - freed) / limit * 100, 100)}%`;
+        // Ghost segment: the slots the pending selection would give back, so the
+        // effect of the action is visible before committing to it.
+        const proj = document.getElementById('schemaSegProj');
+        // Hidden rather than zero-width: the bar is a gapped flex row, so a
+        // zero-width segment still leaves a sliver.
+        proj.hidden = freed === 0;
+        proj.style.width = `${Math.min(freed / limit * 100, 100)}%`;
+        document.getElementById('schemaCapProj').innerHTML = freed
+            ? `<span class="schema-cap-proj">-${freed} pending</span>` : '';
+        document.getElementById('schemaCapReserved').textContent =
+            `${(cap.reserved || 0).toLocaleString()} reserved`;
 
         // Terse by design: the strip is one line, and the explanation belongs in
         // the drawer for the specific field, not repeated in the chrome.
@@ -329,11 +481,14 @@ const SchemaFields = {
             : '<p class="schema-muted schema-drawer-none">Nothing queries this field yet.</p>';
 
         const maxTop = (f.top || []).reduce((m, t) => Math.max(m, t.count), 0) || 1;
+        // An approximate count comes from a bounded-memory estimator, which only
+        // happens on fields with too many distinct values for a share to mean
+        // much. Marking it beats printing an estimate as though it were counted.
         const top = (f.top || []).length
             ? `<h4>Most common values</h4><div class="schema-topvals">${f.top.map(t =>
                 `<span class="schema-tv"><span class="val">${this.escHtml(t.value)}</span>
                  <span class="tvbar"><i style="width:${Math.round(t.count / maxTop * 100)}%"></i></span>
-                 <span class="pc">${this._pct(f.present ? t.count / f.present : 0)}</span></span>`).join('')}</div>`
+                 <span class="pc">${t.approx ? '~' : ''}${this._pct(f.present ? t.count / f.present : 0)}</span></span>`).join('')}</div>`
             : '';
 
         const canReserve = this.isSelectable(f);
@@ -350,6 +505,9 @@ const SchemaFields = {
             <dl class="schema-kv">
                 <dt>Present in</dt><dd>${f.coverage ? this._pct(f.coverage) + ' of sampled logs' : 'not seen'}</dd>
                 <dt>Distinct values</dt><dd>${f.cardinality ? f.cardinality.toLocaleString() : '—'}</dd>
+                <dt>Storage</dt><dd>${f.bytes_on_disk
+                    ? `${this._bytes(f.bytes_on_disk)}${this.totalBytes ? ` · ${this._pct(f.bytes_on_disk / this.totalBytes)} of fields` : ''}`
+                    : (this.isReserved(f) ? '—' : 'measured once reserved')}</dd>
                 <dt>Queried</dt><dd>${this.QUERIED[f.queried] || 'Never'}</dd>
                 <dt>Skip index</dt><dd>${f.index_type && f.index_type !== 'none' ? this.escHtml(f.index_type) : 'none'}</dd>
             </dl>
@@ -414,9 +572,9 @@ const SchemaFields = {
         const names = [...this.selected];
         if (!names.length) return;
         const cap = this.capacity;
-        const after = cap ? cap.in_data + names.length : 0;
+        const freed = this._freedBySelection();
         const impact = cap
-            ? `\n\nCapacity ${cap.in_data.toLocaleString()} → ${after.toLocaleString()} of ${cap.limit.toLocaleString()}.`
+            ? `\n\nDynamic columns ${cap.dynamic_used.toLocaleString()} → ${Math.max(cap.dynamic_used - freed, 0).toLocaleString()} of ${cap.limit.toLocaleString()}.`
             : '';
         if (!confirm(`Reserve ${names.length} field${names.length === 1 ? '' : 's'}?${impact}\n\nApplies to logs you already have. No data is rewritten.`)) return;
 

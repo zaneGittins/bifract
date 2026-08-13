@@ -2180,6 +2180,62 @@ func TestLogSizeQueries(t *testing.T) {
 		if strings.Contains(result.SQL, "fields.`_size`::String") {
 			t.Errorf("_size should be a computed field, not a JSON field: %s", result.SQL)
 		}
+		// The row-level alias must not survive into the aggregating SELECT:
+		// norm_log would then be neither grouped nor aggregated (ClickHouse 215).
+		if strings.Contains(result.SQL, "byteSize(norm_log) AS _size") {
+			t.Errorf("row-level _size leaked into a GROUP BY select: %s", result.SQL)
+		}
+	})
+
+	// A GROUP BY stage may only project group keys and aggregates. Every row-level
+	// value an earlier command left in the select list (a transform output, or a
+	// base column a transform shadowed) has to be dropped, or ClickHouse rejects
+	// the query with code 215.
+	t.Run("row-level selects are dropped under groupby", func(t *testing.T) {
+		cases := []struct {
+			query  string
+			leaked string
+		}{
+			{"* | len(message) | groupby(event_type, function=sum(_len))", "_len"},
+			{"* | len(message) | groupby(event_type)", "_len"},
+			{"* | levenshtein(a, b) | groupby(event_type, function=avg(_distance))", "_distance"},
+			{"* | logSize() | timechart(span=1h, function=sum(_size))", "_size"},
+			{`* | replace("a", "b") | groupby(event_type)`, "norm_log"},
+			{`* | replace("a", "b", message) | groupby(event_type)`, "norm_log"},
+			{"* | table(timestamp, event_type) | groupby(event_type)", "timestamp"},
+		}
+		for _, tc := range cases {
+			pipeline, err := ParseQuery(tc.query)
+			if err != nil {
+				t.Fatalf("Failed to parse %q: %v", tc.query, err)
+			}
+			result, err := TranslateToSQLWithOrder(pipeline, opts)
+			if err != nil {
+				t.Fatalf("Failed to translate %q: %v", tc.query, err)
+			}
+			if strings.Contains(result.SQL, " AS "+tc.leaked) {
+				t.Errorf("%q leaked row-level select %q into a GROUP BY stage: %s", tc.query, tc.leaked, result.SQL)
+			}
+			if contains(result.FieldOrder, tc.leaked) {
+				t.Errorf("%q kept row-level field %q in the output: %v", tc.query, tc.leaked, result.FieldOrder)
+			}
+		}
+	})
+
+	// The drop must not reach aggregate outputs carried into a later stage: they
+	// are re-registered as assignment-kind but are still per-group values.
+	t.Run("carried aggregate outputs survive a later groupby stage", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | logSize() | groupby(computer_name, function=sum(_size)) | groupby(computer_name, function=max(_sum))")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "AS _sum") || !strings.Contains(result.SQL, "max(toFloat64(_sum)) AS _max") {
+			t.Errorf("Expected the inner _sum to feed the outer max(), got: %s", result.SQL)
+		}
 	})
 
 	t.Run("explicit field with as name", func(t *testing.T) {
@@ -2878,6 +2934,94 @@ func TestDedupFunction(t *testing.T) {
 		}
 		if !strings.Contains(result.SQL, "LIMIT 1 BY") {
 			t.Errorf("Expected LIMIT 1 BY in SQL, got: %s", result.SQL)
+		}
+	})
+
+	// ClickHouse runs LIMIT BY after GROUP BY, so a dedup written into an
+	// aggregating SELECT collapses the groups (or fails with code 215) instead of
+	// the rows being aggregated. It has to wrap the scan.
+	t.Run("dedup before an aggregation collapses the scan", func(t *testing.T) {
+		for _, q := range []string{
+			"* | dedup(user) | groupby(host)",
+			"* | dedup(user) | count()",
+			"* | dedup(user) | timechart(span=1h, function=count())",
+			"* | dedup(user) | frequency(host)",
+		} {
+			pipeline, err := ParseQuery(q)
+			if err != nil {
+				t.Fatalf("Failed to parse %q: %v", q, err)
+			}
+			result, err := TranslateToSQLWithOrder(pipeline, opts)
+			if err != nil {
+				t.Fatalf("Failed to translate %q: %v", q, err)
+			}
+			want := "FROM (SELECT * FROM logs WHERE timestamp >= '2026-01-01 00:00:00.000' AND timestamp <= '2026-01-02 00:00:00.000' ORDER BY timestamp DESC, log_id DESC LIMIT 1 BY fields.`user`::String)"
+			if !strings.Contains(result.SQL, want) {
+				t.Errorf("%q should dedup inside the scan subquery.\n want: %s\n got:  %s", q, want, result.SQL)
+			}
+			if strings.Count(result.SQL, "LIMIT 1 BY") != 1 {
+				t.Errorf("%q should carry exactly one LIMIT BY: %s", q, result.SQL)
+			}
+		}
+	})
+
+	// A pre-aggregation dedup is rendered where the stage's computed columns do
+	// not exist, so its key has to be the expression behind them.
+	t.Run("computed dedup key is inlined ahead of an aggregation", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | lowercase(user) | dedup(user) | groupby(host)")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "LIMIT 1 BY lower(fields.`user`::String)") {
+			t.Errorf("Expected the lowercase expression as the dedup key, got: %s", result.SQL)
+		}
+	})
+
+	// Without an aggregation the dedup stays on the SELECT that computes the
+	// column, where its alias resolves.
+	t.Run("dedup without an aggregation keeps its alias key", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | lowercase(user) | dedup(user)")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "LIMIT 1 BY user") {
+			t.Errorf("Expected the alias as the dedup key, got: %s", result.SQL)
+		}
+	})
+
+	// After an aggregation the dedup applies to the result rows, keyed by an
+	// output column rather than the source field.
+	t.Run("dedup after an aggregation keys on the output column", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(host, user) | dedup(host)")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		if err != nil {
+			t.Fatalf("Failed to translate: %v", err)
+		}
+		if !strings.Contains(result.SQL, "GROUP BY host, user LIMIT 1 BY host") {
+			t.Errorf("Expected LIMIT 1 BY on the aggregating SELECT keyed by host, got: %s", result.SQL)
+		}
+	})
+
+	t.Run("dedup after an aggregation rejects a dropped field", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupby(host) | dedup(user)")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		if _, err := TranslateToSQLWithOrder(pipeline, opts); err == nil {
+			t.Error("Expected an error for dedup on a field the aggregation does not produce")
+		} else if !strings.Contains(err.Error(), "not produced by the preceding aggregation") {
+			t.Errorf("Unexpected error: %v", err)
 		}
 	})
 }

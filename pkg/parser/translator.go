@@ -389,6 +389,89 @@ type FieldStatsParams struct {
 	ValueLen   int // per-value character cap (payload safety for long values)
 }
 
+// FieldSampleParams configures BuildFieldSampleSQL.
+type FieldSampleParams struct {
+	Table      string // logs or logs_distributed
+	Where      string // caller-built predicate; must prune to a bounded, recent slice
+	SampleSize int
+	TopN       int
+	MaxFields  int
+	ValueLen   int
+}
+
+// BuildFieldSampleSQL builds the schema sweep's per-field distribution query.
+//
+// It answers the same question as BuildFieldStatsSQL but under different
+// constraints, which is why it is a separate builder rather than a parameter:
+//
+//  1. No ORDER BY. Recency comes from the caller's predicate, which prunes
+//     partitions. `ORDER BY <ts> DESC LIMIT n` does not read in order on the logs
+//     table, so its cost scales with the rows in the window rather than with n
+//     (measured: a constant LIMIT 20000 read 23k rows over a 1-day window and
+//     323k over 60 days). At retention scale that reads the entire norm_log
+//     column, which is what made the schema tab time out. The predicate form is
+//     O(SampleSize) whatever the table holds. See also OverflowMonitor.detect,
+//     which hit the same trap.
+//
+//  2. One GROUP BY of ~MaxFields groups. uniq and approx_top_k accumulate in
+//     bounded state, replacing a GROUP BY (key, value) over millions of distinct
+//     values feeding a row_number() window function.
+//
+// The empty-value rule is shared with BuildFieldStatsSQL and load-bearing in both:
+// the `fields` JSON has typed sub-columns that serialize as "" on every row, so
+// counting raw keys would report every field as 100% present. Excluding empties
+// makes `present` mean "populated in N events".
+//
+// The caller supplies the sample size separately (a cheap count over the same
+// predicate) because this query cannot carry the __rows__ sentinel: it would
+// distort the single GROUP BY it exists to keep small.
+func BuildFieldSampleSQL(p FieldSampleParams) string {
+	if p.SampleSize <= 0 {
+		p.SampleSize = 50000
+	}
+	if p.TopN <= 0 {
+		p.TopN = 5
+	}
+	if p.MaxFields <= 0 {
+		p.MaxFields = 500
+	}
+	if p.ValueLen <= 0 {
+		p.ValueLen = 256
+	}
+	where := p.Where
+	if strings.TrimSpace(where) == "" {
+		where = "1 = 1"
+	}
+	// approx_top_k's reserved counter size is raised well above TopN so the
+	// returned counts are exact for the low-cardinality fields whose value
+	// distribution is worth showing at all; its third tuple member is the error
+	// bound, which the caller uses to mark a count as approximate rather than
+	// present it as fact. The tuples are split into parallel arrays here so the
+	// result scans as plain typed slices.
+	return fmt.Sprintf(`SELECT
+    key,
+    present,
+    cardinality,
+    arrayMap(t -> t.1, top) AS top_values,
+    arrayMap(t -> t.2, top) AS top_counts,
+    arrayMap(t -> t.3, top) AS top_errors
+FROM (
+    SELECT
+        kv.1 AS key,
+        count() AS present,
+        uniq(kv.2) AS cardinality,
+        approx_top_k(%d, 2048)(substringUTF8(kv.2, 1, %d)) AS top
+    FROM (
+        SELECT norm_log FROM %s WHERE %s LIMIT %d
+    )
+    ARRAY JOIN JSONExtractKeysAndValues(norm_log, 'String') AS kv
+    WHERE kv.1 != '' AND kv.2 != ''
+    GROUP BY key
+    ORDER BY present DESC
+    LIMIT %d
+)`, p.TopN, p.ValueLen, p.Table, where, p.SampleSize, p.MaxFields)
+}
+
 // BuildFieldStatsSQL builds a bounded, sampled aggregation reporting per-field
 // coverage, cardinality, and top values for a BQL query's matched events. Like
 // BuildHistogramSQL it reuses ONLY the WHERE portion of the pipeline (time range,
@@ -978,9 +1061,12 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentF
 	}
 
 	// 2. Add aggregation selects: first check registry/aggregationOutputs,
-	// then keep remaining non-per-row selects as a fallback for handlers
-	// (table, bucket, heatmap, etc.) that add aggregation selects directly
-	// without registering them in the registry.
+	// then keep remaining selects the registry cannot classify as a fallback for
+	// handlers (table, bucket, heatmap, etc.) that add aggregation selects
+	// directly without registering them. A select the registry knows holds a
+	// per-row value (a base column, or a transform output such as lowercase, len,
+	// logSize) is dropped instead: past this point it is neither grouped nor
+	// aggregated, so projecting it fails with ClickHouse code 215.
 	hasExplicitAgg := false
 	for _, sel := range existingSelects {
 		alias := extractFieldAlias(sel)
@@ -988,7 +1074,7 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentF
 			continue
 		}
 		_, inAggOutputs := ctx.Plan.aggregationOutputs[alias]
-		if inAggOutputs || ctx.Registry.IsAggregate(alias) || !ctx.Registry.IsPerRow(alias) {
+		if inAggOutputs || ctx.Registry.IsAggregate(alias) || !ctx.Registry.IsRowLevel(alias) {
 			selects = append(selects, sel)
 			addedAliases[alias] = true
 			hasExplicitAgg = true

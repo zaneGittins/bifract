@@ -1,5 +1,5 @@
 rule: rule.yml
-normalizer: ../../example-normalizers/sysmon-normalizer.yaml
+normalizer: ../../example-normalizers/sysmon/sysmon-normalizer.yaml
 
 cases:
   # Every event in the file must fire.

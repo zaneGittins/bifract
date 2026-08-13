@@ -27,7 +27,14 @@ type QueryLayer struct {
 	Having  []string
 	OrderBy []string
 	LimitBy string
-	Limit   string
+	// ScanLimitBy is a dedup that must collapse rows BEFORE this layer reads
+	// them. ClickHouse applies LIMIT BY after GROUP BY, so a dedup written into
+	// an aggregating SELECT would both fail (the key is not an output column)
+	// and mean the wrong thing (dedup of the groups, not of the rows counted).
+	// Rendering moves it into a subquery around the scan when the layer
+	// aggregates, and emits it exactly like LimitBy when it does not.
+	ScanLimitBy string
+	Limit       string
 }
 
 // UpsertSelect adds expr to the select list, replacing any existing entry with
@@ -320,9 +327,15 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		selectClause += fmt.Sprintf(", %s AS %s", p.JoinKeyExpr, joinHiddenKeyCol)
 	}
 
-	var sql strings.Builder
-	sql.WriteString("SELECT ")
-	sql.WriteString(selectClause)
+	// The row source this SELECT reads, plus any wrapper that must collapse rows
+	// before it does. Each wrapper takes the WHERE with it, so outerWhere is
+	// emptied once a wrapper has applied it.
+	rowSource := opts.EffectiveTableName()
+	whereSQL := ""
+	if len(source.Layer.Where) > 0 {
+		whereSQL = " WHERE " + strings.Join(source.Layer.Where, " AND ")
+	}
+	outerWhere := whereSQL
 
 	if opts.SourceMode == SourceIceberg {
 		// Collapse at-least-once archive duplicates before any aggregation or the
@@ -335,21 +348,41 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		// through LIMIT BY, so pruning would be lost if the WHERE were applied around
 		// it. Duplicate rows are byte-identical, so filtering after the dedup keeps
 		// exactly the row a pre-dedup filter would have kept.
-		sql.WriteString(" FROM (SELECT * FROM " + opts.EffectiveTableName())
-		if len(source.Layer.Where) > 0 {
-			sql.WriteString(" WHERE ")
-			sql.WriteString(strings.Join(source.Layer.Where, " AND "))
-		}
-		sql.WriteString(" LIMIT 1 BY log_id)")
-	} else {
-		sql.WriteString(" FROM " + opts.EffectiveTableName())
-
-		// WHERE
-		if len(source.Layer.Where) > 0 {
-			sql.WriteString(" WHERE ")
-			sql.WriteString(strings.Join(source.Layer.Where, " AND "))
-		}
+		rowSource = "(SELECT * FROM " + rowSource + whereSQL + " LIMIT 1 BY log_id)"
+		outerWhere = ""
 	}
+
+	// A pre-aggregation dedup has to collapse rows before this SELECT aggregates
+	// them (see QueryLayer.ScanLimitBy), so it wraps the scan. Without an
+	// aggregation it renders on this SELECT, exactly as it did before.
+	scanDedup := source.Layer.ScanLimitBy != "" && (len(source.Layer.GroupBy) > 0 || p.IsAggregated)
+	limitBy := source.Layer.LimitBy
+	if source.Layer.ScanLimitBy != "" && !scanDedup {
+		limitBy = source.Layer.ScanLimitBy
+	}
+	if scanDedup {
+		// SELECT * rather than a column list: ClickHouse prunes the columns the
+		// outer query does not read out of a star projection through LIMIT BY, but
+		// reads every column an explicit list names (measured on one window: 1.8MiB
+		// vs 168MiB), and the wrapper stays independent of what the aggregation
+		// above it references.
+		order := ""
+		if o := dedupScanOrder(opts); o != "" {
+			// LIMIT BY keeps the first row of each key, so ordering the scan is what
+			// makes the survivor the newest event (the documented behaviour) rather
+			// than whichever row was read first.
+			order = " ORDER BY " + o
+		}
+		rowSource = "(SELECT * FROM " + rowSource + outerWhere + order + " " + source.Layer.ScanLimitBy + ")"
+		outerWhere = ""
+	}
+
+	var sql strings.Builder
+	sql.WriteString("SELECT ")
+	sql.WriteString(selectClause)
+	sql.WriteString(" FROM ")
+	sql.WriteString(rowSource)
+	sql.WriteString(outerWhere)
 
 	// GROUP BY
 	if len(source.Layer.GroupBy) > 0 {
@@ -370,9 +403,9 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	}
 
 	// LIMIT BY
-	if source.Layer.LimitBy != "" {
+	if limitBy != "" {
 		sql.WriteString(" ")
-		sql.WriteString(source.Layer.LimitBy)
+		sql.WriteString(limitBy)
 	}
 
 	// LIMIT
@@ -537,8 +570,36 @@ func (p *QueryPlan) renderAnalyze(opts QueryOptions) (string, error) {
 	return result.SQL, nil
 }
 
+// dedupScanOrder returns the ORDER BY that decides which row of each dedup key
+// survives: newest first. A subquery source (pgr()) exposes flat columns
+// instead of the logs table, so it is ordered only by the ones it actually has.
+func dedupScanOrder(opts QueryOptions) string {
+	if opts.SourceSubquery == "" {
+		return "timestamp DESC, log_id DESC"
+	}
+	var terms []string
+	for _, c := range opts.SourceColumns {
+		if c == "timestamp" || c == "log_id" {
+			terms = append(terms, c+" DESC")
+		}
+	}
+	return strings.Join(terms, ", ")
+}
+
 // wrapWithLayer wraps an inner SQL string with a QueryLayer's SELECT/WHERE/GROUP BY/HAVING/ORDER BY/LIMIT.
 func wrapWithLayer(innerSQL string, layer QueryLayer) string {
+	// Same split as renderStandard: a dedup that precedes this layer's
+	// aggregation has to collapse the rows feeding it, not its output. Nothing to
+	// order by here: these rows come from a stage that has already aggregated.
+	limitBy := layer.LimitBy
+	if layer.ScanLimitBy != "" {
+		if len(layer.GroupBy) > 0 {
+			innerSQL = "SELECT * FROM (" + innerSQL + ") " + layer.ScanLimitBy
+		} else {
+			limitBy = layer.ScanLimitBy
+		}
+	}
+
 	var outer strings.Builder
 	outer.WriteString("SELECT ")
 	if len(layer.Selects) > 0 {
@@ -569,9 +630,9 @@ func wrapWithLayer(innerSQL string, layer QueryLayer) string {
 		outer.WriteString(" ORDER BY ")
 		outer.WriteString(strings.Join(layer.OrderBy, ", "))
 	}
-	if layer.LimitBy != "" {
+	if limitBy != "" {
 		outer.WriteString(" ")
-		outer.WriteString(layer.LimitBy)
+		outer.WriteString(limitBy)
 	}
 	if layer.Limit != "" {
 		outer.WriteString(" ")

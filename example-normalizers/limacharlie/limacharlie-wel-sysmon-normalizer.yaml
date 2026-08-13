@@ -1,0 +1,140 @@
+name: LimaCharlie WEL - Sysmon
+description: >-
+  Maps Sysmon events as delivered by LimaCharlie's WEL (Windows Event Log) stream onto
+  Bifract's normalized field contract. This is not the same shape as sysmon-normalizer.yaml,
+  which expects flat native Sysmon fields from a Sysmon-native shipper. LimaCharlie wraps
+  every WEL record in an envelope, so the same data arrives as event.EVENT.System.* and
+  event.EVENT.EventData.*, which flatten_full turns into event_EVENT_System_* and
+  event_EVENT_EventData_*.
+
+transforms:
+  - flatten_full
+
+field_mappings:
+  # Common. LimaCharlie renders EventID either as an XML element with attributes
+  # (EventID.content) or as the synthetic _event_id, depending on the record.
+  - sources: [event_EVENT_System_EventID_content, event_EVENT_System__event_id]
+    target: event_id
+  - sources: [event_EVENT_System_Computer]
+    target: computer_name
+  - sources: [event_EVENT_System_Channel]
+    target: channel
+  - sources: [event_EVENT_System_Provider_Name]
+    target: provider
+  - sources: [routing_sid]
+    target: sensor_id
+
+  # Events 1/3/11/22 carry Image; events 8/10 carry SourceImage. No event carries both.
+  - sources: [event_EVENT_EventData_Image, event_EVENT_EventData_SourceImage]
+    target: image
+  - sources: [event_EVENT_EventData_TargetImage]
+    target: target_image
+  - sources: [event_EVENT_EventData_OriginalFileName]
+    target: original_file_name
+  - sources: [event_EVENT_EventData_Hashes]
+    target: hash
+  - sources: [event_EVENT_EventData_User]
+    target: user
+
+  # Process identity comes from Sysmon's own GUIDs, not the LimaCharlie routing atoms.
+  - sources: [event_EVENT_EventData_ProcessGuid]
+    target: process_guid
+  - sources: [event_EVENT_EventData_ParentProcessGuid]
+    target: parent_process_guid
+  - sources: [event_EVENT_EventData_ParentImage]
+    target: parent_image
+  - sources: [event_EVENT_EventData_CommandLine]
+    target: commandline
+  - sources: [event_EVENT_EventData_ParentCommandLine]
+    target: parent_commandline
+  - sources: [event_EVENT_EventData_ProcessId]
+    target: process_id
+  - sources: [event_EVENT_EventData_ParentProcessId]
+    target: parent_process_id
+
+  # Sysmon uses "Guid" casing on event 8 and "GUID" on event 10; both spellings must land
+  # on the same target or those branches silently emit nothing.
+  - sources: [event_EVENT_EventData_SourceProcessGuid, event_EVENT_EventData_SourceProcessGUID]
+    target: source_process_guid
+  - sources: [event_EVENT_EventData_TargetProcessGuid, event_EVENT_EventData_TargetProcessGUID]
+    target: target_process_guid
+  - sources: [event_EVENT_EventData_GrantedAccess]
+    target: access_flags
+  - sources: [event_EVENT_EventData_NewThreadId]
+    target: thread_id
+
+  # File
+  - sources: [event_EVENT_EventData_TargetFilename]
+    target: target_file
+
+  # Network
+  - sources: [event_EVENT_EventData_SourceIp]
+    target: src_ip
+  - sources: [event_EVENT_EventData_SourcePort]
+    target: src_port
+  - sources: [event_EVENT_EventData_DestinationIp]
+    target: dst_ip
+  - sources: [event_EVENT_EventData_DestinationPort]
+    target: dst_port
+  - sources: [event_EVENT_EventData_Protocol]
+    target: proto
+
+  # DNS
+  - sources: [event_EVENT_EventData_QueryName]
+    target: query
+  - sources: [event_EVENT_EventData_QueryResults]
+    target: query_result
+
+  # Registry (12/13/14)
+  - sources: [event_EVENT_EventData_TargetObject]
+    target: target_object
+  - sources: [event_EVENT_EventData_Details]
+    target: details
+  - sources: [event_EVENT_EventData_EventType]
+    target: event_type
+  - sources: [event_EVENT_EventData_NewName]
+    target: new_name
+
+  # Image load (7)
+  - sources: [event_EVENT_EventData_ImageLoaded]
+    target: image_loaded
+  - sources: [event_EVENT_EventData_Signed]
+    target: signed
+  - sources: [event_EVENT_EventData_Signature]
+    target: signature
+  - sources: [event_EVENT_EventData_SignatureStatus]
+    target: signature_status
+
+  # Named pipes (17/18)
+  - sources: [event_EVENT_EventData_PipeName]
+    target: pipe_name
+
+# LimaCharlie outputs filter on event TYPE only, and Sysmon shares the single WEL type
+# with Security, WMI-Activity, PowerShell and the classic channels. Those records also
+# reach this normalizer, get their common System fields mapped, and are left with
+# bifract_category unset, which is correct: an event this normalizer does not understand
+# should not be claimed by a category.
+value_mappings:
+  - from_field: event_id
+    to_field: bifract_category
+    map:
+      "1": process_creation
+      "3": network_connect
+      "6": driver_load
+      "7": image_load
+      "8": remote_thread
+      "10": process_access
+      "11": file_write
+      "12": registry_event
+      "13": registry_event
+      "14": registry_event
+      "15": create_stream_hash
+      "17": pipe_created
+      "18": pipe_created
+      "22": dns_query
+      "23": file_delete
+      "26": file_delete
+
+timestamp_fields:
+  - field: routing_event_time
+    format: unixmilli

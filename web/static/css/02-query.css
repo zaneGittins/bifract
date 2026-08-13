@@ -287,7 +287,7 @@
 }
 .palette-input:focus { outline: none; border-color: var(--accent-primary); }
 .palette-input::placeholder { color: var(--text-muted); }
-.palette-textarea { resize: vertical; min-height: 3rem; max-height: 8rem; }
+.palette-textarea { resize: vertical; min-height: 4.5rem; max-height: 12rem; line-height: 1.45; }
 .palette-check {
     display: flex;
     align-items: center;
@@ -295,9 +295,26 @@
     font-size: 0.75rem;
     color: var(--text-secondary);
     cursor: pointer;
+    white-space: nowrap;
+}
+/* Pair short fields side by side so the form fills the palette width. */
+.palette-form-row { display: flex; gap: 0.5rem; }
+.palette-form-row > .palette-input { flex: 1 1 0; min-width: 0; }
+.palette-form-row > .palette-input.grow { flex: 2 1 0; }
+.palette-form-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-top: 0.125rem;
 }
 .palette-form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
-.palette-row.editing { background: var(--bg-secondary); cursor: default; }
+.palette-row.editing {
+    display: block;
+    padding: 0;
+    background: var(--bg-secondary);
+    cursor: default;
+}
 
 /* Shared search input used by the Send-to-notebook picker. */
 .dropdown-search {

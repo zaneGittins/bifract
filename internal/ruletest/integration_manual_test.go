@@ -107,7 +107,7 @@ func TestWrongExpectationFails(t *testing.T) {
 		}},
 	}
 
-	opts := Options{NormalizerPath: "../../example-normalizers/sysmon-normalizer.yaml"}
+	opts := Options{NormalizerPath: "../../example-normalizers/sysmon/sysmon-normalizer.yaml"}
 	summary, err := Run(context.Background(), b, []SpecLoad{{Path: spec.Path, Spec: spec}}, opts)
 	if err != nil {
 		t.Fatal(err)

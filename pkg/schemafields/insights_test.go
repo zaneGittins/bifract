@@ -163,13 +163,16 @@ func TestRecommendIndexMatchesDefaultsReasoning(t *testing.T) {
 // configured and unconfigured fields share one list, every row carries a
 // verdict, and the worklist sorts to the top.
 func TestBuildFieldsUnifiesAndRanks(t *testing.T) {
-	stats := map[string]FieldInsight{
-		"src_ip":    {Name: "src_ip", Present: 990, Coverage: 0.99, Cardinality: 1000},
-		"noise":     {Name: "noise", Present: 990, Coverage: 0.99, Cardinality: 90000},
-		"tenant_id": {Name: "tenant_id", Present: 400, Coverage: 0.40, Cardinality: 47000},
-		"prevalent": {Name: "prevalent", Present: 950, Coverage: 0.95, Cardinality: 12},
-		"spilled":   {Name: "spilled", Present: 700, Coverage: 0.70, Cardinality: 400000},
-		"queried":   {Name: "queried", Present: 800, Coverage: 0.80, Cardinality: 5000},
+	// Coverage is derived from present over the sampled-row count, so the
+	// fixture supplies the same denominator the sweep would have recorded.
+	const sampledRows = 1000
+	measured := map[string]*Field{
+		"src_ip":    {FieldInsight: FieldInsight{Present: 990, Cardinality: 1000}},
+		"noise":     {FieldInsight: FieldInsight{Present: 990, Cardinality: 90000}},
+		"tenant_id": {FieldInsight: FieldInsight{Present: 400, Cardinality: 47000}},
+		"prevalent": {FieldInsight: FieldInsight{Present: 950, Cardinality: 12}},
+		"spilled":   {FieldInsight: FieldInsight{Present: 700, Cardinality: 400000}},
+		"queried":   {FieldInsight: FieldInsight{Present: 800, Cardinality: 5000}},
 	}
 	configured := map[string]IndexType{
 		"src_ip":  IndexTypeBloomFilter,
@@ -184,7 +187,7 @@ func TestBuildFieldsUnifiesAndRanks(t *testing.T) {
 		"queried":   {Weight: 40},
 	}
 
-	got := buildFields(stats, nil, usage, configured, custom, ignored, overflowed)
+	got := buildFields(measured, sampledRows, usage, configured, custom, ignored, overflowed)
 
 	by := map[string]Field{}
 	for _, f := range got {

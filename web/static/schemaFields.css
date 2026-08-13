@@ -11,7 +11,8 @@
    class rule on specificity, so no !important is required. */
 .schema-cap[hidden],
 .schema-bulkbar[hidden],
-.schema-cap-warn[hidden] {
+.schema-cap-warn[hidden],
+.schema-cap-bar i[hidden] {
     display: none;
 }
 
@@ -29,6 +30,54 @@
     display: flex;
     gap: 8px;
     flex-shrink: 0;
+}
+
+/* Freshness line: pushes the actions to the right and states when the numbers
+   on this page were measured. */
+.schema-meta {
+    margin-right: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 24px;
+}
+
+.schema-meta-text {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.schema-meta-text.stale {
+    color: var(--warning);
+}
+
+.schema-meta-refresh {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    font-size: 0.75rem;
+    color: var(--accent-primary);
+    cursor: pointer;
+    border-bottom: 1px solid transparent;
+}
+
+.schema-meta-refresh:hover:not(:disabled) {
+    border-bottom-color: currentColor;
+}
+
+.schema-meta-refresh:disabled {
+    color: var(--text-muted);
+    cursor: default;
+}
+
+/* Storage column: secondary to the recommendation, so it stays quiet. */
+.schema-size {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
 }
 
 .schema-field-hint {
@@ -75,10 +124,6 @@
 .schema-cap-bar i {
     display: block;
     transition: width 0.35s ease;
-}
-
-.schema-seg-res {
-    background: var(--accent-primary);
 }
 
 .schema-seg-dyn {

@@ -379,13 +379,17 @@ const QueryPalette = {
           <div class="palette-form">
             <div class="palette-form-preview">${preview}</div>
             ${rangeRow}
-            <input id="paletteFormName" class="palette-input" placeholder="Name" maxlength="255" />
+            <div class="palette-form-row">
+              <input id="paletteFormName" class="palette-input grow" placeholder="Name" maxlength="255" />
+              <input id="paletteFormTags" class="palette-input" placeholder="Tags (comma-separated)" />
+            </div>
             <input id="paletteFormDesc" class="palette-input" placeholder="Description (optional)" />
-            <input id="paletteFormTags" class="palette-input" placeholder="Tags (comma-separated)" />
-            <label class="palette-check"><input type="checkbox" id="paletteFormPersonal" /> Personal (only visible to you)</label>
-            <div class="palette-form-actions">
-              <button class="btn-secondary btn-sm" onclick="QueryPalette.toggleSaveForm()">Cancel</button>
-              <button class="btn-primary btn-sm" onclick="QueryPalette.submitSave()">Save query</button>
+            <div class="palette-form-foot">
+              <label class="palette-check"><input type="checkbox" id="paletteFormPersonal" /> Personal (only visible to you)</label>
+              <div class="palette-form-actions">
+                <button class="btn-secondary btn-sm" onclick="QueryPalette.toggleSaveForm()">Cancel</button>
+                <button class="btn-primary btn-sm" onclick="QueryPalette.submitSave()">Save query</button>
+              </div>
             </div>
           </div>`;
     },
@@ -396,14 +400,18 @@ const QueryPalette = {
         return `
           <div class="palette-row editing">
             <div class="palette-form">
-              <input id="peName" class="palette-input" value="${this.escapeHtml(it.name)}" maxlength="255" placeholder="Name" />
+              <div class="palette-form-row">
+                <input id="peName" class="palette-input grow" value="${this.escapeHtml(it.name)}" maxlength="255" placeholder="Name" />
+                <input id="peTags" class="palette-input" value="${this.escapeHtml(tags)}" placeholder="Tags (comma-separated)" />
+              </div>
               <input id="peDesc" class="palette-input" value="${this.escapeHtml(it.description || '')}" placeholder="Description (optional)" />
               <textarea id="peQuery" class="palette-input palette-textarea" placeholder="Query">${this.escapeHtml(it.query_text)}</textarea>
-              <input id="peTags" class="palette-input" value="${this.escapeHtml(tags)}" placeholder="Tags (comma-separated)" />
-              <label class="palette-check"><input type="checkbox" id="pePersonal" ${personal}/> Personal (only visible to you)</label>
-              <div class="palette-form-actions">
-                <button class="btn-secondary btn-sm" onclick="QueryPalette.cancelEdit()">Cancel</button>
-                <button class="btn-primary btn-sm" onclick="QueryPalette.submitEdit('${this.escapeJs(it.id)}')">Update</button>
+              <div class="palette-form-foot">
+                <label class="palette-check"><input type="checkbox" id="pePersonal" ${personal}/> Personal (only visible to you)</label>
+                <div class="palette-form-actions">
+                  <button class="btn-secondary btn-sm" onclick="QueryPalette.cancelEdit()">Cancel</button>
+                  <button class="btn-primary btn-sm" onclick="QueryPalette.submitEdit('${this.escapeJs(it.id)}')">Update</button>
+                </div>
               </div>
             </div>
           </div>`;
