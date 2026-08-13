@@ -9,6 +9,18 @@
 		format json
 	}
 
+	# See caddy/Caddyfile: application/x-ndjson must be named explicitly or search
+	# results go out uncompressed.
+	encode zstd gzip {
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+			header Content-Type application/x-ndjson*
+			header Content-Type application/javascript*
+			header Content-Type image/svg+xml*
+		}
+	}
+
 	@ingest path /api/v1/ingest* /_bulk /v1/logs
 	@sse path */events */stream
 

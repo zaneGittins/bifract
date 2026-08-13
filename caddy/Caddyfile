@@ -24,6 +24,21 @@
 		format json
 	}
 
+	# Search results are NDJSON of normalized log JSON and compress ~14x (a 250-row
+	# page measured 536KB raw, 38KB gzip, 26KB zstd), which on a remote browser is
+	# most of the wall time of a search. application/x-ndjson is NOT in Caddy's
+	# default match list, so it has to be named explicitly or the results -- the
+	# largest response the app serves -- go out uncompressed.
+	encode zstd gzip {
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+			header Content-Type application/x-ndjson*
+			header Content-Type application/javascript*
+			header Content-Type image/svg+xml*
+		}
+	}
+
 	@ingest path /api/v1/ingest* /_bulk /v1/logs
 	@sse path */events */stream
 

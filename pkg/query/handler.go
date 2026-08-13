@@ -387,6 +387,7 @@ type preparedQuery struct {
 	chartType           string
 	chartConfig         map[string]interface{}
 	streamable          bool
+	chunkable           bool // safe to split the row scan into newest-first time chunks
 	appliedCursorPaging bool
 	queryMaxRows        int
 	isBloomQuery        bool
@@ -468,6 +469,70 @@ func histogramRollupSQL(table string, opts parser.QueryOptions, start, end time.
 		"SELECT toStartOfInterval(minute, INTERVAL %d SECOND) AS bucket, sum(cnt) AS cnt FROM %s WHERE %s GROUP BY bucket ORDER BY bucket",
 		bucketSec, table, strings.Join(conds, " AND "),
 	)
+}
+
+// streamChunkDiv sets the newest row-scan chunk to this fraction of the range;
+// each older chunk doubles, so any range resolves to a handful of queries rather
+// than a count that grows with its length. It mirrors histogramChunkDiv: the
+// newest slice paints after a short read while the rest fills in behind it.
+const streamChunkDiv = 16
+
+// streamChunk is one time slice of the row scan. Every chunk except the newest
+// uses an exclusive upper bound so adjacent chunks abut exactly: with a
+// millisecond-precision column, trimming the bound instead would drop whatever
+// landed in the trimmed interval.
+type streamChunk struct {
+	start, end   time.Time
+	endExclusive bool
+}
+
+// streamChunks slices [start, end] into chunks ordered newest-first, each twice
+// the span of the one before it. A query whose matches are rarer than the row
+// limit cannot return anything until its scan ends (ClickHouse holds the
+// ORDER BY ... LIMIT top-N buffer until then), so a single query over a long
+// range shows nothing until it completes. Chunking bounds that wait to a
+// fraction of the range while leaving each chunk a read-in-order scan that still
+// stops at the limit.
+func streamChunks(start, end time.Time) []streamChunk {
+	total := end.Sub(start)
+	if total <= 0 {
+		return nil
+	}
+	var chunks []streamChunk
+	step := total / streamChunkDiv
+	if step <= 0 {
+		step = total
+	}
+	hi := end
+	exclusive := false
+	for hi.After(start) {
+		lo := hi.Add(-step)
+		// Absorb a remainder smaller than half a step rather than trailing a
+		// sliver chunk behind the last full one.
+		if lo.Sub(start) < step/2 {
+			lo = start
+		}
+		chunks = append(chunks, streamChunk{start: lo, end: hi, endExclusive: exclusive})
+		hi = lo
+		exclusive = true
+		step *= 2
+	}
+	return chunks
+}
+
+// buildChunkSQL re-translates the query over one chunk of the range, carrying the
+// remaining row budget as the limit.
+func (p *preparedQuery) buildChunkSQL(c streamChunk, limit int) (string, error) {
+	opts := p.translationOpts
+	opts.StartTime = c.start
+	opts.EndTime = c.end
+	opts.EndExclusive = c.endExclusive
+	opts.MaxRows = limit
+	result, err := parser.TranslateToSQLWithOrder(p.pipeline, opts)
+	if err != nil {
+		return "", err
+	}
+	return result.SQL, nil
 }
 
 // prepareQuery handles auth, fractal/prism resolution, BQL parsing, SQL
@@ -874,6 +939,11 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	// fully computed before any meaningful result exists.
 	streamable := translationResult.DefaultTimeOrder && !isAggregated && chartType == "" && !hasSubquerySource
 
+	// Chunking re-translates the query per time slice, so it is only valid when
+	// no embedded subquery carries its own copy of the range (join /
+	// model_lookup), and only for a whole-range first page.
+	chunkable := streamable && !translationResult.TimeScopedSubquery && req.Cursor == ""
+
 	// Add LIMIT to queries that don't already have one
 	if !sqlLimitRE.MatchString(sql) {
 		if isAggregated {
@@ -961,6 +1031,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		chartType:           chartType,
 		chartConfig:         chartConfig,
 		streamable:          streamable,
+		chunkable:           chunkable,
 		appliedCursorPaging: appliedCursorPaging,
 		queryMaxRows:        queryMaxRows,
 		isBloomQuery:        isBloomQuery,
@@ -1723,28 +1794,46 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			})
 		}
 
-		// One scan over the whole range, however many days it spans. The source
-		// carries ORDER BY timestamp DESC LIMIT, so ClickHouse reads the MergeTree in
-		// reverse sorting-key order and stops as soon as the limit is met; rows reach
-		// the client newest-first as they are produced. (This replaced a loop of 8-hour
-		// windows added when the generated SQL shadowed the sorting key with a String
-		// alias and so scanned the full range regardless of LIMIT -- see the ORDER BY
-		// note in translator.go. The loop cost a query round trip per window, dropped
-		// sub-second rows at each window boundary, and re-scoped join() subqueries to
-		// each window.)
-		streamErr := h.db.StreamQuery(queryCtx, searchID+"-main", prep.sql, onRow, onProgress)
-		flushBatch()
-		if clientGone || r.Context().Err() != nil {
-			return
-		}
-		if streamErr != nil && !errors.Is(streamErr, errStreamPageFull) && !errors.Is(streamErr, errStreamClient) {
-			if queryCtx.Err() == context.DeadlineExceeded {
-				writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
-			} else {
-				emitExecError(streamErr)
+		// Each chunk is a full read-in-order scan of its own slice that stops at the
+		// remaining row budget, so a dense search still finishes inside the first
+		// (smallest) chunk. Chunking exists for the opposite case: when matches are
+		// rarer than the limit, ClickHouse cannot emit anything until the scan ends,
+		// and one query over the whole range would show nothing until it completed.
+		chunks := []streamChunk{{start: prep.startTime, end: prep.endTime}}
+		if prep.chunkable {
+			if c := streamChunks(prep.startTime, prep.endTime); len(c) > 0 {
+				chunks = c
 			}
-			return
 		}
+
+		for i, chunk := range chunks {
+			chunkSQL := prep.sql
+			if len(chunks) > 1 {
+				var sqlErr error
+				if chunkSQL, sqlErr = prep.buildChunkSQL(chunk, prep.queryMaxRows-count); sqlErr != nil {
+					emitExecError(sqlErr)
+					return
+				}
+			}
+			streamErr := h.db.StreamQuery(queryCtx, fmt.Sprintf("%s-c%d", searchID, i), chunkSQL, onRow, onProgress)
+			flushBatch()
+			if clientGone || r.Context().Err() != nil {
+				return
+			}
+			if streamErr != nil && !errors.Is(streamErr, errStreamPageFull) && !errors.Is(streamErr, errStreamClient) {
+				if queryCtx.Err() == context.DeadlineExceeded {
+					writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
+				} else {
+					emitExecError(streamErr)
+				}
+				return
+			}
+			drainHistogram(false)
+			if count >= prep.queryMaxRows {
+				break
+			}
+		}
+
 		if prep.appliedCursorPaging {
 			if hasMoreOut && lastKept != nil {
 				if nc, encErr := encodeCursor(lastKept); encErr == nil {
@@ -1753,7 +1842,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 					hasMoreOut = false
 				}
 			}
-		} else if count == prep.queryMaxRows {
+		} else if count >= prep.queryMaxRows {
 			if prep.isBloomQuery {
 				limitHitOut = "bloom"
 			} else {

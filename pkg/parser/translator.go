@@ -20,6 +20,7 @@ type AnalyticsModelInfo struct {
 type QueryOptions struct {
 	StartTime             time.Time
 	EndTime               time.Time
+	EndExclusive          bool // emit "timestamp < EndTime" instead of "<="; lets adjacent chunks abut without dropping or duplicating a row
 	MaxRows               int
 	FractalID             string                        // Fractal UUID for filtering logs to specific fractal
 	FractalIDs            []string                      // Multiple fractal UUIDs (prism context); overrides FractalID when set
@@ -89,6 +90,12 @@ type TranslationResult struct {
 	// "timestamp DESC" ordering (no user ORDER BY / GROUP BY / aggregation).
 	// Such queries emit rows newest-first and can be progressively streamed.
 	DefaultTimeOrder bool
+	// TimeScopedSubquery is true when the SQL embeds a subquery that carries its
+	// own copy of the query's time bounds (join / model_lookup). Re-translating
+	// such a query over a narrower window also narrows that subquery, which drops
+	// rows whose join partner sits outside the window, so the caller must not
+	// slice the range.
+	TimeScopedSubquery bool
 }
 
 func TranslateToSQL(pipeline *PipelineNode, opts QueryOptions) (string, error) {
@@ -591,9 +598,13 @@ func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 	if opts.UseIngestTimestamp {
 		tsCol = "ingest_timestamp"
 	}
+	endOp := "<="
+	if opts.EndExclusive {
+		endOp = "<"
+	}
 	source.Layer.Where = append(source.Layer.Where,
 		fmt.Sprintf("%s >= '%s'", tsCol, chTimeLiteral(opts.StartTime)),
-		fmt.Sprintf("%s <= '%s'", tsCol, chTimeLiteral(opts.EndTime)),
+		fmt.Sprintf("%s %s '%s'", tsCol, endOp, chTimeLiteral(opts.EndTime)),
 	)
 
 	if len(opts.FractalIDs) > 0 {
@@ -820,12 +831,13 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 	}
 
 	return &TranslationResult{
-		SQL:              sql,
-		FieldOrder:       fieldOrder,
-		IsAggregated:     plan.IsAggregated || len(activeStage.Layer.GroupBy) > 0,
-		ChartType:        plan.ChartType,
-		ChartConfig:      plan.ChartConfig,
-		DefaultTimeOrder: defaultTimeOrder,
+		SQL:                sql,
+		FieldOrder:         fieldOrder,
+		IsAggregated:       plan.IsAggregated || len(activeStage.Layer.GroupBy) > 0,
+		ChartType:          plan.ChartType,
+		ChartConfig:        plan.ChartConfig,
+		DefaultTimeOrder:   defaultTimeOrder,
+		TimeScopedSubquery: plan.IsJoin || plan.ModelLookupSQL != "",
 	}, nil
 }
 
