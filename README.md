@@ -48,7 +48,7 @@ pgr(start="{63047898-ac75-6860-8a04-000000002502}") | pgraph()
 
 ## Status
 
-Bifract is at v0.0.3 and maintained by one developer. It's built to handle billions of logs, and the core (ingest, search, alerting) is stable. The Iceberg archive is the newest piece and the most likely to change. Endpoint behavioral analytics is off by default because the baselines run on every ingested log; leave it off if you don't collect endpoint data.
+Bifract is at v0.0.5 and maintained by one developer. It's built to handle billions of logs, and the core (ingest, search, alerting) is stable. The Iceberg archive is the newest piece and the most likely to change. Endpoint behavioral analytics is off by default because the baselines run on every ingested log; leave it off if you don't collect endpoint data.
 
 ## Documentation
 
