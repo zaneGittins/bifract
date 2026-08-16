@@ -96,6 +96,9 @@ type TranslationResult struct {
 	// rows whose join partner sits outside the window, so the caller must not
 	// slice the range.
 	TimeScopedSubquery bool
+	// Chain is set for chain() queries, describing how to fetch the events behind
+	// each matched sequence. Nil otherwise.
+	Chain *ChainMeta
 }
 
 func TranslateToSQL(pipeline *PipelineNode, opts QueryOptions) (string, error) {
@@ -296,6 +299,9 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	//     (e.g. _avg from multi() would land in WHERE). Materialization then emits
 	//     SQL from the now-complete registry and binds HAVING to its proper stage.
 	// ---------------------------------------------------------------
+	if err := resolveCommandConditions(pipeline.HavingConditions, opts); err != nil {
+		return nil, err
+	}
 	classifyConditions(pipeline.HavingConditions, registry, plan)
 	materializeConditions(registry, plan)
 
@@ -840,6 +846,11 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		// Columns exported purely to make deferred expressions resolvable are
 		// stripped from the SQL result, so they must not be listed for display.
 		fieldOrder = dropHiddenDeferredFields(fieldOrder, plan)
+		// chain()'s internal columns stay in the result data but out of the display.
+		if plan.IsChain {
+			fieldOrder = dropField(fieldOrder, chainAnchorColumn)
+			fieldOrder = dropField(fieldOrder, chainDoneColumn)
+		}
 
 		// When formatters add a subquery wrapper AND the query uses the default
 		// timestamp-DESC order, mirror ORDER BY and LIMIT onto the formatter outer
@@ -921,6 +932,7 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		ChartConfig:        plan.ChartConfig,
 		DefaultTimeOrder:   defaultTimeOrder,
 		TimeScopedSubquery: plan.IsJoin || plan.ModelLookupSQL != "",
+		Chain:              plan.Chain,
 	}, nil
 }
 
@@ -1356,6 +1368,17 @@ func dropHiddenDeferredFields(fieldOrder []string, plan *QueryPlan) []string {
 	out := fieldOrder[:0]
 	for _, f := range fieldOrder {
 		if !hidden[f] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// dropField removes one column from the display order, leaving it in the result set.
+func dropField(fieldOrder []string, name string) []string {
+	out := fieldOrder[:0]
+	for _, f := range fieldOrder {
+		if f != name {
 			out = append(out, f)
 		}
 	}

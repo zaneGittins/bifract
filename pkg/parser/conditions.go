@@ -336,6 +336,8 @@ func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry,
 			} else {
 				condSQL = "(" + inner + ")"
 			}
+		} else if cond.CommandSQL != "" {
+			condSQL = cond.CommandSQL
 		} else {
 			condSQL = buildConditionSQL(cond, registry, scope)
 			if condSQL == "" {
@@ -543,4 +545,29 @@ func negateHavingCondition(h *HavingCondition) {
 	case "=~", "=^", "=$":
 		h.Negate = !h.Negate
 	}
+}
+
+// resolveCommandConditions compiles condition-function operands into SQL. It runs
+// before classification so the rest of the pipeline treats them as ordinary leaves.
+func resolveCommandConditions(conditions []HavingCondition, opts QueryOptions) error {
+	for i := range conditions {
+		if conditions[i].IsCompound {
+			if err := resolveCommandConditions(conditions[i].Children, opts); err != nil {
+				return err
+			}
+			continue
+		}
+		if conditions[i].Command == nil {
+			continue
+		}
+		sql, err := CommandPredicate(*conditions[i].Command, opts)
+		if err != nil {
+			return err
+		}
+		if conditions[i].Command.Negate {
+			sql = "NOT (" + sql + ")"
+		}
+		conditions[i].CommandSQL = sql
+	}
+	return nil
 }

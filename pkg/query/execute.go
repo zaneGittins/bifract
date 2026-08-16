@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"bifract/pkg/evidence"
 	"bifract/pkg/models"
 	"bifract/pkg/parser"
 	"bifract/pkg/settings"
@@ -238,6 +239,9 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 
 	if rows == nil {
 		rows = []map[string]interface{}{}
+	}
+	if translationResult.Chain != nil {
+		evidence.Attach(qctx, translationResult, rows, opts, h.db.QueryLowPriority)
 	}
 	fieldOrder := translationResult.FieldOrder
 	if fieldOrder == nil {

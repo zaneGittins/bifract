@@ -738,13 +738,22 @@ func TestChainFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		// Should have sequenceMatch in HAVING with toDateTime cast
-		if !strings.Contains(result.SQL, "sequenceMatch('(?1)(?2)')(toDateTime(timestamp)") {
-			t.Errorf("Expected sequenceMatch with toDateTime, got: %s", result.SQL)
+		// Millisecond timestamps: second granularity leaves same-second order undefined.
+		if !strings.Contains(result.SQL, "sequenceMatch('(?1)(?2)')(toUInt64(toUnixTimestamp64Milli(timestamp))") {
+			t.Errorf("Expected sequenceMatch with millisecond timestamps, got: %s", result.SQL)
 		}
-		// Should have sequenceCount in SELECT with toDateTime cast
-		if !strings.Contains(result.SQL, "sequenceCount('(?1)(?2)')(toDateTime(timestamp)") {
-			t.Errorf("Expected sequenceCount with toDateTime, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "sequenceCount('(?1)(?2)')(toUInt64(toUnixTimestamp64Milli(timestamp))") {
+			t.Errorf("Expected sequenceCount with millisecond timestamps, got: %s", result.SQL)
+		}
+		// Matched-sequence anchors are emitted on every chain query.
+		if !strings.Contains(result.SQL, "sequenceMatchEvents('(?1)(?2)')(toUInt64(toUnixTimestamp64Milli(timestamp))") {
+			t.Errorf("Expected sequenceMatchEvents anchors, got: %s", result.SQL)
+		}
+		// ...but never as a display column.
+		for _, f := range result.FieldOrder {
+			if f == "_chain_ts" {
+				t.Errorf("_chain_ts must not appear in FieldOrder, got: %v", result.FieldOrder)
+			}
 		}
 		// Should GROUP BY the chain field (uses alias after rebuild)
 		if !strings.Contains(result.SQL, "GROUP BY user") {
@@ -768,9 +777,9 @@ func TestChainFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		// Should have time constraint in pattern
-		if !strings.Contains(result.SQL, "(?t<=300)") {
-			t.Errorf("Expected time constraint (?t<=300) for within=5m, got: %s", result.SQL)
+		// within= is seconds; the pattern constraint is milliseconds.
+		if !strings.Contains(result.SQL, "(?t<=300000)") {
+			t.Errorf("Expected time constraint (?t<=300000) for within=5m, got: %s", result.SQL)
 		}
 	})
 
@@ -839,7 +848,7 @@ func TestChainFunction(t *testing.T) {
 			t.Fatalf("Failed to translate: %v", err)
 		}
 		// 3-step pattern with time constraints between each
-		if !strings.Contains(result.SQL, "(?1)(?t<=3600)(?2)(?t<=3600)(?3)") {
+		if !strings.Contains(result.SQL, "(?1)(?t<=3600000)(?2)(?t<=3600000)(?3)") {
 			t.Errorf("Expected 3-step pattern with 1h constraints, got: %s", result.SQL)
 		}
 	})

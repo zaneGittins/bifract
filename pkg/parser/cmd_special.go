@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+// chainAnchorColumn carries chain()'s matched-sequence timestamps. Present in the
+// result data for drilldown and alert evidence, suppressed from the display columns.
+const chainAnchorColumn = "_chain_ts"
+
+// chainDoneColumn marks when a matched sequence became visible, in whatever time
+// basis the query is scoped by. Distinct from chainAnchorColumn, which is always
+// event time because it keys the log lookup off the sorting key.
+const chainDoneColumn = "_chain_done"
+
 // tableHandler handles table(field1, field2, ...)
 type tableHandler struct{}
 
@@ -428,6 +437,16 @@ func (h *chainHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+// WindowContract reports that a matched sequence spans at most within=, and that
+// chainDoneColumn marks when it completed.
+func (h *chainHandler) WindowContract(cmd CommandNode) (int, string) {
+	within := 0
+	if len(cmd.Arguments) >= 2 && cmd.Arguments[1] != "" {
+		within = spanToSeconds(cmd.Arguments[1])
+	}
+	return within, chainDoneColumn
+}
+
 func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if len(cmd.Arguments) < 1 {
 		return fmt.Errorf("chain() requires grouping field(s) and step definitions")
@@ -436,8 +455,25 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	chainFieldsStr := cmd.Arguments[0]
 	var withinSeconds int
-	if len(cmd.Arguments) >= 2 {
+	if len(cmd.Arguments) >= 2 && cmd.Arguments[1] != "" {
 		withinSeconds = spanToSeconds(cmd.Arguments[1])
+	}
+	ordered := true
+	if len(cmd.Arguments) >= 3 && cmd.Arguments[2] != "" {
+		v := strings.ToLower(strings.Trim(cmd.Arguments[2], `"'`))
+		switch v {
+		case "true", "1", "yes":
+			ordered = true
+		case "false", "0", "no":
+			ordered = false
+		default:
+			return fmt.Errorf("chain(): order must be true or false, got %q", v)
+		}
+	}
+	if !ordered && withinSeconds > 0 {
+		// An unordered window needs a sliding span over the matching events, which
+		// no single aggregate expresses; approximating it drops real matches.
+		return fmt.Errorf("chain(): within= cannot be combined with order=false")
 	}
 
 	chainFields := strings.Split(chainFieldsStr, ",")
@@ -445,7 +481,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		chainFields[i] = strings.TrimSpace(f)
 	}
 
-	steps, err := parseChainSteps(cmd.BlockTokens)
+	steps, stepFields, err := parseChainSteps(cmd.BlockTokens, ctx.Opts, ctx.Registry)
 	if err != nil {
 		return fmt.Errorf("chain(): %w", err)
 	}
@@ -453,17 +489,43 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("chain() requires at least 2 steps, got %d", len(steps))
 	}
 
-	// Build sequenceMatch pattern
+	// Build sequenceMatch pattern. (?t<=N) uses the units of tsExpr (milliseconds).
 	var pattern strings.Builder
 	for i := range steps {
 		if i > 0 && withinSeconds > 0 {
-			pattern.WriteString(fmt.Sprintf("(?t<=%d)", withinSeconds))
+			pattern.WriteString(fmt.Sprintf("(?t<=%d)", withinSeconds*1000))
 		}
 		pattern.WriteString(fmt.Sprintf("(?%d)", i+1))
 	}
 	patternStr := pattern.String()
 	condArgs := strings.Join(steps, ", ")
-	tsExpr := "toDateTime(timestamp)"
+	// Millisecond ordering: toDateTime() leaves same-second event order undefined,
+	// which misorders spawn-then-connect sequences. UInt64 millis; the aggregate
+	// rejects DateTime64 and Int64.
+	tsExpr := "toUInt64(toUnixTimestamp64Milli(timestamp))"
+
+	// countExpr counts matched sequences, matchExpr gates the group, anchorExpr
+	// locates one event per step. Ordered mode sequences the steps; unordered mode
+	// only requires each step to occur, so it counts complete co-occurrence sets and
+	// anchors on each step's earliest event.
+	countExpr := fmt.Sprintf("sequenceCount('%s')(%s, %s)", patternStr, tsExpr, condArgs)
+	matchExpr := fmt.Sprintf("sequenceMatch('%s')(%s, %s)", patternStr, tsExpr, condArgs)
+	anchorExpr := fmt.Sprintf("sequenceMatchEvents('%s')(%s, %s)", patternStr, tsExpr, condArgs)
+	if !ordered {
+		counts := make([]string, len(steps))
+		presence := make([]string, len(steps))
+		anchors := make([]string, len(steps))
+		for i, cond := range steps {
+			counts[i] = fmt.Sprintf("countIf(%s)", cond)
+			presence[i] = fmt.Sprintf("countIf(%s) > 0", cond)
+			anchors[i] = fmt.Sprintf("minIf(%s, %s)", tsExpr, cond)
+		}
+		countExpr = fmt.Sprintf("least(%s)", strings.Join(counts, ", "))
+		matchExpr = strings.Join(presence, " AND ")
+		anchorExpr = fmt.Sprintf("[%s]", strings.Join(anchors, ", "))
+	}
+
+	meta := &ChainMeta{AnchorColumn: chainAnchorColumn, StepConditions: steps, StepFields: stepFields}
 
 	// Multi-identity mode: when multiple fields are provided, they all represent
 	// the same entity (e.g., user, source_user, target_user). We use arrayJoin
@@ -488,6 +550,8 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source.Layer.GroupBy = append(source.Layer.GroupBy, "_entity")
 		ctx.Registry.Register("_entity", FieldKindPerRow, "_entity", ctx.CmdIndex)
 		ctx.Registry.SetResolveExpr("_entity", entityExpr)
+		meta.EntityColumn = "_entity"
+		meta.MultiIdentity = true
 	} else {
 		// Single field: original behavior, GROUP BY that field directly.
 		chainField := chainFields[0]
@@ -505,20 +569,50 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", fieldRef, safeField)})
 		source.Layer.GroupBy = append(source.Layer.GroupBy, fieldRef)
 		ctx.Registry.SetResolveExpr(safeField, fieldRef)
+		meta.EntityColumn = safeField
+		meta.EntityExpr = fieldRef
 	}
 
 	// SELECT chain_count
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-		Expr: fmt.Sprintf("sequenceCount('%s')(%s, %s) AS chain_count", patternStr, tsExpr, condArgs),
+		Expr: fmt.Sprintf("%s AS chain_count", countExpr),
 	})
 
+	// Millisecond timestamps of one matching sequence, aligned to the steps. Keys the
+	// exact events behind a match (alert evidence, drilldown) off the logs sorting key;
+	// hidden from field order. The HAVING guarantees a full-length array, since
+	// sequenceMatchEvents on its own also emits partial chains.
+	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
+		Expr: fmt.Sprintf("%s AS %s", anchorExpr, chainAnchorColumn),
+	})
+	ctx.Registry.Register(chainAnchorColumn, FieldKindAggregate, chainAnchorColumn, ctx.CmdIndex)
+	ctx.Registry.SetResolveExpr(chainAnchorColumn, anchorExpr)
+
+	// Completion marker for windowed evaluators, in the same time basis the query
+	// is scoped by, so it is comparable with the window bounds. Latest step-matching
+	// event, which errs toward re-reporting rather than dropping a real match.
+	scopeTs := "timestamp"
+	if ctx.Opts.UseIngestTimestamp {
+		scopeTs = "ingest_timestamp"
+	}
+	doneExpr := fmt.Sprintf("maxIf(toUnixTimestamp64Milli(%s), %s)", scopeTs, strings.Join(steps, " OR "))
+	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
+		Expr: fmt.Sprintf("%s AS %s", doneExpr, chainDoneColumn),
+	})
+	ctx.Registry.Register(chainDoneColumn, FieldKindAggregate, chainDoneColumn, ctx.CmdIndex)
+	ctx.Registry.SetResolveExpr(chainDoneColumn, doneExpr)
+
 	// HAVING: only groups where the sequence matched
-	source.Layer.Having = append(source.Layer.Having,
-		fmt.Sprintf("sequenceMatch('%s')(%s, %s) = 1", patternStr, tsExpr, condArgs))
+	if ordered {
+		source.Layer.Having = append(source.Layer.Having, matchExpr+" = 1")
+	} else {
+		source.Layer.Having = append(source.Layer.Having, matchExpr)
+	}
 
 	ctx.Plan.IsAggregated = true
 	ctx.Plan.IsChain = true
-	ctx.Registry.SetResolveExpr("chain_count", fmt.Sprintf("sequenceCount('%s')(%s, %s)", patternStr, tsExpr, condArgs))
+	ctx.Plan.Chain = meta
+	ctx.Registry.SetResolveExpr("chain_count", countExpr)
 	source.Layer.OrderBy = append(source.Layer.OrderBy, "chain_count DESC")
 	return nil
 }

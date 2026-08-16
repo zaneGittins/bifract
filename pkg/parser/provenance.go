@@ -244,6 +244,7 @@ func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
 //     process_guids are the children (next frontier).
 //   - backward (ancestors): process_guid IN (frontier) -> (fractal_id, process_guid) primary key;
 //     the returned parent_guids are the parents (next frontier).
+//
 // Fractal + time-window scoping matches the recursive base/step exactly. No FINAL: the caller
 // dedups guids in Go and process_guid is globally unique, so the distinct guid set is identical
 // to the FINAL traversal (FINAL only picks which row per guid, not which guids exist).
@@ -611,6 +612,7 @@ var reconnectEdgeType = map[string]string{
 // AbstractDomain), so only the structural checks are needed:
 //   - single-label name (no dot) -- NetBIOS / LLMNR / mDNS
 //   - AD service-discovery record -- starts with '_' (_ldap._tcp...) or contains '._msdcs.'
+//
 // The former logs-based filter also excluded names resolving ONLY to internal IPs (via
 // query_results); that signal is not carried in the process_edges rollup, so it is not applied here
 // -- the proc_freq host/image rarity gate prunes widely-resolved internal names instead.
@@ -630,6 +632,7 @@ func internalDomainExpr(col string) string {
 //     the existing idx_dst_ip bloom.
 //   - remote_thread/process_access: target guids this tree injected into / opened -- emitted
 //     already by pass-2, so returned only as expansion candidates (object_id empty).
+//
 // Returns "" (no error) when reconnection is disabled or no edge type is selected.
 //
 // totalHosts/totalImages (from BuildReconnectionTotalsSQL, computed once per pgr() call -- see
@@ -808,6 +811,7 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, totalHosts, totalI
 //   - net/dns: two edges -- tree-toucher -> object node AND peer -> object node.
 //   - file: one edge -- writer -> executor (the file path in Label; no object node).
 //   - injection/access: none (pass-2 owns source->target); peer is expansion-only.
+//
 // Edges are deduped by (parent, child, event_type). Every value is escaped.
 //
 // The peer -> object edge carries the peer's image in parent_label. Only the top few peers are

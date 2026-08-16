@@ -42,9 +42,9 @@ type fieldStat struct {
 
 type fieldStatsResponse struct {
 	Success     bool        `json:"success"`
-	SampleSize  uint64      `json:"sample_size"`  // rows actually scanned (coverage denominator)
-	Approximate bool        `json:"approximate"`  // true when the sample cap was hit (more rows match)
-	Supported   bool        `json:"supported"`    // false for source-command queries (pgr() etc.)
+	SampleSize  uint64      `json:"sample_size"` // rows actually scanned (coverage denominator)
+	Approximate bool        `json:"approximate"` // true when the sample cap was hit (more rows match)
+	Supported   bool        `json:"supported"`   // false for source-command queries (pgr() etc.)
 	Fields      []fieldStat `json:"fields"`
 }
 

@@ -99,6 +99,7 @@ type QueryPlan struct {
 	IsTraversal bool
 	IsAnalyze   bool
 	IsChain     bool
+	Chain       *ChainMeta
 
 	// Traversal-specific fields
 	TraversalMode    string

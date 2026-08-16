@@ -17,6 +17,7 @@ import (
 
 	"bifract/pkg/bqlvars"
 	"bifract/pkg/dictionaries"
+	"bifract/pkg/evidence"
 	"bifract/pkg/fractals"
 	"bifract/pkg/models"
 	"bifract/pkg/parser"
@@ -404,6 +405,7 @@ type preparedQuery struct {
 	histRollupTable     string // non-empty when the histogram reads the per-minute rollup
 	pipeline            *parser.PipelineNode
 	translationOpts     parser.QueryOptions
+	translated          *parser.TranslationResult // drives evidence enrichment
 }
 
 // buildHistogramSQL re-translates the histogram for one bucket-aligned slice of
@@ -673,6 +675,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	var chartConfig map[string]interface{}
 	var queryMaxRows int
 	var isBloomQuery bool
+	var translated *parser.TranslationResult
 
 	log.Printf("[QueryHandler] Processing BQL query")
 	pipeline, err := parser.ParseQuery(req.Query)
@@ -916,6 +919,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	isAggregated = translationResult.IsAggregated
 	chartType = translationResult.ChartType
 	chartConfig = translationResult.ChartConfig
+	translated = translationResult
 	// Surface the source command's focus node (pgr start guid) so pgraph() can center/highlight it.
 	if sourceFocus != "" && chartType == "pgraph" {
 		if chartConfig == nil {
@@ -1048,6 +1052,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		histRollupTable:     histRollupTable,
 		pipeline:            pipeline,
 		translationOpts:     opts,
+		translated:          translated,
 	}
 	return
 }
@@ -1373,6 +1378,10 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 			hasMore = true
 		}
 	}
+
+	// Attach the events behind each matched sequence. Runs after any trim so the
+	// lookup is bounded by the page that is actually returned.
+	evidence.Attach(queryCtx, prep.translated, results, prep.translationOpts, h.db.QueryLowPriority)
 
 	// Process histogram into bucketed array. Buckets are aligned to the snapped
 	// window, not the raw query range.
@@ -1877,6 +1886,9 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 				limitHitOut = "search"
 			}
 		}
+		// chain() only: attach the events behind each matched sequence. Aggregated
+		// queries never reach the streaming branch above, so this is the sole path.
+		evidence.Attach(queryCtx, prep.translated, rows, prep.translationOpts, h.db.QueryLowPriority)
 		for _, row := range rows {
 			sanitizeFloats(row)
 		}

@@ -219,10 +219,10 @@ func TestORDoesNotBleed(t *testing.T) {
 
 func TestPipelineBooleanConditions(t *testing.T) {
 	tests := []struct {
-		name       string
-		query      string
-		wantSQL    []string // fragments that must appear
-		wantNoSQL  []string // fragments that must NOT appear
+		name      string
+		query     string
+		wantSQL   []string // fragments that must appear
+		wantNoSQL []string // fragments that must NOT appear
 	}{
 		{
 			name:    "string OR in pipeline",

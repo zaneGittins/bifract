@@ -76,8 +76,8 @@ func sanitizeIceName(field string) string {
 // mapFieldRef returns the ClickHouse field access for a field in Iceberg mode.
 // The archiver serializes fields into the flat JSON `norm_log` String column, so
 // a dotted BQL path is the literal top-level JSON key. JSONExtractString returns
-// '' (not NULL) for a missing key, which the existence/`!=` codegen already
-// tolerates.
+// an empty string (not NULL) for a missing key, which the existence/`!=` codegen
+// already tolerates.
 func mapFieldRef(field string) string {
 	return "JSONExtractString(norm_log, '" + escapeString(field) + "')"
 }

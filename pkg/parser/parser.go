@@ -69,6 +69,13 @@ type HavingCondition struct {
 	IsCompound bool
 	Children   []HavingCondition
 	Negate     bool // NOT applied to the entire compound sub-expression
+
+	// Command holds a condition function used as a boolean operand, e.g.
+	// cidr(a) OR cidr(b). Such a function contributes a predicate like any other
+	// leaf rather than an independent conjunct. CommandSQL is filled in at
+	// translation time, where the handler and its options are available.
+	Command    *CommandNode
+	CommandSQL string
 }
 
 func (h HavingCondition) Type() string { return "having" }
@@ -179,7 +186,14 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 
 		// Handle AND/OR/NOT between HAVING conditions after bare regex/string
 		if p.current().Type == TokenAnd || p.current().Type == TokenOr {
-			// Set logic on previous HAVING condition if one exists
+			// A command immediately before the operator is an operand, not an
+			// independent conjunct: move it into the boolean chain so the operator
+			// is honoured instead of dropped.
+			if len(pipeline.HavingConditions) == 0 && len(pipeline.Commands) > 0 {
+				last := pipeline.Commands[len(pipeline.Commands)-1]
+				pipeline.Commands = pipeline.Commands[:len(pipeline.Commands)-1]
+				pipeline.HavingConditions = append(pipeline.HavingConditions, commandHavingCondition(last))
+			}
 			if len(pipeline.HavingConditions) > 0 {
 				pipeline.HavingConditions[len(pipeline.HavingConditions)-1].Logic = p.current().Value
 			}
@@ -200,7 +214,11 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 					return nil, err
 				}
 				cmd.Negate = true
-				pipeline.Commands = append(pipeline.Commands, *cmd)
+				if p.commandIsBooleanOperand(pipeline) {
+					pipeline.HavingConditions = append(pipeline.HavingConditions, commandHavingCondition(*cmd))
+				} else {
+					pipeline.Commands = append(pipeline.Commands, *cmd)
+				}
 				continue
 			}
 			pipelineNegate = true
@@ -304,7 +322,11 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			if err != nil {
 				return nil, err
 			}
-			pipeline.Commands = append(pipeline.Commands, *cmd)
+			if p.commandIsBooleanOperand(pipeline) {
+				pipeline.HavingConditions = append(pipeline.HavingConditions, commandHavingCondition(*cmd))
+			} else {
+				pipeline.Commands = append(pipeline.Commands, *cmd)
+			}
 		}
 
 		// If the parser position hasn't moved, we're stuck on a token that
@@ -1302,9 +1324,10 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 		return nil, newPosError(p.current(), "expected '(' after chain, got %s", p.current().Type)
 	}
 
-	// Parse arguments: grouping fields and optional within=DURATION
+	// Parse arguments: grouping fields, optional within=DURATION and order=BOOL
 	var groupFields []string
 	var withinValue string
+	orderValue := "true"
 
 	for p.current().Type != TokenRParen && p.current().Type != TokenEOF {
 		tok := p.current()
@@ -1315,16 +1338,22 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 		val := tok.Value
 		if strings.HasPrefix(val, "within=") {
 			withinValue = strings.TrimPrefix(val, "within=")
-		} else if val == "within" {
+		} else if strings.HasPrefix(val, "order=") {
+			orderValue = strings.TrimPrefix(val, "order=")
+		} else if val == "within" || val == "order" {
 			p.advance()
-			// Handle within=VALUE where = is a separate token
+			// Handle name=VALUE where = is a separate token
 			if p.current().Type == TokenEqual {
 				p.advance() // skip =
-				withinValue = p.current().Value
+				if val == "within" {
+					withinValue = p.current().Value
+				} else {
+					orderValue = p.current().Value
+				}
 				p.advance()
 				continue
 			}
-			// "within" without = is treated as a field name
+			// Without = it is a field name
 			groupFields = append(groupFields, val)
 			continue
 		} else {
@@ -1359,11 +1388,8 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 		return nil, newPosError(p.current(), "expected '}' to close chain block, got %s", p.current().Type)
 	}
 
-	// Arguments: [0]=groupFields (comma-separated), [1]=within (optional)
-	cmd.Arguments = []string{strings.Join(groupFields, ",")}
-	if withinValue != "" {
-		cmd.Arguments = append(cmd.Arguments, withinValue)
-	}
+	// Arguments: [0]=groupFields (comma-separated), [1]=within, [2]=order
+	cmd.Arguments = []string{strings.Join(groupFields, ","), withinValue, orderValue}
 	cmd.BlockTokens = blockTokens
 
 	return cmd, nil
@@ -1573,4 +1599,22 @@ func caseInsensitiveSearch(value string) string {
 		return value
 	}
 	return "(?i)" + regexp.QuoteMeta(value)
+}
+
+// commandHavingCondition wraps a condition function as a boolean operand.
+func commandHavingCondition(cmd CommandNode) HavingCondition {
+	return HavingCondition{Command: &cmd}
+}
+
+// commandIsBooleanOperand reports whether the command just parsed takes part in a
+// boolean expression: either an operator follows it, or one preceded it and is
+// still waiting for its right-hand side.
+func (p *Parser) commandIsBooleanOperand(pipeline *PipelineNode) bool {
+	if p.current().Type == TokenAnd || p.current().Type == TokenOr {
+		return true
+	}
+	if n := len(pipeline.HavingConditions); n > 0 && pipeline.HavingConditions[n-1].Logic != "" {
+		return true
+	}
+	return false
 }

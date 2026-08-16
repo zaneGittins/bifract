@@ -368,6 +368,9 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 	if err != nil {
 		return nil, fmt.Errorf("invalid query syntax: %w", err)
 	}
+	if err := validateWindowContract(parsedQuery); err != nil {
+		return nil, err
+	}
 
 	// Validate webhook action IDs exist in the current scope
 	if err := m.validateWebhookActionIDs(ctx, req.WebhookActionIDs, fractalID, prismID); err != nil {
@@ -508,6 +511,9 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 	parsedQuery, err := parser.ParseQuery(req.QueryString)
 	if err != nil {
 		return nil, fmt.Errorf("invalid query syntax: %w", err)
+	}
+	if err := validateWindowContract(parsedQuery); err != nil {
+		return nil, err
 	}
 
 	// Look up the alert's existing scope so action validation stays scoped.
@@ -2219,5 +2225,17 @@ func (m *Manager) DeleteEmailAction(ctx context.Context, id string) error {
 		fmt.Printf("Warning: failed to refresh alert cache: %v\n", err)
 	}
 
+	return nil
+}
+
+// validateWindowContract rejects a query that correlates across events without
+// bounding how far back that correlation reaches. Alerts evaluate over a moving
+// window, so an unbounded correlation can never be evaluated correctly: no finite
+// lookback guarantees the evidence is whole.
+func validateWindowContract(pipeline *parser.PipelineNode) error {
+	lookback, completion := parser.QueryWindowContract(pipeline)
+	if completion != "" && lookback <= 0 {
+		return fmt.Errorf("this query correlates events across time and needs a bound to run as an alert; add within= (e.g. within=5m)")
+	}
 	return nil
 }

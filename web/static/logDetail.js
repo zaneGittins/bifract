@@ -241,6 +241,19 @@ const LogDetail = {
         rawTab.textContent = 'Raw Log';
         rawTab.dataset.tab = 'raw';
 
+        // Chain tab: the events that formed this row's matched sequence. Only
+        // chain() rows carry them, so the tab appears solely for those.
+        const chainEvents = Array.isArray(logData._chain_events) ? logData._chain_events : null;
+        let chainTab = null;
+        if (chainEvents && chainEvents.length) {
+            chainTab = document.createElement('button');
+            chainTab.className = 'log-detail-tab active';
+            chainTab.textContent = 'Chain';
+            chainTab.dataset.tab = 'chain';
+            fieldsTab.classList.remove('active');
+            tabBar.appendChild(chainTab);
+        }
+
         tabBar.appendChild(fieldsTab);
         tabBar.appendChild(rawTab);
 
@@ -256,9 +269,18 @@ const LogDetail = {
 
         content.appendChild(tabBar);
 
+        // Chain tab content
+        if (chainTab) {
+            const chainPane = document.createElement('div');
+            chainPane.className = 'log-detail-tab-content active';
+            chainPane.dataset.tab = 'chain';
+            this._renderChainPane(chainPane, chainEvents, logData);
+            content.appendChild(chainPane);
+        }
+
         // Fields tab content
         const fieldsPane = document.createElement('div');
-        fieldsPane.className = 'log-detail-tab-content active';
+        fieldsPane.className = 'log-detail-tab-content' + (chainTab ? '' : ' active');
         fieldsPane.dataset.tab = 'fields';
 
         const searchContainer = document.createElement('div');
@@ -421,6 +443,89 @@ const LogDetail = {
         this.renderRawLog(logData, container);
     },
 
+    // Renders the matched sequence as a compact, ordered step list. Each step is a
+    // navigator into the full log rather than a second copy of it: clicking one
+    // loads that event into this panel, so the Fields/Raw tabs stay canonical.
+    _renderChainPane(pane, events, parentRow) {
+        // Preview shows only the fields the query filtered on, capped to stay compact.
+        // Clicking a step opens its full log, so nothing is lost.
+        const MAX_PREVIEW_FIELDS = 5;
+        const chainFields = Array.isArray(parentRow && parentRow._chain_fields) ? parentRow._chain_fields : [];
+
+        const header = document.createElement('div');
+        header.className = 'chain-pane-header';
+        const total = parentRow && parentRow.chain_count;
+        header.textContent = events.length + ' step sequence'
+            + (total && Number(total) > 1 ? ` · ${total} occurrences, first shown` : '');
+        pane.appendChild(header);
+
+        const list = document.createElement('ol');
+        list.className = 'chain-step-list';
+
+        events.forEach(ev => {
+            let parsed = {};
+            try { parsed = JSON.parse(ev.norm_log || '{}'); } catch (e) { parsed = {}; }
+
+            const item = document.createElement('li');
+            item.className = 'chain-step-item';
+
+            const badge = document.createElement('span');
+            badge.className = 'chain-step-badge';
+            badge.textContent = ev.step;
+
+            const body = document.createElement('div');
+            body.className = 'chain-step-body';
+
+            const head = document.createElement('div');
+            head.className = 'chain-step-head';
+            const ts = document.createElement('span');
+            ts.className = 'chain-step-ts';
+            ts.textContent = ev.timestamp || '';
+            head.appendChild(ts);
+            body.appendChild(head);
+
+            const shown = chainFields.filter(k =>
+                parsed[k] !== undefined && parsed[k] !== null && parsed[k] !== '');
+
+            const kv = document.createElement('div');
+            kv.className = 'chain-step-fields';
+            shown.slice(0, MAX_PREVIEW_FIELDS).forEach(k => {
+                const span = document.createElement('span');
+                span.className = 'chain-step-kv';
+                const label = document.createElement('em');
+                label.textContent = k;
+                span.appendChild(label);
+                span.appendChild(document.createTextNode(String(parsed[k])));
+                kv.appendChild(span);
+            });
+            if (shown.length > MAX_PREVIEW_FIELDS) {
+                const more = document.createElement('span');
+                more.className = 'chain-step-more';
+                more.textContent = `+${shown.length - MAX_PREVIEW_FIELDS} more`;
+                kv.appendChild(more);
+            }
+            body.appendChild(kv);
+
+            item.appendChild(badge);
+            item.appendChild(body);
+
+            // Load this step's full log into the panel. norm_log is already here,
+            // so Fields renders without a round trip.
+            item.addEventListener('click', () => {
+                this.show({
+                    log_id: ev.log_id,
+                    timestamp: ev.timestamp,
+                    norm_log: ev.norm_log,
+                    fields: parsed,
+                });
+            });
+
+            list.appendChild(item);
+        });
+
+        pane.appendChild(list);
+    },
+
     renderRawLog(logData, container) {
         const rawValue = logData.raw_log || '';
         if (!rawValue) {
@@ -489,6 +594,9 @@ const LogDetail = {
         }
 
         for (const key of Object.keys(logData)) {
+            // _chain_ts / _chain_events back the Chain tab; they are internal keys,
+            // not log fields.
+            if (key.startsWith('_chain_')) continue;
             if (key !== 'fields' && key !== '_all_fields' && key !== 'timestamp' && key !== 'raw_log' && key !== 'norm_log') {
                 flattenedData[key] = logData[key];
             }

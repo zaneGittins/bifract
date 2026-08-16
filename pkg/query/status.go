@@ -23,10 +23,10 @@ type StatusHandler struct {
 	pg           *storage.PostgresClient
 	quotaClearer quotaClearer
 
-	cacheMu    sync.RWMutex
-	cached     *StatusResponse
-	cachedAt   time.Time
-	cacheTTL   time.Duration
+	cacheMu  sync.RWMutex
+	cached   *StatusResponse
+	cachedAt time.Time
+	cacheTTL time.Duration
 }
 
 // SetQuotaClearer attaches a quota manager that is notified when logs are cleared.

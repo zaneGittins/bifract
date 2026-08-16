@@ -201,3 +201,29 @@ func TestTransformLogsForFractalCarriesAlertLabels(t *testing.T) {
 		t.Error("alert_labels leaked into a forward with alert context disabled")
 	}
 }
+
+// Nested values must reach the target fractal as JSON. Go's default formatting
+// renders them as map[k:v] text that no consumer can parse.
+func TestFieldStringSerializesCollectionsAsJSON(t *testing.T) {
+	cases := map[string]struct {
+		in   interface{}
+		want string
+	}{
+		"events":     {[]map[string]interface{}{{"step": 1, "log_id": "a"}}, `[{"log_id":"a","step":1}]`},
+		"uint slice": {[]uint64{10, 20}, `[10,20]`},
+		"strings":    {[]string{"a", "b"}, `["a","b"]`},
+		"map":        {map[string]interface{}{"k": "v"}, `{"k":"v"}`},
+	}
+	for name, tc := range cases {
+		if got := fieldString(tc.in); got != tc.want {
+			t.Errorf("%s: got %s, want %s", name, got, tc.want)
+		}
+	}
+	// Scalars keep their existing rendering.
+	if got := fieldString(int64(7)); got != "7" {
+		t.Errorf("int64: got %s, want 7", got)
+	}
+	if got := fieldString("plain"); got != "plain" {
+		t.Errorf("string: got %s, want plain", got)
+	}
+}

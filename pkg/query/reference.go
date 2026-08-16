@@ -181,11 +181,12 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			{
 				Name:        "chain",
 				Category:    "Detection",
-				Description: "Detects sequential event patterns sharing common field(s) using ClickHouse sequenceMatch. With a single field, events are grouped by that field. With multiple fields, they are treated as identity aliases for the same entity (e.g., user, source_user, target_user) enabling cross-field correlation like lateral movement detection.",
+				Description: "Detects sequential event patterns sharing common field(s) using ClickHouse sequenceMatch. With a single field, events are grouped by that field. With multiple fields, they are treated as identity aliases for the same entity (e.g., user, source_user, target_user) enabling cross-field correlation like lateral movement detection. Returns the field(s) plus chain_count; steps are ordered at millisecond precision. Steps accept filter syntax plus condition functions (cidr, in, comment), negatable with ! and combinable with AND/OR; projecting/aggregating functions are rejected. Also carries an undisplayed _chain_ts holding the longest matching sequence's timestamps in step order.",
 				Syntax:      "| chain(field1, field2, ..., within=DURATION) { step1; step2; ... }",
 				Parameters: []Param{
 					{Name: "field", Type: "string", Required: true, Description: "One or more identity fields. Single field groups directly. Multiple fields are treated as aliases for the same entity, matching events where any field contains the entity value."},
 					{Name: "within", Type: "duration", Required: false, Description: "Max time between consecutive steps (e.g., 5m, 1h, 1d)"},
+					{Name: "order", Type: "boolean", Required: false, Description: "Default true: steps must occur in the written order. false requires every step to occur for the entity in any order, and cannot be combined with within."},
 				},
 				Examples: []string{
 					"| chain(user) { event_id=4624; event_id=4688 }",
@@ -193,6 +194,8 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 					"event_source=Security | chain(user, within=1h) { event_id=4624; event_id=4672; event_id=4688 }",
 					"| chain(user, within=1d) { event_id=1 | image=/explorer/i; event_id=1 | image=/powershell/i | command_line=/-nop/i; event_id=3 | image=/powershell/i }",
 					"| chain(user, source_user, target_user, within=1d) { event_id=1 | image=/powershell/i; event_id=10; event_id=4625 }",
+					"| chain(user, order=false) { event_id=4625; event_id=4672 }",
+					"| chain(process_guid, within=5m) { dst_ip!=\"\" | !cidr(dst_ip, \"10.0.0.0/8\"); cidr(dst_ip, \"10.0.0.0/8\") }",
 				},
 			},
 			{
@@ -965,7 +968,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				Examples: []string{
 					`pgr(start="{GUID}") | pgraph()`,
 					`pgr(start="{GUID}", threshold=0.8) | pgraph(limit=300)`,
-						`ptg(start="{GUID}") | pgraph()`,
+					`ptg(start="{GUID}") | pgraph()`,
 				},
 			},
 			{
@@ -997,7 +1000,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 				},
 				Examples: []string{
 					`ptg(start="{GUID}") | pgraph()`,
-						`ptg(start="{GUID}") | graph(child=process_guid, parent=parent_guid, labels=image)`,
+					`ptg(start="{GUID}") | graph(child=process_guid, parent=parent_guid, labels=image)`,
 					`ptg(start="{GUID}", direction=backward, depth=20)`,
 					`ptg(start="{GUID}", direction=forward) | table(process_guid, image, commandline, _depth)`,
 				},

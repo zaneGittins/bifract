@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -246,12 +247,15 @@ func fieldString(value interface{}) string {
 		return strconv.FormatFloat(float64(v), 'f', -1, 32)
 	case float64:
 		return strconv.FormatFloat(v, 'f', -1, 64)
-	case map[string]interface{}, []interface{}:
-		if b, err := json.Marshal(v); err == nil {
-			return string(b)
-		}
-		return fmt.Sprintf("%v", v)
 	default:
+		// Any collection becomes JSON so downstream consumers can parse it. Go's
+		// default formatting renders nested values as unparseable map[k:v] text.
+		switch reflect.ValueOf(v).Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map:
+			if b, err := json.Marshal(v); err == nil {
+				return string(b)
+			}
+		}
 		return fmt.Sprintf("%v", v)
 	}
 }

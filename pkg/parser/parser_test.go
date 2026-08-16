@@ -312,7 +312,7 @@ func TestNOTGroupParentheses(t *testing.T) {
 		name      string
 		query     string
 		wantErr   bool
-		wantWhere string         // exact WHERE clause match (preferred)
+		wantWhere string            // exact WHERE clause match (preferred)
 		checkSQL  func(string) bool // fallback for complex assertions
 	}{
 		// --- Basic NOT ---
@@ -1593,9 +1593,9 @@ func TestCommentCommand(t *testing.T) {
 			},
 		},
 		{
-			name:  "comment without pre-processing fails",
-			query: `* | comment(tags=security)`,
-			opts:  baseOpts,
+			name:    "comment without pre-processing fails",
+			query:   `* | comment(tags=security)`,
+			opts:    baseOpts,
 			wantErr: true,
 		},
 		{
@@ -1722,8 +1722,8 @@ func TestMatchCommand(t *testing.T) {
 		checkSQL func(string) bool
 	}{
 		{
-			name:  "match with include array - non-strict",
-			query: `* | match(dict="threat_intel", field=src_ip, column=ip, include=[threat_level,country], strict=false)`,
+			name:    "match with include array - non-strict",
+			query:   `* | match(dict="threat_intel", field=src_ip, column=ip, include=[threat_level,country], strict=false)`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return strings.Contains(sql, "dictGetOrDefault(") &&
@@ -1733,8 +1733,8 @@ func TestMatchCommand(t *testing.T) {
 			},
 		},
 		{
-			name:  "match with include array - strict",
-			query: `* | match(dict="threat_intel", field=src_ip, column=ip, include=[threat_level], strict=true)`,
+			name:    "match with include array - strict",
+			query:   `* | match(dict="threat_intel", field=src_ip, column=ip, include=[threat_level], strict=true)`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return strings.Contains(sql, "dictGetOrDefault(") &&
@@ -1762,8 +1762,8 @@ func TestMatchCommand(t *testing.T) {
 			},
 		},
 		{
-			name:  "match followed by groupby on enriched field",
-			query: `* | match(dict="threat_intel", field=src_ip, column=ip, include=[country]) | groupby(country)`,
+			name:    "match followed by groupby on enriched field",
+			query:   `* | match(dict="threat_intel", field=src_ip, column=ip, include=[country]) | groupby(country)`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				// SELECT must use dictGetOrDefault for country, not fields.`country`::String

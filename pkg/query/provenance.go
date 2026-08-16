@@ -672,7 +672,6 @@ func reconString(v interface{}) string {
 	return ""
 }
 
-
 // reconFloat coerces a ClickHouse-driver value to float64. anomaly is emitted via toFloat64(...)
 // so it arrives as float64 today; the string/float32 fallbacks keep ranking working if the
 // driver ever returns it differently (rather than silently collapsing every peer to 0).

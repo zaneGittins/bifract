@@ -1163,3 +1163,54 @@
 .pg-anom-low  { color: var(--text-muted); background: transparent; font-weight: 600; }
 .pg-anom-spacer { flex: 0 0 auto; min-width: 40px; margin-left: 8px; }
 
+
+/* chain() matched sequence, log detail panel */
+.chain-pane-header {
+    padding: 8px 4px 10px;
+    color: var(--text-muted);
+    font-size: 11px;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 6px;
+}
+.chain-step-list { list-style: none; margin: 0; padding: 0; }
+.chain-step-item {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 8px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+}
+.chain-step-item:hover { background: var(--bg-hover); }
+.chain-step-item + .chain-step-item { border-top: 1px solid var(--border-color); }
+
+.chain-step-badge {
+    flex: 0 0 auto;
+    min-width: 18px;
+    height: 18px;
+    line-height: 18px;
+    text-align: center;
+    border-radius: 3px;
+    background: var(--accent-glow);
+    color: var(--accent-secondary);
+    font-size: 11px;
+    font-weight: 600;
+}
+.chain-step-body { min-width: 0; flex: 1; }
+.chain-step-head { display: flex; gap: 8px; align-items: baseline; }
+.chain-step-ts {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.chain-step-fields { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.chain-step-kv {
+    font-size: 11px;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.chain-step-kv em { color: var(--accent-secondary); font-style: normal; margin-right: 6px; }
+.chain-step-more { font-size: 11px; color: var(--text-muted); font-style: italic; }

@@ -37,9 +37,9 @@ func TestAbstractExprMatchesMVs(t *testing.T) {
 	// edge-table fkey_tgt matches proc_freq.target_norm for the scoring join. No p2p/spawn here.
 	delta011 := []use{
 		{"fields.image::String", AbstractPath},       // edge src (fkey_src)
-		{"fields.target_file::String", AbstractPath},  // file target
-		{"fields.dst_ip::String", AbstractIP},         // net target
-		{"fields.query::String", AbstractDomain},      // dns target
+		{"fields.target_file::String", AbstractPath}, // file target
+		{"fields.dst_ip::String", AbstractIP},        // net target
+		{"fields.query::String", AbstractDomain},     // dns target
 	}
 	checks := []struct {
 		file string
@@ -172,8 +172,8 @@ func TestBuildReconnectionSQL(t *testing.T) {
 		"'file' AS recon_type", "'net' AS recon_type", "'dns' AS recon_type",
 		"'remote_thread' AS recon_type", "'process_access' AS recon_type",
 		"src_guid", "object_id",
-		"event_type = 'net_connect'",       // rarity gate
-		"groupUniqArrayMerge(256)(hosts)",  // host-prevalence gate
+		"event_type = 'net_connect'",      // rarity gate
+		"groupUniqArrayMerge(256)(hosts)", // host-prevalence gate
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("reconnection SQL missing %q", want)

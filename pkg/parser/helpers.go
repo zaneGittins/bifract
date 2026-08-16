@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // buildAnalyzeFieldsSQL generates a query that computes per-field statistics.
@@ -990,28 +991,28 @@ func sanitizeIdentifier(s string) (string, error) {
 
 // jsonDefaultTypeHintedFields holds the project-level defaults. Never modified after init.
 var jsonDefaultTypeHintedFields = map[string]bool{
-	"computer_name":      true,
-	"user":               true,
-	"src_ip":             true,
-	"dst_ip":             true,
-	"src_port":           true,
-	"dst_port":           true,
-	"commandline":        true,
-	"hash":               true,
-	"event_id":           true,
-	"image":              true,
-	"parent_image":       true,
-	"call_chain":         true,
-	"operation":          true,
-	"artifact":           true,
-	"query":              true,
-	"original_file_name": true,
-	"proto":              true,
-	"conn_state":         true,
-	"duration":           true,
-	"orig_bytes":         true,
-	"resp_bytes":         true,
-	"bifract_category":   true,
+	"computer_name":       true,
+	"user":                true,
+	"src_ip":              true,
+	"dst_ip":              true,
+	"src_port":            true,
+	"dst_port":            true,
+	"commandline":         true,
+	"hash":                true,
+	"event_id":            true,
+	"image":               true,
+	"parent_image":        true,
+	"call_chain":          true,
+	"operation":           true,
+	"artifact":            true,
+	"query":               true,
+	"original_file_name":  true,
+	"proto":               true,
+	"conn_state":          true,
+	"duration":            true,
+	"orig_bytes":          true,
+	"resp_bytes":          true,
+	"bifract_category":    true,
 	"process_guid":        true,
 	"parent_process_guid": true,
 	"target_image":        true,
@@ -1727,14 +1728,20 @@ func spanToSeconds(span string) int {
 	}
 }
 
-// parseChainSteps parses chain block tokens into per-step SQL boolean expressions.
-// Each step is parsed using the full BQL parser, supporting AND, OR, NOT, parentheses,
-// regex, wildcards, and all other filter syntax. Pipe tokens within chain steps
-// are treated as AND (for backward compatibility).
-// Output: []string of SQL boolean expressions, one per step.
-func parseChainSteps(tokens []Token) ([]string, error) {
-	// Split tokens by semicolons into per-step token slices.
-	// Convert pipe tokens to AND tokens within each step.
+// chainStepDisallowed names commands whose effect cannot be a per-step row
+// predicate. Everything else is admitted and validated by its actual effect.
+var chainStepDisallowed = map[string]string{
+	"match": "match() adds enrichment columns, which cannot be scoped to one chain step",
+}
+
+// parseChainSteps parses chain block tokens into per-step SQL boolean expressions
+// plus the fields those steps filter on.
+//
+// Each step is parsed as a full pipeline and its commands are run against a
+// throwaway plan, so condition commands (cidr, in, comment) contribute their
+// predicate to that step instead of the whole query. Anything that is not a row
+// predicate (projections, aggregates, structural commands) is rejected.
+func parseChainSteps(tokens []Token, opts QueryOptions, parentReg *FieldRegistry) ([]string, []string, error) {
 	var allSteps [][]Token
 	var current []Token
 	for _, tok := range tokens {
@@ -1745,10 +1752,6 @@ func parseChainSteps(tokens []Token) ([]string, error) {
 			}
 			continue
 		}
-		if tok.Type == TokenPipe {
-			current = append(current, Token{Type: TokenAnd, Value: "AND"})
-			continue
-		}
 		current = append(current, tok)
 	}
 	if len(current) > 0 {
@@ -1756,29 +1759,190 @@ func parseChainSteps(tokens []Token) ([]string, error) {
 	}
 
 	var steps []string
+	var fields []string
+	seen := make(map[string]bool)
 	for _, stepTokens := range allSteps {
-		// Append EOF so the parser knows when to stop.
-		stepTokens = append(stepTokens, Token{Type: TokenEOF})
-
-		p := NewParser(stepTokens)
-		filter, err := p.parseFilter()
+		sql, stepFields, err := buildChainStep(append(stepTokens, Token{Type: TokenEOF}), opts, parentReg)
 		if err != nil {
-			return nil, fmt.Errorf("chain step: %w", err)
+			return nil, nil, err
 		}
-		if filter == nil || len(filter.Conditions) == 0 {
+		if sql == "" {
 			continue
 		}
-
-		sql, err := buildWhereClause(filter.Conditions)
-		if err != nil {
-			return nil, fmt.Errorf("chain step: %w", err)
-		}
-		if sql != "" {
-			steps = append(steps, sql)
+		steps = append(steps, sql)
+		for _, f := range stepFields {
+			if !seen[f] {
+				seen[f] = true
+				fields = append(fields, f)
+			}
 		}
 	}
 
-	return steps, nil
+	return steps, fields, nil
+}
+
+// buildChainStep compiles one step into a single boolean expression.
+func buildChainStep(stepTokens []Token, opts QueryOptions, parentReg *FieldRegistry) (string, []string, error) {
+	pl, err := NewParser(stepTokens).Parse()
+	if err != nil {
+		return "", nil, fmt.Errorf("chain step: %w", err)
+	}
+
+	reg := parentReg
+	if reg == nil {
+		reg = NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
+	}
+
+	var conjuncts []string
+	var fields []string
+	seen := make(map[string]bool)
+
+	if pl.Filter != nil && len(pl.Filter.Conditions) > 0 {
+		w, err := buildWhereClauseCtx(pl.Filter.Conditions, reg)
+		if err != nil {
+			return "", nil, fmt.Errorf("chain step: %w", err)
+		}
+		if w != "" {
+			conjuncts = append(conjuncts, w)
+		}
+		fields = collectConditionFieldsOrdered(pl.Filter.Conditions, seen, fields)
+	}
+
+	// Later filter stages in the step (`a=1 | b=2`) arrive as HavingConditions, as
+	// do condition functions used as boolean operands.
+	if len(pl.HavingConditions) > 0 {
+		if err := resolveCommandConditions(pl.HavingConditions, opts); err != nil {
+			return "", nil, fmt.Errorf("chain step: %w", err)
+		}
+		if h := materializeCondGroup(pl.HavingConditions, reg, nil); h != "" {
+			conjuncts = append(conjuncts, h)
+		}
+		for _, c := range pl.HavingConditions {
+			fields = collectHavingFieldsOrdered(c, seen, &fields)
+		}
+	}
+
+	if len(pl.Commands) > 0 {
+		w, cf, err := harvestChainCommands(pl, opts, reg)
+		if err != nil {
+			return "", nil, err
+		}
+		conjuncts = append(conjuncts, w...)
+		for _, f := range cf {
+			if !seen[f] {
+				seen[f] = true
+				fields = append(fields, f)
+			}
+		}
+	}
+
+	if len(pl.Assignments) > 0 {
+		return "", nil, fmt.Errorf("chain step: field assignments cannot be used inside a chain step")
+	}
+
+	switch len(conjuncts) {
+	case 0:
+		return "", fields, nil
+	case 1:
+		return conjuncts[0], fields, nil
+	default:
+		return "(" + strings.Join(conjuncts, " AND ") + ")", fields, nil
+	}
+}
+
+// CommandPredicate compiles a condition function into a boolean expression. The
+// handler runs against a throwaway plan, so its effect is captured as a predicate
+// instead of being appended to the query's WHERE.
+func CommandPredicate(cmd CommandNode, opts QueryOptions) (string, error) {
+	pl := &PipelineNode{Commands: []CommandNode{cmd}}
+	where, _, err := harvestChainCommands(pl, opts, nil)
+	if err != nil {
+		return "", err
+	}
+	if len(where) == 1 {
+		return where[0], nil
+	}
+	return "(" + strings.Join(where, " AND ") + ")", nil
+}
+
+// harvestChainCommands runs a step's commands against a throwaway plan and returns
+// the predicates they produced, rejecting any non-predicate effect.
+func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistry) ([]string, []string, error) {
+	plan := NewQueryPlan()
+	reg := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
+	ctx := &CommandContext{Registry: reg, Plan: plan, Opts: opts, Pipeline: pl}
+
+	for _, cmd := range pl.Commands {
+		if why, bad := chainStepDisallowed[cmd.Name]; bad {
+			return nil, nil, fmt.Errorf("chain step: %s", why)
+		}
+		if getCommandHandler(cmd.Name) == nil {
+			return nil, nil, fmt.Errorf("chain step: unsupported command %s()", cmd.Name)
+		}
+	}
+	for i, cmd := range pl.Commands {
+		ctx.CmdIndex = i
+		if err := getCommandHandler(cmd.Name).Declare(cmd, ctx); err != nil {
+			return nil, nil, fmt.Errorf("chain step: %w", err)
+		}
+	}
+	for i, cmd := range pl.Commands {
+		ctx.CmdIndex = i
+		if err := getCommandHandler(cmd.Name).Execute(cmd, ctx); err != nil {
+			return nil, nil, fmt.Errorf("chain step: %w", err)
+		}
+	}
+
+	src := &plan.SourceStage().Layer
+	if len(src.Selects) > 0 || len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" ||
+		src.LimitBy != "" || len(src.Having) > 0 || plan.IsAggregated || plan.IsJoin ||
+		plan.IsTraversal || plan.IsChain || plan.IsProcessTree || len(plan.WindowLayers) > 0 ||
+		plan.ModelLookupSQL != "" || len(plan.Stages) > 1 {
+		return nil, nil, fmt.Errorf("chain step: only row conditions are allowed; %s() changes the shape of the result", pl.Commands[0].Name)
+	}
+	if len(src.Where) == 0 {
+		return nil, nil, fmt.Errorf("chain step: %s() produced no condition", pl.Commands[0].Name)
+	}
+
+	// A condition command names its field first (cidr(dst_ip, ...), in(user, [...])).
+	var fields []string
+	for _, cmd := range pl.Commands {
+		if len(cmd.Arguments) > 0 {
+			if f := strings.TrimSpace(unwrapList(cmd.Arguments[0])); f != "" && isPlainFieldName(f) {
+				fields = append(fields, f)
+			}
+		}
+	}
+	return src.Where, fields, nil
+}
+
+// isPlainFieldName reports whether s looks like a bare field reference rather than
+// a literal or expression.
+func isPlainFieldName(s string) bool {
+	if s == "" || strings.ContainsAny(s, "\"'()[]=/,") {
+		return false
+	}
+	for _, r := range s {
+		if !(r == '_' || r == '.' || r == '-' || unicode.IsLetter(r) || unicode.IsDigit(r)) {
+			return false
+		}
+	}
+	return true
+}
+
+// collectHavingFieldsOrdered appends a having condition's leaf field names in order.
+func collectHavingFieldsOrdered(c HavingCondition, seen map[string]bool, out *[]string) []string {
+	if c.IsCompound {
+		for _, ch := range c.Children {
+			collectHavingFieldsOrdered(ch, seen, out)
+		}
+		return *out
+	}
+	if c.Field != "" && c.Field != normLogColumn && !seen[c.Field] {
+		seen[c.Field] = true
+		*out = append(*out, c.Field)
+	}
+	return *out
 }
 
 // extractParameter extracts the value of a parameter from a parameter string

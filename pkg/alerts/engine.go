@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"bifract/pkg/dictionaries"
+	"bifract/pkg/evidence"
 	"bifract/pkg/models"
 	"bifract/pkg/parser"
 	"bifract/pkg/settings"
@@ -170,11 +171,15 @@ type Alert struct {
 	UpdatedAt            time.Time                        `json:"updated_at"`
 	LastTriggered        *time.Time                       `json:"last_triggered,omitempty"`
 	LastEvaluatedAt      time.Time                        `json:"last_evaluated_at"`
-	LastExecutionTimeMs  *int                             `json:"last_execution_time_ms,omitempty"`
-	DisabledReason       string                           `json:"disabled_reason,omitempty"`
-	WindowDuration       *int                             `json:"window_duration,omitempty"`
-	ScheduleCron         *string                          `json:"schedule_cron,omitempty"`
-	QueryWindowSeconds   *int                             `json:"query_window_seconds,omitempty"`
+	// Windowed-evaluation contract declared by the query, resolved once at cache
+	// load. Zero/empty for queries that are self-contained in their own range.
+	LookbackSeconds     int     `json:"-"`
+	CompletionColumn    string  `json:"-"`
+	LastExecutionTimeMs *int    `json:"last_execution_time_ms,omitempty"`
+	DisabledReason      string  `json:"disabled_reason,omitempty"`
+	WindowDuration      *int    `json:"window_duration,omitempty"`
+	ScheduleCron        *string `json:"schedule_cron,omitempty"`
+	QueryWindowSeconds  *int    `json:"query_window_seconds,omitempty"`
 }
 
 // NewEngine creates a new alert processing engine.
@@ -538,6 +543,13 @@ func (e *Engine) resolvePrismFractalIDs(ctx context.Context, prismID string, cac
 
 // buildQueryOpts constructs parser.QueryOptions with fractal/prism scoping.
 func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time.Time, cache *prismResolveCache) (parser.QueryOptions, error) {
+	// A query that correlates across events cannot see one that straddles the
+	// window edge, so widen the read by what it declared it needs. Rows completing
+	// before the window start are dropped after the query, keeping this
+	// duplicate-free. Table routing below then reflects the widened range.
+	if alert.LookbackSeconds > 0 {
+		from = from.Add(-time.Duration(alert.LookbackSeconds) * time.Second)
+	}
 	// Route to logs_hot when the cursor is recent enough that the hot table has
 	// the data. Falls back to logs/logs_distributed for older cursors (catch-up
 	// beyond the 2-hour hot window) — self-heals as the cursor advances.
@@ -642,11 +654,14 @@ func isUnrecoverableChError(err error) (code int32, ok bool) {
 // runAlertQuery translates and executes an alert query with timeout handling.
 // On timeout or an unrecoverable CH error the alert is auto-disabled and a
 // health notification is raised.
-func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.QueryOptions, timeoutSec int) ([]map[string]interface{}, error) {
-	sql, err := parser.TranslateToSQL(alert.ParsedQuery, opts)
+// windowStart is the alert's own window start, before any lookback widening in
+// buildQueryOpts; rows completing before it were reported by an earlier window.
+func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.QueryOptions, timeoutSec int, windowStart time.Time) ([]map[string]interface{}, error) {
+	translated, err := parser.TranslateToSQLWithOrder(alert.ParsedQuery, opts)
 	if err != nil {
 		return nil, fmt.Errorf("translate query: %w", err)
 	}
+	sql := translated.SQL
 
 	alertCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
@@ -675,6 +690,12 @@ func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.Qu
 		}
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
+
+	results = dropAlreadyReported(results, alert.CompletionColumn, windowStart)
+
+	// Aggregated rows carry no log fields, so a triggering row would otherwise
+	// reach its actions with no evidence attached.
+	evidence.Attach(ctx, translated, results, opts, e.ch.QueryLowPriority)
 	return results, nil
 }
 
@@ -729,7 +750,7 @@ func (e *Engine) evaluateAlertCursor(ctx context.Context, alert *Alert, cache *p
 		return err
 	}
 
-	results, err := e.runAlertQuery(ctx, alert, opts, getAlertTimeout())
+	results, err := e.runAlertQuery(ctx, alert, opts, getAlertTimeout(), fromTime)
 	if err != nil {
 		return err
 	}
@@ -764,7 +785,7 @@ func (e *Engine) evaluateCompoundAlert(ctx context.Context, alert *Alert, cache 
 		return err
 	}
 
-	results, err := e.runAlertQuery(ctx, alert, opts, getAlertTimeout())
+	results, err := e.runAlertQuery(ctx, alert, opts, getAlertTimeout(), fromTime)
 	if err != nil {
 		return err
 	}
@@ -807,7 +828,13 @@ func (e *Engine) evaluateScheduledAlert(ctx context.Context, alert *Alert, cache
 		timeout = 30
 	}
 
-	results, err := e.runAlertQuery(ctx, alert, opts, timeout)
+	// Scheduled windows overlap by design (each run looks back query_window from
+	// now), so results are new only past the previous run.
+	newSince := lastEval
+	if newSince.IsZero() {
+		newSince = fromTime
+	}
+	results, err := e.runAlertQuery(ctx, alert, opts, timeout, newSince)
 	if err != nil {
 		return err
 	}
@@ -1096,6 +1123,7 @@ func (e *Engine) refreshAlertsCache(ctx context.Context) ([]*Alert, error) {
 			continue
 		}
 		alert.ParsedQuery = parsedQuery
+		alert.LookbackSeconds, alert.CompletionColumn = parser.QueryWindowContract(parsedQuery)
 
 		// Parse cron schedule once at cache load time.
 		if alert.AlertType == "scheduled" && alert.ScheduleCron != nil && *alert.ScheduleCron != "" {
@@ -1335,5 +1363,42 @@ func (tc *ThrottleCache) cleanup() {
 		if now.After(expiry) {
 			delete(tc.entries, key)
 		}
+	}
+}
+
+// dropAlreadyReported removes rows whose evidence completed before the window
+// start. Those were fully visible to the previous window and reported there, so
+// dropping them makes the widened read above duplicate-free without storing state.
+func dropAlreadyReported(rows []map[string]interface{}, completionColumn string, windowStart time.Time) []map[string]interface{} {
+	if completionColumn == "" || len(rows) == 0 {
+		return rows
+	}
+	cutoff := windowStart.UnixMilli()
+	kept := rows[:0]
+	for _, row := range rows {
+		if ms := completionMillis(row[completionColumn]); ms > 0 && ms < cutoff {
+			continue
+		}
+		kept = append(kept, row)
+	}
+	return kept
+}
+
+// completionMillis reads a completion timestamp in unix milliseconds, accepting
+// the integer types the ClickHouse driver may return.
+func completionMillis(v interface{}) int64 {
+	switch n := v.(type) {
+	case uint64:
+		return int64(n)
+	case int64:
+		return n
+	case uint32:
+		return int64(n)
+	case int32:
+		return int64(n)
+	case float64:
+		return int64(n)
+	default:
+		return 0
 	}
 }
