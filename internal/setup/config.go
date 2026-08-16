@@ -116,9 +116,14 @@ func (c *SetupConfig) GeneratePasswords() error {
 	if err != nil {
 		return err
 	}
-	c.ClickHousePassword, err = GenerateAlphanumeric(24)
-	if err != nil {
-		return err
+	// Only a ClickHouse this installer creates gets a generated password. An
+	// external server already has its own credential, supplied by the operator;
+	// generating over it would write a password that authenticates nowhere.
+	if c.CH.Bundled() {
+		c.ClickHousePassword, err = GenerateAlphanumeric(24)
+		if err != nil {
+			return err
+		}
 	}
 	c.IngestClickHousePassword, err = GenerateAlphanumeric(24)
 	if err != nil {

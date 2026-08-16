@@ -321,6 +321,7 @@ const (
 	k8sStepSizeProfile
 	k8sStepClickHouse
 	k8sStepClickHouseHost
+	k8sStepClickHouseAuth
 	k8sStepCHShards
 	k8sStepCHStorage
 	k8sStepOutputDir
@@ -364,6 +365,8 @@ type k8sWizardModel struct {
 	chChoices       []string
 	chCursor        int
 	chHostInput     textinput.Model
+	chUserInput     textinput.Model
+	chPassInput     textinput.Model
 	chValidationErr string
 
 	width  int
@@ -423,6 +426,8 @@ func newK8sWizardModel() k8sWizardModel {
 		chChoices:       []string{"Bundled (recommended)", "External ClickHouse", "ClickHouse Cloud"},
 		chCursor:        0,
 		chHostInput:     k8sCHHostInput(),
+		chUserInput:     k8sCHUserInput(),
+		chPassInput:     k8sCHPassInput(),
 		sslCursor:       0,
 		ipChoices:       []string{"Allow all traffic", "Restrict UI only (allow ingest)", "Restrict all traffic", "mTLS (mutual TLS for UI)"},
 		ipCursor:        0,
@@ -445,6 +450,17 @@ func (m k8sWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			return m.handleEnter()
+		case "tab", "shift+tab":
+			if m.step == k8sStepClickHouseAuth {
+				if m.chUserInput.Focused() {
+					m.chUserInput.Blur()
+					m.chPassInput.Focus()
+				} else {
+					m.chPassInput.Blur()
+					m.chUserInput.Focus()
+				}
+				return m, textinput.Blink
+			}
 		case "up", "k":
 			m.handleUp()
 		case "down", "j":
@@ -458,6 +474,12 @@ func (m k8sWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.domainInput, cmd = m.domainInput.Update(msg)
 	case k8sStepClickHouseHost:
 		m.chHostInput, cmd = m.chHostInput.Update(msg)
+	case k8sStepClickHouseAuth:
+		if m.chUserInput.Focused() {
+			m.chUserInput, cmd = m.chUserInput.Update(msg)
+		} else {
+			m.chPassInput, cmd = m.chPassInput.Update(msg)
+		}
 	case k8sStepAllowedIPs:
 		m.allowedIPsInput, cmd = m.allowedIPsInput.Update(msg)
 	case k8sStepCHShards:
@@ -625,6 +647,22 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 			m.chValidationErr = err.Error()
 			return m, nil
 		}
+		m.chValidationErr = ""
+		m.step = k8sStepClickHouseAuth
+		m.chUserInput.Focus()
+		return m, textinput.Blink
+
+	case k8sStepClickHouseAuth:
+		user := strings.TrimSpace(m.chUserInput.Value())
+		if user == "" {
+			user = "default"
+		}
+		if m.chPassInput.Value() == "" {
+			m.chValidationErr = "A password is required for an external ClickHouse."
+			return m, nil
+		}
+		m.config.CH.User = user
+		m.config.ClickHousePassword = m.chPassInput.Value()
 		m.chValidationErr = ""
 		// External ClickHouse: skip shard and storage sizing entirely, they
 		// describe a workload this installer no longer renders.
@@ -813,6 +851,26 @@ func (m k8sWizardModel) View() string {
 		}
 		content = b.String()
 		hint = "Enter to confirm  |  Esc to go back"
+
+	case k8sStepClickHouseAuth:
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("ClickHouse Credentials"))
+		b.WriteString("\n\n")
+		b.WriteString("The user Bifract connects as. It needs privileges to create the schema,\n")
+		b.WriteString("and to create the least-privilege ingest user.\n\n")
+		b.WriteString(LabelStyle.Render("  Username"))
+		b.WriteString("\n")
+		b.WriteString("  " + m.chUserInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(LabelStyle.Render("  Password"))
+		b.WriteString("\n")
+		b.WriteString("  " + m.chPassInput.View())
+		if m.chValidationErr != "" {
+			b.WriteString("\n\n")
+			b.WriteString(ErrorStyle.Render("  " + m.chValidationErr))
+		}
+		content = b.String()
+		hint = "Tab to switch fields  |  Enter to confirm"
 
 	case k8sStepSizeProfile:
 		var b strings.Builder
@@ -1461,6 +1519,27 @@ const k8sCHLoadBalancerService = "bifract-ch-clickhouse-lb"
 func k8sCHHostInput() textinput.Model {
 	in := textinput.New()
 	in.Placeholder = "clickhouse.example.internal:9000"
+	in.Width = 48
+	in.PromptStyle = PromptStyle
+	in.TextStyle = lipgloss.NewStyle().Foreground(White)
+	return in
+}
+
+// k8sCHUserInput and k8sCHPassInput collect the credential for an external
+// ClickHouse. It cannot be generated: the server already exists and owns its
+// own users.
+func k8sCHUserInput() textinput.Model {
+	in := textinput.New()
+	in.Placeholder = "default"
+	in.Width = 32
+	in.PromptStyle = PromptStyle
+	in.TextStyle = lipgloss.NewStyle().Foreground(White)
+	return in
+}
+
+func k8sCHPassInput() textinput.Model {
+	in := textinput.New()
+	in.EchoMode = textinput.EchoPassword
 	in.Width = 48
 	in.PromptStyle = PromptStyle
 	in.TextStyle = lipgloss.NewStyle().Foreground(White)

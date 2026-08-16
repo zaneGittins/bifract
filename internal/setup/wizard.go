@@ -20,6 +20,7 @@ const (
 	StepInstallDir
 	StepClickHouse
 	StepClickHouseHost
+	StepClickHouseAuth
 	StepDomain
 	StepSSL
 	StepSSLEmail
@@ -62,6 +63,8 @@ type WizardModel struct {
 	chChoices       []string
 	chCursor        int
 	chHostInput     textinput.Model
+	chUserInput     textinput.Model
+	chPassInput     textinput.Model
 	chValidationErr string
 
 	// SSL selection
@@ -131,6 +134,18 @@ func NewWizardModel(cfg *SetupConfig) WizardModel {
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(Purple)
 
+	chUser := textinput.New()
+	chUser.Placeholder = "default"
+	chUser.Width = 32
+	chUser.PromptStyle = PromptStyle
+	chUser.TextStyle = lipgloss.NewStyle().Foreground(White)
+
+	chPass := textinput.New()
+	chPass.EchoMode = textinput.EchoPassword
+	chPass.Width = 48
+	chPass.PromptStyle = PromptStyle
+	chPass.TextStyle = lipgloss.NewStyle().Foreground(White)
+
 	chHost := textinput.New()
 	chHost.Placeholder = "clickhouse.internal:9000"
 	chHost.Width = 48
@@ -148,6 +163,8 @@ func NewWizardModel(cfg *SetupConfig) WizardModel {
 		chChoices:       []string{"Bundled (recommended)", "External ClickHouse", "ClickHouse Cloud"},
 		chCursor:        0,
 		chHostInput:     chHost,
+		chUserInput:     chUser,
+		chPassInput:     chPass,
 		sslChoices:      []string{"Self-signed (default)", "Let's Encrypt (automatic)", "Custom certificates"},
 		sslCursor:       0,
 		ipAccessChoices: []string{"Restrict app, allow ingest from all", "Restrict all", "mTLS client certificates (app only)", "Allow all (not recommended)"},
@@ -195,6 +212,8 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateClickHouse(msg)
 	case StepClickHouseHost:
 		return m.updateClickHouseHost(msg)
+	case StepClickHouseAuth:
+		return m.updateClickHouseAuth(msg)
 	case StepDomain:
 		return m.updateDomain(msg)
 	case StepSSL:
@@ -226,9 +245,11 @@ func (m WizardModel) prevStep() WizardStep {
 		return StepInstallDir
 	case StepClickHouseHost:
 		return StepClickHouse
+	case StepClickHouseAuth:
+		return StepClickHouseHost
 	case StepDomain:
 		if !m.config.CH.Bundled() {
-			return StepClickHouseHost
+			return StepClickHouseAuth
 		}
 		return StepClickHouse
 	case StepSSL:
@@ -327,6 +348,10 @@ func (m WizardModel) View() string {
 	case StepClickHouseHost:
 		content = m.viewClickHouseHost()
 		hint = "Enter to confirm  |  Esc to go back"
+
+	case StepClickHouseAuth:
+		content = m.viewClickHouseAuth()
+		hint = "Tab to switch fields  |  Enter to confirm  |  Esc to go back"
 
 	case StepDomain:
 		content = m.viewDomain()
@@ -861,13 +886,74 @@ func (m WizardModel) updateClickHouseHost(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.chValidationErr = ""
-		m.step = StepDomain
-		m.domainInput.Focus()
+		m.step = StepClickHouseAuth
+		m.chUserInput.Focus()
 		return m, textinput.Blink
 	}
 	var cmd tea.Cmd
 	m.chHostInput, cmd = m.chHostInput.Update(msg)
 	return m, cmd
+}
+
+// updateClickHouseAuth collects the credential for an external ClickHouse. It
+// cannot be generated: the server already exists and owns its own users.
+func (m WizardModel) updateClickHouseAuth(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "tab", "shift+tab":
+			if m.chUserInput.Focused() {
+				m.chUserInput.Blur()
+				m.chPassInput.Focus()
+			} else {
+				m.chPassInput.Blur()
+				m.chUserInput.Focus()
+			}
+			return m, textinput.Blink
+		case "enter":
+			user := strings.TrimSpace(m.chUserInput.Value())
+			if user == "" {
+				user = "default"
+			}
+			pass := m.chPassInput.Value()
+			if pass == "" {
+				m.chValidationErr = "A password is required for an external ClickHouse."
+				return m, nil
+			}
+			m.config.CH.User = user
+			m.config.ClickHousePassword = pass
+			m.chValidationErr = ""
+			m.step = StepDomain
+			m.domainInput.Focus()
+			return m, textinput.Blink
+		}
+	}
+	var cmd tea.Cmd
+	if m.chUserInput.Focused() {
+		m.chUserInput, cmd = m.chUserInput.Update(msg)
+	} else {
+		m.chPassInput, cmd = m.chPassInput.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m WizardModel) viewClickHouseAuth() string {
+	var s strings.Builder
+	s.WriteString(TitleStyle.Render("ClickHouse Credentials"))
+	s.WriteString("\n\n")
+	s.WriteString("The user Bifract connects as. It needs privileges to create the schema,\n")
+	s.WriteString("and to create the least-privilege ingest user.\n\n")
+	s.WriteString(LabelStyle.Render("  Username"))
+	s.WriteString("\n")
+	s.WriteString("  " + m.chUserInput.View())
+	s.WriteString("\n\n")
+	s.WriteString(LabelStyle.Render("  Password"))
+	s.WriteString("\n")
+	s.WriteString("  " + m.chPassInput.View())
+	if m.chValidationErr != "" {
+		s.WriteString("\n\n")
+		s.WriteString(ErrorStyle.Render("  " + m.chValidationErr))
+	}
+	return s.String()
 }
 
 func (m WizardModel) viewClickHouse() string {

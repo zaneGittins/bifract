@@ -411,3 +411,31 @@ func TestKustomizeBuildsWithExternalClickHouse(t *testing.T) {
 		t.Error("a ClickHouseCluster was built for an external ClickHouse")
 	}
 }
+
+// An operator-supplied ClickHouse password must survive GeneratePasswords. The
+// bundled path generates one because the installer creates that server; an
+// external server already owns its credential, and overwriting it would write a
+// password that authenticates nowhere.
+func TestGeneratePasswordsPreservesExternalClickHousePassword(t *testing.T) {
+	external := &SetupConfig{CH: ClickHouseTarget{Backend: CHBackendExternal, Host: "ch.example.com"}}
+	external.ClickHousePassword = "the-operators-real-password"
+	if err := external.GeneratePasswords(); err != nil {
+		t.Fatalf("GeneratePasswords: %v", err)
+	}
+	if external.ClickHousePassword != "the-operators-real-password" {
+		t.Errorf("ClickHousePassword = %q, want the operator's value", external.ClickHousePassword)
+	}
+	// The ingest identity is still ours to mint: the app creates that user on
+	// whichever server it connects to.
+	if external.IngestClickHousePassword == "" {
+		t.Error("IngestClickHousePassword was not generated")
+	}
+
+	bundled := &SetupConfig{}
+	if err := bundled.GeneratePasswords(); err != nil {
+		t.Fatalf("GeneratePasswords: %v", err)
+	}
+	if len(bundled.ClickHousePassword) < 20 {
+		t.Errorf("bundled ClickHousePassword = %q, want a generated value", bundled.ClickHousePassword)
+	}
+}
