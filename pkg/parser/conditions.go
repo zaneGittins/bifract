@@ -571,3 +571,27 @@ func resolveCommandConditions(conditions []HavingCondition, opts QueryOptions) e
 	}
 	return nil
 }
+
+// resolveCommandConditionNodes is resolveCommandConditions for filter conditions.
+func resolveCommandConditionNodes(conditions []ConditionNode, opts QueryOptions) error {
+	for i := range conditions {
+		if conditions[i].IsCompound {
+			if err := resolveCommandConditionNodes(conditions[i].Children, opts); err != nil {
+				return err
+			}
+			continue
+		}
+		if conditions[i].Command == nil {
+			continue
+		}
+		sql, err := CommandPredicate(*conditions[i].Command, opts)
+		if err != nil {
+			return err
+		}
+		if conditions[i].Command.Negate {
+			sql = "NOT (" + sql + ")"
+		}
+		conditions[i].CommandSQL = sql
+	}
+	return nil
+}

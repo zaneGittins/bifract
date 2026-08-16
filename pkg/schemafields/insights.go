@@ -297,13 +297,13 @@ func referencedFields(bql string) []string {
 	// whatever a command takes: anything with an operator, quote, or call syntax
 	// is a value or expression rather than a field, and clause keywords are
 	// skipped by name.
-	for _, cmd := range pipeline.Commands {
+	parser.ForEachCommand(pipeline, func(cmd parser.CommandNode) {
 		for _, arg := range cmd.Arguments {
 			if looksLikeFieldRef(arg) {
 				add(arg)
 			}
 		}
-	}
+	})
 	return out
 }
 

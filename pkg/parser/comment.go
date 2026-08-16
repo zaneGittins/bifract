@@ -6,10 +6,10 @@ import "strings"
 // extracts its tag and keyword parameters. This is called before translation so
 // the query handler can pre-fetch matching log_ids from PostgreSQL.
 func ExtractCommentParams(pipeline *PipelineNode) (tags []string, keyword string, found bool) {
-	for _, cmd := range pipeline.Commands {
+	ForEachCommand(pipeline, func(cmd CommandNode) {
 		name := strings.ToLower(cmd.Name)
 		if name != "comment" && name != "comments" {
-			continue
+			return
 		}
 		found = true
 
@@ -35,7 +35,6 @@ func ExtractCommentParams(pipeline *PipelineNode) (tags []string, keyword string
 				tags = append(tags, arg)
 			}
 		}
-		break
-	}
+	})
 	return
 }

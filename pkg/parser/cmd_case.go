@@ -86,6 +86,9 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 	ctx := &CommandContext{Registry: reg, Plan: plan, Opts: opts, Pipeline: pl}
 
 	if pl.Filter != nil {
+		if err := resolveCommandConditionNodes(pl.Filter.Conditions, opts); err != nil {
+			return eff, err
+		}
 		// Resolve branch-condition fields against the parent pipeline registry so
 		// a computed column (e.g. a prior assignment or aggregate) is referenced
 		// directly instead of as a raw JSON sub-column.

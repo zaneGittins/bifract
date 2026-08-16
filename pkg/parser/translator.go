@@ -153,6 +153,11 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	// 2. Process filter conditions from the parser
 	// ---------------------------------------------------------------
 	if pipeline.Filter != nil {
+		// Condition functions used as boolean operands compile to SQL here, before
+		// the tree is materialized.
+		if err := resolveCommandConditionNodes(pipeline.Filter.Conditions, opts); err != nil {
+			return nil, err
+		}
 		// Pass the (base-fields-only) registry so filter conditions pick up the
 		// source mode. In hot mode this is behavior-identical to the old nil arg
 		// (no computed fields are declared yet); in iceberg mode it routes field

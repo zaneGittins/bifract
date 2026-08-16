@@ -39,6 +39,12 @@ type ConditionNode struct {
 	// node that holds the children as a proper tree.
 	IsCompound bool
 	Children   []ConditionNode
+
+	// Command holds a condition function used as a boolean operand, e.g.
+	// a="x" OR cidr(ip, "10.0.0.0/8"). CommandSQL is filled in at translation
+	// time, where the handler and its options are available.
+	Command    *CommandNode
+	CommandSQL string
 }
 
 func (c ConditionNode) Type() string { return "condition" }
@@ -589,6 +595,17 @@ func (p *Parser) parseValueList() ([]string, error) {
 func (p *Parser) parseCondition() (*ConditionNode, error) {
 	cond := &ConditionNode{}
 
+	// A condition function is an operand like any other leaf, e.g.
+	// a="x" OR cidr(ip, "10.0.0.0/8").
+	if p.current().Type == TokenFunction {
+		cmd, err := p.parseCommand()
+		if err != nil {
+			return nil, err
+		}
+		cond.Command = cmd
+		return cond, nil
+	}
+
 	// Field name
 	tok := p.current()
 	if tok.Type != TokenField {
@@ -1079,6 +1096,7 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 				return nil, err
 			}
 			having := HavingCondition{
+				Command:  cond.Command,
 				Field:    cond.Field,
 				Operator: cond.Operator,
 				Value:    cond.Value,

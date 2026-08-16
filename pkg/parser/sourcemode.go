@@ -134,10 +134,14 @@ func icebergSupportedFeatures(pipeline *PipelineNode) error {
 	if len(pipeline.Assignments) > 0 {
 		return fmt.Errorf("field assignments (:=) are not supported in archive search yet")
 	}
-	for _, cmd := range pipeline.Commands {
-		if !icebergAllowedCommands[strings.ToLower(cmd.Name)] {
-			return fmt.Errorf("command %q is not supported in archive search yet (supported: field filters, free-text/regex search, stats aggregations, groupby, sort, dedup, head/tail/limit, timechart, table)", cmd.Name)
+	var unsupported string
+	ForEachCommand(pipeline, func(cmd CommandNode) {
+		if unsupported == "" && !icebergAllowedCommands[strings.ToLower(cmd.Name)] {
+			unsupported = cmd.Name
 		}
+	})
+	if unsupported != "" {
+		return fmt.Errorf("command %q is not supported in archive search yet (supported: field filters, free-text/regex search, stats aggregations, groupby, sort, dedup, head/tail/limit, timechart, table)", unsupported)
 	}
 	return nil
 }

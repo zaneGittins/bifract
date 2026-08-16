@@ -93,10 +93,16 @@ func checkSupported(pipeline *parser.PipelineNode) error {
 		return fmt.Errorf("rule uses the source command %s(), which reads provenance tables "+
 			"built by materialized views on the live logs table and cannot be tested offline", cmd.Name)
 	}
-	for _, cmd := range pipeline.Commands {
-		if reason, bad := unsupportedCommands[cmd.Name]; bad {
-			return fmt.Errorf("rule uses %s(), which %s and cannot be tested offline", cmd.Name, reason)
+	var name, reason string
+	parser.ForEachCommand(pipeline, func(cmd parser.CommandNode) {
+		if name == "" {
+			if r, bad := unsupportedCommands[cmd.Name]; bad {
+				name, reason = cmd.Name, r
+			}
 		}
+	})
+	if name != "" {
+		return fmt.Errorf("rule uses %s(), which %s and cannot be tested offline", name, reason)
 	}
 	return nil
 }

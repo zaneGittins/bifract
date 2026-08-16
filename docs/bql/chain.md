@@ -18,7 +18,7 @@ chain(field1, field2, ..., within=DURATION, order=BOOL) { step1; step2; step3 }
 - Within a step, use `|` to combine multiple conditions (AND)
 - Each step supports the same condition syntax as filters: `field=value`, `field!=value`, `field=/regex/i`, `field>N`, etc.
 - Condition functions work per step: `cidr()`, `in()`, `comment()`, optionally negated (`!cidr(...)`). Functions that project columns, aggregate, or reshape results (`regex()`, `groupby()`, `sort()`, `match()`) are rejected: a step is a row condition.
-- Condition functions combine with `AND`/`OR` like any other condition: `cidr(dst_ip,"10.0.0.0/8") OR cidr(dst_ip,"192.168.0.0/16")`.
+- Condition functions are ordinary operands: they combine with `AND`/`OR`, nest in parentheses, and negate with `!`, e.g. `cidr(dst_ip,"10.0.0.0/8") OR cidr(dst_ip,"192.168.0.0/16")`. This holds anywhere filters are written, not just in chain steps.
 - Regex alternation inside conditions is supported: `image=/powershell|cmd|whoami/i`
 
 **Returns:** The grouping field (or `_entity` when using multiple identity fields) and `chain_count` (number of times the full sequence occurred).

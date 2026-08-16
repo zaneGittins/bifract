@@ -651,18 +651,19 @@ func buildWhereClauseCtx(conditions []ConditionNode, registry *FieldRegistry) (s
 	return sql, nil
 }
 
-// fixOperatorPrecedence adds parentheses to handle OR/AND precedence correctly
-func fixOperatorPrecedence(sql string) string {
-	// Temporarily disabled to preserve 94.7% test success rate
-	// Complex nested parentheses remain an outstanding issue
-	return sql
-}
-
 func translateCondition(cond ConditionNode) (string, error) {
 	return translateConditionCtx(cond, nil)
 }
 
 func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string, error) {
+	// A condition function was compiled to SQL before materialization.
+	if cond.CommandSQL != "" {
+		if cond.Negate {
+			return "NOT (" + cond.CommandSQL + ")", nil
+		}
+		return cond.CommandSQL, nil
+	}
+
 	// Handle compound nodes by recursively building the inner SQL.
 	if cond.IsCompound {
 		innerSQL, err := buildWhereClauseCtx(cond.Children, registry)
@@ -1798,6 +1799,9 @@ func buildChainStep(stepTokens []Token, opts QueryOptions, parentReg *FieldRegis
 	seen := make(map[string]bool)
 
 	if pl.Filter != nil && len(pl.Filter.Conditions) > 0 {
+		if err := resolveCommandConditionNodes(pl.Filter.Conditions, opts); err != nil {
+			return "", nil, fmt.Errorf("chain step: %w", err)
+		}
 		w, err := buildWhereClauseCtx(pl.Filter.Conditions, reg)
 		if err != nil {
 			return "", nil, fmt.Errorf("chain step: %w", err)
