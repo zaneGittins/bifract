@@ -118,10 +118,13 @@ func RunUpgrade(dir string) error {
 	// Least-privilege ingest DB passwords: preserve if present, else generate strong
 	// ones for installs that predate the split. The app provisions/rotates the
 	// bifract_ingest user+role to match on startup.
-	if v, ok := existingEnv["BIFRACT_INGEST_CLICKHOUSE_PASSWORD"]; ok && v != "" {
+	// Rotate a password that predates the complexity policy: preserving it would
+	// carry a credential a managed ClickHouse refuses, leaving the ingest tier
+	// unable to authenticate. See ClickHousePasswordCompliant.
+	if v, ok := existingEnv["BIFRACT_INGEST_CLICKHOUSE_PASSWORD"]; ok && ClickHousePasswordCompliant(v) {
 		cfg.IngestClickHousePassword = v
 	} else {
-		pw, err := GenerateAlphanumeric(24)
+		pw, err := GenerateClickHousePassword(24)
 		if err != nil {
 			return fmt.Errorf("generate ingest clickhouse password: %w", err)
 		}

@@ -321,7 +321,7 @@ func TestK8sExternalClickHouse(t *testing.T) {
 	// a file we did not write (which is what kubectl kustomize would reject).
 	for _, rel := range []string{"clickhouse/clickhouse-installation.yaml", "clickhouse/lb-service.yaml"} {
 		if _, err := os.Stat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
-			t.Errorf("%s was rendered for an external ClickHouse", rel)
+			t.Errorf("%s was rendered for external ClickHouse", rel)
 		}
 	}
 	kustomization := readRendered(t, dir, "kustomization.yaml")
@@ -330,10 +330,10 @@ func TestK8sExternalClickHouse(t *testing.T) {
 			t.Errorf("kustomization still lists %s", ref)
 		}
 	}
-	// All policies here are Ingress-only, so an external ClickHouse needs none.
+	// All policies here are Ingress-only, so external ClickHouse needs none.
 	policies := readRendered(t, dir, "network-policies.yaml")
 	if strings.Contains(policies, "allow-clickhouse-from-bifract") || strings.Contains(policies, "allow-keeper-from-clickhouse") {
-		t.Error("in-cluster ClickHouse NetworkPolicies rendered for an external ClickHouse")
+		t.Error("in-cluster ClickHouse NetworkPolicies rendered for external ClickHouse")
 	}
 }
 
@@ -402,13 +402,13 @@ func TestKustomizeBuildsWithExternalClickHouse(t *testing.T) {
 
 	out, err := exec.Command("kubectl", "kustomize", dir).CombinedOutput()
 	if err != nil {
-		t.Fatalf("kubectl kustomize failed for an external ClickHouse: %v\n%s", err, out)
+		t.Fatalf("kubectl kustomize failed for external ClickHouse: %v\n%s", err, out)
 	}
 	if !strings.Contains(string(out), "kind: Deployment") {
 		t.Error("kustomize output has no Deployment")
 	}
 	if strings.Contains(string(out), "kind: ClickHouseCluster") {
-		t.Error("a ClickHouseCluster was built for an external ClickHouse")
+		t.Error("a ClickHouseCluster was built for external ClickHouse")
 	}
 }
 
@@ -437,5 +437,85 @@ func TestGeneratePasswordsPreservesExternalClickHousePassword(t *testing.T) {
 	}
 	if len(bundled.ClickHousePassword) < 20 {
 		t.Errorf("bundled ClickHousePassword = %q, want a generated value", bundled.ClickHousePassword)
+	}
+}
+
+// The generated ingest password now contains special characters. It travels
+// through a .env value, Compose interpolation, and a quoted YAML secret; the
+// fixed-string fixtures elsewhere never exercise that. This renders with real
+// generated passwords and hands the result to docker and kubectl.
+func TestGeneratedPasswordsSurviveRendering(t *testing.T) {
+	for i := 0; i < 25; i++ {
+		cfg := composeSetupConfig(t)
+		if err := cfg.GeneratePasswords(); err != nil {
+			t.Fatalf("GeneratePasswords: %v", err)
+		}
+		if !ClickHousePasswordCompliant(cfg.IngestClickHousePassword) {
+			t.Fatalf("generated ingest password %q is not compliant", cfg.IngestClickHousePassword)
+		}
+
+		// .env must round-trip the value byte for byte.
+		dir := t.TempDir()
+		envPath := filepath.Join(dir, ".env")
+		if err := os.WriteFile(envPath, []byte(RenderEnvFile(cfg)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		env, err := ReadEnvFile(envPath)
+		if err != nil {
+			t.Fatalf("read .env: %v", err)
+		}
+		if got := env["BIFRACT_INGEST_CLICKHOUSE_PASSWORD"]; got != cfg.IngestClickHousePassword {
+			t.Fatalf(".env round-trip changed the password: %q -> %q", cfg.IngestClickHousePassword, got)
+		}
+
+		// The k8s secret must stay valid YAML and preserve the value.
+		k8s := freshK8sConfig(sizeProfiles[0], dir)
+		k8s.IngestClickHousePassword = cfg.IngestClickHousePassword
+		rendered, err := renderK8sTemplate("templates/k8s/bifract-secrets.yaml.tmpl", k8sTemplateData{
+			IngestClickHousePassword: k8s.IngestClickHousePassword,
+			ClickHousePassword:       cfg.ClickHousePassword,
+		})
+		if err != nil {
+			t.Fatalf("render secret: %v", err)
+		}
+		var secret struct {
+			StringData map[string]string `yaml:"stringData"`
+		}
+		if err := yaml.Unmarshal([]byte(rendered), &secret); err != nil {
+			t.Fatalf("secret is not valid YAML with password %q: %v", cfg.IngestClickHousePassword, err)
+		}
+		if got := secret.StringData["INGEST_CLICKHOUSE_PASSWORD"]; got != cfg.IngestClickHousePassword {
+			t.Fatalf("YAML round-trip changed the password: %q -> %q", cfg.IngestClickHousePassword, got)
+		}
+	}
+}
+
+// docker compose must accept a rendered stack whose .env carries a generated
+// password, with the interpolated value reaching the container unchanged.
+func TestDockerComposeAcceptsGeneratedPasswords(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available")
+	}
+	cfg := composeSetupConfig(t)
+	if err := cfg.GeneratePasswords(); err != nil {
+		t.Fatalf("GeneratePasswords: %v", err)
+	}
+	rendered, err := RenderDockerCompose(cfg)
+	if err != nil {
+		t.Fatalf("render docker-compose: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte(rendered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(RenderEnvFile(cfg)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("docker", "compose", "-f", filepath.Join(dir, "docker-compose.yml"), "config").CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker compose config rejected a generated password: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), cfg.IngestClickHousePassword) {
+		t.Errorf("the interpolated ingest password did not survive compose config")
 	}
 }

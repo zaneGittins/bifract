@@ -111,3 +111,30 @@ func TestQueryIdentityUser(t *testing.T) {
 		t.Errorf("unknown workload mapped to %q", got)
 	}
 }
+
+// A managed ClickHouse enforces password complexity and rejects CREATE USER with
+// code 36 otherwise, which silently costs the class its memory ceiling. The hex
+// digest alone has no uppercase and no special character.
+func TestQueryIdentityPasswordMeetsComplexityPolicy(t *testing.T) {
+	c := &ClickHouseClient{Password: "admin-password"}
+	for _, user := range []string{SearchCHUser, RecallCHUser} {
+		pw := c.queryIdentityPassword(user)
+		var hasLower, hasUpper, hasDigit, hasSpecial bool
+		for _, r := range pw {
+			switch {
+			case r >= 'a' && r <= 'z':
+				hasLower = true
+			case r >= 'A' && r <= 'Z':
+				hasUpper = true
+			case r >= '0' && r <= '9':
+				hasDigit = true
+			default:
+				hasSpecial = true
+			}
+		}
+		if !hasLower || !hasUpper || !hasDigit || !hasSpecial {
+			t.Errorf("%s password lacks a required class (lower=%v upper=%v digit=%v special=%v)",
+				user, hasLower, hasUpper, hasDigit, hasSpecial)
+		}
+	}
+}

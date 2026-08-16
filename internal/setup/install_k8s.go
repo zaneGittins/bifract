@@ -658,7 +658,7 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 			user = "default"
 		}
 		if m.chPassInput.Value() == "" {
-			m.chValidationErr = "A password is required for an external ClickHouse."
+			m.chValidationErr = "A password is required for external ClickHouse."
 			return m, nil
 		}
 		m.config.CH.User = user
@@ -1515,7 +1515,7 @@ func k8sCHEnv(cfg *K8sConfig, userOverride string) []EnvVar {
 // clickhouse-lb-service.yaml.tmpl.
 const k8sCHLoadBalancerService = "bifract-ch-clickhouse-lb"
 
-// k8sCHHostInput is the endpoint field for an external ClickHouse.
+// k8sCHHostInput is the endpoint field for external ClickHouse.
 func k8sCHHostInput() textinput.Model {
 	in := textinput.New()
 	in.Placeholder = "clickhouse.example.internal:9000"

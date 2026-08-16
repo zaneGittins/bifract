@@ -895,7 +895,7 @@ func (m WizardModel) updateClickHouseHost(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// updateClickHouseAuth collects the credential for an external ClickHouse. It
+// updateClickHouseAuth collects the credential for external ClickHouse. It
 // cannot be generated: the server already exists and owns its own users.
 func (m WizardModel) updateClickHouseAuth(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
@@ -916,7 +916,7 @@ func (m WizardModel) updateClickHouseAuth(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			pass := m.chPassInput.Value()
 			if pass == "" {
-				m.chValidationErr = "A password is required for an external ClickHouse."
+				m.chValidationErr = "A password is required for external ClickHouse."
 				return m, nil
 			}
 			m.config.CH.User = user

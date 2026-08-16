@@ -125,7 +125,9 @@ func (c *SetupConfig) GeneratePasswords() error {
 			return err
 		}
 	}
-	c.IngestClickHousePassword, err = GenerateAlphanumeric(24)
+	// Created on whichever ClickHouse the app connects to, including a managed
+	// one that enforces a complexity policy.
+	c.IngestClickHousePassword, err = GenerateClickHousePassword(24)
 	if err != nil {
 		return err
 	}

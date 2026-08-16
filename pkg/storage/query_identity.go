@@ -77,8 +77,18 @@ func queryIdentityUser(workload string) string {
 func (c *ClickHouseClient) queryIdentityPassword(user string) string {
 	mac := hmac.New(sha256.New, []byte(c.Password))
 	mac.Write([]byte("bifract-query-identity:" + user))
-	return hex.EncodeToString(mac.Sum(nil))
+	// The hex digest is lowercase and digits only. A managed ClickHouse enforces
+	// a complexity policy and rejects CREATE USER with code 36, which costs the
+	// class its memory ceiling. The suffix is fixed rather than derived so the
+	// value stays deterministic: every replica must derive the same password
+	// without shared state, and it adds no entropy the digest does not already
+	// carry.
+	return hex.EncodeToString(mac.Sum(nil)) + queryIdentityPasswordSuffix
 }
+
+// queryIdentityPasswordSuffix supplies the uppercase and special characters a
+// hex digest lacks. See queryIdentityPassword.
+const queryIdentityPasswordSuffix = "Aa1!"
 
 // reconcileQueryIdentities provisions one ClickHouse user per capped class and opens a
 // pool for it. Classes absent from memCaps are uncapped and keep using the default

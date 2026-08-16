@@ -13,9 +13,11 @@ import (
 // bifract-ingest then fails auth as bifract_ingest with 28P01.
 func TestReconfigurePreservesIngestPasswords(t *testing.T) {
 	dir := t.TempDir()
+	// The ClickHouse value must satisfy the complexity policy, or reconfigure
+	// rotates it on purpose; see TestReconfigureRotatesNonCompliantClickHousePassword.
 	writeMinimalInstall(t, dir, map[string]string{
 		"BIFRACT_INGEST_POSTGRES_PASSWORD":   "keepmepg",
-		"BIFRACT_INGEST_CLICKHOUSE_PASSWORD": "keepmech",
+		"BIFRACT_INGEST_CLICKHOUSE_PASSWORD": "Keepmech1!",
 	})
 
 	if err := RunReconfigure(dir); err != nil {
@@ -29,8 +31,41 @@ func TestReconfigurePreservesIngestPasswords(t *testing.T) {
 	if got := env["BIFRACT_INGEST_POSTGRES_PASSWORD"]; got != "keepmepg" {
 		t.Errorf("ingest postgres password = %q, want it preserved as %q", got, "keepmepg")
 	}
-	if got := env["BIFRACT_INGEST_CLICKHOUSE_PASSWORD"]; got != "keepmech" {
-		t.Errorf("ingest clickhouse password = %q, want it preserved as %q", got, "keepmech")
+	if got := env["BIFRACT_INGEST_CLICKHOUSE_PASSWORD"]; got != "Keepmech1!" {
+		t.Errorf("ingest clickhouse password = %q, want it preserved as %q", got, "Keepmech1!")
+	}
+}
+
+// An install created before the complexity policy was known carries an
+// alphanumeric ingest password. Preserving it would faithfully carry forward a
+// credential a managed ClickHouse refuses on CREATE USER, leaving the ingest
+// tier unable to authenticate at all -- so reconfigure rotates it instead. Safe
+// because the app reconciles the ingest user's password at every startup.
+func TestReconfigureRotatesNonCompliantClickHousePassword(t *testing.T) {
+	dir := t.TempDir()
+	const legacy = "aB3dEfGhIjKlMnOpQrSt"
+	writeMinimalInstall(t, dir, map[string]string{
+		"BIFRACT_INGEST_POSTGRES_PASSWORD":   "keepmepg",
+		"BIFRACT_INGEST_CLICKHOUSE_PASSWORD": legacy,
+	})
+
+	if err := RunReconfigure(dir); err != nil {
+		t.Fatalf("RunReconfigure: %v", err)
+	}
+	env, err := ReadEnvFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatalf("read .env: %v", err)
+	}
+	got := env["BIFRACT_INGEST_CLICKHOUSE_PASSWORD"]
+	if got == legacy {
+		t.Error("a non-compliant ingest password was preserved; a managed ClickHouse would refuse it")
+	}
+	if !ClickHousePasswordCompliant(got) {
+		t.Errorf("rotated password %q is still not compliant", got)
+	}
+	// The Postgres credential has no such policy and must be left alone.
+	if env["BIFRACT_INGEST_POSTGRES_PASSWORD"] != "keepmepg" {
+		t.Error("the ingest Postgres password was rotated; only ClickHouse has this policy")
 	}
 }
 

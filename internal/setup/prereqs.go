@@ -55,7 +55,7 @@ func (r PrereqResult) Summary() string {
 	return strings.Join(lines, "\n")
 }
 
-// CheckClickHouseReachable dials an external ClickHouse before any files are
+// CheckClickHouseReachable dials external ClickHouse before any files are
 // written, so a wrong host, a closed port or a TLS mismatch is reported while the
 // operator is still in the wizard rather than after the containers come up.
 //

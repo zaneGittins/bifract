@@ -852,7 +852,7 @@ func backupK8sManifests(srcDir, backupDir string) error {
 // container env list.
 var manifestEnvRe = regexp.MustCompile(`(?m)^\s*-\s*name:\s*(CLICKHOUSE_[A-Z_]+)\s*\n\s*value:\s*"?([^"\n]*)"?\s*$`)
 
-// targetFromManifestEnv recovers an external ClickHouse target from a rendered
+// targetFromManifestEnv recovers external ClickHouse target from a rendered
 // deployment's environment. It reads the same variable names the server parses,
 // so the installer and the runtime cannot drift apart on what an install is.
 func targetFromManifestEnv(manifest string) ClickHouseTarget {

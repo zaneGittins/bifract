@@ -97,7 +97,7 @@ func (t ClickHouseTarget) Validate() error {
 		return nil
 	}
 	if t.Host == "" && t.Hosts == "" {
-		return fmt.Errorf("an external ClickHouse needs a host")
+		return fmt.Errorf("external ClickHouse needs a host")
 	}
 	if t.Port <= 0 || t.Port > 65535 {
 		return fmt.Errorf("port %d is out of range", t.Port)

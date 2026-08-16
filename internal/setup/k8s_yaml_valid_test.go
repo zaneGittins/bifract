@@ -172,7 +172,7 @@ func TestNetworkPolicyOmitsClickHouseWhenExternal(t *testing.T) {
 	}
 	for _, name := range []string{"allow-clickhouse-from-bifract", "allow-keeper-from-clickhouse"} {
 		if strings.Contains(out, name) {
-			t.Errorf("%s rendered for an external ClickHouse", name)
+			t.Errorf("%s rendered for external ClickHouse", name)
 		}
 	}
 	// The policies that do not depend on ClickHouse must survive.
