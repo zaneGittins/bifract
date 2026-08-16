@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"bifract/pkg/objstore"
+	"bifract/pkg/storage"
 )
 
 // Config holds the archiver's runtime configuration, assembled from the same
@@ -19,17 +20,10 @@ type Config struct {
 	Obj   objstore.Config
 	PGDSN string
 
-	// ClickHouse connection (used by restore/reconcile to write back into logs).
-	CHHost     string
-	CHPort     int
-	CHDatabase string
-	CHUser     string
-	CHPassword string
-	// Cluster mode: when CHCluster and CHHosts are both set, restore/reconcile
-	// build a cluster-aware client so writes and reads target logs_distributed
-	// (rows shard across nodes; dedup/counts span the whole cluster).
-	CHHosts   string
-	CHCluster string
+	// CH is the ClickHouse connection used by restore/reconcile to write back
+	// into logs. It is the same contract the server reads; see
+	// storage.ClickHouseEnvFromOS.
+	CH storage.ClickHouseEnv
 
 	SpoolPath string
 
@@ -74,17 +68,15 @@ func ConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	chEnv, err := storage.ClickHouseEnvFromOS()
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
 		Enabled:       getBool("BIFRACT_ARCHIVE_ENABLED", false),
 		Obj:           obj,
 		PGDSN:         pgDSN(),
-		CHHost:        getStr("CLICKHOUSE_HOST", "localhost"),
-		CHPort:        getIntEnv("CLICKHOUSE_PORT", 9000),
-		CHDatabase:    getStr("CLICKHOUSE_DB", "logs"),
-		CHUser:        getStr("CLICKHOUSE_USER", "default"),
-		CHPassword:    getStr("CLICKHOUSE_PASSWORD", "bifract"),
-		CHHosts:       getStr("CLICKHOUSE_HOSTS", ""),
-		CHCluster:     getStr("CLICKHOUSE_CLUSTER", ""),
+		CH:            chEnv,
 		SpoolPath:     getStr("BIFRACT_ARCHIVE_SPOOL_PATH", "/var/lib/bifract/spool"),
 		RollBytes:     getInt64("BIFRACT_ARCHIVE_ROLL_BYTES", 256<<20),
 		RollInterval:  getDuration("BIFRACT_ARCHIVE_ROLL_INTERVAL", 30*time.Minute),

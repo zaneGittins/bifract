@@ -352,6 +352,11 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 		ArchiveMaintainCommitRetries: settings.archiveMaintainCommitRetries,
 	}
 
+	// Where ClickHouse lives. Recovered from the manifests rather than defaulted,
+	// so an upgrade of an external install does not re-render a bundled
+	// ClickHouseInstallation the operator never asked for.
+	cfg.CH = settings.ch
+
 	// Core secrets
 	cfg.PostgresPassword = secrets["POSTGRES_PASSWORD"]
 	cfg.ClickHousePassword = secrets["CLICKHOUSE_PASSWORD"]

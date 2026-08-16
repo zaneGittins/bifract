@@ -17,13 +17,11 @@ import (
 // shard across nodes with cluster-wide dedup/counts. Otherwise it is a plain
 // single-node client targeting the local logs table.
 func NewCHClient(cfg Config) (*storage.ClickHouseClient, error) {
-	if cfg.CHCluster != "" && cfg.CHHosts != "" {
-		hosts := strings.Split(cfg.CHHosts, ",")
-		return storage.NewClickHouseClusterClient(
-			hosts, cfg.CHPort, cfg.CHDatabase, cfg.CHUser, cfg.CHPassword,
-			cfg.CHCluster, storage.DefaultQueryPoolConfig())
+	opts, err := cfg.CH.ClientOptions(storage.DefaultQueryPoolConfig(), storage.RoleArchive)
+	if err != nil {
+		return nil, err
 	}
-	return storage.NewClickHouseClient(cfg.CHHost, cfg.CHPort, cfg.CHDatabase, cfg.CHUser, cfg.CHPassword)
+	return storage.NewClickHouseClient(opts)
 }
 
 // chIcebergTableFunc builds the ClickHouse iceberg*() table-function expression
@@ -297,7 +295,7 @@ func (c *Catalog) Restore(ctx context.Context, ch *storage.ClickHouseClient, obj
 	if err != nil {
 		return 0, fmt.Errorf("archive: no Iceberg table for fractal %s: %w", sourceFractalID, err)
 	}
-	tf, err := chIcebergTableFunc(obj, loc, ch.Cluster)
+	tf, err := chIcebergTableFunc(obj, loc, ch.Topology().FanoutCluster)
 	if err != nil {
 		return 0, err
 	}
@@ -416,7 +414,7 @@ func (c *Catalog) countIceberg(ctx context.Context, ch *storage.ClickHouseClient
 	if err != nil {
 		return 0, err
 	}
-	tf, err := chIcebergTableFunc(obj, loc, ch.Cluster)
+	tf, err := chIcebergTableFunc(obj, loc, ch.Topology().FanoutCluster)
 	if err != nil {
 		return 0, err
 	}

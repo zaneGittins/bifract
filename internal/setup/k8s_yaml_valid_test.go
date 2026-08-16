@@ -22,9 +22,22 @@ func TestK8sManifestsAreValidYAML(t *testing.T) {
 		ArchiverRes:    ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 
 		ArchiveMaintainRes: ResourceProfile{"500m", "2", "3Gi", "5Gi"},
+
+		// The conditional manifests below only render for a bundled ClickHouse,
+		// and the lb-service needs more than one shard to exist.
+		CHBundled:    true,
+		CHShards:     2,
+		CHStorageStr: "100Gi",
+		CHEnvApp:     []EnvVar{{Name: "CLICKHOUSE_HOST", Value: "clickhouse"}},
+		CHEnvIngest:  []EnvVar{{Name: "CLICKHOUSE_HOST", Value: "clickhouse"}},
+		CH:           ResourceProfile{"1", "2", "4Gi", "8Gi"},
+		CHKeeper:     ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 	}
 
-	for _, m := range k8sManifests {
+	// Iterate both sets: moving the ClickHouseInstallation into the conditional
+	// list would otherwise silently drop it from this test, and the lb-service and
+	// mTLS templates were never covered here at all.
+	for _, m := range append(append([]k8sManifestFile{}, k8sManifests...), k8sConditionalManifests...) {
 		t.Run(m.output, func(t *testing.T) {
 			out, err := renderK8sTemplate(m.template, data)
 			if err != nil {
@@ -87,7 +100,7 @@ func TestAppDeploymentSingleReplicaRecreate(t *testing.T) {
 // rule is silent: queries fall back or time out rather than erroring.
 func TestNetworkPolicyAllowsClickHousePort9001(t *testing.T) {
 	out, err := renderK8sTemplate("templates/k8s/network-policies.yaml.tmpl", k8sTemplateData{
-		ImageTag: "test", Domain: "example.com", CHHostsList: "host1",
+		ImageTag: "test", Domain: "example.com", CHHostsList: "host1", CHBundled: true,
 	})
 	if err != nil {
 		t.Fatalf("render: %v", err)
@@ -145,4 +158,34 @@ func TestNetworkPolicyAllowsClickHousePort9001(t *testing.T) {
 		return
 	}
 	t.Error("no ClickHouse NetworkPolicy found in rendered output")
+}
+
+// An external ClickHouse has no in-cluster pods to select. Every policy in this
+// file is Ingress-only, so reaching out to it needs no rule either; a leftover
+// policy selecting a workload that does not exist is dead configuration.
+func TestNetworkPolicyOmitsClickHouseWhenExternal(t *testing.T) {
+	out, err := renderK8sTemplate("templates/k8s/network-policies.yaml.tmpl", k8sTemplateData{
+		ImageTag: "test", Domain: "example.com",
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, name := range []string{"allow-clickhouse-from-bifract", "allow-keeper-from-clickhouse"} {
+		if strings.Contains(out, name) {
+			t.Errorf("%s rendered for an external ClickHouse", name)
+		}
+	}
+	// The policies that do not depend on ClickHouse must survive.
+	if !strings.Contains(out, "policyTypes") {
+		t.Error("no NetworkPolicy rendered at all")
+	}
+	for _, doc := range strings.Split(out, "\n---") {
+		if strings.TrimSpace(doc) == "" {
+			continue
+		}
+		var parsed map[string]interface{}
+		if err := yaml.Unmarshal([]byte(doc), &parsed); err != nil {
+			t.Errorf("document is not valid YAML: %v", err)
+		}
+	}
 }

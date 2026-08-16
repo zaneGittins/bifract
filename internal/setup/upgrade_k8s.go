@@ -254,9 +254,12 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 
 // k8sSettings holds non-secret configuration extracted from existing manifests.
 type k8sSettings struct {
-	imageTag    string
-	domain      string
-	chShards    int
+	imageTag string
+	domain   string
+	chShards int
+	// ch is where this install's ClickHouse lives. Its absence of a
+	// ClickHouseInstallation is what identifies an external one.
+	ch          ClickHouseTarget
 	chStorageGB int
 	ipAccess    IPAccessMode
 	allowedIPs  []string
@@ -595,6 +598,16 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 	// Split by document separator so storage regex only matches the CH cluster doc,
 	// not the Keeper's hardcoded storage value. Replicas are always 1 (Iceberg
 	// handles durability), so they are not parsed or preserved.
+	// No ClickHouseInstallation means this install points at a ClickHouse it does
+	// not own. Recover the target from the app deployment's rendered environment,
+	// which is the same contract the server reads, so an upgrade cannot silently
+	// revert the install to a bundled ClickHouse that is not there.
+	if _, err := os.Stat(filepath.Join(dir, "clickhouse", "clickhouse-installation.yaml")); os.IsNotExist(err) {
+		if data, derr := os.ReadFile(filepath.Join(dir, "bifract", "deployment.yaml")); derr == nil {
+			s.ch = targetFromManifestEnv(string(data))
+		}
+	}
+
 	if data, err := os.ReadFile(filepath.Join(dir, "clickhouse", "clickhouse-installation.yaml")); err == nil {
 		content := string(data)
 		chDoc := content
@@ -833,4 +846,23 @@ func backupK8sManifests(srcDir, backupDir string) error {
 		}
 		return copyFile(path, dst)
 	})
+}
+
+// manifestEnvRe captures one `- name: X` / `value: "Y"` pair from a rendered
+// container env list.
+var manifestEnvRe = regexp.MustCompile(`(?m)^\s*-\s*name:\s*(CLICKHOUSE_[A-Z_]+)\s*\n\s*value:\s*"?([^"\n]*)"?\s*$`)
+
+// targetFromManifestEnv recovers an external ClickHouse target from a rendered
+// deployment's environment. It reads the same variable names the server parses,
+// so the installer and the runtime cannot drift apart on what an install is.
+func targetFromManifestEnv(manifest string) ClickHouseTarget {
+	env := map[string]string{}
+	for _, m := range manifestEnvRe.FindAllStringSubmatch(manifest, -1) {
+		env[m[1]] = strings.TrimSpace(m[2])
+	}
+	if len(env) == 0 {
+		return ClickHouseTarget{}
+	}
+	env[envCHBackend] = string(CHBackendExternal)
+	return TargetFromEnv(env)
 }

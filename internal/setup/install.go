@@ -92,7 +92,7 @@ func RunInstall() error {
 
 	// Set migration baseline
 	printStep("Setting migration baseline...")
-	if err := SetMigrationBaseline(docker, "bifract", "bifract", "default", cfg.ClickHousePassword); err != nil {
+	if err := SetMigrationBaseline(docker, "bifract", "bifract", "default", cfg.ClickHousePassword, cfg.CH.Bundled()); err != nil {
 		printWarn("Could not set baseline (not critical)")
 	} else {
 		printDone("Migration baseline set")
@@ -107,11 +107,17 @@ func RunInstall() error {
 		printDone(fmt.Sprintf("Applied %d Postgres migration(s)", pgApplied))
 	}
 
-	chApplied, err := RunClickHouseMigrations(docker, "default", cfg.ClickHousePassword)
-	if err != nil {
-		printWarn(fmt.Sprintf("ClickHouse migration: %v", err))
-	} else if chApplied > 0 {
-		printDone(fmt.Sprintf("Applied %d ClickHouse migration(s)", chApplied))
+	// Only a ClickHouse this installer runs can be reached with `docker compose
+	// exec`. For an external one the app applies the schema itself at startup,
+	// which it does on every deployment anyway.
+	chApplied := 0
+	if cfg.CH.Bundled() {
+		chApplied, err = RunClickHouseMigrations(docker, "default", cfg.ClickHousePassword)
+		if err != nil {
+			printWarn(fmt.Sprintf("ClickHouse migration: %v", err))
+		} else if chApplied > 0 {
+			printDone(fmt.Sprintf("Applied %d ClickHouse migration(s)", chApplied))
+		}
 	}
 
 	if pgApplied == 0 && chApplied == 0 {

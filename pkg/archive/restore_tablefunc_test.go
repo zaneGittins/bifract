@@ -115,3 +115,59 @@ func chIcebergArgSmoke(t *testing.T) string {
 	}
 	return got
 }
+
+// The Cloud fanout cluster is "default" and may be a warehouse-scoped name
+// containing a dot. Both must render as the *Cluster variant with the cluster as
+// the FIRST argument, because the credential redaction in restore.go is
+// positional: a reordering here would start leaking secrets into query_log.
+func TestChIcebergTableFuncCloudFanout(t *testing.T) {
+	s3 := objstore.Config{
+		Backend: objstore.BackendS3, S3Bucket: "bkt", S3Region: "us-east-1",
+		S3AccessKey: "AK", S3SecretKey: "SK",
+	}
+	for _, tc := range []struct{ name, cluster, want string }{
+		{
+			name:    "cloud default fanout",
+			cluster: "default",
+			want:    "icebergS3Cluster('default', 'https://s3.us-east-1.amazonaws.com/bkt/warehouse/f_1/', 'AK', 'SK')",
+		},
+		{
+			name:    "warehouse scoped fanout keeps the dot",
+			cluster: "all_groups.default",
+			want:    "icebergS3Cluster('all_groups.default', 'https://s3.us-east-1.amazonaws.com/bkt/warehouse/f_1/', 'AK', 'SK')",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := chIcebergTableFunc(s3, "s3://bkt/warehouse/f_1", tc.cluster)
+			if err != nil {
+				t.Fatalf("chIcebergTableFunc: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got  %s\nwant %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// Archive writing goes through the Go SDK from Bifract's own pods, so a custom
+// endpoint is only a problem for the paths ClickHouse reads. This is the fact the
+// managed-ClickHouse gate keys on.
+func TestRequiresCustomEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  objstore.Config
+		want bool
+	}{
+		{"minio", objstore.Config{Backend: objstore.BackendMinIO, S3Endpoint: "http://minio:9000"}, true},
+		{"s3 with a custom endpoint", objstore.Config{Backend: objstore.BackendS3, S3Endpoint: "https://nyc3.digitaloceanspaces.com"}, true},
+		{"plain s3", objstore.Config{Backend: objstore.BackendS3, S3Region: "us-east-1"}, false},
+		{"azure", objstore.Config{Backend: objstore.BackendAzure, AzureAccount: "acct"}, false},
+		{"disk", objstore.Config{Backend: objstore.BackendDisk}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.RequiresCustomEndpoint(); got != tc.want {
+				t.Errorf("RequiresCustomEndpoint = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

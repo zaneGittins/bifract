@@ -2,6 +2,8 @@ package setup
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -16,6 +18,8 @@ const (
 	StepWelcome WizardStep = iota
 	StepPrereqs
 	StepInstallDir
+	StepClickHouse
+	StepClickHouseHost
 	StepDomain
 	StepSSL
 	StepSSLEmail
@@ -34,6 +38,7 @@ var stepLabels = []struct {
 	{StepWelcome, "Welcome"},
 	{StepPrereqs, "Prerequisites"},
 	{StepInstallDir, "Directory"},
+	{StepClickHouse, "ClickHouse"},
 	{StepDomain, "Domain"},
 	{StepSSL, "SSL"},
 	{StepIPAccess, "IP Access"},
@@ -52,6 +57,12 @@ type WizardModel struct {
 	emailInput      textinput.Model
 	certPathInput   textinput.Model
 	keyPathInput    textinput.Model
+
+	// ClickHouse backend selection
+	chChoices       []string
+	chCursor        int
+	chHostInput     textinput.Model
+	chValidationErr string
 
 	// SSL selection
 	sslChoices []string
@@ -120,6 +131,12 @@ func NewWizardModel(cfg *SetupConfig) WizardModel {
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(Purple)
 
+	chHost := textinput.New()
+	chHost.Placeholder = "clickhouse.internal:9000"
+	chHost.Width = 48
+	chHost.PromptStyle = PromptStyle
+	chHost.TextStyle = lipgloss.NewStyle().Foreground(White)
+
 	return WizardModel{
 		step:            StepWelcome,
 		config:          cfg,
@@ -128,6 +145,9 @@ func NewWizardModel(cfg *SetupConfig) WizardModel {
 		emailInput:      email,
 		certPathInput:   certPath,
 		keyPathInput:    keyPath,
+		chChoices:       []string{"Bundled (recommended)", "External ClickHouse", "ClickHouse Cloud"},
+		chCursor:        0,
+		chHostInput:     chHost,
 		sslChoices:      []string{"Self-signed (default)", "Let's Encrypt (automatic)", "Custom certificates"},
 		sslCursor:       0,
 		ipAccessChoices: []string{"Restrict app, allow ingest from all", "Restrict all", "mTLS client certificates (app only)", "Allow all (not recommended)"},
@@ -171,6 +191,10 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updatePrereqs(msg)
 	case StepInstallDir:
 		return m.updateInstallDir(msg)
+	case StepClickHouse:
+		return m.updateClickHouse(msg)
+	case StepClickHouseHost:
+		return m.updateClickHouseHost(msg)
 	case StepDomain:
 		return m.updateDomain(msg)
 	case StepSSL:
@@ -198,8 +222,15 @@ func (m WizardModel) prevStep() WizardStep {
 		return StepWelcome
 	case StepInstallDir:
 		return StepPrereqs
-	case StepDomain:
+	case StepClickHouse:
 		return StepInstallDir
+	case StepClickHouseHost:
+		return StepClickHouse
+	case StepDomain:
+		if !m.config.CH.Bundled() {
+			return StepClickHouseHost
+		}
+		return StepClickHouse
 	case StepSSL:
 		return StepDomain
 	case StepSSLEmail, StepSSLCert:
@@ -287,6 +318,14 @@ func (m WizardModel) View() string {
 
 	case StepInstallDir:
 		content = m.viewInstallDir()
+		hint = "Enter to confirm  |  Esc to go back"
+
+	case StepClickHouse:
+		content = m.viewClickHouse()
+		hint = "Up/Down to select  |  Enter to confirm  |  Esc to go back"
+
+	case StepClickHouseHost:
+		content = m.viewClickHouseHost()
 		hint = "Enter to confirm  |  Esc to go back"
 
 	case StepDomain:
@@ -508,9 +547,8 @@ func (m WizardModel) updateInstallDir(msg tea.Msg) (tea.Model, tea.Cmd) {
 			val = "/opt/bifract"
 		}
 		m.config.InstallDir = val
-		m.step = StepDomain
-		m.domainInput.Focus()
-		return m, textinput.Blink
+		m.step = StepClickHouse
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.installDirInput, cmd = m.installDirInput.Update(msg)
@@ -747,4 +785,123 @@ func RunWizard(cfg *SetupConfig) (*SetupConfig, error) {
 		return nil, fmt.Errorf("setup cancelled")
 	}
 	return final.config, nil
+}
+
+// ClickHouse backend selection. The deployment kind is chosen here rather than
+// inferred from the address: a managed service exposes a cluster name for its
+// table functions, and reading that as a self-managed cluster would wrongly turn
+// on Distributed tables and ON CLUSTER against a server that has neither.
+func (m WizardModel) updateClickHouse(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "up", "k":
+		if m.chCursor > 0 {
+			m.chCursor--
+		}
+	case "down", "j":
+		if m.chCursor < len(m.chChoices)-1 {
+			m.chCursor++
+		}
+	case "enter":
+		switch m.chCursor {
+		case 0:
+			m.config.CH = ClickHouseTarget{}
+			m.config.CH.Normalize()
+			m.step = StepDomain
+			m.domainInput.Focus()
+			return m, textinput.Blink
+		case 1:
+			m.config.CH = ClickHouseTarget{Backend: CHBackendExternal}
+			m.chHostInput.Placeholder = "clickhouse.internal:9000"
+		case 2:
+			m.config.CH = ClickHouseTarget{
+				Backend:    CHBackendExternal,
+				Deployment: "cloud",
+				Secure:     true,
+			}
+			m.chHostInput.Placeholder = "your-service.clickhouse.cloud"
+		}
+		m.chValidationErr = ""
+		m.step = StepClickHouseHost
+		m.chHostInput.Focus()
+		return m, textinput.Blink
+	}
+	return m, nil
+}
+
+func (m WizardModel) updateClickHouseHost(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
+		val := strings.TrimSpace(m.chHostInput.Value())
+		if val == "" {
+			m.chValidationErr = "A host is required."
+			return m, nil
+		}
+		host, port := val, 0
+		if h, p, err := net.SplitHostPort(val); err == nil {
+			host = h
+			if n, convErr := strconv.Atoi(p); convErr == nil {
+				port = n
+			}
+		}
+		m.config.CH.Host = host
+		m.config.CH.Port = port
+		m.config.CH.Normalize()
+
+		if err := m.config.CH.Validate(); err != nil {
+			m.chValidationErr = err.Error()
+			return m, nil
+		}
+		// Reachability now, while the operator can still fix a typo, rather than
+		// after the containers come up and fail their health check.
+		if err := CheckClickHouseReachable(m.config.CH); err != nil {
+			m.chValidationErr = err.Error()
+			return m, nil
+		}
+		m.chValidationErr = ""
+		m.step = StepDomain
+		m.domainInput.Focus()
+		return m, textinput.Blink
+	}
+	var cmd tea.Cmd
+	m.chHostInput, cmd = m.chHostInput.Update(msg)
+	return m, cmd
+}
+
+func (m WizardModel) viewClickHouse() string {
+	var s strings.Builder
+	s.WriteString(TitleStyle.Render("ClickHouse Backend"))
+	s.WriteString("\n\n")
+	s.WriteString("Where should Bifract store log data?\n\n")
+	s.WriteString(RenderOptionList(m.chChoices, []string{
+		"Run ClickHouse in this Compose stack. Bifract manages its lifecycle and upgrades.",
+		"Connect to a ClickHouse you already run. This installer will not manage it.",
+		"Connect to a managed ClickHouse Cloud service over TLS.",
+	}, m.chCursor))
+	return s.String()
+}
+
+func (m WizardModel) viewClickHouseHost() string {
+	var s strings.Builder
+	s.WriteString(TitleStyle.Render("ClickHouse Endpoint"))
+	s.WriteString("\n\n")
+	if m.config.CH.Deployment == "cloud" {
+		s.WriteString("Enter your service hostname. TLS is required and port ")
+		s.WriteString(HighlightStyle.Render("9440"))
+		s.WriteString(" is assumed.\n\n")
+	} else {
+		s.WriteString("Enter the native-protocol endpoint. Port ")
+		s.WriteString(HighlightStyle.Render("9000"))
+		s.WriteString(" is assumed if omitted.\n\n")
+	}
+	s.WriteString(LabelStyle.Render("  Host"))
+	s.WriteString("\n")
+	s.WriteString("  " + m.chHostInput.View())
+	if m.chValidationErr != "" {
+		s.WriteString("\n\n")
+		s.WriteString(ErrorStyle.Render("  " + m.chValidationErr))
+	}
+	return s.String()
 }

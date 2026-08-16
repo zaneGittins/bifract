@@ -147,33 +147,60 @@ func withinCapTolerance(live, next int64) bool {
 // exists to account for memory, not to restrict what a search may read, and a missing
 // grant would surface as a query failure for the user.
 func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string, memCapBytes int64) (driver.Conn, error) {
-	onCluster := ""
-	if c.IsCluster() {
-		onCluster = " ON CLUSTER '" + EscCHStr(c.Cluster) + "'"
-	}
+	onCluster := c.OnClusterSQL()
 	pw := EscCHStr(c.queryIdentityPassword(user))
 
-	stmts := []string{
+	// Required: without these the identity does not exist or does not enforce the
+	// ceiling it exists for, so a failure means no identity.
+	required := []string{
 		fmt.Sprintf("CREATE USER IF NOT EXISTS %s%s IDENTIFIED BY '%s'", user, onCluster, pw),
 		fmt.Sprintf("ALTER USER %s%s IDENTIFIED BY '%s'", user, onCluster, pw),
-		// SELECT and dictGet cover log reads and model_lookup enrichment; REMOTE and
-		// CREATE TEMPORARY TABLE cover a cluster's fan-out and GLOBAL IN; S3, AZURE and
-		// URL cover recall's Iceberg table functions.
+		// SELECT and dictGet cover log reads and model_lookup enrichment.
 		fmt.Sprintf("GRANT%s SELECT, dictGet ON *.* TO %s", onCluster, user),
-		fmt.Sprintf("GRANT%s REMOTE, CREATE TEMPORARY TABLE, S3, AZURE, URL ON *.* TO %s", onCluster, user),
 		// The whole point of the identity.
 		fmt.Sprintf("ALTER USER %s%s SETTINGS max_memory_usage_for_user = %d", user, onCluster, memCapBytes),
 	}
-	for _, stmt := range stmts {
+	for _, stmt := range required {
 		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
 		err := c.conn.Exec(sctx, stmt)
 		cancel()
 		if err != nil {
+			c.recordCapability(CapQueryIdentity, err)
 			return nil, fmt.Errorf("%s: %w", user, err)
 		}
 	}
 
-	conn, err := openClickHouseConn(c.addrs, c.Database, user, c.queryIdentityPassword(user), DefaultQueryPoolConfig())
+	// Optional, granted one privilege at a time. These widen what a search can
+	// reach rather than making the identity work at all, and not every server
+	// defines all of them. Bundled into one statement, a single unsupported
+	// privilege would cost the whole identity and with it the class's memory
+	// ceiling, which is a far worse outcome than losing one capability.
+	optional := []struct{ priv, covers string }{
+		{"REMOTE", "cross-shard fan-out"},
+		{"CREATE TEMPORARY TABLE", "GLOBAL IN"},
+		{"S3", "recall over S3-backed archives"},
+		{"AZURE", "recall over Azure-backed archives"},
+		{"URL", "recall over URL-addressed archives"},
+	}
+	for _, o := range optional {
+		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
+		err := c.conn.Exec(sctx, fmt.Sprintf("GRANT%s %s ON *.* TO %s", onCluster, o.priv, user))
+		cancel()
+		if err != nil {
+			log.Printf("[ClickHouse] %s: no %s privilege, %s is unavailable to this class: %v", user, o.priv, o.covers, err)
+		}
+	}
+	c.recordCapability(CapQueryIdentity, nil)
+
+	identityConn := ConnOptions{
+		Addrs:    c.addrs,
+		Database: c.Database,
+		User:     user,
+		Password: c.queryIdentityPassword(user),
+		TLS:      c.tls,
+		Pool:     DefaultQueryPoolConfig(),
+	}
+	conn, err := openClickHouseConn(identityConn)
 	if err != nil {
 		return nil, fmt.Errorf("connect as %s: %w", user, err)
 	}

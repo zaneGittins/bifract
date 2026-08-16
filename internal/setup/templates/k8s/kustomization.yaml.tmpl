@@ -5,9 +5,11 @@ namespace: bifract
 
 resources:
   - namespace.yaml
+{{- if .CHBundled}}
   - clickhouse/clickhouse-installation.yaml
 {{- if gt .CHShards 1}}
   - clickhouse/lb-service.yaml
+{{- end}}
 {{- end}}
   - postgres/statefulset.yaml
   - bifract/deployment.yaml

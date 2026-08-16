@@ -307,8 +307,17 @@ const SettingsView = {
             toggle.disabled = !d.provisioned;
             this.syncClearCatalogGuard(d.enabled);
             if (hint) {
-                hint.textContent = d.provisioned ? '' : 'Not provisioned. Run bifract --upgrade to add the archiver.';
-                hint.style.display = d.provisioned ? 'none' : '';
+                // read_blocked means archiving works but ClickHouse cannot read
+                // the archive back, so restore and recall are off. Worth saying:
+                // the toggle looks entirely healthy otherwise.
+                let msg = '';
+                if (!d.provisioned) {
+                    msg = 'Not provisioned. Run bifract --upgrade to add the archiver.';
+                } else if (d.read_blocked) {
+                    msg = `Restore and recall unavailable: ${d.read_blocked}`;
+                }
+                hint.textContent = msg;
+                hint.style.display = msg ? '' : 'none';
             }
         } catch (err) {
             console.error('[Settings] archive status load error:', err);
@@ -588,12 +597,57 @@ const SettingsView = {
         this.isActive = false;
     },
 
+    // Controls whose stored value only takes effect if ClickHouse permits it.
+    // Without this a share the server refused still renders as the configured
+    // percentage, so the page reports a limit that is not in force.
+    CAPABILITY_GATED_CONTROLS: {
+        queryCPUPercentSettings: 'workload_scheduling',
+        recallCPUPercentSettings: 'workload_scheduling',
+        queryMemoryPercentSettings: 'server_memory_budget',
+        recallMemoryPercentSettings: 'server_memory_budget',
+    },
+
+    // Disables a control and says why, reusing the sp-row-blocked treatment the
+    // archive and danger-zone rows already use. The hint is created on demand so
+    // each new gated control needs no extra markup.
+    applyCapabilityGates(capabilities) {
+        const caps = capabilities || {};
+        for (const [controlId, capKey] of Object.entries(this.CAPABILITY_GATED_CONTROLS)) {
+            const control = document.getElementById(controlId);
+            if (!control) continue;
+            const cap = caps[capKey] || {};
+            // Unknown means not yet exercised, not broken; only an explicit
+            // refusal disables the control.
+            const blocked = cap.state === 'unavailable';
+
+            control.disabled = blocked;
+            const info = control.closest('.sp-row')?.querySelector('.sp-row-info');
+            if (!info) continue;
+
+            let hint = info.querySelector('.sp-row-blocked');
+            if (!blocked) {
+                if (hint) hint.style.display = 'none';
+                continue;
+            }
+            if (!hint) {
+                hint = document.createElement('p');
+                hint.className = 'sp-row-blocked';
+                info.appendChild(hint);
+            }
+            hint.textContent = cap.reason
+                ? `Not in force: ${cap.reason}`
+                : 'Not in force: this ClickHouse server does not support it.';
+            hint.style.display = '';
+        }
+    },
+
     async loadSettings() {
         try {
             const response = await fetch('/api/v1/settings', { credentials: 'include' });
             const data = await response.json();
 
             if (data.success) {
+                this.applyCapabilityGates(data.capabilities);
                 // Load system limits
                 const alertTimeoutSelect = document.getElementById('alertTimeoutSettings');
                 if (alertTimeoutSelect) {

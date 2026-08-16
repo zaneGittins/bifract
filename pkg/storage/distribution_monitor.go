@@ -91,9 +91,10 @@ func (m *DistributionMonitor) Stats() DistributionQueueStats {
 	return DistributionQueueStats{Healthy: true}
 }
 
-// Start begins background polling. No-op for single-node deployments.
+// Start begins background polling. No-op without Distributed tables, which are
+// what produce a distribution queue.
 func (m *DistributionMonitor) Start() {
-	if !m.ch.IsCluster() {
+	if !m.ch.Topology().DistributedTables {
 		return
 	}
 	go m.run()
@@ -133,10 +134,7 @@ func (m *DistributionMonitor) poll(prevErrorCount *int64, wasDegraded *bool) {
 
 	// In cluster mode query all replicas so the count reflects the full
 	// cluster, not just whichever shard this connection landed on.
-	distQueueTable := "system.distribution_queue"
-	if m.ch.IsCluster() {
-		distQueueTable = fmt.Sprintf("clusterAllReplicas('%s', system, distribution_queue)", EscCHStr(m.ch.Cluster))
-	}
+	distQueueTable := m.ch.Topology().FanoutSystemTableArgs("system", "distribution_queue")
 	rows, err := m.ch.Query(ctx, fmt.Sprintf(`
 		SELECT
 			COALESCE(sum(data_files), 0)        AS data_files,

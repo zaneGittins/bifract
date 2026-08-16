@@ -1210,8 +1210,8 @@ func (m *Manager) executeQuery(ctx context.Context, fractalID string, prismFract
 	}
 
 	tableName := "logs"
-	if m.ch != nil && m.ch.IsCluster() {
-		tableName = "logs_distributed"
+	if m.ch != nil {
+		tableName = m.ch.ReadTable()
 	}
 	opts := parser.QueryOptions{
 		StartTime:             start,

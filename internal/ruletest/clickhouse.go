@@ -103,7 +103,7 @@ func Connect(ctx context.Context, target *Target, verbose bool) (*Backend, error
 		return nil, err
 	}
 
-	client, err := storage.NewClickHouseClient(target.Host, target.Port, logsDatabase, target.User, target.Password)
+	client, err := storage.NewClickHouseClient(storage.SingleNodeOptions(target.Host, target.Port, logsDatabase, target.User, target.Password))
 	if err != nil {
 		b.teardownContainer()
 		return nil, fmt.Errorf("connecting to ClickHouse at %s: %w", target.Addr(), err)
@@ -126,7 +126,7 @@ func Connect(ctx context.Context, target *Target, verbose bool) (*Backend, error
 // It connects through `default` because the driver's handshake names a database and
 // would fail outright against a blank server.
 func ensureDatabase(ctx context.Context, t Target) error {
-	boot, err := storage.NewClickHouseClient(t.Host, t.Port, "default", t.User, t.Password)
+	boot, err := storage.NewClickHouseClient(storage.SingleNodeOptions(t.Host, t.Port, "default", t.User, t.Password))
 	if err != nil {
 		return fmt.Errorf("connecting to ClickHouse at %s: %w", t.Addr(), err)
 	}
@@ -265,7 +265,7 @@ func waitReady(ctx context.Context, t Target, timeout time.Duration, verbose boo
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		client, err := storage.NewClickHouseClient(t.Host, t.Port, "default", t.User, t.Password)
+		client, err := storage.NewClickHouseClient(storage.SingleNodeOptions(t.Host, t.Port, "default", t.User, t.Password))
 		if err == nil {
 			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			// version() returns a String; a bare SELECT 1 is UInt8, which the

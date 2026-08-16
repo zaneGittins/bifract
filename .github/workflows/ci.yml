@@ -33,16 +33,14 @@ jobs:
 
       # Build-tagged tests are excluded from `go test ./...` and `go vet ./...`, so nothing
       # else compiles them. Without this they rot silently and are only discovered broken
-      # the next time someone runs them by hand. Compiles only; the docker fixtures these
-      # need are described in test/chcluster/README.md.
+      # the next time someone runs them by hand. Every tag is set at once over ./... so a
+      # new tagged file in any package is covered without editing this step. Compiles only;
+      # the fixtures these need are in test/chcluster/ and test/archiveminio/, and the rule
+      # tester's takes BIFRACT_TEST_CLICKHOUSE=host:port against any ClickHouse.
+      #
+      # Keep in sync with: grep -rho '//go:build .*' --include='*.go' .
       - name: Vet tagged tests
-        run: go vet -tags chcluster,chupgrade ./pkg/storage/
-
-      # Same reasoning as above: the rule tester's ClickHouse-backed test is
-      # build-tagged, so nothing else compiles it. Run it with
-      # BIFRACT_TEST_CLICKHOUSE=host:port against any ClickHouse.
-      - name: Vet rule tester integration test
-        run: go vet -tags ruletestch ./internal/ruletest/
+        run: go vet -tags archiveminio,chcluster,chupgrade,normlogesc,ruletestch ./...
 
       # The shipped example detections are what users copy. Linting them needs no
       # database and catches a rule that stops translating.

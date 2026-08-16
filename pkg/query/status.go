@@ -86,7 +86,7 @@ func (h *StatusHandler) HandleHealthCheck(w http.ResponseWriter, r *http.Request
 
 	resp := healthResp{Success: true, Connected: h.db.HealthCheck(ctx) == nil}
 
-	if resp.Connected && h.db.IsCluster() {
+	if resp.Connected && h.db.Topology().FanoutCluster != "" {
 		shardCtx, shardCancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer shardCancel()
 		total, healthy, err := h.db.ShardHealth(shardCtx)

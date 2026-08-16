@@ -173,11 +173,32 @@ func main() {
 	defer db.Close()
 	defer dbIngest.Close()
 
+	// Version floor before migrations, because migrations are what need it. A
+	// pinned self-managed image below the floor is a fixable misconfiguration and
+	// is fatal; a managed service below it means our floor is wrong rather than
+	// their server, so that only warns. Failing to read the version never blocks
+	// boot either way.
+	if v, ok, err := db.CheckVersionFloor(context.Background()); err != nil {
+		log.Printf("Warning: could not read ClickHouse version: %v", err)
+	} else if !ok {
+		if db.Topology().ManagedStorage {
+			log.Printf("Warning: ClickHouse %s is below the tested minimum %s; this is a managed service, so the floor may simply be out of date", v, storage.MinClickHouseVersion)
+		} else {
+			log.Fatalf("ClickHouse %s is below the minimum supported version %s. Update the ClickHouse image and restart.", v, storage.MinClickHouseVersion)
+		}
+	} else {
+		log.Printf("ClickHouse server version %s", v)
+	}
+
 	log.Println("Initializing ClickHouse schema...")
 	if err := db.Initialize(context.Background(), dbsql.ClickHouseSQL, dbsql.ClickHouseMigrations, dbsql.ClickHouseMigrationsDir); err != nil {
 		log.Fatalf("Failed to initialize ClickHouse schema: %v", err)
 	}
 	log.Println("ClickHouse schema ready")
+
+	// Read-only capability probes. Everything else is recorded by the reconcilers
+	// below, which perform the real operation.
+	db.ProbeCapabilities(context.Background())
 
 	// Native cold tiering has been replaced by the Iceberg archive. Migrate any
 	// logs table still on the legacy 'tiered' storage policy back to the default
@@ -329,6 +350,9 @@ func main() {
 	settings.RegisterQueryLimitsApplier(func(limits storage.WorkloadLimits) error {
 		return db.ReconcileQueryWorkloads(context.Background(), limits)
 	})
+	// So the settings page reports a share the server has refused as unavailable,
+	// instead of showing the stored percentage as though it were in force.
+	settings.RegisterCapabilityReporter(db.Capabilities)
 
 	// Initialize fractal management system
 	log.Println("Initializing fractal management system...")
@@ -514,7 +538,7 @@ func main() {
 	// metadata and hand the scan to ClickHouse: they have no spool affinity, and
 	// running them in the always-on app tier means scaling ingest down cannot
 	// leave archive jobs stuck at 'pending'.
-	stopArchiveJobWorkers, recallEstimator := startArchiveJobWorkers()
+	stopArchiveJobWorkers, recallEstimator := startArchiveJobWorkers(db.Topology())
 
 	// Queue depth at which alert evaluation is deferred to protect ingestion.
 	// Clamp the configured percentage to a sane (1, 100] range so a bad value
@@ -866,13 +890,45 @@ func main() {
 			r.Post("/logs/by-timestamp", queryHandler.HandleGetLogByTimestamp)
 			r.Get("/logs/fields", queryHandler.HandleGetLogFields)
 			r.Get("/status", statusHandler.HandleStatus)
-			r.Get("/health/clickhouse", statusHandler.HandleHealthCheck)
+			// The single source of truth for what this deployment is and what it can
+			// do. It replaces inferring the shape from incidental payload keys on
+			// four unrelated endpoints, which could only ever answer "cluster or
+			// not" and said nothing about a feature the server had refused.
+			r.Get("/system/topology", func(w http.ResponseWriter, r *http.Request) {
+				topo := db.Topology()
+				resp := map[string]interface{}{
+					"deployment":         string(topo.Kind),
+					"distributed_tables": topo.DistributedTables,
+					"shard_routing":      topo.ShardRouting,
+					"managed_storage":    topo.ManagedStorage,
+					"fanout_cluster":     topo.FanoutCluster,
+				}
+				if v, _, err := db.CheckVersionFloor(r.Context()); err == nil {
+					resp["version"] = v.String()
+					resp["min_version"] = storage.MinClickHouseVersion.String()
+				}
+				// Reasons carry the server's own messages, which name internal
+				// identifiers, so non-admins get states without them.
+				user, _ := r.Context().Value("user").(*storage.User)
+				admin := user != nil && user.IsAdmin
+				caps := map[string]interface{}{}
+				for k, c := range db.Capabilities() {
+					entry := map[string]interface{}{"state": c.State.String()}
+					if admin && c.Reason != "" {
+						entry["reason"] = c.Reason
+					}
+					caps[string(k)] = entry
+				}
+				resp["capabilities"] = caps
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+			})
 			r.Get("/system/pressure", func(w http.ResponseWriter, r *http.Request) {
 				alertsDeferred := ingestQueue.Depth() > alertDeferThreshold
 				resp := map[string]interface{}{
 					"alerts_deferred": alertsDeferred,
 				}
-				if dbIngest.IsCluster() {
+				if dbIngest.Topology().DistributedTables {
 					s := distMonitor.Stats()
 					resp["distribution_queue"] = map[string]interface{}{
 						"healthy":           s.Healthy,
@@ -1028,6 +1084,10 @@ func main() {
 					"enabled":     enabled,
 					"provisioned": provisioned,
 					"backend":     getEnv("BIFRACT_ARCHIVE_BACKEND", "disk"),
+					// Empty unless ClickHouse cannot read the archive, in which case
+					// archiving still works but restore and recall do not. An admin
+					// is the only one who can act on it, so it surfaces here.
+					"read_blocked": archiveCHReadBlocked,
 					"spool": map[string]interface{}{
 						"used_bytes": usedBytes,
 						"max_bytes":  maxBytes,
@@ -1660,10 +1720,15 @@ func main() {
 				}
 				// Provisioned in-process (full server) or in the split ingest tier.
 				provisioned := ingestQueue.SpoolProvisioned() || pg.ReadSpoolStatus(r.Context()).Provisioned
+				resp := map[string]interface{}{
+					"available": enabled && provisioned && archiveCHReadBlocked == "",
+				}
+				// Say why rather than presenting recall as simply absent.
+				if archiveCHReadBlocked != "" {
+					resp["reason"] = archiveCHReadBlocked
+				}
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"available": enabled && provisioned,
-				})
+				json.NewEncoder(w).Encode(resp)
 			})
 
 			// Pre-flight scan estimate: what a Recall over this window would open,
@@ -2445,20 +2510,17 @@ func main() {
 }
 
 type Config struct {
-	PostgresHost       string
-	PostgresPort       int
-	PostgresDB         string
-	PostgresUser       string
-	PostgresPassword   string
-	ClickHouseHost     string
-	ClickHousePort     int
-	ClickHouseDB       string
-	ClickHouseUser     string
-	ClickHousePassword string
-	Port               int
-	MaxQueryRows       int
-	LiteLLMURL         string
-	LiteLLMMasterKey   string
+	PostgresHost     string
+	PostgresPort     int
+	PostgresDB       string
+	PostgresUser     string
+	PostgresPassword string
+	// CH is the whole ClickHouse contract; see storage.ClickHouseEnvFromOS.
+	CH               storage.ClickHouseEnv
+	Port             int
+	MaxQueryRows     int
+	LiteLLMURL       string
+	LiteLLMMasterKey string
 	// Ingestion queue
 	IngestQueueSize int
 	IngestWorkers   int
@@ -2479,12 +2541,6 @@ type Config struct {
 	CHQueryMaxConns  int
 	CHIngestMaxConns int
 
-	// ClickHouse cluster mode (empty = single-node)
-	ClickHouseHosts   string // Comma-separated list of hosts (overrides ClickHouseHost when set)
-	ClickHouseCluster string // Cluster name for ON CLUSTER DDL and ReplicatedMergeTree
-	// Optional single LB endpoint for ingest writes; keeps CLICKHOUSE_HOSTS for schema sync
-	ClickHouseWriteHost string
-
 	// Base URL for external links (e.g. webhook alert_link)
 	BaseURL string
 
@@ -2497,21 +2553,23 @@ type Config struct {
 }
 
 func loadConfig() Config {
+	// Fatal, not degraded: a misconfigured storage backend has no safe fallback.
+	chEnv, err := storage.ClickHouseEnvFromOS()
+	if err != nil {
+		log.Fatalf("ClickHouse configuration: %v", err)
+	}
+
 	config := Config{
-		PostgresHost:       getEnv("POSTGRES_HOST", "localhost"),
-		PostgresPort:       getEnvInt("POSTGRES_PORT", 5432),
-		PostgresDB:         getEnv("POSTGRES_DB", "bifract"),
-		PostgresUser:       getEnv("POSTGRES_USER", "bifract"),
-		PostgresPassword:   getEnv("POSTGRES_PASSWORD", "bifract"),
-		ClickHouseHost:     getEnv("CLICKHOUSE_HOST", "localhost"),
-		ClickHousePort:     getEnvInt("CLICKHOUSE_PORT", 9000),
-		ClickHouseDB:       getEnv("CLICKHOUSE_DB", "logs"),
-		ClickHouseUser:     getEnv("CLICKHOUSE_USER", "default"),
-		ClickHousePassword: getEnv("CLICKHOUSE_PASSWORD", ""),
-		Port:               getEnvInt("BIFRACT_PORT", 8080),
-		MaxQueryRows:       getEnvInt("BIFRACT_MAX_QUERY_ROWS", 10000),
-		LiteLLMURL:         getEnv("LITELLM_URL", "http://litellm:8000"),
-		LiteLLMMasterKey:   getEnv("LITELLM_MASTER_KEY", ""),
+		PostgresHost:     getEnv("POSTGRES_HOST", "localhost"),
+		PostgresPort:     getEnvInt("POSTGRES_PORT", 5432),
+		PostgresDB:       getEnv("POSTGRES_DB", "bifract"),
+		PostgresUser:     getEnv("POSTGRES_USER", "bifract"),
+		PostgresPassword: getEnv("POSTGRES_PASSWORD", "bifract"),
+		CH:               chEnv,
+		Port:             getEnvInt("BIFRACT_PORT", 8080),
+		MaxQueryRows:     getEnvInt("BIFRACT_MAX_QUERY_ROWS", 10000),
+		LiteLLMURL:       getEnv("LITELLM_URL", "http://litellm:8000"),
+		LiteLLMMasterKey: getEnv("LITELLM_MASTER_KEY", ""),
 		// Ingestion queue defaults
 		IngestQueueSize: getEnvInt("BIFRACT_INGEST_QUEUE_SIZE", 100),
 		IngestWorkers:   getEnvInt("BIFRACT_INGEST_WORKERS", 4),
@@ -2529,11 +2587,6 @@ func loadConfig() Config {
 		CHQueryMaxConns:  getEnvInt("BIFRACT_CH_QUERY_MAX_CONNS", 0),
 		CHIngestMaxConns: getEnvInt("BIFRACT_CH_INGEST_MAX_CONNS", 0),
 
-		// ClickHouse cluster mode
-		ClickHouseHosts:     getEnv("CLICKHOUSE_HOSTS", ""),
-		ClickHouseCluster:   getEnv("CLICKHOUSE_CLUSTER", ""),
-		ClickHouseWriteHost: getEnv("CLICKHOUSE_WRITE_HOST", ""),
-
 		// Base URL
 		BaseURL: getEnv("BIFRACT_BASE_URL", ""),
 
@@ -2547,8 +2600,7 @@ func loadConfig() Config {
 
 	log.Printf("Configuration loaded:")
 	log.Printf("  PostgreSQL: %s:%d", config.PostgresHost, config.PostgresPort)
-	log.Printf("  ClickHouse: %s:%d", config.ClickHouseHost, config.ClickHousePort)
-	log.Printf("  Database: %s", config.ClickHouseDB)
+	log.Printf("  ClickHouse: %s", config.CH)
 	log.Printf("  Server Port: %d", config.Port)
 	log.Printf("  Max Query Rows: %d", config.MaxQueryRows)
 	log.Printf("  LiteLLM URL: %s", config.LiteLLMURL)
@@ -2560,16 +2612,6 @@ func loadConfig() Config {
 	log.Printf("  Alert Eval Interval: admin-configurable via Limits settings")
 	log.Printf("  Model Score Interval: %ds", config.ModelScoreInterval)
 	log.Printf("  Alert Ingest Defer: %d%% of queue depth", config.AlertIngestDeferPct)
-	if config.ClickHouseCluster != "" {
-		log.Printf("  ClickHouse Cluster: %s (replicated mode)", config.ClickHouseCluster)
-		if config.ClickHouseHosts != "" {
-			log.Printf("  ClickHouse Hosts: %s", config.ClickHouseHosts)
-		}
-		if config.ClickHouseWriteHost != "" {
-			log.Printf("  ClickHouse Write Host (ingest LB): %s", config.ClickHouseWriteHost)
-		}
-	}
-
 	if config.MetricsEnabled {
 		log.Printf("  Prometheus Metrics: %s/metrics", config.MetricsAddr)
 	}
@@ -2749,13 +2791,28 @@ func validateRecallQuery(query string) error {
 // cancelled job is left 'running' and picked up by the stale reaper, exactly as
 // after a pod kill) plus a scan Estimator for the Recall pre-flight endpoint,
 // nil when no object-storage backend is configured.
-func startArchiveJobWorkers() (func(), *archive.Estimator) {
+// archiveCHReadBlocked explains why ClickHouse cannot read the archive, or is
+// empty when it can. Set once during startup, read by the recall endpoint.
+var archiveCHReadBlocked string
+
+func startArchiveJobWorkers(topo storage.Topology) (func(), *archive.Estimator) {
 	cfg, err := archive.ConfigFromEnv()
 	if err != nil {
 		log.Printf("Warning: archive job workers disabled, bad config: %v", err)
 		return func() {}, nil
 	}
 	if cfg.Obj.Backend == objstore.BackendDisk || cfg.Obj.Backend == "" {
+		return func() {}, nil
+	}
+	// Restore and recall are read by ClickHouse, not by us. A managed ClickHouse
+	// has no route to a self-hosted object store, so those queues would claim jobs
+	// and fail every one. Archive writing is unaffected: that goes through the Go
+	// SDK from this pod, so a MinIO-backed install keeps archiving either way.
+	if cfg.Obj.RequiresCustomEndpoint() && topo.ManagedStorage {
+		archiveCHReadBlocked = fmt.Sprintf(
+			"the archive uses a self-hosted object endpoint that a managed ClickHouse cannot reach (backend %q); archiving continues, restore and recall are unavailable",
+			cfg.Obj.Backend)
+		log.Printf("Warning: archive restore/recall disabled: %s", archiveCHReadBlocked)
 		return func() {}, nil
 	}
 	db, err := sql.Open("postgres", cfg.PGDSN)

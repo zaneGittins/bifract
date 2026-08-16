@@ -79,27 +79,17 @@ spec:
                 secretKeyRef:
                   name: bifract-secrets
                   key: INGEST_POSTGRES_PASSWORD
-            - name: CLICKHOUSE_HOSTS
-              value: "{{.CHHostsList}}"
-{{- if gt .CHShards 1}}
-            - name: CLICKHOUSE_WRITE_HOST
-              value: "bifract-ch-clickhouse-lb"
-{{- end}}
-            - name: CLICKHOUSE_PORT
-              value: "9000"
-            - name: CLICKHOUSE_DB
-              value: logs
             # Least-privilege ingest identity (INSERT-only on logs; cannot read log
             # data). Provisioned by the app tier at startup.
-            - name: CLICKHOUSE_USER
-              value: bifract_ingest
+{{- range .CHEnvIngest}}
+            - name: {{.Name}}
+              value: "{{.Value}}"
+{{- end}}
             - name: CLICKHOUSE_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: bifract-secrets
                   key: INGEST_CLICKHOUSE_PASSWORD
-            - name: CLICKHOUSE_CLUSTER
-              value: default
             - name: BIFRACT_PORT
               value: "8080"
             # Ingestion queue tuning

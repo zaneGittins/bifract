@@ -25,7 +25,21 @@ func chTestPool() ClickHousePoolConfig {
 
 func newTestClusterClient(t *testing.T) *ClickHouseClient {
 	t.Helper()
-	c, err := NewClickHouseClusterClient(chTestHosts, 9000, "logs", "default", "bifract", chTestCluster, chTestPool())
+	topo, err := DeriveTopology(TopologySpec{Kind: DeploymentSelfManagedCluster, Cluster: chTestCluster})
+	if err != nil {
+		t.Fatalf("topology: %v", err)
+	}
+	c, err := NewClickHouseClient(ClientOptions{
+		Conn: ConnOptions{
+			Addrs:    HostAddrs(chTestHosts, 9000),
+			Database: "logs",
+			User:     "default",
+			Password: "bifract",
+			Pool:     chTestPool(),
+		},
+		Topo: topo,
+		Role: RoleControlPlane,
+	})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -43,7 +57,7 @@ func shardCounts(t *testing.T) []struct {
 		Migration uint32
 	}, 0, len(chTestHosts))
 	for _, addr := range chTestHosts {
-		conn, err := openClickHouseConn([]string{addr}, "default", "default", "bifract", chTestPool())
+		conn, err := openClickHouseConn(ConnOptions{Addrs: []string{addr}, Database: "default", User: "default", Password: "bifract", Pool: chTestPool()})
 		if err != nil {
 			t.Fatalf("open %s: %v", addr, err)
 		}
@@ -66,7 +80,7 @@ func shardCounts(t *testing.T) []struct {
 func dropEverything(t *testing.T) {
 	t.Helper()
 	for _, addr := range chTestHosts {
-		conn, err := openClickHouseConn([]string{addr}, "default", "default", "bifract", chTestPool())
+		conn, err := openClickHouseConn(ConnOptions{Addrs: []string{addr}, Database: "default", User: "default", Password: "bifract", Pool: chTestPool()})
 		if err != nil {
 			t.Fatalf("open %s: %v", addr, err)
 		}
@@ -79,7 +93,7 @@ func dropEverything(t *testing.T) {
 
 func execOnShard(t *testing.T, addr, query string) {
 	t.Helper()
-	conn, err := openClickHouseConn([]string{addr}, "default", "default", "bifract", chTestPool())
+	conn, err := openClickHouseConn(ConnOptions{Addrs: []string{addr}, Database: "default", User: "default", Password: "bifract", Pool: chTestPool()})
 	if err != nil {
 		t.Fatalf("open %s: %v", addr, err)
 	}
@@ -126,7 +140,7 @@ func TestClusterInitFresh(t *testing.T) {
 
 	// process_edges_distributed was missing from the fresh path entirely.
 	for _, addr := range chTestHosts {
-		conn, _ := openClickHouseConn([]string{addr}, "logs", "default", "bifract", chTestPool())
+		conn, _ := openClickHouseConn(ConnOptions{Addrs: []string{addr}, Database: "logs", User: "default", Password: "bifract", Pool: chTestPool()})
 		ok, err := chTableExists(context.Background(), conn, "process_edges_distributed")
 		conn.Close()
 		if err != nil || !ok {

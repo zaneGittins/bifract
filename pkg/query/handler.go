@@ -89,10 +89,10 @@ func (h *QueryHandler) SetGeoIPEnabled(enabled bool) {
 
 // queryTableName returns "logs_distributed" in cluster mode, "logs" otherwise.
 func (h *QueryHandler) queryTableName() string {
-	if h.db != nil && h.db.IsCluster() {
-		return "logs_distributed"
+	if h.db == nil {
+		return "logs"
 	}
-	return "logs"
+	return h.db.ReadTable()
 }
 
 // procLineageTableName returns the process-lineage read table for ptg() traversal,
@@ -856,7 +856,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		ProcLineageTable:      h.procLineageTableName(),
 		ProcFreqTable:         h.procFreqTableName(),
 		ProcEdgesTable:        h.procEdgesTableName(),
-		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
+		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
 	}
 
 	// Source commands (e.g. pgr()) generate the pipeline's source rather than filtering the
@@ -1218,7 +1218,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		ProcLineageTable:      h.procLineageTableName(),
 		ProcFreqTable:         h.procFreqTableName(),
 		ProcEdgesTable:        h.procEdgesTableName(),
-		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
+		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
 	}
 	if _, err := parser.TranslateToSQLWithOrder(pipeline, opts); err != nil {
 		respondJSON(w, http.StatusOK, ValidateResponse{
@@ -2433,7 +2433,7 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 	}
 
 	selectCols := "timestamp, norm_log, log_id, fractal_id"
-	if h.db.IsCluster() {
+	if h.db.Topology().DistributedTables {
 		selectCols += ", toString(_shard_num) AS _shard_num"
 	}
 	logsSQL := fmt.Sprintf("SELECT %s FROM %s %s ORDER BY timestamp DESC LIMIT 50", selectCols, h.queryTableName(), whereClause)
@@ -2664,12 +2664,7 @@ func (h *QueryHandler) fetchProfileData(queryID string) *ProfileData {
 
 	profile := &ProfileData{QueryID: queryID}
 
-	var shardSource string
-	if h.db.IsCluster() {
-		shardSource = fmt.Sprintf("cluster('%s', system.query_log)", escCHStr(h.db.Cluster))
-	} else {
-		shardSource = "system.query_log"
-	}
+	shardSource := h.db.Topology().ShardSystemTable("system.query_log")
 
 	shardSQL := fmt.Sprintf(`
 SELECT
@@ -2714,8 +2709,8 @@ ORDER BY coordinator DESC, duration_ms DESC`, shardSource, escCHStr(queryID))
 		})
 	}
 
-	// Skip index effectiveness — only meaningful in cluster mode (multiple shards).
-	if h.db.IsCluster() {
+	// Skip index effectiveness — only meaningful when the query fanned out to shards.
+	if h.db.Topology().FanoutCluster != "" {
 		skipSQL := fmt.Sprintf(`
 SELECT
     hostname()                                                       AS shard,
@@ -2726,11 +2721,11 @@ SELECT
        round(100.0 * ProfileEvents['SelectedMarks'] /
              ProfileEvents['SelectedMarksTotal'], 1),
        toFloat64(0))                                                            AS pct_marks_surviving
-FROM cluster('%s', system.query_log)
+FROM %s
 WHERE initial_query_id = '%s'
   AND is_initial_query = 0
   AND type = 'QueryFinish'
-ORDER BY shard`, escCHStr(h.db.Cluster), escCHStr(queryID))
+ORDER BY shard`, h.db.Topology().ShardSystemTable("system.query_log"), escCHStr(queryID))
 
 		skipRows, err := h.db.Query(ctx, skipSQL)
 		if err != nil {

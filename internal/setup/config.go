@@ -55,6 +55,11 @@ type SetupConfig struct {
 
 	IPAccess   IPAccessMode
 	AllowedIPs []string
+
+	// CH is where ClickHouse comes from. Its zero value is the bundled
+	// ClickHouse this installer renders, so an install that predates the field
+	// keeps its existing shape through reconfigure and upgrade.
+	CH ClickHouseTarget
 }
 
 // AllowedIPsString returns the allowed IPs as a comma-separated string for env persistence.

@@ -43,15 +43,11 @@ type fractalMeta struct {
 	RowsPerSec float64
 }
 
-// partsSource is the metadata table to read. On a cluster this is cluster(), not
-// clusterAllReplicas(): one replica per shard. Every replica of a shard holds the
-// same parts, so counting them all would multiply every byte figure by the
-// replication factor.
+// partsSource is the metadata table to read. ShardSystemTable is one replica per
+// shard, not every replica: each replica of a shard holds the same parts, so
+// counting them all would multiply every byte figure by the replication factor.
 func partsSource(ch *storage.ClickHouseClient, table string) string {
-	if ch.Cluster != "" {
-		return fmt.Sprintf("cluster('%s', system.%s)", storage.EscCHStr(ch.Cluster), table)
-	}
-	return "system." + table
+	return ch.Topology().ShardSystemTable("system." + table)
 }
 
 // fractalFromPartition extracts the fractal_id from a `('<fractal>','<date>')`

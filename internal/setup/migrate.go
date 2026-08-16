@@ -204,7 +204,7 @@ func stampProvisionedClickHouseSchema(docker *DockerOps, user, password string, 
 }
 
 // SetMigrationBaseline marks the initial migration as applied without running it.
-func SetMigrationBaseline(docker *DockerOps, pgUser, pgDB, chUser, chPassword string) error {
+func SetMigrationBaseline(docker *DockerOps, pgUser, pgDB, chUser, chPassword string, chBundled bool) error {
 	if _, err := docker.ExecPostgres(pgUser, pgDB, createMigrationsTablePG); err != nil {
 		return fmt.Errorf("create pg migrations table: %w", err)
 	}
@@ -213,6 +213,12 @@ func SetMigrationBaseline(docker *DockerOps, pgUser, pgDB, chUser, chPassword st
 		return fmt.Errorf("set pg baseline: %w", err)
 	}
 
+	// The ClickHouse half only applies to a ClickHouse this installer runs, since
+	// it goes through `docker compose exec`. For an external one the app stamps
+	// its own baseline during schema init.
+	if !chBundled {
+		return nil
+	}
 	if _, err := docker.ExecClickHouse(chUser, chPassword, createMigrationsTableCH); err != nil {
 		return fmt.Errorf("create ch migrations table: %w", err)
 	}

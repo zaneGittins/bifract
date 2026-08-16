@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -60,19 +59,18 @@ func mustConnectPostgres(config Config) *storage.PostgresClient {
 }
 
 // connectClickHouse builds the query (all-shards) and ingest (write-routed) ClickHouse
-// clients and health-checks both (no schema init). Returns an error so the ingest tier
+// clients and health-checks both (no schema init). It returns an error so the ingest tier
 // can retry through the startup window before its least-privilege user exists; the full
-// server uses mustConnectClickHouse (Fatalf).
-// connectClickHouse dials ClickHouse and returns the query pool (all shards) and the
-// ingest pool. createDB selects whether the cluster path bootstraps the database
-// (CREATE DATABASE IF NOT EXISTS): true for the app/control-plane tier (which owns
-// schema provisioning and connects with an admin identity), false for the ingest tier
-// (whose least-privilege user cannot create databases and connects to the already
-// provisioned one). Ignored in single-node mode, which never creates the database.
-func connectClickHouse(config Config, createDB bool) (db, dbIngest *storage.ClickHouseClient, err error) {
-	newCluster := storage.NewClickHouseClusterClient
-	if !createDB {
-		newCluster = storage.NewClickHouseClusterClientConnectOnly
+// server wraps it in mustConnectClickHouse (Fatalf).
+//
+// controlPlane selects whether the query client bootstraps the database: true for the app
+// tier, which owns schema provisioning and connects with an admin identity; false for the
+// ingest tier, whose least-privilege user cannot create databases. The ingest pool never
+// bootstraps, because the query client above it already has.
+func connectClickHouse(config Config, controlPlane bool) (db, dbIngest *storage.ClickHouseClient, err error) {
+	queryRole := storage.RoleIngest
+	if controlPlane {
+		queryRole = storage.RoleControlPlane
 	}
 	queryPool := storage.DefaultQueryPoolConfig()
 	if config.CHQueryMaxConns > 0 {
@@ -92,52 +90,25 @@ func connectClickHouse(config Config, createDB bool) (db, dbIngest *storage.Clic
 		}
 	}
 
-	if config.ClickHouseCluster != "" && config.ClickHouseHosts != "" {
-		// Cluster mode: connect to multiple hosts.
-		hosts := strings.Split(config.ClickHouseHosts, ",")
-		db, err = newCluster(
-			hosts, config.ClickHousePort,
-			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
-			config.ClickHouseCluster, queryPool,
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("cluster query pool: %w", err)
-		}
-		// When a dedicated write LB host is set, route ingest writes through it so k8s
-		// spreads connections across all shards; the query pool (db) keeps all shard
-		// addresses (used for schema sync and all-shards backpressure).
-		ingestHosts := hosts
-		if config.ClickHouseWriteHost != "" {
-			ingestHosts = []string{config.ClickHouseWriteHost}
-		}
-		dbIngest, err = newCluster(
-			ingestHosts, config.ClickHousePort,
-			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
-			config.ClickHouseCluster, ingestPool,
-		)
-		if err != nil {
-			db.Close()
-			return nil, nil, fmt.Errorf("cluster ingest pool: %w", err)
-		}
-	} else {
-		// Single-node mode (default).
-		db, err = storage.NewClickHouseClientWithPool(
-			config.ClickHouseHost, config.ClickHousePort,
-			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
-			queryPool,
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("query pool: %w", err)
-		}
-		dbIngest, err = storage.NewClickHouseClientWithPool(
-			config.ClickHouseHost, config.ClickHousePort,
-			config.ClickHouseDB, config.ClickHouseUser, config.ClickHousePassword,
-			ingestPool,
-		)
-		if err != nil {
-			db.Close()
-			return nil, nil, fmt.Errorf("ingest pool: %w", err)
-		}
+	// The query client covers every address (schema sync and all-node backpressure
+	// need that); the ingest client routes through the write LB when one is set.
+	queryOpts, err := config.CH.ClientOptions(queryPool, queryRole)
+	if err != nil {
+		return nil, nil, err
+	}
+	ingestOpts, err := config.CH.IngestOptions(ingestPool, storage.RoleIngest)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	db, err = storage.NewClickHouseClient(queryOpts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query pool: %w", err)
+	}
+	dbIngest, err = storage.NewClickHouseClient(ingestOpts)
+	if err != nil {
+		db.Close()
+		return nil, nil, fmt.Errorf("ingest pool: %w", err)
 	}
 
 	for _, hc := range []struct {

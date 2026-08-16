@@ -180,9 +180,14 @@ func (c *ClickHouseClient) ReconcileQueryWorkloads(ctx context.Context, limits W
 	}
 
 	// Resource first: a workload referencing an absent resource is not scheduled.
-	if err := c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE RESOURCE IF NOT EXISTS %s (MASTER THREAD, WORKER THREAD)", QueryCPUResource)); err != nil {
+	// This is also the capability verdict for workload scheduling as a whole: it is
+	// the first statement the feature needs, so its outcome answers the question
+	// without a second, synthetic probe that could disagree.
+	resErr := c.execWorkloadDDL(ctx, fmt.Sprintf("CREATE RESOURCE IF NOT EXISTS %s (MASTER THREAD, WORKER THREAD)", QueryCPUResource))
+	c.recordCapability(CapWorkloadScheduling, resErr)
+	if resErr != nil {
 		c.setActiveWorkloads(nil)
-		return fmt.Errorf("create cpu resource: %w", err)
+		return fmt.Errorf("create cpu resource: %w", resErr)
 	}
 
 	if err := c.ensureRootWorkload(ctx); err != nil {
@@ -301,25 +306,46 @@ func percentLabel(percent int) string {
 	return strconv.Itoa(percent) + "%"
 }
 
-// serverMemoryBudget reads the node's max_server_memory_usage. In cluster mode this
-// is the node the client is connected to; the workload limit applies per node, so a
-// uniform cluster gets a uniform share.
+// serverMemoryBudget reads the node's memory budget, which the admin's percentage
+// shares are resolved against. In cluster mode this is the node the client is
+// connected to; the limit applies per node, so a uniform cluster gets a uniform share.
+//
+// max_server_memory_usage is the right answer where it is readable. Where it is not,
+// falling back to the cgroup or host total keeps the per-query memory ceilings, which
+// are the part that still works on a server that exposes no server settings. Losing
+// the whole feature because one system table is unreadable would be a worse trade.
 func (c *ClickHouseClient) serverMemoryBudget(ctx context.Context) (int64, error) {
 	qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+
 	rows, err := c.Query(qctx, "SELECT value FROM system.server_settings WHERE name = 'max_server_memory_usage'")
-	if err != nil {
-		return 0, fmt.Errorf("read server memory budget: %w", err)
+	if err == nil && len(rows) > 0 {
+		s, _ := rows[0]["value"].(string)
+		if budget, perr := strconv.ParseInt(s, 10, 64); perr == nil && budget > 0 {
+			c.caps.set(CapServerMemoryBudget, CapAvailable, "")
+			return budget, nil
+		}
 	}
-	if len(rows) == 0 {
-		return 0, fmt.Errorf("read server memory budget: max_server_memory_usage not reported")
+
+	mrows, merr := c.Query(qctx, SystemMemoryMetricsSQL)
+	if merr != nil {
+		c.recordCapability(CapServerMemoryBudget, merr)
+		return 0, fmt.Errorf("read server memory budget: %w", merr)
 	}
-	s, _ := rows[0]["value"].(string)
-	budget, perr := strconv.ParseInt(s, 10, 64)
-	if perr != nil || budget <= 0 {
-		return 0, fmt.Errorf("read server memory budget: unusable value %q", s)
+	m := MetricRowsToMap(mrows)
+	for _, src := range []struct{ metric, label string }{
+		{"CGroupMemoryTotal", "cgroup limit"},
+		{"OSMemoryTotal", "host memory"},
+	} {
+		if v := m[src.metric]; v > 0 {
+			c.caps.set(CapServerMemoryBudget, CapAvailable,
+				"max_server_memory_usage is not readable; shares are resolved against the "+src.label)
+			return int64(v), nil
+		}
 	}
-	return budget, nil
+	c.caps.set(CapServerMemoryBudget, CapUnavailable,
+		"this server reports neither max_server_memory_usage nor a memory total, so percentage shares cannot be resolved")
+	return 0, fmt.Errorf("read server memory budget: no usable memory total reported")
 }
 
 // existingWorkloadRoot returns the name of the current root workload (the one with
@@ -353,15 +379,15 @@ func (c *ClickHouseClient) existingWorkloadRoot(ctx context.Context) (string, er
 // idempotent no-ops (every statement here is IF NOT EXISTS, OR REPLACE, or IF EXISTS),
 // and with node-local entities each node genuinely needs its own copy.
 func (c *ClickHouseClient) execWorkloadDDL(ctx context.Context, stmt string) error {
-	if !c.IsCluster() {
+	if !c.topo.PerNodeAdmin {
 		sctx, cancel := context.WithTimeout(ctx, workloadDDLTimeout)
 		defer cancel()
 		return c.conn.Exec(sctx, stmt)
 	}
 
-	pool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+	pool := adminNodePool
 	for _, addr := range c.addrs {
-		conn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, pool)
+		conn, err := openClickHouseConn(c.nodeConnOptions(addr, pool))
 		if err != nil {
 			return fmt.Errorf("connect to %s: %w", addr, err)
 		}

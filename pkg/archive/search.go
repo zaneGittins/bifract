@@ -77,7 +77,7 @@ func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj 
 	if err != nil {
 		return nil, fmt.Errorf("archive: no Iceberg table for fractal %s: %w", req.FractalID, err)
 	}
-	tf, err := chIcebergTableFunc(obj, loc, ch.Cluster)
+	tf, err := chIcebergTableFunc(obj, loc, ch.Topology().FanoutCluster)
 	if err != nil {
 		return nil, err
 	}

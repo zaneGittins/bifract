@@ -113,6 +113,10 @@ spec:
               app: bifract-ingest
       ports:
         - port: 5432
+{{- if .CHBundled}}
+# ClickHouse and its Keeper only exist when this installer renders them.
+# An external ClickHouse has no in-cluster pods to select, and all policies
+# here are Ingress-only, so reaching out to it needs no rule.
 ---
 # ClickHouse: allow Bifract connections and inter-node replication.
 # The official ClickHouse operator labels pods with app.kubernetes.io/instance.
@@ -184,3 +188,4 @@ spec:
               app.kubernetes.io/instance: bifract-keeper-keeper
       ports:
         - port: 9181
+{{- end}}

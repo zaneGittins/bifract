@@ -81,6 +81,27 @@ func RegisterQueryLimitsApplier(fn func(limits storage.WorkloadLimits) error) {
 	queryLimitsApplier = fn
 }
 
+// capabilityReporter reports what the ClickHouse server actually permits.
+// Registered by the server at startup; nil in tools that only read settings.
+var capabilityReporter func() storage.Capabilities
+
+// RegisterCapabilityReporter wires the live capability set into the settings
+// response, so the UI can say a control is unavailable and why.
+//
+// Capabilities are deliberately NOT a field on Settings: Settings is persisted to
+// Postgres and capabilities are runtime state that must never be written back.
+func RegisterCapabilityReporter(fn func() storage.Capabilities) {
+	capabilityReporter = fn
+}
+
+// currentCapabilities returns the live capability set, or nil when unreported.
+func currentCapabilities() storage.Capabilities {
+	if capabilityReporter == nil {
+		return nil
+	}
+	return capabilityReporter()
+}
+
 // ValidationError is a settings value an admin can correct, whose message is safe
 // and useful to show them. Anything else from Update is an internal failure and
 // stays generic.
@@ -396,7 +417,11 @@ func NewHandler(pg *storage.PostgresClient) *Handler {
 type SettingsResponse struct {
 	Success  bool     `json:"success"`
 	Settings Settings `json:"settings"`
-	Error    string   `json:"error,omitempty"`
+	// Capabilities is a sibling of Settings, not part of it: a stored value stays
+	// stored even when the server currently refuses to apply it, and the UI reads
+	// this to say so rather than showing a share that is not in force.
+	Capabilities storage.Capabilities `json:"capabilities,omitempty"`
+	Error        string               `json:"error,omitempty"`
 }
 
 func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
@@ -416,8 +441,9 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, SettingsResponse{
-		Success:  true,
-		Settings: Get(),
+		Success:      true,
+		Settings:     Get(),
+		Capabilities: currentCapabilities(),
 	})
 }
 

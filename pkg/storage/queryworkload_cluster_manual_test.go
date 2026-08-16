@@ -28,7 +28,7 @@ func TestReconcileQueryWorkloadsAcrossCluster(t *testing.T) {
 
 	// Assert per shard, directly. A cluster-wide query would be satisfied by one node.
 	for _, addr := range chTestHosts {
-		conn, err := openClickHouseConn([]string{addr}, "default", "default", "bifract", chTestPool())
+		conn, err := openClickHouseConn(ConnOptions{Addrs: []string{addr}, Database: "default", User: "default", Password: "bifract", Pool: chTestPool()})
 		if err != nil {
 			t.Fatalf("connect %s: %v", addr, err)
 		}
@@ -78,7 +78,7 @@ func TestReconcileQueryWorkloadsAcrossCluster(t *testing.T) {
 		t.Fatalf("disable: %v", err)
 	}
 	for _, addr := range chTestHosts {
-		conn, err := openClickHouseConn([]string{addr}, "default", "default", "bifract", chTestPool())
+		conn, err := openClickHouseConn(ConnOptions{Addrs: []string{addr}, Database: "default", User: "default", Password: "bifract", Pool: chTestPool()})
 		if err != nil {
 			t.Fatalf("connect %s: %v", addr, err)
 		}

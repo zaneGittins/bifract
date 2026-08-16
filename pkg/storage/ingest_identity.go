@@ -74,8 +74,9 @@ const IngestCHUser = "bifract_ingest"
 // the migration/endpoint-analysis sync paths), unlike ON CLUSTER which can stall on a
 // restarting peer.
 func (c *ClickHouseClient) ReconcileMaterializedViewSecurity(ctx context.Context) error {
-	if !c.IsCluster() {
+	if !c.topo.PerNodeAdmin {
 		n, err := reconcileMVSecurityOnConn(ctx, c.conn)
+		c.recordCapability(CapMVSecurityDefiner, err)
 		if err != nil {
 			return err
 		}
@@ -85,10 +86,9 @@ func (c *ClickHouseClient) ReconcileMaterializedViewSecurity(ctx context.Context
 		return nil
 	}
 
-	initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
 	var firstErr error
 	for _, addr := range c.addrs {
-		hostConn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, initPool)
+		hostConn, err := openClickHouseConn(c.nodeConnOptions(addr, adminNodePool))
 		if err != nil {
 			log.Printf("Warning: MV security sync to %s failed: %v", addr, err)
 			if firstErr == nil {
@@ -106,6 +106,7 @@ func (c *ClickHouseClient) ReconcileMaterializedViewSecurity(ctx context.Context
 		}
 		hostConn.Close()
 	}
+	c.recordCapability(CapMVSecurityDefiner, firstErr)
 	return firstErr
 }
 
@@ -166,28 +167,28 @@ func (c *ClickHouseClient) EnsureIngestUser(ctx context.Context, password string
 		log.Printf("[ClickHouse] WARNING: BIFRACT_INGEST_CLICKHOUSE_PASSWORD is empty; skipping %q provisioning. The ingest tier cannot authenticate until it is set.", IngestCHUser)
 		return nil
 	}
-	onCluster := ""
-	grantOnCluster := ""
-	if c.IsCluster() {
-		onCluster = " ON CLUSTER '" + EscCHStr(c.Cluster) + "'"
-		// The ON CLUSTER clause sits right after the GRANT keyword, not after the name.
-		grantOnCluster = " ON CLUSTER '" + EscCHStr(c.Cluster) + "'"
-	}
+	// The clause sits after the user name in CREATE/ALTER USER but right after the
+	// GRANT keyword in a grant, hence the two splice positions below.
+	onCluster := c.OnClusterSQL()
 	pw := EscCHStr(password)
 	stmts := []string{
 		fmt.Sprintf("CREATE USER IF NOT EXISTS %s%s IDENTIFIED BY '%s'", IngestCHUser, onCluster, pw),
 		fmt.Sprintf("ALTER USER %s%s IDENTIFIED BY '%s'", IngestCHUser, onCluster, pw),
-		fmt.Sprintf("GRANT%s INSERT ON logs.* TO %s", grantOnCluster, IngestCHUser),
-		fmt.Sprintf("GRANT%s SELECT ON system.* TO %s", grantOnCluster, IngestCHUser),
+		fmt.Sprintf("GRANT%s INSERT ON logs.* TO %s", onCluster, IngestCHUser),
+		fmt.Sprintf("GRANT%s SELECT ON system.* TO %s", onCluster, IngestCHUser),
 	}
 	for _, stmt := range stmts {
 		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := c.conn.Exec(sctx, stmt)
 		cancel()
 		if err != nil {
+			// Security-relevant: without this identity the ingest tier connects as the
+			// admin user, so the outcome is reported rather than only logged.
+			c.recordCapability(CapIngestIdentity, err)
 			return fmt.Errorf("ensure ingest user: %w", err)
 		}
 	}
+	c.recordCapability(CapIngestIdentity, nil)
 	log.Printf("[ClickHouse] Least-privilege ingest user %q ensured (INSERT on logs, SELECT on system)", IngestCHUser)
 	return nil
 }

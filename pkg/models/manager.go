@@ -95,7 +95,7 @@ func chModelStateDistName(id string) string {
 // networkStateReadTable returns the table the scorer reads for a network model:
 // the distributed state table in cluster mode, the local state table otherwise.
 func (m *Manager) networkStateReadTable(id string) string {
-	if m.ch.IsCluster() {
+	if m.ch.Topology().DistributedTables {
 		return chModelStateDistName(id)
 	}
 	return chModelStateName(id)
@@ -176,7 +176,7 @@ func (m *Manager) ListModelInfos(ctx context.Context, fractalID string) (map[str
 		_ = json.Unmarshal(defRaw, &def)
 
 		tableName := chModelTableName(id)
-		if m.ch.IsCluster() {
+		if m.ch.Topology().DistributedTables {
 			tableName = chModelDistName(id)
 		}
 
@@ -229,7 +229,7 @@ func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []st
 		}
 
 		tableName := chModelTableName(id)
-		if m.ch.IsCluster() {
+		if m.ch.Topology().DistributedTables {
 			tableName = chModelDistName(id)
 		}
 
@@ -558,11 +558,11 @@ func (m *Manager) createCHObjects(ctx context.Context, id string, def ModelDefin
 	}
 
 	// In cluster mode, create a Distributed table for fan-out reads.
-	if m.ch.IsCluster() {
+	if m.ch.Topology().DistributedTables {
 		distName := chModelDistName(id)
 		distSQL := fmt.Sprintf(
 			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
-			distName, tableName, storage.EscCHStr(m.ch.Cluster), tableName,
+			distName, tableName, storage.EscCHStr(m.ch.Topology().DDLCluster), tableName,
 		)
 		if err := m.ch.Exec(ctx, distSQL); err != nil {
 			log.Printf("model %s: create distributed table: %v", id, err)
@@ -604,8 +604,8 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id string, def Mod
 
 	// Distributed tables (cluster mode): one over the results table for fan-out
 	// reads, one over the state table so the scorer aggregates state across shards.
-	if m.ch.IsCluster() {
-		cl := storage.EscCHStr(m.ch.Cluster)
+	if m.ch.Topology().DistributedTables {
+		cl := storage.EscCHStr(m.ch.Topology().DDLCluster)
 		distResults := fmt.Sprintf(
 			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
 			chModelDistName(id), tableName, cl, tableName,
@@ -645,7 +645,7 @@ func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName strin
 		log.Printf("drop table %s: %v", tableName, err)
 	}
 	// Drop the distributed table(s) (cluster mode) so no dangling fan-out object remains.
-	if m.ch.IsCluster() {
+	if m.ch.Topology().DistributedTables {
 		distDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelDistName(id)))
 		if err := m.ch.Exec(ctx, distDrop); err != nil {
 			log.Printf("drop distributed table %s: %v", chModelDistName(id), err)
@@ -683,7 +683,7 @@ func (m *Manager) RowCount(ctx context.Context, tableName string) (uint64, error
 // readTableName returns the distributed table name in cluster mode, otherwise the local table.
 // Always use this for read queries so they fan out across all shards.
 func (m *Manager) readTableName(model *Model) string {
-	if m.ch.IsCluster() {
+	if m.ch.Topology().DistributedTables {
 		return chModelDistName(model.ID)
 	}
 	return model.CHTableName

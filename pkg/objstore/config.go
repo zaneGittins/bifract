@@ -168,6 +168,17 @@ func (c Config) IcebergProps() map[string]string {
 	return props
 }
 
+// RequiresCustomEndpoint reports whether reading this store means dialing an
+// endpoint other than the cloud provider's public one. It is a pure objstore
+// fact; who cares about it, and what they do, is decided by the caller.
+//
+// It matters because Bifract writes archives itself, through the Go SDK from its
+// own pods, but restore and recall are read BY ClickHouse. A ClickHouse the
+// operator does not run may have no route to a self-hosted endpoint at all.
+func (c Config) RequiresCustomEndpoint() bool {
+	return c.Backend == BackendMinIO || (c.Backend == BackendS3 && c.S3Endpoint != "")
+}
+
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v

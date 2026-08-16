@@ -20,8 +20,7 @@ import (
 func TestInitProvisionedSchemaIsStampedNotReplayed(t *testing.T) {
 	ctx := context.Background()
 
-	root, err := openClickHouseConn([]string{upgradeAddr}, "default", "default", "bifract",
-		ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1})
+	root, err := openClickHouseConn(ConnOptions{Addrs: []string{upgradeAddr}, Database: "default", User: "default", Password: "bifract", Pool: ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1}})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -33,8 +32,7 @@ func TestInitProvisionedSchemaIsStampedNotReplayed(t *testing.T) {
 	}
 	root.Close()
 
-	logsConn, err := openClickHouseConn([]string{upgradeAddr}, "logs", "default", "bifract",
-		ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1})
+	logsConn, err := openClickHouseConn(ConnOptions{Addrs: []string{upgradeAddr}, Database: "logs", User: "default", Password: "bifract", Pool: ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1}})
 	if err != nil {
 		t.Fatalf("connect to logs: %v", err)
 	}

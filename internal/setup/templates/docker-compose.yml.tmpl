@@ -46,6 +46,7 @@ services:
       - bifract-network
     restart: unless-stopped
 
+{{- if .CHBundled}}
   clickhouse:
     image: clickhouse/clickhouse-server:26.6.2.81-alpine
     container_name: bifract-clickhouse
@@ -68,6 +69,7 @@ services:
     networks:
       - bifract-network
     restart: unless-stopped
+{{- end}}
 
   litellm:
     image: ghcr.io/berriai/litellm:main-v1.81.14-stable
@@ -91,10 +93,9 @@ services:
     # shrink GOMAXPROCS to match and slow query serving.
     mem_limit: ${BIFRACT_MEM_LIMIT:-4g}
     environment:
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 9000
-      CLICKHOUSE_DB: logs
-      CLICKHOUSE_USER: default
+{{- range .CHEnvApp}}
+      {{.Name}}: "{{.Value}}"
+{{- end}}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       # Least-privilege ingest identities: the app (admin) provisions them at startup so
       # the ingest tier gets INSERT-only CH access + a curated PG role (cannot read logs
@@ -159,8 +160,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+{{- if .CHBundled}}
       clickhouse:
         condition: service_healthy
+{{- end}}
     networks:
       - bifract-network
     restart: unless-stopped
@@ -180,11 +183,10 @@ services:
     # set and the GC only tightens under genuine pressure.
     mem_limit: ${BIFRACT_INGEST_MEM_LIMIT:-4g}
     environment:
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 9000
-      CLICKHOUSE_DB: logs
       # Least-privilege ingest identities (INSERT-only on logs; curated PG grants).
-      CLICKHOUSE_USER: bifract_ingest
+{{- range .CHEnvIngest}}
+      {{.Name}}: "{{.Value}}"
+{{- end}}
       CLICKHOUSE_PASSWORD: ${BIFRACT_INGEST_CLICKHOUSE_PASSWORD}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
@@ -213,8 +215,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+{{- if .CHBundled}}
       clickhouse:
         condition: service_healthy
+{{- end}}
       bifract:
         condition: service_healthy
     networks:
@@ -240,10 +244,9 @@ services:
       # ClickHouse connection: the restore/reconcile worker writes archived rows
       # back into the logs table, so the archiver needs the same CH access as the
       # server.
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 9000
-      CLICKHOUSE_DB: logs
-      CLICKHOUSE_USER: default
+{{- range .CHEnvApp}}
+      {{.Name}}: "{{.Value}}"
+{{- end}}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       BIFRACT_ARCHIVE_ENABLED: ${BIFRACT_ARCHIVE_ENABLED:-false}
       BIFRACT_ARCHIVE_BACKEND: ${BIFRACT_ARCHIVE_BACKEND:-disk}
@@ -296,10 +299,9 @@ services:
       POSTGRES_DB: bifract
       POSTGRES_USER: bifract
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bifract}
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 9000
-      CLICKHOUSE_DB: logs
-      CLICKHOUSE_USER: default
+{{- range .CHEnvApp}}
+      {{.Name}}: "{{.Value}}"
+{{- end}}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       BIFRACT_ARCHIVE_MAINTAIN_INTERVAL: ${BIFRACT_ARCHIVE_MAINTAIN_INTERVAL:-1h}
       BIFRACT_ARCHIVE_MAINTAIN_BYTE_BUDGET: ${BIFRACT_ARCHIVE_MAINTAIN_BYTE_BUDGET:-}
@@ -330,7 +332,9 @@ services:
 
 volumes:
   postgres-data:
+{{- if .CHBundled}}
   clickhouse-data:
+{{- end}}
   caddy-data:
   caddy-config:
   bifract-maxmind:

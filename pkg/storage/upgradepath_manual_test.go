@@ -38,8 +38,7 @@ func upgradeConn(t *testing.T, database string) interface {
 	Exec(context.Context, string, ...interface{}) error
 } {
 	t.Helper()
-	conn, err := openClickHouseConn([]string{upgradeAddr}, database, "default", "bifract",
-		ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1})
+	conn, err := openClickHouseConn(ConnOptions{Addrs: []string{upgradeAddr}, Database: database, User: "default", Password: "bifract", Pool: ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1}})
 	if err != nil {
 		t.Fatalf("connect (%s): %v", database, err)
 	}
@@ -55,8 +54,7 @@ func TestUpgradeFromV002(t *testing.T) {
 		t.Fatalf("read v0.0.2 init SQL: %v", err)
 	}
 
-	root, err := openClickHouseConn([]string{upgradeAddr}, "default", "default", "bifract",
-		ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1})
+	root, err := openClickHouseConn(ConnOptions{Addrs: []string{upgradeAddr}, Database: "default", User: "default", Password: "bifract", Pool: ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1}})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -69,8 +67,7 @@ func TestUpgradeFromV002(t *testing.T) {
 	}
 	root.Close()
 
-	conn, err := openClickHouseConn([]string{upgradeAddr}, "logs", "default", "bifract",
-		ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1})
+	conn, err := openClickHouseConn(ConnOptions{Addrs: []string{upgradeAddr}, Database: "logs", User: "default", Password: "bifract", Pool: ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1}})
 	if err != nil {
 		t.Fatalf("connect to logs: %v", err)
 	}

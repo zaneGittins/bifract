@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -29,7 +31,17 @@ type ClickHouseClient struct {
 	User     string
 	Password string
 	Database string
-	Cluster  string // ClickHouse cluster name; empty for single-node deployments
+
+	// topo is the deployment topology, resolved once at construction. Every
+	// deployment-shape branch in the codebase reads from it; see topology.go.
+	topo Topology
+
+	// tls is carried so per-node connections reuse the pooled connection's
+	// transport security rather than silently falling back to plaintext.
+	tls TLSConfig
+
+	// caps holds what this server actually permits; see capabilities.go.
+	caps capabilityStore
 
 	// Shard-direct lookup (cluster mode only). shardHosts caches shard_num -> host:port
 	// from system.clusters so detail queries can bypass the Distributed fan-out.
@@ -104,59 +116,41 @@ func (c *ClickHouseClient) WaitForSchemaReady(ctx context.Context) {
 // Addrs returns the host:port addresses this client connects to.
 func (c *ClickHouseClient) Addrs() []string { return c.addrs }
 
-// HTTPAddr returns the first host with port 8123 (ClickHouse HTTP interface).
-// The native addrs use port 9000; the HTTP interface is always on 8123.
-func (c *ClickHouseClient) HTTPAddr() string {
-	if len(c.addrs) == 0 {
-		return "localhost:8123"
-	}
-	host := c.addrs[0]
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		host = host[:idx]
-	}
-	return host + ":8123"
-}
+// Topology returns the deployment topology this client was built for.
+func (c *ClickHouseClient) Topology() Topology { return c.topo }
 
-// IsCluster returns true when the client is configured for a replicated cluster.
-func (c *ClickHouseClient) IsCluster() bool {
-	return c.Cluster != ""
+// logsDatabase is the database holding the log schema. Queries against
+// system.columns and system.tables must filter on it rather than a literal:
+// CLICKHOUSE_DB is configurable, and a hardcoded name silently returns nothing
+// on any install that changed it.
+func (c *ClickHouseClient) logsDatabase() string {
+	if c.Database == "" {
+		return "logs"
+	}
+	return c.Database
 }
 
 // OnClusterSQL returns the ON CLUSTER clause for DDL statements, or an empty
-// string for single-node deployments.
-func (c *ClickHouseClient) OnClusterSQL() string {
-	if c.Cluster == "" {
-		return ""
-	}
-	return " ON CLUSTER '" + EscCHStr(c.Cluster) + "'"
-}
+// string when the deployment has no DDL cluster.
+func (c *ClickHouseClient) OnClusterSQL() string { return c.topo.OnClusterSQL() }
 
 // ReadTable returns the table name for read queries. In cluster mode this is
-// "logs_distributed" for cross-shard reads; in single-node mode it is "logs".
+// "logs_distributed" for cross-shard reads; otherwise it is "logs".
 func (c *ClickHouseClient) ReadTable() string {
-	if c.Cluster != "" {
-		return "logs_distributed"
-	}
-	return "logs"
+	return c.topo.Table("logs")
 }
 
 // WriteTable returns the table name for insert queries. In cluster mode this is
 // "logs_distributed" so the Distributed engine shards writes across all nodes;
-// in single-node mode it is "logs".
+// otherwise it is "logs".
 func (c *ClickHouseClient) WriteTable() string {
-	if c.Cluster != "" {
-		return "logs_distributed"
-	}
-	return "logs"
+	return c.topo.Table("logs")
 }
 
 // RawWriteTable returns the table for raw_log inserts. In cluster mode this is
 // logs_raw_distributed so the Distributed engine shards writes across nodes.
 func (c *ClickHouseClient) RawWriteTable() string {
-	if c.Cluster != "" {
-		return "logs_raw_distributed"
-	}
-	return "logs_raw"
+	return c.topo.Table("logs_raw")
 }
 
 // RawReadTable returns the table for raw_log point lookups (detail "Raw" tab,
@@ -164,28 +158,19 @@ func (c *ClickHouseClient) RawWriteTable() string {
 // is placed independently of its logs row (separate rand() distribution), so it is
 // not co-located on any one shard and must be read via the fan-out table.
 func (c *ClickHouseClient) RawReadTable() string {
-	if c.Cluster != "" {
-		return "logs_raw_distributed"
-	}
-	return "logs_raw"
+	return c.topo.Table("logs_raw")
 }
 
 // HistogramReadTable returns the table name for pre-aggregated histogram reads.
 // In cluster mode this fans out to all shards via logs_histogram_distributed.
 func (c *ClickHouseClient) HistogramReadTable() string {
-	if c.Cluster != "" {
-		return "logs_histogram_distributed"
-	}
-	return "logs_histogram"
+	return c.topo.Table("logs_histogram")
 }
 
 // HotReadTable returns the table name for hot-path alert queries (recent cursor).
 // In cluster mode this fans out to all shards via logs_hot_distributed.
 func (c *ClickHouseClient) HotReadTable() string {
-	if c.Cluster != "" {
-		return "logs_hot_distributed"
-	}
-	return "logs_hot"
+	return c.topo.Table("logs_hot")
 }
 
 // ProcLineageReadTable returns the table name for ptg() process-tree traversal.
@@ -193,10 +178,7 @@ func (c *ClickHouseClient) HotReadTable() string {
 // recursive hop gathers a process's children/parents from every shard (rows are
 // rand-placed, following their source log row).
 func (c *ClickHouseClient) ProcLineageReadTable() string {
-	if c.Cluster != "" {
-		return "proc_lineage_distributed"
-	}
-	return "proc_lineage"
+	return c.topo.Table("proc_lineage")
 }
 
 // ProcEdgesReadTable returns the table for pgr()'s file/net/dns edge fetch. Cluster mode fans out
@@ -204,10 +186,7 @@ func (c *ClickHouseClient) ProcLineageReadTable() string {
 // shard's MV writes locally), so the reader must GROUP BY to merge the AggregatingMergeTree
 // partials across shards -- pgr's edgesAgg already does.
 func (c *ClickHouseClient) ProcEdgesReadTable() string {
-	if c.Cluster != "" {
-		return "process_edges_distributed"
-	}
-	return "process_edges"
+	return c.topo.Table("process_edges")
 }
 
 // ReconcileProcLineageTTL applies a configured retention (in days) to proc_lineage via a
@@ -232,10 +211,7 @@ func (c *ClickHouseClient) ReconcileProcLineageTTL(ctx context.Context, days int
 // mode this fans out to all shards via proc_freq_distributed; the scoring join re-aggregates
 // the AggregatingMergeTree state across shards (sum / groupUniqArrayMerge).
 func (c *ClickHouseClient) ProcFreqReadTable() string {
-	if c.Cluster != "" {
-		return "proc_freq_distributed"
-	}
-	return "proc_freq"
+	return c.topo.Table("proc_freq")
 }
 
 // ReconcileProcFreqTTL applies a configured retention (in days) to proc_freq via a
@@ -261,7 +237,7 @@ var rewriteEngineRe = regexp.MustCompile(`(?i)ENGINE\s*=\s*(MergeTree|ReplacingM
 // equivalents when cluster mode is active. Returns the input unchanged for
 // single-node deployments.
 func (c *ClickHouseClient) RewriteEngine(sql string) string {
-	if c.Cluster == "" {
+	if !c.topo.ReplicatedEngines {
 		return sql
 	}
 	return rewriteEngineRe.ReplaceAllStringFunc(sql, func(match string) string {
@@ -314,7 +290,7 @@ var injectOnClusterPatterns = []struct {
 // InjectOnCluster inserts an ON CLUSTER clause into CREATE TABLE, ALTER TABLE,
 // TRUNCATE TABLE, and DROP TABLE statements. No-op for single-node deployments.
 func (c *ClickHouseClient) InjectOnCluster(sql string) string {
-	if c.Cluster == "" {
+	if c.topo.DDLCluster == "" {
 		return sql
 	}
 	upper := strings.ToUpper(strings.TrimSpace(sql))
@@ -348,10 +324,10 @@ type LogEntry struct {
 // Single-node: a fresh install (logs table absent) runs the full init SQL and stamps
 // every migration as applied; an upgrade applies only unapplied numbered migrations.
 //
-// Cluster: see initializeCluster. Every decision is made per shard.
+// Sharded deployments: see initializeShards. Every decision is made per shard.
 func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migrations embed.FS, migrationsDir string) error {
-	if c.IsCluster() {
-		return c.initializeCluster(ctx, sql, migrations, migrationsDir)
+	if c.topo.PerNodeAdmin {
+		return c.initializeShards(ctx, sql, migrations, migrationsDir)
 	}
 
 	hasLogs, err := chTableExists(ctx, c.conn, "logs")
@@ -409,219 +385,6 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 	return nil
 }
 
-// shardSchemaState is one shard's provisioning status, read from that shard directly.
-type shardSchemaState struct {
-	addr         string
-	reachable    bool
-	hasLogs      bool
-	migrationMax uint32
-}
-
-// initializeCluster provisions every shard independently.
-//
-// A cluster is not a single thing to initialize: each shard has its own local tables and
-// its own _bifract_migrations (the replica path is keyed by {shard}), so "is this a fresh
-// install?" and "which migrations are applied?" have per-shard answers. Deciding once from
-// the load-balanced connection answers for whichever node the driver picked and silently
-// leaves the rest unprovisioned, which stays invisible until a query fans out.
-//
-// ON CLUSTER is avoided throughout: it queues DDL through Keeper and times out on a
-// cluster that is still coming up, which is the very situation that produces a
-// half-provisioned cluster. The same idempotent DDL run directly on each host reaches the
-// same end state without the queue.
-func (c *ClickHouseClient) initializeCluster(ctx context.Context, sql string, migrations embed.FS, migrationsDir string) error {
-	pool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
-	states := c.probeShards(ctx, pool)
-
-	needsSchema, anyReachable := false, false
-	var refMax uint32
-	for _, st := range states {
-		if !st.reachable {
-			continue
-		}
-		anyReachable = true
-		if !st.hasLogs {
-			needsSchema = true
-		}
-		if st.migrationMax > refMax {
-			refMax = st.migrationMax
-		}
-	}
-	// Never report the schema ready off an all-unreachable probe: that would let the
-	// server start serving against a cluster whose state was never established.
-	if !anyReachable {
-		return fmt.Errorf("no ClickHouse shard reachable for schema initialization")
-	}
-
-	// A shard with no schema breaks reads and the ingest pool's health check as soon as the
-	// write LB routes to it, so provision synchronously and fail loudly: the pod restarts
-	// and retries, which is self-healing. When every shard already has a schema this is an
-	// upgrade, so run it in the background where a slow migration cannot become a
-	// CrashLoopBackOff.
-	if needsSchema {
-		if err := c.syncShardSchemas(ctx, states, refMax, sql, migrations, migrationsDir, pool); err != nil {
-			return err
-		}
-		log.Printf("Cluster schema sync complete")
-		c.markSchemaReady()
-		return nil
-	}
-
-	go func() {
-		if err := c.syncShardSchemas(ctx, states, refMax, sql, migrations, migrationsDir, pool); err != nil {
-			log.Printf("Warning: cluster schema sync: %v", err)
-		}
-		log.Printf("Cluster schema sync complete")
-		c.markSchemaReady()
-	}()
-	return nil
-}
-
-// probeShards reports each shard's schema state. An unreachable shard is marked and
-// skipped rather than failing the probe, so one node being briefly down during a rolling
-// restart does not stop the others from being repaired.
-func (c *ClickHouseClient) probeShards(ctx context.Context, pool ClickHousePoolConfig) []shardSchemaState {
-	states := make([]shardSchemaState, 0, len(c.addrs))
-	for _, addr := range c.addrs {
-		st := shardSchemaState{addr: addr}
-		conn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, pool)
-		if err != nil {
-			log.Printf("Warning: schema probe of %s failed: %v", addr, err)
-			states = append(states, st)
-			continue
-		}
-		probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		hasLogs, err := chTableExists(probeCtx, conn, "logs")
-		if err != nil {
-			log.Printf("Warning: schema probe of %s failed: %v", addr, err)
-			cancel()
-			conn.Close()
-			states = append(states, st)
-			continue
-		}
-		st.reachable = true
-		st.hasLogs = hasLogs
-		// A missing _bifract_migrations table and an empty one mean the same thing here:
-		// nothing recorded on this shard.
-		var maxNum uint32
-		if err := conn.QueryRow(probeCtx, "SELECT max(number) FROM logs._bifract_migrations").Scan(&maxNum); err == nil {
-			st.migrationMax = maxNum
-		}
-		cancel()
-		conn.Close()
-		states = append(states, st)
-	}
-	return states
-}
-
-// syncShardSchemas brings each shard to the current schema and creates the Distributed
-// tables on it. Safe to re-run: every branch is idempotent.
-func (c *ClickHouseClient) syncShardSchemas(ctx context.Context, states []shardSchemaState, refMax uint32, sql string, migrations embed.FS, migrationsDir string, pool ClickHousePoolConfig) error {
-	// Migrations apply only when every shard is reachable, so one is never applied to a
-	// subset and left divergent. Schema repair and Distributed table creation are
-	// per-node and idempotent, so they still run.
-	shardsOK := true
-	if err := ensureAllShardsReachable(ctx, c.addrs, c.Database, c.User, c.Password, pool); err != nil {
-		shardsOK = false
-		log.Printf("Skipping cluster migration apply (self-heals on next restart): %v", err)
-	}
-
-	distStmts := c.distributedTableDDL()
-
-	for _, st := range states {
-		if !st.reachable {
-			continue
-		}
-		conn, err := openClickHouseConn([]string{st.addr}, c.Database, c.User, c.Password, pool)
-		if err != nil {
-			log.Printf("Warning: cluster schema sync to %s failed: %v", st.addr, err)
-			continue
-		}
-
-		switch {
-		case !st.hasLogs:
-			// No schema on this shard. Provision it from the init SQL, then stamp the
-			// migrations that schema already embodies. Fatal on failure: a cluster serving
-			// with a shard missing returns short results rather than an error.
-			log.Printf("Provisioning schema on shard %s", st.addr)
-			if err := runInitSQLOnConn(ctx, conn, sql, c.RewriteEngine); err != nil {
-				conn.Close()
-				return fmt.Errorf("provision schema on %s: %w", st.addr, err)
-			}
-			if err := setClickHouseMigrationsBaseline(ctx, conn, c.RewriteEngine, migrations, migrationsDir, 0); err != nil {
-				conn.Close()
-				return fmt.Errorf("baseline migrations on %s: %w", st.addr, err)
-			}
-		case st.migrationMax == 0 && refMax > 0:
-			// Schema present but nothing recorded here, while a sibling shard has records:
-			// this shard was provisioned by the init SQL and only the stamp was missed.
-			// Replaying history against an already-current schema does not work (004 selects
-			// raw_log, which 013 removed), so record the sibling's level instead.
-			log.Printf("Stamping shard %s through migration %d (schema present, none recorded)", st.addr, refMax)
-			if err := setClickHouseMigrationsBaseline(ctx, conn, c.RewriteEngine, migrations, migrationsDir, refMax); err != nil {
-				log.Printf("Warning: stamp migrations on %s: %v", st.addr, err)
-			}
-		case shardsOK:
-			n, err := runMigrationsOnConn(ctx, conn, c.RewriteEngine, true, migrations, migrationsDir)
-			if err != nil {
-				log.Printf("Warning: migration sync on %s: %v", st.addr, err)
-			} else if n > 0 {
-				log.Printf("Applied %d ClickHouse migration(s) to shard %s", n, st.addr)
-			}
-		}
-
-		for _, stmt := range distStmts {
-			stmtCtx, stmtCancel := context.WithTimeout(ctx, 30*time.Second)
-			conn.Exec(stmtCtx, stmt)
-			stmtCancel()
-		}
-		// Distributed tables are created "AS <local>" and do not inherit later
-		// ALTER ADD COLUMN, so reconcile any columns a migration added to the local table
-		// onto the Distributed variants.
-		for _, pair := range [][2]string{
-			{"logs_distributed", "logs"},
-			{"logs_histogram_distributed", "logs_histogram"},
-			{"logs_hot_distributed", "logs_hot"},
-			{"proc_lineage_distributed", "proc_lineage"},
-			{"proc_freq_distributed", "proc_freq"},
-			{"process_edges_distributed", "process_edges"},
-			{"logs_raw_distributed", "logs_raw"},
-		} {
-			syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
-			if err := syncDistributedColumns(syncCtx, conn, c.Database, pair[0], pair[1]); err != nil {
-				log.Printf("Warning: column sync %s on %s: %v", pair[0], st.addr, err)
-			}
-			syncCancel()
-		}
-		// syncDistributedColumns only adds/modifies columns; it never drops. After migration
-		// 013 removes raw_log from the local logs/logs_hot tables, the Distributed variants
-		// still carry it, and an INSERT through a Distributed table forwards its columns to
-		// the local table (which no longer has raw_log). Drop it explicitly so the two stay
-		// in lockstep. Runs after sync so it is the final word.
-		for _, dt := range []string{"logs_distributed", "logs_hot_distributed"} {
-			dropCtx, dropCancel := context.WithTimeout(ctx, 30*time.Second)
-			conn.Exec(dropCtx, "ALTER TABLE "+dt+" DROP COLUMN IF EXISTS raw_log")
-			dropCancel()
-		}
-		conn.Close()
-	}
-	return nil
-}
-
-// distributedTableDDL returns the idempotent CREATE for every Distributed table, to be
-// run directly on each host. These cannot live in the init SQL because they need the
-// cluster name, which is only known to the running server.
-func (c *ClickHouseClient) distributedTableDDL() []string {
-	locals := []string{"logs", "logs_histogram", "logs_hot", "proc_lineage", "proc_freq", "process_edges", "logs_raw"}
-	stmts := make([]string, 0, len(locals))
-	for _, t := range locals {
-		stmts = append(stmts, fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS %s_distributed AS %s ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
-			t, t, EscCHStr(c.Cluster), t))
-	}
-	return stmts
-}
-
 // runInitSQLOnConn applies the init schema to one connection. Every statement is
 // idempotent, so this is safe to re-run against a partially provisioned shard.
 func runInitSQLOnConn(ctx context.Context, conn driver.Conn, sql string, transformStmt func(string) string) error {
@@ -676,106 +439,6 @@ func chTableExists(ctx context.Context, conn driver.Conn, table string) (bool, e
 	err := conn.QueryRow(ctx,
 		"SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = ?", table).Scan(&count)
 	return count > 0, err
-}
-
-// syncDistributedColumns brings a Distributed table's column definitions in line
-// with its underlying local table. Distributed tables are created with
-// "AS <local>", which snapshots the structure at creation time; a later
-// ALTER TABLE <local> ADD COLUMN does not propagate. Two failures follow:
-//
-//  1. Missing column: inserts/reads that reference the new column fail with
-//     "No such column ... in table <dist>" (code 16).
-//  2. Missing DEFAULT: when an INSERT omits a column, the Distributed engine
-//     materializes it from *its own* column default before forwarding to the
-//     local shard, then sends that value explicitly -- so a Distributed column
-//     added type-only writes an empty string that overrides the local table's
-//     DEFAULT (e.g. norm_log's DEFAULT toString(fields) never fires, leaving
-//     norm_log empty on every new row).
-//
-// Because a Distributed table stores no data, adding/altering columns is free
-// and metadata-only. This reconciles both cases generically from the local
-// table's system.columns, so any current or future schema change (column and
-// its DEFAULT/MATERIALIZED/ALIAS expression) auto-propagates here without each
-// migration having to remember the Distributed variants.
-func syncDistributedColumns(ctx context.Context, conn driver.Conn, database, distTable, localTable string) error {
-	type colDef struct {
-		typ, kind, expr string
-	}
-	load := func(table string) (map[string]colDef, []string, error) {
-		rows, qerr := conn.Query(ctx, `
-			SELECT name, type, default_kind, default_expression
-			FROM system.columns
-			WHERE database = ? AND table = ?
-			ORDER BY position`, database, table)
-		if qerr != nil {
-			return nil, nil, qerr
-		}
-		defer rows.Close()
-		cols := make(map[string]colDef)
-		var order []string
-		for rows.Next() {
-			var name, typ, kind, expr string
-			if serr := rows.Scan(&name, &typ, &kind, &expr); serr != nil {
-				return nil, nil, serr
-			}
-			cols[name] = colDef{typ: typ, kind: kind, expr: expr}
-			order = append(order, name)
-		}
-		return cols, order, rows.Err()
-	}
-
-	local, localOrder, err := load(localTable)
-	if err != nil {
-		return err
-	}
-	dist, _, err := load(distTable)
-	if err != nil {
-		return err
-	}
-
-	// defaultClause renders the "DEFAULT <expr>" (or MATERIALIZED/ALIAS) suffix,
-	// or "" when the column has no default. CODEC/TTL are deliberately omitted:
-	// a Distributed table stores no data, so they are meaningless there.
-	defaultClause := func(c colDef) string {
-		if c.kind == "" || c.expr == "" {
-			return ""
-		}
-		return " " + c.kind + " " + c.expr
-	}
-
-	var changed int
-	for _, name := range localOrder {
-		// Skip fields here: it needs the same type-hint list as logs, not just
-		// column presence, so it's reconciled by ReconcileSchemaFields instead.
-		if name == "fields" {
-			continue
-		}
-		lc := local[name]
-		dc, exists := dist[name]
-		if !exists {
-			stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS `%s` %s%s",
-				distTable, name, lc.typ, defaultClause(lc))
-			if err := conn.Exec(ctx, stmt); err != nil {
-				return fmt.Errorf("add column %s to %s: %w", name, distTable, err)
-			}
-			changed++
-			continue
-		}
-		// Column present: repair a drifted or absent default so the Distributed
-		// layer materializes omitted columns identically to the local table.
-		if dc.kind != lc.kind || dc.expr != lc.expr {
-			stmt := fmt.Sprintf("ALTER TABLE %s MODIFY COLUMN `%s` %s%s",
-				distTable, name, lc.typ, defaultClause(lc))
-			if err := conn.Exec(ctx, stmt); err != nil {
-				return fmt.Errorf("modify column %s on %s: %w", name, distTable, err)
-			}
-			changed++
-		}
-	}
-	if changed > 0 {
-		log.Printf("Reconciled %d column(s) on %s", changed, distTable)
-	}
-	return nil
 }
 
 type chMigrationEntry struct {
@@ -997,27 +660,6 @@ func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt fu
 	return applied, nil
 }
 
-// ensureAllShardsReachable verifies every shard address accepts a trivial query.
-// It gates cluster migrations: applying to only the reachable subset would leave
-// shards on divergent schemas. Returns an error naming the first unreachable shard.
-func ensureAllShardsReachable(ctx context.Context, addrs []string, database, user, password string, pool ClickHousePoolConfig) error {
-	for _, addr := range addrs {
-		conn, err := openClickHouseConn([]string{addr}, database, user, password, pool)
-		if err != nil {
-			return fmt.Errorf("shard %s unreachable: %w", addr, err)
-		}
-		pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		var one uint8
-		err = conn.QueryRow(pingCtx, "SELECT 1").Scan(&one)
-		cancel()
-		conn.Close()
-		if err != nil {
-			return fmt.Errorf("shard %s not ready: %w", addr, err)
-		}
-	}
-	return nil
-}
-
 // setClickHouseMigrationsBaseline marks migrations as applied without running them, for
 // a connection whose schema came from the init SQL rather than from the migration files.
 // upTo bounds the highest number recorded; 0 records all of them.
@@ -1167,102 +809,205 @@ func DefaultIngestPoolConfig() ClickHousePoolConfig {
 	}
 }
 
-// NewClickHouseClient creates a client with the default query pool config.
-func NewClickHouseClient(host string, port int, database, user, password string) (*ClickHouseClient, error) {
-	return NewClickHouseClientWithPool(host, port, database, user, password, DefaultQueryPoolConfig())
+// nodeProbePool sizes the short-lived connections used to read one node's
+// system tables: a single connection, no idle retention, and a short dial so a
+// wedged node fails the probe instead of stalling the poll loop.
+var nodeProbePool = ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 0, DialTimeout: 3 * time.Second}
+
+// adminNodePool sizes the short-lived connections used for per-node admin work
+// (schema provisioning, DDL, partition drops).
+var adminNodePool = ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+
+// TLSConfig configures transport security to ClickHouse. The zero value is
+// plaintext, which is what a bundled ClickHouse on the same network uses.
+type TLSConfig struct {
+	Enabled bool
+	// ServerName overrides SNI and certificate verification; empty uses the
+	// dial address host.
+	ServerName string
+	// CACertPath adds one PEM root; empty uses the system roots.
+	CACertPath string
+	// InsecureSkipVerify disables certificate verification. Opt-in only, and
+	// logged loudly by the caller that enables it.
+	InsecureSkipVerify bool
 }
 
-// NewClickHouseClientWithPool creates a client with explicit pool configuration.
-func NewClickHouseClientWithPool(host string, port int, database, user, password string, pool ClickHousePoolConfig) (*ClickHouseClient, error) {
-	addr := fmt.Sprintf("%s:%d", host, port)
-	conn, err := openClickHouseConn([]string{addr}, database, user, password, pool)
-	if err != nil {
-		return nil, err
+// tlsConfig builds the driver's TLS settings, or nil for plaintext. Returning
+// nil rather than a disabled *tls.Config is what keeps a non-secure client's
+// driver options byte-identical to a build with no TLS support at all.
+func (t TLSConfig) tlsConfig() (*tls.Config, error) {
+	if !t.Enabled {
+		return nil, nil
 	}
-	c := &ClickHouseClient{conn: conn, addrs: []string{addr}, User: user, Password: password, Database: database, schemaReady: make(chan struct{})}
-	c.configureInsertSettings()
-	return c, nil
-}
-
-// validClusterName matches only safe ClickHouse cluster identifiers.
-var validClusterName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-
-// NewClickHouseClusterClient creates a cluster-aware client that connects to
-// multiple ClickHouse nodes. The driver handles failover across the provided
-// addresses but does not load-balance writes; use logs_distributed for that.
-//
-// It bootstraps the target database (CREATE DATABASE IF NOT EXISTS) because on a
-// fresh cluster the operator does not pre-create it. This is a schema-provisioning
-// concern and requires a privileged (admin) identity -- only the app/control-plane
-// tier should use this. The data-plane ingest tier, whose least-privilege user
-// cannot (and must not) create databases, uses NewClickHouseClusterClientConnectOnly.
-func NewClickHouseClusterClient(hosts []string, port int, database, user, password, cluster string, pool ClickHousePoolConfig) (*ClickHouseClient, error) {
-	return newClickHouseClusterClient(hosts, port, database, user, password, cluster, pool, true)
-}
-
-// NewClickHouseClusterClientConnectOnly is like NewClickHouseClusterClient but does
-// NOT create the database -- it connects to an already-provisioned one. Use it from
-// the ingest tier: its least-privilege ClickHouse user (INSERT-only, no CREATE
-// DATABASE) would otherwise fail the bootstrap with code 497, and by the time the
-// ingest tier connects the app tier has already created the database.
-func NewClickHouseClusterClientConnectOnly(hosts []string, port int, database, user, password, cluster string, pool ClickHousePoolConfig) (*ClickHouseClient, error) {
-	return newClickHouseClusterClient(hosts, port, database, user, password, cluster, pool, false)
-}
-
-func newClickHouseClusterClient(hosts []string, port int, database, user, password, cluster string, pool ClickHousePoolConfig, createDB bool) (*ClickHouseClient, error) {
-	if !validClusterName.MatchString(cluster) {
-		return nil, fmt.Errorf("invalid cluster name %q: must be alphanumeric, hyphens, or underscores only", cluster)
+	cfg := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         t.ServerName,
+		InsecureSkipVerify: t.InsecureSkipVerify,
 	}
-	addrs := make([]string, len(hosts))
-	for i, h := range hosts {
+	if t.CACertPath != "" {
+		pem, err := os.ReadFile(t.CACertPath)
+		if err != nil {
+			return nil, fmt.Errorf("read ClickHouse CA cert: %w", err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("ClickHouse CA cert %s contains no usable certificate", t.CACertPath)
+		}
+		cfg.RootCAs = roots
+	}
+	return cfg, nil
+}
+
+// ConnOptions is the complete input to opening a ClickHouse connection.
+type ConnOptions struct {
+	Addrs    []string
+	Database string
+	User     string
+	Password string
+	TLS      TLSConfig
+	Pool     ClickHousePoolConfig
+}
+
+// ClientRole says what the client is allowed to provision. It gates privileged
+// bootstrap, which is a property of the identity rather than of the topology.
+type ClientRole uint8
+
+const (
+	// RoleControlPlane owns the schema and ensures its database exists.
+	RoleControlPlane ClientRole = iota
+	// RoleIngest is the least-privilege data plane. Its ClickHouse user cannot
+	// (and must not) create databases, so it never bootstraps: by the time it
+	// connects, the control plane has already provisioned.
+	RoleIngest
+	// RoleArchive reads and writes archive data without provisioning.
+	RoleArchive
+)
+
+// ClientOptions builds a ClickHouseClient.
+type ClientOptions struct {
+	Conn ConnOptions
+	Topo Topology
+	Role ClientRole
+}
+
+// HostAddrs renders host entries as host:port. An entry that already carries a
+// port is used verbatim, so per-host ports survive.
+func HostAddrs(hosts []string, port int) []string {
+	addrs := make([]string, 0, len(hosts))
+	for _, h := range hosts {
 		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
 		if strings.Contains(h, ":") {
-			addrs[i] = h
+			addrs = append(addrs, h)
 		} else {
-			addrs[i] = fmt.Sprintf("%s:%d", h, port)
+			addrs = append(addrs, fmt.Sprintf("%s:%d", h, port))
 		}
 	}
-	if createDB {
-		// In cluster mode the target database may not exist yet (the operator doesn't
-		// pre-create it). ON CLUSTER is deliberately avoided here: it queues distributed
-		// DDL through Keeper and times out on a still-initializing cluster.
-		//
-		// Create it on EVERY host instead. A single bootstrap connection would let the
-		// driver pick one address and provision only that node, leaving the rest without
-		// the database. Nothing surfaces until a query fans out to a missing node, and
-		// because schema init records itself in _bifract_migrations, later restarts skip
-		// the repair. The result is a cluster that is silently half-provisioned.
-		createDBStmt := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", EscCHStr(database))
-		for _, addr := range addrs {
-			bootstrap, err := openClickHouseConn([]string{addr}, "default", user, password, pool)
-			if err != nil {
-				return nil, fmt.Errorf("bootstrap connection to %s: %w", addr, err)
-			}
-			execErr := bootstrap.Exec(context.Background(), createDBStmt)
-			bootstrap.Close()
-			if execErr != nil {
-				return nil, fmt.Errorf("create database %s on %s: %w", database, addr, execErr)
-			}
-		}
-	}
+	return addrs
+}
 
-	conn, err := openClickHouseConn(addrs, database, user, password, pool)
+// SingleNodeOptions builds ClientOptions for a single-endpoint, plaintext,
+// control-plane client with the default query pool.
+func SingleNodeOptions(host string, port int, database, user, password string) ClientOptions {
+	return ClientOptions{
+		Conn: ConnOptions{
+			Addrs:    HostAddrs([]string{host}, port),
+			Database: database,
+			User:     user,
+			Password: password,
+			Pool:     DefaultQueryPoolConfig(),
+		},
+		Topo: Topology{Kind: DeploymentSingleNode},
+		Role: RoleControlPlane,
+	}
+}
+
+// NewClickHouseClient opens a client for the given topology and role. It is the
+// only constructor: topology, transport security, pool sizing and provisioning
+// privilege are all properties of the deployment, and threading them through
+// several positional constructors is how they drift apart.
+func NewClickHouseClient(opts ClientOptions) (*ClickHouseClient, error) {
+	if len(opts.Conn.Addrs) == 0 {
+		return nil, fmt.Errorf("clickhouse: no addresses configured")
+	}
+	if opts.Role == RoleControlPlane {
+		if err := ensureDatabase(opts.Conn, opts.Topo); err != nil {
+			return nil, err
+		}
+	}
+	conn, err := openClickHouseConn(opts.Conn)
 	if err != nil {
 		return nil, err
 	}
-	c := &ClickHouseClient{conn: conn, addrs: addrs, User: user, Password: password, Database: database, Cluster: cluster, schemaReady: make(chan struct{})}
+	c := &ClickHouseClient{
+		conn:        conn,
+		addrs:       opts.Conn.Addrs,
+		User:        opts.Conn.User,
+		Password:    opts.Conn.Password,
+		Database:    opts.Conn.Database,
+		tls:         opts.Conn.TLS,
+		topo:        opts.Topo,
+		schemaReady: make(chan struct{}),
+	}
 	c.configureInsertSettings()
 	return c, nil
 }
 
-// openClickHouseConn opens a connection to ClickHouse with the given addresses.
-func openClickHouseConn(addrs []string, database, user, password string, pool ClickHousePoolConfig) (driver.Conn, error) {
+// ensureDatabase runs CREATE DATABASE IF NOT EXISTS from a bootstrap connection
+// to the server's default database, because the target may not exist yet.
+//
+// Per node when the topology does admin work per node: a single pooled
+// connection lets the driver pick one address and provision only that node,
+// leaving the rest without the database. Nothing surfaces until a query fans out
+// to a missing node, and because schema init records itself in
+// _bifract_migrations, later restarts skip the repair. The result is a cluster
+// that is silently half-provisioned. ON CLUSTER is no help: it queues DDL
+// through Keeper and times out on a cluster that is still coming up.
+func ensureDatabase(o ConnOptions, topo Topology) error {
+	if o.Database == "" || o.Database == "default" {
+		return nil
+	}
+	targets := [][]string{o.Addrs}
+	if topo.PerNodeAdmin {
+		targets = targets[:0]
+		for _, addr := range o.Addrs {
+			targets = append(targets, []string{addr})
+		}
+	}
+	stmt := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", EscCHStr(o.Database))
+	for _, addrs := range targets {
+		bo := o
+		bo.Addrs = addrs
+		bo.Database = "default"
+		bootstrap, err := openClickHouseConn(bo)
+		if err != nil {
+			return fmt.Errorf("bootstrap connection to %s: %w", strings.Join(addrs, ","), err)
+		}
+		execErr := bootstrap.Exec(context.Background(), stmt)
+		bootstrap.Close()
+		if execErr != nil {
+			return fmt.Errorf("create database %s on %s: %w", o.Database, strings.Join(addrs, ","), execErr)
+		}
+	}
+	return nil
+}
+
+// openClickHouseConn opens a connection to ClickHouse with the given options.
+func openClickHouseConn(o ConnOptions) (driver.Conn, error) {
+	tlsCfg, err := o.TLS.tlsConfig()
+	if err != nil {
+		return nil, err
+	}
 	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: addrs,
+		Protocol: clickhouse.Native,
+		TLS:      tlsCfg,
+		Addr:     o.Addrs,
 		Auth: clickhouse.Auth{
-			Database: database,
-			Username: user,
-			Password: password,
+			Database: o.Database,
+			Username: o.User,
+			Password: o.Password,
 		},
 		Settings: clickhouse.Settings{
 			"use_uncompressed_cache": 1,
@@ -1274,11 +1019,11 @@ func openClickHouseConn(addrs []string, database, user, password string, pool Cl
 			// wide is safe and has no effect on the small SQL every other feature sends.
 			"max_query_size": maxGeneratedQuerySize,
 		},
-		DialTimeout:     pool.DialTimeout,
+		DialTimeout:     o.Pool.DialTimeout,
 		ReadTimeout:     0,
-		MaxOpenConns:    pool.MaxOpenConns,
-		MaxIdleConns:    pool.MaxIdleConns,
-		ConnMaxLifetime: pool.ConnMaxLifetime,
+		MaxOpenConns:    o.Pool.MaxOpenConns,
+		MaxIdleConns:    o.Pool.MaxIdleConns,
+		ConnMaxLifetime: o.Pool.ConnMaxLifetime,
 		Compression: &clickhouse.Compression{
 			Method: clickhouse.CompressionLZ4,
 		},
@@ -1289,24 +1034,24 @@ func openClickHouseConn(addrs []string, database, user, password string, pool Cl
 	return conn, nil
 }
 
-// OpenClickHouseAddr opens a lightweight, single-connection ClickHouse conn
-// to a specific host:port. Callers must Close() when done.
-func OpenClickHouseAddr(addr, user, password string) (driver.Conn, error) {
-	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{addr},
-		Auth: clickhouse.Auth{
-			Database: "default",
-			Username: user,
-			Password: password,
-		},
-		DialTimeout:  3 * time.Second,
-		MaxOpenConns: 1,
-		MaxIdleConns: 0,
-	})
-	if err != nil {
-		return nil, err
+// nodeConnOptions returns options for a direct connection to one node, reusing
+// this client's credentials, database and transport security.
+func (c *ClickHouseClient) nodeConnOptions(addr string, pool ClickHousePoolConfig) ConnOptions {
+	return ConnOptions{
+		Addrs:    []string{addr},
+		Database: c.Database,
+		User:     c.User,
+		Password: c.Password,
+		TLS:      c.tls,
+		Pool:     pool,
 	}
-	return conn, nil
+}
+
+// OpenNodeConn opens a short-lived direct connection to one node, so a reading
+// is attributable to that node rather than to whichever address the pool picked.
+// Only meaningful when Topology().PerNodeAdmin. Callers must Close().
+func (c *ClickHouseClient) OpenNodeConn(addr string) (driver.Conn, error) {
+	return openClickHouseConn(c.nodeConnOptions(addr, nodeProbePool))
 }
 
 // QueryConn executes a query on a raw driver.Conn and returns results as
@@ -1357,7 +1102,7 @@ func (c *ClickHouseClient) HealthCheck(ctx context.Context) error {
 // currently healthy (estimated_recovery_time = 0 means ClickHouse's connection
 // manager considers the node reachable). Returns 0, 0, nil for single-node.
 func (c *ClickHouseClient) ShardHealth(ctx context.Context) (total, healthy int, err error) {
-	if !c.IsCluster() {
+	if c.topo.FanoutCluster == "" {
 		return 0, 0, nil
 	}
 	rows, err := c.Query(ctx, fmt.Sprintf(`
@@ -1367,7 +1112,7 @@ func (c *ClickHouseClient) ShardHealth(ctx context.Context) (total, healthy int,
 			FROM system.clusters
 			WHERE cluster = '%s'
 			GROUP BY shard_num
-		)`, EscCHStr(c.Cluster)))
+		)`, EscCHStr(c.topo.FanoutCluster)))
 	if err != nil || len(rows) == 0 {
 		return 0, 0, err
 	}
@@ -1393,10 +1138,10 @@ type ClusterServerStats struct {
 // degrades when any one node saturates, not on average. Returns nil, nil for
 // single-node deployments (the caller falls back to node-local gauges).
 func (c *ClickHouseClient) ClusterServerStats(ctx context.Context) (*ClusterServerStats, error) {
-	if !c.IsCluster() {
+	if c.topo.FanoutCluster == "" {
 		return nil, nil
 	}
-	cl := EscCHStr(c.Cluster)
+	cl := EscCHStr(c.topo.FanoutCluster)
 	stats := &ClusterServerStats{}
 
 	total, healthy, err := c.ShardHealth(ctx)
@@ -1691,10 +1436,7 @@ func (c *ClickHouseClient) RevertTieredStoragePolicy(ctx context.Context) error 
 		return nil
 	}
 
-	source := "system.parts"
-	if c.Cluster != "" {
-		source = fmt.Sprintf("clusterAllReplicas('%s', system.parts)", EscCHStr(c.Cluster))
-	}
+	source := c.topo.FanoutSystemTable("system.parts")
 	rows, err := c.conn.Query(ctx,
 		"SELECT DISTINCT partition FROM "+source+" WHERE database = currentDatabase() AND table = 'logs' AND active = 1 AND disk_name != 'default'",
 	)
@@ -2338,15 +2080,9 @@ func (c *ClickHouseClient) typeHintFieldSet(ctx context.Context) map[string]bool
 		return set
 	}
 	var typ string
-	// c.Database (not currentDatabase()) is the logs DB; the pool's session database
-	// may be "default".
-	db := c.Database
-	if db == "" {
-		db = "logs"
-	}
 	if err := c.conn.QueryRow(ctx,
 		"SELECT type FROM system.columns WHERE database = ? AND table = 'logs' AND name = 'fields'",
-		db,
+		c.logsDatabase(),
 	).Scan(&typ); err == nil {
 		// type looks like JSON(artifact String, user String, max_dynamic_paths=1024, ...).
 		// Each declared sub-path is "name Type"; parse the leading identifier of each
@@ -2502,7 +2238,7 @@ func (c *ClickHouseClient) loadShardHosts(ctx context.Context) (map[uint64]strin
 
 	rows, err := c.conn.Query(ctx, fmt.Sprintf(
 		"SELECT shard_num, host_name, port FROM system.clusters WHERE cluster = '%s' AND replica_num = 1 ORDER BY shard_num",
-		EscCHStr(c.Cluster),
+		EscCHStr(c.topo.FanoutCluster),
 	))
 	if err != nil {
 		return nil, fmt.Errorf("query system.clusters: %w", err)
@@ -2540,9 +2276,9 @@ func (c *ClickHouseClient) shardHostForNum(ctx context.Context, shardNum uint64)
 }
 
 // ShardNums returns every shard number in the cluster, sorted ascending. Empty
-// for single-node deployments (IsCluster false).
+// for deployments that do not route per shard.
 func (c *ClickHouseClient) ShardNums(ctx context.Context) ([]uint64, error) {
-	if !c.IsCluster() {
+	if !c.topo.ShardRouting {
 		return nil, nil
 	}
 	hosts, err := c.loadShardHosts(ctx)
@@ -2580,7 +2316,7 @@ func (c *ClickHouseClient) shardConnForNum(ctx context.Context, shardNum uint64)
 		ConnMaxLifetime: 10 * time.Minute,
 		DialTimeout:     5 * time.Second,
 	}
-	conn, err := openClickHouseConn([]string{hostPort}, c.Database, c.User, c.Password, pool)
+	conn, err := openClickHouseConn(c.nodeConnOptions(hostPort, pool))
 	if err != nil {
 		return nil, fmt.Errorf("open shard %d connection to %s: %w", shardNum, hostPort, err)
 	}
@@ -2623,7 +2359,7 @@ type ShardDistQueueStat struct {
 // Returns nil for single-node deployments. A per-shard connection or query
 // failure marks that shard Unreachable rather than failing the whole call.
 func (c *ClickHouseClient) DistributionQueueByShard(ctx context.Context) ([]ShardDistQueueStat, error) {
-	if !c.IsCluster() {
+	if !c.topo.DistributedTables {
 		return nil, nil
 	}
 	shardNums, err := c.ShardNums(ctx)
@@ -2697,7 +2433,7 @@ const logsDistributedTable = "logs_distributed"
 // hangs forever" failure this action exists to route around, if the queue is
 // stuck because of an in-flight send.
 func (c *ClickHouseClient) ResetDistributedQueue(ctx context.Context, shardNum uint64) error {
-	if !c.IsCluster() {
+	if !c.topo.DistributedTables {
 		return fmt.Errorf("distribution queue reset only applies to cluster deployments")
 	}
 
@@ -2726,7 +2462,7 @@ func (c *ClickHouseClient) ResetDistributedQueue(ctx context.Context, shardNum u
 
 	createSQL := fmt.Sprintf(
 		"CREATE TABLE IF NOT EXISTS %s AS logs ENGINE = Distributed('%s', currentDatabase(), 'logs', rand())",
-		logsDistributedTable, EscCHStr(c.Cluster),
+		logsDistributedTable, EscCHStr(c.topo.DDLCluster),
 	)
 	// The table is now gone on this shard until CREATE succeeds. A single
 	// transient failure here (a network blip, a momentary server hiccup) would
@@ -2758,7 +2494,7 @@ func (c *ClickHouseClient) ResetDistributedQueue(ctx context.Context, shardNum u
 // path when not in cluster mode, when shardNum is 0, or when the direct shard
 // connection fails.
 func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID string, ts time.Time, fractalID string, shardNum uint64) (map[string]interface{}, error) {
-	if !c.IsCluster() || shardNum == 0 {
+	if !c.topo.ShardRouting || shardNum == 0 {
 		return c.GetLogFieldsByID(ctx, logID, ts, fractalID)
 	}
 
@@ -2888,13 +2624,13 @@ func (c *ClickHouseClient) StartHotTableCleaner(ctx context.Context) {
 // In cluster mode it opens a short-lived direct connection to each shard address
 // and runs DROP PARTITION locally, bypassing the distributed DDL task queue.
 func (c *ClickHouseClient) dropExpiredHotPartitions(ctx context.Context) {
-	if c.Cluster == "" {
+	if !c.topo.PerNodeAdmin {
 		dropHotPartitionsOnConn(ctx, c.conn, "local")
 		return
 	}
-	pool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+	pool := adminNodePool
 	for _, addr := range c.addrs {
-		conn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, pool)
+		conn, err := openClickHouseConn(c.nodeConnOptions(addr, pool))
 		if err != nil {
 			log.Printf("[HotTableCleaner] connect to %s: %v", addr, err)
 			continue
@@ -3009,12 +2745,12 @@ func (c *ClickHouseClient) FractalPartitionUsage(ctx context.Context) ([]Fractal
 		}
 	}
 
-	if c.Cluster == "" {
+	if !c.topo.PerNodeAdmin {
 		collect(c.conn, "local")
 	} else {
-		pool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+		pool := adminNodePool
 		for _, addr := range c.addrs {
-			conn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, pool)
+			conn, err := openClickHouseConn(c.nodeConnOptions(addr, pool))
 			if err != nil {
 				log.Printf("[QuotaRollover] connect to %s: %v", addr, err)
 				continue
@@ -3059,13 +2795,13 @@ func (c *ClickHouseClient) DropLogPartition(ctx context.Context, partition strin
 // serializes DDL through Keeper's global queue, which a slow schema mutation can
 // clog. Returns the first error while still attempting every remaining shard.
 func (c *ClickHouseClient) execOnEveryShard(ctx context.Context, stmt, what string) error {
-	if c.Cluster == "" {
+	if !c.topo.PerNodeAdmin {
 		return c.conn.Exec(ctx, stmt)
 	}
-	pool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
+	pool := adminNodePool
 	var firstErr error
 	for _, addr := range c.addrs {
-		conn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, pool)
+		conn, err := openClickHouseConn(c.nodeConnOptions(addr, pool))
 		if err != nil {
 			log.Printf("[ClickHouse] connect to %s for %s: %v", addr, what, err)
 			if firstErr == nil {
@@ -3210,10 +2946,7 @@ func (c *ClickHouseClient) indexMutationExists(ctx context.Context, idx string) 
 // submitMaterializeIndex queues an asynchronous MATERIALIZE INDEX (alter_sync=0)
 // so the call returns immediately while ClickHouse rebuilds parts in the background.
 func (c *ClickHouseClient) submitMaterializeIndex(ctx context.Context, idx string) error {
-	sql := "ALTER TABLE logs"
-	if c.IsCluster() {
-		sql += c.OnClusterSQL()
-	}
+	sql := "ALTER TABLE logs" + c.OnClusterSQL()
 	sql += fmt.Sprintf(" MATERIALIZE INDEX %s", idx)
 	actx := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"alter_sync":     0,
@@ -3403,7 +3136,8 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 
 	// Read current type hints from ClickHouse.
 	rows, err := c.conn.Query(ctx,
-		"SELECT type FROM system.columns WHERE database = 'logs' AND table = 'logs' AND name = 'fields'")
+		"SELECT type FROM system.columns WHERE database = ? AND table = 'logs' AND name = 'fields'",
+		c.logsDatabase())
 	if err != nil {
 		return result, fmt.Errorf("read fields column type: %w", err)
 	}
@@ -3458,7 +3192,7 @@ func (c *ClickHouseClient) ReconcileSchemaFields(ctx context.Context, fields []S
 	// at bootstrap and never inherit later MODIFY COLUMN on logs/logs_hot; mirror
 	// here so neither drifts. logs_hot_distributed is what HotReadTable() actually
 	// queries in cluster mode, so this is the table the alert engine reads.
-	if c.IsCluster() {
+	if c.topo.DistributedTables {
 		c.mirrorFieldsTypeHint(ctx, "logs_distributed", mergedList)
 		c.mirrorFieldsTypeHint(ctx, "logs_hot_distributed", mergedList)
 	}
@@ -3524,7 +3258,7 @@ func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []Sch
 		return fmt.Errorf("read current type hints: %w", err)
 	}
 
-	for _, tbl := range []string{"logs.logs_histogram", "logs.logs", "logs.logs_hot"} {
+	for _, tbl := range []string{"logs_histogram", "logs", "logs_hot"} {
 		sql := fmt.Sprintf("TRUNCATE TABLE %s", tbl)
 		if err := c.conn.Exec(ctx, c.InjectOnCluster(sql)); err != nil {
 			return fmt.Errorf("truncate %s: %w", tbl, err)
@@ -3562,7 +3296,7 @@ func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []Sch
 		return fmt.Errorf("reset fields column: %w", err)
 	}
 	c.mirrorFieldsTypeHint(ctx, "logs_hot", desired)
-	if c.IsCluster() {
+	if c.topo.DistributedTables {
 		c.mirrorFieldsTypeHint(ctx, "logs_distributed", desired)
 		c.mirrorFieldsTypeHint(ctx, "logs_hot_distributed", desired)
 	}
@@ -3575,7 +3309,8 @@ func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []Sch
 // currentFieldHints returns the type-hinted field names declared on logs.fields.
 func (c *ClickHouseClient) currentFieldHints(ctx context.Context) ([]string, error) {
 	rows, err := c.conn.Query(ctx,
-		"SELECT type FROM system.columns WHERE database = 'logs' AND table = 'logs' AND name = 'fields'")
+		"SELECT type FROM system.columns WHERE database = ? AND table = 'logs' AND name = 'fields'",
+		c.logsDatabase())
 	if err != nil {
 		return nil, err
 	}

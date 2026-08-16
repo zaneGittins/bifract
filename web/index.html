@@ -721,7 +721,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="queryCPUPercentSettings" class="sp-row-label">Search CPU share</label>
-                                        <p class="sp-row-desc">Share of each ClickHouse node's cores that running searches may use in total. Keeps one expensive search from starving ingestion.</p>
+                                        <p class="sp-row-desc">Share of the ClickHouse service's CPU that running searches may use in total. Keeps one expensive search from starving ingestion.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="queryCPUPercentSettings" class="setting-select">
@@ -837,7 +837,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="recallCPUPercentSettings" class="sp-row-label">Recall CPU share</label>
-                                        <p class="sp-row-desc">Share of each ClickHouse node's cores that running Recall searches may use in total. Recall is scheduled behind interactive search, so an archive scan cannot make live search feel slow.</p>
+                                        <p class="sp-row-desc">Share of the ClickHouse service's CPU that running Recall searches may use in total. Recall is scheduled behind interactive search, so an archive scan cannot make live search feel slow.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="recallCPUPercentSettings" class="setting-select">

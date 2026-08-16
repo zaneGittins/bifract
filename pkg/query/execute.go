@@ -165,7 +165,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 		ProcLineageTable:      h.procLineageTableName(),
 		ProcFreqTable:         h.procFreqTableName(),
 		ProcEdgesTable:        h.procEdgesTableName(),
-		IncludeShardNum:       h.db != nil && h.db.IsCluster(),
+		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
 	}
 
 	// Source commands (e.g. pgr()) generate the pipeline's source. Resolve into a subquery

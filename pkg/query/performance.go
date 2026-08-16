@@ -140,7 +140,7 @@ func (mc *MetricsCollector) sampleCPU(key string, addr *string) (float64, bool) 
 	var rows []map[string]interface{}
 	var err error
 	if addr != nil {
-		conn, openErr := storage.OpenClickHouseAddr(*addr, mc.db.User, mc.db.Password)
+		conn, openErr := mc.db.OpenNodeConn(*addr)
 		if openErr != nil {
 			log.Printf("[MetricsCollector] failed to connect to %s: %v", *addr, openErr)
 			return 0, false
@@ -192,7 +192,7 @@ func (mc *MetricsCollector) sampleMemory(key string, addr *string) (float64, boo
 	var rows []map[string]interface{}
 	var err error
 	if addr != nil {
-		conn, openErr := storage.OpenClickHouseAddr(*addr, mc.db.User, mc.db.Password)
+		conn, openErr := mc.db.OpenNodeConn(*addr)
 		if openErr != nil {
 			log.Printf("[MetricsCollector] failed to connect to %s for memory: %v", *addr, openErr)
 			return 0, false
@@ -329,10 +329,7 @@ func (h *PerformanceHandler) HandleProcesses(w http.ResponseWriter, r *http.Requ
 	// Cluster: system.processes is per node, so a query started through the load
 	// balancer is invisible from any other node. Read every replica and label the
 	// rows with the node they are running on.
-	source := "system.processes"
-	if h.db.IsCluster() {
-		source = fmt.Sprintf("clusterAllReplicas('%s', system.processes)", escCHStr(h.db.Cluster))
-	}
+	source := h.db.Topology().FanoutSystemTable("system.processes")
 	sql := fmt.Sprintf(`SELECT
 		query_id,
 		user,

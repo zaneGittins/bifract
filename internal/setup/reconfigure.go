@@ -50,6 +50,7 @@ func RunReconfigure(dir string) error {
 	if v, ok := existingEnv["CLICKHOUSE_PASSWORD"]; ok {
 		cfg.ClickHousePassword = v
 	}
+	cfg.CH = TargetFromEnv(existingEnv)
 	// Least-privilege ingest DB passwords: preserve if present, else generate strong
 	// ones for installs that predate the split. Dropping these writes empty values to
 	// .env, which silently strands the ingest tier: the app skips provisioning on an

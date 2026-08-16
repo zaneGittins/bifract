@@ -557,8 +557,8 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 	switch {
 	case e.ch != nil && time.Since(from) < hotTableLookbackThreshold:
 		tableName = e.ch.HotReadTable()
-	case e.ch != nil && e.ch.IsCluster():
-		tableName = "logs_distributed"
+	case e.ch != nil:
+		tableName = e.ch.ReadTable()
 	default:
 		tableName = "logs"
 	}

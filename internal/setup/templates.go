@@ -44,6 +44,14 @@ func RenderEnvFile(cfg *SetupConfig) string {
 	fmt.Fprintf(&b, "BIFRACT_INGEST_POSTGRES_PASSWORD=%s\n", cfg.IngestPostgresPassword)
 	fmt.Fprintf(&b, "BIFRACT_INGEST_CLICKHOUSE_PASSWORD=%s\n", cfg.IngestClickHousePassword)
 	fmt.Fprintf(&b, "LITELLM_MASTER_KEY=%s\n", cfg.LiteLLMMasterKey)
+	if ch := cfg.CH.PersistEnv(); len(ch) > 0 {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "# External ClickHouse. Recovered on reconfigure/upgrade so the")
+		fmt.Fprintln(&b, "# install does not revert to a bundled ClickHouse it no longer has.")
+		for _, v := range ch {
+			fmt.Fprintf(&b, "%s=%s\n", v.Name, v.Value)
+		}
+	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "# AI chat (optional - see docs/features/ai-chat.md)")
 	fmt.Fprintln(&b, "# LITELLM_API_KEY=")

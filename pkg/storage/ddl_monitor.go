@@ -69,9 +69,10 @@ func (m *DDLMonitor) History(ctx context.Context, since time.Duration, bucketSec
 	return out
 }
 
-// Start begins background polling. No-op for single-node deployments.
+// Start begins background polling. No-op where DDL is not distributed through
+// Keeper, so there is no distributed_ddl_queue to watch.
 func (m *DDLMonitor) Start() {
-	if !m.ch.IsCluster() {
+	if m.ch.Topology().DDLCluster == "" {
 		return
 	}
 	go m.run()

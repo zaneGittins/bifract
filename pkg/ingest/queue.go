@@ -573,8 +573,10 @@ func (q *IngestQueue) monitorCPU() {
 		case <-q.stop:
 			return
 		case <-ticker.C:
-			pct, err := q.queryClickHouseCPU()
-			if err != nil {
+			pct, cpuOK, err := q.queryClickHouseCPU()
+			if err != nil || !cpuOK {
+				// Unmeasurable is not "idle": leave the streak reset and do not
+				// let a missing metric look like healthy headroom.
 				q.cpuState.highStreak.Store(0)
 			} else if pct >= cpuPressureTrigger {
 				if q.cpuState.highStreak.Add(1) >= cpuPressureSustainSamples {
@@ -588,7 +590,7 @@ func (q *IngestQueue) monitorCPU() {
 				}
 			}
 
-			if diskPct, diskErr := q.queryClickHouseDisk(); diskErr == nil {
+			if diskPct, diskOK, diskErr := q.queryClickHouseDisk(); diskErr == nil && diskOK {
 				if diskPct >= diskPressureTrigger {
 					q.raisePressure(&q.diskState, fmt.Sprintf("%.1f", diskPct), fmt.Sprintf("%.1f", diskPressureTrigger),
 						fmt.Sprintf("ClickHouse disk at %.1f%% used (threshold %.1f%%)", diskPct, diskPressureTrigger))
@@ -717,8 +719,8 @@ func (q *IngestQueue) notifyPressure(p *pressureState, severity string) {
 // monitor. Guards against the OOM class of incident where inserts get killed and the
 // distribution queue backs up.
 func (q *IngestQueue) monitorMemory() {
-	pct, err := q.queryClickHouseMemory()
-	if err != nil {
+	pct, ok, err := q.queryClickHouseMemory()
+	if err != nil || !ok {
 		q.memState.highStreak.Store(0)
 		return
 	}
@@ -738,41 +740,46 @@ func (q *IngestQueue) monitorMemory() {
 // queryClickHouseMemory returns the highest memory utilization (0-100) across all
 // ClickHouse nodes, preferring the cgroup limit over node RAM. In cluster mode it
 // takes the max so backpressure triggers when any node is near its limit.
-func (q *IngestQueue) queryClickHouseMemory() (float64, error) {
+func (q *IngestQueue) queryClickHouseMemory() (float64, bool, error) {
 	addrs := q.mdb().Addrs()
 	if len(addrs) <= 1 {
 		return q.queryNodeMemory(nil)
 	}
 	var maxPct float64
+	var measured bool
 	var lastErr error
 	for _, addr := range addrs {
-		pct, err := q.queryNodeMemory(&addr)
+		pct, ok, err := q.queryNodeMemory(&addr)
 		if err != nil {
 			lastErr = err
 			continue
 		}
+		if !ok {
+			continue
+		}
+		measured = true
 		if pct > maxPct {
 			maxPct = pct
 		}
 	}
-	if maxPct > 0 || lastErr == nil {
-		return maxPct, nil
+	if measured || lastErr == nil {
+		return maxPct, measured, nil
 	}
-	return 0, lastErr
+	return 0, false, lastErr
 }
 
 // queryNodeMemory queries memory metrics from a single ClickHouse node.
 // If addr is nil, uses the shared connection pool.
-func (q *IngestQueue) queryNodeMemory(addr *string) (float64, error) {
+func (q *IngestQueue) queryNodeMemory(addr *string) (float64, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var rows []map[string]interface{}
 	var err error
 	if addr != nil {
-		conn, openErr := storage.OpenClickHouseAddr(*addr, q.mdb().User, q.mdb().Password)
+		conn, openErr := q.mdb().OpenNodeConn(*addr)
 		if openErr != nil {
-			return 0, openErr
+			return 0, false, openErr
 		}
 		defer conn.Close()
 		rows, err = storage.QueryConn(ctx, conn, storage.SystemMemoryMetricsSQL)
@@ -780,42 +787,47 @@ func (q *IngestQueue) queryNodeMemory(addr *string) (float64, error) {
 		rows, err = q.mdb().Query(ctx, storage.SystemMemoryMetricsSQL)
 	}
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	pct, _ := storage.MemoryPercentFromMetrics(storage.MetricRowsToMap(rows))
-	return pct, nil
+	pct, ok := storage.MemoryPercentFromMetrics(storage.MetricRowsToMap(rows))
+	return pct, ok, nil
 }
 
 // queryClickHouseCPU returns the highest CPU utilization (0-100) across
 // all ClickHouse nodes. In single-node mode this queries via the shared
 // connection pool. In cluster mode it queries each node individually and
 // returns the max, so backpressure triggers when any node is overloaded.
-func (q *IngestQueue) queryClickHouseCPU() (float64, error) {
+func (q *IngestQueue) queryClickHouseCPU() (float64, bool, error) {
 	addrs := q.mdb().Addrs()
 	if len(addrs) <= 1 {
 		return q.queryNodeCPU(nil)
 	}
 	var maxPct float64
+	var measured bool
 	var lastErr error
 	for _, addr := range addrs {
-		pct, err := q.queryNodeCPU(&addr)
+		pct, ok, err := q.queryNodeCPU(&addr)
 		if err != nil {
 			lastErr = err
 			continue
 		}
+		if !ok {
+			continue
+		}
+		measured = true
 		if pct > maxPct {
 			maxPct = pct
 		}
 	}
-	if maxPct > 0 || lastErr == nil {
-		return maxPct, nil
+	if measured || lastErr == nil {
+		return maxPct, measured, nil
 	}
-	return 0, lastErr
+	return 0, false, lastErr
 }
 
 // queryNodeCPU queries CPU metrics from a single ClickHouse node.
 // If addr is nil, uses the shared connection pool.
-func (q *IngestQueue) queryNodeCPU(addr *string) (float64, error) {
+func (q *IngestQueue) queryNodeCPU(addr *string) (float64, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -823,9 +835,9 @@ func (q *IngestQueue) queryNodeCPU(addr *string) (float64, error) {
 	var err error
 
 	if addr != nil {
-		conn, openErr := storage.OpenClickHouseAddr(*addr, q.mdb().User, q.mdb().Password)
+		conn, openErr := q.mdb().OpenNodeConn(*addr)
 		if openErr != nil {
-			return 0, openErr
+			return 0, false, openErr
 		}
 		defer conn.Close()
 		rows, err = storage.QueryConn(ctx, conn, storage.SystemCPUMetricsSQL)
@@ -833,39 +845,47 @@ func (q *IngestQueue) queryNodeCPU(addr *string) (float64, error) {
 		rows, err = q.mdb().Query(ctx, storage.SystemCPUMetricsSQL)
 	}
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	pct, _ := storage.CPUPercentFromMetrics(storage.MetricRowsToMap(rows))
-	return pct, nil
+	pct, ok := storage.CPUPercentFromMetrics(storage.MetricRowsToMap(rows))
+	return pct, ok, nil
 }
 
 // queryClickHouseDisk returns the highest disk usage percentage (0-100) across
 // all ClickHouse nodes. Queries the system.disks table for the default disk.
-func (q *IngestQueue) queryClickHouseDisk() (float64, error) {
+func (q *IngestQueue) queryClickHouseDisk() (float64, bool, error) {
 	addrs := q.mdb().Addrs()
 	if len(addrs) <= 1 {
 		return q.queryNodeDisk(nil)
 	}
 	var maxPct float64
+	var measured bool
 	var lastErr error
 	for _, addr := range addrs {
-		pct, err := q.queryNodeDisk(&addr)
+		pct, ok, err := q.queryNodeDisk(&addr)
 		if err != nil {
 			lastErr = err
 			continue
 		}
+		if !ok {
+			continue
+		}
+		measured = true
 		if pct > maxPct {
 			maxPct = pct
 		}
 	}
-	if maxPct > 0 || lastErr == nil {
-		return maxPct, nil
+	if measured || lastErr == nil {
+		return maxPct, measured, nil
 	}
-	return 0, lastErr
+	return 0, false, lastErr
 }
 
 // queryNodeDisk queries disk usage from a single ClickHouse node.
-func (q *IngestQueue) queryNodeDisk(addr *string) (float64, error) {
+// A server that manages storage for us reports no local disk. That is not 0%
+// used: it is not measurable, and the caller must skip the trigger rather than
+// read an empty answer as "plenty of room".
+func (q *IngestQueue) queryNodeDisk(addr *string) (float64, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -875,9 +895,9 @@ func (q *IngestQueue) queryNodeDisk(addr *string) (float64, error) {
 	var err error
 
 	if addr != nil {
-		conn, openErr := storage.OpenClickHouseAddr(*addr, q.mdb().User, q.mdb().Password)
+		conn, openErr := q.mdb().OpenNodeConn(*addr)
 		if openErr != nil {
-			return 0, openErr
+			return 0, false, openErr
 		}
 		defer conn.Close()
 		rows, err = storage.QueryConn(ctx, conn, diskQuery)
@@ -885,18 +905,18 @@ func (q *IngestQueue) queryNodeDisk(addr *string) (float64, error) {
 		rows, err = q.mdb().Query(ctx, diskQuery)
 	}
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if len(rows) == 0 {
-		return 0, nil
+		return 0, false, nil
 	}
 
 	total := asFloat64(rows[0]["total_space"])
 	free := asFloat64(rows[0]["free_space"])
 	if total <= 0 {
-		return 0, nil
+		return 0, false, nil
 	}
-	return (total - free) / total * 100, nil
+	return (total - free) / total * 100, true, nil
 }
 
 func asFloat64(v interface{}) float64 {

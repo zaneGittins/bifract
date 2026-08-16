@@ -114,6 +114,7 @@ func RunUpgrade(dir string) error {
 	if v, ok := existingEnv["CLICKHOUSE_PASSWORD"]; ok {
 		cfg.ClickHousePassword = v
 	}
+	cfg.CH = TargetFromEnv(existingEnv)
 	// Least-privilege ingest DB passwords: preserve if present, else generate strong
 	// ones for installs that predate the split. The app provisions/rotates the
 	// bifract_ingest user+role to match on startup.
@@ -310,12 +311,15 @@ func RunUpgrade(dir string) error {
 			printDone(fmt.Sprintf("Applied %d Postgres migration(s)", pgApplied))
 		}
 
-		chPass := cfg.ClickHousePassword
-		chApplied, err := RunClickHouseMigrations(docker, "default", chPass)
-		if err != nil {
-			printWarn(fmt.Sprintf("ClickHouse migration: %v", err))
-		} else if chApplied > 0 {
-			printDone(fmt.Sprintf("Applied %d ClickHouse migration(s)", chApplied))
+		// See install.go: only a bundled ClickHouse is reachable by docker exec.
+		chApplied := 0
+		if cfg.CH.Bundled() {
+			chApplied, err = RunClickHouseMigrations(docker, "default", cfg.ClickHousePassword)
+			if err != nil {
+				printWarn(fmt.Sprintf("ClickHouse migration: %v", err))
+			} else if chApplied > 0 {
+				printDone(fmt.Sprintf("Applied %d ClickHouse migration(s)", chApplied))
+			}
 		}
 
 		if pgApplied == 0 && chApplied == 0 {

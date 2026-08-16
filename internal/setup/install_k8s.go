@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"bifract/pkg/archive"
+	"bifract/pkg/storage"
 )
 
 // ResourceProfile defines CPU and memory requests/limits for a component.
@@ -317,6 +319,8 @@ const (
 	k8sStepIPAccess
 	k8sStepAllowedIPs
 	k8sStepSizeProfile
+	k8sStepClickHouse
+	k8sStepClickHouseHost
 	k8sStepCHShards
 	k8sStepCHStorage
 	k8sStepOutputDir
@@ -334,6 +338,7 @@ var k8sStepLabels = []struct {
 	{k8sStepSSL, "SSL"},
 	{k8sStepIPAccess, "IP Access"},
 	{k8sStepSizeProfile, "Resources"},
+	{k8sStepClickHouse, "ClickHouse"},
 	{k8sStepCHShards, "Cluster"},
 	{k8sStepOutputDir, "Output"},
 	{k8sStepConfirm, "Confirm"},
@@ -356,6 +361,10 @@ type k8sWizardModel struct {
 	ipCursor        int
 	ipValidationErr string
 	sizeCursor      int
+	chChoices       []string
+	chCursor        int
+	chHostInput     textinput.Model
+	chValidationErr string
 
 	width  int
 	height int
@@ -411,6 +420,9 @@ func newK8sWizardModel() k8sWizardModel {
 		storageInput:    storage,
 		outputDirInput:  outputDir,
 		sslChoices:      []string{"Let's Encrypt (automatic)", "Custom certificate"},
+		chChoices:       []string{"Bundled (recommended)", "External ClickHouse", "ClickHouse Cloud"},
+		chCursor:        0,
+		chHostInput:     k8sCHHostInput(),
 		sslCursor:       0,
 		ipChoices:       []string{"Allow all traffic", "Restrict UI only (allow ingest)", "Restrict all traffic", "mTLS (mutual TLS for UI)"},
 		ipCursor:        0,
@@ -444,6 +456,8 @@ func (m k8sWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.step {
 	case k8sStepDomain:
 		m.domainInput, cmd = m.domainInput.Update(msg)
+	case k8sStepClickHouseHost:
+		m.chHostInput, cmd = m.chHostInput.Update(msg)
 	case k8sStepAllowedIPs:
 		m.allowedIPsInput, cmd = m.allowedIPsInput.Update(msg)
 	case k8sStepCHShards:
@@ -470,6 +484,10 @@ func (m *k8sWizardModel) handleUp() {
 		if m.sizeCursor > 0 {
 			m.sizeCursor--
 		}
+	case k8sStepClickHouse:
+		if m.chCursor > 0 {
+			m.chCursor--
+		}
 	}
 }
 
@@ -486,6 +504,10 @@ func (m *k8sWizardModel) handleDown() {
 	case k8sStepSizeProfile:
 		if m.sizeCursor < len(sizeProfiles)-1 {
 			m.sizeCursor++
+		}
+	case k8sStepClickHouse:
+		if m.chCursor < len(m.chChoices)-1 {
+			m.chCursor++
 		}
 	}
 }
@@ -555,8 +577,59 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 		m.config.SizeProfile = profile
 		m.config.CHShards = profile.CHShards
 		m.shardsInput.SetValue(fmt.Sprintf("%d", profile.CHShards))
-		m.step = k8sStepCHShards
-		m.shardsInput.Focus()
+		m.step = k8sStepClickHouse
+		return m, nil
+
+	case k8sStepClickHouse:
+		switch m.chCursor {
+		case 0:
+			m.config.CH = ClickHouseTarget{}
+			m.config.CH.Normalize()
+			// Shard and storage sizing only describe a ClickHouse we render.
+			m.step = k8sStepCHShards
+			m.shardsInput.Focus()
+			return m, textinput.Blink
+		case 1:
+			m.config.CH = ClickHouseTarget{Backend: CHBackendExternal}
+			m.chHostInput.Placeholder = "clickhouse.example.internal:9000"
+		case 2:
+			m.config.CH = ClickHouseTarget{Backend: CHBackendExternal, Deployment: "cloud", Secure: true}
+			m.chHostInput.Placeholder = "your-service.clickhouse.cloud"
+		}
+		m.chValidationErr = ""
+		m.step = k8sStepClickHouseHost
+		m.chHostInput.Focus()
+		return m, textinput.Blink
+
+	case k8sStepClickHouseHost:
+		val := strings.TrimSpace(m.chHostInput.Value())
+		if val == "" {
+			m.chValidationErr = "A host is required."
+			return m, nil
+		}
+		host, port := val, 0
+		if h, p, err := net.SplitHostPort(val); err == nil {
+			host = h
+			if n, convErr := strconv.Atoi(p); convErr == nil {
+				port = n
+			}
+		}
+		m.config.CH.Host = host
+		m.config.CH.Port = port
+		m.config.CH.Normalize()
+		if err := m.config.CH.Validate(); err != nil {
+			m.chValidationErr = err.Error()
+			return m, nil
+		}
+		if err := CheckClickHouseReachable(m.config.CH); err != nil {
+			m.chValidationErr = err.Error()
+			return m, nil
+		}
+		m.chValidationErr = ""
+		// External ClickHouse: skip shard and storage sizing entirely, they
+		// describe a workload this installer no longer renders.
+		m.step = k8sStepOutputDir
+		m.outputDirInput.Focus()
 		return m, textinput.Blink
 
 	case k8sStepCHShards:
@@ -705,6 +778,38 @@ func (m k8sWizardModel) View() string {
 		if m.ipValidationErr != "" {
 			b.WriteString("\n\n")
 			b.WriteString(ErrorStyle.Render("  " + m.ipValidationErr))
+		}
+		content = b.String()
+		hint = "Enter to confirm  |  Esc to go back"
+
+	case k8sStepClickHouse:
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("ClickHouse Backend"))
+		b.WriteString("\n\n")
+		b.WriteString("Where should Bifract store log data?\n\n")
+		b.WriteString(RenderOptionList(m.chChoices, []string{
+			"Deploy ClickHouse into this cluster with the ClickHouse operator.",
+			"Connect to a ClickHouse you already run. No ClickHouse workloads are deployed.",
+			"Connect to a managed ClickHouse Cloud service over TLS.",
+		}, m.chCursor))
+		content = b.String()
+		hint = "Up/Down to select  |  Enter to confirm  |  Esc to go back"
+
+	case k8sStepClickHouseHost:
+		var b strings.Builder
+		b.WriteString(TitleStyle.Render("ClickHouse Endpoint"))
+		b.WriteString("\n\n")
+		if m.config.CH.Deployment == "cloud" {
+			b.WriteString("Enter your service hostname. TLS is required and port 9440 is assumed.\n\n")
+		} else {
+			b.WriteString("Enter the native-protocol endpoint. Port 9000 is assumed if omitted.\n\n")
+		}
+		b.WriteString(LabelStyle.Render("  Host"))
+		b.WriteString("\n")
+		b.WriteString("  " + m.chHostInput.View())
+		if m.chValidationErr != "" {
+			b.WriteString("\n\n")
+			b.WriteString(ErrorStyle.Render("  " + m.chValidationErr))
 		}
 		content = b.String()
 		hint = "Enter to confirm  |  Esc to go back"
@@ -919,13 +1024,19 @@ func RunInstallK8s() error {
 
 // k8sTemplateData holds all values needed by the K8s manifest templates.
 type k8sTemplateData struct {
-	ImageTag                 string
-	Domain                   string
-	CHShards                 int
-	CHStorageGB              int
-	CHStorageStr             string
-	CHPasswordHash           string
-	CHHostsList              string
+	ImageTag       string
+	Domain         string
+	CHShards       int
+	CHStorageGB    int
+	CHStorageStr   string
+	CHPasswordHash string
+	CHHostsList    string
+	// CHBundled drives every manifest that only exists for a ClickHouse this
+	// installer renders: the ClickHouseInstallation, its load balancer, its
+	// NetworkPolicy and its kustomization entries.
+	CHBundled                bool
+	CHEnvApp                 []EnvVar
+	CHEnvIngest              []EnvVar
 	PostgresPassword         string
 	IngestPostgresPassword   string
 	ClickHousePassword       string
@@ -1050,7 +1161,6 @@ type k8sManifestFile struct {
 var k8sManifests = []k8sManifestFile{
 	{"templates/k8s/namespace.yaml.tmpl", "namespace.yaml"},
 	{"templates/k8s/kustomization.yaml.tmpl", "kustomization.yaml"},
-	{"templates/k8s/clickhouse-installation.yaml.tmpl", "clickhouse/clickhouse-installation.yaml"},
 	{"templates/k8s/postgres-statefulset.yaml.tmpl", "postgres/statefulset.yaml"},
 	{"templates/k8s/bifract-deployment.yaml.tmpl", "bifract/deployment.yaml"},
 	{"templates/k8s/bifract-ingest-deployment.yaml.tmpl", "bifract/ingest-deployment.yaml"},
@@ -1063,6 +1173,14 @@ var k8sManifests = []k8sManifestFile{
 	{"templates/k8s/litellm-deployment.yaml.tmpl", "litellm/deployment.yaml"},
 	{"templates/k8s/litellm-configmap.yaml.tmpl", "litellm/configmap.yaml"},
 	{"templates/k8s/network-policies.yaml.tmpl", "network-policies.yaml"},
+}
+
+// k8sConditionalManifests are rendered only for some configurations. They are a
+// separate list rather than an inline branch so the YAML-validity test can
+// iterate both sets and keep covering them.
+var k8sConditionalManifests = []k8sManifestFile{
+	{"templates/k8s/clickhouse-installation.yaml.tmpl", "clickhouse/clickhouse-installation.yaml"},
+	{"templates/k8s/clickhouse-lb-service.yaml.tmpl", "clickhouse/lb-service.yaml"},
 }
 
 func writeK8sManifests(cfg *K8sConfig) error {
@@ -1105,7 +1223,10 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		CHStorageGB:              cfg.CHStorageGB,
 		CHStorageStr:             formatStorageSize(cfg.CHStorageGB),
 		CHPasswordHash:           fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.ClickHousePassword))),
-		CHHostsList:              buildCHHostsList(cfg.CHShards),
+		CHHostsList:              buildCHHostsList(cfg),
+		CHBundled:                cfg.CH.Bundled(),
+		CHEnvApp:                 k8sCHEnv(cfg, ""),
+		CHEnvIngest:              k8sCHEnv(cfg, storage.IngestCHUser),
 		PostgresPassword:         cfg.PostgresPassword,
 		ClickHousePassword:       cfg.ClickHousePassword,
 		IngestClickHousePassword: cfg.IngestClickHousePassword,
@@ -1167,15 +1288,26 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		}
 	}
 
-	// Write ClickHouse LB service for multi-shard clusters.
-	if cfg.CHShards > 1 {
-		content, err := renderK8sTemplate("templates/k8s/clickhouse-lb-service.yaml.tmpl", data)
-		if err != nil {
-			return fmt.Errorf("render clickhouse LB service template: %w", err)
-		}
-		outPath := filepath.Join(cfg.OutputDir, "clickhouse/lb-service.yaml")
-		if err := os.WriteFile(outPath, []byte(content), 0600); err != nil {
-			return fmt.Errorf("write clickhouse LB service: %w", err)
+	// ClickHouse manifests exist only for a ClickHouse this installer renders.
+	// An external one brings its own load balancing, and there is no in-cluster
+	// workload to declare or select.
+	if cfg.CH.Bundled() {
+		for _, m := range k8sConditionalManifests {
+			// The LB only exists once there is more than one shard to spread across.
+			if m.output == "clickhouse/lb-service.yaml" && cfg.CHShards <= 1 {
+				continue
+			}
+			content, err := renderK8sTemplate(m.template, data)
+			if err != nil {
+				return fmt.Errorf("render %s: %w", m.template, err)
+			}
+			outPath := filepath.Join(cfg.OutputDir, m.output)
+			if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+				return fmt.Errorf("create dir for %s: %w", m.output, err)
+			}
+			if err := os.WriteFile(outPath, []byte(content), 0600); err != nil {
+				return fmt.Errorf("write %s: %w", m.output, err)
+			}
 		}
 	}
 
@@ -1258,9 +1390,14 @@ func parseK8sMemToBytes(s string) int64 {
 	return n * mult
 }
 
-func buildCHHostsList(shards int) string {
-	hosts := make([]string, 0, shards)
-	for s := 0; s < shards; s++ {
+func buildCHHostsList(cfg *K8sConfig) string {
+	if !cfg.CH.Bundled() {
+		// An external cluster's addresses are the operator's to choose; the pod
+		// naming convention below only describes one we render ourselves.
+		return cfg.CH.Hosts
+	}
+	hosts := make([]string, 0, cfg.CHShards)
+	for s := 0; s < cfg.CHShards; s++ {
 		hosts = append(hosts, fmt.Sprintf("bifract-ch-clickhouse-%d-0-0.bifract-ch-clickhouse-headless", s))
 	}
 	return strings.Join(hosts, ",")
@@ -1298,4 +1435,34 @@ func buildIPBlockIngest(cfg *K8sConfig) string {
 	}
 	ipList := strings.Join(cfg.AllowedIPs, " ")
 	return fmt.Sprintf("      @blocked_ingest not remote_ip %s\n      respond @blocked_ingest 403\n", ipList)
+}
+
+// k8sCHEnv renders the ClickHouse environment for one k8s workload. The bundled
+// addressing is the operator's convention: per-shard pod FQDNs behind the
+// headless service, a cluster named "default" created by the ClickHouseCluster,
+// and a load balancer service once there is more than one shard to spread across.
+func k8sCHEnv(cfg *K8sConfig, userOverride string) []EnvVar {
+	o := CHEnvOptions{UserOverride: userOverride}
+	if cfg.CH.Bundled() {
+		o.BundledHosts = buildCHHostsList(cfg)
+		o.BundledCluster = "default"
+		if cfg.CHShards > 1 {
+			o.BundledWriteHost = k8sCHLoadBalancerService
+		}
+	}
+	return cfg.CH.EnvVars(o)
+}
+
+// k8sCHLoadBalancerService must match the Service name in
+// clickhouse-lb-service.yaml.tmpl.
+const k8sCHLoadBalancerService = "bifract-ch-clickhouse-lb"
+
+// k8sCHHostInput is the endpoint field for an external ClickHouse.
+func k8sCHHostInput() textinput.Model {
+	in := textinput.New()
+	in.Placeholder = "clickhouse.example.internal:9000"
+	in.Width = 48
+	in.PromptStyle = PromptStyle
+	in.TextStyle = lipgloss.NewStyle().Foreground(White)
+	return in
 }

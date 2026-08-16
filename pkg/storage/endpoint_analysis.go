@@ -54,7 +54,7 @@ const AdvancedEndpointAnalysisSetting = "advanced_endpoint_analysis"
 // cluster ATTACH/DETACH is not atomic across nodes, so a toggle may briefly leave the
 // feature active on some nodes and not others; it converges once this completes.
 func (c *ClickHouseClient) ReconcileEndpointAnalysisMVs(ctx context.Context, enabled bool) error {
-	if !c.IsCluster() {
+	if !c.topo.PerNodeAdmin {
 		if err := reconcileEndpointMVsOnConn(ctx, c.conn, enabled); err != nil {
 			return err
 		}
@@ -62,10 +62,9 @@ func (c *ClickHouseClient) ReconcileEndpointAnalysisMVs(ctx context.Context, ena
 		return nil
 	}
 
-	initPool := ClickHousePoolConfig{MaxOpenConns: 1, MaxIdleConns: 1, DialTimeout: 10 * time.Second}
 	var firstErr error
 	for _, addr := range c.addrs {
-		hostConn, err := openClickHouseConn([]string{addr}, c.Database, c.User, c.Password, initPool)
+		hostConn, err := openClickHouseConn(c.nodeConnOptions(addr, adminNodePool))
 		if err != nil {
 			log.Printf("Warning: endpoint analysis sync to %s failed: %v", addr, err)
 			if firstErr == nil {
