@@ -890,6 +890,7 @@ func main() {
 			r.Post("/logs/by-timestamp", queryHandler.HandleGetLogByTimestamp)
 			r.Get("/logs/fields", queryHandler.HandleGetLogFields)
 			r.Get("/status", statusHandler.HandleStatus)
+			r.Get("/health/clickhouse", statusHandler.HandleHealthCheck)
 			// The single source of truth for what this deployment is and what it can
 			// do. It replaces inferring the shape from incidental payload keys on
 			// four unrelated endpoints, which could only ever answer "cluster or

@@ -69,9 +69,10 @@ func NewStatusHandler(db *storage.ClickHouseClient, pg *storage.PostgresClient) 
 }
 
 // HandleHealthCheck is an ultralight endpoint that only pings ClickHouse.
-// Used by the UI status dot; no expensive queries. In cluster mode also
-// checks per-shard health via system.clusters and returns degraded=true
-// when one or more shards are unreachable.
+// Used by the UI status dot; no expensive queries. On a self-managed cluster it
+// also checks per-shard health via system.clusters and returns degraded=true
+// when one or more shards are unreachable. Cloud is skipped: the service owns
+// replication, and a scaled-down replica there is normal, not degraded.
 func (h *StatusHandler) HandleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
@@ -86,7 +87,7 @@ func (h *StatusHandler) HandleHealthCheck(w http.ResponseWriter, r *http.Request
 
 	resp := healthResp{Success: true, Connected: h.db.HealthCheck(ctx) == nil}
 
-	if resp.Connected && h.db.Topology().FanoutCluster != "" {
+	if resp.Connected && h.db.Topology().ShardRouting {
 		shardCtx, shardCancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer shardCancel()
 		total, healthy, err := h.db.ShardHealth(shardCtx)
