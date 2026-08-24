@@ -51,9 +51,9 @@ func partsSource(ch *storage.ClickHouseClient, table string) string {
 }
 
 // fractalFromPartition extracts the fractal_id from a `('<fractal>','<date>')`
-// partition expression. PARTITION BY (fractal_id, toDate(timestamp)) makes every
-// part attributable to exactly one fractal, so per-fractal accounting needs no
-// data scan.
+// partition expression. PARTITION BY (fractal_id, toDate(ingest_timestamp)) makes
+// every part attributable to exactly one fractal, so per-fractal accounting needs
+// no data scan. Only the fractal half is read here, so the date axis is irrelevant.
 const fractalFromPartition = `extract(partition, '^\\(''([^'']*)''')`
 
 // normalizedPaths rewrites a part's sub-column list into real JSON paths.

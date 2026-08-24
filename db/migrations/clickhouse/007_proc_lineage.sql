@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- Process-lineage skeleton for ptg() (Process Tree Graph). One row per process-create
 -- event, ordered by (fractal_id, process_guid) so ptg() traversal hops are primary-key
 -- point lookups instead of full-table scans over logs (which OOMs dfs/bfs at scale).

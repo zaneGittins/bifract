@@ -458,6 +458,28 @@
             });
         })();
 
+        // A deep link that bounced through login. It is kept in sessionStorage
+        // rather than carried on the URL because the OIDC round trip returns to
+        // "/" and never comes back through this page.
+        const PENDING_LINK_KEY = 'bifract-pending-link';
+
+        // Only same-origin absolute paths survive, or the next parameter becomes
+        // an open redirect. Tab and newline are stripped first because the URL
+        // parser drops them too, which turns "/\n/host" into "//host".
+        function safeInternalPath(path) {
+            if (typeof path !== 'string') return null;
+            const cleaned = path.replace(/[\t\n\r]/g, '');
+            if (!cleaned || cleaned[0] !== '/') return null;
+            if (cleaned[1] === '/' || cleaned[1] === '\\') return null;
+            return cleaned;
+        }
+
+        function consumePendingLink() {
+            const next = safeInternalPath(sessionStorage.getItem(PENDING_LINK_KEY));
+            sessionStorage.removeItem(PENDING_LINK_KEY);
+            return next || '/';
+        }
+
         // Login page authentication
         const LoginPage = {
             inviteToken: null,
@@ -465,6 +487,9 @@
             async init() {
                 const params = new URLSearchParams(window.location.search);
                 const inviteToken = params.get('invite');
+
+                const next = safeInternalPath(params.get('next'));
+                if (next) sessionStorage.setItem(PENDING_LINK_KEY, next);
 
                 if (inviteToken) {
                     await this.initInviteFlow(inviteToken);
@@ -510,7 +535,7 @@
                                 this.setupLoginForm();
                                 return;
                             }
-                            window.location.href = '/';
+                            window.location.href = consumePendingLink();
                             return;
                         }
                     }
@@ -635,7 +660,7 @@
                             if (data.user && data.user.force_password_change) {
                                 this.showForceChangeFlow(password);
                             } else {
-                                window.location.href = '/';
+                                window.location.href = consumePendingLink();
                             }
                         } else {
                             this.showError(data.error || 'Login failed');
@@ -707,7 +732,7 @@
                             successDiv.style.display = 'block';
 
                             setTimeout(() => {
-                                window.location.href = '/';
+                                window.location.href = consumePendingLink();
                             }, 1500);
                         } else {
                             this.showForceChangeError(data.error || 'Failed to change password');

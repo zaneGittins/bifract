@@ -7,7 +7,6 @@ import (
 	"log"
 	"math"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
 	"time"
@@ -607,20 +606,14 @@ func cpuPoints(points []storage.MetricPoint) []map[string]interface{} {
 	return out
 }
 
-// partitionRe extracts the fractal_id and date from a system.parts partition
-// value, which for the logs table (PARTITION BY (fractal_id, toDate(timestamp)))
-// is formatted as the tuple ('<fractal_id>','YYYY-MM-DD'). The default fractal
-// has an empty id, yielding (”,'YYYY-MM-DD').
-var partitionRe = regexp.MustCompile(`^\('(.*)','(\d{4}-\d{2}-\d{2})'\)$`)
-
 // HandleIngestDaily returns per-day ingest volume (uncompressed + on-disk bytes
 // and row counts) derived purely from system.parts partition metadata. Because
-// the logs table is partitioned by (fractal_id, toDate(timestamp)), this is a
-// metadata-only query (no data scan, sub-millisecond) and is exact per fractal.
+// the logs table is partitioned by (fractal_id, toDate(ingest_timestamp)), this is
+// a metadata-only query (no data scan, sub-millisecond) and is exact per fractal.
 //
-// Bucketing is by event date (toDate(timestamp)) and bytes reflect the full
-// on-disk row footprint, so totals reconcile with the storage cards' "raw"
-// figure (both use system.parts.data_uncompressed_bytes).
+// Bucketing is by ingest date and bytes reflect the full on-disk row footprint, so
+// totals reconcile with the storage cards' "raw" figure (both use
+// system.parts.data_uncompressed_bytes).
 //
 // Optional params: ?fractal=<id> to scope to a single fractal, ?days=N to bound
 // the window (default 30, max 365).
@@ -673,14 +666,14 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 	// (stacked) per fractal.
 	byFractalDay := map[string]map[string]*dayAgg{} // fractalID -> day -> agg
 	totalByFractal := map[string]float64{}          // ranking by uncompressed bytes
-	maxDataDay := ""
+	var maxDataDay time.Time
 	for _, row := range rows {
 		part, _ := row["partition"].(string)
-		m := partitionRe.FindStringSubmatch(part)
-		if m == nil {
+		fractalID, dayTime, ok := storage.ParseLogPartition(part)
+		if !ok {
 			continue
 		}
-		fractalID, day := m[1], m[2]
+		day := dayTime.Format("2006-01-02")
 		if fractalFilter != "" && fractalID != fractalFilter {
 			continue
 		}
@@ -699,25 +692,24 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 		agg.disk += toFloat64(row["disk_bytes"])
 		agg.rows += toFloat64(row["rows"])
 		totalByFractal[fractalID] += raw
-		if day > maxDataDay {
-			maxDataDay = day
+		if dayTime.After(maxDataDay) {
+			maxDataDay = dayTime
 		}
 	}
 
 	// Contiguous day window, zero-filled so bars stay evenly spaced and aligned.
-	// The window ends today, or later if data carries event timestamps into the
-	// future. The forward extension is capped at the requested window length:
-	// toDate() accepts dates out to 2149, so one log with a skewed or misparsed
-	// timestamp would otherwise zero-fill tens of thousands of buckets.
+	// Ingest dates are stamped by our own servers, so unlike event timestamps they
+	// cannot run years ahead; the window only ever needs one day of slack to cover
+	// a writer whose clock is briefly past UTC midnight.
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	start := today.AddDate(0, 0, -days+1)
 	end := today
-	if t, err := time.Parse("2006-01-02", maxDataDay); err == nil && t.After(end) {
-		if limit := today.AddDate(0, 0, days); t.After(limit) {
-			t = limit
+	if limit := today.AddDate(0, 0, 1); maxDataDay.After(end) {
+		end = maxDataDay
+		if end.After(limit) {
+			end = limit
 		}
-		end = t
 	}
 
 	dayKeys := make([]string, 0, days)

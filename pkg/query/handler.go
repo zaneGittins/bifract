@@ -235,6 +235,12 @@ const (
 	// small ones.
 	histogramChunkDiv = 16
 
+	// histogramMinChunkBuckets floors the chunk size. Each chunk costs one query
+	// that evaluates every part in the fractal before pruning granules, so tiny
+	// chunks pay that fixed cost to scan almost nothing, and they finish under
+	// query_cache_min_query_duration so they never cache either.
+	histogramMinChunkBuckets = 8
+
 	// histogramCacheSettings caches a histogram chunk in ClickHouse. The generated
 	// SQL depends only on the query's WHERE clause and its bucket-snapped range, so
 	// editing downstream pipeline commands (| stats, | table) or re-running the same
@@ -298,17 +304,26 @@ type histogramChunk struct {
 }
 
 // histogramChunks slices the snapped range into chunks ordered newest-first,
-// each twice the span of the one before it. Chunk bounds land on bucket
-// boundaries, and because logs is partitioned by (fractal_id, toDate(timestamp))
-// they also land on partition boundaries, so chunking reads the same granules a
-// single query would.
+// each twice the span of the one before it. Chunk count is bounded above by that
+// doubling and below by histogramMinChunkBuckets: logs partitions on ingest time,
+// so an event-time chunk no longer prunes to a partition and every chunk pays a
+// fixed per-query cost proportional to the fractal's part count. A range too
+// short to earn that cost is returned as a single chunk.
 func histogramChunks(snapStart time.Time, bucketSec, bucketCount int) []histogramChunk {
 	if bucketSec <= 0 || bucketCount <= 0 {
 		return nil
 	}
 	step := bucketCount / histogramChunkDiv
-	if step < 1 {
-		step = 1
+	if step < histogramMinChunkBuckets {
+		step = histogramMinChunkBuckets
+	}
+	if step*2 > bucketCount {
+		return []histogramChunk{{
+			start: snapStart,
+			end:   snapStart.Add(time.Duration(bucketCount*bucketSec) * time.Second),
+			loIdx: 0,
+			hiIdx: bucketCount,
+		}}
 	}
 	var chunks []histogramChunk
 	for hi := bucketCount; hi > 0; {
@@ -479,6 +494,12 @@ func histogramRollupSQL(table string, opts parser.QueryOptions, start, end time.
 // newest slice paints after a short read while the rest fills in behind it.
 const streamChunkDiv = 16
 
+// streamMinChunk floors the chunk span for the same reason as
+// histogramMinChunkBuckets: each chunk is a query that walks every part in the
+// fractal before pruning granules, so slicing a short range only multiplies that
+// fixed cost.
+const streamMinChunk = time.Minute
+
 // streamChunk is one time slice of the row scan. Every chunk except the newest
 // uses an exclusive upper bound so adjacent chunks abut exactly: with a
 // millisecond-precision column, trimming the bound instead would drop whatever
@@ -494,7 +515,7 @@ type streamChunk struct {
 // ORDER BY ... LIMIT top-N buffer until then), so a single query over a long
 // range shows nothing until it completes. Chunking bounds that wait to a
 // fraction of the range while leaving each chunk a read-in-order scan that still
-// stops at the limit.
+// stops at the limit. A range too short to earn the per-chunk cost stays whole.
 func streamChunks(start, end time.Time) []streamChunk {
 	total := end.Sub(start)
 	if total <= 0 {
@@ -502,8 +523,11 @@ func streamChunks(start, end time.Time) []streamChunk {
 	}
 	var chunks []streamChunk
 	step := total / streamChunkDiv
-	if step <= 0 {
-		step = total
+	if step < streamMinChunk {
+		step = streamMinChunk
+	}
+	if step*2 > total {
+		return []streamChunk{{start: start, end: end}}
 	}
 	hi := end
 	exclusive := false
@@ -2175,7 +2199,7 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 	}
 
 	// The exact timestamp from the search result is required: it is the leading
-	// sort key and part of the partition key, so it turns the lookup from a
+	// sort key, so it pins the primary index and turns the lookup from a
 	// whole-table bloom-filter scan into a near-pinpoint read. There is a single,
 	// deterministic lookup path (no log_id-only fallback), so a missing or
 	// malformed timestamp is a client error rather than a slow-path trigger.

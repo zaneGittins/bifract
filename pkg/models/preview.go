@@ -267,12 +267,12 @@ func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, sour
 	// from a historical backfill. Instead we report the new-entity RATE: entities
 	// first observed in the last 24h of the window (i.e. new entities/day). The
 	// FlagBasis makes clear this is a rate estimate, not an instantaneous count.
-	recent := end.Add(-24 * time.Hour).Format("2006-01-02 15:04:05")
+	recent := end.Add(-24 * time.Hour).UTC().Format("2006-01-02 15:04:05")
 	res.Metric = "event_count"
 
 	metricsSQL := fmt.Sprintf(`SELECT
     toUInt64(count()) AS entities,
-    toUInt64(countIf(first_seen >= toDateTime64('%s', 3))) AS new_recent
+    toUInt64(countIf(first_seen >= toDateTime64('%s', 3, 'UTC'))) AS new_recent
 FROM (%s)`, recent, agg)
 
 	topSQL := fmt.Sprintf(`SELECT entity_key, first_seen, last_seen, event_count

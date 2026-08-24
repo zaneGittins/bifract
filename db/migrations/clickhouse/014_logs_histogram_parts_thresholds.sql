@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- Raise part-count thresholds on logs_histogram. logs_histogram_mv aggregates only within
 -- each incoming insert block (SummingMergeTree reconciles duplicate (fractal_id, minute)
 -- keys on merge, not on insert), so every insert batch lands its own small part. Under

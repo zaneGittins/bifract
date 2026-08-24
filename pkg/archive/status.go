@@ -208,6 +208,36 @@ func ClaimOrphanSweep(ctx context.Context, db *sql.DB, interval time.Duration) (
 	return claimed, nil
 }
 
+// ClaimDeepCompaction reports whether this pass should plan compaction across
+// the WHOLE table rather than only recent partitions, stamping the claim in the
+// same statement so only one pass per interval does so even if two maintainer
+// pods briefly overlap during a rolling update.
+//
+// Routine passes are bounded to MaintainOptions.CompactLookback, which keeps
+// planning cost proportional to recent ingest instead of to total retention. The
+// deep pass is the safety net for partitions a budget- or deadline-truncated
+// pass left behind before they aged out of that window. A nil db means no
+// coordination is possible; the caller falls back to the bounded pass, since a
+// missed deep pass costs fragmentation, never correctness.
+func ClaimDeepCompaction(ctx context.Context, db *sql.DB, interval time.Duration) (bool, error) {
+	if db == nil || interval <= 0 {
+		return false, nil
+	}
+	var claimed bool
+	err := db.QueryRowContext(ctx,
+		`UPDATE archive_maintain_status SET last_deep_compaction_at = NOW()
+		 WHERE id = 1 AND (last_deep_compaction_at IS NULL OR last_deep_compaction_at < NOW() - $1::interval)
+		 RETURNING true`,
+		fmt.Sprintf("%d seconds", int64(interval.Seconds()))).Scan(&claimed)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return claimed, nil
+}
+
 // appendMaintainHistory inserts one row per maintain invocation (whatever the
 // outcome) and trims the table back down to maintainHistoryLimit rows, so the
 // admin UI can show a trend across recent passes -- including skipped/failed

@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- Align logs_hot with the base columns BQL can reference. Migration 006 added norm_log and
 -- normalizer to logs but not to logs_hot, leaving the two schemas divergent.
 -- Alert queries route to logs_hot whenever the cursor is under 110 min old (the normal

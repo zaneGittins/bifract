@@ -174,7 +174,6 @@ func TestBuildRestoreInsert(t *testing.T) {
 
 	for _, want := range []string{
 		"LIMIT 1 BY log_id",
-		"max_partitions_per_insert_block = 1000",
 		"norm_log::JSON",
 		"INSERT INTO logs (timestamp, log_id, fields, fractal_id, ingest_timestamp, normalizer)",
 		// The dedup set is capped, and MUST throw on overflow rather than break:
@@ -196,6 +195,13 @@ func TestBuildRestoreInsert(t *testing.T) {
 	// raw_log is not restored: the logs table no longer has the column.
 	if strings.Contains(sql, "raw_log") {
 		t.Errorf("restore insert should not reference raw_log:\n%s", sql)
+	}
+
+	// A chunk is one ingest day for one target fractal, and logs partitions on that
+	// same axis, so the insert touches exactly one partition. Raising the limit back
+	// would only mask a chunker that stopped bounding to a day.
+	if strings.Contains(sql, "max_partitions_per_insert_block") {
+		t.Errorf("restore insert should not need to raise the partition limit:\n%s", sql)
 	}
 
 	// LIMIT 1 BY must sit after WHERE and before SETTINGS, or ClickHouse rejects it.

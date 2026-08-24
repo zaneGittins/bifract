@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- Extends the proc_freq baseline (008) with the remaining pgr() edge types and fixes a
 -- released bug. All of these ship in init-clickhouse.sql for fresh installs; this migration
 -- brings existing installs (already past migration 008) to parity.

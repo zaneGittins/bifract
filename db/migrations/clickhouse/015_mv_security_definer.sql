@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- Make every logs-sourced materialized view run as DEFINER.
 --
 -- An MV created without a security clause executes with the INSERTING user's privileges.

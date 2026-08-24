@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- process_edges: pgr() edge-fetch acceleration (see db/init-clickhouse.sql for the rationale).
 -- One aggregated row per (fractal_id, src process_guid, event_type, abstracted target), so pgr
 -- reads a tree's file/net/dns edges by a primary-key lookup on process_guid instead of scanning

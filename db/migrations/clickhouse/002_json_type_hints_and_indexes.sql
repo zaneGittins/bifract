@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- Migration 002: neutralized (was: JSON type hints + skip indexes).
 --
 -- The original migration ran ALTER TABLE logs MODIFY COLUMN fields JSON(...) from a

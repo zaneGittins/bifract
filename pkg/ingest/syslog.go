@@ -72,7 +72,6 @@ func (h *IngestHandler) parseSyslogLogs(data []byte, token *ingesttokens.Validat
 		}
 
 		entry.IngestTimestamp = ingestTime
-		entry.Fields["ingesttimestamp"] = ingestTime.Format(time.RFC3339Nano)
 		entry.LogID = storage.GenerateLogID(entry.Timestamp, entry.RawLog)
 
 		logs = append(logs, entry)

@@ -305,7 +305,6 @@ func (h *IngestHandler) parseKVLogs(data []byte, token *ingesttokens.ValidatedTo
 		}
 
 		entry.IngestTimestamp = ingestTime
-		entry.Fields["ingesttimestamp"] = ingestTime.Format(time.RFC3339Nano)
 		entry.LogID = storage.GenerateLogID(entry.Timestamp, entry.RawLog)
 
 		logs = append(logs, entry)

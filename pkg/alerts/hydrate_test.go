@@ -14,13 +14,14 @@ type fakeHydrator struct {
 	fields map[string]map[string]interface{}
 	err    error
 
-	gotTable    string
-	gotByIngest bool
-	gotKeys     []storage.LogKey
+	gotTable string
+	gotKeys  []storage.LogKey
+	gotFrom  time.Time
+	gotTo    time.Time
 }
 
-func (f *fakeHydrator) HydrateLogFields(_ context.Context, table string, byIngest bool, keys []storage.LogKey, _, _ time.Time) (map[string]map[string]interface{}, error) {
-	f.gotTable, f.gotByIngest, f.gotKeys = table, byIngest, keys
+func (f *fakeHydrator) HydrateLogFields(_ context.Context, table string, keys []storage.LogKey, from, to time.Time) (map[string]map[string]interface{}, error) {
+	f.gotTable, f.gotKeys, f.gotFrom, f.gotTo = table, keys, from, to
 	return f.fields, f.err
 }
 
@@ -167,25 +168,22 @@ func e2(h logHydrator) *Engine { return &Engine{hydrator: h} }
 
 // TestHydrateRowsRoutesToEvaluationTable: hydrating from logs what was matched on
 // logs_hot_distributed would silently return nothing on every cluster install.
+// The alert's own window is passed through unchanged for every table, since both
+// logs and logs_hot are partitioned on ingest_timestamp.
 func TestHydrateRowsRoutesToEvaluationTable(t *testing.T) {
 	results := []map[string]interface{}{prunedRow("a", "1")}
-	for _, tc := range []struct {
-		table        string
-		wantByIngest bool
-	}{
-		{"logs_hot", true},
-		{"logs_hot_distributed", true},
-		{"logs", false},
-		{"logs_distributed", false},
-	} {
-		t.Run(tc.table, func(t *testing.T) {
+	from := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	to := from.Add(time.Minute)
+	for _, table := range []string{"logs_hot", "logs_hot_distributed", "logs", "logs_distributed"} {
+		t.Run(table, func(t *testing.T) {
 			h := &fakeHydrator{}
-			e2(h).hydrateRows(context.Background(), results, parser.QueryOptions{TableName: tc.table}, 10)
-			if h.gotTable != tc.table {
-				t.Errorf("hydrated from %q, want %q", h.gotTable, tc.table)
+			opts := parser.QueryOptions{TableName: table, StartTime: from, EndTime: to}
+			e2(h).hydrateRows(context.Background(), results, opts, 10)
+			if h.gotTable != table {
+				t.Errorf("hydrated from %q, want %q", h.gotTable, table)
 			}
-			if h.gotByIngest != tc.wantByIngest {
-				t.Errorf("byIngest = %v, want %v", h.gotByIngest, tc.wantByIngest)
+			if !h.gotFrom.Equal(from) || !h.gotTo.Equal(to) {
+				t.Errorf("window = %s..%s, want %s..%s", h.gotFrom, h.gotTo, from, to)
 			}
 		})
 	}
@@ -207,7 +205,9 @@ func TestHydrateRowsRespectsLimit(t *testing.T) {
 	}
 }
 
-func TestHydrateRowsParsesRowTimestamp(t *testing.T) {
+// The fractal id carries into the lookup as a partition-pruning filter, so losing
+// it would widen every hydration to the whole table.
+func TestHydrateRowsCarriesFractalID(t *testing.T) {
 	h := &fakeHydrator{}
 	e2(h).hydrateRows(context.Background(), []map[string]interface{}{prunedRow("a", "1")},
 		parser.QueryOptions{TableName: "logs"}, 10)
@@ -215,8 +215,8 @@ func TestHydrateRowsParsesRowTimestamp(t *testing.T) {
 	if len(h.gotKeys) != 1 {
 		t.Fatalf("got %d keys, want 1", len(h.gotKeys))
 	}
-	if h.gotKeys[0].Timestamp.IsZero() {
-		t.Error("timestamp did not parse; the cold path would drop this key")
+	if h.gotKeys[0].LogID != "a" {
+		t.Errorf("log_id = %q, want a", h.gotKeys[0].LogID)
 	}
 	if h.gotKeys[0].FractalID != "f1" {
 		t.Errorf("fractal_id = %q, want f1", h.gotKeys[0].FractalID)

@@ -11,6 +11,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -120,5 +121,30 @@ func TestUpgradeFromV002(t *testing.T) {
 		"SELECT count() FROM system.columns WHERE database='logs' AND table='logs' AND name='raw_log'").Scan(&rawCols)
 	if rawCols != 0 {
 		t.Errorf("logs.raw_log still present after migration 013")
+	}
+
+	// The migration chain still runs clean, but it cannot carry a v0.0.2 install
+	// across the partition key: no migration can, since ClickHouse has no way to
+	// alter one. Initialize must refuse rather than serve a table whose retention,
+	// histogram prune and ingest batching all assume the ingest axis.
+	if err := checkPartitionKey(ctx, conn); !errors.Is(err, ErrIncompatibleSchema) {
+		t.Errorf("checkPartitionKey on a fully migrated v0.0.2 schema = %v, want ErrIncompatibleSchema", err)
+	}
+
+	// And it must accept what the app provisions on the fresh path after a reset.
+	// Driven by ResetLogDataStatements (what --reset-logs actually runs) rather than a
+	// hand-rolled DROP: dropping only `logs` leaves the derived tables at their old shape,
+	// and CREATE TABLE IF NOT EXISTS then silently keeps them while the MVs fail against
+	// them. It also means a table added to the reset set is covered here automatically.
+	for _, stmt := range ResetLogDataStatements(nil, nil) {
+		if err := conn.Exec(ctx, stmt); err != nil {
+			t.Fatalf("reset: %s: %v", stmt, err)
+		}
+	}
+	if err := runInitSQLOnConn(ctx, conn, dbsql.ClickHouseSQL, nil); err != nil {
+		t.Fatalf("provision from current init SQL: %v", err)
+	}
+	if err := checkPartitionKey(ctx, conn); err != nil {
+		t.Errorf("checkPartitionKey on the current schema = %v, want nil", err)
 	}
 }

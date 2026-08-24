@@ -187,11 +187,9 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 // HandleSamples returns recent raw logs from a fractal so the editor can preview
 // against real data instead of hand-pasted JSON.
 //
-// Reads logs_hot, the 2-hour rolling table ordered by (fractal_id,
-// ingest_timestamp, log_id): a per-fractal recency scan there is a primary-key
-// range read that never touches the main logs table. Quiet fractals fall back to
-// logs, where the (fractal_id, toDate(timestamp)) partition key plus a bounded
-// day window keeps the read pruned.
+// Reads logs_raw, whose 7-day TTL already bounds the scan to at most a week of
+// ingest partitions for the fractal, ordered by its own (timestamp, log_id) sort
+// key so the read is in-order rather than a sort.
 func (h *Handler) HandleSamples(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {
 		return

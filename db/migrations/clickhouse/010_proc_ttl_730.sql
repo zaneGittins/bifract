@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- Extend process-provenance retention to 730 days. The original defaults (proc_lineage 365d
 -- in migration 007, proc_freq 180d in migration 008) are too short for DFIR / CTF datasets
 -- whose events can be a year or more old: on ingest, a row whose timestamp + old-TTL is

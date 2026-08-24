@@ -46,7 +46,6 @@ func BuildLogEntry(obj map[string]interface{}, norm *normalizers.CompiledNormali
 	}
 
 	entry.IngestTimestamp = ingestTime
-	entry.Fields["ingesttimestamp"] = ingestTime.Format(time.RFC3339Nano)
 	entry.LogID = storage.GenerateLogID(entry.Timestamp, entry.RawLog)
 
 	return entry, nil

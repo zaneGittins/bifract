@@ -194,8 +194,10 @@ func (h *StatusHandler) fetchStatus() StatusResponse {
 		}
 	}
 
-	// min/max timestamp: use system.parts min/max columns to avoid full scans.
-	// MergeTree stores per-part min/max for the partition key and ORDER BY columns.
+	// min/max ingest time: read from system.parts to avoid a full scan. min_time
+	// and max_time track the partition key's time column, which is ingest_timestamp,
+	// so these are the ingest bounds. Event-time bounds live on the fractals table
+	// (earliest_log / latest_log), which is computed from the data itself.
 	if status.ClickHouse.TotalLogs > 0 {
 		minMaxQuery := `
 			SELECT

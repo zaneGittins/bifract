@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"os"
@@ -27,7 +28,7 @@ type MaintainOptions struct {
 	// ByteBudget caps the total bytes compaction will rewrite in this single
 	// Maintain() pass, across all tables. Bounds the pass's memory footprint
 	// regardless of backlog size; leftover work carries over to the next
-	// scheduled run since compaction.Analyze always replans from the table's
+	// scheduled run since planning always restarts from the table's
 	// current file layout. 0 disables compaction entirely (snapshot expiry
 	// still runs).
 	ByteBudget int64
@@ -52,6 +53,17 @@ type MaintainOptions struct {
 	// maxBatchBytesFor); it exists because batch size, not group size, is what a
 	// pass's peak memory scales with.
 	MaxBatchBytes int64
+	// CompactLookback bounds compaction PLANNING to partitions whose ingest_date
+	// is within this much of now. Zero means plan the whole table (a "deep" pass).
+	//
+	// Planning an unbounded table means reading every manifest on every pass, so
+	// planning cost grows with retention while the work actually available is
+	// bounded by ingest rate -- the pass gets slower forever while the backlog it
+	// can find stays the same size. A lookback keeps the routine pass proportional
+	// to recent ingest; ClaimDeepCompaction schedules the occasional full pass that
+	// picks up anything an earlier budget- or deadline-truncated pass left behind.
+	// See planCompaction.
+	CompactLookback time.Duration
 }
 
 // DefaultMaintainOptions returns sensible defaults: keep ~7 days of snapshots,
@@ -72,6 +84,7 @@ func DefaultMaintainOptions() MaintainOptions {
 		CommitRetries:   10,
 		OrphanOlderThan: 72 * time.Hour,
 		ScanConcurrency: MaintainScanConcurrency(),
+		CompactLookback: defaultCompactLookback,
 	}
 }
 
@@ -86,7 +99,64 @@ func MaintainOptionsFromEnv() MaintainOptions {
 	opts.CommitRetries = getIntEnv("BIFRACT_ARCHIVE_MAINTAIN_COMMIT_RETRIES", opts.CommitRetries)
 	opts.OrphanOlderThan = getDuration("BIFRACT_ARCHIVE_ORPHAN_OLDER_THAN", opts.OrphanOlderThan)
 	opts.MaxBatchBytes = getInt64("BIFRACT_ARCHIVE_MAINTAIN_MAX_BATCH_BYTES", opts.MaxBatchBytes)
+	opts.CompactLookback = getDuration("BIFRACT_ARCHIVE_MAINTAIN_LOOKBACK", opts.CompactLookback)
 	return opts
+}
+
+// defaultCompactLookback is how far back a routine pass plans compaction.
+//
+// ingest_date is INGEST time, so partitions are sealed the moment the day rolls
+// over and never receive files again: everything a routine pass can usefully do
+// lives in the last day or two. Three days is that plus slack for passes that
+// ran out of budget or time, and it is only a planning bound -- the periodic deep
+// pass (CompactLookback 0) is what guarantees nothing is stranded permanently.
+const defaultCompactLookback = 72 * time.Hour
+
+// compactionConfig returns the compaction plan config.
+//
+// It differs from compaction.DefaultConfig() in one place: MinInputFiles is 2,
+// not 5. That default assumes a partition that is still growing, where declining
+// to rewrite 4 files is a bet that a 5th will arrive. Every partition this pass
+// may touch is SEALED (see isOpenPartitionGroup), so the bet can never pay: 5
+// permanently strands any sealed partition holding 2-4 files, and permanently
+// strands the remainder bin of every partition whose file count is not a
+// multiple of the bin size. That is the small-volume failure mode, where a quiet
+// fractal writing a handful of files a day never compacts anything at all.
+//
+// The three size bounds are set together, at the table's own write target and
+// DefaultConfig's ratios, so a future change to the library's default target
+// cannot leave Target inconsistent with Min/Max (which Validate rejects).
+func compactionConfig() compaction.Config {
+	cfg := compaction.DefaultConfig()
+	cfg.TargetFileSizeBytes = targetFileSizeBytes
+	cfg.MinFileSizeBytes = targetFileSizeBytes * 3 / 4
+	cfg.MaxFileSizeBytes = targetFileSizeBytes * 9 / 5
+	cfg.MinInputFiles = 2
+	return cfg
+}
+
+// planCompaction analyzes tbl for compactable file groups, optionally bounding
+// the scan to partitions within lookback of now.
+//
+// This is compaction.Analyze with a partition filter: Analyze itself is
+// hardcoded to tbl.Scan().PlanFiles(ctx), which reads every manifest in the
+// table on every pass. Filtering on the partition column lets PlanFiles prune
+// whole manifests by their partition summaries, so a routine pass reads
+// metadata proportional to recent ingest instead of to total retention.
+//
+// A zero or negative lookback plans the whole table.
+func planCompaction(ctx context.Context, tbl *icetable.Table, lookback time.Duration) (compaction.Plan, error) {
+	var opts []icetable.ScanOption
+	if lookback > 0 {
+		opts = append(opts, icetable.WithRowFilter(
+			iceberg.GreaterThanEqual(iceberg.Reference(partitionFieldName), epochDayIce(time.Now().Add(-lookback))),
+		))
+	}
+	tasks, err := tbl.Scan(opts...).PlanFiles(ctx)
+	if err != nil {
+		return compaction.Plan{}, fmt.Errorf("plan files for compaction analysis: %w", err)
+	}
+	return compactionConfig().PlanCompaction(tasks)
 }
 
 // defaultOrphanSweepInterval DISABLES orphan cleanup.
@@ -137,7 +207,7 @@ const fallbackScanConcurrency = 2
 // It is derived from the process memory limit rather than from CPU count: a
 // fixed constant (this was 4) is unrelated to how much memory the container
 // actually has, and on a 2GB limit it reliably OOMKilled the maintainer mid
-// pass, every pass, forever -- compaction.Analyze replans identical work each
+// pass, every pass, forever -- planning replans identical work each
 // time, so nothing about the retry ever differed. GOMAXPROCS is still an upper
 // bound (more decoders than cores buys nothing), and
 // BIFRACT_ARCHIVE_MAINTAIN_SCAN_CONCURRENCY overrides the whole calculation.
@@ -255,16 +325,18 @@ const (
 // MaintainStats summarizes one Maintain() pass, for logging and for
 // persisting to the archive_maintain_status row the admin UI's System ->
 // Archive panel reads (see WriteMaintainStatus). CandidateBytes is the total
-// backlog compaction.Analyze found across every table this pass reached --
+// backlog planning found across every table this pass reached --
 // it under-reports total system-wide backlog when the pass-wide budget runs
-// out before every table gets a turn (Analyze is only run while there's still
-// budget to spend), when a table's LoadTable or Analyze call itself errors
-// (that table's backlog silently isn't measured this pass either), and
-// because today's still-open ingest_date partition is excluded from
-// candidacy entirely (see isOpenPartitionGroup) so it never contributes
-// bytes here regardless of how much small-file backlog it's accumulating;
-// treat it as "sealed backlog found among tables this pass could inspect,"
-// not a precise system-wide total.
+// out before every table gets a turn (planning only runs while there's still
+// budget to spend), when a table's LoadTable or planning call itself errors
+// (that table's backlog silently isn't measured this pass either), because
+// today's still-open ingest_date partition is excluded from candidacy
+// entirely (see isOpenPartitionGroup) so it never contributes bytes here
+// regardless of how much small-file backlog it's accumulating, and because a
+// routine pass only plans partitions within CompactLookback, so fragmentation
+// older than that window is invisible until the next deep pass; treat it as
+// "sealed backlog found among the tables and partitions this pass could
+// inspect," not a precise system-wide total.
 type MaintainStats struct {
 	Tables         int
 	Compacted      int
@@ -314,8 +386,9 @@ func (c *Catalog) Maintain(ctx context.Context, opts MaintainOptions) (MaintainS
 	// Logged before any work: a pass killed by the OOM killer writes no outcome
 	// of its own, so this line is the only record that it started and of the
 	// settings it started with.
-	log.Printf("[Maintain] starting: scan concurrency %d, byte budget %d, batch cap %d, memory limit %d, GOMAXPROCS %d",
-		opts.ScanConcurrency, opts.ByteBudget, opts.MaxBatchBytes, processMemoryLimit(), runtime.GOMAXPROCS(0))
+	log.Printf("[Maintain] starting: scan concurrency %d, byte budget %d, batch cap %d, compact lookback %s, memory limit %d, GOMAXPROCS %d",
+		opts.ScanConcurrency, opts.ByteBudget, opts.MaxBatchBytes, lookbackLabel(opts.CompactLookback),
+		processMemoryLimit(), runtime.GOMAXPROCS(0))
 	if undersized, limit, need := MaintainMemoryUndersized(); undersized {
 		log.Printf("[Maintain] WARNING: memory limit %d bytes is below the %d bytes a compaction pass needs; "+
 			"this pass will likely be killed before it finishes. Raise the maintainer's memory limit "+
@@ -476,6 +549,15 @@ func maxBatchBytesFor(memLimit int64, scanConcurrency int) int64 {
 	return memLimit * maintainBatchMemoryNum / (maintainBatchMemoryDen * int64(scanConcurrency))
 }
 
+// lookbackLabel renders a compaction lookback for logs, naming the unbounded
+// (deep) pass explicitly rather than printing "0s".
+func lookbackLabel(d time.Duration) string {
+	if d <= 0 {
+		return "whole table (deep pass)"
+	}
+	return d.String()
+}
+
 // tableDeadline returns when the current table must stop compacting so the
 // tables after it still get a turn. Splits the pass's remaining time evenly
 // across the tables not yet visited, mirroring how ByteBudget is shared. With no
@@ -536,12 +618,12 @@ func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 	if opts.MaxBatchBytes <= 0 {
 		opts.MaxBatchBytes = maxBatchBytesFor(processMemoryLimit(), opts.ScanConcurrency)
 	}
-	plan, err := compaction.Analyze(ctx, tbl, compaction.DefaultConfig())
+	plan, err := planCompaction(ctx, tbl, opts.CompactLookback)
 	if err != nil {
 		return compactResult{}, err
 	}
 
-	open := iceberg.Date(epochDay(time.Now()))
+	open := epochDayIce(time.Now())
 	sealed := plan.Groups[:0]
 	for _, g := range plan.Groups {
 		if isOpenPartitionGroup(g, open) {
@@ -583,7 +665,7 @@ func compactTable(ctx context.Context, c *Catalog, ident icetable.Identifier, tb
 	// A failed rewrite skips its group without debiting the budget so the batch
 	// moves on. The first group of the pass is always attempted even if it alone
 	// exceeds budget, so a budget smaller than one group cannot stall the table
-	// forever; that is safe because compaction.Analyze bin-packs to
+	// forever; that is safe because planning bin-packs to
 	// TargetFileSizeBytes, so a group is bounded by file size, never by partition
 	// size.
 	res := compactResult{candidateBytes: candidateBytes}

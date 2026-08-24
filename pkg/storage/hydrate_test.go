@@ -1,97 +1,10 @@
 package storage
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
-
-func ts(s string) time.Time {
-	t, err := time.Parse("2006-01-02 15:04:05", s)
-	if err != nil {
-		panic(err)
-	}
-	return t
-}
-
-// TestGroupKeysByDateNeverSpansPartitions is the reason the cold path groups at
-// all: logs is partitioned by toDate(timestamp) but alerts match on
-// ingest_timestamp, so a single backfilled row would otherwise stretch a
-// min/max range across every partition in between.
-func TestGroupKeysByDateNeverSpansPartitions(t *testing.T) {
-	keys := []LogKey{
-		{LogID: "a", Timestamp: ts("2026-08-03 10:00:00")},
-		{LogID: "b", Timestamp: ts("2026-08-03 10:00:05")},
-		{LogID: "c", Timestamp: ts("2020-01-01 03:00:00")}, // backfilled outlier
-	}
-	batches := groupKeysByDate(keys)
-	if len(batches) != 2 {
-		t.Fatalf("expected 2 date batches, got %d", len(batches))
-	}
-	for _, b := range batches {
-		if b.from.UTC().Format("2006-01-02") != b.to.UTC().Format("2006-01-02") {
-			t.Errorf("batch spans dates: %s..%s", b.from, b.to)
-		}
-	}
-}
-
-// TestGroupKeysByDateNarrowsToObservedRange keeps the primary-key range as tight
-// as the matched rows allow rather than widening to the day boundary.
-func TestGroupKeysByDateNarrowsToObservedRange(t *testing.T) {
-	keys := []LogKey{
-		{LogID: "a", Timestamp: ts("2026-08-03 10:00:05")},
-		{LogID: "b", Timestamp: ts("2026-08-03 10:00:01")},
-		{LogID: "c", Timestamp: ts("2026-08-03 10:00:09")},
-	}
-	batches := groupKeysByDate(keys)
-	if len(batches) != 1 {
-		t.Fatalf("expected 1 batch, got %d", len(batches))
-	}
-	if !batches[0].from.Equal(ts("2026-08-03 10:00:01")) {
-		t.Errorf("from = %s, want 10:00:01", batches[0].from)
-	}
-	if !batches[0].to.Equal(ts("2026-08-03 10:00:09")) {
-		t.Errorf("to = %s, want 10:00:09", batches[0].to)
-	}
-}
-
-func TestGroupKeysByDateSkipsUnusableKeys(t *testing.T) {
-	keys := []LogKey{
-		{LogID: "a", Timestamp: ts("2026-08-03 10:00:00")},
-		{LogID: "", Timestamp: ts("2026-08-03 10:00:00")}, // no id
-		{LogID: "b"},                                      // unparseable timestamp
-		{LogID: "a", Timestamp: ts("2026-08-03 10:00:00")}, // duplicate
-	}
-	batches := groupKeysByDate(keys)
-	if len(batches) != 1 || len(batches[0].logIDs) != 1 || batches[0].logIDs[0] != "a" {
-		t.Fatalf("expected only log a, got %+v", batches)
-	}
-}
-
-// TestGroupKeysByDateCapsPartitionBudget keeps the largest groups when a replay
-// spreads matched rows across more dates than the budget allows.
-func TestGroupKeysByDateCapsPartitionBudget(t *testing.T) {
-	var keys []LogKey
-	day := ts("2026-08-03 12:00:00")
-	for d := 0; d < hydrateMaxDateGroups+3; d++ {
-		rows := 1
-		if d == 0 {
-			rows = 5 // the group that must survive the cap
-		}
-		for r := 0; r < rows; r++ {
-			keys = append(keys, LogKey{
-				LogID:     string(rune('a'+d)) + string(rune('0'+r)),
-				Timestamp: day.AddDate(0, 0, -d),
-			})
-		}
-	}
-	batches := groupKeysByDate(keys)
-	if len(batches) != hydrateMaxDateGroups {
-		t.Fatalf("expected %d batches, got %d", hydrateMaxDateGroups, len(batches))
-	}
-	if len(batches[0].logIDs) != 5 {
-		t.Errorf("largest group was dropped: first batch has %d ids", len(batches[0].logIDs))
-	}
-}
 
 func TestChunkStrings(t *testing.T) {
 	if got := chunkStrings(nil, 500); got != nil {
@@ -134,7 +47,7 @@ func TestDedupeLogIDs(t *testing.T) {
 // the hydration SQL. The table always comes from parser.QueryOptions.TableName.
 func TestHydrateLogFieldsRejectsUnknownTable(t *testing.T) {
 	c := &ClickHouseClient{}
-	_, err := c.HydrateLogFields(nil, "logs; DROP TABLE logs", false, []LogKey{{LogID: "a"}}, time.Time{}, time.Time{})
+	_, err := c.HydrateLogFields(nil, "logs; DROP TABLE logs", []LogKey{{LogID: "a"}}, time.Time{}, time.Time{})
 	if err == nil {
 		t.Fatal("expected an error for an unsupported table")
 	}
@@ -150,5 +63,45 @@ func TestChTimeArgIsUTC(t *testing.T) {
 	got := chTimeArg(time.Date(2026, 8, 3, 15, 0, 0, 0, loc))
 	if got != "2026-08-03 10:00:00.000" {
 		t.Errorf("chTimeArg = %q, want the UTC rendering", got)
+	}
+}
+
+// An unset window must drop the time bound rather than render as a range around
+// year zero, which would match nothing and silently return every row unhydrated.
+// That is the same silent-loss shape as the date grouping this replaced.
+func TestHydrateQueryUnsetWindowIsUnbounded(t *testing.T) {
+	bounded := hydrateQuery("logs", true, true)
+	if !strings.Contains(bounded, "ingest_timestamp >=") || !strings.Contains(bounded, "fractal_id IN") {
+		t.Errorf("bounded query missing predicates:\n%s", bounded)
+	}
+
+	unbounded := hydrateQuery("logs", false, false)
+	if strings.Contains(unbounded, "ingest_timestamp") {
+		t.Errorf("zero window must not emit a time bound:\n%s", unbounded)
+	}
+	if !strings.Contains(unbounded, "log_id IN (?)") {
+		t.Errorf("unbounded query lost its log_id filter:\n%s", unbounded)
+	}
+	// The dedup clause is what keeps a re-ingested log_id from double-counting.
+	for _, q := range []string{bounded, unbounded} {
+		if !strings.HasSuffix(q, "LIMIT 1 BY log_id") {
+			t.Errorf("query must end in the dedup clause:\n%s", q)
+		}
+	}
+}
+
+// The argument list must line up with the placeholders in every shape, or the
+// driver binds the fractal filter to a timestamp.
+func TestHydrateQueryPlaceholderCount(t *testing.T) {
+	for _, tc := range []struct {
+		bounded, scoped bool
+		want            int
+	}{
+		{true, true, 4}, {true, false, 3}, {false, true, 2}, {false, false, 1},
+	} {
+		q := hydrateQuery("logs", tc.bounded, tc.scoped)
+		if got := strings.Count(q, "?"); got != tc.want {
+			t.Errorf("bounded=%v scoped=%v: %d placeholders, want %d\n%s", tc.bounded, tc.scoped, got, tc.want, q)
+		}
 	}
 }

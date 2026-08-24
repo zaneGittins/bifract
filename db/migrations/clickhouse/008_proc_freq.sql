@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- proc_freq: the NoDoze frequency baseline for pgr() edge scoring. One row per abstracted
 -- behavioral pattern (src process -> relationship -> target) with its count and the set of
 -- hosts that exhibited it. Aggregated + abstracted, so it stays tiny (megabytes) vs the raw

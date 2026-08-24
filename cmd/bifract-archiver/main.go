@@ -304,6 +304,28 @@ func maintainLoopInterval() time.Duration {
 	return d
 }
 
+// defaultDeepCompactionInterval is how often one maintain pass plans compaction
+// across the whole table instead of only recent partitions. Daily: sealed
+// partitions never gain files, so the only thing a deep pass finds is work a
+// truncated earlier pass skipped, and the routine lookback already covers
+// several days of that.
+const defaultDeepCompactionInterval = 24 * time.Hour
+
+// deepCompactionInterval reads the deep-pass cadence. Non-positive disables the
+// deep pass entirely, for an operator who wants every pass strictly bounded.
+func deepCompactionInterval() time.Duration {
+	raw := os.Getenv("BIFRACT_ARCHIVE_DEEP_COMPACTION_INTERVAL")
+	if raw == "" {
+		return defaultDeepCompactionInterval
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Printf("maintain: invalid BIFRACT_ARCHIVE_DEEP_COMPACTION_INTERVAL %q: %v; using %s", raw, err, defaultDeepCompactionInterval)
+		return defaultDeepCompactionInterval
+	}
+	return d
+}
+
 // runMaintainOnce executes the gated, singleton maintenance pass shared by the
 // one-shot `maintain` command and the `maintain-loop` scheduler: skip if
 // archiving is disabled, skip if another pass holds the advisory lock, else
@@ -404,6 +426,20 @@ func runMaintainOnce(parent context.Context, cfg archive.Config, db *sql.DB) err
 		opts.OrphanOlderThan = 0
 	} else {
 		log.Printf("maintain: orphan sweep due (every %s)", orphanInterval)
+	}
+
+	// Compaction planning is normally bounded to recent ingest_date partitions so
+	// its cost tracks ingest rate rather than total retention. Periodically one
+	// pass plans the whole table instead, to pick up partitions an earlier
+	// budget- or deadline-truncated pass left behind before they aged out of that
+	// window. Falling back to the bounded pass on a claim failure is safe: a
+	// missed deep pass costs fragmentation, never correctness.
+	deepInterval := deepCompactionInterval()
+	if deep, err := archive.ClaimDeepCompaction(ctx, db, deepInterval); err != nil {
+		log.Printf("maintain: deep compaction claim failed, planning recent partitions only: %v", err)
+	} else if deep {
+		log.Printf("maintain: deep compaction pass due (every %s); planning the whole table", deepInterval)
+		opts.CompactLookback = 0
 	}
 
 	log.Println("maintain: compaction + retention + snapshot expiry ...")

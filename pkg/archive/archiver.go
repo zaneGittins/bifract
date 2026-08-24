@@ -11,6 +11,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	icetable "github.com/apache/iceberg-go/table"
 
 	"bifract/pkg/spool"
 	"bifract/pkg/storage"
@@ -32,9 +33,8 @@ type Archiver struct {
 	enabled func() bool
 	db      *sql.DB // for the archive_status heartbeat (may be nil)
 
-	pending      map[string][]storage.LogEntry
-	pendingBytes map[string]int64 // per-fractal buffered size, keyed like pending
-	totalBytes   int64            // sum of pendingBytes, for the memory backstop
+	pending  map[string]*fractalBuffer
+	totalMem int64 // sum of every buffer's mem, for the MaxPendingBytes backstop
 
 	lastReadCP    spool.Checkpoint
 	committedCP   spool.Checkpoint // last checkpoint persisted to the spool
@@ -57,16 +57,29 @@ func NewArchiver(cfg Config, reader *spool.Reader, cat *Catalog, enabled func() 
 		enabled = func() bool { return true }
 	}
 	return &Archiver{
-		cfg:          cfg,
-		reader:       reader,
-		cat:          cat,
-		mem:          memory.DefaultAllocator,
-		enabled:      enabled,
-		db:           db,
-		pending:      make(map[string][]storage.LogEntry),
-		pendingBytes: make(map[string]int64),
-		lastFlush:    time.Now(),
+		cfg:       cfg,
+		reader:    reader,
+		cat:       cat,
+		mem:       memory.DefaultAllocator,
+		enabled:   enabled,
+		db:        db,
+		pending:   make(map[string]*fractalBuffer),
+		lastFlush: time.Now(),
 	}
+}
+
+// fractalBuffer is one fractal's un-committed batch, measured two ways: payload
+// predicts the Parquet file the commit will write (RollBytes), mem predicts
+// whether the process fits its cgroup (MaxPendingBytes).
+//
+// Using mem for both was a real defect. It charges a per-FIELD constant, so a
+// field-dense fractal reached the roll threshold at a fraction of the data
+// volume a raw-heavy one needed and wrote correspondingly smaller files - which
+// is compaction work created purely by an artifact of the estimate.
+type fractalBuffer struct {
+	logs    []storage.LogEntry
+	payload int64
+	mem     int64
 }
 
 // heartbeatInterval is how often the archiver refreshes archive_status while running.
@@ -130,10 +143,16 @@ func (a *Archiver) Run(ctx context.Context) error {
 
 		for i := range batch.Logs {
 			e := batch.Logs[i]
-			a.pending[e.FractalID] = append(a.pending[e.FractalID], e)
+			buf := a.pending[e.FractalID]
+			if buf == nil {
+				buf = &fractalBuffer{}
+				a.pending[e.FractalID] = buf
+			}
+			buf.logs = append(buf.logs, e)
+			buf.payload += payloadSize(&e)
 			n := approxSize(&e)
-			a.pendingBytes[e.FractalID] += n
-			a.totalBytes += n
+			buf.mem += n
+			a.totalMem += n
 		}
 		a.lastReadCP = batch.Next
 
@@ -153,23 +172,24 @@ func (a *Archiver) Run(ctx context.Context) error {
 // until it is not. A full flush (which is also what advances the spool
 // checkpoint) happens once RollInterval has elapsed.
 func (a *Archiver) roll(ctx context.Context) error {
-	for fractalID, n := range a.pendingBytes {
-		if n >= a.cfg.RollBytes {
+	for fractalID, buf := range a.pending {
+		if buf.payload >= a.cfg.RollBytes {
 			if err := a.commitAndDrop(ctx, fractalID); err != nil {
 				return err
 			}
 		}
 	}
 
-	for a.totalBytes >= a.cfg.MaxPendingBytes {
-		fractalID, n := a.largestPending()
-		if fractalID == "" {
+	for a.totalMem >= a.cfg.MaxPendingBytes {
+		fractalID, buf := a.largestPending()
+		if buf == nil {
 			break
 		}
 		// Not silent: this is the backstop producing a smaller-than-target file,
-		// and it is the signal to raise BIFRACT_ARCHIVE_MAX_PENDING_BYTES.
-		log.Printf("[Archiver] pending buffer at %d bytes (cap %d): committing fractal %s early at %d bytes, below the %d roll target",
-			a.totalBytes, a.cfg.MaxPendingBytes, fractalID, n, a.cfg.RollBytes)
+		// and it is the signal to raise BIFRACT_ARCHIVE_MAX_PENDING_BYTES. Both
+		// measures are logged because their ratio is what sizing that cap needs.
+		log.Printf("[Archiver] pending buffer at %d bytes of memory (cap %d): committing fractal %s early at %d payload bytes (%d in memory), below the %d roll target",
+			a.totalMem, a.cfg.MaxPendingBytes, fractalID, buf.payload, buf.mem, a.cfg.RollBytes)
 		if err := a.commitAndDrop(ctx, fractalID); err != nil {
 			return err
 		}
@@ -181,16 +201,18 @@ func (a *Archiver) roll(ctx context.Context) error {
 	return nil
 }
 
-// largestPending returns the buffered fractal holding the most bytes.
-func (a *Archiver) largestPending() (string, int64) {
-	var best string
-	var bestN int64
-	for fractalID, n := range a.pendingBytes {
-		if n > bestN {
-			best, bestN = fractalID, n
+// largestPending returns the buffered fractal holding the most MEMORY. The
+// backstop it serves exists to get the process back under its memory cap, so
+// memory -- not payload -- is what picks the victim.
+func (a *Archiver) largestPending() (string, *fractalBuffer) {
+	var bestID string
+	var best *fractalBuffer
+	for fractalID, buf := range a.pending {
+		if best == nil || buf.mem > best.mem {
+			bestID, best = fractalID, buf
 		}
 	}
-	return best, bestN
+	return bestID, best
 }
 
 // commitAndDrop appends one fractal's buffer to its Iceberg table and removes it
@@ -198,15 +220,17 @@ func (a *Archiver) largestPending() (string, int64) {
 // flush from re-committing (and so duplicating) the fractals that already
 // succeeded: a retry resumes with only what is left.
 func (a *Archiver) commitAndDrop(ctx context.Context, fractalID string) error {
-	logs := a.pending[fractalID]
-	if len(logs) > 0 {
-		if err := a.commitFractal(ctx, fractalID, logs); err != nil {
+	buf := a.pending[fractalID]
+	if buf == nil {
+		return nil
+	}
+	if len(buf.logs) > 0 {
+		if err := a.commitFractal(ctx, fractalID, buf); err != nil {
 			return fmt.Errorf("commit fractal %s: %w", fractalID, err)
 		}
 	}
-	a.totalBytes -= a.pendingBytes[fractalID]
+	a.totalMem -= buf.mem
 	delete(a.pending, fractalID)
-	delete(a.pendingBytes, fractalID)
 	return nil
 }
 
@@ -259,9 +283,8 @@ func (a *Archiver) syncSpoolClear(ctx context.Context) bool {
 		}
 		// Drop pre-clear data buffered in memory and re-anchor the checkpoints to
 		// the reset spool so nothing stale is flushed.
-		a.pending = make(map[string][]storage.LogEntry)
-		a.pendingBytes = make(map[string]int64)
-		a.totalBytes = 0
+		a.pending = make(map[string]*fractalBuffer)
+		a.totalMem = 0
 		a.lastReadCP = a.reader.Position()
 		a.committedCP = a.reader.Position()
 		a.appliedClearGen = marker
@@ -304,12 +327,12 @@ func (a *Archiver) maybeHeartbeat(ctx context.Context) {
 
 // commitFractal appends one fractal's buffered records as a single Iceberg
 // snapshot.
-func (a *Archiver) commitFractal(ctx context.Context, fractalID string, logs []storage.LogEntry) error {
+func (a *Archiver) commitFractal(ctx context.Context, fractalID string, buf *fractalBuffer) error {
 	tbl, err := a.cat.EnsureTable(ctx, fractalID)
 	if err != nil {
 		return err
 	}
-	rec := buildRecord(a.mem, logs)
+	rec := buildRecord(a.mem, buf.logs)
 	defer rec.Release()
 
 	rdr, err := array.NewRecordReader(arrowSchema(), []arrow.RecordBatch{rec})
@@ -327,16 +350,46 @@ func (a *Archiver) commitFractal(ctx context.Context, fractalID string, logs []s
 		return err
 	}
 	writeVersionHint(ctx, updated)
-	log.Printf("[Archiver] committed %d logs for fractal %s", len(logs), fractalID)
+	files, onDisk := addedFiles(updated)
+	// The written size is the only figure here that is not an estimate, and its
+	// ratio to payload is what tells an operator where to set RollBytes to land
+	// on a file size compaction will leave alone.
+	log.Printf("[Archiver] committed %d logs for fractal %s: %d payload bytes -> %d file(s), %d bytes on disk",
+		len(buf.logs), fractalID, buf.payload, files, onDisk)
 	return nil
+}
+
+// addedFiles reports the data files and compressed bytes the latest snapshot
+// added, from its summary. Zeroes when the summary is absent, which only happens
+// for a table with no snapshot yet.
+func addedFiles(tbl *icetable.Table) (files int, onDisk int64) {
+	snap := tbl.CurrentSnapshot()
+	if snap == nil || snap.Summary == nil || snap.Summary.Properties == nil {
+		return 0, 0
+	}
+	return snap.Summary.Properties.GetInt("added-data-files", 0),
+		int64(snap.Summary.Properties.GetInt("added-files-size", 0))
+}
+
+// payloadSize is the entry's real data volume: the bytes that reach the Parquet
+// writer, with no allowance for Go's in-memory overhead. It drives the roll
+// threshold so that threshold means the same volume whatever the field density
+// (see fractalBuffer). Deliberately NOT interchangeable with approxSize.
+func payloadSize(e *storage.LogEntry) int64 {
+	s := len(e.RawLog) + len(e.LogID) + len(e.FractalID) + len(e.Normalizer)
+	for k, v := range e.Fields {
+		s += len(k) + len(v)
+	}
+	return int64(s)
 }
 
 // approxSize estimates an entry's live heap footprint. It deliberately counts
 // the Go overhead raw byte lengths miss - the LogEntry struct, per-string
 // headers, and per-map-entry bucket cost - because this number drives the
-// MaxPendingBytes memory backstop, not just a file-size target. A field-dense
-// entry is mostly overhead, and undercounting it is what turns a generous-looking
-// buffer cap into an OOM. Generous by design rather than exact.
+// MaxPendingBytes memory backstop and nothing else. A field-dense entry is mostly
+// overhead, and undercounting it is what turns a generous-looking buffer cap into
+// an OOM. Generous by design rather than exact, which is exactly why it must not
+// be used to size files; see payloadSize.
 func approxSize(e *storage.LogEntry) int64 {
 	const (
 		entryOverhead = 200 // LogEntry struct + string headers + map header

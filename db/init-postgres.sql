@@ -1997,6 +1997,9 @@ ALTER TABLE archive_maintain_status ADD COLUMN IF NOT EXISTS orphans_deleted   I
 -- Orphan cleanup lists every file under each table location, so it runs on its own
 -- (much longer) cadence than a maintain pass. This is its claim stamp.
 ALTER TABLE archive_maintain_status ADD COLUMN IF NOT EXISTS last_orphan_sweep_at TIMESTAMPTZ;
+-- Routine passes plan compaction over recent partitions only; this stamps the
+-- occasional whole-table pass that catches anything left behind.
+ALTER TABLE archive_maintain_status ADD COLUMN IF NOT EXISTS last_deep_compaction_at TIMESTAMPTZ;
 
 -- Per-run history (bounded to the most recent rows by the writer, see
 -- appendMaintainHistory) so the admin UI can show a trend across multiple

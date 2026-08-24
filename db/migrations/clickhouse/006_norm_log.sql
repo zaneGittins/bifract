@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- Add norm_log: a flat, indefinitely-retained serialization of the normalized fields.
 -- The log-detail lookup and BQL text search read norm_log instead of reconstructing the
 -- JSON fields column (which opens ~1000+ per-path subcolumn files per part). A point-read
@@ -16,10 +17,11 @@ ALTER TABLE logs ADD COLUMN IF NOT EXISTS normalizer LowCardinality(String) DEFA
 ALTER TABLE logs MODIFY COLUMN raw_log String CODEC(ZSTD(3)) TTL toDateTime(timestamp) + INTERVAL 7 DAY;
 
 -- Move the full-text n-gram index from raw_log to lower(norm_log). DROP/ADD INDEX are
--- metadata-only and instant. Existing parts are NOT indexed until MATERIALIZE INDEX runs;
--- the bifract app submits that backfill asynchronously at startup (alter_sync=0). Note:
--- until both the column and index are materialized, free-text search over pre-migration
--- data falls back to a scan. To backfill manually:
+-- metadata-only and instant. Existing parts are NOT indexed until MATERIALIZE INDEX runs.
+-- The app used to submit that backfill at startup; it no longer exists, because the index
+-- is now inline in init-clickhouse.sql and every part is indexed on insert. Note: until
+-- both the column and index are materialized, free-text search over pre-migration data
+-- falls back to a scan. To backfill manually:
 --   ALTER TABLE logs MATERIALIZE INDEX norm_log_ngram_lc;
 ALTER TABLE logs DROP INDEX IF EXISTS raw_log_ngram_lc;
 ALTER TABLE logs ADD INDEX IF NOT EXISTS norm_log_ngram_lc lower(norm_log) TYPE text(tokenizer = ngrams(3)) GRANULARITY 1;

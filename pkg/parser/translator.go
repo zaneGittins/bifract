@@ -415,11 +415,11 @@ type FieldSampleParams struct {
 // It answers the same question as BuildFieldStatsSQL but under different
 // constraints, which is why it is a separate builder rather than a parameter:
 //
-//  1. No ORDER BY. Recency comes from the caller's predicate, which prunes
-//     partitions. `ORDER BY <ts> DESC LIMIT n` does not read in order on the logs
-//     table, so its cost scales with the rows in the window rather than with n
-//     (measured: a constant LIMIT 20000 read 23k rows over a 1-day window and
-//     323k over 60 days). At retention scale that reads the entire norm_log
+//  1. No ORDER BY. Recency comes from the caller's ingest_timestamp predicate,
+//     which prunes partitions. `ORDER BY <ts> DESC LIMIT n` does not read in
+//     order on the logs table, so its cost scales with the rows in the window
+//     rather than with n (measured: a constant LIMIT 20000 read 23k rows over a
+//     1-day window and 323k over 60 days). At retention scale that reads the entire norm_log
 //     column, which is what made the schema tab time out. The predicate form is
 //     O(SampleSize) whatever the table holds. See also OverflowMonitor.detect,
 //     which hit the same trap.

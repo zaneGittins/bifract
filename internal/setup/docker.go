@@ -98,6 +98,13 @@ func (d *DockerOps) ExecPostgres(user, db, sql string) (string, error) {
 	return string(out), err
 }
 
+// ExecPostgresTuples runs a query and returns rows only, pipe-separated and
+// unaligned, so callers can parse them without stripping psql's table borders.
+func (d *DockerOps) ExecPostgresTuples(user, db, sql string) (string, error) {
+	out, err := d.compose("exec", "-T", "postgres", "psql", "-U", user, "-d", db, "-tAc", sql).CombinedOutput()
+	return string(out), err
+}
+
 // ExecPostgresDump runs pg_dump inside the postgres container and returns the output.
 func (d *DockerOps) ExecPostgresDump(user, db string) ([]byte, error) {
 	cmd := d.compose("exec", "-T", "postgres", "pg_dump", "-U", user, "-d", db, "-Fc")

@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Drops the logs database on every ClickHouse node and recreates it using the
-# local db/init-clickhouse.sql (which includes GRANULARITY 1 on the inverted
-# index). Clears all log data, stuck merges, mutations, and the replication
-# queue. Fractal configs (Postgres) are not affected.
+# Developer escape hatch. For operators the supported path is
+# `bifract --reset-logs` (or --reset-logs-k8s), which additionally preserves
+# dictionaries, clears the Postgres state that describes the dropped data, and
+# lets the app provision the schema from its embedded copy.
+#
+# Drops the whole logs database on every ClickHouse node and recreates it using
+# the local db/init-clickhouse.sql. Clears all log data, stuck merges, mutations,
+# and the replication queue. Fractal configs (Postgres) are not affected, but
+# neither are the Postgres rows that describe the data being dropped, and
+# ClickHouse dictionaries are destroyed along with everything else.
 #
 # Run from the repo root.
 #

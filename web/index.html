@@ -2740,7 +2740,7 @@
                         <div class="setting-item">
                             <div class="setting-info">
                                 <label for="manageFractalRetentionSelect" class="setting-label">Delete logs after</label>
-                                <p class="setting-description">Logs older than this are permanently removed. Runs hourly.</p>
+                                <p class="setting-description">Logs ingested more than this long ago are permanently removed. Runs hourly.</p>
                             </div>
                             <select id="manageFractalRetentionSelect" class="setting-select">
                                 <option value="">Never (keep forever)</option>
@@ -3332,7 +3332,7 @@
                     <div class="setting-item">
                         <div class="setting-info">
                             <label for="fractalRetentionSelect" class="setting-label">Log Retention Period</label>
-                            <p class="setting-description">Automatically delete logs older than this period. Deletion runs hourly based on log timestamp. Default is unlimited.</p>
+                            <p class="setting-description">Automatically delete logs this long after they were ingested. Replayed history is kept for its full window rather than dropped on arrival. Runs hourly. Default is unlimited.</p>
                         </div>
                         <select id="fractalRetentionSelect" class="setting-select">
                             <option value="">Unlimited</option>

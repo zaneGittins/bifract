@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- Retire the deprecated field_tokens column and its text index. Equality now resolves against
 -- the JSON sub-column directly (see pkg/parser), so field_tokens is no longer written or queried.
 -- The compound field:value lookup it was built for could not work: hasToken rejects the colon

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -217,6 +218,13 @@ func runIngestServer() {
 	// Ingest mode never runs migrations. Wait (bounded) for the schema so cold starts
 	// after a fresh deploy don't drop the first burst.
 	waitForWriteTable(dbIngest)
+
+	// The control plane refuses to start on an incompatible schema, but this tier is
+	// the one that writes, and it starts independently. Without its own check it
+	// would keep accepting logs into a table that is about to be dropped.
+	if err := dbIngest.CheckLogsPartitionKey(context.Background()); errors.Is(err, storage.ErrIncompatibleSchema) {
+		log.Fatalf("Refusing to ingest: %v", err)
+	}
 
 	if err := settings.Init(pg); err != nil {
 		log.Printf("Warning: failed to initialize settings: %v", err)

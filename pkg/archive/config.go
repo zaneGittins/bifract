@@ -27,21 +27,32 @@ type Config struct {
 
 	SpoolPath string
 
-	// RollBytes is the PER-FRACTAL roll threshold: a fractal is committed on its
-	// own once its buffered data reaches this, so Parquet file size tracks
-	// RollBytes regardless of how many fractals are ingesting concurrently. (A
-	// shared threshold across all fractals divides into one small file per
-	// fractal per roll, which is what buries compaction.)
+	// RollBytes is the PER-FRACTAL roll threshold, in PAYLOAD bytes: a fractal is
+	// committed on its own once its buffered data reaches this, so Parquet file
+	// size tracks RollBytes regardless of how many fractals are ingesting
+	// concurrently. (A shared threshold across all fractals divides into one small
+	// file per fractal per roll, which is what buries compaction.)
+	//
+	// Payload, not the approxSize memory estimate: see fractalBuffer. Payload is
+	// uncompressed, so the file it produces is smaller by whatever zstd achieves
+	// on that fractal's data; the per-commit log reports both so the ratio is
+	// observed rather than guessed.
 	RollBytes int64
 	// RollInterval bounds staleness: every interval the whole buffer is flushed
 	// and the spool checkpoint advances, however little each fractal has.
 	RollInterval time.Duration
 
-	// MaxPendingBytes bounds the archiver's total in-memory buffer. RollBytes is
-	// per-fractal, so without this cap a deployment with many active fractals
-	// would hold RollBytes x fractals of un-flushed data. Over the cap the
-	// largest fractal is committed early (a smaller file, logged so the trade is
-	// visible), which keeps memory bounded while still favouring big files.
+	// MaxPendingBytes bounds the archiver's total in-memory buffer, in approxSize
+	// MEMORY bytes. RollBytes is per-fractal, so without this cap a deployment
+	// with many active fractals would hold RollBytes x fractals of un-flushed
+	// data. Over the cap the largest fractal is committed early (a smaller file,
+	// logged so the trade is visible), which keeps memory bounded while still
+	// favouring big files.
+	//
+	// Its unit differs from RollBytes on purpose: this one has to predict the
+	// cgroup, that one has to predict the file. A buffer's memory always exceeds
+	// its payload, by a factor set by the fractal's field density, so an operator
+	// sizing this reads the ratio off the per-commit log rather than assuming 1:1.
 	MaxPendingBytes int64
 
 	// PollInterval is how often the run loop checks the spool when it has caught
@@ -90,7 +101,9 @@ func ConfigFromEnv() (Config, error) {
 		c.JobConcurrency = 1
 	}
 	// A cap below the per-fractal threshold would make the memory backstop, not
-	// RollBytes, decide every commit. Keep at least one full roll of headroom.
+	// RollBytes, decide every commit. A buffer's memory is always at least its
+	// payload, so this is the floor below which that is guaranteed rather than
+	// merely likely; the early-commit log covers the rest of the range.
 	if c.MaxPendingBytes < c.RollBytes {
 		c.MaxPendingBytes = c.RollBytes
 	}

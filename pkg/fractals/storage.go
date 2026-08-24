@@ -3,7 +3,6 @@ package fractals
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"bifract/pkg/storage"
@@ -305,6 +304,10 @@ func (s *Storage) SetDiskQuota(ctx context.Context, fractalID string, quotaBytes
 // fractal via metadata-only DROP PARTITION (like quota rollover), instead of
 // the old ALTER TABLE ... DELETE mutation. Enforced at day granularity, so
 // the boundary day can lag up to ~24h behind the exact cutoff.
+//
+// The partition axis is ingest time, so retention means "ingested more than N days
+// ago", not "event timestamp older than N days". Replayed history is kept for its
+// full window instead of being dropped on the next pass.
 func (s *Storage) DeleteOldLogs(ctx context.Context, fractalID string, retentionDays int, isDefault bool) error {
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
 	cutoffDay := time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, time.UTC)
@@ -323,7 +326,7 @@ func (s *Storage) DeleteOldLogs(ctx context.Context, fractalID string, retention
 		if !ids[p.FractalID] {
 			continue
 		}
-		day, ok := partitionDay(p.Partition)
+		_, day, ok := storage.ParseLogPartition(p.Partition)
 		if !ok || !day.Before(cutoffDay) {
 			continue
 		}
@@ -332,24 +335,6 @@ func (s *Storage) DeleteOldLogs(ctx context.Context, fractalID string, retention
 		}
 	}
 	return nil
-}
-
-// partitionDay extracts the day from a logs partition string, e.g.
-// ('my-fractal','2026-07-01') -> 2026-07-01. Parsed from the partition key
-// itself (ClickHouse's canonical rendering of toDate(timestamp)) rather than
-// from data-derived columns like system.parts.min_time, so the retention
-// cutoff can't drift from timezone or driver interpretation differences.
-func partitionDay(partition string) (time.Time, bool) {
-	idx := strings.LastIndex(partition, "','")
-	if idx < 0 {
-		return time.Time{}, false
-	}
-	dateStr := strings.TrimSuffix(partition[idx+3:], "')")
-	d, err := time.Parse("2006-01-02", dateStr)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return d, true
 }
 
 // DeleteFractal deletes an index and all associated data

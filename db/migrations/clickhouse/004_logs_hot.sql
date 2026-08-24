@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- Migration 004: logs_hot hot table and materialized view for alert engine scaling.
 --
 -- logs_hot holds the last ~2 hours of logs ordered by (fractal_id, ingest_timestamp)

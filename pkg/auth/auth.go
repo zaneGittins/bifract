@@ -34,7 +34,7 @@ const (
 	minPasswordLength = 12
 
 	// Login rate limiting
-	loginMaxFailures    = 5               // failures before blocking
+	loginMaxFailures    = 5 // failures before blocking
 	loginBlockDuration  = 15 * time.Minute
 	loginWindowDuration = 15 * time.Minute
 
@@ -451,6 +451,26 @@ func (h *AuthHandler) RBACResolver() *rbac.Resolver {
 // LogAuthEvent logs an authentication event to the system fractal (exported for OIDC handler).
 func (h *AuthHandler) LogAuthEvent(event, user, ip, detail string) {
 	h.logAuthEvent(event, user, ip, detail)
+}
+
+// SessionUser resolves the browser session cookie to a user, or nil when the
+// request carries no usable session. Unlike AuthMiddleware it never writes a
+// response, so page routes can redirect to the login screen instead of handing
+// a browser navigation a JSON 401.
+func (h *AuthHandler) SessionUser(r *http.Request) *storage.User {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return nil
+	}
+	session, exists := h.getSession(cookie.Value)
+	if !exists {
+		return nil
+	}
+	user, err := h.pg.GetUser(r.Context(), session.Username)
+	if err != nil || user == nil || !user.Enabled || user.ForcePasswordChange {
+		return nil
+	}
+	return user
 }
 
 func (h *AuthHandler) getSession(sessionID string) (*Session, bool) {
@@ -1734,4 +1754,3 @@ func (h *AuthHandler) HandleGenerateClientCert(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusOK)
 	w.Write(p12Data)
 }
-

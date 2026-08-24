@@ -59,8 +59,8 @@ SETTINGS index_granularity = 8192`, tableName), nil
 		return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
     fractal_id  LowCardinality(String),
     entity_key  String,
-    first_seen  SimpleAggregateFunction(min, DateTime64(3)),
-    last_seen   SimpleAggregateFunction(max, DateTime64(3)),
+    first_seen  SimpleAggregateFunction(min, DateTime64(3, 'UTC')),
+    last_seen   SimpleAggregateFunction(max, DateTime64(3, 'UTC')),
     event_count SimpleAggregateFunction(sum, UInt64),
     days        AggregateFunction(groupUniqArray(365), Date)
 ) ENGINE = AggregatingMergeTree()
@@ -105,7 +105,7 @@ func volumeBucketExpr(timeBucket string) string {
 // volumeBucketColType returns the CH column type for the bucket key.
 func volumeBucketColType(timeBucket string) string {
 	if timeBucket == "hour" {
-		return "DateTime"
+		return "DateTime('UTC')"
 	}
 	return "Date"
 }
@@ -473,8 +473,8 @@ func BuildNetStateTableDDL(stateTable string, windowDays int) string {
     ts_state   AggregateFunction(groupArray(%d), UInt32),
     size_state AggregateFunction(groupArray(%d), Float64),
     dur_sum    SimpleAggregateFunction(sum, Float64),
-    first_ts   SimpleAggregateFunction(min, DateTime64(3)),
-    last_ts    SimpleAggregateFunction(max, DateTime64(3))
+    first_ts   SimpleAggregateFunction(min, DateTime64(3, 'UTC')),
+    last_ts    SimpleAggregateFunction(max, DateTime64(3, 'UTC'))
 ) ENGINE = AggregatingMergeTree()
 ORDER BY (fractal_id, src, dst, port, day)
 TTL day + INTERVAL %d DAY
@@ -505,9 +505,9 @@ func BuildNetResultsTableDDL(resultsTable string) string {
     final_score        Float64,
     conn_count         UInt64,
     total_duration     Float64,
-    first_seen         DateTime64(3),
-    last_seen          DateTime64(3),
-    scored_at          DateTime64(3)
+    first_seen         DateTime64(3, 'UTC'),
+    last_seen          DateTime64(3, 'UTC'),
+    scored_at          DateTime64(3, 'UTC')
 ) ENGINE = ReplacingMergeTree(scored_at)
 ORDER BY (fractal_id, src_ip, dst_ip, dst_port)
 SETTINGS index_granularity = 8192`, resultsTable)

@@ -3,7 +3,6 @@ package alerts
 import (
 	"context"
 	"log"
-	"strings"
 	"time"
 
 	"bifract/pkg/parser"
@@ -18,7 +17,7 @@ const hydrationRowCeiling = 1000
 // logHydrator is the narrow ClickHouse dependency hydration needs, mirroring the
 // engineNotifWriter seam so the row handling is testable without a live server.
 type logHydrator interface {
-	HydrateLogFields(ctx context.Context, table string, byIngest bool, keys []storage.LogKey, from, to time.Time) (map[string]map[string]interface{}, error)
+	HydrateLogFields(ctx context.Context, table string, keys []storage.LogKey, from, to time.Time) (map[string]map[string]interface{}, error)
 }
 
 // hydrationLimit returns how many result rows are worth hydrating for this alert,
@@ -74,19 +73,16 @@ func (e *Engine) hydrateRows(ctx context.Context, results []map[string]interface
 		}
 		key := storage.LogKey{LogID: row["log_id"].(string)}
 		key.FractalID, _ = row["fractal_id"].(string)
-		key.Timestamp, _ = storage.RowTime(row, "timestamp")
 		keys = append(keys, key)
 	}
 	if len(keys) == 0 {
 		return results
 	}
 
-	// Mirror the table the evaluation read. The hot table is keyed on
-	// ingest_timestamp, which the alert's own window bounds; the main logs table
-	// is keyed on timestamp, which is unrelated to that window.
-	byIngest := strings.HasPrefix(opts.TableName, "logs_hot")
-
-	fields, err := e.hydrator.HydrateLogFields(ctx, opts.TableName, byIngest, keys, opts.StartTime, opts.EndTime)
+	// Mirror the table the evaluation read. Both it and logs_hot are partitioned on
+	// ingest_timestamp, and the alert always evaluates over an ingest window
+	// (UseIngestTimestamp), so its own bounds prune the hydration lookup.
+	fields, err := e.hydrator.HydrateLogFields(ctx, opts.TableName, keys, opts.StartTime, opts.EndTime)
 	if err != nil {
 		log.Printf("[Alert Engine] Hydration failed, forwarding pruned rows: %v", err)
 		return results

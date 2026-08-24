@@ -21,6 +21,7 @@ const QueryExecutor = {
     deferredShareLink: null, // Store share link data waiting for fractals to load
     deferredPollingInterval: null, // Interval for polling fractal availability
     isProcessingSharedQuery: false, // Flag to prevent clearing state during shared query processing
+    _consumedShareKey: null, // Identity of the share link already landed on, so it is not replayed
 
     // Default element configuration for main search view
     elementConfig: {
@@ -300,10 +301,21 @@ const QueryExecutor = {
         this.currentQuery = query;
         this.currentCursor = null;
 
-        // Clear shared query state when user runs their own query (but not during shared query processing)
+        // Running your own query abandons any share link still in flight, but no
+        // longer wipes the URL: the address bar mirrors this search instead. Only
+        // the main search view is mirrored; alert previews and other embedded
+        // executors pass their own element config and own no URL.
         if (!this.isProcessingSharedQuery) {
-            this.clearSharedQueryState();
+            this.abandonPendingShare();
         }
+        // Arriving on a link is already a history entry, so that path amends the
+        // URL rather than stacking a second entry for the same search. The mode is
+        // a one-shot set by the caller, not a timed flag: keying off how recently
+        // a link landed would silently swallow the entry for a query the user runs
+        // in the second after it.
+        const urlSyncMode = this._urlSyncMode || 'push';
+        this._urlSyncMode = null;
+        if (!config) this._syncQueryToUrl(urlSyncMode);
 
         // Cancel any previous request
         if (this.currentRequest) {
@@ -1913,20 +1925,9 @@ const QueryExecutor = {
             }
 
             // Check for deferred share links now that data may be loaded
-            if (this.deferredShareLink) {
-                let hasData;
-                if (this.deferredShareLink.isPrismShare) {
-                    hasData = (window.FractalSelector?.availablePrisms?.length > 0) ||
-                              (window.FractalListing?.prisms?.length > 0);
-                } else {
-                    hasData = (window.FractalSelector?.availableFractals?.length > 0) ||
-                              (window.FractalListing?.fractals?.length > 0);
-                }
-
-                if (hasData) {
-                    this.processDeferredShareLink();
-                    return;
-                }
+            if (this.deferredShareLink && this._shareTargetAvailable(this.deferredShareLink.isPrismShare)) {
+                this.processDeferredShareLink();
+                return;
             }
 
             // Check for shared links on fractal change if URL has share params
@@ -5507,59 +5508,72 @@ const QueryExecutor = {
     // Share Query Functionality
     // ============================
 
+    // _deepLinkTime converts the picker's state into the /go/search from/to
+    // vocabulary. Presets are already written as an offset ("24h" -> "-24h").
+    _deepLinkTime(trState) {
+        const type = trState.type || '24h';
+        if (type === 'all') return { from: 'all' };
+
+        if (type === 'custom') {
+            const start = new Date(trState.customStart);
+            const end = new Date(trState.customEnd);
+            if (isNaN(start) || isNaN(end)) return { from: '-24h' };
+            return { from: start.toISOString(), to: end.toISOString() };
+        }
+
+        if (type === 'relative') {
+            const unit = { minutes: 'm', hours: 'h', days: 'd', weeks: 'w' }[trState.relativeUnit] || 'h';
+            return { from: `-${trState.relativeN || 4}${unit}` };
+        }
+
+        return { from: `-${type}` };
+    },
+
+    // buildDeepLink renders the current search as a /go/search URL: the public,
+    // documented contract, so a pasted link stays readable and editable by hand
+    // and is resolved and validated server-side when it is opened.
+    buildDeepLink() {
+        const elements = this.getElements();
+        const rawQuery = elements.queryInput ? elements.queryInput.value.trim() : '';
+        if (!rawQuery) return null;
+
+        const ctx = window.FractalContext;
+        const current = ctx?.currentFractal;
+        if (!current) {
+            console.error('[Share] No fractal or prism selected');
+            return null;
+        }
+
+        const params = new URLSearchParams();
+        params.set('q', rawQuery);
+        // Name over id: being human-readable is the point of the external form.
+        // An unnamed context falls back to the id, which also resolves.
+        params.set(ctx.isPrism() ? 'prism' : 'fractal', current.name || current.id);
+
+        const { from, to } = this._deepLinkTime(window.TimePicker?.state || {});
+        params.set('from', from);
+        if (to) params.set('to', to);
+
+        // Only bindings the user actually set: an all-"*" set carries nothing.
+        for (const v of (this.varManager ? this.varManager.serialize() : [])) {
+            if (v && v.name && v.value !== '*' && v.value !== '') params.set(`var.${v.name}`, v.value);
+        }
+
+        return `${window.location.origin}/go/search?${params.toString()}`;
+    },
+
     // Generate shareable URL and copy to clipboard
     async generateAndCopyShareLink() {
+        const shareUrl = this.buildDeepLink();
+        if (!shareUrl) return;
+
         try {
-            const elements = this.getElements();
-            if (!elements.queryInput) return;
-
-            const rawQuery = elements.queryInput.value.trim();
-            if (!rawQuery) return;
-
-            // Get current time range
-            const trState = window.TimePicker?.state || { type: '24h' };
-            const timeRangeValue = trState.type;
-
-            // Get current fractal/prism ID
-            const ctx = window.FractalContext;
-            const contextId = ctx?.currentFractal?.id;
-            if (!contextId) {
-                console.error('[Share] No fractal or prism selected');
-                return;
-            }
-
-            // Build URL parameters
-            const urlParams = new URLSearchParams();
-            urlParams.set('q', btoa(encodeURIComponent(rawQuery)));
-            urlParams.set('tr', timeRangeValue);
-            if (ctx.isPrism()) {
-                urlParams.set('p', contextId);
-            } else {
-                urlParams.set('f', contextId);
-            }
-
-            if (timeRangeValue === 'custom' && trState.customStart && trState.customEnd) {
-                urlParams.set('ts', trState.customStart);
-                urlParams.set('te', trState.customEnd);
-            } else if (timeRangeValue === 'relative') {
-                urlParams.set('rn', String(trState.relativeN || 4));
-                urlParams.set('ru', trState.relativeUnit || 'hours');
-            }
-
-            // Carry the @variable values so a shared link reproduces them.
-            const varsArr = this.varManager ? this.varManager.serialize() : [];
-            if (varsArr.length) urlParams.set('vars', this._encodeVars(varsArr));
-
-            // Generate full URL
-            const shareUrl = `${window.location.origin}${window.location.pathname}?${urlParams.toString()}`;
-
-            // Copy to clipboard
             await navigator.clipboard.writeText(shareUrl);
-
         } catch (error) {
-            console.error('[Share] Failed to generate/copy link:', error);
+            console.error('[Share] Failed to copy link:', error);
 
-            // Fallback for older browsers
+            // Fallback for older browsers and non-secure contexts, where the
+            // clipboard API is unavailable.
             try {
                 const textArea = document.createElement('textarea');
                 textArea.value = shareUrl;
@@ -5569,8 +5583,6 @@ const QueryExecutor = {
                 document.body.removeChild(textArea);
             } catch (fallbackError) {
                 console.error('[Share] Fallback copy also failed:', fallbackError);
-
-                // Show error toast when both methods fail
                 if (window.Toast) {
                     Toast.error('Copy Failed', 'Could not copy query link to clipboard');
                 }
@@ -5578,189 +5590,283 @@ const QueryExecutor = {
         }
     },
 
-    // Load query from URL parameters on page load
-    loadFromShareLink() {
-        // First, check if we even have a search string to avoid unnecessary processing
-        if (!window.location.search) {
-            return false;
+    // ---- URL mirroring -----------------------------------------------------
+    // Every executed search is written into the URL, so the address bar always
+    // describes what is on screen: reload re-runs it, copy-paste shares it, and
+    // Back returns to the previous query. Running a query is a navigation, so it
+    // pushes a history entry; amending one in place (variable edits, a re-run of
+    // the same thing) replaces the current entry instead.
+
+    // _queryUrlParams snapshots the current search into the internal link form.
+    // Returns null when there is nothing to describe.
+    _queryUrlParams() {
+        const elements = this.getElements();
+        const rawQuery = elements.queryInput ? elements.queryInput.value.trim() : '';
+        const ctx = window.FractalContext;
+        const current = ctx?.currentFractal;
+        if (!rawQuery || !current) return null;
+
+        const trState = window.TimePicker?.state || { type: '24h' };
+        const params = new URLSearchParams();
+        params.set('q', btoa(encodeURIComponent(rawQuery)));
+        params.set('tr', trState.type || '24h');
+        params.set(ctx.isPrism() ? 'p' : 'f', current.id);
+
+        if (trState.type === 'custom' && trState.customStart && trState.customEnd) {
+            params.set('ts', trState.customStart);
+            params.set('te', trState.customEnd);
+        } else if (trState.type === 'relative') {
+            params.set('rn', String(trState.relativeN || 4));
+            params.set('ru', trState.relativeUnit || 'hours');
         }
 
-        const urlParams = new URLSearchParams(window.location.search);
-
-        // Check if we have share parameters - be very explicit about this check
-        const hasQuery = urlParams.has('q');
-        const hasTimeRange = urlParams.has('tr');
-        const hasFractal = urlParams.has('f');
-        const hasPrism = urlParams.has('p');
-
-        if (!hasQuery || !hasTimeRange || (!hasFractal && !hasPrism)) {
-            return false; // No share parameters found
+        const varsArr = this.varManager ? this.varManager.serialize() : [];
+        if (varsArr.some(v => v.value !== '*' && v.value !== '')) {
+            params.set('vars', this._encodeVars(varsArr));
         }
+        return params;
+    },
 
+    // _urlStateKey canonicalizes a param set for comparison. Order varies by
+    // producer (the server sorts, URLSearchParams preserves insertion), so the
+    // raw query string is not a reliable identity.
+    _urlStateKey(params) {
+        if (!params) return '';
+        return [...params.entries()].map(([k, v]) => `${k}=${v}`).sort().join('&');
+    },
 
-        // Set flag to prevent clearing shared state during processing
-        this.isProcessingSharedQuery = true;
-
+    // _syncQueryToUrl writes the current search into the address bar. It pushes a
+    // history entry only for a state that differs from the one already there, so
+    // re-running the same query does not stack duplicates that Back must chew
+    // through. Replays driven by Back/Forward suppress the write entirely.
+    _syncQueryToUrl(mode) {
         try {
-            const encodedQuery = urlParams.get('q');
-            const timeRangeValue = urlParams.get('tr');
-            const fractalId = urlParams.get('f');
-            const prismId = urlParams.get('p');
-            const contextId = fractalId || prismId;
-            const isPrismShare = !!prismId;
+            const params = this._queryUrlParams();
+            if (!params) return;
 
-            // Validate the parameters before proceeding
-            if (!encodedQuery || !timeRangeValue || !contextId) {
-                return false;
+            const changed = this._urlStateKey(params) !== this._urlStateKey(new URLSearchParams(window.location.search));
+            const url = `${window.location.origin}${window.location.pathname}?${params.toString()}${window.location.hash}`;
+            const state = window.App?._buildFractalState ? App._buildFractalState() : history.state;
+
+            if (mode === 'push' && changed) history.pushState(state, '', url);
+            else history.replaceState(state, '', url);
+
+            // The URL now describes this search, so it is not an unvisited link.
+            const share = this._parseShareParams();
+            if (share) this._consumedShareKey = share.key;
+        } catch (e) { /* best-effort URL sync */ }
+    },
+
+    // replayFromUrl restores whatever the current URL describes. Called on
+    // Back/Forward, where the URL is the source of truth and re-executing is the
+    // point, so the one-shot guard that stops a link replaying is bypassed.
+    replayFromUrl() {
+        const share = this._parseShareParams();
+        if (!share) {
+            // An entry from before the first query on this tab: leave the results
+            // standing but empty the box, so the view matches an empty URL rather
+            // than inventing a query nobody asked for.
+            if (this.isProcessingSharedQuery) return;
+            const elements = this.getElements();
+            if (elements.queryInput) {
+                elements.queryInput.value = '';
+                if (window.SyntaxHighlight) SyntaxHighlight.update();
+                this.syncSearchVariables();
             }
+            return;
+        }
 
-            // Decode query
-            let query;
-            try {
-                query = decodeURIComponent(atob(encodedQuery));
-            } catch (decodeError) {
-                console.error('[Share] Failed to decode shared query:', decodeError);
-                this.showError('Invalid shared link: malformed query');
-                return false;
+        // This exact state has already been applied, either by an earlier replay
+        // or by the fractal switch the same navigation triggered. Keying on the
+        // state rather than on how recently a link landed matters: a timer here
+        // would ignore Back pressed in the second after arriving on a link.
+        if (this._consumedShareKey === share.key) return;
+
+        this._applyShare(share);
+    },
+
+    // ---- Share links -------------------------------------------------------
+    // A share link has three entry paths: applied immediately, deferred until
+    // the fractal list loads, or resumed after a context switch. All three now
+    // consume one parsed object, because parsing the URL separately per path is
+    // how ts/te and vars came to be dropped on some links but not others.
+
+    // _parseShareParams reads the share contract out of the current URL, or
+    // returns null when this is not a share link.
+    _parseShareParams() {
+        if (!window.location.search) return null;
+        const params = new URLSearchParams(window.location.search);
+        const contextId = params.get('f') || params.get('p');
+        if (!params.has('q') || !params.has('tr') || !contextId) return null;
+
+        let query;
+        try {
+            query = decodeURIComponent(atob(params.get('q')));
+        } catch (decodeError) {
+            console.error('[Share] Failed to decode shared query:', decodeError);
+            // Reported by loadFromShareLink, not here: this parser also backs a
+            // predicate that runs on navigation and must stay side-effect free.
+            this._shareParseError = 'Invalid shared link: malformed query';
+            return null;
+        }
+        if (!query) return null;
+        this._shareParseError = null;
+
+        return {
+            query,
+            timeRangeValue: params.get('tr'),
+            customStart: params.get('ts'),
+            customEnd: params.get('te'),
+            relativeN: params.get('rn'),
+            relativeUnit: params.get('ru'),
+            vars: params.get('vars'),
+            contextId,
+            isPrismShare: params.has('p'),
+            // Identity of the link, used to avoid replaying one the user has
+            // already landed on. Excludes vars, which _syncVarsToUrl rewrites
+            // as the user edits them.
+            key: `${params.get('q')}|${params.get('tr')}|${contextId}`,
+        };
+    },
+
+    // Whether the fractal or prism list the link needs has loaded yet.
+    _shareTargetAvailable(isPrismShare) {
+        try {
+            if (isPrismShare) {
+                return (window.FractalSelector?.availablePrisms?.length > 0) ||
+                       (window.FractalListing?.prisms?.length > 0);
             }
+            return (window.FractalSelector?.availableFractals?.length > 0) ||
+                   (window.FractalListing?.fractals?.length > 0);
+        } catch (checkError) {
+            console.warn('[Share] Error checking availability:', checkError);
+            return false;
+        }
+    },
 
-            // Check if the relevant data source (fractals or prisms) is loaded
-            let hasData = false;
-            try {
-                if (isPrismShare) {
-                    const selectorPrisms = window.FractalSelector?.availablePrisms?.length || 0;
-                    const listingPrisms = window.FractalListing?.prisms?.length || 0;
-                    hasData = selectorPrisms > 0 || listingPrisms > 0;
-                } else {
-                    const selectorFractals = window.FractalSelector?.availableFractals?.length || 0;
-                    const listingFractals = window.FractalListing?.fractals?.length || 0;
-                    hasData = selectorFractals > 0 || listingFractals > 0;
-                }
-            } catch (selectorError) {
-                console.warn('[Share] Error checking availability:', selectorError);
-                hasData = false;
-            }
+    // Resolve the link's target within what the user can see. Absence means no
+    // access; the server enforces this again at execute time.
+    _findShareTarget(share) {
+        const lists = share.isPrismShare
+            ? [window.FractalSelector?.availablePrisms, window.FractalListing?.prisms]
+            : [window.FractalSelector?.availableFractals, window.FractalListing?.fractals];
+        for (const list of lists) {
+            if (!Array.isArray(list)) continue;
+            const hit = list.find(item => item && item.id === share.contextId);
+            if (hit) return hit;
+        }
+        return null;
+    },
 
-            if (!hasData) {
-                // Store the share link data to be processed when fractals are loaded
-                this.deferredShareLink = { encodedQuery, timeRangeValue, fractalId: contextId, isPrismShare, relativeN: urlParams.get('rn'), relativeUnit: urlParams.get('ru') };
+    // Switch to the link's fractal or prism. Which selection API exists depends
+    // on how far initialization has got, so fall through them in preference order.
+    _switchShareContext(share, target) {
+        const ctx = window.FractalContext;
+        const selector = window.FractalSelector;
 
-                // Start periodic check for fractals loading
-                this.startDeferredShareLinkPolling();
-                return true; // We are processing a share link, just deferred
-            }
-
-            // Check if user has access to the shared fractal/prism
-
-            let hasAccess = null;
-            try {
-                if (isPrismShare) {
-                    // Check prism access in FractalSelector and FractalListing
-                    if (window.FractalSelector?.availablePrisms?.length > 0) {
-                        hasAccess = window.FractalSelector.availablePrisms.find(p => p && p.id === contextId);
-                    }
-                    if (!hasAccess && window.FractalListing?.prisms?.length > 0) {
-                        hasAccess = window.FractalListing.prisms.find(p => p && p.id === contextId);
-                    }
-                } else {
-                    // Check fractal access in FractalSelector and FractalListing
-                    if (window.FractalSelector?.availableFractals?.length > 0) {
-                        hasAccess = window.FractalSelector.availableFractals.find(f => f && f.id === contextId);
-                    }
-                    if (!hasAccess && window.FractalListing?.fractals?.length > 0) {
-                        hasAccess = window.FractalListing.fractals.find(f => f && f.id === contextId);
-                    }
-                }
-            } catch (accessError) {
-                console.error('[Share] Error checking access:', accessError);
-                this.showError('Failed to verify access: ' + accessError.message);
-                return false;
-            }
-
-            if (!hasAccess) {
-                console.error('[Share] User does not have access to shared', isPrismShare ? 'prism' : 'fractal', ':', contextId);
-                this.showError('Access denied: You do not have permission to view this shared query');
-                return false;
-            }
-
-            // Switch to the shared fractal/prism if it's not current
-            if (!window.FractalContext?.currentFractal || window.FractalContext.currentFractal.id !== contextId) {
-
-                // Store the shared link data to be processed after context switch
-                this.pendingShareData = {
-                    query,
-                    timeRangeValue,
-                    customStart: urlParams.get('ts'),
-                    customEnd: urlParams.get('te'),
-                    relativeN: urlParams.get('rn'),
-                    relativeUnit: urlParams.get('ru')
-                };
-
-                if (isPrismShare) {
-                    // Use prism selection methods
-                    if (window.FractalContext && typeof window.FractalContext.setCurrentPrism === 'function') {
-                        window.FractalContext.setCurrentPrism(hasAccess);
-                        return true;
-                    } else if (window.FractalSelector && typeof window.FractalSelector.selectPrism === 'function') {
-                        window.FractalSelector.selectPrism(contextId);
-                        return true;
-                    } else {
-                        console.error('[Share] No prism selection method available');
-                        this.showError('Unable to switch to shared prism');
-                        return false;
-                    }
-                }
-
-                // Fractal selection methods
-                if (window.FractalContext && typeof window.FractalContext.setCurrentFractal === 'function') {
-                    window.FractalContext.setCurrentFractal(hasAccess);
-                    return true;
-                } else if (window.FractalSelector && typeof window.FractalSelector.setCurrentFractal === 'function') {
-                    window.FractalSelector.setCurrentFractal(hasAccess);
-                    return true;
-                } else if (window.FractalSelector && typeof window.FractalSelector.selectFractal === 'function') {
-                    window.FractalSelector.selectFractal(contextId, hasAccess.name);
-                    return true;
-                } else if (window.FractalContext && typeof window.FractalContext.selectFractalOnServer === 'function') {
-                    window.FractalContext.currentFractal = hasAccess;
-                    window.FractalContext.selectFractalOnServer(contextId);
-                    return true;
-                } else {
-                    console.error('[Share] No fractal selection method available');
-                    this.showError('Unable to switch to shared fractal');
-                    return false;
-                }
-            }
-
-
-            // Load the shared data into UI
-            this.loadShareDataIntoUI({
-                query,
-                timeRangeValue,
-                customStart: urlParams.get('ts'),
-                customEnd: urlParams.get('te'),
-                relativeN: urlParams.get('rn'),
-                relativeUnit: urlParams.get('ru'),
-                vars: urlParams.get('vars')
-            });
-
-        } catch (error) {
-            console.error('[Share] Failed to load shared query:', error);
-            this.isProcessingSharedQuery = false; // Clear flag on error
-            this.showError('Failed to load shared query: ' + (error.message || 'Unknown error'));
+        if (share.isPrismShare) {
+            if (typeof ctx?.setCurrentPrism === 'function') { ctx.setCurrentPrism(target); return true; }
+            if (typeof selector?.selectPrism === 'function') { selector.selectPrism(share.contextId); return true; }
+            console.error('[Share] No prism selection method available');
+            this.showError('Unable to switch to shared prism');
             return false;
         }
 
-        // Successfully processed share link data
+        if (typeof ctx?.setCurrentFractal === 'function') { ctx.setCurrentFractal(target); return true; }
+        if (typeof selector?.setCurrentFractal === 'function') { selector.setCurrentFractal(target); return true; }
+        if (typeof selector?.selectFractal === 'function') { selector.selectFractal(share.contextId, target.name); return true; }
+        if (typeof ctx?.selectFractalOnServer === 'function') {
+            ctx.currentFractal = target;
+            ctx.selectFractalOnServer(share.contextId);
+            return true;
+        }
+        if (typeof window.FractalListing?.selectFractal === 'function') {
+            window.FractalListing.selectFractal(share.contextId);
+            return true;
+        }
+        console.error('[Share] No fractal selection method available');
+        this.showError('Unable to switch to shared fractal');
+        return false;
+    },
+
+    // Verify access, switch context if needed, then load. Used by every path.
+    _applyShare(share) {
+        const target = this._findShareTarget(share);
+        if (!target) {
+            console.error('[Share] No access to shared', share.isPrismShare ? 'prism' : 'fractal', share.contextId);
+            this.showError('Access denied: You do not have permission to view this shared query');
+            this.isProcessingSharedQuery = false;
+            return false;
+        }
+
+        // Claim the link before any async work. Two entry points race on load
+        // (FractalSelector after its listing arrives, and onFractalChange), and
+        // without this both would run it and the query would execute twice.
+        this._consumedShareKey = share.key || null;
+
+        const current = window.FractalContext?.currentFractal;
+        if (!current || current.id !== share.contextId) {
+            // The switch is async; onFractalChange replays this same object.
+            this.pendingShareData = share;
+            if (this._switchShareContext(share, target)) return true;
+            this.pendingShareData = null;
+            this._consumedShareKey = null;
+            this.isProcessingSharedQuery = false;
+            return false;
+        }
+
+        this.loadShareDataIntoUI(share);
         return true;
     },
 
+    // hasUnprocessedShareLink reports whether the URL still holds a share link
+    // that has not been landed on yet. Navigation handlers use it to decide
+    // whether clearing the share state would discard a link mid-flight.
+    hasUnprocessedShareLink() {
+        const share = this._parseShareParams();
+        return !!share && this._consumedShareKey !== share.key;
+    },
+
+    // Load query from URL parameters on page load
+    loadFromShareLink() {
+        const share = this._parseShareParams();
+        if (!share) {
+            if (this._shareParseError) {
+                this.showError(this._shareParseError);
+                this._shareParseError = null;
+            }
+            return false;
+        }
+        // Already landed on this link: a later fractal switch must not drag the
+        // user back to it.
+        if (this._consumedShareKey === share.key) return false;
+
+        this.isProcessingSharedQuery = true;
+        try {
+            if (!this._shareTargetAvailable(share.isPrismShare)) {
+                this.deferredShareLink = share;
+                this.startDeferredShareLinkPolling();
+                return true;
+            }
+            return this._applyShare(share);
+        } catch (error) {
+            console.error('[Share] Failed to load shared query:', error);
+            this.isProcessingSharedQuery = false;
+            this.showError('Failed to load shared query: ' + (error.message || 'Unknown error'));
+            return false;
+        }
+    },
+
     // Load shared query data into the UI and execute
-    loadShareDataIntoUI(shareData) {
-        const { query, timeRangeValue, customStart, customEnd, relativeN, relativeUnit } = shareData;
+    loadShareDataIntoUI(share) {
+        const { query, timeRangeValue, customStart, customEnd, relativeN, relativeUnit } = share;
 
         // Set flag to prevent clearing shared state during processing
         this.isProcessingSharedQuery = true;
+        // The link's parameters stay in the URL so it survives a reload and can
+        // be copied out of the address bar. clearSharedQueryState removes them
+        // once the user runs their own query or navigates away.
+        if (share.key) this._consumedShareKey = share.key;
 
         // Navigate to the search view within the fractal
         if (window.App && typeof window.App.showFractalView === 'function') {
@@ -5779,8 +5885,8 @@ const QueryExecutor = {
             // Restore the shared variable values, then reconcile the tray against
             // the query text so the @vars surface with their shared values.
             if (this.varManager) {
-                if (shareData.vars) {
-                    const seeded = this._decodeVars(shareData.vars);
+                if (share.vars) {
+                    const seeded = this._decodeVars(share.vars);
                     if (seeded.size) this._pendingUrlVars = seeded;
                 }
                 this.syncSearchVariables();
@@ -5800,21 +5906,12 @@ const QueryExecutor = {
                 SyntaxHighlight.update();
             }
 
-            // Auto-execute the shared query
+            // Auto-execute the shared query. The URL already describes it, so this
+            // run amends the current history entry instead of adding one.
             setTimeout(() => {
+                this._urlSyncMode = 'replace';
                 this.execute();
-                // Clear processing flag after execution starts
-                setTimeout(() => {
-                    this.isProcessingSharedQuery = false;
-                    // Now clear URL parameters after everything is loaded
-                    if (window.location.search) {
-                        const urlParams = new URLSearchParams(window.location.search);
-                        if (urlParams.has('q') || urlParams.has('tr') || urlParams.has('f') || urlParams.has('p')) {
-                            const cleanUrl = `${window.location.origin}${window.location.pathname}`;
-                            window.history.replaceState({}, document.title, cleanUrl);
-                        }
-                    }
-                }, 1000); // Wait a second for the query to fully execute
+                setTimeout(() => { this.isProcessingSharedQuery = false; }, 1000);
             }, 100);
         }, 200);
     },
@@ -5830,25 +5927,8 @@ const QueryExecutor = {
 
         this.deferredPollingInterval = setInterval(() => {
             attempts++;
-            const isPrism = this.deferredShareLink?.isPrismShare;
 
-            let hasData = false;
-            try {
-                if (isPrism) {
-                    const selectorPrisms = window.FractalSelector?.availablePrisms?.length || 0;
-                    const listingPrisms = window.FractalListing?.prisms?.length || 0;
-                    hasData = selectorPrisms > 0 || listingPrisms > 0;
-                } else {
-                    const selectorFractals = window.FractalSelector?.availableFractals?.length || 0;
-                    const listingFractals = window.FractalListing?.fractals?.length || 0;
-                    hasData = selectorFractals > 0 || listingFractals > 0;
-                }
-            } catch (checkError) {
-                console.warn('[Share] Error during polling check:', checkError);
-                hasData = false;
-            }
-
-            if (hasData) {
+            if (this._shareTargetAvailable(this.deferredShareLink?.isPrismShare)) {
                 clearInterval(this.deferredPollingInterval);
                 this.deferredPollingInterval = null;
                 this.processDeferredShareLink();
@@ -5857,6 +5937,7 @@ const QueryExecutor = {
                 clearInterval(this.deferredPollingInterval);
                 this.deferredPollingInterval = null;
                 this.deferredShareLink = null;
+                this.isProcessingSharedQuery = false;
                 this.showError('Failed to load shared query: timeout waiting for data');
             }
         }, 500);
@@ -5864,31 +5945,16 @@ const QueryExecutor = {
 
     // Check for deferred share links when fractals are loaded
     checkDeferredShareLink() {
-        if (this.deferredShareLink) {
-            let hasData;
-            if (this.deferredShareLink.isPrismShare) {
-                hasData = (window.FractalSelector?.availablePrisms?.length > 0) ||
-                          (window.FractalListing?.prisms?.length > 0);
-            } else {
-                hasData = (window.FractalSelector?.availableFractals?.length > 0) ||
-                          (window.FractalListing?.fractals?.length > 0);
-            }
-
-            if (hasData) {
-                this.processDeferredShareLink();
-            }
+        if (this.deferredShareLink && this._shareTargetAvailable(this.deferredShareLink.isPrismShare)) {
+            this.processDeferredShareLink();
         }
     },
 
     // Process deferred share link once fractals are loaded
     processDeferredShareLink() {
-        if (!this.deferredShareLink) {
-            return;
-        }
+        const share = this.deferredShareLink;
+        if (!share) return;
 
-        const { encodedQuery, timeRangeValue, fractalId, isPrismShare, relativeN, relativeUnit } = this.deferredShareLink;
-
-        // Clear the deferred data and polling
         this.deferredShareLink = null;
         if (this.deferredPollingInterval) {
             clearInterval(this.deferredPollingInterval);
@@ -5896,139 +5962,40 @@ const QueryExecutor = {
         }
 
         try {
-            // Validate that we have the required data
-            if (!encodedQuery || !timeRangeValue || !fractalId) {
-                console.error('[Share] Invalid deferred share data:', { encodedQuery, timeRangeValue, fractalId });
-                this.showError('Invalid shared link data');
-                return;
-            }
-
-            let query;
-            try {
-                query = decodeURIComponent(atob(encodedQuery));
-            } catch (decodeError) {
-                console.error('[Share] Failed to decode deferred query:', decodeError);
-                this.showError('Invalid shared link: malformed query');
-                return;
-            }
-
-            // Now fractals/prisms should be loaded, check access
-            let hasAccess = null;
-            try {
-                if (isPrismShare) {
-                    if (window.FractalSelector?.availablePrisms?.length > 0) {
-                        hasAccess = window.FractalSelector.availablePrisms.find(p => p && p.id === fractalId);
-                    }
-                    if (!hasAccess && window.FractalListing?.prisms?.length > 0) {
-                        hasAccess = window.FractalListing.prisms.find(p => p && p.id === fractalId);
-                    }
-                } else {
-                    if (window.FractalSelector?.availableFractals?.length > 0) {
-                        hasAccess = window.FractalSelector.availableFractals.find(f => f && f.id === fractalId);
-                    }
-                    if (!hasAccess && window.FractalListing?.fractals?.length > 0) {
-                        hasAccess = window.FractalListing.fractals.find(f => f && f.id === fractalId);
-                    }
-                }
-            } catch (accessCheckError) {
-                console.error('[Share] Error checking deferred access:', accessCheckError);
-                this.showError('Failed to verify access: ' + accessCheckError.message);
-                return;
-            }
-
-            if (!hasAccess) {
-                console.error('[Share] User does not have access to deferred', isPrismShare ? 'prism' : 'fractal', ':', fractalId);
-                this.showError('Access denied: You do not have permission to view this shared query');
-                return;
-            }
-
-            // Switch to the shared fractal/prism if it's not current
-            if (!window.FractalContext?.currentFractal || window.FractalContext.currentFractal.id !== fractalId) {
-
-                // Store the shared link data to be processed after context switch
-                this.pendingShareData = {
-                    query,
-                    timeRangeValue,
-                    customStart: null,
-                    customEnd: null,
-                    relativeN: relativeN || null,
-                    relativeUnit: relativeUnit || null
-                };
-
-                if (isPrismShare) {
-                    if (window.FractalContext && typeof window.FractalContext.setCurrentPrism === 'function') {
-                        window.FractalContext.setCurrentPrism(hasAccess);
-                        return;
-                    } else if (window.FractalSelector && typeof window.FractalSelector.selectPrism === 'function') {
-                        window.FractalSelector.selectPrism(fractalId);
-                        return;
-                    } else {
-                        console.error('[Share] No prism selection method available for deferred processing');
-                        this.showError('Unable to switch to shared prism');
-                        return;
-                    }
-                }
-
-                if (window.FractalContext && typeof window.FractalContext.setCurrentFractal === 'function') {
-                    window.FractalContext.setCurrentFractal(hasAccess);
-                    return;
-                } else if (window.FractalSelector && typeof window.FractalSelector.setCurrentFractal === 'function') {
-                    window.FractalSelector.setCurrentFractal(hasAccess);
-                    return;
-                } else if (window.FractalSelector && typeof window.FractalSelector.selectFractal === 'function') {
-                    window.FractalSelector.selectFractal(fractalId, hasAccess.name);
-                    return;
-                } else if (window.FractalContext && typeof window.FractalContext.selectFractalOnServer === 'function') {
-                    window.FractalContext.currentFractal = hasAccess;
-                    window.FractalContext.selectFractalOnServer(fractalId);
-                    return;
-                } else if (window.FractalListing && typeof window.FractalListing.selectFractal === 'function') {
-                    window.FractalListing.selectFractal(fractalId);
-                    return;
-                } else {
-                    console.error('[Share] No fractal selection method available for deferred processing');
-                    this.showError('Unable to switch to shared fractal');
-                    return;
-                }
-            }
-
-            // Load directly if already in correct context
-            this.loadShareDataIntoUI({
-                query,
-                timeRangeValue,
-                customStart: null,
-                customEnd: null,
-                relativeN: relativeN || null,
-                relativeUnit: relativeUnit || null
-            });
-
+            this._applyShare(share);
         } catch (error) {
             console.error('[Share] Failed to process deferred share link:', error);
-            this.isProcessingSharedQuery = false; // Clear flag on error
+            this.isProcessingSharedQuery = false;
             this.showError('Failed to load shared query: ' + (error.message || 'Unknown error'));
         }
     },
 
-    // Clear shared query state and URL parameters
-    clearSharedQueryState() {
-
-        // Clear pending and deferred share data
+    // abandonPendingShare drops a share link that has not finished loading, along
+    // with its polling. It leaves the URL alone: the caller is usually execute(),
+    // which is about to describe its own search there.
+    abandonPendingShare() {
         this.pendingShareData = null;
         this.deferredShareLink = null;
         this.isProcessingSharedQuery = false;
 
-        // Clear polling interval if active
         if (this.deferredPollingInterval) {
             clearInterval(this.deferredPollingInterval);
             this.deferredPollingInterval = null;
         }
+    },
 
-        // Clear URL parameters if they exist
+    // Clear shared query state and the query's URL parameters. Used when leaving
+    // the search view, where a query in the address bar no longer describes what
+    // is on screen.
+    clearSharedQueryState() {
+        this.abandonPendingShare();
+        this._consumedShareKey = null;
+
         if (window.location.search) {
             const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.has('q') || urlParams.has('tr') || urlParams.has('f') || urlParams.has('p')) {
-                const cleanUrl = `${window.location.origin}${window.location.pathname}`;
-                window.history.replaceState({}, document.title, cleanUrl);
+            if (['q', 'tr', 'f', 'p', 'vars'].some(k => urlParams.has(k))) {
+                const cleanUrl = `${window.location.origin}${window.location.pathname}${window.location.hash}`;
+                window.history.replaceState(history.state, document.title, cleanUrl);
             }
         }
     },

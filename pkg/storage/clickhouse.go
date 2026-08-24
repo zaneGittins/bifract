@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -201,7 +202,7 @@ func (c *ClickHouseClient) ReconcileProcLineageTTL(ctx context.Context, days int
 	// materialize_ttl_after_modify = 0: metadata-only change, no part-rewriting mutation
 	// (which would run on every startup the env var is set). New/merged parts adopt the TTL.
 	stmt := fmt.Sprintf(
-		"ALTER TABLE proc_lineage%s MODIFY TTL toDateTime(timestamp) + INTERVAL %d DAY SETTINGS materialize_ttl_after_modify = 0",
+		"ALTER TABLE proc_lineage%s MODIFY TTL toDateTime(ingest_timestamp) + INTERVAL %d DAY SETTINGS materialize_ttl_after_modify = 0",
 		c.OnClusterSQL(), days,
 	)
 	return c.conn.Exec(ctx, stmt)
@@ -346,6 +347,12 @@ func (c *ClickHouseClient) Initialize(ctx context.Context, sql string, migration
 		return nil
 	}
 
+	// Refuse before touching anything: an event-time logs table cannot be migrated,
+	// and every migration below assumes the current key.
+	if err := checkPartitionKey(ctx, c.conn); err != nil {
+		return err
+	}
+
 	// A schema that came from the init SQL rather than the migration runner carries no
 	// (or a truncated) migration record, and replaying history against it fails. Stamp
 	// what it demonstrably already embodies before running anything. The cluster path
@@ -439,6 +446,52 @@ func chTableExists(ctx context.Context, conn driver.Conn, table string) (bool, e
 	err := conn.QueryRow(ctx,
 		"SELECT count() FROM system.tables WHERE database = currentDatabase() AND name = ?", table).Scan(&count)
 	return count > 0, err
+}
+
+// TableExists reports whether a table exists in the client's database. Callers use
+// it to self-heal objects that Postgres still describes but ClickHouse has lost,
+// which is the state a log-data reset leaves analytics models in.
+func (c *ClickHouseClient) TableExists(ctx context.Context, table string) (bool, error) {
+	return chTableExists(ctx, c.conn, table)
+}
+
+// ErrIncompatibleSchema is returned when ClickHouse holds a logs table from a
+// release before the partition key moved to ingest time. ClickHouse cannot alter a
+// partition key, so there is no migration: the data has to be dropped.
+var ErrIncompatibleSchema = errors.New(
+	"ClickHouse schema is from an incompatible release (logs is partitioned by event time).\n" +
+		"This version changed the logs partition key, and ClickHouse cannot alter one in place,\n" +
+		"so upgrading requires dropping all ClickHouse log data.\n\n" +
+		"Run:  bifract --reset-logs        (or --reset-logs-k8s on Kubernetes)\n\n" +
+		"Postgres is untouched: users, fractals, saved searches, notebooks, dashboards,\n" +
+		"alerts and the Iceberg archive all survive")
+
+// CheckLogsPartitionKey reports ErrIncompatibleSchema when the logs table is still
+// keyed on event time. The ingest tier calls this: it never runs migrations, so
+// without its own check it would keep writing into a schema the control plane has
+// already refused to start against.
+//
+// Any other error means the answer is unknown (no logs table yet on a cold start,
+// or an identity that cannot see the row) and callers should not treat it as a
+// verdict.
+func (c *ClickHouseClient) CheckLogsPartitionKey(ctx context.Context) error {
+	return checkPartitionKey(ctx, c.conn)
+}
+
+// checkPartitionKey reports ErrIncompatibleSchema when an existing logs table is
+// still keyed on event time. Read from system.tables rather than tracked as a
+// version, so it describes the live schema and cannot drift out of sync with it.
+func checkPartitionKey(ctx context.Context, conn driver.Conn) error {
+	var key string
+	err := conn.QueryRow(ctx,
+		"SELECT partition_key FROM system.tables WHERE database = currentDatabase() AND name = 'logs'").Scan(&key)
+	if err != nil {
+		return fmt.Errorf("failed to read logs partition key: %w", err)
+	}
+	if !strings.Contains(key, "ingest_timestamp") {
+		return ErrIncompatibleSchema
+	}
+	return nil
 }
 
 type chMigrationEntry struct {
@@ -1289,16 +1342,12 @@ func (c *ClickHouseClient) InsertLogsInto(ctx context.Context, table string, log
 	}
 
 	for _, log := range logs {
-		ingestTS := log.IngestTimestamp
-		if ingestTS.IsZero() {
-			ingestTS = time.Now()
-		}
 		err := batch.Append(
 			log.Timestamp,
 			log.LogID,
 			log.Fields,
 			log.FractalID,
-			ingestTS,
+			log.IngestTime(),
 			log.Normalizer,
 		)
 		if err != nil {
@@ -1313,11 +1362,20 @@ func (c *ClickHouseClient) InsertLogsInto(ctx context.Context, table string, log
 	return nil
 }
 
+// IngestTime returns the entry's ingest_timestamp, defaulting to now when unset. It is
+// the logs and logs_raw partition key, so it must never be written zero.
+func (e LogEntry) IngestTime() time.Time {
+	if e.IngestTimestamp.IsZero() {
+		return time.Now()
+	}
+	return e.IngestTimestamp
+}
+
 // insertRawLogs writes the pre-normalization raw_log into the logs_raw side table.
 // Best-effort: failures are logged, not returned, since logs_raw only backs the detail
 // "Raw" tab and normalizer preview. Rows with an empty raw_log are skipped.
 func (c *ClickHouseClient) insertRawLogs(ctx context.Context, logs []LogEntry) {
-	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.RawWriteTable()+" (timestamp, fractal_id, log_id, raw_log)")
+	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.RawWriteTable()+" (timestamp, fractal_id, log_id, raw_log, ingest_timestamp)")
 	if err != nil {
 		log.Printf("[InsertLogs] prepare logs_raw batch failed (raw tab/preview degraded): %v", err)
 		return
@@ -1327,7 +1385,7 @@ func (c *ClickHouseClient) insertRawLogs(ctx context.Context, logs []LogEntry) {
 		if l.RawLog == "" {
 			continue
 		}
-		if err := batch.Append(l.Timestamp, l.FractalID, l.LogID, l.RawLog); err != nil {
+		if err := batch.Append(l.Timestamp, l.FractalID, l.LogID, l.RawLog, l.IngestTime()); err != nil {
 			log.Printf("[InsertLogs] append logs_raw row failed: %v", err)
 			batch.Abort()
 			return
@@ -1360,9 +1418,10 @@ func (c *ClickHouseClient) ExecArgs(ctx context.Context, query string, args ...i
 	return nil
 }
 
-// DeleteLogsByFractalID drops all partitions belonging to a fractal.
-// With PARTITION BY (fractal_id, toDate(timestamp)), each partition holds one
-// fractal's data for one day. DROP PARTITION is an instant metadata operation —
+// DeleteLogsByFractalID drops all partitions belonging to a fractal. With
+// PARTITION BY (fractal_id, toDate(ingest_timestamp)) each partition holds one
+// fractal's data for one ingest day, and only the fractal half is matched here, so
+// the date axis does not matter. DROP PARTITION is an instant metadata operation:
 // no lightweight delete mutation or OPTIMIZE TABLE needed, no matter how much
 // data the fractal holds. Replication happens via ZooKeeper automatically on
 // ReplicatedMergeTree, so ON CLUSTER is not used.
@@ -1745,6 +1804,18 @@ func unwrapSimpleAggregateFunction(typeName string) string {
 	return typeName
 }
 
+// isCHDateTimeType reports whether a ClickHouse type is a scalar date/time, which must be
+// scanned into a time.Time. Matched by prefix rather than equality because the log columns
+// carry an explicit timezone (DateTime64(3, 'UTC')): falling through to the default string
+// destination is a scan error, not just a formatting difference. Array(DateTime) does not
+// match here and reaches the map via the interface path.
+func isCHDateTimeType(typeName string) bool {
+	if inner, ok := strings.CutPrefix(typeName, "Nullable("); ok {
+		typeName = strings.TrimSuffix(inner, ")")
+	}
+	return strings.HasPrefix(typeName, "DateTime") || typeName == "Date"
+}
+
 // scanRowMap scans the current row of rows into a map[string]interface{} using
 // the supplied column types. It is shared by the buffered Query path and the
 // streaming StreamQuery path so the two never diverge in type handling. The
@@ -1771,9 +1842,7 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 			values[i] = new(int64)
 		case typeName == "Float64" || typeName == "Nullable(Float64)":
 			values[i] = new(float64)
-		case typeName == "DateTime64(3)" || typeName == "DateTime" || typeName == "Nullable(DateTime64(3))":
-			values[i] = new(time.Time)
-		case typeName == "Date" || typeName == "Nullable(Date)":
+		case isCHDateTimeType(typeName):
 			values[i] = new(time.Time)
 		case strings.HasPrefix(typeName, "Array("):
 			inner := typeName[6 : len(typeName)-1]
@@ -1931,10 +2000,10 @@ func (c *ClickHouseClient) QueryRow(ctx context.Context, query string, args ...i
 
 // GetLogByTimestamp fetches a single log by log_id, optionally pinned by an
 // exact timestamp and/or scoped to a fractal. The log table is
-// ORDER BY (timestamp, log_id) and PARTITION BY (fractal_id, toDate(timestamp)),
-// so a non-zero timestamp prunes to a single date partition and pins the primary
-// index, and a non-empty fractalID prunes to that fractal's partitions - either
-// predicate turns a whole-table scan into a near-pinpoint read. Callers that
+// ORDER BY (timestamp, log_id), so a non-zero timestamp pins the primary index to
+// one granule per part, and a non-empty fractalID prunes to that fractal's
+// partitions - together they turn a whole-table scan into a near-pinpoint read.
+// The timestamp no longer prunes partitions: those are keyed on ingest time. Callers that
 // must read the log's own fractal_id for access control pass an empty fractalID
 // and verify afterwards. A zero timestamp is omitted (used by comment creation,
 // which resolves the timestamp from the matched row).
@@ -2000,9 +2069,7 @@ func (c *ClickHouseClient) scanLogRow(ctx context.Context, query string, args []
 			values[i] = new(int64)
 		case typeName == "Float64" || typeName == "Nullable(Float64)":
 			values[i] = new(float64)
-		case typeName == "DateTime64(3)" || typeName == "DateTime" || typeName == "Nullable(DateTime64(3))":
-			values[i] = new(time.Time)
-		case typeName == "Date" || typeName == "Nullable(Date)":
+		case isCHDateTimeType(typeName):
 			values[i] = new(time.Time)
 		default:
 			values[i] = new(string)
@@ -2045,10 +2112,10 @@ func (c *ClickHouseClient) scanLogRow(ctx context.Context, query string, args []
 
 // GetLogFieldsByID fetches the parsed fields for a single log by an exact
 // (timestamp, log_id) key, optionally scoped to a fractal. The log table is
-// ORDER BY (timestamp, log_id) and PARTITION BY (fractal_id, toDate(timestamp)),
-// so the timestamp equality prunes to a single date partition and pins the
-// primary index to one granule, and a non-empty fractalID prunes to one
-// fractal - turning a whole-table bloom-filter scan into a near-pinpoint read.
+// ORDER BY (timestamp, log_id), so the timestamp equality pins the primary index
+// to one granule per part, and a non-empty fractalID prunes to one fractal -
+// turning a whole-table bloom-filter scan into a near-pinpoint read. Partitions
+// are keyed on ingest time, so the timestamp does not prune them.
 // The frontend supplies the exact ClickHouse timestamp from the search result,
 // so it bit-matches the DateTime64(3) value.
 //
@@ -2673,30 +2740,39 @@ func dropHotPartitionsOnConn(ctx context.Context, conn driver.Conn, label string
 	}
 }
 
-// FractalPartition describes one active logs partition (one fractal, one day)
-// and its on-disk size, summed across all shards in a cluster.
+// FractalPartition describes one active logs partition (one fractal, one ingest
+// day) and its on-disk size, summed across all shards in a cluster.
 type FractalPartition struct {
 	// Partition is ClickHouse's canonical partition expression, e.g.
 	// ('my-fractal','2026-07-01'). It is used verbatim in DROP PARTITION.
 	Partition string
 	FractalID string
 	Bytes     int64
-	MinTime   time.Time
+	// MinTime is system.parts.min_time, which tracks the partition key's time
+	// column: an ingest time, not an event time. Ordering by it is true FIFO.
+	MinTime time.Time
 }
 
-// parseFractalFromPartition extracts the fractal_id from a logs partition string.
-// The PARTITION BY (fractal_id, toDate(timestamp)) key renders as ('<id>','<date>')
-// with any single quote in the id doubled (ClickHouse's canonical form).
-func parseFractalFromPartition(p string) string {
-	if !strings.HasPrefix(p, "('") {
-		return ""
+// ParseLogPartition splits a logs partition expression into its two halves. The
+// PARTITION BY (fractal_id, toDate(ingest_timestamp)) key renders as ('<id>','<date>')
+// with any single quote in the id doubled (ClickHouse's canonical form), so the last
+// separator is the real one. The date is an ingest date, not an event date.
+//
+// Callers must branch on ok: an empty fractal id is the default fractal's real scope,
+// not a parse failure.
+func ParseLogPartition(partition string) (fractalID string, day time.Time, ok bool) {
+	if !strings.HasPrefix(partition, "('") || !strings.HasSuffix(partition, "')") {
+		return "", time.Time{}, false
 	}
-	rest := p[2:]
-	idx := strings.Index(rest, "','")
-	if idx < 0 {
-		return ""
+	sep := strings.LastIndex(partition, "','")
+	if sep < 2 {
+		return "", time.Time{}, false
 	}
-	return strings.ReplaceAll(rest[:idx], "''", "'")
+	day, err := time.Parse("2006-01-02", partition[sep+3:len(partition)-2])
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	return strings.ReplaceAll(partition[2:sep], "''", "'"), day, true
 }
 
 // FractalPartitionUsage returns the on-disk size of every active logs partition,
@@ -2728,8 +2804,8 @@ func (c *ClickHouseClient) FractalPartitionUsage(ctx context.Context) ([]Fractal
 			}
 			p := agg[partition]
 			if p == nil {
-				fid := parseFractalFromPartition(partition)
-				if fid == "" {
+				fid, _, ok := ParseLogPartition(partition)
+				if !ok {
 					continue
 				}
 				p = &FractalPartition{Partition: partition, FractalID: fid, MinTime: mn}
@@ -2767,7 +2843,7 @@ func (c *ClickHouseClient) FractalPartitionUsage(ctx context.Context) ([]Fractal
 	return out, nil
 }
 
-// DropLogPartition drops a single logs partition (one fractal, one day) on every
+// DropLogPartition drops a single logs partition (one fractal, one ingest day) on every
 // shard. DROP PARTITION is near-instant metadata and idempotent (dropping an
 // already-dropped partition is a no-op), so this is safe to retry and to run from
 // multiple pods. ON CLUSTER is deliberately avoided for the same reason as the hot
@@ -2778,14 +2854,14 @@ func (c *ClickHouseClient) DropLogPartition(ctx context.Context, partition strin
 	if err := c.execOnEveryShard(ctx, "ALTER TABLE logs DROP PARTITION "+partition, "drop partition "+partition); err != nil {
 		return err
 	}
-	day := parsePartitionDay(partition)
-	if day == "" {
+	fractalID, day, ok := ParseLogPartition(partition)
+	if !ok {
 		// Without a day the prune would widen to the whole fractal, which is only
 		// ever correct when the fractal itself is being deleted.
 		log.Printf("[ClickHouse] Skipping histogram rollup prune: unparseable partition %s", partition)
 		return nil
 	}
-	return c.PruneHistogramRollup(ctx, parseFractalFromPartition(partition), day)
+	return c.PruneHistogramRollup(ctx, fractalID, day.Format("2006-01-02"))
 }
 
 // execOnEveryShard runs a statement against every shard directly, bypassing the
@@ -2823,166 +2899,22 @@ func (c *ClickHouseClient) execOnEveryShard(ctx context.Context, stmt, what stri
 // escCHLiteral escapes a value for use inside a single-quoted ClickHouse literal.
 func escCHLiteral(s string) string { return strings.ReplaceAll(s, "'", "''") }
 
-// parsePartitionDay extracts the day from a logs partition string, e.g.
-// ('my-fractal','2026-07-01') -> "2026-07-01".
-func parsePartitionDay(partition string) string {
-	idx := strings.LastIndex(partition, "','")
-	if idx < 0 || !strings.HasSuffix(partition, "')") {
-		return ""
-	}
-	return partition[idx+3 : len(partition)-2]
-}
-
 // PruneHistogramRollup removes the pre-aggregated counts belonging to log data
 // that has been dropped. logs_histogram is filled by a materialized view on
 // insert, so nothing removes its rows when a logs partition is dropped; without
 // this the rollup keeps counting data that no longer exists and any histogram
 // read from it reports phantom events. An empty day prunes the whole fractal.
 // An empty fractalID is the default fractal's real scope, not a missing value.
+//
+// day is an ingest date and matches ingest_day, the rollup's own ingest-axis key.
+// Matching the event minute instead would prune the wrong rows in both directions.
 func (c *ClickHouseClient) PruneHistogramRollup(ctx context.Context, fractalID, day string) error {
 	where := fmt.Sprintf("fractal_id = '%s'", escCHLiteral(fractalID))
 	if day != "" {
-		where += fmt.Sprintf(" AND toDate(minute) = '%s'", escCHLiteral(day))
+		where += fmt.Sprintf(" AND ingest_day = '%s'", escCHLiteral(day))
 	}
 	stmt := "DELETE FROM logs_histogram WHERE " + where
 	return c.execOnEveryShard(ctx, stmt, "prune histogram rollup")
-}
-
-// NormLogIndexName is the lower(norm_log) n-gram text index (migration 006) used to
-// accelerate case-insensitive substring/regex search on the canonical text field.
-const NormLogIndexName = "norm_log_ngram_lc"
-
-// rawLogIndexBackfillLockID is a Postgres advisory-lock id that ensures only one
-// replica submits the one-time MATERIALIZE INDEX backfill. Distinct from the
-// schema-init lock ("bifract\0").
-const rawLogIndexBackfillLockID int64 = 0x6269667261637401 // "bifract\x01"
-
-// indexBackfillDoneKey returns the settings-table key that durably records that the
-// one-time MATERIALIZE INDEX backfill for idx has been submitted.
-func indexBackfillDoneKey(idx string) string { return idx + "_backfilled" }
-
-// StartNormLogIndexBackfill materializes the lower(norm_log) n-gram index on parts
-// written before the index existed, so historical data benefits from granule
-// pruning. It never blocks startup:
-//
-//   - Schema init adds the index as metadata only (instant). Older parts carry no
-//     index data until MATERIALIZE INDEX rebuilds them, which can take hours on
-//     large tables, so the rebuild runs here in a background goroutine.
-//   - The ALTER is submitted with alter_sync=0, so it returns as soon as the
-//     mutation is queued and ClickHouse rebuilds parts asynchronously.
-//   - A Postgres advisory lock ensures only one replica submits it.
-//
-// Re-submitting MATERIALIZE INDEX is NOT cheap: ClickHouse rebuilds the index on
-// every active part, saturating CPU even when the data is already indexed. The
-// system.mutations existence check alone cannot prevent this, because ClickHouse
-// prunes finished mutation records once a table exceeds finished_mutations_to_keep
-// (100 by default) -- and schema reconciliation issues many ALTER mutations, so the
-// original backfill record is eventually evicted. We therefore persist a durable
-// marker in Postgres the moment the backfill is queued; once set, the backfill is
-// never resubmitted, regardless of mutation-history eviction or restarts. The
-// mutation is durable server-side once queued, so it completes even if this process
-// exits immediately after submitting.
-//
-// pg may be nil, in which case the (fragile) system.mutations existence check is the
-// only guard, acceptable for single-replica deployments without Postgres.
-func (c *ClickHouseClient) StartNormLogIndexBackfill(ctx context.Context, pg *PostgresClient) {
-	go func() {
-		doneKey := indexBackfillDoneKey(NormLogIndexName)
-
-		if pg != nil {
-			unlock, ok := pg.TryAdvisoryLock(ctx, rawLogIndexBackfillLockID)
-			if !ok {
-				return // another replica owns the backfill
-			}
-			defer unlock()
-
-			// Durable guard: once submitted, never submit again. Survives
-			// ClickHouse pruning the mutation record on busy clusters.
-			if v, err := pg.GetSetting(ctx, doneKey); err == nil && v == "true" {
-				return
-			}
-		}
-
-		exists, err := c.indexMutationExists(ctx, NormLogIndexName)
-		if err != nil {
-			log.Printf("[IndexBackfill] check existing mutation: %v", err)
-			return
-		}
-		if !exists {
-			if err := c.submitMaterializeIndex(ctx, NormLogIndexName); err != nil {
-				log.Printf("[IndexBackfill] submit MATERIALIZE INDEX %s: %v", NormLogIndexName, err)
-				return
-			}
-			log.Printf("[IndexBackfill] submitted MATERIALIZE INDEX %s; backfilling existing parts in the background", NormLogIndexName)
-		}
-
-		// The mutation is now queued durably (or was already present). Record the
-		// marker so future restarts skip the expensive re-materialization even
-		// after ClickHouse prunes the mutation record.
-		if pg != nil {
-			if err := pg.SetSetting(ctx, doneKey, "true"); err != nil {
-				log.Printf("[IndexBackfill] persist backfill marker: %v", err)
-			}
-		}
-
-		c.awaitIndexMutation(ctx, NormLogIndexName)
-	}()
-}
-
-// indexMutationExists reports whether a MATERIALIZE INDEX mutation for idx already
-// exists for the logs table (running or finished).
-func (c *ClickHouseClient) indexMutationExists(ctx context.Context, idx string) (bool, error) {
-	var n uint64
-	q := fmt.Sprintf(
-		"SELECT count() FROM system.mutations WHERE database = currentDatabase() AND table = 'logs' AND command LIKE '%%MATERIALIZE INDEX %s%%'",
-		idx,
-	)
-	if err := c.conn.QueryRow(ctx, q).Scan(&n); err != nil {
-		return false, err
-	}
-	return n > 0, nil
-}
-
-// submitMaterializeIndex queues an asynchronous MATERIALIZE INDEX (alter_sync=0)
-// so the call returns immediately while ClickHouse rebuilds parts in the background.
-func (c *ClickHouseClient) submitMaterializeIndex(ctx context.Context, idx string) error {
-	sql := "ALTER TABLE logs" + c.OnClusterSQL()
-	sql += fmt.Sprintf(" MATERIALIZE INDEX %s", idx)
-	actx := clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
-		"alter_sync":     0,
-		"mutations_sync": 0,
-	}))
-	return c.conn.Exec(actx, sql)
-}
-
-// awaitIndexMutation polls mutation progress for logging only; the mutation
-// proceeds server-side regardless of this goroutine's lifetime.
-func (c *ClickHouseClient) awaitIndexMutation(ctx context.Context, idx string) {
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
-	q := fmt.Sprintf(
-		"SELECT countIf(is_done = 0), toInt64(sum(parts_to_do)) FROM system.mutations"+
-			" WHERE database = currentDatabase() AND table = 'logs' AND command LIKE '%%MATERIALIZE INDEX %s%%'",
-		idx,
-	)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			var pending uint64
-			var remaining int64
-			if err := c.conn.QueryRow(ctx, q).Scan(&pending, &remaining); err != nil {
-				log.Printf("[IndexBackfill] poll progress: %v", err)
-				return
-			}
-			if pending == 0 {
-				log.Printf("[IndexBackfill] MATERIALIZE INDEX %s complete", idx)
-				return
-			}
-			log.Printf("[IndexBackfill] MATERIALIZE INDEX %s in progress (%d parts remaining)", idx, remaining)
-		}
-	}
 }
 
 // jsonTypeHintRe matches one declared path inside a JSON column type.

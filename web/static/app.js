@@ -10,7 +10,34 @@ const App = {
         alert: null
     },
 
+    // resumePendingLink navigates to a deep link that was stashed before login.
+    // The entry is consumed before navigating, so a destination that keeps
+    // bouncing cannot loop. Returns true when a navigation was started.
+    resumePendingLink() {
+        let next = null;
+        try {
+            next = sessionStorage.getItem('bifract-pending-link');
+            sessionStorage.removeItem('bifract-pending-link');
+        } catch (e) {
+            return false; // storage unavailable (private mode); not worth failing over
+        }
+        // Same-origin absolute paths only: "//host" and "/\host" point elsewhere.
+        // Tab and newline are stripped first because the URL parser drops them
+        // too, which would turn "/\n/host" into "//host".
+        if (typeof next !== 'string') return false;
+        next = next.replace(/[\t\n\r]/g, '');
+        if (!next || next[0] !== '/' || next[1] === '/' || next[1] === '\\') return false;
+        if (next === window.location.pathname + window.location.search) return false;
+        window.location.replace(next);
+        return true;
+    },
+
     init() {
+        // A deep link the user was bounced off for login lands back here once
+        // authenticated. OIDC in particular returns to "/" rather than to the
+        // login page, so the destination is picked up from sessionStorage.
+        if (this.resumePendingLink()) return;
+
         // Initialize all modules
         if (window.TimeBar) {
             TimeBar.init();
@@ -376,6 +403,12 @@ const App = {
             this._navigatingFromPopState = true;
             try {
                 await this.routeFromHash(event);
+                // The hash routes the view; the query string describes the search
+                // within it. Each executed query is its own history entry, so Back
+                // on the search tab has to re-run what that entry names.
+                if (this.currentView === 'search' && window.QueryExecutor?.replayFromUrl) {
+                    QueryExecutor.replayFromUrl();
+                }
             } finally {
                 this._navigatingFromPopState = false;
             }
@@ -757,8 +790,8 @@ const App = {
 
             if (isConnected) {
                 html += `<div class="status-item"><span class="status-label">Storage Used:</span><span class="status-value">${ch.table_size || this.formatBytes(ch.storage_bytes || 0)}</span></div>`;
-                html += `<div class="status-item"><span class="status-label">Earliest Log:</span><span class="status-value">${ch.oldest_log || 'N/A'}</span></div>`;
-                html += `<div class="status-item"><span class="status-label">Latest Log:</span><span class="status-value">${ch.newest_log || 'N/A'}</span></div>`;
+                html += `<div class="status-item"><span class="status-label">First Ingest:</span><span class="status-value">${ch.oldest_log || 'N/A'}</span></div>`;
+                html += `<div class="status-item"><span class="status-label">Last Ingest:</span><span class="status-value">${ch.newest_log || 'N/A'}</span></div>`;
             }
 
             html += '</div>';
@@ -807,17 +840,10 @@ const App = {
         this.currentViewLevel = 'main';
         this.currentView = tab;
 
-        // Clear shared query state when navigating away from fractal views
-        // BUT NOT if we have share parameters that need to be processed
-        if (window.QueryExecutor && typeof window.QueryExecutor.clearSharedQueryState === 'function') {
-            // Check if we have share parameters before clearing
-            const urlParams = new URLSearchParams(window.location.search);
-            const hasShareParams = urlParams.has('q') && urlParams.has('tr') && (urlParams.has('f') || urlParams.has('p'));
-
-            if (!hasShareParams) {
-                window.QueryExecutor.clearSharedQueryState();
-            } else {
-            }
+        // Clear shared query state when navigating away from fractal views,
+        // unless a share link is still waiting to be processed.
+        if (window.QueryExecutor && !window.QueryExecutor.hasUnprocessedShareLink?.()) {
+            window.QueryExecutor.clearSharedQueryState?.();
         }
 
         // Hide fractal view
@@ -1021,17 +1047,12 @@ const App = {
             this._pushHash(this._buildHash(tab, subPath), this._buildFractalState());
         }
 
-        // Clear shared query state when navigating away from search tab
-        // BUT NOT if we have share parameters that need to be processed
-        if (tab !== 'search' && window.QueryExecutor && typeof window.QueryExecutor.clearSharedQueryState === 'function') {
-            // Check if we have share parameters before clearing
-            const urlParams = new URLSearchParams(window.location.search);
-            const hasShareParams = urlParams.has('q') && urlParams.has('tr') && (urlParams.has('f') || urlParams.has('p'));
-
-            if (!hasShareParams) {
-                window.QueryExecutor.clearSharedQueryState();
-            } else {
-            }
+        // Clear shared query state when navigating away from the search tab,
+        // unless a share link is still waiting to be processed. Once the link
+        // has been landed on, leaving search retires its URL parameters so a
+        // reload does not drag the user back to it.
+        if (tab !== 'search' && window.QueryExecutor && !window.QueryExecutor.hasUnprocessedShareLink?.()) {
+            window.QueryExecutor.clearSharedQueryState?.();
         }
 
         // Stop model backfill polling when leaving the models tab

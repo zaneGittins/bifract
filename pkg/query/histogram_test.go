@@ -106,6 +106,34 @@ func TestHistogramChunksGrowAndStayFew(t *testing.T) {
 	}
 }
 
+// Each chunk is a query that walks every part in the fractal before pruning
+// granules, so a 1- or 2-bucket chunk pays that cost to scan almost nothing and
+// finishes too fast to cache. A short range must resolve to one query.
+func TestHistogramChunksFloorChunkSize(t *testing.T) {
+	start := time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC)
+
+	// Below two floor-sized chunks there is nothing to split into.
+	for _, bucketCount := range []int{1, 3, 8, 15} {
+		if n := len(histogramChunks(start, 30, bucketCount)); n != 1 {
+			t.Errorf("bucketCount %d produced %d chunks, want 1", bucketCount, n)
+		}
+	}
+
+	// Above the floor, chunking resumes and no chunk is smaller than the floor.
+	for _, bucketCount := range []int{16, 64, 96, 240, 4999} {
+		chunks := histogramChunks(start, 900, bucketCount)
+		if len(chunks) < 2 {
+			t.Fatalf("bucketCount %d produced %d chunks, want it still chunked", bucketCount, len(chunks))
+		}
+		for i, c := range chunks {
+			if n := c.hiIdx - c.loIdx; n < histogramMinChunkBuckets {
+				t.Errorf("bucketCount %d chunk %d spans %d buckets, want >= %d",
+					bucketCount, i, n, histogramMinChunkBuckets)
+			}
+		}
+	}
+}
+
 // Chunked folding must produce exactly what one full-range scan would, including
 // for a row landing on a shared chunk boundary.
 func TestFoldHistogramRowsMatchesSingleScan(t *testing.T) {

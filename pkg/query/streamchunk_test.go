@@ -53,6 +53,31 @@ func TestStreamChunksStayFew(t *testing.T) {
 	}
 }
 
+// Every chunk is a query that walks the fractal's parts before pruning granules,
+// so a short range must stay whole rather than paying that cost several times.
+func TestStreamChunksFloorChunkSpan(t *testing.T) {
+	end := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+
+	// Below two floor-sized chunks there is nothing to split into.
+	for _, span := range []time.Duration{time.Second, time.Minute, streamMinChunk + time.Second} {
+		if n := len(streamChunks(end.Add(-span), end)); n != 1 {
+			t.Errorf("span %s produced %d chunks, want 1", span, n)
+		}
+	}
+
+	for _, span := range []time.Duration{8 * time.Minute, time.Hour, 24 * time.Hour, 30 * 24 * time.Hour} {
+		chunks := streamChunks(end.Add(-span), end)
+		if len(chunks) < 2 {
+			t.Fatalf("span %s produced %d chunks, want it still chunked", span, len(chunks))
+		}
+		for i, c := range chunks {
+			if d := c.end.Sub(c.start); d < streamMinChunk {
+				t.Errorf("span %s chunk %d spans %s, want >= %s", span, i, d, streamMinChunk)
+			}
+		}
+	}
+}
+
 func TestStreamChunksRejectsEmptyRange(t *testing.T) {
 	now := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
 	if got := streamChunks(now, now); got != nil {

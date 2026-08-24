@@ -90,6 +90,12 @@ func epochDay(t time.Time) arrow.Date32 {
 	return arrow.Date32(t.UTC().Unix() / 86400)
 }
 
+// epochDayIce is epochDay as the Iceberg Date the partition column is typed as,
+// for building predicates against ingest_date.
+func epochDayIce(t time.Time) iceberg.Date {
+	return iceberg.Date(epochDay(t))
+}
+
 // buildRecord materializes a batch of log entries into a single Arrow record
 // matching arrowSchema. The caller must Release the returned record.
 func buildRecord(mem memory.Allocator, logs []storage.LogEntry) arrow.RecordBatch {

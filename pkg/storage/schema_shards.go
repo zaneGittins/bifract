@@ -144,6 +144,16 @@ func (c *ClickHouseClient) syncShardSchemas(ctx context.Context, states []shardS
 			continue
 		}
 
+		// Checked per shard, not once through the load balancer: a cluster-wide answer
+		// describes only whichever node the driver picked. Fatal, so a half-reset
+		// cluster cannot come up serving from the shards that were missed.
+		if st.hasLogs {
+			if err := checkPartitionKey(ctx, conn); err != nil {
+				conn.Close()
+				return fmt.Errorf("shard %s: %w", st.addr, err)
+			}
+		}
+
 		switch {
 		case !st.hasLogs:
 			// No schema on this shard. Provision it from the init SQL, then stamp the

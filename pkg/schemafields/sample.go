@@ -18,9 +18,9 @@ import (
 // in the tab that decides whether they get a column.
 
 // sampleSize is how many rows per fractal the distribution is measured over.
-// Cost is a function of this number alone: the window predicate prunes
-// partitions and the LIMIT stops the scan, so a fractal holding a billion rows
-// costs the same as one holding a million.
+// Cost is a function of this number alone: the ingest-time window predicate
+// prunes partitions and the LIMIT stops the scan, so a fractal holding a billion
+// rows costs the same as one holding a million.
 func sampleSize() int {
 	if v := os.Getenv("BIFRACT_SCHEMA_INSIGHTS_SAMPLE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -170,11 +170,12 @@ func derivedWindow(rowsPerSec float64, want int) time.Duration {
 }
 
 // windowPredicate scopes a scan to one fractal's trailing window. Both halves
-// prune: fractal_id and toDate(timestamp) are the partition key, so only the
-// relevant partitions are opened, and the caller's LIMIT stops the read there.
+// prune: fractal_id and toDate(ingest_timestamp) are the partition key, so only
+// the relevant partitions are opened, and the caller's LIMIT stops the read there.
+// The anchor comes from system.parts min/max, which is also the ingest axis.
 func windowPredicate(fractalID string, anchor time.Time, window time.Duration) string {
 	from := anchor.Add(-window).UTC()
-	return fmt.Sprintf("fractal_id = %s AND timestamp >= toDateTime64('%s', 3, 'UTC')",
+	return fmt.Sprintf("fractal_id = %s AND ingest_timestamp >= toDateTime64('%s', 3, 'UTC')",
 		quoteCH(fractalID), from.Format("2006-01-02 15:04:05.000"))
 }
 

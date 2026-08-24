@@ -5,9 +5,14 @@ CREATE DATABASE IF NOT EXISTS logs;
 USE logs;
 
 -- Create the main logs table with fractal isolation support
+-- Every DateTime is pinned to 'UTC', not the server timezone: toDate()/toStartOfMinute()
+-- over these columns feed the partition key and histogram rollup, and Go reads partition
+-- names back as UTC dates (ParseLogPartition). A non-UTC server would shift both.
 CREATE TABLE IF NOT EXISTS logs (
-    timestamp DateTime64(3),
-    log_id String,
+    -- Delta+ZSTD: sorted timestamps compress to ~1 byte/row vs ~5 under the LZ4 default,
+    -- and this column is read by nearly every query. log_id is hex, which ZSTD halves.
+    timestamp DateTime64(3, 'UTC') CODEC(Delta(8), ZSTD(1)),
+    log_id String CODEC(ZSTD(1)),
     fields JSON(
         max_dynamic_paths=1024,
         `computer_name`      String,
@@ -43,7 +48,8 @@ CREATE TABLE IF NOT EXISTS logs (
         `target_file`         String
     ),
     fractal_id LowCardinality(String) DEFAULT '',
-    ingest_timestamp DateTime64(3) DEFAULT now64(3),
+    -- Near-constant within a part, so Delta leaves almost nothing to store.
+    ingest_timestamp DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC') CODEC(Delta(8), ZSTD(1)),
     -- Flat, indefinitely-retained serialization of the normalized fields. A point-read of
     -- one ZSTD String file is subsecond, versus reconstructing the JSON column from ~1000+
     -- per-path subcolumn files. Populated by ClickHouse from the fields column at insert
@@ -59,7 +65,6 @@ CREATE TABLE IF NOT EXISTS logs (
     -- arbitrary substring and regex matches. Only the index stores the lowercased form.
     INDEX norm_log_ngram_lc lower(norm_log) TYPE text(tokenizer = ngrams(3)) GRANULARITY 1,
     INDEX log_id_bloom log_id TYPE bloom_filter(0.001) GRANULARITY 1,
-    INDEX ingest_ts_minmax ingest_timestamp TYPE minmax GRANULARITY 1,
     -- Skip indexes on normalized fields. Defined inline so all new parts are indexed
     -- on insert without requiring MATERIALIZE INDEX. Direct sub-column references
     -- (no CAST) are required — ClickHouse's skip index optimizer does not match
@@ -85,65 +90,32 @@ CREATE TABLE IF NOT EXISTS logs (
     -- logs by it; proc_lineage carries its own parent_guid bloom.
     INDEX idx_process_guid       fields.process_guid       TYPE bloom_filter(0.001) GRANULARITY 1
 ) ENGINE = MergeTree()
-PARTITION BY (fractal_id, toDate(timestamp))
+-- Ingest time, not event time: a batch spanning several event days would otherwise write a
+-- part into each of those already-merged partitions and drag every one back through a merge.
+-- timestamp stays the leading ORDER BY column, so event-time predicates still prune granules.
+-- ingest_timestamp needs no minmax index: as a partition-key column it already has one.
+PARTITION BY (fractal_id, toDate(ingest_timestamp))
 ORDER BY (timestamp, log_id)
 SETTINGS index_granularity = 8192;
-
--- Defensive: idempotent ADD COLUMN / ADD INDEX for existing installs that predate
--- inline definitions. IF NOT EXISTS means these are safe no-ops on fresh installs.
-ALTER TABLE logs ADD INDEX IF NOT EXISTS ingest_ts_minmax       ingest_timestamp      TYPE minmax           GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_ip             fields.src_ip         TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_ip             fields.dst_ip         TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_computer_name      fields.computer_name  TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_user               fields.user           TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_hash               fields.hash           TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_image              fields.image          TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_parent_image       fields.parent_image   TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_original_file_name fields.original_file_name TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_query              fields.query          TYPE bloom_filter(0.001) GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_event_id           fields.event_id       TYPE set(256)           GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_operation          fields.operation      TYPE set(256)            GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_artifact           fields.artifact       TYPE set(64)            GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_src_port           fields.src_port       TYPE set(4096)          GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_dst_port           fields.dst_port       TYPE set(4096)          GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_proto              fields.proto          TYPE set(16)            GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_conn_state         fields.conn_state     TYPE set(64)            GRANULARITY 1;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS idx_process_guid       fields.process_guid   TYPE bloom_filter(0.001) GRANULARITY 1;
-
--- Defensive columns for installs that predate norm_log. ADD COLUMN IF NOT EXISTS is a
--- no-op on fresh installs (already defined inline). norm_log defaults from the fields
--- column, so on existing data it is computed-on-read until MATERIALIZE COLUMN runs.
-ALTER TABLE logs ADD COLUMN IF NOT EXISTS norm_log String DEFAULT toString(fields) CODEC(ZSTD(3));
-ALTER TABLE logs ADD COLUMN IF NOT EXISTS normalizer LowCardinality(String) DEFAULT '';
--- raw_log lives in its own daily-partitioned logs_raw table (whole-partition TTL drop),
--- never as a column TTL here: a column TTL on the largest column forces perpetual part
--- rewrites during merges. Drop it defensively on installs that predate the split.
-ALTER TABLE logs DROP COLUMN IF EXISTS raw_log;
-
--- Full-text n-gram index now lives on lower(norm_log) (the canonical text field), not
--- raw_log. DROP/ADD INDEX are metadata-only and instant, so this is safe at startup.
--- Existing parts are NOT indexed until MATERIALIZE INDEX runs; the bifract app submits
--- that backfill asynchronously at startup (alter_sync=0) so it never blocks boot. To
--- backfill manually: ALTER TABLE logs MATERIALIZE INDEX norm_log_ngram_lc;
-ALTER TABLE logs DROP INDEX IF EXISTS raw_log_inverted;
-ALTER TABLE logs DROP INDEX IF EXISTS raw_log_ngram_lc;
-ALTER TABLE logs ADD INDEX IF NOT EXISTS norm_log_ngram_lc lower(norm_log) TYPE text(tokenizer = ngrams(3)) GRANULARITY 1;
 
 -- Pre-normalization original log text, split out of the logs table into its own
 -- daily-partitioned table so its 7-day retention is a metadata-only DROP PARTITION
 -- (ttl_only_drop_parts) instead of a column TTL, which on the largest column forces
 -- perpetual part rewrites during merges. Read only by the log-detail "Raw" tab and the
 -- normalizer preview, both keyed by (timestamp, log_id).
+-- Partition and TTL are both on ingest time, matching logs. They must share an axis or
+-- ttl_only_drop_parts stops dropping whole parts, which is the point of the split.
 CREATE TABLE IF NOT EXISTS logs_raw (
-    timestamp   DateTime64(3),
-    fractal_id  LowCardinality(String) DEFAULT '',
-    log_id      String,
-    raw_log     String CODEC(ZSTD(3)),
+    timestamp        DateTime64(3, 'UTC') CODEC(Delta(8), ZSTD(1)),
+    fractal_id       LowCardinality(String) DEFAULT '',
+    log_id           String CODEC(ZSTD(1)),
+    raw_log          String CODEC(ZSTD(3)),
+    ingest_timestamp DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC') CODEC(Delta(8), ZSTD(1)),
     INDEX log_id_bloom log_id TYPE bloom_filter(0.001) GRANULARITY 1
 ) ENGINE = MergeTree()
-PARTITION BY (fractal_id, toDate(timestamp))
+PARTITION BY (fractal_id, toDate(ingest_timestamp))
 ORDER BY (timestamp, log_id)
-TTL toDateTime(timestamp) + INTERVAL 7 DAY DELETE
+TTL toDateTime(ingest_timestamp) + INTERVAL 7 DAY DELETE
 SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 
 -- Pre-aggregated per-minute counts per fractal for fast landing-page histograms.
@@ -156,12 +128,16 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 -- outpace background merges and hit the parts_to_throw_insert default of 3000, rejecting
 -- inserts until merges catch up. The table stays tiny (tens of MB), so tolerating far more
 -- parts before throttling is low-risk.
+--
+-- ingest_day matches the logs partition key so DropLogPartition can prune this rollup
+-- exactly. Readers group by minute and sum across ingest_day, so it is invisible to them.
 CREATE TABLE IF NOT EXISTS logs_histogram (
     fractal_id LowCardinality(String),
-    minute     DateTime,
+    ingest_day Date,
+    minute     DateTime('UTC'),
     cnt        UInt64
 ) ENGINE = SummingMergeTree(cnt)
-ORDER BY (fractal_id, minute)
+ORDER BY (fractal_id, ingest_day, minute)
 SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000;
 
 -- Feeds logs_histogram from every insert into the local logs table.
@@ -170,10 +146,11 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS logs_histogram_mv TO logs_histogram
 DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
+    toDate(ingest_timestamp) AS ingest_day,
     toStartOfMinute(timestamp) AS minute,
     count() AS cnt
 FROM logs
-GROUP BY fractal_id, minute;
+GROUP BY fractal_id, ingest_day, minute;
 
 -- Hot table for the alert engine: 2-hour rolling window ordered by ingest_timestamp.
 -- Alert queries with UseIngestTimestamp=true route here when cursor is < 110 min old,
@@ -183,8 +160,8 @@ GROUP BY fractal_id, minute;
 -- No skip indexes: ORDER BY covers the alert query pattern; indexes on 2h data waste writes.
 -- TTL is a safety net only; the StartHotTableCleaner goroutine is the primary mechanism.
 CREATE TABLE IF NOT EXISTS logs_hot (
-    timestamp        DateTime64(3),
-    log_id           String,
+    timestamp        DateTime64(3, 'UTC') CODEC(Delta(8), ZSTD(1)),
+    log_id           String CODEC(ZSTD(1)),
     fields           JSON(
         max_dynamic_paths=1024,
         `computer_name`      String,
@@ -220,7 +197,7 @@ CREATE TABLE IF NOT EXISTS logs_hot (
         `target_file`         String
     ),
     fractal_id       LowCardinality(String) DEFAULT '',
-    ingest_timestamp DateTime64(3) DEFAULT now64(3),
+    ingest_timestamp DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC') CODEC(Delta(8), ZSTD(1)),
     -- Mirrors logs.norm_log: the canonical BQL text column. Required, not optional --
     -- any alert query with a pipeline command projects norm_log, and those route here
     -- whenever the cursor is under 110 min old. No n-gram index (see note above on skip
@@ -248,17 +225,6 @@ SELECT
     normalizer
 FROM logs;
 
--- Defensive columns for installs created before these existed on logs_hot. logs_hot must
--- carry every base column BQL can reference (see ParserBaseColumns in pkg/parser/registry.go):
--- alert queries route here on a recent cursor, and a missing column fails with code 47
--- (unknown identifier), which the engine treats as unrecoverable and auto-disables the alert.
--- Migration 012 carries the same changes plus the matching MODIFY QUERY for the MV.
-ALTER TABLE logs_hot ADD COLUMN IF NOT EXISTS norm_log String DEFAULT toString(fields) CODEC(ZSTD(3));
-ALTER TABLE logs_hot ADD COLUMN IF NOT EXISTS normalizer LowCardinality(String) DEFAULT '';
--- logs_hot no longer mirrors raw_log (it is not addressable by any alert query). Drop it
--- defensively; the feeding MV (logs_hot_mv) no longer projects it.
-ALTER TABLE logs_hot DROP COLUMN IF EXISTS raw_log;
-
 -- Process-lineage skeleton: one row per process-create event, ordered by
 -- (fractal_id, process_guid) so ptg() traversal hops are primary-key point lookups
 -- instead of full-table scans over logs (which OOMs dfs/bfs at scale). This is a
@@ -268,19 +234,22 @@ ALTER TABLE logs_hot DROP COLUMN IF EXISTS raw_log;
 -- on re-ingestion / iceberg replay (process_guid is globally unique per process).
 -- TTL is a default; the app applies BIFRACT_PROC_LINEAGE_TTL_DAYS via MODIFY TTL at startup.
 CREATE TABLE IF NOT EXISTS proc_lineage (
-    fractal_id    LowCardinality(String),
-    timestamp     DateTime64(3),
-    log_id        String,
-    process_guid  String,
-    parent_guid   String,
-    image         LowCardinality(String),
-    parent_image  LowCardinality(String),
-    commandline   String,
-    computer_name LowCardinality(String),
+    fractal_id       LowCardinality(String),
+    timestamp        DateTime64(3, 'UTC'),
+    ingest_timestamp DateTime64(3, 'UTC'),
+    log_id           String,
+    process_guid     String,
+    parent_guid      String,
+    image            LowCardinality(String),
+    parent_image     LowCardinality(String),
+    commandline      String,
+    computer_name    LowCardinality(String),
     INDEX idx_parent_guid parent_guid TYPE bloom_filter(0.001) GRANULARITY 1
 ) ENGINE = ReplacingMergeTree(timestamp)
 ORDER BY (fractal_id, process_guid)
-TTL toDateTime(timestamp) + INTERVAL 730 DAY
+-- Retention on the ingest axis, matching logs. On event time a source with a skewed
+-- clock (an event dated years back) has its lineage row deleted at the first merge.
+TTL toDateTime(ingest_timestamp) + INTERVAL 730 DAY
 SETTINGS index_granularity = 8192;
 
 -- Populates proc_lineage from process-create events, keyed on the normalized
@@ -290,6 +259,7 @@ DEFINER = default SQL SECURITY DEFINER AS
 SELECT
     fractal_id,
     timestamp,
+    ingest_timestamp,
     log_id,
     fields.process_guid::String        AS process_guid,
     fields.parent_process_guid::String AS parent_guid,
@@ -309,6 +279,8 @@ CREATE TABLE IF NOT EXISTS proc_freq (
     src_image   LowCardinality(String),
     event_type  LowCardinality(String),
     target_norm String,
+    -- Ingest day, not event day (see proc_lineage): it is both the TTL basis and an
+    -- aggregation bucket, and nothing on the read side filters it.
     day         Date,
     event_count SimpleAggregateFunction(sum, UInt64),
     hosts       AggregateFunction(groupUniqArray(256), String)
@@ -324,7 +296,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.parent_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
     'spawn' AS event_type,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
-    toDate(timestamp) AS day,
+    toDate(ingest_timestamp) AS day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -338,7 +310,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
     'file_write' AS event_type,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_file::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
-    toDate(timestamp) AS day,
+    toDate(ingest_timestamp) AS day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -352,7 +324,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
     'net_connect' AS event_type,
     multiIf(match(fields.dst_ip::String, '^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|127\\.|169\\.254\\.)'), concat(replaceRegexpOne(fields.dst_ip::String, '\\.[0-9]{1,3}$', ''), '.0/24'), match(fields.dst_ip::String, '^(::1$|fe80:|fc|fd)'), 'internal', fields.dst_ip::String) AS target_norm,
-    toDate(timestamp) AS day,
+    toDate(ingest_timestamp) AS day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -366,7 +338,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
     'dns_query' AS event_type,
     lower(replaceRegexpOne(fields.query::String, '\\.$', '')) AS target_norm,
-    toDate(timestamp) AS day,
+    toDate(ingest_timestamp) AS day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -380,7 +352,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
     'remote_thread' AS event_type,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
-    toDate(timestamp) AS day,
+    toDate(ingest_timestamp) AS day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -394,7 +366,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS src_image,
     'process_access' AS event_type,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
-    toDate(timestamp) AS day,
+    toDate(ingest_timestamp) AS day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -411,20 +383,22 @@ GROUP BY fractal_id, src_image, event_type, target_norm, day;
 -- TestAbstractExprMatchesMVs) so fkey_tgt matches proc_freq.target_norm for pgr's anomaly join.
 -- Gated by the advanced_endpoint_analysis toggle via ATTACH/DETACH (see endpointAnalysisMVNames).
 CREATE TABLE IF NOT EXISTS process_edges (
-    fractal_id    LowCardinality(String),
-    process_guid  String,
-    event_type    LowCardinality(String),
-    dst_node      String,
-    label         SimpleAggregateFunction(anyLast, String),
-    fkey_src      SimpleAggregateFunction(anyLast, String),
-    fkey_tgt      SimpleAggregateFunction(anyLast, String),
-    log_id        SimpleAggregateFunction(anyLast, String),
-    timestamp     SimpleAggregateFunction(max, DateTime64(3)),
-    computer_name SimpleAggregateFunction(anyLast, String),
-    cnt           SimpleAggregateFunction(sum, UInt64)
+    fractal_id       LowCardinality(String),
+    process_guid     String,
+    event_type       LowCardinality(String),
+    dst_node         String,
+    label            SimpleAggregateFunction(anyLast, String),
+    fkey_src         SimpleAggregateFunction(anyLast, String),
+    fkey_tgt         SimpleAggregateFunction(anyLast, String),
+    log_id           SimpleAggregateFunction(anyLast, String),
+    timestamp        SimpleAggregateFunction(max, DateTime64(3, 'UTC')),
+    ingest_timestamp SimpleAggregateFunction(max, DateTime64(3, 'UTC')),
+    computer_name    SimpleAggregateFunction(anyLast, String),
+    cnt              SimpleAggregateFunction(sum, UInt64)
 ) ENGINE = AggregatingMergeTree()
 ORDER BY (fractal_id, process_guid, event_type, dst_node)
-TTL toDateTime(timestamp) + INTERVAL 730 DAY
+-- Ingest axis (see proc_lineage). max() means an edge lives 730 days past its last ingest.
+TTL toDateTime(ingest_timestamp) + INTERVAL 730 DAY
 SETTINGS index_granularity = 8192;
 
 -- Single MV feeding process_edges for the three default pgr leaf categories. One pass over each
@@ -456,6 +430,7 @@ SELECT
     )) AS fkey_tgt,
     anyLast(log_id) AS log_id,
     max(timestamp) AS timestamp,
+    max(ingest_timestamp) AS ingest_timestamp,
     anyLast(fields.computer_name::String) AS computer_name,
     count() AS cnt
 FROM logs

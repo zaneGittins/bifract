@@ -96,14 +96,6 @@ func chIcebergTableFunc(obj objstore.Config, tableLocation, cluster string) (str
 	return "", fmt.Errorf("archive: unsupported backend %q for restore", obj.Backend)
 }
 
-// restoreMaxPartitionsPerInsert raises ClickHouse's max_partitions_per_insert_block
-// (default 100) for restore inserts. Chunking bounds the Iceberg read side to one
-// ingest_date, but the logs table partitions by EVENT date, so one ingest day can
-// still land in many logs partitions when that day's data carries a wide event-time
-// spread (backfills, replayed sources, clock skew). The default would fail such a
-// chunk outright; this is a guard against that, not an invitation to insert wide.
-const restoreMaxPartitionsPerInsert = 1000
-
 // restoreChunkRowTarget bounds the rows any single restore INSERT touches, so the
 // in-memory structures ClickHouse builds for it stay bounded regardless of how
 // dense an ingest day is: the LIMIT 1 BY log_id set over the inserted rows, and
@@ -132,9 +124,10 @@ const minChunkDuration = time.Second
 
 // buildRestoreInsert assembles one chunk's INSERT ... SELECT. Extracted so the
 // correctness-critical clauses stay under test: dropping LIMIT 1 BY would silently
-// duplicate archive-internal dupes, dropping max_partitions_per_insert_block would
-// make wide chunks fail outright, and set_overflow_mode must stay 'throw' so a
-// too-large dedup set fails rather than silently truncating.
+// duplicate archive-internal dupes, and set_overflow_mode must stay 'throw' so a
+// too-large dedup set fails rather than silently truncating. No partition-count
+// override is needed: a chunk is one ingest day for one target fractal, which is
+// exactly one logs partition.
 //
 // fractalLiteral is the fractal_id written into the destination rows, as a quoted
 // SQL literal. It replaces the archive's own fractal_id column so a restore can
@@ -146,8 +139,8 @@ func buildRestoreInsert(writeTable, fractalLiteral, tableFunc, where string) str
 		"INSERT INTO %s (timestamp, log_id, fields, fractal_id, ingest_timestamp, normalizer) "+
 			"SELECT timestamp, log_id, norm_log::JSON, %s, ingest_timestamp, normalizer "+
 			"FROM %s WHERE %s LIMIT 1 BY log_id "+
-			"SETTINGS max_partitions_per_insert_block = %d, max_rows_in_set = %d, set_overflow_mode = 'throw'",
-		writeTable, fractalLiteral, tableFunc, where, restoreMaxPartitionsPerInsert, restoreMaxRowsInSet)
+			"SETTINGS max_rows_in_set = %d, set_overflow_mode = 'throw'",
+		writeTable, fractalLiteral, tableFunc, where, restoreMaxRowsInSet)
 }
 
 // RestoreProgress is called after each chunk commits, with the timestamp the next
@@ -324,6 +317,7 @@ func (c *Catalog) Restore(ctx context.Context, ch *storage.ClickHouseClient, obj
 		// partition column, so pinning it to this chunk's day prunes the read to a
 		// single partition; a bisected chunk stays inside one UTC day, so its
 		// ingest_date is cf's day. The ingest_timestamp bounds clip within the day.
+		// logs shares that axis, so a chunk also writes exactly one logs partition.
 		where := fmt.Sprintf(
 			"fractal_id = %s AND ingest_date = %s AND ingest_timestamp >= %s AND ingest_timestamp < %s",
 			chQuote(sourceFractalID), chQuote(chDate(cf)), chQuote(chTime(cf)), chQuote(chTime(ct)))
@@ -427,10 +421,9 @@ func (c *Catalog) countIceberg(ctx context.Context, ch *storage.ClickHouseClient
 }
 
 // countLogs counts hot-store rows in an ingest-time window, matching the axis
-// restore and countIceberg use so the two counts are directly comparable. The
-// logs table is ordered by event timestamp, but it carries a minmax skip index on
-// ingest_timestamp (db/init-clickhouse.sql) and ingest_timestamp is near-monotonic
-// with insertion order, so this prunes granules rather than scanning the fractal.
+// restore and countIceberg use so the two counts are directly comparable. The logs
+// table is ordered by event timestamp but partitioned on (fractal_id,
+// toDate(ingest_timestamp)), so both predicates prune partitions outright.
 func countLogs(ctx context.Context, ch *storage.ClickHouseClient, fractalID string, from, to time.Time) (int64, error) {
 	q := fmt.Sprintf("SELECT count() AS c FROM %s WHERE fractal_id = %s AND ingest_timestamp >= %s AND ingest_timestamp < %s",
 		ch.ReadTable(), chQuote(fractalID), chQuote(chTime(from)), chQuote(chTime(to)))

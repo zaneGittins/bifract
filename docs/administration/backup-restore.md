@@ -84,7 +84,7 @@ Set on the `bifract-archiver` service (compose) or the `bifract-secrets` Secret 
 | `BIFRACT_ARCHIVE_BACKEND` | `disk` | `disk`, `s3`, `minio`, or `azure` |
 | `BIFRACT_ARCHIVE_PREFIX` | | Optional path prefix within the bucket/container/dir |
 | `BIFRACT_ARCHIVE_SPOOL_MAX_BYTES` | `10 GiB` | Spool capacity; ingest applies backpressure (`429`) near it |
-| `BIFRACT_ARCHIVE_ROLL_BYTES` | `128 MiB` | Roll a Parquet file at this size |
+| `BIFRACT_ARCHIVE_ROLL_BYTES` | `128 MiB` | Roll a Parquet file once a fractal has buffered this much log data. Measured on the uncompressed payload, so the file it writes is smaller by whatever compression that data achieves; each commit logs both numbers |
 | `BIFRACT_ARCHIVE_ROLL_INTERVAL` | `30m` | ...or after this long, whichever first |
 
 === "S3 / MinIO"
@@ -132,7 +132,7 @@ Two modes replay archived data back into ClickHouse for an **ingest-time** windo
 - **Reconcile** compares the hot-store and archive counts first and restores only the rows ClickHouse is missing (heals a gap).
 
 !!! note "The window is ingest time, not event time"
-    The archive is partitioned by ingest date, so an ingest-time window lets ClickHouse read only the partitions you asked for instead of scanning the whole table. This matches how Recall queries the archive. In practice ingest time and event time differ only by your pipeline's lag.
+    Both the archive and the `logs` table are partitioned by ingest date, so an ingest-time window lets ClickHouse read only the partitions you asked for on either side instead of scanning the whole table. This matches how Recall queries the archive. In practice ingest time and event time differ only by your pipeline's lag.
 
 Each job runs as **one chunk per ingest day**, and records a cursor after every chunk. That means a restore is resumable: if it fails, is cancelled, or its worker restarts, the completed days are not replayed. Use **Resume** on the job to continue from the first unfinished day. It also keeps each insert bounded rather than issuing one unbounded statement across the whole window.
 
@@ -164,6 +164,8 @@ Both log a resume point as each ingest day completes. If a run is interrupted, r
 Compaction, snapshot expiry, and cleanup run continuously in a dedicated singleton service (`bifract-archiver maintain-loop`), deployed as the `bifract-archiver-maintain` compose service or the `bifract-archive-maintain` Deployment on Kubernetes. It runs scheduled passes on a timer (`BIFRACT_ARCHIVE_MAINTAIN_INTERVAL`, default `1h`) and a Postgres advisory lock guarantees only one pass runs at a time. This is mandatory at high volume to keep the number of Parquet files and Iceberg snapshots bounded.
 
 `bifract-archiver maintain` runs a single pass and exits, for ad-hoc or manual invocation.
+
+A routine pass plans compaction only over partitions ingested within `BIFRACT_ARCHIVE_MAINTAIN_LOOKBACK` (default `72h`), which keeps its planning cost proportional to recent ingest rather than to how much history the archive holds. Because `ingest_date` partitions are sealed the moment the day rolls over and never receive files again, that window covers everything a pass can usefully do. Every `BIFRACT_ARCHIVE_DEEP_COMPACTION_INTERVAL` (default `24h`) one pass plans the whole table instead, picking up anything an earlier pass abandoned at its byte budget or deadline before it aged out of the window. Set the interval to `0` to disable the deep pass and keep every pass strictly bounded.
 
 ## Disaster Recovery
 

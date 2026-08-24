@@ -1,3 +1,4 @@
+-- DEAD: stamped but never executed since the ingest-partition reset. Kept for numbering (next: 016) and TestUpgradeFromV002.
 -- Split raw_log out of the logs table into its own daily-partitioned logs_raw table.
 -- The old design kept raw_log as a column with a 7-day column TTL; a column TTL cannot
 -- drop whole parts, so every part crossing the 7-day boundary was rewritten to purge the

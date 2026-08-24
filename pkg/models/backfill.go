@@ -97,7 +97,9 @@ func envInt64(key string) (int64, bool) {
 }
 
 // timeChunk is a half-open [start, end) interval over event timestamp, aligned
-// to UTC calendar days so each chunk maps to one logs partition (toDate(timestamp)).
+// to UTC calendar days to bound the rows any one chunk aggregates. Chunks no
+// longer map onto partitions: logs partitions on ingest time, and it is the
+// ingest_timestamp < anchor guard on the same query that prunes.
 type timeChunk struct {
 	start time.Time
 	end   time.Time

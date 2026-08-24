@@ -69,6 +69,15 @@ spec:
               value: "{{.ArchiveMaintainByteBudget}}"
             - name: BIFRACT_ARCHIVE_MAINTAIN_COMMIT_RETRIES
               value: "{{.ArchiveMaintainCommitRetries}}"
+            # Compaction planning scope. A routine pass plans only partitions
+            # within LOOKBACK, so planning cost tracks recent ingest instead of
+            # total retention; every DEEP_COMPACTION_INTERVAL one pass plans the
+            # whole table to pick up anything a truncated pass left behind.
+            # Unset falls back to the binary defaults (72h / 24h).
+            - name: BIFRACT_ARCHIVE_MAINTAIN_LOOKBACK
+              value: ""
+            - name: BIFRACT_ARCHIVE_DEEP_COMPACTION_INTERVAL
+              value: ""
             # Orphan-file cleanup: DISABLED (0). iceberg-go v0.6.0's
             # DeleteOrphanFiles livelocks on the S3/MinIO backend -- it spins on
             # CPU without progressing, and because the sweep runs inside the

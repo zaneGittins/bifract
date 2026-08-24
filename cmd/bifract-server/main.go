@@ -27,6 +27,7 @@ import (
 	"bifract/pkg/comments"
 	"bifract/pkg/contextlinks"
 	"bifract/pkg/dashboards"
+	"bifract/pkg/deeplink"
 	"bifract/pkg/dictionaries"
 	"bifract/pkg/feeds"
 	"bifract/pkg/fractals"
@@ -214,11 +215,6 @@ func main() {
 	defer hotCleanerCancel()
 	db.StartHotTableCleaner(hotCleanerCtx)
 	log.Println("Hot table cleaner started")
-
-	// Backfill the lower(raw_log) n-gram index on parts that predate it. Runs
-	// asynchronously (alter_sync=0, advisory-locked to one replica) so the heavy
-	// MATERIALIZE INDEX never blocks startup or trips the readiness probe.
-	db.StartNormLogIndexBackfill(context.Background(), pg)
 
 	// Load custom schema fields from Postgres and reconcile ClickHouse schema.
 	// SetCustomTypeHintedFields runs synchronously so the parser is ready before
@@ -560,6 +556,9 @@ func main() {
 	// Model backfills yield to the same CPU/disk backpressure that gates ingestion,
 	// then resume any backfill interrupted by a prior crash.
 	modelManager.SetBackfillHealth(ingestQueue)
+	// Recreate any model whose ClickHouse objects went missing (a log-data reset
+	// drops them by design). Without this the scorer fails on every tick forever.
+	modelManager.ReconcileCHObjects(context.Background())
 	modelManager.RecoverBackfills(context.Background())
 
 	ingestHandler := ingest.NewIngestHandler(ingestQueue, config.MaxBodySize, tokenCache, ingestTokenStorage)
@@ -672,6 +671,7 @@ func main() {
 	prismHandler.SetRBACResolver(authHandler.RBACResolver())
 	fractalHandler := fractals.NewHandler(fractalManager, authHandler, prismManager)
 	fractalHandler.SetRBAC(pg, authHandler.RBACResolver())
+	deepLinkHandler := deeplink.NewHandler(fractalManager, prismManager, authHandler, authHandler.RBACResolver())
 
 	// Wire RBAC into handlers that need per-fractal permission checks
 	apiKeyHandler.SetRBAC(authHandler.RBACResolver())
@@ -2410,6 +2410,11 @@ func main() {
 		metricsServer = metrics.NewServer(config.MetricsAddr, collector)
 		metricsServer.Start()
 	}
+
+	// Deep links: the documented, hand-constructible entry point external tools
+	// use to drop an analyst into a specific query. Session-authenticated and
+	// resolved server-side, then redirected into the SPA.
+	r.Get("/go/search", deepLinkHandler.HandleSearch)
 
 	// Serve static files and web UI. noDirFS suppresses directory index
 	// listings, so requests for a directory 404 instead of enumerating it.

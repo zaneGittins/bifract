@@ -255,7 +255,6 @@ func (h *OTLPHandler) convertLogRecord(
 	}
 
 	entry.IngestTimestamp = ingestTime
-	entry.Fields["ingesttimestamp"] = ingestTime.Format(time.RFC3339Nano)
 	entry.LogID = storage.GenerateLogID(entry.Timestamp, entry.RawLog)
 
 	return entry

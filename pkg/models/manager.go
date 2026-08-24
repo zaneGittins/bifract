@@ -64,33 +64,13 @@ func (m *Manager) SetBackfillHealth(h BackfillHealth) {
 	m.bfHealth = h
 }
 
-// chModelTableName returns the local CH table name for a model UUID.
-func chModelTableName(id string) string {
-	return "model_" + strings.ReplaceAll(id, "-", "_")
-}
-
-// chModelMVName returns the CH materialized view name for a model UUID.
-func chModelMVName(id string) string {
-	return "model_mv_" + strings.ReplaceAll(id, "-", "_")
-}
-
-// chModelDistName returns the distributed table name for cluster mode.
-func chModelDistName(id string) string {
-	return "model_dist_" + strings.ReplaceAll(id, "-", "_")
-}
-
-// chModelStateName returns the CH rolling-state table name for a scheduled
-// (network) model. The MV writes here at ingest; the scorer reads from here.
-func chModelStateName(id string) string {
-	return "model_state_" + strings.ReplaceAll(id, "-", "_")
-}
-
-// chModelStateDistName returns the distributed table over the state table, used by
-// the scorer in cluster mode so a single-replica scoring pass aggregates state from
-// every shard (state is maintained per-shard by the local MV).
-func chModelStateDistName(id string) string {
-	return "model_diststate_" + strings.ReplaceAll(id, "-", "_")
-}
+// Model object names live in pkg/storage so the log-data reset, which cannot
+// import this package, drops exactly what is created here.
+func chModelTableName(id string) string     { return storage.ModelCHTableName(id) }
+func chModelMVName(id string) string        { return storage.ModelCHMVName(id) }
+func chModelDistName(id string) string      { return storage.ModelCHDistName(id) }
+func chModelStateName(id string) string     { return storage.ModelCHStateName(id) }
+func chModelStateDistName(id string) string { return storage.ModelCHStateDistName(id) }
 
 // networkStateReadTable returns the table the scorer reads for a network model:
 // the distributed state table in cluster mode, the local state table otherwise.
@@ -585,7 +565,7 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id string, def Mod
 		return fmt.Errorf("create state table: %w", err)
 	}
 
-	resultsSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetResultsTableDDL("`"+tableName+"`")))
+	resultsSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetResultsTableDDL("`" + tableName + "`")))
 	if err := m.ch.Exec(ctx, resultsSQL); err != nil && !isCHDDLTimeout(err) {
 		_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", stateName)))
 		return fmt.Errorf("create results table: %w", err)
@@ -923,7 +903,7 @@ func networkScoreThreshold(def ModelDefinition, mt ModelType) float64 {
 	if mt == ModelTypeLongConnection {
 		return def.LongConn.WithDefaults().ScoreThreshold
 	}
-	return def.Beacon.WithDefaults(int64(def.WindowDays())*86400).ScoreThreshold
+	return def.Beacon.WithDefaults(int64(def.WindowDays()) * 86400).ScoreThreshold
 }
 
 // getNetworkData returns scored pairs from a network model's results table, ranked
@@ -1386,4 +1366,68 @@ func validateCreateRequest(req CreateRequest) error {
 		return fmt.Errorf("invalid alert_mode: %s", alertMode)
 	}
 	return nil
+}
+
+// ReconcileCHObjects recreates the ClickHouse objects of any model whose table is
+// missing. Postgres is the source of truth for which models exist, but their CH
+// objects are created imperatively at model create/update, so anything that drops
+// them out of band leaves the model defined and permanently broken: the scorer
+// fails every tick with "unknown table expression".
+//
+// The log-data reset is exactly that case by design (model aggregates derive from
+// logs that no longer exist), so recreating here is what makes the reset recoverable
+// without the operator re-saving every model. Recreated tables are empty until a
+// backfill runs.
+//
+// Best-effort and non-fatal: a model that cannot be recreated is logged and skipped
+// so one bad definition never blocks startup.
+func (m *Manager) ReconcileCHObjects(ctx context.Context) {
+	rows, err := m.pg.Query(ctx,
+		`SELECT id, model_type, definition, ch_table_name, ch_mv_name FROM analytics_models`)
+	if err != nil {
+		log.Printf("models: reconcile CH objects: %v", err)
+		return
+	}
+	type target struct {
+		id, table, mv string
+		mt            ModelType
+		def           ModelDefinition
+	}
+	var targets []target
+	for rows.Next() {
+		var t target
+		var mt, defJSON string
+		if err := rows.Scan(&t.id, &mt, &defJSON, &t.table, &t.mv); err != nil {
+			log.Printf("models: reconcile CH objects: scan: %v", err)
+			rows.Close()
+			return
+		}
+		if err := json.Unmarshal([]byte(defJSON), &t.def); err != nil {
+			log.Printf("models: reconcile CH objects: model %s definition: %v", t.id, err)
+			continue
+		}
+		t.mt = ModelType(mt)
+		targets = append(targets, t)
+	}
+	rows.Close()
+
+	recreated := 0
+	for _, t := range targets {
+		exists, err := m.ch.TableExists(ctx, t.table)
+		if err != nil {
+			log.Printf("models: reconcile CH objects: probe %s: %v", t.table, err)
+			continue
+		}
+		if exists {
+			continue
+		}
+		if err := m.createCHObjects(ctx, t.id, t.def, t.mt, t.table, t.mv); err != nil {
+			log.Printf("models: reconcile CH objects: recreate %s: %v", t.table, err)
+			continue
+		}
+		recreated++
+	}
+	if recreated > 0 {
+		log.Printf("[Models] Recreated ClickHouse objects for %d model(s); run a backfill to repopulate", recreated)
+	}
 }

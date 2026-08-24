@@ -51,6 +51,7 @@ func main() {
 	var installMode, installK8sMode, upgradeMode, upgradeK8sMode, reconfigureMode, reconfigureK8sMode, showVersion, skipSelfUpdate bool
 	var backupMode, restoreMode, listBackupsMode, nonInteractive, genClientCertMode bool
 	var startMode, stopMode, statusMode bool
+	var resetLogsMode, resetLogsK8sMode bool
 	var restoreFile, certName, certPassword string
 	var ipAccess, allowedIPs, domain, sizeProfile string
 	var shards int
@@ -76,6 +77,10 @@ func main() {
 			reconfigureMode = true
 		case "--reconfigure-k8s":
 			reconfigureK8sMode = true
+		case "--reset-logs":
+			resetLogsMode = true
+		case "--reset-logs-k8s":
+			resetLogsK8sMode = true
 		case "--ip-access":
 			if i+1 < len(args) {
 				i++
@@ -223,6 +228,12 @@ func main() {
 	if statusMode {
 		modeCount++
 	}
+	if resetLogsMode {
+		modeCount++
+	}
+	if resetLogsK8sMode {
+		modeCount++
+	}
 
 	if modeCount == 0 {
 		printUsage()
@@ -283,6 +294,13 @@ func main() {
 		}
 		return
 	}
+	if resetLogsK8sMode {
+		if err := setup.RunResetLogsK8s(nonInteractive); err != nil {
+			fmt.Fprintf(os.Stderr, "\n%s %v\n", setup.ErrorStyle.Render("Error:"), err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Preflight: check Docker is installed and running
 	if _, err := exec.LookPath("docker"); err != nil {
@@ -320,6 +338,8 @@ func main() {
 		err = setup.RunStop(dir)
 	case statusMode:
 		err = setup.RunStatus(dir)
+	case resetLogsMode:
+		err = setup.RunResetLogs(dir, nonInteractive)
 	}
 
 	if err != nil {
@@ -345,6 +365,8 @@ func printUsage() {
 	fmt.Println("  --restore          Restore PostgreSQL from backup")
 	fmt.Println("  --list-backups     List available backups")
 	fmt.Println("  --gen-client-cert  Generate a client certificate for mTLS")
+	fmt.Println("  --reset-logs       DESTRUCTIVE: drop all ClickHouse log data and re-provision")
+	fmt.Println("  --reset-logs-k8s   DESTRUCTIVE: same, against a Kubernetes deployment")
 	fmt.Println("  --ingest           Bulk log ingestion (see --ingest --help)")
 	fmt.Println("  --test             Test detection rules against sample logs (see --test --help)")
 	fmt.Println()

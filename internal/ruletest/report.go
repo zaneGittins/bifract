@@ -90,9 +90,6 @@ func writeExplain(w io.Writer, c CaseResult) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if k == "ingesttimestamp" {
-				continue
-			}
 			fmt.Fprintf(w, "         %s = %s\n", k, truncate(f[k], 120))
 		}
 	}

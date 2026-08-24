@@ -128,7 +128,7 @@ func (qm *QuotaManager) NotifyCleared(fractalID string) {
 const rolloverAdvisoryLockID int64 = 0x6269667261637402
 
 // StartRolloverSweep launches the background loop that enforces rollover-action
-// quotas by dropping whole (fractal, oldest-day) partitions. Only the app tier
+// quotas by dropping whole (fractal, oldest ingest day) partitions. Only the app tier
 // should call this, passing an admin ClickHouse client (all shard addresses); the
 // ingest tier's INSERT-only user cannot DROP PARTITION. Under multiple app-tier
 // replicas a Postgres advisory lock guarantees a single active runner per tick, so
@@ -159,8 +159,10 @@ func (qm *QuotaManager) rolloverLoop() {
 
 // sweepRollovers finds every rollover-action fractal that is over quota and drops
 // its oldest partitions until it is back within rolloverTargetFraction. Whole
-// partitions (one fractal-day each) are dropped, which is near-instant metadata,
-// not a mutation. system.parts is the authoritative fresh usage source, so the
+// partitions (one fractal ingest-day each) are dropped, which is near-instant
+// metadata, not a mutation. Oldest is oldest-ingested, so this is true FIFO: it
+// evicts what has been held longest rather than whichever day happens to carry the
+// oldest event timestamps. system.parts is the authoritative fresh usage source, so the
 // sweep is self-correcting and needs no delta bookkeeping.
 func (qm *QuotaManager) sweepRollovers() {
 	quotas := make(map[string]int64)
@@ -217,7 +219,8 @@ func (qm *QuotaManager) sweepRollovers() {
 
 		var freed int64
 		dropped := 0
-		// Keep at least the newest partition (current live day); never drop it all.
+		// Keep at least the newest partition; never drop it all. On the ingest axis
+		// that is reliably the partition currently receiving writes.
 		for i := 0; i < len(ps)-1 && total-freed > target; i++ {
 			if err := qm.admin.DropLogPartition(ctx, ps[i].Partition); err != nil {
 				log.Printf("[Quota] Rollover: drop partition %s for fractal %s: %v", ps[i].Partition, fid, err)

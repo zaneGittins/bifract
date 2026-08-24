@@ -8,12 +8,12 @@ import (
 )
 
 // TestPartKeyOfMatchesClickHouseToDate verifies the Go partition key matches
-// the table's PARTITION BY (fractal_id, toDate(timestamp)). The ClickHouse
+// the table's PARTITION BY (fractal_id, toDate(ingest_timestamp)). The ClickHouse
 // server runs UTC, so day boundaries must be computed in UTC: a local-time
 // truncation would split a bucket across two partitions near midnight.
 func TestPartKeyOfMatchesClickHouseToDate(t *testing.T) {
 	mk := func(fid string, ts time.Time) partKey {
-		return partKeyOf(&storage.LogEntry{FractalID: fid, Timestamp: ts})
+		return partKeyOf(&storage.LogEntry{FractalID: fid, IngestTimestamp: ts})
 	}
 
 	day := func(s string) int64 {
@@ -55,7 +55,7 @@ func TestPartKeyOfMatchesClickHouseToDate(t *testing.T) {
 func TestPartKeySeparatesFractalAndDay(t *testing.T) {
 	base := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 	e := func(fid string, ts time.Time) partKey {
-		return partKeyOf(&storage.LogEntry{FractalID: fid, Timestamp: ts})
+		return partKeyOf(&storage.LogEntry{FractalID: fid, IngestTimestamp: ts})
 	}
 
 	same := e("f1", base)
@@ -99,9 +99,9 @@ func TestAccumulatorGroupsByPartition(t *testing.T) {
 		for d := 0; d < days; d++ {
 			for i := 0; i < perPart; i++ {
 				batch = append(batch, storage.LogEntry{
-					FractalID: string(rune('a' + f)),
-					Timestamp: base.AddDate(0, 0, -d),
-					RawLog:    "x",
+					FractalID:       string(rune('a' + f)),
+					IngestTimestamp: base.AddDate(0, 0, -d),
+					RawLog:          "x",
 				})
 			}
 		}
@@ -150,6 +150,52 @@ func TestAccumulatorGroupsByPartition(t *testing.T) {
 	}
 }
 
+// TestAccumulatorCollapsesScatteredEventTimes is the property the ingest-time
+// partition key buys: a batch of late arrivals spanning many event days is one
+// partition, so it writes one part instead of dragging N merged partitions back
+// through a merge.
+func TestAccumulatorCollapsesScatteredEventTimes(t *testing.T) {
+	q := &IngestQueue{
+		ch:            make(chan []storage.LogEntry, 4),
+		flushCh:       make(chan *partBucket, 64),
+		batchRows:     1 << 30,
+		batchBytes:    1 << 30,
+		flushInterval: time.Millisecond,
+		bufferBytes:   1 << 30,
+		maxKeys:       1 << 20,
+	}
+
+	q.wg.Add(1)
+	go q.accumulator()
+
+	base := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	batch := make([]storage.LogEntry, 0, 90)
+	for d := 0; d < 90; d++ {
+		batch = append(batch, storage.LogEntry{
+			FractalID: "f1",
+			// Arriving now, carrying event times from up to 90 days ago.
+			Timestamp:       base.AddDate(0, 0, -d),
+			IngestTimestamp: base,
+			RawLog:          "x",
+		})
+	}
+	q.ch <- batch
+	close(q.ch)
+
+	var buckets int
+	for b := range q.flushCh {
+		buckets++
+		if len(b.entries) != len(batch) {
+			t.Errorf("bucket holds %d entries, want all %d", len(b.entries), len(batch))
+		}
+	}
+	q.wg.Wait()
+
+	if buckets != 1 {
+		t.Errorf("90 event days produced %d buckets, want 1", buckets)
+	}
+}
+
 // TestAccumulatorFlushesOnRowBound verifies a busy partition flushes on size
 // without waiting for the interval, which is what keeps live search fresh.
 func TestAccumulatorFlushesOnRowBound(t *testing.T) {
@@ -171,7 +217,7 @@ func TestAccumulatorFlushesOnRowBound(t *testing.T) {
 	ts := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 	batch := make([]storage.LogEntry, batchRows)
 	for i := range batch {
-		batch[i] = storage.LogEntry{FractalID: "f1", Timestamp: ts, RawLog: "x"}
+		batch[i] = storage.LogEntry{FractalID: "f1", IngestTimestamp: ts, RawLog: "x"}
 	}
 	q.ch <- batch
 
@@ -210,9 +256,9 @@ func TestAccumulatorEnforcesKeyCap(t *testing.T) {
 	batch := make([]storage.LogEntry, 0, maxKeys*4)
 	for d := 0; d < maxKeys*4; d++ {
 		batch = append(batch, storage.LogEntry{
-			FractalID: "f1",
-			Timestamp: base.AddDate(0, 0, -d),
-			RawLog:    "x",
+			FractalID:       "f1",
+			IngestTimestamp: base.AddDate(0, 0, -d),
+			RawLog:          "x",
 		})
 	}
 	q.ch <- batch

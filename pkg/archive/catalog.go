@@ -123,10 +123,35 @@ const metadataPreviousVersionsMax = 10
 // library default happens to be in a future version.
 const targetFileSizeBytes = 512 << 20
 
+// manifestTargetSizeBytes / manifestMinCountToMerge configure manifest merging
+// on append. iceberg-go defaults commit.manifest-merge.enabled to FALSE (Java
+// defaults it to true), so without these every append leaves a manifest that is
+// never merged and the list grows one per commit, forever.
+//
+// That is the dominant cost in archive maintenance: a rewrite commit's
+// overwriteFiles.existingManifests() iterates every entry of every manifest with
+// no partition pruning, so commit cost is O(files ever written) however little
+// the commit changes. Merging makes the list proportional to table size instead.
+//
+// 8MB is Iceberg's own manifest target. The threshold is 8, not iceberg-go's
+// 100, because 100 commits is days of the archiver's roll cadence; merging only
+// rewrites under-target bins, so a low threshold stays cheap.
+//
+// Merging leaves the manifests it superseded behind, which matters because
+// orphan cleanup is disabled (see defaultOrphanSweepInterval). They are not a
+// leak: ExpireSnapshots runs with postCommit set, and its cleanup deletes every
+// manifest reachable only from the snapshots it expired, minus anything a
+// retained snapshot still references.
+const (
+	manifestTargetSizeBytes = 8 << 20
+	manifestMinCountToMerge = 8
+)
+
 // iceTableProperties returns the write properties for a fractal table: zstd
 // compression, a bloom filter on each promoted column for fast equality pruning
 // (Parquet min/max stats, written by default, additionally prune range and time
-// predicates), a bounded metadata log, and an explicit target file size.
+// predicates), a bounded metadata log, an explicit target file size, and
+// manifest merging on append.
 //
 // Requires ClickHouse >= 26.6 to read the arrow-go bloom filters correctly: CH
 // 26.2 mis-read them and false-negative pruned (dropped real matches). The
@@ -142,6 +167,12 @@ func iceTableProperties() iceberg.Properties {
 		"write.metadata.delete-after-commit.enabled": "true",
 		"write.metadata.previous-versions-max":       strconv.Itoa(metadataPreviousVersionsMax),
 		"write.target-file-size-bytes":               strconv.Itoa(targetFileSizeBytes),
+		// Bounds the manifest list. Off by default in iceberg-go; see
+		// manifestTargetSizeBytes for why leaving it off makes compaction commits
+		// cost O(files ever written).
+		"commit.manifest-merge.enabled":      "true",
+		"commit.manifest.target-size-bytes":  strconv.Itoa(manifestTargetSizeBytes),
+		"commit.manifest.min-count-to-merge": strconv.Itoa(manifestMinCountToMerge),
 	}
 	for _, f := range parser.IcePromotedFields() {
 		col, _ := parser.IcePromotedColumn(f)

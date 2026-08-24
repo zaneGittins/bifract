@@ -239,7 +239,7 @@ type notifWriterIface interface {
 }
 
 // partKey identifies a ClickHouse partition of the logs table, whose
-// partition expression is (fractal_id, toDate(timestamp)). day is unix
+// partition expression is (fractal_id, toDate(ingest_timestamp)). day is unix
 // seconds at UTC midnight; the ClickHouse server runs UTC, so this matches
 // toDate() exactly and a bucket never straddles two partitions.
 type partKey struct {
@@ -255,11 +255,13 @@ type partBucket struct {
 	firstSeen time.Time
 }
 
-// partKeyOf maps a log entry to its destination partition.
+// partKeyOf maps a log entry to its destination partition. Enqueue settles
+// IngestTimestamp before anything reaches here, so the key always matches the
+// partition the row lands in.
 func partKeyOf(e *storage.LogEntry) partKey {
 	return partKey{
 		fractalID: e.FractalID,
-		day:       e.Timestamp.UTC().Truncate(24 * time.Hour).Unix(),
+		day:       e.IngestTimestamp.UTC().Truncate(24 * time.Hour).Unix(),
 	}
 }
 
@@ -495,6 +497,15 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 		q.Metrics.QueueDrops.Add(n)
 		q.pendingDropsQueue.Add(n)
 		return false
+	}
+
+	// Settle ingest_timestamp before anything consumes the batch. It is the logs
+	// and logs_raw partition key and the archive's ingest_date, so the spool tee
+	// below and the ClickHouse insert must agree on one value; stamping later would
+	// let them disagree across a UTC midnight. Every real ingest path already sets
+	// it at parse time, so this is the fallback for one that does not.
+	for i := range logs {
+		logs[i].IngestTimestamp = logs[i].IngestTime()
 	}
 
 	// Archive tee (fail-closed, spool-before-ack): when archiving is enabled,

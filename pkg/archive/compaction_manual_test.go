@@ -22,10 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
 	icetable "github.com/apache/iceberg-go/table"
-	"github.com/apache/iceberg-go/table/compaction"
 
 	"bifract/pkg/objstore"
 	"bifract/pkg/storage"
@@ -295,11 +293,11 @@ func TestCompactionBatchesGroupsIntoOneCommit(t *testing.T) {
 		t.Fatalf("load table: %v", err)
 	}
 
-	plan, err := compaction.Analyze(ctx, tbl, compaction.DefaultConfig())
+	plan, err := planCompaction(ctx, tbl, DefaultMaintainOptions().CompactLookback)
 	if err != nil {
 		t.Fatalf("analyze: %v", err)
 	}
-	open := iceberg.Date(epochDay(time.Now()))
+	open := epochDayIce(time.Now())
 	var sealed int
 	for _, g := range plan.Groups {
 		if !isOpenPartitionGroup(g, open) {
@@ -363,11 +361,11 @@ func TestCompactionBatchSplitsAtMemoryCap(t *testing.T) {
 		t.Fatalf("load table: %v", err)
 	}
 
-	plan, err := compaction.Analyze(ctx, tbl, compaction.DefaultConfig())
+	plan, err := planCompaction(ctx, tbl, DefaultMaintainOptions().CompactLookback)
 	if err != nil {
 		t.Fatalf("analyze: %v", err)
 	}
-	open := iceberg.Date(epochDay(time.Now()))
+	open := epochDayIce(time.Now())
 	var sealed int
 	for _, g := range plan.Groups {
 		if !isOpenPartitionGroup(g, open) {

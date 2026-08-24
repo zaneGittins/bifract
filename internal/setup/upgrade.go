@@ -304,6 +304,26 @@ func RunUpgrade(dir string) error {
 
 	docker := &DockerOps{Dir: dir}
 
+	// Checked against the still-running old containers, before any image is pulled.
+	// An event-time logs table cannot be migrated (ClickHouse cannot alter a
+	// partition key), so the new app would refuse to start; catching it here means
+	// the operator decides now rather than after a container fails to boot.
+	if docker.IsRunning() && cfg.CH.Bundled() {
+		needsReset, err := clickHouseNeedsReset(docker, cfg.ClickHousePassword)
+		if err != nil {
+			printWarn(fmt.Sprintf("Could not check the ClickHouse schema: %v", err))
+		} else if needsReset {
+			abandonStep()
+			if !confirmDestructive("Reset now and continue the upgrade?") {
+				return fmt.Errorf("upgrade stopped: the ClickHouse schema is incompatible with this version\n" +
+					"  Run 'bifract --reset-logs' when ready, then upgrade again")
+			}
+			if err := resetBeforeUpgrade(existingEnv, docker); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Run migrations if containers are running
 	if docker.IsRunning() {
 		printStep("Running database migrations...")

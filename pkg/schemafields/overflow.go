@@ -109,11 +109,12 @@ const overflowMinSample = 200
 //     fixture whose parts truly overflowed `extra2`/`extra3`, the ordered form
 //     reported five unrelated names.
 //
-//  2. Recency comes from a timestamp predicate, which prunes partitions. The
+//  2. Recency comes from an ingest_timestamp predicate, which prunes partitions. The
 //     previous `ORDER BY timestamp DESC LIMIT n` forced a reverse-order merge over
 //     every part, opening the wide JSON column in each: 248k rows read for a 2k
 //     limit, 1.14 GiB peak, over the 512 MiB budget, so the sweep never completed.
-//     The predicate form measured 794 KiB and 7 ms on the same data.
+//     The predicate form measured 794 KiB and 7 ms on the same data. It must stay on
+//     the ingest axis: that is the partition key, and event time no longer prunes.
 func (s *Sweeper) detect(ctx context.Context) ([]overflowField, error) {
 	for i, days := range overflowWindowDays {
 		last := i == len(overflowWindowDays)-1
@@ -136,13 +137,12 @@ func (s *Sweeper) detect(ctx context.Context) ([]overflowField, error) {
 	return nil, nil
 }
 
-// overflowWindow bounds a sample to the trailing `days` of data. The window is
+// overflowWindow bounds a sample to the trailing `days` of ingest. The window is
 // anchored at the newest log so an install that stopped ingesting still assesses
-// its own most recent data, but clamped to now() so a single future-dated
-// timestamp (parsed timestamps are untrusted user data) cannot push the window
-// past every real row.
+// its own most recent data, and stays clamped to now() as a guard against a skewed
+// server clock. ingest_timestamp is the partition key, so this prunes.
 func (s *Sweeper) overflowWindow(days int) string {
-	return fmt.Sprintf("timestamp >= least((SELECT max(timestamp) FROM %s), now64(3)) - INTERVAL %d DAY",
+	return fmt.Sprintf("ingest_timestamp >= least((SELECT max(ingest_timestamp) FROM %s), now64(3)) - INTERVAL %d DAY",
 		s.ch.ReadTable(), days)
 }
 
