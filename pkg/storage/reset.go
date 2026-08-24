@@ -45,6 +45,45 @@ var resetBookkeepingTables = []string{
 	"_bifract_migration_steps",
 }
 
+// ResetKeeperTables returns the local table names whose ClickHouse Keeper metadata
+// must be cleared after the drop, in cluster mode. RewriteEngine turns every local
+// MergeTree into a ReplicatedMergeTree keyed on
+// /clickhouse/tables/{shard}/{database}/{table}, and DROP TABLE only garbage-collects
+// that path once the LAST registered replica is gone. Replica entries left behind by
+// earlier incarnations of a pod keep the path alive, so re-provisioning the same
+// table hits code 342 ("Metadata ... in ZooKeeper differs").
+//
+// Distributed tables are absent: they hold no data and no Keeper state. Dictionaries
+// are absent because they are never dropped.
+func ResetKeeperTables(extraTables []string) []string {
+	return append(append([]string{}, extraTables...), resetShardedTables...)
+}
+
+// KeeperTablePath renders the Keeper path for one table, matching the macro layout
+// RewriteEngine writes into the engine clause.
+func KeeperTablePath(shard, database, table string) string {
+	return fmt.Sprintf("/clickhouse/tables/%s/%s/%s", shard, database, table)
+}
+
+// KeeperReplicasQuery lists the replicas still registered for a table path. It
+// errors when the path does not exist, which is the healthy case and callers should
+// treat as "nothing to clean".
+func KeeperReplicasQuery(path string) string {
+	return fmt.Sprintf("SELECT name FROM system.zookeeper WHERE path = '%s/replicas'", escCHLiteral(path))
+}
+
+// DropKeeperReplicaStatement removes one replica's registration by path. Only valid
+// for a replica that is not currently active, which is exactly the state a dropped
+// table leaves behind.
+func DropKeeperReplicaStatement(replica, path string) string {
+	return fmt.Sprintf("SYSTEM DROP REPLICA '%s' FROM ZKPATH '%s'", escCHLiteral(replica), escCHLiteral(path))
+}
+
+// ShardMacroQuery reads a node's {shard} substitution, needed to build its Keeper
+// paths. Read per node rather than assumed: the macro is what the engine clause
+// interpolated, so anything else can target the wrong subtree.
+const ShardMacroQuery = `SELECT substitution FROM system.macros WHERE macro = 'shard'`
+
 // ResetLogDataStatements returns the DDL that drops every ClickHouse object derived
 // from log data, in dependency order. Returned as statements rather than executed so
 // the installer can run them over a driver connection to an external ClickHouse or
@@ -88,6 +127,36 @@ func (c *ClickHouseClient) ResetLogData(ctx context.Context, extraViews, extraTa
 	for _, stmt := range ResetLogDataStatements(extraViews, extraTables) {
 		if err := c.execOnEveryShard(ctx, stmt, "reset"); err != nil {
 			return fmt.Errorf("reset: %s: %w", stmt, err)
+		}
+	}
+	return c.cleanKeeperPaths(ctx, extraTables)
+}
+
+// cleanKeeperPaths frees the Keeper registration of the tables just dropped. Only
+// meaningful where RewriteEngine produced ReplicatedMergeTree; a non-replicated
+// deployment registers nothing.
+func (c *ClickHouseClient) cleanKeeperPaths(ctx context.Context, extraTables []string) error {
+	if !c.topo.ReplicatedEngines {
+		return nil
+	}
+	var shard string
+	if err := c.conn.QueryRow(ctx, ShardMacroQuery).Scan(&shard); err != nil || shard == "" {
+		return nil
+	}
+	for _, table := range ResetKeeperTables(extraTables) {
+		path := KeeperTablePath(shard, c.Database, table)
+		rows, err := c.Query(ctx, KeeperReplicasQuery(path))
+		if err != nil {
+			continue // absent path: nothing registered
+		}
+		for _, row := range rows {
+			replica, _ := row["name"].(string)
+			if replica == "" {
+				continue
+			}
+			// Non-fatal: code 305 means the replica is active or a local table holds
+			// the path, i.e. it is not an orphan.
+			_ = c.execOnEveryShard(ctx, DropKeeperReplicaStatement(replica, path), "drop keeper replica")
 		}
 	}
 	return nil

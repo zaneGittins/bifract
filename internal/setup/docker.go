@@ -128,7 +128,11 @@ func (d *DockerOps) ExecClickHouse(user, password, sql string) (string, error) {
 	// --database logs: migration bodies use unqualified table names (ALTER TABLE
 	// logs, CREATE TABLE logs_hot) that must resolve against the logs database, not
 	// the client's default. Fully-qualified bookkeeping statements are unaffected.
+	// receive_timeout is raised over the 300s client default: a large DROP ... SYNC
+	// exceeds it and the client dies while the server keeps working.
 	out, err := d.compose("exec", "-T", "clickhouse", "clickhouse-client",
-		"--user", user, "--password", password, "--database", "logs", "--query", sql).CombinedOutput()
+		"--user", user, "--password", password, "--database", "logs",
+		"--receive_timeout", chClientTimeoutSec, "--send_timeout", chClientTimeoutSec,
+		"--query", sql).CombinedOutput()
 	return string(out), err
 }

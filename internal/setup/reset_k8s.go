@@ -14,6 +14,10 @@ const (
 	k8sSecretName    = "bifract-secrets"
 	k8sCHPodSelector = "app.kubernetes.io/name=clickhouse-server"
 	k8sCHPodPrefix   = "bifract-ch"
+
+	chDatabase = "logs"
+	// The clickhouse-client default is 300s, which a large DROP ... SYNC exceeds.
+	chClientTimeoutSec = "3600"
 )
 
 // RunResetLogsK8s drops all ClickHouse log data in a Kubernetes deployment, then
@@ -47,20 +51,28 @@ func RunResetLogsK8s(nonInteractive bool) error {
 		return nil
 	}
 
-	resetSteps(5)
+	resetSteps(4 + len(pods))
 
 	printStep("Scaling down writers")
 	// Recorded before scaling down so the restore below puts back what was there.
-	// A deployment that is absent (single-tier installs run ingest inside the app)
+	// A workload that is absent (single-tier installs run ingest inside the app)
 	// simply has no entry.
-	replicas := currentReplicas(writerDeployments)
-	for deploy := range replicas {
-		if err := kubectl("scale", "deployment", deploy, "-n", k8sNamespace, "--replicas=0"); err != nil {
+	replicas := currentReplicas(writerWorkloads)
+	for _, w := range replicas {
+		if err := kubectl("scale", w.kind, w.name, "-n", k8sNamespace, "--replicas=0"); err != nil {
 			abandonStep()
-			return fmt.Errorf("scale down %s: %w", deploy, err)
+			return fmt.Errorf("scale down %s/%s: %w", w.kind, w.name, err)
 		}
 	}
-	printDone(fmt.Sprintf("Scaled %d deployment(s) to zero", len(replicas)))
+	// Restore on every exit path: an abort partway through otherwise strands the
+	// cluster with no app and no ingest.
+	restored := false
+	defer func() {
+		if !restored {
+			restoreReplicas(replicas)
+		}
+	}()
+	printDone(fmt.Sprintf("Scaled %d workload(s) to zero", len(replicas)))
 
 	pgUser, pgDB := secrets["POSTGRES_USER"], secrets["POSTGRES_DB"]
 	if pgUser == "" {
@@ -78,18 +90,22 @@ func RunResetLogsK8s(nonInteractive bool) error {
 	}
 	printDone(fmt.Sprintf("Found %d model object(s)", len(modelViews)+len(modelTables)))
 
-	printStep("Dropping ClickHouse log data")
 	stmts := storage.ResetLogDataStatements(modelViews, modelTables)
-	for _, pod := range pods {
+	for i, pod := range pods {
+		// Per-pod progress: one spinner for a multi-minute drop looks like a hang.
+		printStep(fmt.Sprintf("Dropping ClickHouse log data (%d/%d: %s)", i+1, len(pods), pod))
 		for _, stmt := range stmts {
-			if out, err := kubectlOut("exec", "-n", k8sNamespace, pod, "--",
-				"clickhouse-client", "--password", chPassword, "--database", "logs", "--query", stmt); err != nil {
+			if out, err := chExec(pod, chPassword, stmt); err != nil {
 				abandonStep()
 				return fmt.Errorf("clickhouse reset on %s (%s): %w\n%s", pod, stmt, err, out)
 			}
 		}
+		if err := cleanKeeperPaths(pod, chPassword, modelTables); err != nil {
+			abandonStep()
+			return fmt.Errorf("keeper cleanup on %s: %w", pod, err)
+		}
+		printDone(fmt.Sprintf("Dropped on %s", pod))
 	}
-	printDone(fmt.Sprintf("Dropped on %d pod(s)", len(pods)))
 
 	printStep("Clearing stale Postgres state")
 	if err := resetPostgresStateK8s(pgUser, pgDB); err != nil {
@@ -99,11 +115,8 @@ func RunResetLogsK8s(nonInteractive bool) error {
 	printDone("Postgres state cleared")
 
 	printStep("Restarting Bifract")
-	for deploy, n := range replicas {
-		if err := kubectl("scale", "deployment", deploy, "-n", k8sNamespace, fmt.Sprintf("--replicas=%d", n)); err != nil {
-			printWarn(fmt.Sprintf("Scale %s back to %d failed: %v", deploy, n, err))
-		}
-	}
+	restoreReplicas(replicas)
+	restored = true
 	printDone("Writers scaled back up")
 
 	fmt.Println()
@@ -111,16 +124,26 @@ func RunResetLogsK8s(nonInteractive bool) error {
 	return nil
 }
 
-// writerDeployments are the deployments that write to ClickHouse and so must be
-// stopped for the drop.
-var writerDeployments = []string{"bifract", "bifract-ingest"}
+// writerWorkloads write to ClickHouse and must be stopped for the drop. Kinds
+// differ: bifract is a Deployment, bifract-ingest a StatefulSet. `kubectl scale
+// deployment` on a StatefulSet silently matches nothing.
+var writerWorkloads = []k8sWorkload{
+	{kind: "deployment", name: "bifract"},
+	{kind: "statefulset", name: "bifract-ingest"},
+}
 
-// currentReplicas reads each deployment's replica count, skipping any that does
-// not exist. Returning a map means the restore only touches what it scaled down.
-func currentReplicas(deploys []string) map[string]int {
-	out := make(map[string]int, len(deploys))
-	for _, d := range deploys {
-		res, err := kubectlOut("get", "deployment", d, "-n", k8sNamespace, "-o", "jsonpath={.spec.replicas}")
+type k8sWorkload struct {
+	kind     string
+	name     string
+	replicas int
+}
+
+// currentReplicas reads each workload's replica count, skipping any that is absent
+// or already zero, so the restore only touches what this run scaled down.
+func currentReplicas(workloads []k8sWorkload) []k8sWorkload {
+	var out []k8sWorkload
+	for _, w := range workloads {
+		res, err := kubectlOut("get", w.kind, w.name, "-n", k8sNamespace, "-o", "jsonpath={.spec.replicas}")
 		if err != nil {
 			continue
 		}
@@ -128,9 +151,60 @@ func currentReplicas(deploys []string) map[string]int {
 		if err != nil || n <= 0 {
 			continue
 		}
-		out[d] = n
+		w.replicas = n
+		out = append(out, w)
 	}
 	return out
+}
+
+func restoreReplicas(workloads []k8sWorkload) {
+	for _, w := range workloads {
+		if err := kubectl("scale", w.kind, w.name, "-n", k8sNamespace,
+			fmt.Sprintf("--replicas=%d", w.replicas)); err != nil {
+			printWarn(fmt.Sprintf("Scale %s/%s back to %d failed: %v", w.kind, w.name, w.replicas, err))
+		}
+	}
+}
+
+// chExec runs one statement in a ClickHouse pod. receive_timeout is raised because
+// the client default is 300s and a large DROP ... SYNC exceeds it, killing the
+// client while the server keeps going.
+func chExec(pod, password, stmt string) (string, error) {
+	return kubectlOut("exec", "-n", k8sNamespace, pod, "--", "clickhouse-client",
+		"--password", password, "--database", chDatabase,
+		"--receive_timeout", chClientTimeoutSec, "--send_timeout", chClientTimeoutSec,
+		"--query", stmt)
+}
+
+// cleanKeeperPaths removes the Keeper registration of every table just dropped.
+// DROP TABLE only frees the path once its last replica is gone, so entries left by
+// earlier pod incarnations keep it alive and re-provisioning fails with code 342.
+func cleanKeeperPaths(pod, password string, modelTables []string) error {
+	shard, err := chExec(pod, password, storage.ShardMacroQuery)
+	if err != nil {
+		return fmt.Errorf("read shard macro: %w\n%s", err, shard)
+	}
+	shard = strings.TrimSpace(shard)
+	if shard == "" {
+		return nil // not a replicated cluster; nothing registered in Keeper
+	}
+
+	for _, table := range storage.ResetKeeperTables(modelTables) {
+		path := storage.KeeperTablePath(shard, chDatabase, table)
+		// An absent path errors, which is the healthy case.
+		out, err := chExec(pod, password, storage.KeeperReplicasQuery(path))
+		if err != nil {
+			continue
+		}
+		for _, replica := range nonEmptyLines(out) {
+			// Non-fatal: code 305 means the replica is still active or a local table
+			// holds the path, i.e. it is not an orphan and must be left alone.
+			if _, err := chExec(pod, password, storage.DropKeeperReplicaStatement(replica, path)); err != nil {
+				continue
+			}
+		}
+	}
+	return nil
 }
 
 // clickHousePods lists the ClickHouse pods, by operator label first and by name
