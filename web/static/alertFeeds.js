@@ -430,7 +430,7 @@ const AlertFeeds = {
             const statusClass = isAutoDisabled ? 'auto-disabled' : (alert.enabled ? 'enabled' : 'disabled');
             const statusText = isAutoDisabled ? 'Auto-disabled' : (alert.enabled ? 'Enabled' : 'Disabled');
             const lastTriggered = alert.last_triggered
-                ? new Date(alert.last_triggered).toLocaleString()
+                ? TZ.format(alert.last_triggered, 'friendly')
                 : 'Never';
             const lastRunTime = alert.last_execution_time_ms != null
                 ? (alert.last_execution_time_ms >= 1000
@@ -623,7 +623,7 @@ const AlertFeeds = {
         const statusClass = isAutoDisabled ? 'auto-disabled' : (alert.enabled ? 'enabled' : 'disabled');
         const statusText = isAutoDisabled ? 'Auto-disabled' : (alert.enabled ? 'Enabled' : 'Disabled');
         const lastTriggered = alert.last_triggered
-            ? new Date(alert.last_triggered).toLocaleString()
+            ? TZ.format(alert.last_triggered, 'friendly')
             : 'Never';
 
         const severity = this.getAlertSeverity(alert);
@@ -698,7 +698,7 @@ const AlertFeeds = {
 
                 <div class="alert-detail-field">
                     <label>Created:</label>
-                    <span>${new Date(alert.created_at).toLocaleString()}</span>
+                    <span>${TZ.format(alert.created_at, 'friendly')}</span>
                 </div>
 
                 <div class="alert-detail-field">

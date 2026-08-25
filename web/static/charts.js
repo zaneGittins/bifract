@@ -732,7 +732,19 @@ window.BifractCharts = {
                         title: cfg.yLabel ? { display: true, text: cfg.yLabel, color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 12, weight: '600' } } : undefined,
                         ticks: unit ? { color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 11 }, callback: (v) => this.formatValue(v, unit) } : undefined
                     } : undefined,
-                    x: { ticks: xTicks }
+                    x: {
+                        ticks: xTicks,
+                        // Time buckets are grouped server-side in UTC, so the
+                        // axis says so whenever that differs from what the rest
+                        // of the UI is showing. Relabelling these into the
+                        // display zone would name calendar days and hours whose
+                        // counts they do not hold.
+                        title: (window.TZ && !TZ.isUTC()) ? {
+                            display: true, text: 'UTC',
+                            color: cv('--chart-text-secondary'),
+                            font: { family: 'Inter', size: 10 }
+                        } : undefined
+                    }
                 }),
                 layout: { padding: 10 }
             }

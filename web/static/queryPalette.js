@@ -708,7 +708,7 @@ const QueryPalette = {
         if (s < 3600) return Math.floor(s / 60) + 'm ago';
         if (s < 86400) return Math.floor(s / 3600) + 'h ago';
         if (s < 604800) return Math.floor(s / 86400) + 'd ago';
-        return d.toLocaleDateString();
+        return TZ.format(d, 'date');
     },
 
     // _rangeFields extracts the persisted snake_case time-range fields from a row
@@ -735,7 +735,7 @@ const QueryPalette = {
             return `Last ${it.relative_n || 1}${u}`;
         }
         if (t === 'custom') {
-            const fmt = d => { const x = new Date(d); return isNaN(x.getTime()) ? '' : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+            const fmt = d => { const p = TZ.parts(d); return p ? `${TZ.MONTHS[p.month - 1]} ${p.day}` : ''; };
             if (it.custom_start && it.custom_end) return `${fmt(it.custom_start)} – ${fmt(it.custom_end)}`;
             return 'Custom';
         }

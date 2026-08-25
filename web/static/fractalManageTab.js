@@ -124,9 +124,9 @@ const FractalManageTab = {
         const createdByEl = document.getElementById('managePrismCreatedBy');
         if (createdByEl) createdByEl.textContent = prism.created_by || '';
         const createdAtEl = document.getElementById('managePrismCreatedAt');
-        if (createdAtEl) createdAtEl.textContent = prism.created_at ? new Date(prism.created_at).toLocaleString() : '';
+        if (createdAtEl) createdAtEl.textContent = prism.created_at ? TZ.format(prism.created_at, 'friendly') : '';
         const updatedAtEl = document.getElementById('managePrismUpdatedAt');
-        if (updatedAtEl) updatedAtEl.textContent = prism.updated_at ? new Date(prism.updated_at).toLocaleString() : '';
+        if (updatedAtEl) updatedAtEl.textContent = prism.updated_at ? TZ.format(prism.updated_at, 'friendly') : '';
 
         // Load full prism details (including members) from API
         try {
@@ -330,16 +330,16 @@ const FractalManageTab = {
         document.getElementById('manageFractalName').textContent = fractal.name;
         document.getElementById('manageFractalDescription').textContent = fractal.description || 'None';
         document.getElementById('manageFractalCreatedBy').textContent = fractal.created_by;
-        document.getElementById('manageFractalCreatedAt').textContent = new Date(fractal.created_at).toLocaleString();
-        document.getElementById('manageFractalUpdatedAt').textContent = new Date(fractal.updated_at).toLocaleString();
+        document.getElementById('manageFractalCreatedAt').textContent = TZ.format(fractal.created_at, 'friendly');
+        document.getElementById('manageFractalUpdatedAt').textContent = TZ.format(fractal.updated_at, 'friendly');
 
         // Populate statistics
         document.getElementById('manageFractalLogCount').textContent = (fractal.log_count || 0).toLocaleString();
         document.getElementById('manageFractalSizeBytes').textContent = this.formatBytes(fractal.size_bytes || 0);
         document.getElementById('manageFractalEarliestLog').textContent =
-            fractal.earliest_log ? new Date(fractal.earliest_log).toLocaleString() : 'None';
+            fractal.earliest_log ? TZ.format(fractal.earliest_log, 'friendly') : 'None';
         document.getElementById('manageFractalLatestLog').textContent =
-            fractal.latest_log ? new Date(fractal.latest_log).toLocaleString() : 'None';
+            fractal.latest_log ? TZ.format(fractal.latest_log, 'friendly') : 'None';
 
         // Hide delete action for default/system fractals
         const isProtected = fractal.is_default || fractal.is_system;

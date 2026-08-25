@@ -116,7 +116,7 @@ const GroupsView = {
                     </div>
                 </td>
                 <td><span class="role-badge">${g.member_count || 0}</span></td>
-                <td class="text-muted">${new Date(g.created_at).toLocaleDateString()}</td>
+                <td class="text-muted">${TZ.format(g.created_at, 'date')}</td>
                 <td class="kebab-cell" onclick="event.stopPropagation()">
                     <div class="kebab-wrapper">
                         <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button>
@@ -363,7 +363,7 @@ const GroupsView = {
                         </div>
                     </div>
                 </td>
-                <td class="text-muted">${new Date(m.added_at).toLocaleDateString()}</td>
+                <td class="text-muted">${TZ.format(m.added_at, 'date')}</td>
                 <td><button class="btn-delete-user btn-sm" onclick="GroupsView.removeMember('${Utils.escapeJs(m.username)}')">Remove</button></td>
             </tr>`;
         });

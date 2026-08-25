@@ -1367,6 +1367,16 @@ const QueryExecutor = {
             : field === 'norm_log' ? 'raw-log-col'
             : (numericFields.has(field) ? 'numeric-col' : '');
         let html;
+        // The backend sends timestamps as bare UTC strings. Cells stay
+        // unsuffixed because the time bar always states the active zone; the
+        // hover text carries the zone and the UTC value for correlation.
+        if (field === 'timestamp' && typeof value === 'string' && value) {
+            const shown = TZ.format(value);
+            return {
+                html: `<span title="${Utils.escapeAttr(TZ.title(value))}">${Utils.escapeHtml(shown)}</span>`,
+                cellClass
+            };
+        }
         if (typeof value === 'object' && value !== null) {
             html = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(JSON.stringify(value))}</span>`;
             cellClass += ' json-cell';
@@ -3496,16 +3506,18 @@ const QueryExecutor = {
     // year-old tree reads correctly, not "8760h ago"). Full timestamp goes in the title.
     _pgFmtTime(ms) {
         if (ms == null) return '';
-        const now = Date.now(), d = new Date(ms), diff = now - ms;
+        const now = Date.now(), diff = now - ms;
         const MIN = 60000, HR = 3600000, DAY = 86400000;
         if (diff >= 0 && diff < 45000) return 'just now';
         if (diff >= 0 && diff < HR) return Math.round(diff / MIN) + 'm ago';
         if (diff >= 0 && diff < DAY) return Math.round(diff / HR) + 'h ago';
-        const hm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
-        if (diff >= 0 && diff < 7 * DAY) return d.toLocaleDateString(undefined, { weekday: 'short' }) + ' ' + hm;
-        const sameYear = d.getFullYear() === new Date(now).getFullYear();
-        if (sameYear) return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + hm;
-        return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+        const p = TZ.parts(ms);
+        if (!p) return '';
+        const hm = `${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`;
+        if (diff >= 0 && diff < 7 * DAY) return `${p.weekday} ${hm}`;
+        const sameYear = p.year === TZ.parts(now).year;
+        if (sameYear) return `${TZ.MONTHS[p.month - 1]} ${p.day} ${hm}`;
+        return `${TZ.MONTHS[p.month - 1]} ${p.day}, ${p.year}`;
     },
     // Age-independent gap between a node and its parent (how long after the parent it appeared).
     _pgFmtDelta(deltaMs) {
@@ -4383,7 +4395,7 @@ const QueryExecutor = {
                 `<svg class="pg-ic-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>` +
                 `<svg class="pg-ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></span></div>`;
         };
-        const timeStr = t != null ? new Date(t).toISOString().replace('T', ' ').replace('Z', ' UTC') : '';
+        const timeStr = t != null ? TZ.format(t, 'full') : '';
         // Instant process-centric summary straight from the model, so the drawer is never empty while
         // the full field set loads.
         const instant = kv('command line', meta.cmd) + kv(m.labelDerived(guid) ? 'image (from a linked event)' : 'image', name) + kv('user', meta.user) +
@@ -4672,7 +4684,7 @@ const QueryExecutor = {
             let timeCell = '';
             if (t != null) {
                 const delta = pt != null ? this._pgFmtDelta(t - pt) : '';
-                const full = new Date(t).toISOString().replace('T', ' ').replace('Z', ' UTC');
+                const full = TZ.format(t, 'full');
                 // Δt from parent is the triage signal (how fast the chain ran). The absolute date is
                 // noise on every row: show it only on a root (no parent to diff against), and keep the
                 // full timestamp in the tooltip everywhere.

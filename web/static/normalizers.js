@@ -1172,7 +1172,7 @@ const Normalizers = {
             return;
         }
         bar.innerHTML = samples.map((s, i) => {
-            const when = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : '';
+            const when = s.timestamp ? TZ.format(s.timestamp, 'time') : '';
             return `<button class="nz-sample-tab${i === this._activeSampleIndex ? ' nz-sample-active' : ''}" onclick="Normalizers.selectSample(${i})" title="${s.fields_num} top-level fields, captured ${Utils.escapeHtml(when)}">${s.fields_num} fields</button>`;
         }).join('');
         const meta = document.getElementById('normalizerInputMeta');

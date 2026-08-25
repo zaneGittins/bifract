@@ -1444,6 +1444,16 @@ body {
     opacity: 0.85;
 }
 
+/* Zone the absolute inputs are read in */
+.tp-zone-tag {
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    color: var(--accent-primary);
+    letter-spacing: 0;
+    text-transform: none;
+    margin-left: 0.25rem;
+}
+
 .tp-absolute-col {
     display: flex;
     flex-direction: column;
@@ -1537,6 +1547,12 @@ body {
 .timeline-tooltip strong {
     color: var(--accent-secondary);
     font-size: 0.8125rem;
+}
+
+.timeline-tooltip-zone {
+    opacity: 0.6;
+    font-size: 0.6875rem;
+    letter-spacing: 0.03em;
 }
 
 #mainView,

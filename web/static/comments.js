@@ -332,18 +332,13 @@ const Comments = {
 
         if (timestamp) {
             try {
-                // ClickHouse returns timestamps without timezone (e.g. "2026-03-22 18:37:11.329").
-                // These are UTC but new Date() would interpret them as local time.
-                // Append 'Z' to ensure correct UTC parsing before converting to ISO string.
-                let toParse = timestamp;
-                if (!toParse.endsWith('Z') && !toParse.includes('+') && !toParse.includes('T')) {
-                    toParse = toParse.replace(' ', 'T') + 'Z';
-                }
-                const date = new Date(toParse);
-                if (isNaN(date.getTime())) {
+                // ClickHouse returns timestamps without a zone; TZ.toEpoch knows
+                // those are UTC, where new Date() would read them as local.
+                const ms = TZ.toEpoch(timestamp);
+                if (!Number.isFinite(ms)) {
                     throw new Error('Invalid date');
                 }
-                timestamp = date.toISOString();
+                timestamp = new Date(ms).toISOString();
             } catch (error) {
                 console.error('[Comments] Failed to convert timestamp:', error);
                 if (window.Toast) {
@@ -639,11 +634,10 @@ const Comments = {
         if (diffHours < 24) return `${diffHours}h ago`;
         if (diffDays < 7) return `${diffDays}d ago`;
 
-        return date.toLocaleDateString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
-        });
+        const p = TZ.parts(date);
+        const sameYear = p.year === TZ.parts(now).year;
+        return sameYear ? `${TZ.MONTHS[p.month - 1]} ${p.day}`
+                        : `${TZ.MONTHS[p.month - 1]} ${p.day}, ${p.year}`;
     },
 
     // Fetch and cache all log IDs that have comments

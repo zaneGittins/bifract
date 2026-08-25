@@ -428,7 +428,7 @@ const CommentedLogs = {
             const comment = pageComments[pi];
             const globalIndex = pageStart + pi;
             const isSelected = this.selectedIds.has(comment.id);
-            const created = new Date(comment.created_at).toLocaleString();
+            const created = TZ.format(comment.created_at, 'friendly');
             const textPreview = comment.text.length > 100
                 ? comment.text.substring(0, 100) + '...' : comment.text;
             const tags = comment.tags || [];
@@ -566,7 +566,7 @@ const CommentedLogs = {
         // Update header from comment data immediately
         const tsEl = document.getElementById('cdpTimestamp');
         if (tsEl) tsEl.textContent = comment.log_timestamp
-            ? new Date(comment.log_timestamp).toLocaleString() : '';
+            ? TZ.format(comment.log_timestamp, 'friendly') : '';
         const badge = document.getElementById('cdpLevelBadge');
         if (badge) { badge.textContent = ''; badge.className = 'log-level-badge'; }
 
@@ -677,7 +677,7 @@ const CommentedLogs = {
             <span class="gravatar-sm" style="background-color:${authorColor}">${Utils.escapeHtml(authorInitial)}</span>
             <span>${Utils.escapeHtml(comment.author_display_name || comment.author || '')}</span>
             <span>&middot;</span>
-            <span>${new Date(comment.created_at).toLocaleString()}</span>
+            <span>${TZ.format(comment.created_at, 'friendly')}</span>
         `;
         (comment.tags || []).forEach(t => {
             const tag = document.createElement('span');

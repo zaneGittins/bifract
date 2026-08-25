@@ -193,7 +193,7 @@ const FractalManagement = {
         const logCount = fractal.log_count || 0;
         const sizeBytes = fractal.size_bytes || 0;
         const sizeFormatted = this.formatBytes(sizeBytes);
-        const createdAt = new Date(fractal.created_at).toLocaleDateString();
+        const createdAt = TZ.format(fractal.created_at, 'date');
 
         const dateRange = this.formatDateRange(fractal.earliest_log, fractal.latest_log);
 
@@ -687,16 +687,16 @@ const FractalManagement = {
         document.getElementById('detailFractalName').textContent = fractal.name;
         document.getElementById('detailFractalDescription').textContent = fractal.description || 'None';
         document.getElementById('detailFractalCreatedBy').textContent = fractal.created_by;
-        document.getElementById('detailFractalCreatedAt').textContent = new Date(fractal.created_at).toLocaleString();
-        document.getElementById('detailFractalUpdatedAt').textContent = new Date(fractal.updated_at).toLocaleString();
+        document.getElementById('detailFractalCreatedAt').textContent = TZ.format(fractal.created_at, 'friendly');
+        document.getElementById('detailFractalUpdatedAt').textContent = TZ.format(fractal.updated_at, 'friendly');
 
         // Populate statistics
         document.getElementById('detailFractalLogCount').textContent = (fractal.log_count || 0).toLocaleString();
         document.getElementById('detailFractalSizeBytes').textContent = this.formatBytes(fractal.size_bytes || 0);
         document.getElementById('detailFractalEarliestLog').textContent =
-            fractal.earliest_log ? new Date(fractal.earliest_log).toLocaleString() : 'None';
+            fractal.earliest_log ? TZ.format(fractal.earliest_log, 'friendly') : 'None';
         document.getElementById('detailFractalLatestLog').textContent =
-            fractal.latest_log ? new Date(fractal.latest_log).toLocaleString() : 'None';
+            fractal.latest_log ? TZ.format(fractal.latest_log, 'friendly') : 'None';
 
         // Disable delete button for default/system fractals
         const deleteBtn = document.getElementById('deleteFractalBtn');
@@ -933,15 +933,15 @@ const FractalManagement = {
         }
 
         if (!earliest) {
-            return `Until ${new Date(latest).toLocaleDateString()}`;
+            return `Until ${TZ.format(latest, 'date')}`;
         }
 
         if (!latest) {
-            return `From ${new Date(earliest).toLocaleDateString()}`;
+            return `From ${TZ.format(earliest, 'date')}`;
         }
 
-        const earliestDate = new Date(earliest).toLocaleDateString();
-        const latestDate = new Date(latest).toLocaleDateString();
+        const earliestDate = TZ.format(earliest, 'date');
+        const latestDate = TZ.format(latest, 'date');
 
         if (earliestDate === latestDate) {
             return earliestDate;

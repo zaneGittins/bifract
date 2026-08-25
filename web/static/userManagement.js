@@ -68,7 +68,7 @@ const UserManagement = {
         this.users.forEach(user => {
             const isSelf = currentUser && currentUser.username === user.username;
             const lastLogin = user.last_login
-                ? new Date(user.last_login).toLocaleString()
+                ? TZ.format(user.last_login, 'friendly')
                 : 'Never';
 
             html += '<tr>';

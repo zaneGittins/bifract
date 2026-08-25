@@ -614,18 +614,18 @@ const Performance = {
         this.disarmRestore();
     },
 
-    // The datetime-local fields are treated as UTC wall-clock (the label says
-    // UTC), so we format from and parse to UTC rather than the browser locale.
+    // The datetime-local fields are wall clock in the user's display zone, which
+    // is what the label next to them states.
     toInputValue(d) {
-        const p = n => String(n).padStart(2, '0');
-        return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+        const t = TZ.format(d.getTime(), 'datetime');
+        return t ? t.replace(' ', 'T') : '';
     },
 
-    // Parse a datetime-local value as UTC into an ISO-8601 string, or null.
+    // Parse a datetime-local value, read as wall clock in the display zone, into
+    // a UTC ISO-8601 string, or null.
     inputToUTCISO(v) {
-        const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
-        if (!m) return null;
-        return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] || '00'}.000Z`;
+        const ms = TZ.parseWallClock(String(v).trim());
+        return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
     },
 
     setRestoreMsg(text, kind) {
@@ -823,7 +823,7 @@ const Performance = {
         if (j.error) html += `<div class="restore-job-error">${this.escapeHtml(j.error)}</div>`;
         html += '<div class="restore-detail-grid">';
         html += row('Mode', this.escapeHtml(j.mode));
-        html += row('Ingested between', `${this.fmtWindow(j.from)} &rarr; ${this.fmtWindow(j.to)} UTC`);
+        html += row('Ingested between', `${this.fmtWindow(j.from)} &rarr; ${this.fmtWindow(j.to)} ${TZ.abbrev(j.to)}`);
         if (j.target_fractal_name) html += row('Destination', this.escapeHtml(j.target_fractal_name));
         if (chunksTotal > 0) html += row('Chunks', `${chunksDone} of ${chunksTotal}`);
         if (j.cursor_ts && (j.status === 'failed' || j.status === 'canceled')) {
@@ -975,16 +975,12 @@ const Performance = {
     },
 
     fmtWindow(iso) {
-        const d = new Date(iso);
-        if (isNaN(d)) return '--';
-        const p = n => String(n).padStart(2, '0');
-        return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+        return TZ.format(iso, 'minute') || '--';
     },
 
     fmtStamp(iso) {
-        const d = new Date(iso);
-        if (isNaN(d)) return '—';
-        return this.fmtWindow(iso) + ' UTC';
+        const t = TZ.format(iso, 'minute');
+        return t ? `${t} ${TZ.abbrev(iso)}` : '—';
     },
 
     async cancelRestoreJob(id) {
@@ -2364,6 +2360,9 @@ const Performance = {
         return (ms / 1000).toFixed(1) + 's';
     },
 
+    // Deliberately UTC. The value is a whole calendar day produced by a
+    // server-side aggregate over UTC, so shifting the label into the display
+    // zone would name a day whose counts it does not hold.
     formatDay(d) {
         const parts = String(d).split('-');
         if (parts.length !== 3) return d;
@@ -2374,10 +2373,7 @@ const Performance = {
 
     formatEventTime(t) {
         if (!t) return '--';
-        // ClickHouse returns time strings; extract time portion
-        const str = String(t);
-        const parts = str.split(' ');
-        return parts.length > 1 ? parts[1] : str;
+        return TZ.format(t, 'time') || '--';
     },
 
     truncateQuery(q, maxLen) {

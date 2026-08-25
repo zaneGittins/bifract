@@ -63,7 +63,10 @@ const TimePicker = {
         if (type === 'relative') return `Last ${relativeN}${unitShort[relativeUnit] || relativeUnit[0]}`;
         if (type === 'custom') {
             if (customStart && customEnd) {
-                const fmt = d => new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+                const fmt = d => {
+                    const p = TZ.parts(d);
+                    return p ? `${TZ.MONTHS[p.month - 1]} ${p.day}` : '';
+                };
                 return `${fmt(customStart)} – ${fmt(customEnd)}`;
             }
             return 'Custom';
@@ -171,16 +174,17 @@ const TimePicker = {
         } catch (e) {}
     },
 
+    // Absolute inputs are wall clock in the user's display zone, both directions.
+    // They were browser-local, which silently disagreed with the UTC timestamps
+    // in the results table and with the UTC inputs on the Recall tab.
     _toDatetimeLocal(iso) {
-        const d = new Date(iso);
-        const pad = n => String(n).padStart(2, '0');
-        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        return TZ.formatInput(iso);
     },
 
     _parseAbsInput(val) {
         if (!val) return null;
-        const d = new Date(val.trim().replace(' ', 'T'));
-        return isNaN(d) ? null : d.toISOString();
+        const ms = TZ.parseWallClock(val.trim());
+        return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
     },
 
     _updateLabel() {
@@ -195,6 +199,9 @@ const TimePicker = {
     },
 
     open() {
+        // The absolute inputs are read in the display zone, so they say which.
+        const zoneTag = document.getElementById('tpAbsZone');
+        if (zoneTag) zoneTag.textContent = TZ.abbrev();
         const panel = document.getElementById('timePickerPanel');
         const backdrop = document.getElementById('timePickerBackdrop');
         const btn = document.getElementById('timePickerBtn');

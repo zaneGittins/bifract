@@ -510,7 +510,7 @@
                                             <tr>
                                                 <th>Fractal</th>
                                                 <th>Mode</th>
-                                                <th>Window (UTC)</th>
+                                                <th>Window</th>
                                                 <th>Status</th>
                                                 <th class="restore-col-progress">Progress</th>
                                                 <th>Requested</th>
@@ -542,7 +542,7 @@
                                         </div>
                                     </div>
                                     <div class="restore-field">
-                                        <label class="restore-label">Ingested between <span class="restore-sublabel">ingest time, UTC &mdash; matches the archive's partitioning, so only the days you select are read</span></label>
+                                        <label class="restore-label">Ingested between <span class="restore-sublabel">ingest time, shown in your display timezone &mdash; matches the archive's partitioning, so only the days you select are read</span></label>
                                         <div class="restore-range-row">
                                             <input type="datetime-local" id="restoreFrom" class="restore-input" step="1">
                                             <span class="restore-range-sep">to</span>
@@ -1476,7 +1476,7 @@
                             <button id="tpRelativeApply" class="tp-apply-btn" type="button">Apply</button>
                         </div>
                         <div class="tp-divider"></div>
-                        <div class="tp-section-label">Absolute range</div>
+                        <div class="tp-section-label">Absolute range <span class="tp-zone-tag" id="tpAbsZone"></span></div>
                         <div class="tp-absolute-col">
                             <div class="tp-abs-row">
                                 <span class="tp-abs-label">From</span>
@@ -2841,6 +2841,7 @@
                                 <input type="text" placeholder="YYYY-MM-DD HH:mm" id="alertCustomStart" class="datetime-input" />
                                 <span class="range-separator">to</span>
                                 <input type="text" placeholder="YYYY-MM-DD HH:mm" id="alertCustomEnd" class="datetime-input" />
+                                <span class="tp-zone-tag" id="alertCustomZone"></span>
                             </div>
 
                             <div class="toolbar-spacer"></div>
@@ -3182,7 +3183,22 @@
             <span id="statusBarComments" class="status-bar-comments" style="display:none;"></span>
         </div>
         <div class="time-bar-center">
-            <span id="currentTimeUTC">UTC: --:--:--</span>
+            <div class="tz-picker-wrap">
+                <button type="button" class="tz-clock" id="tzClockBtn" aria-haspopup="dialog" aria-expanded="false">
+                    <span class="tz-clock-zone" id="tzClockZone">UTC</span>
+                    <span class="tz-clock-time" id="tzClockTime">--:--:--</span>
+                    <svg class="tz-clock-caret" viewBox="0 0 10 6" width="8" height="5" aria-hidden="true"><path d="M1 5L5 1l4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <div class="tz-picker" id="tzPicker" role="dialog" aria-label="Display timezone" style="display:none">
+                    <div class="tz-picker-head">
+                        <span class="tz-section-label">Display timezone</span>
+                        <span class="tz-picker-offset" id="tzPickerOffset"></span>
+                    </div>
+                    <input type="text" class="tz-search" id="tzSearch" placeholder="Search zones..." spellcheck="false" autocomplete="off">
+                    <div class="tz-list" id="tzList"></div>
+                    <div class="tz-note">Logs are stored in UTC. This changes display only.</div>
+                </div>
+            </div>
         </div>
         <div class="time-bar-right">
             <span id="bifractVersion">Bifract version: --</span>
@@ -3982,6 +3998,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/fractalContext.js"></script>
     <script src="/static/fractalSelector.js"></script>
     <script src="/static/fractalListing.js"></script>
+    <script src="/static/timezone.js"></script>
     <script src="/static/utils.js"></script>
     <script src="/static/syntaxHighlight.js"></script>
     <script src="/static/variables.js"></script>

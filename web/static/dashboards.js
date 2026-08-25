@@ -657,7 +657,7 @@ const Dashboards = {
         const age = Utils.timeAgo(newest);
         if (!age) return clear();
         el.textContent = `Updated ${age}`;
-        el.title = new Date(newest).toLocaleString();
+        el.title = TZ.format(newest, 'friendly');
     },
 
     startUpdatedAtTicker() {
@@ -1614,7 +1614,7 @@ const Dashboards = {
 
     formatShareDate(iso) {
         if (!iso) return 'never';
-        try { return new Date(iso).toLocaleString(); } catch { return iso; }
+        try { return TZ.format(iso, 'friendly'); } catch { return iso; }
     },
 
     showShareModal() {
@@ -2276,7 +2276,7 @@ const Dashboards = {
     formatDate(dateStr) {
         if (!dateStr) return '';
         try {
-            return new Date(dateStr).toLocaleString();
+            return TZ.format(dateStr, 'friendly');
         } catch {
             return dateStr;
         }

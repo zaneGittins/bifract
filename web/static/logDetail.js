@@ -199,7 +199,8 @@ const LogDetail = {
         }
 
         if (tsSpan) {
-            tsSpan.textContent = logData.timestamp || '';
+            tsSpan.textContent = logData.timestamp ? TZ.format(logData.timestamp, 'full') : '';
+            tsSpan.title = logData.timestamp ? TZ.title(logData.timestamp) : '';
         }
 
         if (srcSpan) {
@@ -480,7 +481,8 @@ const LogDetail = {
             head.className = 'chain-step-head';
             const ts = document.createElement('span');
             ts.className = 'chain-step-ts';
-            ts.textContent = ev.timestamp || '';
+            ts.textContent = ev.timestamp ? TZ.format(ev.timestamp, 'full') : '';
+            ts.title = ev.timestamp ? TZ.title(ev.timestamp) : '';
             head.appendChild(ts);
             body.appendChild(head);
 
@@ -644,9 +646,13 @@ const LogDetail = {
             const valueDiv = document.createElement('div');
             valueDiv.className = 'log-field-value';
 
+            const isTimestamp = key === 'timestamp' && value;
+            const shownValue = isTimestamp ? TZ.format(value, 'full') : value;
+            // Copying a timestamp yields the zone-qualified form: an unlabelled
+            // wall clock pasted into a ticket is how zone mistakes propagate.
             const copyText = typeof value === 'object' && value !== null
                 ? JSON.stringify(value, null, 2)
-                : String(value || '');
+                : String(shownValue || '');
 
             if (typeof value === 'object' && value !== null) {
                 const jsonStr = JSON.stringify(value, null, 2);
@@ -669,7 +675,8 @@ const LogDetail = {
 
                 const textSpan = document.createElement('span');
                 textSpan.className = 'log-field-value-text';
-                textSpan.textContent = String(value || '-');
+                textSpan.textContent = String(shownValue || '-');
+                if (isTimestamp) textSpan.title = TZ.title(value);
 
                 const actions = document.createElement('span');
                 actions.className = 'log-field-actions';

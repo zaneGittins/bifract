@@ -690,6 +690,7 @@ func (h *AuthHandler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) 
 		"prism_role":       prismRole,
 		"selected_fractal": selectedFractal,
 		"selected_prism":   selectedPrism,
+		"display_timezone": displayTimezone(user.DisplayTimezone),
 	}
 	if user.ForcePasswordChange {
 		userData["force_password_change"] = true
@@ -905,6 +906,64 @@ func (h *AuthHandler) HandleResetInvite(w http.ResponseWriter, r *http.Request) 
 			"expires_at":   expiresAt,
 		},
 	})
+}
+
+// displayTimezone falls back to UTC for a user row written before the column
+// existed, or one whose stored zone was dropped from the IANA database.
+func displayTimezone(tz string) string {
+	if tz == "" {
+		return "UTC"
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return "UTC"
+	}
+	return tz
+}
+
+// validDisplayTimezone accepts an IANA zone name resolvable by the embedded
+// tzdata. "Local" is rejected: it means the server's zone, which is not a
+// meaningful answer for a browser asking how to render a timestamp.
+func validDisplayTimezone(tz string) bool {
+	if tz == "" || len(tz) > 64 || tz == "Local" {
+		return false
+	}
+	_, err := time.LoadLocation(tz)
+	return err == nil
+}
+
+// HandleUpdatePreferences stores per-user display preferences. Display timezone
+// is the only one today; it changes how the UI renders timestamps and nothing
+// about how they are stored or queried.
+func (h *AuthHandler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value("user").(*storage.User)
+
+	var req struct {
+		DisplayTimezone *string `json:"display_timezone"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		return
+	}
+
+	if req.DisplayTimezone != nil {
+		tz := strings.TrimSpace(*req.DisplayTimezone)
+		if !validDisplayTimezone(tz) {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(Response{Success: false, Error: "Unknown timezone"})
+			return
+		}
+		if err := h.pg.SetUserDisplayTimezone(r.Context(), user.Username, tz); err != nil {
+			log.Printf("Failed to save display timezone for %s: %v", user.Username, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to save preferences"})
+			return
+		}
+		user.DisplayTimezone = tz
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(Response{Success: true})
 }
 
 // HandleChangePassword lets an authenticated user change their own password.

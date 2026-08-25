@@ -14,12 +14,17 @@ CREATE TABLE IF NOT EXISTS users (
     auth_provider VARCHAR(20) NOT NULL DEFAULT 'local',
     oidc_subject VARCHAR(255),
     force_password_change BOOLEAN NOT NULL DEFAULT FALSE,
-    enabled BOOLEAN NOT NULL DEFAULT TRUE
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    display_timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'
 );
 
 -- Ensure OIDC columns exist (handles case where table was created by container init without them)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(20) NOT NULL DEFAULT 'local';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_subject VARCHAR(255);
+
+-- IANA zone the UI renders timestamps in for this user. Display only; all stored
+-- data stays UTC.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS display_timezone VARCHAR(64) NOT NULL DEFAULT 'UTC';
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_subject ON users(oidc_subject) WHERE oidc_subject IS NOT NULL;
 

@@ -233,7 +233,7 @@ const AnalyticsModels = {
     _modelRow(m) {
         const statusClass = { active: 'badge-active', error: 'badge-error', rebuilding: 'badge-rebuilding' }[m.status] || 'badge-none';
         const alertBadge = this._alertModeBadge(m);
-        const updated = m.updated_at ? new Date(m.updated_at).toLocaleDateString() : '—';
+        const updated = m.updated_at ? TZ.format(m.updated_at, 'date') : '—';
         const errorTitle = m.status === 'error' && m.error_message ? ` title="${_esc(m.error_message)}"` : '';
         const backfillBadge = m.backfill_status === 'running'
             ? ` <span class="model-badge badge-backfilling" title="Backfilling historical data">⟳ Backfilling ${this._backfillPct(m)}%</span>`
@@ -1886,8 +1886,7 @@ ${isBeacon ? `
         if (col === 'conn_count' || col === 'total_duration') return _esc(this._fmtNum(Number(v)));
         if (col === 'model_count' || col === 'event_count' || col === 'latest_count' || col === 'n_buckets') return _esc(this._fmtNum(Number(v)));
         if (col === 'first_seen' || col === 'last_seen') {
-            const d = new Date(v);
-            return _esc(isNaN(d.getTime()) ? String(v) : d.toLocaleString());
+            return _esc(TZ.format(v, 'friendly') || String(v));
         }
         return `<span class="score-cell-val" title="${_esc(String(v))}">${_esc(String(v))}</span>`;
     },

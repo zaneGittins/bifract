@@ -852,6 +852,14 @@
     color: var(--text-primary);
 }
 
+/* Trailing value on a menu row (e.g. the active timezone abbreviation) */
+.user-menu-hint {
+    margin-left: 0.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+
 .user-menu-item svg {
     width: 16px;
     height: 16px;

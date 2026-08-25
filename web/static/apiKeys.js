@@ -265,7 +265,7 @@ const APIKeys = {
             const isExpired = key.expires_at && new Date(key.expires_at) < new Date();
             const statusClass = key.is_active && !isExpired ? 'active' : 'inactive';
             const statusText = isExpired ? 'Expired' : (key.is_active ? 'Active' : 'Inactive');
-            const expiresText = key.expires_at ? new Date(key.expires_at).toLocaleDateString() : 'Never';
+            const expiresText = key.expires_at ? TZ.format(key.expires_at, 'date') : 'Never';
 
             html += `<tr>
                 <td>

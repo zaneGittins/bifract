@@ -43,6 +43,17 @@ const App = {
             TimeBar.init();
         }
 
+        // Changing the display zone relabels what is already on screen rather
+        // than re-running the query: the data is identical, only its rendering
+        // moves.
+        document.addEventListener(TZ.EVENT, () => {
+            if (window.QueryExecutor && QueryExecutor.currentResults && QueryExecutor.currentResults.length) {
+                QueryExecutor.renderResults(QueryExecutor.currentResults);
+            }
+            if (window.Timeline) Timeline.redraw();
+            if (window.Auth) Auth.updateTimezoneHint();
+        });
+
         if (window.SyntaxHighlight) {
             SyntaxHighlight.init();
         }

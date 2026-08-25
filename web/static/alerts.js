@@ -466,7 +466,7 @@ const Alerts = {
         const statusClass = alert.enabled ? 'enabled' : 'disabled';
         const statusText = alert.enabled ? 'Enabled' : 'Disabled';
         const lastTriggered = alert.last_triggered
-            ? new Date(alert.last_triggered).toLocaleString()
+            ? TZ.format(alert.last_triggered, 'friendly')
             : 'Never';
 
         return `
@@ -529,7 +529,7 @@ const Alerts = {
                         </div>
                     ` : ''}
                     <div class="alert-meta-item">
-                        <strong>Created:</strong> ${new Date(alert.created_at).toLocaleDateString()}
+                        <strong>Created:</strong> ${TZ.format(alert.created_at, 'date')}
                     </div>
                     <div class="alert-meta-item">
                         <strong>Last Triggered:</strong> ${lastTriggered}
@@ -625,7 +625,7 @@ const Alerts = {
         const statusClass = isAutoDisabled ? 'auto-disabled' : (alert.enabled ? 'enabled' : 'disabled');
         const statusText = isAutoDisabled ? 'Auto-disabled' : (alert.enabled ? 'Enabled' : 'Disabled');
         const lastTriggered = alert.last_triggered
-            ? new Date(alert.last_triggered).toLocaleString()
+            ? TZ.format(alert.last_triggered, 'friendly')
             : 'Never';
 
         const modifiedBy = alert.updated_by || alert.created_by || '-';
@@ -714,7 +714,7 @@ const Alerts = {
         const statusClass = isAutoDisabled ? 'auto-disabled' : (alert.enabled ? 'enabled' : 'disabled');
         const statusText = isAutoDisabled ? 'Auto-disabled' : (alert.enabled ? 'Enabled' : 'Disabled');
         const lastTriggered = alert.last_triggered
-            ? new Date(alert.last_triggered).toLocaleString()
+            ? TZ.format(alert.last_triggered, 'friendly')
             : 'Never';
 
         return `
@@ -796,7 +796,7 @@ const Alerts = {
 
                 <div class="alert-detail-field">
                     <label>Created:</label>
-                    <span>${new Date(alert.created_at).toLocaleString()}</span>
+                    <span>${TZ.format(alert.created_at, 'friendly')}</span>
                 </div>
 
                 <div class="alert-detail-field">
@@ -2589,14 +2589,14 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 break;
             case 'custom':
                 if (customStart && customEnd && customStart.value && customEnd.value) {
-                    const startDate = new Date(customStart.value);
-                    const endDate = new Date(customEnd.value);
+                    const startMs = TZ.parseWallClock(customStart.value);
+                    const endMs = TZ.parseWallClock(customEnd.value);
 
                     // Validate that start is before end
-                    if (startDate < endDate) {
+                    if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs < endMs) {
                         return {
-                            start: startDate.toISOString(),
-                            end: endDate.toISOString()
+                            start: new Date(startMs).toISOString(),
+                            end: new Date(endMs).toISOString()
                         };
                     }
                 }
@@ -2684,13 +2684,14 @@ throttleField: ${alert.throttle_field}` : ''}`;
             timeRangeSelect.addEventListener('change', (e) => {
                 if (e.target.value === 'custom') {
                     customTimeInputs.style.display = 'flex';
+                    const zoneTag = document.getElementById('alertCustomZone');
+                    if (zoneTag) zoneTag.textContent = TZ.abbrev();
                     // Initialize custom inputs with default values if empty
                     if (customStart && customEnd) {
                         if (!customStart.value) {
-                            const now = new Date();
-                            const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000);
-                            customStart.value = oneDayAgo.toISOString().slice(0, 16).replace('T', ' ');
-                            customEnd.value = now.toISOString().slice(0, 16).replace('T', ' ');
+                            const now = Date.now();
+                            customStart.value = TZ.formatInput(now - 24 * 60 * 60 * 1000);
+                            customEnd.value = TZ.formatInput(now);
                         }
                     }
                 } else {

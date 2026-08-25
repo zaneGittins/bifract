@@ -63,7 +63,7 @@ const RecallTimePicker = {
         if (type === 'relative') return `Ingest: last ${relN}${unitShort[relUnit] || relUnit[0]}`;
         if (type === 'custom') {
             if (absStart && absEnd) {
-                const fmt = d => new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+                const fmt = d => { const p = TZ.parts(d); return p ? `${TZ.MONTHS[p.month - 1]} ${p.day}` : ''; };
                 return `Ingest: ${fmt(absStart)} – ${fmt(absEnd)}`;
             }
             return 'Ingest: custom';
@@ -71,21 +71,18 @@ const RecallTimePicker = {
         return `Ingest: last ${type}`;
     },
 
-    // Parse "YYYY-MM-DD HH:MM" (optional seconds) as UTC into ISO8601, or null.
-    // The backend parses these absolute inputs as UTC, so we match that.
+    // Parse "YYYY-MM-DD HH:MM" (optional seconds) as wall clock in the display
+    // zone into a UTC ISO8601 string, or null. The backend takes UTC; the user
+    // types in whatever zone the rest of the UI is showing them.
     _parseAbsInput(val) {
         if (!val) return null;
-        const m = String(val).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
-        if (!m) return null;
-        return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] || '00'}.000Z`;
+        const ms = TZ.parseWallClock(String(val).trim());
+        return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
     },
 
     // Format a UTC ISO string into the "YYYY-MM-DD HH:MM" absolute input.
     _toAbsInput(iso) {
-        const d = new Date(iso);
-        if (isNaN(d)) return '';
-        const p = n => String(n).padStart(2, '0');
-        return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+        return TZ.formatInput(iso);
     },
 
     setState(newState) {
@@ -410,12 +407,10 @@ const Recall = {
     },
 
     // Convert a UTC ISO8601 string into the archive restore form's datetime-local
-    // value ("YYYY-MM-DDTHH:MM:SS", interpreted as UTC there).
+    // value, which reads as wall clock in the display zone.
     isoToRestoreInput(iso) {
-        const d = new Date(iso);
-        if (isNaN(d)) return '';
-        const p = n => String(n).padStart(2, '0');
-        return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+        const s = TZ.format(iso, 'datetime');
+        return s ? s.replace(' ', 'T') : '';
     },
 
     // ---- Submit + poll --------------------------------------------------

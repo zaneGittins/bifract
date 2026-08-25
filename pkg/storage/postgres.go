@@ -31,6 +31,7 @@ type User struct {
 	OIDCSubject         string     `json:"-"`
 	ForcePasswordChange bool       `json:"force_password_change,omitempty"`
 	Enabled             bool       `json:"enabled"`
+	DisplayTimezone     string     `json:"display_timezone"`
 }
 
 type Comment struct {
@@ -126,7 +127,8 @@ func (c *PostgresClient) GetUser(ctx context.Context, username string) (*User, e
 	err := c.db.QueryRowContext(ctx, `
 		SELECT username, password_hash, display_name, gravatar_color, gravatar_initial,
 		       created_at, last_login, is_admin, COALESCE(auth_provider, 'local'),
-		       COALESCE(force_password_change, FALSE), COALESCE(enabled, TRUE)
+		       COALESCE(force_password_change, FALSE), COALESCE(enabled, TRUE),
+		       COALESCE(display_timezone, 'UTC')
 		FROM users
 		WHERE username = $1
 	`, username).Scan(
@@ -141,6 +143,7 @@ func (c *PostgresClient) GetUser(ctx context.Context, username string) (*User, e
 		&user.AuthProvider,
 		&user.ForcePasswordChange,
 		&user.Enabled,
+		&user.DisplayTimezone,
 	)
 
 	if err == sql.ErrNoRows {
@@ -323,6 +326,25 @@ func (c *PostgresClient) SetUserEnabled(ctx context.Context, username string, en
 		username, enabled)
 	if err != nil {
 		return fmt.Errorf("failed to update user enabled state: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("user not found: %s", username)
+	}
+	return nil
+}
+
+// SetUserDisplayTimezone stores the IANA zone the UI renders timestamps in for
+// this user. The caller is responsible for validating the zone name.
+func (c *PostgresClient) SetUserDisplayTimezone(ctx context.Context, username string, timezone string) error {
+	result, err := c.db.ExecContext(ctx,
+		`UPDATE users SET display_timezone = $2 WHERE username = $1`,
+		username, timezone)
+	if err != nil {
+		return fmt.Errorf("failed to update display timezone: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {

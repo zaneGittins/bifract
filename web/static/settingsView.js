@@ -843,7 +843,7 @@ const SettingsView = {
 
         users.forEach(user => {
             const isSelf = currentUser && currentUser.username === user.username;
-            const lastLogin = user.last_login ? new Date(user.last_login).toLocaleString() : 'Never';
+            const lastLogin = user.last_login ? TZ.format(user.last_login, 'friendly') : 'Never';
             const isAdmin = currentUser && currentUser.is_admin;
 
             const u = Utils.escapeJs(user.username);

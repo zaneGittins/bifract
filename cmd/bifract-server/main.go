@@ -18,6 +18,11 @@ import (
 	"syscall"
 	"time"
 
+	// The runtime image is FROM scratch and carries no /usr/share/zoneinfo, so
+	// time.LoadLocation has no database to read. Per-user display timezones are
+	// validated against this embedded copy.
+	_ "time/tzdata"
+
 	dbsql "bifract/db"
 	"bifract/pkg/alerts"
 	"bifract/pkg/apikeys"
@@ -2030,6 +2035,7 @@ func main() {
 			r.Post("/auth/logout", authHandler.HandleLogout)
 			r.Get("/auth/user", authHandler.HandleCurrentUser)
 			r.Post("/auth/change-password", authHandler.HandleChangePassword)
+			r.Patch("/auth/preferences", authHandler.HandleUpdatePreferences)
 
 			// Comments
 			r.Post("/comments", commentHandler.HandleCreateComment)

@@ -293,40 +293,66 @@ const Timeline = {
         this._currentBuckets = buckets;
     },
 
-    // Returns the first tick time >= startMs that aligns to a clean boundary for intervalMs.
+    // Start of the day containing an instant, in the display zone.
+    _zoneDayStart(ms) {
+        const p = TZ.parts(ms);
+        if (!p) return ms;
+        const p2 = n => String(n).padStart(2, '0');
+        return TZ.parseWallClock(`${p.year}-${p2(p.month)}-${p2(p.day)} 00:00:00`);
+    },
+
+    // Start of the next day, in the display zone. Stepping 26 hours guarantees
+    // crossing the boundary even when a DST change makes the day 23 hours long,
+    // and can never skip a day.
+    _zoneNextDayStart(ms) {
+        return this._zoneDayStart(this._zoneDayStart(ms) + 26 * 3600000);
+    },
+
+    // Returns the first tick time >= startMs that aligns to a clean boundary for
+    // intervalMs, read in the display zone. Ticks are wall-clock boundaries in
+    // that zone, so a zone whose offset is not a whole hour still gets round
+    // labels rather than everything landing on :30.
     _firstTickAfter(startMs, intervalMs) {
+        const p = TZ.parts(startMs);
+        if (!p) return startMs;
+        const p2 = n => String(n).padStart(2, '0');
+        const day = `${p.year}-${p2(p.month)}-${p2(p.day)}`;
+        const at = (h, m, sec) => TZ.parseWallClock(`${day} ${p2(h)}:${p2(m)}:${p2(sec)}`);
+
         if (intervalMs < 60000) {
-            // 30 s — snap to :00 or :30 second mark
-            const d = new Date(startMs);
-            const s = d.getSeconds();
-            if (s === 0 || s === 30) return d.getTime() >= startMs ? d.getTime() : d.getTime() + intervalMs;
-            d.setSeconds(s < 30 ? 30 : 60, 0); // setSeconds(60) rolls over to next minute
-            return d.getTime();
+            // 30 s — snap to the :00 or :30 second mark
+            const minuteStart = at(p.hour, p.minute, 0);
+            const t = p.second === 0 ? minuteStart
+                : p.second <= 30 ? minuteStart + 30000
+                : minuteStart + 60000;
+            return t >= startMs ? t : t + intervalMs;
         }
         if (intervalMs < 3600000) {
-            // Minute-level — snap to interval-aligned minute from the hour
-            const d = new Date(startMs);
-            d.setSeconds(0, 0);
+            // Minute-level — interval-aligned minutes from the top of the hour
             const intervalMins = intervalMs / 60000;
-            const snapped = Math.ceil(d.getMinutes() / intervalMins) * intervalMins;
-            d.setMinutes(snapped, 0, 0); // handles overflow (e.g. 60 → next hour)
-            return d.getTime() >= startMs ? d.getTime() : d.getTime() + intervalMs;
+            const snapped = Math.ceil(p.minute / intervalMins) * intervalMins;
+            const t = at(p.hour, 0, 0) + snapped * 60000;
+            return t >= startMs ? t : t + intervalMs;
         }
         if (intervalMs < 86400000) {
-            // Hour-level — snap to interval-aligned hour from local midnight
-            const d = new Date(startMs);
-            d.setMinutes(0, 0, 0);
+            // Hour-level — interval-aligned hours from midnight in the display zone
             const intervalHours = intervalMs / 3600000;
-            const snapped = Math.ceil(d.getHours() / intervalHours) * intervalHours;
-            d.setHours(snapped, 0, 0, 0); // setHours handles >=24 (rolls into next day)
-            return d.getTime() >= startMs ? d.getTime() : d.getTime() + intervalMs;
+            const snapped = Math.ceil(p.hour / intervalHours) * intervalHours;
+            const t = snapped >= 24 ? this._zoneNextDayStart(startMs) : at(snapped, 0, 0);
+            return t >= startMs ? t : t + intervalMs;
         }
-        // Day-level — snap to local midnight, advance by day multiples
-        const d = new Date(startMs);
-        d.setHours(0, 0, 0, 0);
-        const days = intervalMs / 86400000;
-        while (d.getTime() < startMs) d.setDate(d.getDate() + days);
-        return d.getTime();
+        const t = this._zoneDayStart(startMs);
+        return t >= startMs ? t : this._zoneNextDayStart(startMs);
+    },
+
+    // Advance one tick. Day-and-longer intervals re-snap to midnight in the
+    // display zone rather than adding a fixed 24 hours, so a DST change does not
+    // push every later tick to 23:00 or 01:00.
+    _nextTick(t, intervalMs) {
+        if (intervalMs < 86400000) return t + intervalMs;
+        let next = t;
+        for (let i = 0; i < intervalMs / 86400000; i++) next = this._zoneNextDayStart(next);
+        return next;
     },
 
     // Finds the finest interval where no two adjacent labels collide.
@@ -341,9 +367,6 @@ const Timeline = {
             86400000, 172800000, 604800000
         ];
 
-        const startDate = new Date(startMs);
-        const endDate   = new Date(endMs);
-
         for (const interval of INTERVALS) {
             // Skip intervals that would produce more ticks than the canvas can show —
             // avoids generating millions of objects + measureText calls for wide ranges.
@@ -353,9 +376,9 @@ const Timeline = {
             if (firstTick > endMs) continue;
 
             const ticks = [];
-            for (let t = firstTick; t <= endMs; t += interval) {
+            for (let t = firstTick; t <= endMs; t = this._nextTick(t, interval)) {
                 const x = (t - startMs) / duration * canvasWidth;
-                const label = this._formatRulerLabel(new Date(t), interval, startDate, endDate);
+                const label = this._formatRulerLabel(t, interval, startMs, endMs);
                 const labelWidth = ctx.measureText(label).width;
                 ticks.push({ x, label, labelWidth });
             }
@@ -376,43 +399,47 @@ const Timeline = {
         return [];
     },
 
-    // Formats a tick label adaptively based on interval length and range span.
-    _formatRulerLabel(date, intervalMs, rangeStart, rangeEnd) {
-        const h   = date.getHours();
-        const m   = date.getMinutes();
-        const s   = date.getSeconds();
-        const D   = date.getDate();
-        const Mon = date.getMonth();
-        const Y   = date.getFullYear();
+    // Formats a tick label adaptively based on interval length and range span,
+    // in the display zone.
+    _formatRulerLabel(ms, intervalMs, rangeStartMs, rangeEndMs) {
+        const p = TZ.parts(ms);
+        if (!p) return '';
+        const p2 = n => String(n).padStart(2, '0');
 
-        const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const MON_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-        const crossesYear = rangeStart.getFullYear() !== rangeEnd.getFullYear();
-        const rangeDays   = (rangeEnd - rangeStart) / 86400000;
+        const rs = TZ.parts(rangeStartMs), re = TZ.parts(rangeEndMs);
+        const crossesYear = rs && re && rs.year !== re.year;
+        const rangeDays   = (rangeEndMs - rangeStartMs) / 86400000;
+        const mon = TZ.MONTHS[p.month - 1];
 
         if (intervalMs >= 86400000) {
-            if (crossesYear) return `${MON_NAMES[Mon]} ${D} '${String(Y).slice(2)}`;
-            if (rangeDays > 14) return `${MON_NAMES[Mon]} ${D}`;
-            return `${DAY_NAMES[date.getDay()]} ${D}`;
+            if (crossesYear) return `${mon} ${p.day} '${String(p.year).slice(2)}`;
+            if (rangeDays > 14) return `${mon} ${p.day}`;
+            return `${p.weekday} ${p.day}`;
         }
 
         if (intervalMs >= 3600000) {
             // Midnight tick: show the day name instead of 00:00
-            if (h === 0 && m === 0) {
-                if (crossesYear) return `${MON_NAMES[Mon]} ${D}`;
-                return `${DAY_NAMES[date.getDay()]} ${D}`;
+            if (p.hour === 0 && p.minute === 0) {
+                if (crossesYear) return `${mon} ${p.day}`;
+                return `${p.weekday} ${p.day}`;
             }
-            return `${String(h).padStart(2, '0')}:00`;
+            return `${p2(p.hour)}:00`;
         }
 
         if (intervalMs >= 60000) {
-            return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+            return `${p2(p.hour)}:${p2(p.minute)}`;
         }
 
         // 30 s
-        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        return `${p2(p.hour)}:${p2(p.minute)}:${p2(p.second)}`;
+    },
+
+    // Repaint the main timeline from cached buckets. The data is unchanged; only
+    // the axis labels move.
+    redraw() {
+        const canvas = document.getElementById('timeline');
+        if (!canvas || !this._currentBuckets || !canvas.offsetWidth) return;
+        this._drawBars(canvas, this._currentBuckets);
     },
 
     _setupResizeObserver(canvas) {
@@ -426,12 +453,11 @@ const Timeline = {
         this._resizeObserver.observe(canvas.parentElement);
     },
 
-    formatDateLabel(date) {
-        const month   = String(date.getMonth() + 1).padStart(2, '0');
-        const day     = String(date.getDate()).padStart(2, '0');
-        const hours   = String(date.getHours()).padStart(2, '0');
-        const minutes = String(date.getMinutes()).padStart(2, '0');
-        return `${month}/${day} ${hours}:${minutes}`;
+    formatDateLabel(value) {
+        const p = TZ.parts(value);
+        if (!p) return '';
+        const p2 = n => String(n).padStart(2, '0');
+        return `${p2(p.month)}/${p2(p.day)} ${p2(p.hour)}:${p2(p.minute)}`;
     },
 
     setupInteraction(canvas, buckets, barWidth, startDate, bucketSize, duration) {
@@ -465,8 +491,8 @@ const Timeline = {
             } else {
                 const barIndex = Math.floor(x / barWidth);
                 if (barIndex >= 0 && barIndex < buckets.length) {
-                    const bucketTime = new Date(startDate.getTime() + barIndex * bucketSize);
-                    this.showTooltip(e.clientX, e.clientY, buckets[barIndex], bucketTime);
+                    const bucketStart = startDate.getTime() + barIndex * bucketSize;
+                    this.showTooltip(e.clientX, e.clientY, buckets[barIndex], bucketStart, bucketSize);
                 } else {
                     this.hideTooltip();
                 }
@@ -519,7 +545,7 @@ const Timeline = {
         }
     },
 
-    showTooltip(x, y, count, time) {
+    showTooltip(x, y, count, time, bucketSize) {
         let tooltip = document.getElementById('timelineTooltip');
         if (!tooltip) {
             tooltip = document.createElement('div');
@@ -529,7 +555,14 @@ const Timeline = {
         }
 
         const timeStr = this.formatDateLabel(time);
-        tooltip.innerHTML = `<strong>${count.toLocaleString()}</strong> events &middot; ${timeStr}`;
+        // Buckets are aligned to the epoch, not to a calendar day in the display
+        // zone, so a bucket a day or longer states both ends: "Aug 24" alone
+        // would read as a local calendar day it is not.
+        const span = (bucketSize >= 86400000)
+            ? `${timeStr} &rarr; ${this.formatDateLabel(time + bucketSize)}`
+            : timeStr;
+        const zone = TZ.isUTC() ? 'UTC' : TZ.abbrev(time);
+        tooltip.innerHTML = `<strong>${count.toLocaleString()}</strong> events &middot; ${span} <span class="timeline-tooltip-zone">${zone}</span>`;
 
         // Measure before placing so the tooltip can be flipped rather than clipped.
         // Hidden (not undisplayed) to keep the box measurable without a flash at the
@@ -585,12 +618,10 @@ const Timeline = {
         const alertCustomTimeInputs = document.getElementById('alertCustomTimeInputs');
 
         if (alertTimeRange && alertCustomStart && alertCustomEnd && alertCustomTimeInputs) {
-            const pad = n => String(n).padStart(2, '0');
-            const fmt = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
             alertTimeRange.value = 'custom';
             alertCustomTimeInputs.style.display = 'flex';
-            alertCustomStart.value = fmt(startTime);
-            alertCustomEnd.value   = fmt(endTime);
+            alertCustomStart.value = TZ.formatInput(startTime);
+            alertCustomEnd.value   = TZ.formatInput(endTime);
         }
     }
 };

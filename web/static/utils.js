@@ -9,14 +9,18 @@ const Utils = {
         return `${year}-${month}-${day} ${hours}:${minutes}`;
     },
 
-    formatTimestamp(ts) {
+    // Absolute timestamp in the user's display zone. A bare ClickHouse string
+    // carries no zone and is UTC; TZ.toEpoch knows that, the native Date parser
+    // does not.
+    formatTimestamp(ts, style) {
         if (!ts) return '-';
-        try {
-            const date = new Date(ts);
-            return date.toISOString().replace('T', ' ').substring(0, 19);
-        } catch (e) {
-            return String(ts);
-        }
+        return TZ.format(ts, style || 'datetime') || '-';
+    },
+
+    // Hover text for a rendered timestamp: the zone it is shown in, plus the
+    // UTC value when they differ.
+    timestampTitle(ts) {
+        return ts ? TZ.title(ts) : '';
     },
 
     // Compact relative age: "just now", "45s ago", "3m ago", "2d ago".
@@ -24,9 +28,7 @@ const Utils = {
     // missing or unparseable value so callers choose their own fallback.
     timeAgo(when) {
         if (when === null || when === undefined || when === '') return '';
-        const t = when instanceof Date ? when.getTime()
-            : typeof when === 'number' ? when
-            : new Date(when).getTime();
+        const t = TZ.toEpoch(when);
         if (!Number.isFinite(t)) return '';
 
         const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
@@ -40,8 +42,7 @@ const Utils = {
     },
 
     getCurrentUTC() {
-        const now = new Date();
-        return now.toISOString().substring(11, 19);
+        return TZ.format(Date.now(), 'time');
     },
 
     respondJSON(w, status, data) {

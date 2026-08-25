@@ -291,7 +291,7 @@ const FractalListing = {
         } else if (diffDays < 7) {
             return `${diffDays}d ago`;
         } else {
-            return eventDate.toLocaleDateString();
+            return TZ.format(eventDate, 'date');
         }
     },
 

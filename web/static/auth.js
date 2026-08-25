@@ -156,6 +156,11 @@ const Auth = {
                         return;
                     }
                     this.currentUser = data.user;
+                    // Postgres is the source of truth for the display zone; the
+                    // localStorage mirror only prevents a flash of UTC before
+                    // this lands. Adopting fires the change event, so anything
+                    // already rendered re-renders in the right zone.
+                    if (window.TZ) TZ.adopt(data.user.display_timezone);
                     this.showLoggedInUI();
                     return;
                 }
@@ -201,6 +206,10 @@ const Auth = {
                             <svg id="sqlToggleIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                             <span id="sqlToggleLabel">${sqlLabel}</span>
                         </button>
+                        <button class="user-menu-item" onclick="Auth.toggleMenu(); TimeBar.openPicker();">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            <span>Timezone<span class="user-menu-hint" id="tzMenuHint"></span></span>
+                        </button>
                         <button class="user-menu-item" onclick="Auth.showChangePassword()">
                             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                             <span>Change Password</span>
@@ -214,6 +223,7 @@ const Auth = {
                 </div>
             `;
             ThemeManager.updateIcon();
+            this.updateTimezoneHint();
         }
 
         if (window.App) {
@@ -296,6 +306,11 @@ const Auth = {
         if (menu) {
             menu.classList.toggle('open');
         }
+    },
+
+    updateTimezoneHint() {
+        const hint = document.getElementById('tzMenuHint');
+        if (hint && window.TZ) hint.textContent = TZ.abbrev();
     },
 
     updateThemeLabel() {
