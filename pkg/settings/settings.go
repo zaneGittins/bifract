@@ -432,14 +432,6 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Admin only - settings may contain sensitive configuration
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		respondJSON(w, http.StatusForbidden, SettingsResponse{
-			Success: false,
-			Error:   "Admin access required",
-		})
-		return
-	}
 
 	respondJSON(w, http.StatusOK, SettingsResponse{
 		Success:      true,
@@ -455,14 +447,6 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only admins can update settings
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		respondJSON(w, http.StatusForbidden, SettingsResponse{
-			Success: false,
-			Error:   "Only administrators can update settings",
-		})
-		return
-	}
 
 	// Decode onto the current settings, not a zero value, so a partial POST (the
 	// UI autosaves one control at a time) only changes the keys it sends and

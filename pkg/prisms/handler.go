@@ -111,10 +111,6 @@ type PrismRequest struct {
 
 func (h *Handler) HandleCreatePrism(w http.ResponseWriter, r *http.Request) {
 	user := getCurrentUser(r)
-	if user == nil || !user.IsAdmin {
-		respondError(w, http.StatusForbidden, "only administrators can create prisms")
-		return
-	}
 
 	var req PrismRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -179,12 +175,6 @@ func (h *Handler) HandleUpdatePrism(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleDeletePrism(w http.ResponseWriter, r *http.Request) {
-	user := getCurrentUser(r)
-	if user == nil || !user.IsAdmin {
-		respondError(w, http.StatusForbidden, "only administrators can delete prisms")
-		return
-	}
-
 	id := chi.URLParam(r, "id")
 	if err := h.manager.DeletePrism(r.Context(), id); err != nil {
 		log.Printf("[Prisms] Failed to delete prism %s: %v", id, err)

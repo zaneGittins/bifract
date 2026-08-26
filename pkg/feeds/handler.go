@@ -47,19 +47,6 @@ func (h *Handler) getCurrentUser(r *http.Request) *storage.User {
 	return nil
 }
 
-func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) *storage.User {
-	user := h.getCurrentUser(r)
-	if user == nil {
-		h.respond(w, http.StatusUnauthorized, nil, "authentication required")
-		return nil
-	}
-	if !user.IsAdmin {
-		h.respond(w, http.StatusForbidden, nil, "admin access required")
-		return nil
-	}
-	return user
-}
-
 // getFeedScoped fetches a feed by ID and verifies it belongs to the caller's
 // current scope (fractal or prism). Returns nil and writes an error response
 // if the feed is not found or not in scope.
@@ -121,10 +108,7 @@ func (h *Handler) HandleGetFeed(w http.ResponseWriter, r *http.Request) {
 
 // HandleCreateFeed creates a new feed (admin only).
 func (h *Handler) HandleCreateFeed(w http.ResponseWriter, r *http.Request) {
-	user := h.requireAdmin(w, r)
-	if user == nil {
-		return
-	}
+	user := h.getCurrentUser(r)
 
 	fractalID, prismID := h.getScope(r)
 	if fractalID == "" && prismID == "" {
@@ -149,10 +133,6 @@ func (h *Handler) HandleCreateFeed(w http.ResponseWriter, r *http.Request) {
 
 // HandleUpdateFeed updates an existing feed (admin only).
 func (h *Handler) HandleUpdateFeed(w http.ResponseWriter, r *http.Request) {
-	user := h.requireAdmin(w, r)
-	if user == nil {
-		return
-	}
 
 	id := chi.URLParam(r, "id")
 	if h.getFeedScoped(w, r, id) == nil {
@@ -175,10 +155,6 @@ func (h *Handler) HandleUpdateFeed(w http.ResponseWriter, r *http.Request) {
 
 // HandleDeleteFeed deletes a feed and all its alerts (admin only).
 func (h *Handler) HandleDeleteFeed(w http.ResponseWriter, r *http.Request) {
-	user := h.requireAdmin(w, r)
-	if user == nil {
-		return
-	}
 
 	id := chi.URLParam(r, "id")
 	if h.getFeedScoped(w, r, id) == nil {
@@ -194,10 +170,6 @@ func (h *Handler) HandleDeleteFeed(w http.ResponseWriter, r *http.Request) {
 
 // HandleSyncFeed triggers an immediate sync (admin only).
 func (h *Handler) HandleSyncFeed(w http.ResponseWriter, r *http.Request) {
-	user := h.requireAdmin(w, r)
-	if user == nil {
-		return
-	}
 
 	id := chi.URLParam(r, "id")
 	feed := h.getFeedScoped(w, r, id)
@@ -237,10 +209,7 @@ func (h *Handler) HandleGetFeedAlerts(w http.ResponseWriter, r *http.Request) {
 
 // HandleEnableAllAlerts enables all alerts for a feed (admin only).
 func (h *Handler) HandleEnableAllAlerts(w http.ResponseWriter, r *http.Request) {
-	user := h.requireAdmin(w, r)
-	if user == nil {
-		return
-	}
+	user := h.getCurrentUser(r)
 
 	id := chi.URLParam(r, "id")
 	if h.getFeedScoped(w, r, id) == nil {
@@ -256,10 +225,7 @@ func (h *Handler) HandleEnableAllAlerts(w http.ResponseWriter, r *http.Request) 
 
 // HandleDisableAllAlerts disables all alerts for a feed (admin only).
 func (h *Handler) HandleDisableAllAlerts(w http.ResponseWriter, r *http.Request) {
-	user := h.requireAdmin(w, r)
-	if user == nil {
-		return
-	}
+	user := h.getCurrentUser(r)
 
 	id := chi.URLParam(r, "id")
 	if h.getFeedScoped(w, r, id) == nil {

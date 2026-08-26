@@ -111,14 +111,6 @@ func (h *StatusHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Admin only: exposes system-level ClickHouse statistics
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		respondJSON(w, http.StatusForbidden, StatusResponse{
-			Success: false,
-			Error:   "Admin access required",
-		})
-		return
-	}
 
 	// Serve from cache if fresh
 	h.cacheMu.RLock()
@@ -270,14 +262,6 @@ func (h *StatusHandler) HandleClearLogs(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Only admins can clear logs
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{
-			"success": false,
-			"error":   "Only administrators can clear logs",
-		})
-		return
-	}
 
 	// Check for fractal_id query parameter for per-fractal log clearing
 	fractalID := r.URL.Query().Get("fractal_id")

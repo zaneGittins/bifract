@@ -33,9 +33,6 @@ func (h *Handler) HandleListEnabled(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	links, err := h.manager.List(r.Context())
 	if err != nil {
 		log.Printf("[ContextLinks] Failed to list context links: %v", err)
@@ -46,9 +43,6 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	cl, err := h.manager.Get(r.Context(), id)
 	if err != nil {
@@ -59,9 +53,6 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	username := h.getCurrentUser(r)
 
 	var req CreateRequest
@@ -92,9 +83,6 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := chi.URLParam(r, "id")
 
 	var req UpdateRequest
@@ -121,9 +109,6 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	if err := h.manager.Delete(r.Context(), id); err != nil {
 		log.Printf("[ContextLinks] Failed to delete context link %s: %v", id, err)
@@ -131,15 +116,6 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.respondSuccess(w, map[string]string{"message": "Context link deleted"})
-}
-
-func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Admin access required")
-		return false
-	}
-	return true
 }
 
 func (h *Handler) getCurrentUser(r *http.Request) string {

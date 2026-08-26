@@ -166,10 +166,6 @@ func (d routerDeps) handlePressure(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d routerDeps) handleArchiveStatus(w http.ResponseWriter, r *http.Request) {
-	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
 	enabled := false
 	if v, _ := d.pg.GetSetting(r.Context(), "archive_enabled"); v == "true" {
 		enabled = true
@@ -320,10 +316,6 @@ type enabledRequest struct {
 }
 
 func (d routerDeps) handleSetArchiveEnabled(w http.ResponseWriter, r *http.Request) {
-	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
 	// Guardrail: archiving can only be enabled when the spool machinery
 	// is provisioned (dormant-but-present after --upgrade). In a split
 	// deployment the spool lives in the ingest tier, so also accept its
@@ -352,11 +344,7 @@ func (d routerDeps) handleSetArchiveEnabled(w http.ResponseWriter, r *http.Reque
 }
 
 func (d routerDeps) handleRunArchiveMaintain(w http.ResponseWriter, r *http.Request) {
-	u, ok := r.Context().Value("user").(*storage.User)
-	if !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
+	u, _ := r.Context().Value("user").(*storage.User)
 	// Same provisioning guard as enabling: until the archive machinery is
 	// provisioned (--upgrade) there is no maintainer to service the request.
 	if !d.ingestQueue.SpoolProvisioned() && !d.pg.ReadSpoolStatus(r.Context()).Provisioned {
@@ -379,10 +367,6 @@ func (d routerDeps) handleRunArchiveMaintain(w http.ResponseWriter, r *http.Requ
 }
 
 func (d routerDeps) handleClearArchiveCatalog(w http.ResponseWriter, r *http.Request) {
-	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
 	// Require archiving disabled so the archiver is not concurrently
 	// recreating tables/namespaces mid-clear (races a clean reset to zero).
 	if v, _ := d.pg.GetSetting(r.Context(), archiveEnabledSetting); v == "true" {
@@ -423,11 +407,7 @@ func (d routerDeps) handleClearArchiveCatalog(w http.ResponseWriter, r *http.Req
 }
 
 func (d routerDeps) handleClearArchiveSpool(w http.ResponseWriter, r *http.Request) {
-	u, ok := r.Context().Value("user").(*storage.User)
-	if !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
+	u, _ := r.Context().Value("user").(*storage.User)
 	// Require archiving disabled: the reset runs on the ingest (Writer)
 	// side only while the tee is not spooling, so a clear while enabled
 	// would race live writes.
@@ -449,10 +429,6 @@ func (d routerDeps) handleClearArchiveSpool(w http.ResponseWriter, r *http.Reque
 }
 
 func (d routerDeps) handleDistributionQueueShards(w http.ResponseWriter, r *http.Request) {
-	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
 	stats, err := d.dbIngest.DistributionQueueByShard(r.Context())
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to query distribution queue")
@@ -468,11 +444,7 @@ type resetDistributionQueueRequest struct {
 }
 
 func (d routerDeps) handleResetDistributionQueue(w http.ResponseWriter, r *http.Request) {
-	u, ok := r.Context().Value("user").(*storage.User)
-	if !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
+	u, _ := r.Context().Value("user").(*storage.User)
 	var body resetDistributionQueueRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "Invalid JSON")
@@ -492,10 +464,6 @@ func (d routerDeps) handleResetDistributionQueue(w http.ResponseWriter, r *http.
 }
 
 func (d routerDeps) handleGetEndpointAnalysis(w http.ResponseWriter, r *http.Request) {
-	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
 	enabled := false
 	if v, _ := d.pg.GetSetting(r.Context(), storage.AdvancedEndpointAnalysisSetting); v == "true" {
 		enabled = true
@@ -505,10 +473,6 @@ func (d routerDeps) handleGetEndpointAnalysis(w http.ResponseWriter, r *http.Req
 }
 
 func (d routerDeps) handleSetEndpointAnalysis(w http.ResponseWriter, r *http.Request) {
-	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
 	var body enabledRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "Invalid JSON")
@@ -543,10 +507,6 @@ func (d routerDeps) handleGetSharedLinksEnabled(w http.ResponseWriter, r *http.R
 }
 
 func (d routerDeps) handleSetSharedLinksEnabled(w http.ResponseWriter, r *http.Request) {
-	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
 	var body enabledRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "Invalid JSON")
@@ -584,11 +544,7 @@ type createRestoreRequest struct {
 }
 
 func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) {
-	u, ok := r.Context().Value("user").(*storage.User)
-	if !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
+	u, _ := r.Context().Value("user").(*storage.User)
 	var body createRestoreRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "Invalid JSON")
@@ -717,10 +673,6 @@ func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) 
 }
 
 func (d routerDeps) handleListRestores(w http.ResponseWriter, r *http.Request) {
-	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
 	// Pagination + optional status filter.
 	q := r.URL.Query()
 	limit, offset := api.PageParams(r, 20, 100)
@@ -800,10 +752,6 @@ func (d routerDeps) handleListRestores(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d routerDeps) handleCancelRestore(w http.ResponseWriter, r *http.Request) {
-	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
 	id := chi.URLParam(r, "id")
 	res, err := d.pg.Exec(r.Context(),
 		`UPDATE archive_restore_jobs SET status = 'canceled', finished_at = NOW(), updated_at = NOW()
@@ -821,10 +769,6 @@ func (d routerDeps) handleCancelRestore(w http.ResponseWriter, r *http.Request) 
 }
 
 func (d routerDeps) handleResumeRestore(w http.ResponseWriter, r *http.Request) {
-	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
 	id := chi.URLParam(r, "id")
 	res, err := d.pg.Exec(r.Context(),
 		`UPDATE archive_restore_jobs

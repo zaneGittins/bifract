@@ -48,9 +48,6 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	n, err := h.manager.Get(r.Context(), id)
 	if err != nil {
@@ -61,9 +58,6 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	username := h.getCurrentUser(r)
 
 	var req CreateRequest
@@ -82,9 +76,6 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := chi.URLParam(r, "id")
 
 	var req UpdateRequest
@@ -103,9 +94,6 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	if err := h.manager.Delete(r.Context(), id); err != nil {
 		log.Printf("[Normalizers] Failed to delete normalizer %s: %v", id, err)
@@ -116,9 +104,6 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleSetDefault(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	if err := h.manager.SetDefault(r.Context(), id); err != nil {
 		log.Printf("[Normalizers] Failed to set default normalizer %s: %v", id, err)
@@ -145,9 +130,6 @@ type PreviewRequest struct {
 // as ingestion (see Normalizer.Trace), so what the editor shows is what the
 // ingest path will do. No DB interaction needed.
 func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	var req PreviewRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid JSON")
@@ -190,9 +172,6 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 // ingest partitions for the fractal, ordered by its own (timestamp, log_id) sort
 // key so the read is in-order rather than a sort.
 func (h *Handler) HandleSamples(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	if h.ch == nil {
 		h.respondError(w, http.StatusServiceUnavailable, "Log storage unavailable")
 		return
@@ -298,9 +277,6 @@ func (h *Handler) collectSamples(ctx context.Context, table, tsColumn, extraWher
 
 // HandleTokenUsage returns tokens using a given normalizer, with fractal names.
 func (h *Handler) HandleTokenUsage(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	tokens, err := h.manager.GetTokenUsage(r.Context(), id)
 	if err != nil {
@@ -313,9 +289,6 @@ func (h *Handler) HandleTokenUsage(w http.ResponseWriter, r *http.Request) {
 
 // HandleDuplicate creates a copy of an existing normalizer with a new name.
 func (h *Handler) HandleDuplicate(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	username := h.getCurrentUser(r)
 
@@ -330,9 +303,6 @@ func (h *Handler) HandleDuplicate(w http.ResponseWriter, r *http.Request) {
 
 // HandleExportYAML exports a normalizer as YAML.
 func (h *Handler) HandleExportYAML(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	n, err := h.manager.Get(r.Context(), id)
 	if err != nil {
@@ -362,9 +332,6 @@ func (h *Handler) HandleExportYAML(w http.ResponseWriter, r *http.Request) {
 
 // HandleImportYAML imports a normalizer from YAML.
 func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	username := h.getCurrentUser(r)
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
@@ -411,15 +378,6 @@ func sanitizeFilename(s string) string {
 		return '_'
 	}, s)
 	return s
-}
-
-func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Admin access required")
-		return false
-	}
-	return true
 }
 
 func (h *Handler) getCurrentUser(r *http.Request) string {

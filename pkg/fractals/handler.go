@@ -127,10 +127,6 @@ func (h *Handler) HandleListFractals(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) HandleCreateFractal(w http.ResponseWriter, r *http.Request) {
 	// Check if user is admin
 	user := h.getCurrentUser(r)
-	if user == nil || !user.IsAdmin {
-		h.sendError(w, http.StatusForbidden, "Only administrators can create fractals")
-		return
-	}
 
 	var req CreateFractalRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -218,12 +214,6 @@ func (h *Handler) HandleUpdateFractal(w http.ResponseWriter, r *http.Request) {
 // HandleDeleteFractal deletes an index (admin only)
 func (h *Handler) HandleDeleteFractal(w http.ResponseWriter, r *http.Request) {
 	// Check if user is admin
-	user := h.getCurrentUser(r)
-	if user == nil || !user.IsAdmin {
-		h.sendError(w, http.StatusForbidden, "Only administrators can delete fractals")
-		return
-	}
-
 	fractalID := chi.URLParam(r, "id")
 	if fractalID == "" {
 		h.sendError(w, http.StatusBadRequest, "Fractal ID is required")
@@ -429,12 +419,6 @@ func (h *Handler) HandleSetDiskQuota(w http.ResponseWriter, r *http.Request) {
 // HandleRefreshStats refreshes statistics for all fractals
 func (h *Handler) HandleRefreshStats(w http.ResponseWriter, r *http.Request) {
 	// Check if user is admin
-	user := h.getCurrentUser(r)
-	if user == nil || !user.IsAdmin {
-		h.sendError(w, http.StatusForbidden, "Only administrators can refresh index statistics")
-		return
-	}
-
 	if err := h.manager.RefreshFractalStats(r.Context()); err != nil {
 		log.Printf("[Fractals] Failed to refresh stats: %v", err)
 		h.sendError(w, http.StatusInternalServerError, "Failed to refresh statistics")

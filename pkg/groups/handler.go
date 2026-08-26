@@ -28,26 +28,12 @@ func (h *Handler) getCurrentUser(r *http.Request) *storage.User {
 	return nil
 }
 
-func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) *storage.User {
-	user := h.getCurrentUser(r)
-	if user == nil || !user.IsAdmin {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(apiResponse{Error: "Only administrators can manage groups"})
-		return nil
-	}
-	return user
-}
-
 func (h *Handler) sendJSON(w http.ResponseWriter, status int, resp apiResponse) {
 	api.WriteJSON(w, status, resp)
 }
 
 // HandleListGroups lists all groups (tenant admin only).
 func (h *Handler) HandleListGroups(w http.ResponseWriter, r *http.Request) {
-	if h.requireAdmin(w, r) == nil {
-		return
-	}
 	groups, err := h.pg.ListGroups(r.Context())
 	if err != nil {
 		h.sendJSON(w, http.StatusInternalServerError, apiResponse{Error: "Failed to list groups"})
@@ -67,10 +53,7 @@ type GroupRequest struct {
 
 // HandleCreateGroup creates a new group (tenant admin only).
 func (h *Handler) HandleCreateGroup(w http.ResponseWriter, r *http.Request) {
-	user := h.requireAdmin(w, r)
-	if user == nil {
-		return
-	}
+	user := h.getCurrentUser(r)
 
 	var req GroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -92,9 +75,6 @@ func (h *Handler) HandleCreateGroup(w http.ResponseWriter, r *http.Request) {
 
 // HandleGetGroup retrieves a single group (tenant admin only).
 func (h *Handler) HandleGetGroup(w http.ResponseWriter, r *http.Request) {
-	if h.requireAdmin(w, r) == nil {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	group, err := h.pg.GetGroup(r.Context(), id)
 	if err != nil {
@@ -106,9 +86,6 @@ func (h *Handler) HandleGetGroup(w http.ResponseWriter, r *http.Request) {
 
 // HandleUpdateGroup updates a group (tenant admin only).
 func (h *Handler) HandleUpdateGroup(w http.ResponseWriter, r *http.Request) {
-	if h.requireAdmin(w, r) == nil {
-		return
-	}
 	id := chi.URLParam(r, "id")
 
 	var req GroupRequest
@@ -131,9 +108,6 @@ func (h *Handler) HandleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 
 // HandleDeleteGroup deletes a group (tenant admin only).
 func (h *Handler) HandleDeleteGroup(w http.ResponseWriter, r *http.Request) {
-	if h.requireAdmin(w, r) == nil {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	if err := h.pg.DeleteGroup(r.Context(), id); err != nil {
 		h.sendJSON(w, http.StatusBadRequest, apiResponse{Error: "Failed to delete group"})
@@ -144,9 +118,6 @@ func (h *Handler) HandleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 
 // HandleListMembers lists members of a group (tenant admin only).
 func (h *Handler) HandleListMembers(w http.ResponseWriter, r *http.Request) {
-	if h.requireAdmin(w, r) == nil {
-		return
-	}
 	id := chi.URLParam(r, "id")
 	members, err := h.pg.ListGroupMembers(r.Context(), id)
 	if err != nil {
@@ -166,10 +137,7 @@ type AddMemberRequest struct {
 
 // HandleAddMember adds a user to a group (tenant admin only).
 func (h *Handler) HandleAddMember(w http.ResponseWriter, r *http.Request) {
-	user := h.requireAdmin(w, r)
-	if user == nil {
-		return
-	}
+	user := h.getCurrentUser(r)
 	groupID := chi.URLParam(r, "id")
 
 	var req AddMemberRequest
@@ -197,9 +165,6 @@ func (h *Handler) HandleAddMember(w http.ResponseWriter, r *http.Request) {
 
 // HandleRemoveMember removes a user from a group (tenant admin only).
 func (h *Handler) HandleRemoveMember(w http.ResponseWriter, r *http.Request) {
-	if h.requireAdmin(w, r) == nil {
-		return
-	}
 	groupID := chi.URLParam(r, "id")
 	username := chi.URLParam(r, "username")
 

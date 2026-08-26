@@ -54,9 +54,6 @@ type FieldCatalog struct {
 
 // HandleList returns project defaults and user-defined custom fields.
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	custom, err := h.manager.List(r.Context())
 	if err != nil {
 		log.Printf("[SchemaFields] list: %v", err)
@@ -100,9 +97,6 @@ func (h *Handler) HandleCatalog(w http.ResponseWriter, r *http.Request) {
 
 // HandleCreate adds a custom field, syncs ClickHouse schema, and notifies the parser.
 func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	var req CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid JSON")
@@ -135,9 +129,6 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 // suggestions in one payload so the schema tab renders from a single request.
 // It reads only the tables the background sweep writes.
 func (h *Handler) HandleInsights(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	ins, err := h.BuildInsights(r.Context())
 	if err != nil {
 		log.Printf("[SchemaFields] insights: %v", err)
@@ -151,9 +142,6 @@ func (h *Handler) HandleInsights(w http.ResponseWriter, r *http.Request) {
 // immediately: the sweep takes as long as it takes, and the page picks up the
 // result on its next load rather than holding a request open for it.
 func (h *Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	if h.sweeper == nil {
 		h.respondError(w, http.StatusServiceUnavailable, "Schema measurement is not running")
 		return
@@ -164,9 +152,6 @@ func (h *Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 
 // HandleIgnore dismisses a suggested field.
 func (h *Handler) HandleIgnore(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	name := chi.URLParam(r, "name")
 	if err := h.manager.Ignore(r.Context(), name, h.getCurrentUser(r)); err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
@@ -177,9 +162,6 @@ func (h *Handler) HandleIgnore(w http.ResponseWriter, r *http.Request) {
 
 // HandleUnignore restores a dismissed field to the suggestions list.
 func (h *Handler) HandleUnignore(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	name := chi.URLParam(r, "name")
 	if err := h.manager.Unignore(r.Context(), name); err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
@@ -256,9 +238,6 @@ func (h *Handler) markFields(ctx context.Context, fieldNames []string, status, e
 
 // HandleDelete removes a custom field from Postgres (soft: ClickHouse schema unchanged until reset).
 func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	name := chi.URLParam(r, "name")
 	if err := h.manager.Delete(r.Context(), name); err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
@@ -286,9 +265,6 @@ type ResetRequest struct {
 // HandleReset truncates all log data, rebuilds ClickHouse schema from current config,
 // and reloads the parser type-hint map.
 func (h *Handler) HandleReset(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	var body ResetRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Confirm != "DELETE ALL LOG DATA" {
 		h.respondError(w, http.StatusBadRequest, `confirmation required: {"confirm": "DELETE ALL LOG DATA"}`)
@@ -334,9 +310,6 @@ func (h *Handler) HandleReset(w http.ResponseWriter, r *http.Request) {
 // HandleExportYAML returns the custom schema fields as a YAML document.
 // Project defaults are built into the binary and are intentionally excluded.
 func (h *Handler) HandleExportYAML(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	custom, err := h.manager.List(r.Context())
 	if err != nil {
 		log.Printf("[SchemaFields] export list: %v", err)
@@ -364,9 +337,6 @@ func (h *Handler) HandleExportYAML(w http.ResponseWriter, r *http.Request) {
 // uploaded YAML (replace semantics: fields absent from the file are removed).
 // The full set is then reconciled into ClickHouse in the background.
 func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, "Failed to read request body")
@@ -408,15 +378,6 @@ func (h *Handler) notifyFieldChange(custom []SchemaField) {
 		m[f.FieldName] = true
 	}
 	h.onFieldChange(m)
-}
-
-func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Admin access required")
-		return false
-	}
-	return true
 }
 
 func (h *Handler) getCurrentUser(r *http.Request) string {

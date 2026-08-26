@@ -512,11 +512,6 @@ func (h *Handler) HandleGetExecutions(w http.ResponseWriter, r *http.Request) {
 
 // HandleListWebhooks retrieves webhook actions in the current fractal/prism scope
 func (h *Handler) HandleListWebhooks(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	ctx := r.Context()
 
@@ -541,11 +536,6 @@ func (h *Handler) HandleListWebhooks(w http.ResponseWriter, r *http.Request) {
 
 // HandleCreateWebhook creates a new webhook action
 func (h *Handler) HandleCreateWebhook(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	ctx := r.Context()
 
@@ -588,11 +578,6 @@ func (h *Handler) HandleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 
 // HandleGetWebhook retrieves a specific webhook action by ID
 func (h *Handler) HandleGetWebhook(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	ctx := r.Context()
 	webhookID := chi.URLParam(r, "id")
@@ -622,11 +607,6 @@ func (h *Handler) HandleGetWebhook(w http.ResponseWriter, r *http.Request) {
 
 // HandleUpdateWebhook updates an existing webhook action
 func (h *Handler) HandleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	ctx := r.Context()
 	webhookID := chi.URLParam(r, "id")
@@ -667,11 +647,6 @@ func (h *Handler) HandleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 
 // HandleDeleteWebhook removes a webhook action
 func (h *Handler) HandleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	ctx := r.Context()
 	webhookID := chi.URLParam(r, "id")
@@ -707,11 +682,6 @@ func (h *Handler) HandleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 
 // HandleTestWebhook sends a test payload to a webhook
 func (h *Handler) HandleTestWebhook(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	ctx := r.Context()
 	webhookID := chi.URLParam(r, "id")
@@ -750,11 +720,6 @@ func (h *Handler) HandleTestWebhook(w http.ResponseWriter, r *http.Request) {
 
 // HandleListFractalActions retrieves fractal actions in the current fractal/prism scope
 func (h *Handler) HandleListFractalActions(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	ctx := r.Context()
 
@@ -779,11 +744,6 @@ func (h *Handler) HandleListFractalActions(w http.ResponseWriter, r *http.Reques
 
 // HandleCreateFractalAction creates a new fractal action
 func (h *Handler) HandleCreateFractalAction(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	ctx := r.Context()
 
@@ -826,11 +786,6 @@ func (h *Handler) HandleCreateFractalAction(w http.ResponseWriter, r *http.Reque
 
 // HandleGetFractalAction retrieves a specific fractal action by ID
 func (h *Handler) HandleGetFractalAction(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	ctx := r.Context()
 	fractalActionID := chi.URLParam(r, "id")
@@ -860,11 +815,6 @@ func (h *Handler) HandleGetFractalAction(w http.ResponseWriter, r *http.Request)
 
 // HandleUpdateFractalAction updates an existing fractal action
 func (h *Handler) HandleUpdateFractalAction(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	ctx := r.Context()
 	fractalActionID := chi.URLParam(r, "id")
@@ -905,11 +855,6 @@ func (h *Handler) HandleUpdateFractalAction(w http.ResponseWriter, r *http.Reque
 
 // HandleDeleteFractalAction removes a fractal action
 func (h *Handler) HandleDeleteFractalAction(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	ctx := r.Context()
 	fractalActionID := chi.URLParam(r, "id")
@@ -1302,11 +1247,6 @@ func (h *Handler) HandleToggleFeedAlert(w http.ResponseWriter, r *http.Request) 
 // ============================
 
 func (h *Handler) HandleListEmailActions(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	fractalID, prismID, err := h.getScope(r)
 	if err != nil {
@@ -1326,11 +1266,6 @@ func (h *Handler) HandleListEmailActions(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) HandleCreateEmailAction(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	var req EmailActionCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1360,11 +1295,6 @@ func (h *Handler) HandleCreateEmailAction(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) HandleGetEmailAction(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	id := chi.URLParam(r, "id")
 	action, err := h.manager.GetEmailAction(r.Context(), id)
@@ -1385,11 +1315,6 @@ func (h *Handler) HandleGetEmailAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleUpdateEmailAction(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	id := chi.URLParam(r, "id")
 	existing, err := h.manager.GetEmailAction(r.Context(), id)
@@ -1424,11 +1349,6 @@ func (h *Handler) HandleUpdateEmailAction(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) HandleDeleteEmailAction(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	id := chi.URLParam(r, "id")
 	existing, err := h.manager.GetEmailAction(r.Context(), id)
@@ -1461,11 +1381,6 @@ type ActionTestResult struct {
 }
 
 func (h *Handler) HandleTestEmailAction(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	id := chi.URLParam(r, "id")
 	ctx := r.Context()
@@ -1501,11 +1416,6 @@ func (h *Handler) HandleTestEmailAction(w http.ResponseWriter, r *http.Request) 
 // ============================
 
 func (h *Handler) HandleGetSMTPSettings(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	raw, err := h.manager.pg.GetSetting(r.Context(), "smtp_config")
 	if err != nil {
@@ -1529,11 +1439,6 @@ func (h *Handler) HandleGetSMTPSettings(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) HandleUpdateSMTPSettings(w http.ResponseWriter, r *http.Request) {
-	user := h.getUserObj(r)
-	if user == nil || !user.IsAdmin {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
 
 	var config SMTPConfig
 	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {

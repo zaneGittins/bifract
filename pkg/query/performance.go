@@ -316,14 +316,6 @@ func (h *PerformanceHandler) StopCollector() {
 
 // HandleProcesses returns currently running queries from system.processes
 func (h *PerformanceHandler) HandleProcesses(w http.ResponseWriter, r *http.Request) {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{
-			"success": false,
-			"error":   "Admin access required",
-		})
-		return
-	}
 
 	// Cluster: system.processes is per node, so a query started through the load
 	// balancer is invisible from any other node. Read every replica and label the
@@ -365,14 +357,6 @@ func (h *PerformanceHandler) HandleProcesses(w http.ResponseWriter, r *http.Requ
 
 // HandleKillQuery kills a running query by query_id
 func (h *PerformanceHandler) HandleKillQuery(w http.ResponseWriter, r *http.Request) {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{
-			"success": false,
-			"error":   "Admin access required",
-		})
-		return
-	}
 
 	queryID := r.URL.Query().Get("query_id")
 	if queryID == "" {
@@ -416,14 +400,6 @@ func (h *PerformanceHandler) HandleKillQuery(w http.ResponseWriter, r *http.Requ
 // HandleMetrics returns ClickHouse server metrics for performance monitoring.
 // Accepts optional ?range= param: 1h (default), 8h, 24h.
 func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{
-			"success": false,
-			"error":   "Admin access required",
-		})
-		return
-	}
 
 	// Parse time range. `since`/`bucketSec` drive the persisted CPU history read;
 	// `interval` bounds the live query_log scan (capped at 24h for long ranges).
@@ -618,14 +594,6 @@ func cpuPoints(points []storage.MetricPoint) []map[string]interface{} {
 // Optional params: ?fractal=<id> to scope to a single fractal, ?days=N to bound
 // the window (default 30, max 365).
 func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Request) {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{
-			"success": false,
-			"error":   "Admin access required",
-		})
-		return
-	}
 
 	fractalFilter := r.URL.Query().Get("fractal")
 	days := 30
@@ -809,14 +777,6 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 // HandleAlertStats returns alert engine evaluation stats derived from alert_executions.
 // Accepts optional ?range= param: 1h (default), 8h, 24h.
 func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Request) {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{
-			"success": false,
-			"error":   "Admin access required",
-		})
-		return
-	}
 
 	if h.pg == nil {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{

@@ -685,13 +685,6 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if user is admin
-	user := r.Context().Value("user").(*storage.User)
-	if !user.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Only administrators can register new users")
-		return
-	}
-
 	var req RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
@@ -813,12 +806,6 @@ func (h *AuthHandler) HandleAcceptInvite(w http.ResponseWriter, r *http.Request)
 func (h *AuthHandler) HandleResetInvite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-
-	user := r.Context().Value("user").(*storage.User)
-	if !user.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Only administrators can reset invites")
 		return
 	}
 
@@ -1016,10 +1003,6 @@ func (h *AuthHandler) HandleAdminResetPassword(w http.ResponseWriter, r *http.Re
 	}
 
 	admin := r.Context().Value("user").(*storage.User)
-	if !admin.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Only administrators can reset passwords")
-		return
-	}
 
 	var req AdminResetPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1318,13 +1301,6 @@ const (
 )
 
 func (h *AuthHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
-	// Check if user is admin
-	user := r.Context().Value("user").(*storage.User)
-	if !user.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Only administrators can list users")
-		return
-	}
-
 	users, err := h.pg.ListUsers(r.Context())
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to list users")
@@ -1365,10 +1341,6 @@ func (h *AuthHandler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 
 	// Check if user is admin
 	user := r.Context().Value("user").(*storage.User)
-	if !user.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Only administrators can delete users")
-		return
-	}
 
 	// Get username from URL path
 	username := r.URL.Query().Get("username")
@@ -1407,10 +1379,6 @@ type UpdateUserRequest struct {
 // HandleUpdateUser allows an admin to update a user's display name or role
 func (h *AuthHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(*storage.User)
-	if !user.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Only administrators can edit users")
-		return
-	}
 
 	rawUsername := chi.URLParam(r, "username")
 	if rawUsername == "" {
@@ -1459,10 +1427,6 @@ func (h *AuthHandler) HandleSetUserEnabled(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "application/json")
 
 	user := r.Context().Value("user").(*storage.User)
-	if !user.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Only administrators can enable or disable users")
-		return
-	}
 
 	rawUsername := chi.URLParam(r, "username")
 	if rawUsername == "" {
@@ -1609,12 +1573,6 @@ func (h *AuthHandler) validateAPIKey(ctx context.Context, apiKey string) (*Valid
 
 // HandleMTLSStatus returns whether mTLS client cert generation is available.
 func (h *AuthHandler) HandleMTLSStatus(w http.ResponseWriter, r *http.Request) {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
-
 	enabled := false
 	if h.clientCADir != "" {
 		caPath := filepath.Join(h.clientCADir, "ca.pem")
@@ -1637,12 +1595,6 @@ type GenerateClientCertRequest struct {
 // HandleGenerateClientCert generates a PKCS#12 client certificate for a user
 // and streams it as a download. Admin only.
 func (h *AuthHandler) HandleGenerateClientCert(w http.ResponseWriter, r *http.Request) {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil || !user.IsAdmin {
-		api.WriteError(w, http.StatusForbidden, "Admin access required")
-		return
-	}
-
 	rawUsername := chi.URLParam(r, "username")
 	if rawUsername == "" {
 		api.WriteError(w, http.StatusBadRequest, "Username is required")
