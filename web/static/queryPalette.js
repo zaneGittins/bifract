@@ -147,7 +147,7 @@ const QueryPalette = {
         try {
             const resp = await fetch(url, { credentials: 'include' });
             const data = await resp.json();
-            this.history = (data.success && data.data && data.data.history) ? data.data.history : [];
+            this.history = (data.success && data.data) || [];
             this.writeCache(this.history);
         } catch (err) {
             console.error('[QueryPalette] history load failed:', err);
@@ -161,7 +161,7 @@ const QueryPalette = {
         try {
             const resp = await fetch(url, { credentials: 'include' });
             const data = await resp.json();
-            this.saved = (data.success && data.data && data.data.saved_queries) ? data.data.saved_queries : [];
+            this.saved = (data.success && data.data) || [];
         } catch (err) {
             console.error('[QueryPalette] saved load failed:', err);
         }

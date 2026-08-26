@@ -10,6 +10,7 @@ import (
 	"bifract/pkg/api"
 	"bifract/pkg/apikeys"
 	"bifract/pkg/archive"
+	"bifract/pkg/attack"
 	"bifract/pkg/auth"
 	"bifract/pkg/chat"
 	"bifract/pkg/comments"
@@ -173,10 +174,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 		r.Group(func(r api.Router) {
 			r.Use(ingest.RateLimitMiddleware(d.rateLimiter))
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/ingest",
-				Summary: "Ingest a batch of logs, routed to the fractal the ingest token is scoped to.",
-				Handler: d.ingestHandler.HandleIngest,
+				Method:   http.MethodPost,
+				Path:     "/ingest",
+				Response: ingest.IngestResponse{},
+				Summary:  "Ingest a batch of logs, routed to the fractal the ingest token is scoped to.",
+				Handler:  d.ingestHandler.HandleIngest,
 			})
 		})
 
@@ -185,10 +187,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Use(ingest.InternalOnlyMiddleware)
 			r.Use(ingest.RateLimitMiddleware(d.rateLimiter))
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/internal/ingest/{fractal}",
-				Summary: "Ingest logs for a named fractal from inside the private network, without a token.",
-				Handler: d.internalIngestHandler.HandleInternalIngest,
+				Method:   http.MethodPost,
+				Path:     "/internal/ingest/{fractal}",
+				Response: ingest.IngestResponse{},
+				Summary:  "Ingest logs for a named fractal from inside the private network, without a token.",
+				Handler:  d.internalIngestHandler.HandleInternalIngest,
 			})
 		})
 
@@ -215,17 +218,19 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			Handler: d.authHandler.HandleLogin,
 		})
 		r.Register(api.Route{
-			Method:  http.MethodGet,
-			Path:    "/auth/invite/validate",
-			Summary: "Check whether an invite token is still valid.",
-			Handler: d.authHandler.HandleValidateInvite,
+			Method:   http.MethodGet,
+			Path:     "/auth/invite/validate",
+			Response: auth.Response{},
+			Summary:  "Check whether an invite token is still valid.",
+			Handler:  d.authHandler.HandleValidateInvite,
 		})
 		r.Register(api.Route{
-			Method:  http.MethodPost,
-			Path:    "/auth/invite/accept",
-			Request: auth.AcceptInviteRequest{},
-			Summary: "Set a password and activate an account from an invite token.",
-			Handler: d.authHandler.HandleAcceptInvite,
+			Method:   http.MethodPost,
+			Path:     "/auth/invite/accept",
+			Request:  auth.AcceptInviteRequest{},
+			Response: auth.Response{},
+			Summary:  "Set a password and activate an account from an invite token.",
+			Handler:  d.authHandler.HandleAcceptInvite,
 		})
 		r.Register(api.Route{
 			Method:  http.MethodGet,
@@ -284,16 +289,18 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Query and status
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/query",
-				Summary: "Run a BQL query and return the full result set.",
-				Handler: d.queryHandler.HandleQuery,
+				Method:   http.MethodPost,
+				Path:     "/query",
+				Response: query.QueryResponse{},
+				Summary:  "Run a BQL query and return the full result set.",
+				Handler:  d.queryHandler.HandleQuery,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/query/stream",
-				Summary: "Run a BQL query and stream results as they arrive.",
-				Handler: d.queryHandler.HandleQueryStream,
+				Method:   http.MethodPost,
+				Path:     "/query/stream",
+				Response: query.QueryResponse{},
+				Summary:  "Run a BQL query and stream results as they arrive.",
+				Handler:  d.queryHandler.HandleQueryStream,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
@@ -302,11 +309,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.queryHandler.HandleFieldStats,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/query/validate",
-				Request: query.QueryRequest{},
-				Summary: "Parse and translate a BQL query without running it.",
-				Handler: d.queryHandler.HandleValidate,
+				Method:   http.MethodPost,
+				Path:     "/query/validate",
+				Request:  query.QueryRequest{},
+				Response: query.ValidateResponse{},
+				Summary:  "Parse and translate a BQL query without running it.",
+				Handler:  d.queryHandler.HandleValidate,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodGet,
@@ -315,10 +323,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.queryHandler.HandleReference,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/query/fields",
-				Summary: "List the field names available to queries.",
-				Handler: d.schemaFieldsHandler.HandleCatalog,
+				Method:   http.MethodGet,
+				Path:     "/query/fields",
+				Response: api.ListResponse[string]{},
+				Summary:  "List the field names available to queries.",
+				Handler:  d.schemaFieldsHandler.HandleCatalog,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodGet,
@@ -333,23 +342,26 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.queryHandler.HandleGetRecentHistogram,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/logs/by-timestamp",
-				Request: query.LogByTimestampRequest{},
-				Summary: "Fetch one log's full detail by timestamp and log id.",
-				Handler: d.queryHandler.HandleGetLogByTimestamp,
+				Method:   http.MethodPost,
+				Path:     "/logs/by-timestamp",
+				Request:  query.LogByTimestampRequest{},
+				Response: map[string]interface{}{},
+				Summary:  "Fetch one log's full detail by timestamp and log id.",
+				Handler:  d.queryHandler.HandleGetLogByTimestamp,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/logs/fields",
-				Summary: "List the field names present in the fractal's logs.",
-				Handler: d.queryHandler.HandleGetLogFields,
+				Method:   http.MethodGet,
+				Path:     "/logs/fields",
+				Response: map[string]interface{}{},
+				Summary:  "List the field names present in the fractal's logs.",
+				Handler:  d.queryHandler.HandleGetLogFields,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/status",
-				Summary: "Report backend connectivity and store status.",
-				Handler: d.statusHandler.HandleStatus,
+				Method:   http.MethodGet,
+				Path:     "/status",
+				Response: query.StatusResponse{},
+				Summary:  "Report backend connectivity and store status.",
+				Handler:  d.statusHandler.HandleStatus,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodGet,
@@ -376,16 +388,18 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Health notifications
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/notifications",
-				Summary: "List health notifications.",
-				Handler: d.notificationHandler.HandleList,
+				Method:   http.MethodGet,
+				Path:     "/notifications",
+				Response: api.Response[notifications.NotificationFeed]{},
+				Summary:  "List health notifications.",
+				Handler:  d.notificationHandler.HandleList,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/notifications/count",
-				Summary: "Return the caller's unread notification count.",
-				Handler: d.notificationHandler.HandleCount,
+				Method:   http.MethodGet,
+				Path:     "/notifications/count",
+				Response: api.Response[notifications.UnreadCount]{},
+				Summary:  "Return the caller's unread notification count.",
+				Handler:  d.notificationHandler.HandleCount,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
@@ -396,17 +410,19 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Settings
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/settings",
-				Summary: "Read the instance settings.",
-				Handler: d.settingsHandler.HandleGet,
+				Method:   http.MethodGet,
+				Path:     "/settings",
+				Response: settings.SettingsResponse{},
+				Summary:  "Read the instance settings.",
+				Handler:  d.settingsHandler.HandleGet,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/settings",
-				Request: settings.Settings{},
-				Summary: "Update the instance settings.",
-				Handler: d.settingsHandler.HandleUpdate,
+				Method:   http.MethodPost,
+				Path:     "/settings",
+				Request:  settings.Settings{},
+				Response: settings.SettingsResponse{},
+				Summary:  "Update the instance settings.",
+				Handler:  d.settingsHandler.HandleUpdate,
 			})
 
 			// Iceberg archive status + enable toggle (admin only).
@@ -538,10 +554,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// List recent restore jobs for the admin UI (newest first).
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/system/archive/restore",
-				Summary: "List restore jobs.",
-				Handler: d.handleListRestores,
+				Method:   http.MethodGet,
+				Path:     "/system/archive/restore",
+				Response: api.ListResponse[map[string]interface{}]{},
+				Summary:  "List restore jobs.",
+				Handler:  d.handleListRestores,
 			})
 
 			// Cancel a pending or running restore job. Moving the row out of
@@ -628,45 +645,51 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Auth
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/auth/logout",
-				Summary: "End the current session.",
-				Handler: d.authHandler.HandleLogout,
+				Method:   http.MethodPost,
+				Path:     "/auth/logout",
+				Response: auth.Response{},
+				Summary:  "End the current session.",
+				Handler:  d.authHandler.HandleLogout,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/auth/user",
-				Summary: "Describe the authenticated caller and its current scope.",
-				Handler: d.authHandler.HandleCurrentUser,
+				Method:   http.MethodGet,
+				Path:     "/auth/user",
+				Response: auth.Response{},
+				Summary:  "Describe the authenticated caller and its current scope.",
+				Handler:  d.authHandler.HandleCurrentUser,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/auth/change-password",
-				Request: auth.ChangePasswordRequest{},
-				Summary: "Change the caller's own password.",
-				Handler: d.authHandler.HandleChangePassword,
+				Method:   http.MethodPost,
+				Path:     "/auth/change-password",
+				Request:  auth.ChangePasswordRequest{},
+				Response: auth.Response{},
+				Summary:  "Change the caller's own password.",
+				Handler:  d.authHandler.HandleChangePassword,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPatch,
-				Path:    "/auth/preferences",
-				Request: auth.UpdatePreferencesRequest{},
-				Summary: "Update the caller's display preferences.",
-				Handler: d.authHandler.HandleUpdatePreferences,
+				Method:   http.MethodPatch,
+				Path:     "/auth/preferences",
+				Request:  auth.UpdatePreferencesRequest{},
+				Response: auth.Response{},
+				Summary:  "Update the caller's display preferences.",
+				Handler:  d.authHandler.HandleUpdatePreferences,
 			})
 
 			// Comments
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/comments",
-				Request: comments.CreateCommentRequest{},
-				Summary: "Create a comment on a log.",
-				Handler: d.commentHandler.HandleCreateComment,
+				Method:   http.MethodPost,
+				Path:     "/comments",
+				Request:  comments.CreateCommentRequest{},
+				Response: comments.Response{},
+				Summary:  "Create a comment on a log.",
+				Handler:  d.commentHandler.HandleCreateComment,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/comments/flat",
-				Summary: "List comments individually rather than grouped by log.",
-				Handler: d.commentHandler.HandleGetFlatComments,
+				Method:   http.MethodGet,
+				Path:     "/comments/flat",
+				Response: api.ListResponse[storage.Comment]{},
+				Summary:  "List comments individually rather than grouped by log.",
+				Handler:  d.commentHandler.HandleGetFlatComments,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
@@ -690,71 +713,81 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.commentHandler.HandleBulkDeleteComments,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/comments/tags",
-				Summary: "List the tags in use across the scope's comments.",
-				Handler: d.commentHandler.HandleGetTags,
+				Method:   http.MethodGet,
+				Path:     "/comments/tags",
+				Response: comments.Response{},
+				Summary:  "List the tags in use across the scope's comments.",
+				Handler:  d.commentHandler.HandleGetTags,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/comments/graph/log-fields",
-				Request: comments.LogFieldsRequest{},
-				Summary: "Batch-fetch parsed field data for a set of logs.",
-				Handler: d.commentHandler.HandleGetLogFields,
+				Method:   http.MethodPost,
+				Path:     "/comments/graph/log-fields",
+				Request:  comments.LogFieldsRequest{},
+				Response: comments.Response{},
+				Summary:  "Batch-fetch parsed field data for a set of logs.",
+				Handler:  d.commentHandler.HandleGetLogFields,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/comments/{id}",
-				Summary: "Read one comment.",
-				Handler: d.commentHandler.HandleGetComment,
+				Method:   http.MethodGet,
+				Path:     "/comments/{id}",
+				Response: comments.Response{},
+				Summary:  "Read one comment.",
+				Handler:  d.commentHandler.HandleGetComment,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/comments/{id}",
-				Request: comments.UpdateCommentRequest{},
-				Summary: "Update one comment.",
-				Handler: d.commentHandler.HandleUpdateComment,
+				Method:   http.MethodPut,
+				Path:     "/comments/{id}",
+				Request:  comments.UpdateCommentRequest{},
+				Response: comments.Response{},
+				Summary:  "Update one comment.",
+				Handler:  d.commentHandler.HandleUpdateComment,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/comments/{id}",
-				Summary: "Delete one comment.",
-				Handler: d.commentHandler.HandleDeleteComment,
+				Method:   http.MethodDelete,
+				Path:     "/comments/{id}",
+				Response: comments.Response{},
+				Summary:  "Delete one comment.",
+				Handler:  d.commentHandler.HandleDeleteComment,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/logs/{log_id}/comments",
-				Summary: "List the comments on one log.",
-				Handler: d.commentHandler.HandleGetLogComments,
+				Method:   http.MethodGet,
+				Path:     "/logs/{log_id}/comments",
+				Response: comments.Response{},
+				Summary:  "List the comments on one log.",
+				Handler:  d.commentHandler.HandleGetLogComments,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/logs/{log_id}/comments",
-				Summary: "Delete every comment on one log.",
-				Handler: d.commentHandler.HandleDeleteCommentsByLogID,
+				Method:   http.MethodDelete,
+				Path:     "/logs/{log_id}/comments",
+				Response: comments.Response{},
+				Summary:  "Delete every comment on one log.",
+				Handler:  d.commentHandler.HandleDeleteCommentsByLogID,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/logs/commented",
-				Summary: "List the logs that carry comments.",
-				Handler: d.commentHandler.HandleGetCommentedLogs,
+				Method:   http.MethodGet,
+				Path:     "/logs/commented",
+				Response: api.ListResponse[map[string]interface{}]{},
+				Summary:  "List the logs that carry comments.",
+				Handler:  d.commentHandler.HandleGetCommentedLogs,
 			})
 
 			// Notebooks (API keys require "notebook" permission)
 			r.Group(func(r api.Router) {
 				r.Use(auth.RequireAPIKeyPermission("notebook"))
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/notebooks",
-					Summary: "List notebooks in scope.",
-					Handler: d.notebookHandler.HandleListNotebooks,
+					Method:   http.MethodGet,
+					Path:     "/notebooks",
+					Response: api.ListResponse[storage.Notebook]{},
+					Summary:  "List notebooks in scope.",
+					Handler:  d.notebookHandler.HandleListNotebooks,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/notebooks",
-					Request: notebooks.CreateNotebookRequest{},
-					Summary: "Create a notebook.",
-					Handler: d.notebookHandler.HandleCreateNotebook,
+					Method:   http.MethodPost,
+					Path:     "/notebooks",
+					Request:  notebooks.CreateNotebookRequest{},
+					Response: notebooks.Response{},
+					Summary:  "Create a notebook.",
+					Handler:  d.notebookHandler.HandleCreateNotebook,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodGet,
@@ -763,102 +796,117 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler: d.notebookHandler.HandleAIStatus,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/notebooks/import",
-					Summary: "Import a notebook from YAML.",
-					Handler: d.notebookHandler.HandleImportNotebook,
+					Method:   http.MethodPost,
+					Path:     "/notebooks/import",
+					Response: notebooks.Response{},
+					Summary:  "Import a notebook from YAML.",
+					Handler:  d.notebookHandler.HandleImportNotebook,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/notebooks/generate-from-comments",
-					Request: notebooks.GenerateFromCommentsRequest{},
-					Summary: "Build a notebook from every comment carrying a tag.",
-					Handler: d.notebookHandler.HandleGenerateFromComments,
+					Method:   http.MethodPost,
+					Path:     "/notebooks/generate-from-comments",
+					Request:  notebooks.GenerateFromCommentsRequest{},
+					Response: notebooks.Response{},
+					Summary:  "Build a notebook from every comment carrying a tag.",
+					Handler:  d.notebookHandler.HandleGenerateFromComments,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/notebooks/{id}",
-					Summary: "Read one notebook with its sections.",
-					Handler: d.notebookHandler.HandleGetNotebook,
+					Method:   http.MethodGet,
+					Path:     "/notebooks/{id}",
+					Response: notebooks.Response{},
+					Summary:  "Read one notebook with its sections.",
+					Handler:  d.notebookHandler.HandleGetNotebook,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPut,
-					Path:    "/notebooks/{id}",
-					Request: notebooks.UpdateNotebookRequest{},
-					Summary: "Update a notebook's metadata.",
-					Handler: d.notebookHandler.HandleUpdateNotebook,
+					Method:   http.MethodPut,
+					Path:     "/notebooks/{id}",
+					Request:  notebooks.UpdateNotebookRequest{},
+					Response: notebooks.Response{},
+					Summary:  "Update a notebook's metadata.",
+					Handler:  d.notebookHandler.HandleUpdateNotebook,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodDelete,
-					Path:    "/notebooks/{id}",
-					Summary: "Delete a notebook.",
-					Handler: d.notebookHandler.HandleDeleteNotebook,
+					Method:   http.MethodDelete,
+					Path:     "/notebooks/{id}",
+					Response: notebooks.Response{},
+					Summary:  "Delete a notebook.",
+					Handler:  d.notebookHandler.HandleDeleteNotebook,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/notebooks/{id}/sections",
-					Request: notebooks.CreateSectionRequest{},
-					Summary: "Add a section to a notebook.",
-					Handler: d.notebookHandler.HandleCreateSection,
+					Method:   http.MethodPost,
+					Path:     "/notebooks/{id}/sections",
+					Request:  notebooks.CreateSectionRequest{},
+					Response: notebooks.Response{},
+					Summary:  "Add a section to a notebook.",
+					Handler:  d.notebookHandler.HandleCreateSection,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPut,
-					Path:    "/notebooks/{id}/sections/{section_id}",
-					Request: notebooks.UpdateSectionRequest{},
-					Summary: "Update a notebook section.",
-					Handler: d.notebookHandler.HandleUpdateSection,
+					Method:   http.MethodPut,
+					Path:     "/notebooks/{id}/sections/{section_id}",
+					Request:  notebooks.UpdateSectionRequest{},
+					Response: notebooks.Response{},
+					Summary:  "Update a notebook section.",
+					Handler:  d.notebookHandler.HandleUpdateSection,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodDelete,
-					Path:    "/notebooks/{id}/sections/{section_id}",
-					Summary: "Delete a notebook section.",
-					Handler: d.notebookHandler.HandleDeleteSection,
+					Method:   http.MethodDelete,
+					Path:     "/notebooks/{id}/sections/{section_id}",
+					Response: notebooks.Response{},
+					Summary:  "Delete a notebook section.",
+					Handler:  d.notebookHandler.HandleDeleteSection,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/notebooks/{id}/sections/{section_id}/execute",
-					Request: notebooks.ExecuteQueryRequest{},
-					Summary: "Run a query section and cache its results.",
-					Handler: d.notebookHandler.HandleExecuteQuerySection,
+					Method:   http.MethodPost,
+					Path:     "/notebooks/{id}/sections/{section_id}/execute",
+					Request:  notebooks.ExecuteQueryRequest{},
+					Response: notebooks.Response{},
+					Summary:  "Run a query section and cache its results.",
+					Handler:  d.notebookHandler.HandleExecuteQuerySection,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/notebooks/{id}/sections/{section_id}/summarize",
-					Summary: "Generate an AI summary of a notebook's other sections.",
-					Handler: d.notebookHandler.HandleGenerateAISummary,
+					Method:   http.MethodPost,
+					Path:     "/notebooks/{id}/sections/{section_id}/summarize",
+					Response: notebooks.Response{},
+					Summary:  "Generate an AI summary of a notebook's other sections.",
+					Handler:  d.notebookHandler.HandleGenerateAISummary,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPut,
-					Path:    "/notebooks/{id}/sections/{section_id}/results",
-					Request: notebooks.UpdateSectionResultsRequest{},
-					Summary: "Replace a query section's cached results.",
-					Handler: d.notebookHandler.HandleUpdateSectionResults,
+					Method:   http.MethodPut,
+					Path:     "/notebooks/{id}/sections/{section_id}/results",
+					Request:  notebooks.UpdateSectionResultsRequest{},
+					Response: notebooks.Response{},
+					Summary:  "Replace a query section's cached results.",
+					Handler:  d.notebookHandler.HandleUpdateSectionResults,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/notebooks/{id}/sections/reorder",
-					Request: notebooks.ReorderSectionsRequest{},
-					Summary: "Reorder a notebook's sections.",
-					Handler: d.notebookHandler.HandleReorderSections,
+					Method:   http.MethodPost,
+					Path:     "/notebooks/{id}/sections/reorder",
+					Request:  notebooks.ReorderSectionsRequest{},
+					Response: notebooks.Response{},
+					Summary:  "Reorder a notebook's sections.",
+					Handler:  d.notebookHandler.HandleReorderSections,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPut,
-					Path:    "/notebooks/{id}/variables",
-					Request: notebooks.UpdateVariablesRequest{},
-					Summary: "Update a notebook's query variables.",
-					Handler: d.notebookHandler.HandleUpdateVariables,
+					Method:   http.MethodPut,
+					Path:     "/notebooks/{id}/variables",
+					Request:  notebooks.UpdateVariablesRequest{},
+					Response: notebooks.Response{},
+					Summary:  "Update a notebook's query variables.",
+					Handler:  d.notebookHandler.HandleUpdateVariables,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/notebooks/{id}/presence",
-					Summary: "Report the caller as viewing a notebook.",
-					Handler: d.notebookHandler.HandleUpdatePresence,
+					Method:   http.MethodPost,
+					Path:     "/notebooks/{id}/presence",
+					Response: notebooks.Response{},
+					Summary:  "Report the caller as viewing a notebook.",
+					Handler:  d.notebookHandler.HandleUpdatePresence,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/notebooks/{id}/presence",
-					Summary: "List who is currently viewing a notebook.",
-					Handler: d.notebookHandler.HandleGetPresence,
+					Method:   http.MethodGet,
+					Path:     "/notebooks/{id}/presence",
+					Response: notebooks.Response{},
+					Summary:  "List who is currently viewing a notebook.",
+					Handler:  d.notebookHandler.HandleGetPresence,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodGet,
@@ -884,83 +932,95 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Group(func(r api.Router) {
 				r.Use(auth.RequireAPIKeyPermission("dashboard"))
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/dashboards",
-					Summary: "List dashboards in scope.",
-					Handler: d.dashboardHandler.HandleListDashboards,
+					Method:   http.MethodGet,
+					Path:     "/dashboards",
+					Response: api.ListResponse[storage.Dashboard]{},
+					Summary:  "List dashboards in scope.",
+					Handler:  d.dashboardHandler.HandleListDashboards,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/dashboards",
-					Request: dashboards.CreateDashboardRequest{},
-					Summary: "Create a dashboard.",
-					Handler: d.dashboardHandler.HandleCreateDashboard,
+					Method:   http.MethodPost,
+					Path:     "/dashboards",
+					Request:  dashboards.CreateDashboardRequest{},
+					Response: dashboards.Response{},
+					Summary:  "Create a dashboard.",
+					Handler:  d.dashboardHandler.HandleCreateDashboard,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/dashboards/{id}",
-					Summary: "Read one dashboard with its widgets.",
-					Handler: d.dashboardHandler.HandleGetDashboard,
+					Method:   http.MethodGet,
+					Path:     "/dashboards/{id}",
+					Response: dashboards.Response{},
+					Summary:  "Read one dashboard with its widgets.",
+					Handler:  d.dashboardHandler.HandleGetDashboard,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPut,
-					Path:    "/dashboards/{id}",
-					Request: dashboards.UpdateDashboardRequest{},
-					Summary: "Update a dashboard's metadata.",
-					Handler: d.dashboardHandler.HandleUpdateDashboard,
+					Method:   http.MethodPut,
+					Path:     "/dashboards/{id}",
+					Request:  dashboards.UpdateDashboardRequest{},
+					Response: dashboards.Response{},
+					Summary:  "Update a dashboard's metadata.",
+					Handler:  d.dashboardHandler.HandleUpdateDashboard,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodDelete,
-					Path:    "/dashboards/{id}",
-					Summary: "Delete a dashboard.",
-					Handler: d.dashboardHandler.HandleDeleteDashboard,
+					Method:   http.MethodDelete,
+					Path:     "/dashboards/{id}",
+					Response: dashboards.Response{},
+					Summary:  "Delete a dashboard.",
+					Handler:  d.dashboardHandler.HandleDeleteDashboard,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/dashboards/{id}/widgets",
-					Request: dashboards.CreateWidgetRequest{},
-					Summary: "Add a widget to a dashboard.",
-					Handler: d.dashboardHandler.HandleCreateWidget,
+					Method:   http.MethodPost,
+					Path:     "/dashboards/{id}/widgets",
+					Request:  dashboards.CreateWidgetRequest{},
+					Response: dashboards.Response{},
+					Summary:  "Add a widget to a dashboard.",
+					Handler:  d.dashboardHandler.HandleCreateWidget,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPut,
-					Path:    "/dashboards/{id}/widgets/{widget_id}",
-					Request: dashboards.UpdateWidgetRequest{},
-					Summary: "Update a widget.",
-					Handler: d.dashboardHandler.HandleUpdateWidget,
+					Method:   http.MethodPut,
+					Path:     "/dashboards/{id}/widgets/{widget_id}",
+					Request:  dashboards.UpdateWidgetRequest{},
+					Response: dashboards.Response{},
+					Summary:  "Update a widget.",
+					Handler:  d.dashboardHandler.HandleUpdateWidget,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPut,
-					Path:    "/dashboards/{id}/widgets/{widget_id}/layout",
-					Request: dashboards.UpdateWidgetLayoutRequest{},
-					Summary: "Move or resize a widget.",
-					Handler: d.dashboardHandler.HandleUpdateWidgetLayout,
+					Method:   http.MethodPut,
+					Path:     "/dashboards/{id}/widgets/{widget_id}/layout",
+					Request:  dashboards.UpdateWidgetLayoutRequest{},
+					Response: dashboards.Response{},
+					Summary:  "Move or resize a widget.",
+					Handler:  d.dashboardHandler.HandleUpdateWidgetLayout,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodDelete,
-					Path:    "/dashboards/{id}/widgets/{widget_id}",
-					Summary: "Delete a widget.",
-					Handler: d.dashboardHandler.HandleDeleteWidget,
+					Method:   http.MethodDelete,
+					Path:     "/dashboards/{id}/widgets/{widget_id}",
+					Response: dashboards.Response{},
+					Summary:  "Delete a widget.",
+					Handler:  d.dashboardHandler.HandleDeleteWidget,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPut,
-					Path:    "/dashboards/{id}/variables",
-					Request: dashboards.UpdateVariablesRequest{},
-					Summary: "Update a dashboard's query variables.",
-					Handler: d.dashboardHandler.HandleUpdateVariables,
+					Method:   http.MethodPut,
+					Path:     "/dashboards/{id}/variables",
+					Request:  dashboards.UpdateVariablesRequest{},
+					Response: dashboards.Response{},
+					Summary:  "Update a dashboard's query variables.",
+					Handler:  d.dashboardHandler.HandleUpdateVariables,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPut,
-					Path:    "/dashboards/{id}/refresh-interval",
-					Request: dashboards.UpdateRefreshIntervalRequest{},
-					Summary: "Set a dashboard's server-side refresh cadence.",
-					Handler: d.dashboardHandler.HandleUpdateRefreshInterval,
+					Method:   http.MethodPut,
+					Path:     "/dashboards/{id}/refresh-interval",
+					Request:  dashboards.UpdateRefreshIntervalRequest{},
+					Response: dashboards.Response{},
+					Summary:  "Set a dashboard's server-side refresh cadence.",
+					Handler:  d.dashboardHandler.HandleUpdateRefreshInterval,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/dashboards/{id}/execute",
-					Summary: "Run every widget on a dashboard and push the results to viewers.",
-					Handler: d.dashboardHandler.HandleExecuteDashboard,
+					Method:   http.MethodPost,
+					Path:     "/dashboards/{id}/execute",
+					Response: dashboards.Response{},
+					Summary:  "Run every widget on a dashboard and push the results to viewers.",
+					Handler:  d.dashboardHandler.HandleExecuteDashboard,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPost,
@@ -970,16 +1030,18 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler: d.dashboardHandler.HandleExecuteWidget,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/dashboards/{id}/presence",
-					Summary: "Report the caller as viewing a dashboard.",
-					Handler: d.dashboardHandler.HandleUpdatePresence,
+					Method:   http.MethodPost,
+					Path:     "/dashboards/{id}/presence",
+					Response: dashboards.Response{},
+					Summary:  "Report the caller as viewing a dashboard.",
+					Handler:  d.dashboardHandler.HandleUpdatePresence,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/dashboards/{id}/presence",
-					Summary: "List who is currently viewing a dashboard.",
-					Handler: d.dashboardHandler.HandleGetPresence,
+					Method:   http.MethodGet,
+					Path:     "/dashboards/{id}/presence",
+					Response: dashboards.Response{},
+					Summary:  "List who is currently viewing a dashboard.",
+					Handler:  d.dashboardHandler.HandleGetPresence,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodGet,
@@ -988,10 +1050,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler: d.dashboardHandler.HandleExportDashboard,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/dashboards/import",
-					Summary: "Import a dashboard from YAML.",
-					Handler: d.dashboardHandler.HandleImportDashboard,
+					Method:   http.MethodPost,
+					Path:     "/dashboards/import",
+					Response: dashboards.Response{},
+					Summary:  "Import a dashboard from YAML.",
+					Handler:  d.dashboardHandler.HandleImportDashboard,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodGet,
@@ -1003,10 +1066,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				// dashboard's scope; list is viewer+). The anonymous read route is
 				// registered separately in the public block below.
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/dashboards/{id}/shared-links",
-					Summary: "List a dashboard's shared links, without their tokens.",
-					Handler: d.dashboardHandler.HandleListSharedLinks,
+					Method:   http.MethodGet,
+					Path:     "/dashboards/{id}/shared-links",
+					Response: dashboards.Response{},
+					Summary:  "List a dashboard's shared links, without their tokens.",
+					Handler:  d.dashboardHandler.HandleListSharedLinks,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPost,
@@ -1016,10 +1080,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler: d.dashboardHandler.HandleCreateSharedLink,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodDelete,
-					Path:    "/dashboards/{id}/shared-links/{link_id}",
-					Summary: "Revoke a shared link.",
-					Handler: d.dashboardHandler.HandleRevokeSharedLink,
+					Method:   http.MethodDelete,
+					Path:     "/dashboards/{id}/shared-links/{link_id}",
+					Response: dashboards.Response{},
+					Summary:  "Revoke a shared link.",
+					Handler:  d.dashboardHandler.HandleRevokeSharedLink,
 				})
 			})
 
@@ -1027,30 +1092,34 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Group(func(r api.Router) {
 				r.Use(auth.RequireAPIKeyPermission("alert_manage"))
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/alerts",
-					Summary: "List alerts in scope.",
-					Handler: d.alertHandler.HandleListAlerts,
+					Method:   http.MethodGet,
+					Path:     "/alerts",
+					Response: api.ListResponse[*alerts.Alert]{},
+					Summary:  "List alerts in scope.",
+					Handler:  d.alertHandler.HandleListAlerts,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/alerts",
-					Request: alerts.AlertCreateRequest{},
-					Summary: "Create an alert.",
-					Handler: d.alertHandler.HandleCreateAlert,
+					Method:   http.MethodPost,
+					Path:     "/alerts",
+					Request:  alerts.AlertCreateRequest{},
+					Response: api.Response[*alerts.Alert]{},
+					Summary:  "Create an alert.",
+					Handler:  d.alertHandler.HandleCreateAlert,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/alerts/{id}",
-					Summary: "Read one alert.",
-					Handler: d.alertHandler.HandleGetAlert,
+					Method:   http.MethodGet,
+					Path:     "/alerts/{id}",
+					Response: api.Response[*alerts.Alert]{},
+					Summary:  "Read one alert.",
+					Handler:  d.alertHandler.HandleGetAlert,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPut,
-					Path:    "/alerts/{id}",
-					Request: alerts.AlertUpdateRequest{},
-					Summary: "Update an alert.",
-					Handler: d.alertHandler.HandleUpdateAlert,
+					Method:   http.MethodPut,
+					Path:     "/alerts/{id}",
+					Request:  alerts.AlertUpdateRequest{},
+					Response: api.Response[*alerts.Alert]{},
+					Summary:  "Update an alert.",
+					Handler:  d.alertHandler.HandleUpdateAlert,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodDelete,
@@ -1059,57 +1128,65 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler: d.alertHandler.HandleDeleteAlert,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/alerts/import",
-					Request: alerts.ImportYAMLRequest{},
-					Summary: "Import an alert from YAML or Sigma.",
-					Handler: d.alertHandler.HandleImportYAML,
+					Method:   http.MethodPost,
+					Path:     "/alerts/import",
+					Request:  alerts.ImportYAMLRequest{},
+					Response: api.Response[*alerts.Alert]{},
+					Summary:  "Import an alert from YAML or Sigma.",
+					Handler:  d.alertHandler.HandleImportYAML,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/alerts/batch-toggle",
-					Request: alerts.BatchToggleAlertsRequest{},
-					Summary: "Enable or disable a set of alerts.",
-					Handler: d.alertHandler.HandleBatchToggleAlerts,
+					Method:   http.MethodPost,
+					Path:     "/alerts/batch-toggle",
+					Request:  alerts.BatchToggleAlertsRequest{},
+					Response: api.Response[map[string]int]{},
+					Summary:  "Enable or disable a set of alerts.",
+					Handler:  d.alertHandler.HandleBatchToggleAlerts,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/alerts/{id}/executions",
-					Summary: "List an alert's evaluation history.",
-					Handler: d.alertHandler.HandleGetExecutions,
+					Method:   http.MethodGet,
+					Path:     "/alerts/{id}/executions",
+					Response: api.ListResponse[map[string]interface{}]{},
+					Summary:  "List an alert's evaluation history.",
+					Handler:  d.alertHandler.HandleGetExecutions,
 				})
 
 				// MITRE ATT&CK coverage, derived from the attack.* labels rules
 				// already carry. Read-only, scoped to the session's fractal/prism.
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/attack/matrix",
-					Summary: "Return the embedded ATT&CK matrix.",
-					Handler: d.alertHandler.HandleAttackMatrix,
+					Method:   http.MethodGet,
+					Path:     "/attack/matrix",
+					Response: api.Response[*attack.Matrix]{},
+					Summary:  "Return the embedded ATT&CK matrix.",
+					Handler:  d.alertHandler.HandleAttackMatrix,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/attack/coverage",
-					Summary: "Return per-technique rule counts and the coverage summary.",
-					Handler: d.alertHandler.HandleAttackCoverage,
+					Method:   http.MethodGet,
+					Path:     "/attack/coverage",
+					Response: api.Response[*attack.Coverage]{},
+					Summary:  "Return per-technique rule counts and the coverage summary.",
+					Handler:  d.alertHandler.HandleAttackCoverage,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/attack/techniques/{id}/rules",
-					Summary: "List the rules covering one technique.",
-					Handler: d.alertHandler.HandleAttackTechniqueRules,
+					Method:   http.MethodGet,
+					Path:     "/attack/techniques/{id}/rules",
+					Response: api.Response[alerts.TechniqueRules]{},
+					Summary:  "List the rules covering one technique.",
+					Handler:  d.alertHandler.HandleAttackTechniqueRules,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/attack/techniques/{id}/gap",
-					Summary: "List candidate rules for one uncovered technique.",
-					Handler: d.alertHandler.HandleAttackTechniqueGap,
+					Method:   http.MethodGet,
+					Path:     "/attack/techniques/{id}/gap",
+					Response: api.Response[alerts.Gap]{},
+					Summary:  "List candidate rules for one uncovered technique.",
+					Handler:  d.alertHandler.HandleAttackTechniqueGap,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/attack/gaps",
-					Summary: "Rank uncovered techniques by what can be covered today.",
-					Handler: d.alertHandler.HandleAttackGaps,
+					Method:   http.MethodGet,
+					Path:     "/attack/gaps",
+					Response: api.Response[alerts.AttackGaps]{},
+					Summary:  "Rank uncovered techniques by what can be covered today.",
+					Handler:  d.alertHandler.HandleAttackGaps,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodGet,
@@ -1121,30 +1198,34 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Webhook management
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/webhooks",
-				Summary: "List webhook actions in scope.",
-				Handler: d.alertHandler.HandleListWebhooks,
+				Method:   http.MethodGet,
+				Path:     "/webhooks",
+				Response: api.ListResponse[*alerts.WebhookAction]{},
+				Summary:  "List webhook actions in scope.",
+				Handler:  d.alertHandler.HandleListWebhooks,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/webhooks",
-				Request: alerts.WebhookCreateRequest{},
-				Summary: "Create a webhook action.",
-				Handler: d.alertHandler.HandleCreateWebhook,
+				Method:   http.MethodPost,
+				Path:     "/webhooks",
+				Request:  alerts.WebhookCreateRequest{},
+				Response: api.Response[*alerts.WebhookAction]{},
+				Summary:  "Create a webhook action.",
+				Handler:  d.alertHandler.HandleCreateWebhook,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/webhooks/{id}",
-				Summary: "Read one webhook action.",
-				Handler: d.alertHandler.HandleGetWebhook,
+				Method:   http.MethodGet,
+				Path:     "/webhooks/{id}",
+				Response: api.Response[*alerts.WebhookAction]{},
+				Summary:  "Read one webhook action.",
+				Handler:  d.alertHandler.HandleGetWebhook,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/webhooks/{id}",
-				Request: alerts.WebhookUpdateRequest{},
-				Summary: "Update a webhook action.",
-				Handler: d.alertHandler.HandleUpdateWebhook,
+				Method:   http.MethodPut,
+				Path:     "/webhooks/{id}",
+				Request:  alerts.WebhookUpdateRequest{},
+				Response: api.Response[*alerts.WebhookAction]{},
+				Summary:  "Update a webhook action.",
+				Handler:  d.alertHandler.HandleUpdateWebhook,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
@@ -1153,38 +1234,43 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.alertHandler.HandleDeleteWebhook,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/webhooks/{id}/test",
-				Summary: "Send a test payload to a webhook.",
-				Handler: d.alertHandler.HandleTestWebhook,
+				Method:   http.MethodPost,
+				Path:     "/webhooks/{id}/test",
+				Response: api.Response[*alerts.WebhookResult]{},
+				Summary:  "Send a test payload to a webhook.",
+				Handler:  d.alertHandler.HandleTestWebhook,
 			})
 
 			// Fractal action management
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/fractal-actions",
-				Summary: "List fractal actions in scope.",
-				Handler: d.alertHandler.HandleListFractalActions,
+				Method:   http.MethodGet,
+				Path:     "/fractal-actions",
+				Response: api.ListResponse[alerts.FractalAction]{},
+				Summary:  "List fractal actions in scope.",
+				Handler:  d.alertHandler.HandleListFractalActions,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/fractal-actions",
-				Request: alerts.FractalActionCreateRequest{},
-				Summary: "Create a fractal action.",
-				Handler: d.alertHandler.HandleCreateFractalAction,
+				Method:   http.MethodPost,
+				Path:     "/fractal-actions",
+				Request:  alerts.FractalActionCreateRequest{},
+				Response: api.Response[*alerts.FractalAction]{},
+				Summary:  "Create a fractal action.",
+				Handler:  d.alertHandler.HandleCreateFractalAction,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/fractal-actions/{id}",
-				Summary: "Read one fractal action.",
-				Handler: d.alertHandler.HandleGetFractalAction,
+				Method:   http.MethodGet,
+				Path:     "/fractal-actions/{id}",
+				Response: api.Response[*alerts.FractalAction]{},
+				Summary:  "Read one fractal action.",
+				Handler:  d.alertHandler.HandleGetFractalAction,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/fractal-actions/{id}",
-				Request: alerts.FractalActionUpdateRequest{},
-				Summary: "Update a fractal action.",
-				Handler: d.alertHandler.HandleUpdateFractalAction,
+				Method:   http.MethodPut,
+				Path:     "/fractal-actions/{id}",
+				Request:  alerts.FractalActionUpdateRequest{},
+				Response: api.Response[*alerts.FractalAction]{},
+				Summary:  "Update a fractal action.",
+				Handler:  d.alertHandler.HandleUpdateFractalAction,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
@@ -1195,30 +1281,34 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Email action management
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/email-actions",
-				Summary: "List email actions in scope.",
-				Handler: d.alertHandler.HandleListEmailActions,
+				Method:   http.MethodGet,
+				Path:     "/email-actions",
+				Response: api.ListResponse[alerts.EmailAction]{},
+				Summary:  "List email actions in scope.",
+				Handler:  d.alertHandler.HandleListEmailActions,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/email-actions",
-				Request: alerts.EmailActionCreateRequest{},
-				Summary: "Create an email action.",
-				Handler: d.alertHandler.HandleCreateEmailAction,
+				Method:   http.MethodPost,
+				Path:     "/email-actions",
+				Request:  alerts.EmailActionCreateRequest{},
+				Response: api.Response[*alerts.EmailAction]{},
+				Summary:  "Create an email action.",
+				Handler:  d.alertHandler.HandleCreateEmailAction,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/email-actions/{id}",
-				Summary: "Read one email action.",
-				Handler: d.alertHandler.HandleGetEmailAction,
+				Method:   http.MethodGet,
+				Path:     "/email-actions/{id}",
+				Response: api.Response[*alerts.EmailAction]{},
+				Summary:  "Read one email action.",
+				Handler:  d.alertHandler.HandleGetEmailAction,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/email-actions/{id}",
-				Request: alerts.EmailActionUpdateRequest{},
-				Summary: "Update an email action.",
-				Handler: d.alertHandler.HandleUpdateEmailAction,
+				Method:   http.MethodPut,
+				Path:     "/email-actions/{id}",
+				Request:  alerts.EmailActionUpdateRequest{},
+				Response: api.Response[*alerts.EmailAction]{},
+				Summary:  "Update an email action.",
+				Handler:  d.alertHandler.HandleUpdateEmailAction,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
@@ -1227,18 +1317,20 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.alertHandler.HandleDeleteEmailAction,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/email-actions/{id}/test",
-				Summary: "Send a test message through an email action.",
-				Handler: d.alertHandler.HandleTestEmailAction,
+				Method:   http.MethodPost,
+				Path:     "/email-actions/{id}/test",
+				Response: api.Response[alerts.ActionTestResult]{},
+				Summary:  "Send a test message through an email action.",
+				Handler:  d.alertHandler.HandleTestEmailAction,
 			})
 
 			// SMTP settings
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/smtp-settings",
-				Summary: "Read the SMTP configuration, without the password.",
-				Handler: d.alertHandler.HandleGetSMTPSettings,
+				Method:   http.MethodGet,
+				Path:     "/smtp-settings",
+				Response: api.Response[alerts.SMTPConfig]{},
+				Summary:  "Read the SMTP configuration, without the password.",
+				Handler:  d.alertHandler.HandleGetSMTPSettings,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
@@ -1250,109 +1342,125 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Prism management
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/prisms",
-				Summary: "List the prisms the caller can reach.",
-				Handler: d.prismHandler.HandleListPrisms,
+				Method:   http.MethodGet,
+				Path:     "/prisms",
+				Response: api.ListResponse[*prisms.Prism]{},
+				Summary:  "List the prisms the caller can reach.",
+				Handler:  d.prismHandler.HandleListPrisms,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/prisms",
-				Request: prisms.PrismRequest{},
-				Summary: "Create a prism.",
-				Handler: d.prismHandler.HandleCreatePrism,
+				Method:   http.MethodPost,
+				Path:     "/prisms",
+				Request:  prisms.PrismRequest{},
+				Response: api.Response[*prisms.Prism]{},
+				Summary:  "Create a prism.",
+				Handler:  d.prismHandler.HandleCreatePrism,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/prisms/{id}",
-				Summary: "Read one prism.",
-				Handler: d.prismHandler.HandleGetPrism,
+				Method:   http.MethodGet,
+				Path:     "/prisms/{id}",
+				Response: api.Response[*prisms.Prism]{},
+				Summary:  "Read one prism.",
+				Handler:  d.prismHandler.HandleGetPrism,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/prisms/{id}",
-				Request: prisms.PrismRequest{},
-				Summary: "Update a prism.",
-				Handler: d.prismHandler.HandleUpdatePrism,
+				Method:   http.MethodPut,
+				Path:     "/prisms/{id}",
+				Request:  prisms.PrismRequest{},
+				Response: api.Response[*prisms.Prism]{},
+				Summary:  "Update a prism.",
+				Handler:  d.prismHandler.HandleUpdatePrism,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/prisms/{id}",
-				Summary: "Delete a prism.",
-				Handler: d.prismHandler.HandleDeletePrism,
+				Method:   http.MethodDelete,
+				Path:     "/prisms/{id}",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Delete a prism.",
+				Handler:  d.prismHandler.HandleDeletePrism,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/prisms/{id}/select",
-				Summary: "Set the session's selected prism.",
-				Handler: d.prismHandler.HandleSelectPrism,
+				Method:   http.MethodPost,
+				Path:     "/prisms/{id}/select",
+				Response: api.Response[prisms.SelectedPrism]{},
+				Summary:  "Set the session's selected prism.",
+				Handler:  d.prismHandler.HandleSelectPrism,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/prisms/{id}/members",
-				Request: prisms.AddMemberRequest{},
-				Summary: "Add a fractal to a prism.",
-				Handler: d.prismHandler.HandleAddMember,
+				Method:   http.MethodPost,
+				Path:     "/prisms/{id}/members",
+				Request:  prisms.AddMemberRequest{},
+				Response: api.Response[*prisms.Prism]{},
+				Summary:  "Add a fractal to a prism.",
+				Handler:  d.prismHandler.HandleAddMember,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/prisms/{id}/members/{fractalID}",
-				Summary: "Remove a fractal from a prism.",
-				Handler: d.prismHandler.HandleRemoveMember,
+				Method:   http.MethodDelete,
+				Path:     "/prisms/{id}/members/{fractalID}",
+				Response: api.Response[*prisms.Prism]{},
+				Summary:  "Remove a fractal from a prism.",
+				Handler:  d.prismHandler.HandleRemoveMember,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/prisms/{id}/permissions",
-				Summary: "List who has access to a prism.",
-				Handler: d.prismHandler.HandleListPrismPermissions,
+				Method:   http.MethodGet,
+				Path:     "/prisms/{id}/permissions",
+				Response: api.ListResponse[storage.PrismPermission]{},
+				Summary:  "List who has access to a prism.",
+				Handler:  d.prismHandler.HandleListPrismPermissions,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/prisms/{id}/permissions",
-				Request: prisms.GrantPermissionRequest{},
-				Summary: "Grant a user or group access to a prism.",
-				Handler: d.prismHandler.HandleGrantPrismPermission,
+				Method:   http.MethodPost,
+				Path:     "/prisms/{id}/permissions",
+				Request:  prisms.GrantPermissionRequest{},
+				Response: api.Response[*storage.PrismPermission]{},
+				Summary:  "Grant a user or group access to a prism.",
+				Handler:  d.prismHandler.HandleGrantPrismPermission,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/prisms/{id}/permissions/{permId}",
-				Request: prisms.UpdatePermissionRequest{},
-				Summary: "Change a prism permission's role.",
-				Handler: d.prismHandler.HandleUpdatePrismPermission,
+				Method:   http.MethodPut,
+				Path:     "/prisms/{id}/permissions/{permId}",
+				Request:  prisms.UpdatePermissionRequest{},
+				Response: api.Response[map[string]string]{},
+				Summary:  "Change a prism permission's role.",
+				Handler:  d.prismHandler.HandleUpdatePrismPermission,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/prisms/{id}/permissions/{permId}",
-				Summary: "Revoke a prism permission.",
-				Handler: d.prismHandler.HandleRevokePrismPermission,
+				Method:   http.MethodDelete,
+				Path:     "/prisms/{id}/permissions/{permId}",
+				Response: api.Response[map[string]string]{},
+				Summary:  "Revoke a prism permission.",
+				Handler:  d.prismHandler.HandleRevokePrismPermission,
 			})
 
 			// Fractal management
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/fractals",
-				Summary: "List the fractals and prisms the caller can reach.",
-				Handler: d.fractalHandler.HandleListFractals,
+				Method:   http.MethodGet,
+				Path:     "/fractals",
+				Response: api.Response[fractals.FractalListResponse]{},
+				Summary:  "List the fractals and prisms the caller can reach.",
+				Handler:  d.fractalHandler.HandleListFractals,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/fractals",
-				Request: fractals.CreateFractalRequest{},
-				Summary: "Create a fractal.",
-				Handler: d.fractalHandler.HandleCreateFractal,
+				Method:   http.MethodPost,
+				Path:     "/fractals",
+				Request:  fractals.CreateFractalRequest{},
+				Response: api.Response[*fractals.Fractal]{},
+				Summary:  "Create a fractal.",
+				Handler:  d.fractalHandler.HandleCreateFractal,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/fractals/{id}",
-				Summary: "Read one fractal.",
-				Handler: d.fractalHandler.HandleGetFractal,
+				Method:   http.MethodGet,
+				Path:     "/fractals/{id}",
+				Response: api.Response[map[string]interface{}]{},
+				Summary:  "Read one fractal.",
+				Handler:  d.fractalHandler.HandleGetFractal,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/fractals/{id}",
-				Request: fractals.UpdateFractalRequest{},
-				Summary: "Update a fractal.",
-				Handler: d.fractalHandler.HandleUpdateFractal,
+				Method:   http.MethodPut,
+				Path:     "/fractals/{id}",
+				Request:  fractals.UpdateFractalRequest{},
+				Response: api.Response[*fractals.Fractal]{},
+				Summary:  "Update a fractal.",
+				Handler:  d.fractalHandler.HandleUpdateFractal,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
@@ -1361,16 +1469,18 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.fractalHandler.HandleDeleteFractal,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/fractals/{id}/select",
-				Summary: "Set the session's selected fractal.",
-				Handler: d.fractalHandler.HandleSelectFractal,
+				Method:   http.MethodPost,
+				Path:     "/fractals/{id}/select",
+				Response: api.Response[fractals.SelectedFractal]{},
+				Summary:  "Set the session's selected fractal.",
+				Handler:  d.fractalHandler.HandleSelectFractal,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/fractals/{id}/stats",
-				Summary: "Return a fractal's row counts and storage usage.",
-				Handler: d.fractalHandler.HandleGetStats,
+				Method:   http.MethodGet,
+				Path:     "/fractals/{id}/stats",
+				Response: api.Response[*fractals.FractalStats]{},
+				Summary:  "Return a fractal's row counts and storage usage.",
+				Handler:  d.fractalHandler.HandleGetStats,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPut,
@@ -1402,17 +1512,19 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Fractal permissions (fractal admin or tenant admin, checked in handler)
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/fractals/{id}/permissions",
-				Summary: "List who has access to a fractal.",
-				Handler: d.fractalHandler.HandleListPermissions,
+				Method:   http.MethodGet,
+				Path:     "/fractals/{id}/permissions",
+				Response: api.ListResponse[storage.FractalPermission]{},
+				Summary:  "List who has access to a fractal.",
+				Handler:  d.fractalHandler.HandleListPermissions,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/fractals/{id}/permissions",
-				Request: fractals.GrantPermissionRequest{},
-				Summary: "Grant a user or group access to a fractal.",
-				Handler: d.fractalHandler.HandleGrantPermission,
+				Method:   http.MethodPost,
+				Path:     "/fractals/{id}/permissions",
+				Request:  fractals.GrantPermissionRequest{},
+				Response: api.Response[*storage.FractalPermission]{},
+				Summary:  "Grant a user or group access to a fractal.",
+				Handler:  d.fractalHandler.HandleGrantPermission,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPut,
@@ -1483,30 +1595,34 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// API Key management (fractal-scoped)
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/fractals/{id}/api-keys",
-				Summary: "List a fractal's API keys.",
-				Handler: d.apiKeyHandler.HandleListAPIKeys,
+				Method:   http.MethodGet,
+				Path:     "/fractals/{id}/api-keys",
+				Response: api.ListResponse[apikeys.APIKey]{},
+				Summary:  "List a fractal's API keys.",
+				Handler:  d.apiKeyHandler.HandleListAPIKeys,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/fractals/{id}/api-keys",
-				Request: apikeys.CreateAPIKeyRequest{},
-				Summary: "Create an API key scoped to a fractal.",
-				Handler: d.apiKeyHandler.HandleCreateAPIKey,
+				Method:   http.MethodPost,
+				Path:     "/fractals/{id}/api-keys",
+				Request:  apikeys.CreateAPIKeyRequest{},
+				Response: api.Response[apikeys.CreateAPIKeyResponse]{},
+				Summary:  "Create an API key scoped to a fractal.",
+				Handler:  d.apiKeyHandler.HandleCreateAPIKey,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/fractals/{id}/api-keys/{keyId}",
-				Summary: "Read one fractal API key.",
-				Handler: d.apiKeyHandler.HandleGetAPIKey,
+				Method:   http.MethodGet,
+				Path:     "/fractals/{id}/api-keys/{keyId}",
+				Response: api.Response[*apikeys.APIKey]{},
+				Summary:  "Read one fractal API key.",
+				Handler:  d.apiKeyHandler.HandleGetAPIKey,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/fractals/{id}/api-keys/{keyId}",
-				Request: apikeys.UpdateAPIKeyRequest{},
-				Summary: "Update a fractal API key.",
-				Handler: d.apiKeyHandler.HandleUpdateAPIKey,
+				Method:   http.MethodPut,
+				Path:     "/fractals/{id}/api-keys/{keyId}",
+				Request:  apikeys.UpdateAPIKeyRequest{},
+				Response: api.Response[*apikeys.APIKey]{},
+				Summary:  "Update a fractal API key.",
+				Handler:  d.apiKeyHandler.HandleUpdateAPIKey,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
@@ -1515,38 +1631,43 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.apiKeyHandler.HandleDeleteAPIKey,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/fractals/{id}/api-keys/{keyId}/toggle",
-				Summary: "Activate or deactivate a fractal API key.",
-				Handler: d.apiKeyHandler.HandleToggleAPIKey,
+				Method:   http.MethodPost,
+				Path:     "/fractals/{id}/api-keys/{keyId}/toggle",
+				Response: api.Response[map[string]interface{}]{},
+				Summary:  "Activate or deactivate a fractal API key.",
+				Handler:  d.apiKeyHandler.HandleToggleAPIKey,
 			})
 
 			// API Key management (prism-scoped)
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/prisms/{id}/api-keys",
-				Summary: "List a prism's API keys.",
-				Handler: d.apiKeyHandler.HandleListPrismAPIKeys,
+				Method:   http.MethodGet,
+				Path:     "/prisms/{id}/api-keys",
+				Response: api.ListResponse[apikeys.APIKey]{},
+				Summary:  "List a prism's API keys.",
+				Handler:  d.apiKeyHandler.HandleListPrismAPIKeys,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/prisms/{id}/api-keys",
-				Request: apikeys.CreateAPIKeyRequest{},
-				Summary: "Create an API key scoped to a prism.",
-				Handler: d.apiKeyHandler.HandleCreatePrismAPIKey,
+				Method:   http.MethodPost,
+				Path:     "/prisms/{id}/api-keys",
+				Request:  apikeys.CreateAPIKeyRequest{},
+				Response: api.Response[apikeys.CreateAPIKeyResponse]{},
+				Summary:  "Create an API key scoped to a prism.",
+				Handler:  d.apiKeyHandler.HandleCreatePrismAPIKey,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/prisms/{id}/api-keys/{keyId}",
-				Summary: "Read one prism API key.",
-				Handler: d.apiKeyHandler.HandleGetPrismAPIKey,
+				Method:   http.MethodGet,
+				Path:     "/prisms/{id}/api-keys/{keyId}",
+				Response: api.Response[*apikeys.APIKey]{},
+				Summary:  "Read one prism API key.",
+				Handler:  d.apiKeyHandler.HandleGetPrismAPIKey,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/prisms/{id}/api-keys/{keyId}",
-				Request: apikeys.UpdateAPIKeyRequest{},
-				Summary: "Update a prism API key.",
-				Handler: d.apiKeyHandler.HandleUpdatePrismAPIKey,
+				Method:   http.MethodPut,
+				Path:     "/prisms/{id}/api-keys/{keyId}",
+				Request:  apikeys.UpdateAPIKeyRequest{},
+				Response: api.Response[*apikeys.APIKey]{},
+				Summary:  "Update a prism API key.",
+				Handler:  d.apiKeyHandler.HandleUpdatePrismAPIKey,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
@@ -1555,38 +1676,43 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.apiKeyHandler.HandleDeletePrismAPIKey,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/prisms/{id}/api-keys/{keyId}/toggle",
-				Summary: "Activate or deactivate a prism API key.",
-				Handler: d.apiKeyHandler.HandleTogglePrismAPIKey,
+				Method:   http.MethodPost,
+				Path:     "/prisms/{id}/api-keys/{keyId}/toggle",
+				Response: api.Response[map[string]interface{}]{},
+				Summary:  "Activate or deactivate a prism API key.",
+				Handler:  d.apiKeyHandler.HandleTogglePrismAPIKey,
 			})
 
 			// Ingest Token management
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/fractals/{id}/ingest-tokens",
-				Summary: "List a fractal's ingest tokens.",
-				Handler: d.ingestTokenHandler.HandleListTokens,
+				Method:   http.MethodGet,
+				Path:     "/fractals/{id}/ingest-tokens",
+				Response: api.ListResponse[ingesttokens.IngestToken]{},
+				Summary:  "List a fractal's ingest tokens.",
+				Handler:  d.ingestTokenHandler.HandleListTokens,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/fractals/{id}/ingest-tokens",
-				Request: ingesttokens.CreateTokenRequest{},
-				Summary: "Create an ingest token for a fractal.",
-				Handler: d.ingestTokenHandler.HandleCreateToken,
+				Method:   http.MethodPost,
+				Path:     "/fractals/{id}/ingest-tokens",
+				Request:  ingesttokens.CreateTokenRequest{},
+				Response: api.Response[ingesttokens.CreateTokenResponse]{},
+				Summary:  "Create an ingest token for a fractal.",
+				Handler:  d.ingestTokenHandler.HandleCreateToken,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/fractals/{id}/ingest-tokens/{tokenId}",
-				Summary: "Read one ingest token.",
-				Handler: d.ingestTokenHandler.HandleGetToken,
+				Method:   http.MethodGet,
+				Path:     "/fractals/{id}/ingest-tokens/{tokenId}",
+				Response: api.Response[*ingesttokens.IngestToken]{},
+				Summary:  "Read one ingest token.",
+				Handler:  d.ingestTokenHandler.HandleGetToken,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/fractals/{id}/ingest-tokens/{tokenId}",
-				Request: ingesttokens.UpdateTokenRequest{},
-				Summary: "Update an ingest token.",
-				Handler: d.ingestTokenHandler.HandleUpdateToken,
+				Method:   http.MethodPut,
+				Path:     "/fractals/{id}/ingest-tokens/{tokenId}",
+				Request:  ingesttokens.UpdateTokenRequest{},
+				Response: api.Response[*ingesttokens.IngestToken]{},
+				Summary:  "Update an ingest token.",
+				Handler:  d.ingestTokenHandler.HandleUpdateToken,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
@@ -1595,69 +1721,79 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.ingestTokenHandler.HandleDeleteToken,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/fractals/{id}/ingest-tokens/{tokenId}/toggle",
-				Summary: "Activate or deactivate an ingest token.",
-				Handler: d.ingestTokenHandler.HandleToggleToken,
+				Method:   http.MethodPost,
+				Path:     "/fractals/{id}/ingest-tokens/{tokenId}/toggle",
+				Response: api.Response[map[string]interface{}]{},
+				Summary:  "Activate or deactivate an ingest token.",
+				Handler:  d.ingestTokenHandler.HandleToggleToken,
 			})
 
 			// Dictionaries
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/dictionaries",
-				Summary: "List dictionaries in scope.",
-				Handler: d.dictionaryHandler.HandleListDictionaries,
+				Method:   http.MethodGet,
+				Path:     "/dictionaries",
+				Response: api.ListResponse[*dictionaries.Dictionary]{},
+				Summary:  "List dictionaries in scope.",
+				Handler:  d.dictionaryHandler.HandleListDictionaries,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/dictionaries",
-				Request: dictionaries.CreateDictionaryRequest{},
-				Summary: "Create a dictionary.",
-				Handler: d.dictionaryHandler.HandleCreateDictionary,
+				Method:   http.MethodPost,
+				Path:     "/dictionaries",
+				Request:  dictionaries.CreateDictionaryRequest{},
+				Response: api.Response[*dictionaries.Dictionary]{},
+				Summary:  "Create a dictionary.",
+				Handler:  d.dictionaryHandler.HandleCreateDictionary,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/dictionaries/{id}",
-				Summary: "Read one dictionary's definition.",
-				Handler: d.dictionaryHandler.HandleGetDictionary,
+				Method:   http.MethodGet,
+				Path:     "/dictionaries/{id}",
+				Response: api.Response[*dictionaries.Dictionary]{},
+				Summary:  "Read one dictionary's definition.",
+				Handler:  d.dictionaryHandler.HandleGetDictionary,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/dictionaries/{id}",
-				Request: dictionaries.UpdateDictionaryRequest{},
-				Summary: "Update a dictionary's definition.",
-				Handler: d.dictionaryHandler.HandleUpdateDictionary,
+				Method:   http.MethodPut,
+				Path:     "/dictionaries/{id}",
+				Request:  dictionaries.UpdateDictionaryRequest{},
+				Response: api.Response[*dictionaries.Dictionary]{},
+				Summary:  "Update a dictionary's definition.",
+				Handler:  d.dictionaryHandler.HandleUpdateDictionary,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/dictionaries/{id}",
-				Summary: "Delete a dictionary.",
-				Handler: d.dictionaryHandler.HandleDeleteDictionary,
+				Method:   http.MethodDelete,
+				Path:     "/dictionaries/{id}",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Delete a dictionary.",
+				Handler:  d.dictionaryHandler.HandleDeleteDictionary,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/dictionaries/{id}/data",
-				Summary: "Read a dictionary's rows.",
-				Handler: d.dictionaryHandler.HandleGetRows,
+				Method:   http.MethodGet,
+				Path:     "/dictionaries/{id}/data",
+				Response: api.ListResponse[dictionaries.DictionaryRow]{},
+				Summary:  "Read a dictionary's rows.",
+				Handler:  d.dictionaryHandler.HandleGetRows,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/dictionaries/{id}/data",
-				Request: dictionaries.UpsertRowsRequest{},
-				Summary: "Insert or update dictionary rows.",
-				Handler: d.dictionaryHandler.HandleUpsertRows,
+				Method:   http.MethodPost,
+				Path:     "/dictionaries/{id}/data",
+				Request:  dictionaries.UpsertRowsRequest{},
+				Response: api.Response[map[string]int]{},
+				Summary:  "Insert or update dictionary rows.",
+				Handler:  d.dictionaryHandler.HandleUpsertRows,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/dictionaries/{id}/data/{key}",
-				Summary: "Delete one dictionary row.",
-				Handler: d.dictionaryHandler.HandleDeleteRow,
+				Method:   http.MethodDelete,
+				Path:     "/dictionaries/{id}/data/{key}",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Delete one dictionary row.",
+				Handler:  d.dictionaryHandler.HandleDeleteRow,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/dictionaries/{id}/import",
-				Summary: "Load dictionary rows from an uploaded CSV.",
-				Handler: d.dictionaryHandler.HandleImportCSV,
+				Method:   http.MethodPost,
+				Path:     "/dictionaries/{id}/import",
+				Response: api.Response[map[string]int]{},
+				Summary:  "Load dictionary rows from an uploaded CSV.",
+				Handler:  d.dictionaryHandler.HandleImportCSV,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodGet,
@@ -1666,121 +1802,139 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.dictionaryHandler.HandleExportCSV,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/dictionaries/{id}/columns",
-				Request: dictionaries.AddColumnRequest{},
-				Summary: "Add a column to a dictionary.",
-				Handler: d.dictionaryHandler.HandleAddColumn,
+				Method:   http.MethodPost,
+				Path:     "/dictionaries/{id}/columns",
+				Request:  dictionaries.AddColumnRequest{},
+				Response: api.Response[*dictionaries.Dictionary]{},
+				Summary:  "Add a column to a dictionary.",
+				Handler:  d.dictionaryHandler.HandleAddColumn,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/dictionaries/{id}/columns/{name}",
-				Summary: "Remove a column from a dictionary.",
-				Handler: d.dictionaryHandler.HandleRemoveColumn,
+				Method:   http.MethodDelete,
+				Path:     "/dictionaries/{id}/columns/{name}",
+				Response: api.Response[*dictionaries.Dictionary]{},
+				Summary:  "Remove a column from a dictionary.",
+				Handler:  d.dictionaryHandler.HandleRemoveColumn,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/dictionaries/{id}/columns/{name}/key",
-				Summary: "Make a column part of the dictionary's key.",
-				Handler: d.dictionaryHandler.HandleSetColumnKey,
+				Method:   http.MethodPost,
+				Path:     "/dictionaries/{id}/columns/{name}/key",
+				Response: api.Response[*dictionaries.Dictionary]{},
+				Summary:  "Make a column part of the dictionary's key.",
+				Handler:  d.dictionaryHandler.HandleSetColumnKey,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/dictionaries/{id}/columns/{name}/key",
-				Summary: "Remove a column from the dictionary's key.",
-				Handler: d.dictionaryHandler.HandleUnsetColumnKey,
+				Method:   http.MethodDelete,
+				Path:     "/dictionaries/{id}/columns/{name}/key",
+				Response: api.Response[*dictionaries.Dictionary]{},
+				Summary:  "Remove a column from the dictionary's key.",
+				Handler:  d.dictionaryHandler.HandleUnsetColumnKey,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/dictionaries/{id}/reload",
-				Summary: "Force ClickHouse to reload a dictionary.",
-				Handler: d.dictionaryHandler.HandleReloadDictionary,
+				Method:   http.MethodPost,
+				Path:     "/dictionaries/{id}/reload",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Force ClickHouse to reload a dictionary.",
+				Handler:  d.dictionaryHandler.HandleReloadDictionary,
 			})
 
 			// Analytics models
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/models",
-				Summary: "List models in scope.",
-				Handler: d.modelHandler.HandleList,
+				Method:   http.MethodGet,
+				Path:     "/models",
+				Response: api.ListResponse[*models.Model]{},
+				Summary:  "List models in scope.",
+				Handler:  d.modelHandler.HandleList,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/models",
-				Request: models.CreateRequest{},
-				Summary: "Create a model.",
-				Handler: d.modelHandler.HandleCreate,
+				Method:   http.MethodPost,
+				Path:     "/models",
+				Request:  models.CreateRequest{},
+				Response: api.Response[*models.Model]{},
+				Summary:  "Create a model.",
+				Handler:  d.modelHandler.HandleCreate,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/models/test-extraction",
-				Request: models.TestExtractionRequest{},
-				Summary: "Run a model's extraction against recent logs.",
-				Handler: d.modelHandler.HandleTestExtraction,
+				Method:   http.MethodPost,
+				Path:     "/models/test-extraction",
+				Request:  models.TestExtractionRequest{},
+				Response: api.Response[models.ExtractionTest]{},
+				Summary:  "Run a model's extraction against recent logs.",
+				Handler:  d.modelHandler.HandleTestExtraction,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/models/generate-query",
-				Request: models.GenerateQueryRequest{},
-				Summary: "Generate the BQL a model definition implies.",
-				Handler: d.modelHandler.HandleGenerateQuery,
+				Method:   http.MethodPost,
+				Path:     "/models/generate-query",
+				Request:  models.GenerateQueryRequest{},
+				Response: api.Response[map[string]string]{},
+				Summary:  "Generate the BQL a model definition implies.",
+				Handler:  d.modelHandler.HandleGenerateQuery,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/models/parse-query",
-				Request: models.ParseQueryRequest{},
-				Summary: "Lower a BQL query into a model's filter and extraction.",
-				Handler: d.modelHandler.HandleParseQuery,
+				Method:   http.MethodPost,
+				Path:     "/models/parse-query",
+				Request:  models.ParseQueryRequest{},
+				Response: api.Response[models.ParsedSource]{},
+				Summary:  "Lower a BQL query into a model's filter and extraction.",
+				Handler:  d.modelHandler.HandleParseQuery,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/models/preview",
-				Request: models.PreviewRequest{},
-				Summary: "Estimate a model's output before creating it.",
-				Handler: d.modelHandler.HandlePreview,
+				Method:   http.MethodPost,
+				Path:     "/models/preview",
+				Request:  models.PreviewRequest{},
+				Response: api.Response[*models.PreviewResult]{},
+				Summary:  "Estimate a model's output before creating it.",
+				Handler:  d.modelHandler.HandlePreview,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/models/import",
-				Summary: "Create a model from a YAML definition.",
-				Handler: d.modelHandler.HandleImport,
+				Method:   http.MethodPost,
+				Path:     "/models/import",
+				Response: api.Response[*models.Model]{},
+				Summary:  "Create a model from a YAML definition.",
+				Handler:  d.modelHandler.HandleImport,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/models/{id}",
-				Summary: "Read one model.",
-				Handler: d.modelHandler.HandleGet,
+				Method:   http.MethodGet,
+				Path:     "/models/{id}",
+				Response: api.Response[models.ModelDetail]{},
+				Summary:  "Read one model.",
+				Handler:  d.modelHandler.HandleGet,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/models/{id}",
-				Request: models.UpdateRequest{},
-				Summary: "Update a model.",
-				Handler: d.modelHandler.HandleUpdate,
+				Method:   http.MethodPut,
+				Path:     "/models/{id}",
+				Request:  models.UpdateRequest{},
+				Response: api.Response[*models.Model]{},
+				Summary:  "Update a model.",
+				Handler:  d.modelHandler.HandleUpdate,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/models/{id}",
-				Summary: "Delete a model and drop its ClickHouse objects.",
-				Handler: d.modelHandler.HandleDelete,
+				Method:   http.MethodDelete,
+				Path:     "/models/{id}",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Delete a model and drop its ClickHouse objects.",
+				Handler:  d.modelHandler.HandleDelete,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/models/{id}/data",
-				Summary: "Read a model's rows with their scores.",
-				Handler: d.modelHandler.HandleGetData,
+				Method:   http.MethodGet,
+				Path:     "/models/{id}/data",
+				Response: api.ListResponse[map[string]interface{}]{},
+				Summary:  "Read a model's rows with their scores.",
+				Handler:  d.modelHandler.HandleGetData,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/models/{id}/stats",
-				Summary: "Return a model's aggregate statistics.",
-				Handler: d.modelHandler.HandleGetStats,
+				Method:   http.MethodGet,
+				Path:     "/models/{id}/stats",
+				Response: api.Response[map[string]interface{}]{},
+				Summary:  "Return a model's aggregate statistics.",
+				Handler:  d.modelHandler.HandleGetStats,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/models/{id}/histogram",
-				Summary: "Return a model's score distribution.",
-				Handler: d.modelHandler.HandleGetHistogram,
+				Method:   http.MethodGet,
+				Path:     "/models/{id}/histogram",
+				Response: api.Response[map[string]interface{}]{},
+				Summary:  "Return a model's score distribution.",
+				Handler:  d.modelHandler.HandleGetHistogram,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodGet,
@@ -1789,135 +1943,155 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.modelHandler.HandleExport,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/models/{id}/enable-alert",
-				Summary: "Enable the alert backing a model.",
-				Handler: d.modelHandler.HandleEnableAlert,
+				Method:   http.MethodPost,
+				Path:     "/models/{id}/enable-alert",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Enable the alert backing a model.",
+				Handler:  d.modelHandler.HandleEnableAlert,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/models/{id}/disable-alert",
-				Summary: "Pause the alert backing a model.",
-				Handler: d.modelHandler.HandleDisableAlert,
+				Method:   http.MethodPost,
+				Path:     "/models/{id}/disable-alert",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Pause the alert backing a model.",
+				Handler:  d.modelHandler.HandleDisableAlert,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/models/{id}/backfill",
-				Request: models.BackfillRequest{},
-				Summary: "Start a one-time historical backfill for a model.",
-				Handler: d.modelHandler.HandleStartBackfill,
+				Method:   http.MethodPost,
+				Path:     "/models/{id}/backfill",
+				Request:  models.BackfillRequest{},
+				Response: api.Response[*models.Model]{},
+				Summary:  "Start a one-time historical backfill for a model.",
+				Handler:  d.modelHandler.HandleStartBackfill,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/models/{id}/backfill/cancel",
-				Summary: "Stop an in-flight model backfill, keeping partial data.",
-				Handler: d.modelHandler.HandleCancelBackfill,
+				Method:   http.MethodPost,
+				Path:     "/models/{id}/backfill/cancel",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Stop an in-flight model backfill, keeping partial data.",
+				Handler:  d.modelHandler.HandleCancelBackfill,
 			})
 
 			// Dictionary actions (for alerts)
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/dictionary-actions",
-				Summary: "List dictionary actions in scope.",
-				Handler: d.dictionaryHandler.HandleListDictionaryActions,
+				Method:   http.MethodGet,
+				Path:     "/dictionary-actions",
+				Response: api.ListResponse[*dictionaries.DictionaryAction]{},
+				Summary:  "List dictionary actions in scope.",
+				Handler:  d.dictionaryHandler.HandleListDictionaryActions,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/dictionary-actions",
-				Request: dictionaries.DictionaryActionRequest{},
-				Summary: "Create a dictionary action.",
-				Handler: d.dictionaryHandler.HandleCreateDictionaryAction,
+				Method:   http.MethodPost,
+				Path:     "/dictionary-actions",
+				Request:  dictionaries.DictionaryActionRequest{},
+				Response: api.Response[*dictionaries.DictionaryAction]{},
+				Summary:  "Create a dictionary action.",
+				Handler:  d.dictionaryHandler.HandleCreateDictionaryAction,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/dictionary-actions/{id}",
-				Summary: "Read one dictionary action.",
-				Handler: d.dictionaryHandler.HandleGetDictionaryAction,
+				Method:   http.MethodGet,
+				Path:     "/dictionary-actions/{id}",
+				Response: api.Response[*dictionaries.DictionaryAction]{},
+				Summary:  "Read one dictionary action.",
+				Handler:  d.dictionaryHandler.HandleGetDictionaryAction,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/dictionary-actions/{id}",
-				Request: dictionaries.DictionaryActionRequest{},
-				Summary: "Update a dictionary action.",
-				Handler: d.dictionaryHandler.HandleUpdateDictionaryAction,
+				Method:   http.MethodPut,
+				Path:     "/dictionary-actions/{id}",
+				Request:  dictionaries.DictionaryActionRequest{},
+				Response: api.Response[*dictionaries.DictionaryAction]{},
+				Summary:  "Update a dictionary action.",
+				Handler:  d.dictionaryHandler.HandleUpdateDictionaryAction,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/dictionary-actions/{id}",
-				Summary: "Delete a dictionary action.",
-				Handler: d.dictionaryHandler.HandleDeleteDictionaryAction,
+				Method:   http.MethodDelete,
+				Path:     "/dictionary-actions/{id}",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Delete a dictionary action.",
+				Handler:  d.dictionaryHandler.HandleDeleteDictionaryAction,
 			})
 
 			// Saved Queries
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/saved-queries",
-				Summary: "List saved queries in scope.",
-				Handler: d.savedQueryHandler.HandleList,
+				Method:   http.MethodGet,
+				Path:     "/saved-queries",
+				Response: api.ListResponse[savedqueries.SavedQuery]{},
+				Summary:  "List saved queries in scope.",
+				Handler:  d.savedQueryHandler.HandleList,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/saved-queries",
-				Request: savedqueries.SavedQueryRequest{},
-				Summary: "Save a query.",
-				Handler: d.savedQueryHandler.HandleCreate,
+				Method:   http.MethodPost,
+				Path:     "/saved-queries",
+				Request:  savedqueries.SavedQueryRequest{},
+				Response: api.Response[savedqueries.SavedQuery]{},
+				Summary:  "Save a query.",
+				Handler:  d.savedQueryHandler.HandleCreate,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/saved-queries/{id}",
-				Request: savedqueries.SavedQueryRequest{},
-				Summary: "Update a saved query.",
-				Handler: d.savedQueryHandler.HandleUpdate,
+				Method:   http.MethodPut,
+				Path:     "/saved-queries/{id}",
+				Request:  savedqueries.SavedQueryRequest{},
+				Response: api.Response[savedqueries.SavedQuery]{},
+				Summary:  "Update a saved query.",
+				Handler:  d.savedQueryHandler.HandleUpdate,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/saved-queries/{id}",
-				Summary: "Delete a saved query.",
-				Handler: d.savedQueryHandler.HandleDelete,
+				Method:   http.MethodDelete,
+				Path:     "/saved-queries/{id}",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Delete a saved query.",
+				Handler:  d.savedQueryHandler.HandleDelete,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/saved-queries/{id}/use",
-				Summary: "Record that a saved query was run.",
-				Handler: d.savedQueryHandler.HandleMarkUsed,
+				Method:   http.MethodPost,
+				Path:     "/saved-queries/{id}/use",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Record that a saved query was run.",
+				Handler:  d.savedQueryHandler.HandleMarkUsed,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/saved-queries/{id}/favorite",
-				Summary: "Pin a saved query for the caller.",
-				Handler: d.savedQueryHandler.HandleFavorite,
+				Method:   http.MethodPost,
+				Path:     "/saved-queries/{id}/favorite",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Pin a saved query for the caller.",
+				Handler:  d.savedQueryHandler.HandleFavorite,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/saved-queries/{id}/favorite",
-				Summary: "Unpin a saved query for the caller.",
-				Handler: d.savedQueryHandler.HandleUnfavorite,
+				Method:   http.MethodDelete,
+				Path:     "/saved-queries/{id}/favorite",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Unpin a saved query for the caller.",
+				Handler:  d.savedQueryHandler.HandleUnfavorite,
 			})
 
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/query-history",
-				Summary: "List the caller's recent queries.",
-				Handler: d.queryHistoryHandler.HandleList,
+				Method:   http.MethodGet,
+				Path:     "/query-history",
+				Response: api.ListResponse[queryhistory.QueryHistory]{},
+				Summary:  "List the caller's recent queries.",
+				Handler:  d.queryHistoryHandler.HandleList,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/query-history",
-				Request: queryhistory.RecordRequest{},
-				Summary: "Record a query the caller ran.",
-				Handler: d.queryHistoryHandler.HandleRecord,
+				Method:   http.MethodPost,
+				Path:     "/query-history",
+				Request:  queryhistory.RecordRequest{},
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Record a query the caller ran.",
+				Handler:  d.queryHistoryHandler.HandleRecord,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/query-history",
-				Summary: "Clear the caller's query history.",
-				Handler: d.queryHistoryHandler.HandleClear,
+				Method:   http.MethodDelete,
+				Path:     "/query-history",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Clear the caller's query history.",
+				Handler:  d.queryHistoryHandler.HandleClear,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/query-history/{id}",
-				Summary: "Delete one query-history entry.",
-				Handler: d.queryHistoryHandler.HandleDelete,
+				Method:   http.MethodDelete,
+				Path:     "/query-history/{id}",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Delete one query-history entry.",
+				Handler:  d.queryHistoryHandler.HandleDelete,
 			})
 
 			// Chat. Conversations are private per-user state keyed on a real
@@ -1926,42 +2100,48 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Group(func(r api.Router) {
 				r.Use(auth.DenyAPIKey("chat"))
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/chat/conversations",
-					Summary: "List the caller's chat conversations.",
-					Handler: d.chatHandler.HandleListConversations,
+					Method:   http.MethodGet,
+					Path:     "/chat/conversations",
+					Response: api.ListResponse[*chat.Conversation]{},
+					Summary:  "List the caller's chat conversations.",
+					Handler:  d.chatHandler.HandleListConversations,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/chat/conversations",
-					Request: chat.CreateConversationRequest{},
-					Summary: "Start a chat conversation.",
-					Handler: d.chatHandler.HandleCreateConversation,
+					Method:   http.MethodPost,
+					Path:     "/chat/conversations",
+					Request:  chat.CreateConversationRequest{},
+					Response: api.Response[*chat.Conversation]{},
+					Summary:  "Start a chat conversation.",
+					Handler:  d.chatHandler.HandleCreateConversation,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPatch,
-					Path:    "/chat/conversations/{id}",
-					Request: chat.RenameConversationRequest{},
-					Summary: "Rename a conversation.",
-					Handler: d.chatHandler.HandleRenameConversation,
+					Method:   http.MethodPatch,
+					Path:     "/chat/conversations/{id}",
+					Request:  chat.RenameConversationRequest{},
+					Response: api.Response[*chat.Conversation]{},
+					Summary:  "Rename a conversation.",
+					Handler:  d.chatHandler.HandleRenameConversation,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodDelete,
-					Path:    "/chat/conversations/{id}",
-					Summary: "Delete a conversation.",
-					Handler: d.chatHandler.HandleDeleteConversation,
+					Method:   http.MethodDelete,
+					Path:     "/chat/conversations/{id}",
+					Response: api.Response[map[string]bool]{},
+					Summary:  "Delete a conversation.",
+					Handler:  d.chatHandler.HandleDeleteConversation,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/chat/conversations/{id}/messages",
-					Summary: "Read a conversation's messages.",
-					Handler: d.chatHandler.HandleGetMessages,
+					Method:   http.MethodGet,
+					Path:     "/chat/conversations/{id}/messages",
+					Response: api.ListResponse[*chat.Message]{},
+					Summary:  "Read a conversation's messages.",
+					Handler:  d.chatHandler.HandleGetMessages,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodDelete,
-					Path:    "/chat/conversations/{id}/messages",
-					Summary: "Clear a conversation's messages.",
-					Handler: d.chatHandler.HandleClearMessages,
+					Method:   http.MethodDelete,
+					Path:     "/chat/conversations/{id}/messages",
+					Response: api.Response[map[string]bool]{},
+					Summary:  "Clear a conversation's messages.",
+					Handler:  d.chatHandler.HandleClearMessages,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPost,
@@ -1971,125 +2151,143 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler: d.chatHandler.HandleStream,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPatch,
-					Path:    "/chat/conversations/{id}/libraries",
-					Request: chat.SetConversationLibrariesRequest{},
-					Summary: "Set the instruction libraries attached to a conversation.",
-					Handler: d.chatHandler.HandleSetConversationLibraries,
+					Method:   http.MethodPatch,
+					Path:     "/chat/conversations/{id}/libraries",
+					Request:  chat.SetConversationLibrariesRequest{},
+					Response: api.Response[map[string]bool]{},
+					Summary:  "Set the instruction libraries attached to a conversation.",
+					Handler:  d.chatHandler.HandleSetConversationLibraries,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/chat/conversations/{id}/libraries",
-					Summary: "List the instruction libraries attached to a conversation.",
-					Handler: d.chatHandler.HandleGetConversationLibraries,
+					Method:   http.MethodGet,
+					Path:     "/chat/conversations/{id}/libraries",
+					Response: api.ListResponse[*instructions.Library]{},
+					Summary:  "List the instruction libraries attached to a conversation.",
+					Handler:  d.chatHandler.HandleGetConversationLibraries,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodDelete,
-					Path:    "/chat/conversations",
-					Summary: "Delete all of the caller's conversations.",
-					Handler: d.chatHandler.HandleDeleteAllConversations,
+					Method:   http.MethodDelete,
+					Path:     "/chat/conversations",
+					Response: api.Response[map[string]bool]{},
+					Summary:  "Delete all of the caller's conversations.",
+					Handler:  d.chatHandler.HandleDeleteAllConversations,
 				})
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/chat/instructions",
-				Summary: "List the caller's chat instructions.",
-				Handler: d.chatHandler.HandleListInstructions,
+				Method:   http.MethodGet,
+				Path:     "/chat/instructions",
+				Response: api.ListResponse[*chat.Instruction]{},
+				Summary:  "List the caller's chat instructions.",
+				Handler:  d.chatHandler.HandleListInstructions,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/chat/instructions",
-				Request: chat.InstructionRequest{},
-				Summary: "Create a chat instruction.",
-				Handler: d.chatHandler.HandleCreateInstruction,
+				Method:   http.MethodPost,
+				Path:     "/chat/instructions",
+				Request:  chat.InstructionRequest{},
+				Response: api.Response[*chat.Instruction]{},
+				Summary:  "Create a chat instruction.",
+				Handler:  d.chatHandler.HandleCreateInstruction,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/chat/instructions/{instructionId}",
-				Request: chat.InstructionRequest{},
-				Summary: "Update a chat instruction.",
-				Handler: d.chatHandler.HandleUpdateInstruction,
+				Method:   http.MethodPut,
+				Path:     "/chat/instructions/{instructionId}",
+				Request:  chat.InstructionRequest{},
+				Response: api.Response[*chat.Instruction]{},
+				Summary:  "Update a chat instruction.",
+				Handler:  d.chatHandler.HandleUpdateInstruction,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/chat/instructions/{instructionId}",
-				Summary: "Delete a chat instruction.",
-				Handler: d.chatHandler.HandleDeleteInstruction,
+				Method:   http.MethodDelete,
+				Path:     "/chat/instructions/{instructionId}",
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Delete a chat instruction.",
+				Handler:  d.chatHandler.HandleDeleteInstruction,
 			})
 
 			// Context Links (enabled endpoint for all users, CRUD admin-checked in handler)
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/context-links/enabled",
-				Summary: "List the context links enabled for the current scope.",
-				Handler: d.contextLinkHandler.HandleListEnabled,
+				Method:   http.MethodGet,
+				Path:     "/context-links/enabled",
+				Response: api.ListResponse[contextlinks.ContextLink]{},
+				Summary:  "List the context links enabled for the current scope.",
+				Handler:  d.contextLinkHandler.HandleListEnabled,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/context-links",
-				Summary: "List context links in scope.",
-				Handler: d.contextLinkHandler.HandleList,
+				Method:   http.MethodGet,
+				Path:     "/context-links",
+				Response: api.ListResponse[contextlinks.ContextLink]{},
+				Summary:  "List context links in scope.",
+				Handler:  d.contextLinkHandler.HandleList,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/context-links",
-				Request: contextlinks.CreateRequest{},
-				Summary: "Create a context link.",
-				Handler: d.contextLinkHandler.HandleCreate,
+				Method:   http.MethodPost,
+				Path:     "/context-links",
+				Request:  contextlinks.CreateRequest{},
+				Response: api.Response[*contextlinks.ContextLink]{},
+				Summary:  "Create a context link.",
+				Handler:  d.contextLinkHandler.HandleCreate,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/context-links/{id}",
-				Summary: "Read one context link.",
-				Handler: d.contextLinkHandler.HandleGet,
+				Method:   http.MethodGet,
+				Path:     "/context-links/{id}",
+				Response: api.Response[*contextlinks.ContextLink]{},
+				Summary:  "Read one context link.",
+				Handler:  d.contextLinkHandler.HandleGet,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/context-links/{id}",
-				Request: contextlinks.UpdateRequest{},
-				Summary: "Update a context link.",
-				Handler: d.contextLinkHandler.HandleUpdate,
+				Method:   http.MethodPut,
+				Path:     "/context-links/{id}",
+				Request:  contextlinks.UpdateRequest{},
+				Response: api.Response[*contextlinks.ContextLink]{},
+				Summary:  "Update a context link.",
+				Handler:  d.contextLinkHandler.HandleUpdate,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/context-links/{id}",
-				Summary: "Delete a context link.",
-				Handler: d.contextLinkHandler.HandleDelete,
+				Method:   http.MethodDelete,
+				Path:     "/context-links/{id}",
+				Response: api.Response[map[string]string]{},
+				Summary:  "Delete a context link.",
+				Handler:  d.contextLinkHandler.HandleDelete,
 			})
 
 			// Alert Feeds
 			// Instruction Libraries
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/instruction-libraries",
-				Summary: "List instruction libraries in scope.",
-				Handler: d.instructionHandler.HandleListLibraries,
+				Method:   http.MethodGet,
+				Path:     "/instruction-libraries",
+				Response: api.Response[[]*instructions.Library]{},
+				Summary:  "List instruction libraries in scope.",
+				Handler:  d.instructionHandler.HandleListLibraries,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/instruction-libraries/ensure-default",
-				Summary: "Return the scope's library, creating it if there is none.",
-				Handler: d.instructionHandler.HandleEnsureDefaultLibrary,
+				Method:   http.MethodGet,
+				Path:     "/instruction-libraries/ensure-default",
+				Response: api.Response[*instructions.Library]{},
+				Summary:  "Return the scope's library, creating it if there is none.",
+				Handler:  d.instructionHandler.HandleEnsureDefaultLibrary,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/instruction-libraries",
-				Request: instructions.CreateLibraryRequest{},
-				Summary: "Create an instruction library.",
-				Handler: d.instructionHandler.HandleCreateLibrary,
+				Method:   http.MethodPost,
+				Path:     "/instruction-libraries",
+				Request:  instructions.CreateLibraryRequest{},
+				Response: api.Response[*instructions.Library]{},
+				Summary:  "Create an instruction library.",
+				Handler:  d.instructionHandler.HandleCreateLibrary,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/instruction-libraries/{id}",
-				Summary: "Read one library with its pages.",
-				Handler: d.instructionHandler.HandleGetLibrary,
+				Method:   http.MethodGet,
+				Path:     "/instruction-libraries/{id}",
+				Response: api.Response[map[string]interface{}]{},
+				Summary:  "Read one library with its pages.",
+				Handler:  d.instructionHandler.HandleGetLibrary,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/instruction-libraries/{id}",
-				Request: instructions.UpdateLibraryRequest{},
-				Summary: "Update a library.",
-				Handler: d.instructionHandler.HandleUpdateLibrary,
+				Method:   http.MethodPut,
+				Path:     "/instruction-libraries/{id}",
+				Request:  instructions.UpdateLibraryRequest{},
+				Response: api.Response[*instructions.Library]{},
+				Summary:  "Update a library.",
+				Handler:  d.instructionHandler.HandleUpdateLibrary,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
@@ -2098,36 +2296,41 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.instructionHandler.HandleDeleteLibrary,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/instruction-libraries/{id}/pages",
-				Summary: "List a library's pages.",
-				Handler: d.instructionHandler.HandleListPages,
+				Method:   http.MethodGet,
+				Path:     "/instruction-libraries/{id}/pages",
+				Response: api.Response[[]*instructions.Page]{},
+				Summary:  "List a library's pages.",
+				Handler:  d.instructionHandler.HandleListPages,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/instruction-libraries/{id}/pages",
-				Request: instructions.CreatePageRequest{},
-				Summary: "Create a page in a library.",
-				Handler: d.instructionHandler.HandleCreatePage,
+				Method:   http.MethodPost,
+				Path:     "/instruction-libraries/{id}/pages",
+				Request:  instructions.CreatePageRequest{},
+				Response: api.Response[*instructions.Page]{},
+				Summary:  "Create a page in a library.",
+				Handler:  d.instructionHandler.HandleCreatePage,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/instruction-libraries/{id}/pages/{pageId}",
-				Summary: "Read one page.",
-				Handler: d.instructionHandler.HandleGetPage,
+				Method:   http.MethodGet,
+				Path:     "/instruction-libraries/{id}/pages/{pageId}",
+				Response: api.Response[*instructions.Page]{},
+				Summary:  "Read one page.",
+				Handler:  d.instructionHandler.HandleGetPage,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/instruction-libraries/{id}/pages/{pageId}/backlinks",
-				Summary: "List the pages linking to a page.",
-				Handler: d.instructionHandler.HandleGetBacklinks,
+				Method:   http.MethodGet,
+				Path:     "/instruction-libraries/{id}/pages/{pageId}/backlinks",
+				Response: api.Response[[]instructions.PageRef]{},
+				Summary:  "List the pages linking to a page.",
+				Handler:  d.instructionHandler.HandleGetBacklinks,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/instruction-libraries/{id}/pages/{pageId}",
-				Request: instructions.UpdatePageRequest{},
-				Summary: "Update a page.",
-				Handler: d.instructionHandler.HandleUpdatePage,
+				Method:   http.MethodPut,
+				Path:     "/instruction-libraries/{id}/pages/{pageId}",
+				Request:  instructions.UpdatePageRequest{},
+				Response: api.Response[*instructions.Page]{},
+				Summary:  "Update a page.",
+				Handler:  d.instructionHandler.HandleUpdatePage,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPatch,
@@ -2137,24 +2340,27 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.instructionHandler.HandleMovePage,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/instruction-libraries/{id}/folders",
-				Summary: "List a library's folders.",
-				Handler: d.instructionHandler.HandleListFolders,
+				Method:   http.MethodGet,
+				Path:     "/instruction-libraries/{id}/folders",
+				Response: api.Response[[]*instructions.Folder]{},
+				Summary:  "List a library's folders.",
+				Handler:  d.instructionHandler.HandleListFolders,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/instruction-libraries/{id}/folders",
-				Request: instructions.CreateFolderRequest{},
-				Summary: "Create a folder in a library.",
-				Handler: d.instructionHandler.HandleCreateFolder,
+				Method:   http.MethodPost,
+				Path:     "/instruction-libraries/{id}/folders",
+				Request:  instructions.CreateFolderRequest{},
+				Response: api.Response[*instructions.Folder]{},
+				Summary:  "Create a folder in a library.",
+				Handler:  d.instructionHandler.HandleCreateFolder,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/instruction-libraries/{id}/folders/{folderId}",
-				Request: instructions.UpdateFolderRequest{},
-				Summary: "Rename or reorder a folder.",
-				Handler: d.instructionHandler.HandleUpdateFolder,
+				Method:   http.MethodPut,
+				Path:     "/instruction-libraries/{id}/folders/{folderId}",
+				Request:  instructions.UpdateFolderRequest{},
+				Response: api.Response[*instructions.Folder]{},
+				Summary:  "Rename or reorder a folder.",
+				Handler:  d.instructionHandler.HandleUpdateFolder,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
@@ -2169,37 +2375,42 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.instructionHandler.HandleDeletePage,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/instruction-libraries/{id}/sync",
-				Summary: "Sync a repo-backed library now.",
-				Handler: d.instructionHandler.HandleSyncLibrary,
+				Method:   http.MethodPost,
+				Path:     "/instruction-libraries/{id}/sync",
+				Response: api.Response[*instructions.SyncResult]{},
+				Summary:  "Sync a repo-backed library now.",
+				Handler:  d.instructionHandler.HandleSyncLibrary,
 			})
 
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/feeds",
-				Summary: "List detection feeds in scope.",
-				Handler: d.feedHandler.HandleListFeeds,
+				Method:   http.MethodGet,
+				Path:     "/feeds",
+				Response: api.Response[[]*feeds.Feed]{},
+				Summary:  "List detection feeds in scope.",
+				Handler:  d.feedHandler.HandleListFeeds,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/feeds",
-				Request: feeds.CreateRequest{},
-				Summary: "Create a detection feed.",
-				Handler: d.feedHandler.HandleCreateFeed,
+				Method:   http.MethodPost,
+				Path:     "/feeds",
+				Request:  feeds.CreateRequest{},
+				Response: api.Response[*feeds.Feed]{},
+				Summary:  "Create a detection feed.",
+				Handler:  d.feedHandler.HandleCreateFeed,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/feeds/{id}",
-				Summary: "Read one feed.",
-				Handler: d.feedHandler.HandleGetFeed,
+				Method:   http.MethodGet,
+				Path:     "/feeds/{id}",
+				Response: api.Response[*feeds.Feed]{},
+				Summary:  "Read one feed.",
+				Handler:  d.feedHandler.HandleGetFeed,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/feeds/{id}",
-				Request: feeds.UpdateRequest{},
-				Summary: "Update a feed.",
-				Handler: d.feedHandler.HandleUpdateFeed,
+				Method:   http.MethodPut,
+				Path:     "/feeds/{id}",
+				Request:  feeds.UpdateRequest{},
+				Response: api.Response[*feeds.Feed]{},
+				Summary:  "Update a feed.",
+				Handler:  d.feedHandler.HandleUpdateFeed,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodDelete,
@@ -2214,10 +2425,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.feedHandler.HandleSyncFeed,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/feeds/{id}/alerts",
-				Summary: "List the alerts a feed created.",
-				Handler: d.feedHandler.HandleGetFeedAlerts,
+				Method:   http.MethodGet,
+				Path:     "/feeds/{id}/alerts",
+				Response: api.Response[[]*alerts.Alert]{},
+				Summary:  "List the alerts a feed created.",
+				Handler:  d.feedHandler.HandleGetFeedAlerts,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
@@ -2232,23 +2444,26 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.feedHandler.HandleDisableAllAlerts,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/alerts/feed",
-				Summary: "List feed alerts in scope.",
-				Handler: d.feedHandler.HandleListAllFeedAlerts,
+				Method:   http.MethodGet,
+				Path:     "/alerts/feed",
+				Response: api.Response[*alerts.FeedAlertPage]{},
+				Summary:  "List feed alerts in scope.",
+				Handler:  d.feedHandler.HandleListAllFeedAlerts,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/alerts/feed/batch-toggle",
-				Request: alerts.BatchToggleFeedAlertsRequest{},
-				Summary: "Enable or disable a set of feed alerts.",
-				Handler: d.alertHandler.HandleBatchToggleFeedAlerts,
+				Method:   http.MethodPost,
+				Path:     "/alerts/feed/batch-toggle",
+				Request:  alerts.BatchToggleFeedAlertsRequest{},
+				Response: api.Response[map[string]int]{},
+				Summary:  "Enable or disable a set of feed alerts.",
+				Handler:  d.alertHandler.HandleBatchToggleFeedAlerts,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/alerts/{id}/duplicate",
-				Summary: "Copy a feed alert into a standalone editable alert.",
-				Handler: d.alertHandler.HandleDuplicateAlert,
+				Method:   http.MethodPost,
+				Path:     "/alerts/{id}/duplicate",
+				Response: api.Response[*alerts.Alert]{},
+				Summary:  "Copy a feed alert into a standalone editable alert.",
+				Handler:  d.alertHandler.HandleDuplicateAlert,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
@@ -2260,67 +2475,77 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Normalizers (list for all users, CRUD admin-checked in handler)
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/normalizers",
-				Summary: "List normalizers.",
-				Handler: d.normalizerHandler.HandleList,
+				Method:   http.MethodGet,
+				Path:     "/normalizers",
+				Response: api.ListResponse[normalizers.Normalizer]{},
+				Summary:  "List normalizers.",
+				Handler:  d.normalizerHandler.HandleList,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/normalizers",
-				Request: normalizers.CreateRequest{},
-				Summary: "Create a normalizer.",
-				Handler: d.normalizerHandler.HandleCreate,
+				Method:   http.MethodPost,
+				Path:     "/normalizers",
+				Request:  normalizers.CreateRequest{},
+				Response: api.Response[*normalizers.Normalizer]{},
+				Summary:  "Create a normalizer.",
+				Handler:  d.normalizerHandler.HandleCreate,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/normalizers/preview",
-				Request: normalizers.PreviewRequest{},
-				Summary: "Run a normalizer against sample input without saving it.",
-				Handler: d.normalizerHandler.HandlePreview,
+				Method:   http.MethodPost,
+				Path:     "/normalizers/preview",
+				Request:  normalizers.PreviewRequest{},
+				Response: api.Response[normalizers.TraceResult]{},
+				Summary:  "Run a normalizer against sample input without saving it.",
+				Handler:  d.normalizerHandler.HandlePreview,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/normalizers/samples",
-				Summary: "Return recent raw logs for the normalizer editor.",
-				Handler: d.normalizerHandler.HandleSamples,
+				Method:   http.MethodGet,
+				Path:     "/normalizers/samples",
+				Response: api.ListResponse[normalizers.LogSample]{},
+				Summary:  "Return recent raw logs for the normalizer editor.",
+				Handler:  d.normalizerHandler.HandleSamples,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/normalizers/import",
-				Summary: "Import a normalizer from YAML.",
-				Handler: d.normalizerHandler.HandleImportYAML,
+				Method:   http.MethodPost,
+				Path:     "/normalizers/import",
+				Response: api.Response[*normalizers.Normalizer]{},
+				Summary:  "Import a normalizer from YAML.",
+				Handler:  d.normalizerHandler.HandleImportYAML,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/normalizers/{id}",
-				Summary: "Read one normalizer.",
-				Handler: d.normalizerHandler.HandleGet,
+				Method:   http.MethodGet,
+				Path:     "/normalizers/{id}",
+				Response: api.Response[*normalizers.Normalizer]{},
+				Summary:  "Read one normalizer.",
+				Handler:  d.normalizerHandler.HandleGet,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/normalizers/{id}",
-				Request: normalizers.UpdateRequest{},
-				Summary: "Update a normalizer.",
-				Handler: d.normalizerHandler.HandleUpdate,
+				Method:   http.MethodPut,
+				Path:     "/normalizers/{id}",
+				Request:  normalizers.UpdateRequest{},
+				Response: api.Response[*normalizers.Normalizer]{},
+				Summary:  "Update a normalizer.",
+				Handler:  d.normalizerHandler.HandleUpdate,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/normalizers/{id}",
-				Summary: "Delete a normalizer.",
-				Handler: d.normalizerHandler.HandleDelete,
+				Method:   http.MethodDelete,
+				Path:     "/normalizers/{id}",
+				Response: api.Response[map[string]string]{},
+				Summary:  "Delete a normalizer.",
+				Handler:  d.normalizerHandler.HandleDelete,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/normalizers/{id}/set-default",
-				Summary: "Make a normalizer the default for new tokens.",
-				Handler: d.normalizerHandler.HandleSetDefault,
+				Method:   http.MethodPost,
+				Path:     "/normalizers/{id}/set-default",
+				Response: api.Response[map[string]string]{},
+				Summary:  "Make a normalizer the default for new tokens.",
+				Handler:  d.normalizerHandler.HandleSetDefault,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/normalizers/{id}/duplicate",
-				Summary: "Copy a normalizer under a new name.",
-				Handler: d.normalizerHandler.HandleDuplicate,
+				Method:   http.MethodPost,
+				Path:     "/normalizers/{id}/duplicate",
+				Response: api.Response[*normalizers.Normalizer]{},
+				Summary:  "Copy a normalizer under a new name.",
+				Handler:  d.normalizerHandler.HandleDuplicate,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodGet,
@@ -2329,38 +2554,43 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.normalizerHandler.HandleExportYAML,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/normalizers/{id}/tokens",
-				Summary: "List the ingest tokens using a normalizer.",
-				Handler: d.normalizerHandler.HandleTokenUsage,
+				Method:   http.MethodGet,
+				Path:     "/normalizers/{id}/tokens",
+				Response: api.ListResponse[normalizers.TokenUsageInfo]{},
+				Summary:  "List the ingest tokens using a normalizer.",
+				Handler:  d.normalizerHandler.HandleTokenUsage,
 			})
 
 			// Schema fields (admin-only, checked in handler)
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/admin/schema-fields",
-				Summary: "List the configured schema fields.",
-				Handler: d.schemaFieldsHandler.HandleList,
+				Method:   http.MethodGet,
+				Path:     "/admin/schema-fields",
+				Response: api.Response[schemafields.FieldCatalog]{},
+				Summary:  "List the configured schema fields.",
+				Handler:  d.schemaFieldsHandler.HandleList,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/admin/schema-fields",
-				Request: schemafields.CreateRequest{},
-				Summary: "Add a schema field.",
-				Handler: d.schemaFieldsHandler.HandleCreate,
+				Method:   http.MethodPost,
+				Path:     "/admin/schema-fields",
+				Request:  schemafields.CreateRequest{},
+				Response: api.Response[*schemafields.SchemaField]{},
+				Summary:  "Add a schema field.",
+				Handler:  d.schemaFieldsHandler.HandleCreate,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/admin/schema-fields/{name}",
-				Summary: "Remove a schema field.",
-				Handler: d.schemaFieldsHandler.HandleDelete,
+				Method:   http.MethodDelete,
+				Path:     "/admin/schema-fields/{name}",
+				Response: api.Response[map[string]string]{},
+				Summary:  "Remove a schema field.",
+				Handler:  d.schemaFieldsHandler.HandleDelete,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/admin/schema-fields/reset",
-				Request: schemafields.ResetRequest{},
-				Summary: "Rebuild the ClickHouse schema, dropping all log data.",
-				Handler: d.schemaFieldsHandler.HandleReset,
+				Method:   http.MethodPost,
+				Path:     "/admin/schema-fields/reset",
+				Request:  schemafields.ResetRequest{},
+				Response: api.Response[map[string]string]{},
+				Summary:  "Rebuild the ClickHouse schema, dropping all log data.",
+				Handler:  d.schemaFieldsHandler.HandleReset,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodGet,
@@ -2369,91 +2599,104 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.schemaFieldsHandler.HandleExportYAML,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/admin/schema-fields/import",
-				Summary: "Import schema fields from YAML.",
-				Handler: d.schemaFieldsHandler.HandleImportYAML,
+				Method:   http.MethodPost,
+				Path:     "/admin/schema-fields/import",
+				Response: api.Response[string]{},
+				Summary:  "Import schema fields from YAML.",
+				Handler:  d.schemaFieldsHandler.HandleImportYAML,
 			})
 			// Field distribution, storage, capacity, and ranked suggestions. One
 			// request renders the whole schema tab, entirely from Postgres.
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/admin/schema-fields/insights",
-				Summary: "Return field distribution, storage, capacity, and suggestions.",
-				Handler: d.schemaFieldsHandler.HandleInsights,
+				Method:   http.MethodGet,
+				Path:     "/admin/schema-fields/insights",
+				Response: api.Response[*schemafields.Insights]{},
+				Summary:  "Return field distribution, storage, capacity, and suggestions.",
+				Handler:  d.schemaFieldsHandler.HandleInsights,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/admin/schema-fields/refresh",
-				Summary: "Ask the background sweep to re-measure the schema now.",
-				Handler: d.schemaFieldsHandler.HandleRefresh,
+				Method:   http.MethodPost,
+				Path:     "/admin/schema-fields/refresh",
+				Response: api.Response[map[string]string]{},
+				Summary:  "Ask the background sweep to re-measure the schema now.",
+				Handler:  d.schemaFieldsHandler.HandleRefresh,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/admin/schema-fields/ignore/{name}",
-				Summary: "Dismiss a suggested schema field.",
-				Handler: d.schemaFieldsHandler.HandleIgnore,
+				Method:   http.MethodPost,
+				Path:     "/admin/schema-fields/ignore/{name}",
+				Response: api.Response[map[string]string]{},
+				Summary:  "Dismiss a suggested schema field.",
+				Handler:  d.schemaFieldsHandler.HandleIgnore,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/admin/schema-fields/ignore/{name}",
-				Summary: "Restore a dismissed schema field to the suggestions.",
-				Handler: d.schemaFieldsHandler.HandleUnignore,
+				Method:   http.MethodDelete,
+				Path:     "/admin/schema-fields/ignore/{name}",
+				Response: api.Response[map[string]string]{},
+				Summary:  "Restore a dismissed schema field to the suggestions.",
+				Handler:  d.schemaFieldsHandler.HandleUnignore,
 			})
 
 			// Admin-only routes (checked in handler)
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/auth/register",
-				Request: auth.RegisterRequest{},
-				Summary: "Create a user and issue an invite token.",
-				Handler: d.authHandler.HandleRegister,
+				Method:   http.MethodPost,
+				Path:     "/auth/register",
+				Request:  auth.RegisterRequest{},
+				Response: auth.Response{},
+				Summary:  "Create a user and issue an invite token.",
+				Handler:  d.authHandler.HandleRegister,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/auth/invite/reset",
-				Request: auth.ResetInviteRequest{},
-				Summary: "Reissue the invite token for a pending user.",
-				Handler: d.authHandler.HandleResetInvite,
+				Method:   http.MethodPost,
+				Path:     "/auth/invite/reset",
+				Request:  auth.ResetInviteRequest{},
+				Response: auth.Response{},
+				Summary:  "Reissue the invite token for a pending user.",
+				Handler:  d.authHandler.HandleResetInvite,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/auth/admin-reset-password",
-				Request: auth.AdminResetPasswordRequest{},
-				Summary: "Reset another user's password.",
-				Handler: d.authHandler.HandleAdminResetPassword,
+				Method:   http.MethodPost,
+				Path:     "/auth/admin-reset-password",
+				Request:  auth.AdminResetPasswordRequest{},
+				Response: auth.Response{},
+				Summary:  "Reset another user's password.",
+				Handler:  d.authHandler.HandleAdminResetPassword,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/users",
-				Summary: "List users.",
-				Handler: d.authHandler.HandleListUsers,
+				Method:   http.MethodGet,
+				Path:     "/users",
+				Response: api.ListResponse[map[string]interface{}]{},
+				Summary:  "List users.",
+				Handler:  d.authHandler.HandleListUsers,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/users/{username}",
-				Request: auth.UpdateUserRequest{},
-				Summary: "Update a user's display name or role.",
-				Handler: d.authHandler.HandleUpdateUser,
+				Method:   http.MethodPut,
+				Path:     "/users/{username}",
+				Request:  auth.UpdateUserRequest{},
+				Response: auth.Response{},
+				Summary:  "Update a user's display name or role.",
+				Handler:  d.authHandler.HandleUpdateUser,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPut,
-				Path:    "/users/{username}/enabled",
-				Request: auth.SetUserEnabledRequest{},
-				Summary: "Enable or disable a user account.",
-				Handler: d.authHandler.HandleSetUserEnabled,
+				Method:   http.MethodPut,
+				Path:     "/users/{username}/enabled",
+				Request:  auth.SetUserEnabledRequest{},
+				Response: auth.Response{},
+				Summary:  "Enable or disable a user account.",
+				Handler:  d.authHandler.HandleSetUserEnabled,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/users",
-				Summary: "Delete a user.",
-				Handler: d.authHandler.HandleDeleteUser,
+				Method:   http.MethodDelete,
+				Path:     "/users",
+				Response: auth.Response{},
+				Summary:  "Delete a user.",
+				Handler:  d.authHandler.HandleDeleteUser,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/users/mtls-status",
-				Summary: "Report whether mTLS client certificate generation is available.",
-				Handler: d.authHandler.HandleMTLSStatus,
+				Method:   http.MethodGet,
+				Path:     "/users/mtls-status",
+				Response: auth.Response{},
+				Summary:  "Report whether mTLS client certificate generation is available.",
+				Handler:  d.authHandler.HandleMTLSStatus,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
@@ -2463,42 +2706,48 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.authHandler.HandleGenerateClientCert,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodDelete,
-				Path:    "/logs",
-				Summary: "Delete all log data in the fractal.",
-				Handler: d.statusHandler.HandleClearLogs,
+				Method:   http.MethodDelete,
+				Path:     "/logs",
+				Response: map[string]interface{}{},
+				Summary:  "Delete all log data in the fractal.",
+				Handler:  d.statusHandler.HandleClearLogs,
 			})
 
 			// Performance monitoring (admin-only, checked in handler)
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/admin/processes",
-				Summary: "List the queries ClickHouse is currently running.",
-				Handler: d.performanceHandler.HandleProcesses,
+				Method:   http.MethodGet,
+				Path:     "/admin/processes",
+				Response: map[string]interface{}{},
+				Summary:  "List the queries ClickHouse is currently running.",
+				Handler:  d.performanceHandler.HandleProcesses,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/admin/kill-query",
-				Summary: "Kill a running ClickHouse query.",
-				Handler: d.performanceHandler.HandleKillQuery,
+				Method:   http.MethodPost,
+				Path:     "/admin/kill-query",
+				Response: map[string]interface{}{},
+				Summary:  "Kill a running ClickHouse query.",
+				Handler:  d.performanceHandler.HandleKillQuery,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/admin/metrics",
-				Summary: "Return ClickHouse server metrics.",
-				Handler: d.performanceHandler.HandleMetrics,
+				Method:   http.MethodGet,
+				Path:     "/admin/metrics",
+				Response: map[string]interface{}{},
+				Summary:  "Return ClickHouse server metrics.",
+				Handler:  d.performanceHandler.HandleMetrics,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/admin/ingest-daily",
-				Summary: "Return per-day ingest volume.",
-				Handler: d.performanceHandler.HandleIngestDaily,
+				Method:   http.MethodGet,
+				Path:     "/admin/ingest-daily",
+				Response: map[string]interface{}{},
+				Summary:  "Return per-day ingest volume.",
+				Handler:  d.performanceHandler.HandleIngestDaily,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/admin/alert-stats",
-				Summary: "Return alert engine evaluation statistics.",
-				Handler: d.performanceHandler.HandleAlertStats,
+				Method:   http.MethodGet,
+				Path:     "/admin/alert-stats",
+				Response: map[string]interface{}{},
+				Summary:  "Return alert engine evaluation statistics.",
+				Handler:  d.performanceHandler.HandleAlertStats,
 			})
 		})
 	})
@@ -2507,16 +2756,18 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 	r.Group(func(r api.Router) {
 		r.Use(ingest.RateLimitMiddleware(d.rateLimiter))
 		r.Register(api.Route{
-			Method:  http.MethodPost,
-			Path:    "/_bulk",
-			Summary: "Ingest logs through the Elasticsearch-compatible bulk API.",
-			Handler: d.elasticHandler.HandleBulk,
+			Method:   http.MethodPost,
+			Path:     "/_bulk",
+			Response: ingest.ElasticBulkResponse{},
+			Summary:  "Ingest logs through the Elasticsearch-compatible bulk API.",
+			Handler:  d.elasticHandler.HandleBulk,
 		})
 		r.Register(api.Route{
-			Method:  http.MethodPut,
-			Path:    "/_bulk",
-			Summary: "Ingest logs through the Elasticsearch-compatible bulk API.",
-			Handler: d.elasticHandler.HandleBulk,
+			Method:   http.MethodPut,
+			Path:     "/_bulk",
+			Response: ingest.ElasticBulkResponse{},
+			Summary:  "Ingest logs through the Elasticsearch-compatible bulk API.",
+			Handler:  d.elasticHandler.HandleBulk,
 		})
 	})
 
@@ -2524,10 +2775,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 	r.Group(func(r api.Router) {
 		r.Use(ingest.RateLimitMiddleware(d.rateLimiter))
 		r.Register(api.Route{
-			Method:  http.MethodPost,
-			Path:    "/v1/logs",
-			Summary: "Ingest logs as an OTLP/HTTP ExportLogsServiceRequest.",
-			Handler: d.otlpHandler.HandleLogs,
+			Method:   http.MethodPost,
+			Path:     "/v1/logs",
+			Response: api.Response[*http.Request]{},
+			Summary:  "Ingest logs as an OTLP/HTTP ExportLogsServiceRequest.",
+			Handler:  d.otlpHandler.HandleLogs,
 		})
 	})
 	// Deep links: the documented, hand-constructible entry point external tools

@@ -52,7 +52,7 @@ func (h *Handler) HandleListDictionaries(w http.ResponseWriter, r *http.Request)
 	if dicts == nil {
 		dicts = []*Dictionary{}
 	}
-	h.respondSuccess(w, map[string]interface{}{"dictionaries": dicts, "count": len(dicts)})
+	api.WriteList(w, dicts)
 }
 
 // CreateDictionaryRequest defines a new dictionary and its columns.
@@ -421,7 +421,7 @@ func (h *Handler) HandleListDictionaryActions(w http.ResponseWriter, r *http.Req
 	if actions == nil {
 		actions = []*DictionaryAction{}
 	}
-	h.respondSuccess(w, map[string]interface{}{"actions": actions, "count": len(actions)})
+	api.WriteList(w, actions)
 }
 
 // DictionaryActionRequest carries a dictionary action, on create and on update.

@@ -63,6 +63,28 @@ func (h *Handler) HandleAttackCoverage(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, matrix.Compute(rows, filter))
 }
 
+// TechniqueRules is one ATT&CK technique with the rules covering it, plus the
+// matrix context the detail panel shows alongside them.
+type TechniqueRules struct {
+	Technique  *attack.Technique `json:"technique"`
+	Platforms  []string          `json:"platforms"`
+	LogSources []string          `json:"log_sources"`
+	URL        string            `json:"url"`
+	Rules      []attack.RuleRow  `json:"rules"`
+	Count      int               `json:"count"`
+}
+
+// AttackGaps ranks uncovered techniques. CatalogPopulated distinguishes "no
+// candidate rules exist" from "the feed catalog was never synced", which look
+// the same from an empty candidate list.
+type AttackGaps struct {
+	Gaps             []Gap `json:"gaps"`
+	UncoveredTotal   int   `json:"uncovered_total"`
+	CandidateRules   int   `json:"candidate_rules"`
+	CatalogPopulated bool  `json:"catalog_populated"`
+	Returned         int   `json:"returned"`
+}
+
 // HandleAttackTechniqueRules returns the rules covering one technique (viewer+).
 // Kept separate from the coverage payload so the grid response stays small
 // regardless of how many rules a deployment has.
@@ -91,13 +113,13 @@ func (h *Handler) HandleAttackTechniqueRules(w http.ResponseWriter, r *http.Requ
 		rules = []attack.RuleRow{}
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"technique":   technique,
-		"platforms":   matrix.PlatformNames(technique),
-		"log_sources": matrix.LogSourceNames(technique),
-		"url":         techniqueURL(technique.ID),
-		"rules":       rules,
-		"count":       len(rules),
+	h.respondSuccess(w, TechniqueRules{
+		Technique:  technique,
+		Platforms:  matrix.PlatformNames(technique),
+		LogSources: matrix.LogSourceNames(technique),
+		URL:        techniqueURL(technique.ID),
+		Rules:      rules,
+		Count:      len(rules),
 	})
 }
 
@@ -148,12 +170,12 @@ func (h *Handler) HandleAttackGaps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	uncovered := coverage.Summary.TechniquesTotal - coverage.Summary.TechniquesCovered
-	h.respondSuccess(w, map[string]interface{}{
-		"gaps":              gaps,
-		"uncovered_total":   uncovered,
-		"candidate_rules":   len(candidates),
-		"catalog_populated": len(candidates) > 0,
-		"returned":          len(gaps),
+	h.respondSuccess(w, AttackGaps{
+		Gaps:             gaps,
+		UncoveredTotal:   uncovered,
+		CandidateRules:   len(candidates),
+		CatalogPopulated: len(candidates) > 0,
+		Returned:         len(gaps),
 	})
 }
 

@@ -100,7 +100,7 @@ func (h *Handler) HandleListPrisms(w http.ResponseWriter, r *http.Request) {
 		prisms = filtered
 	}
 
-	respondSuccess(w, map[string]interface{}{"prisms": prisms, "count": len(prisms)})
+	api.WriteList(w, prisms)
 }
 
 // PrismRequest carries a prism, on create and on update.
@@ -263,6 +263,13 @@ func (h *Handler) HandleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	respondSuccess(w, prism)
 }
 
+// SelectedPrism is the prism a session just switched to, with the caller's role.
+type SelectedPrism struct {
+	Selected bool   `json:"selected"`
+	Prism    *Prism `json:"prism"`
+	Role     string `json:"role"`
+}
+
 func (h *Handler) HandleSelectPrism(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
@@ -290,7 +297,7 @@ func (h *Handler) HandleSelectPrism(w http.ResponseWriter, r *http.Request) {
 	if user := getCurrentUser(r); user != nil && user.IsAdmin {
 		roleName = string(rbac.RoleAdmin)
 	}
-	respondSuccess(w, map[string]interface{}{"selected": true, "prism": prism, "role": roleName})
+	respondSuccess(w, SelectedPrism{Selected: true, Prism: prism, Role: roleName})
 }
 
 // ---- Permission Management ----
@@ -310,7 +317,7 @@ func (h *Handler) HandleListPrismPermissions(w http.ResponseWriter, r *http.Requ
 	if perms == nil {
 		perms = []storage.PrismPermission{}
 	}
-	respondSuccess(w, map[string]interface{}{"permissions": perms})
+	api.WriteList(w, perms)
 }
 
 // GrantPermissionRequest grants a role to a user or a group, never both.

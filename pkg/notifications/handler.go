@@ -23,6 +23,18 @@ func NewHandler(pg *storage.PostgresClient) *Handler {
 // name while there is one type, and one schema, behind it.
 type apiResponse = api.Response[any]
 
+// NotificationFeed carries the feed and the caller's unread count together, so
+// the list and the badge come from one request.
+type NotificationFeed struct {
+	Notifications []notificationItem `json:"notifications"`
+	UnreadCount   int                `json:"unread_count"`
+}
+
+// UnreadCount is the badge-only response.
+type UnreadCount struct {
+	UnreadCount int `json:"unread_count"`
+}
+
 type notificationItem struct {
 	ID               string    `json:"id"`
 	NotificationType string    `json:"notification_type"`
@@ -74,10 +86,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"notifications": items,
-		"unread_count":  unreadCount,
-	})
+	h.respondSuccess(w, NotificationFeed{Notifications: items, UnreadCount: unreadCount})
 }
 
 // HandleCount returns only the unread count (lightweight, for badge polling).
@@ -104,7 +113,7 @@ func (h *Handler) HandleCount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{"unread_count": count})
+	h.respondSuccess(w, UnreadCount{UnreadCount: count})
 }
 
 // HandleMarkRead upserts notification_reads for the current user, setting
@@ -132,7 +141,7 @@ func (h *Handler) HandleMarkRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{"ok": true})
+	api.WriteOK(w, "Notifications marked read")
 }
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {

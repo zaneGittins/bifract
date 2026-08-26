@@ -97,7 +97,7 @@ func (h *Handler) HandleListConversations(w http.ResponseWriter, r *http.Request
 	if convs == nil {
 		convs = []*Conversation{}
 	}
-	h.respondSuccess(w, map[string]interface{}{"conversations": convs, "count": len(convs)})
+	api.WriteList(w, convs)
 }
 
 // CreateConversationRequest starts a conversation with optional libraries attached.
@@ -187,7 +187,7 @@ func (h *Handler) HandleGetMessages(w http.ResponseWriter, r *http.Request) {
 	if msgs == nil {
 		msgs = []*Message{}
 	}
-	h.respondSuccess(w, map[string]interface{}{"messages": msgs, "count": len(msgs)})
+	api.WriteList(w, msgs)
 }
 
 func (h *Handler) HandleClearMessages(w http.ResponseWriter, r *http.Request) {
@@ -258,7 +258,7 @@ func (h *Handler) HandleGetConversationLibraries(w http.ResponseWriter, r *http.
 		h.respondError(w, http.StatusInternalServerError, "Failed to load conversation libraries")
 		return
 	}
-	h.respondSuccess(w, libs)
+	api.WriteList(w, libs)
 }
 
 // ---- Instruction Handlers ----
@@ -271,7 +271,7 @@ func (h *Handler) HandleListInstructions(w http.ResponseWriter, r *http.Request)
 	}
 	if prismID != "" {
 		// Legacy instructions are fractal-scoped; use instruction libraries for prism context
-		h.respondSuccess(w, map[string]interface{}{"instructions": []*Instruction{}, "count": 0})
+		api.WriteList(w, []*Instruction{})
 		return
 	}
 
@@ -284,7 +284,7 @@ func (h *Handler) HandleListInstructions(w http.ResponseWriter, r *http.Request)
 	if insts == nil {
 		insts = []*Instruction{}
 	}
-	h.respondSuccess(w, map[string]interface{}{"instructions": insts, "count": len(insts)})
+	api.WriteList(w, insts)
 }
 
 // InstructionRequest carries a chat instruction, on create and on update.

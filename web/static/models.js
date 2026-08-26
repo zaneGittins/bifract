@@ -91,7 +91,7 @@ const AnalyticsModels = {
             // Load model list then navigate; pushSubPath inside these functions is
             // deduplicated against the current URL, so no spurious history entry is created.
             this._api('GET', '/models').then(data => {
-                this.models = data?.data?.models || [];
+                this.models = data?.data || [];
                 if (isEdit) this._editModel(modelId);
                 else this._openDataViewer(modelId);
             }).catch(() => {
@@ -139,7 +139,7 @@ const AnalyticsModels = {
     async _loadModels() {
         try {
             const data = await this._api('GET', '/models');
-            this.models = data?.data?.models || [];
+            this.models = data?.data || [];
             this._renderList();
         } catch (e) {
             Toast.error('Failed to load models');
@@ -220,7 +220,7 @@ const AnalyticsModels = {
             if (this.currentView !== 'list') { this._stopListPoll(); return; }
             try {
                 const data = await this._api('GET', '/models');
-                this.models = data?.data?.models || [];
+                this.models = data?.data || [];
                 this._renderList();
             } catch (e) { /* transient; keep polling */ }
         }, 3000);
@@ -284,7 +284,7 @@ const AnalyticsModels = {
         try {
             const data = await this._apiRaw('POST', '/models/import', text, 'application/yaml');
             await this._loadModels();
-            Toast.success(`Imported "${data?.data?.model?.name || file.name}"`);
+            Toast.success(`Imported "${data?.data?.name || file.name}"`);
         } catch (err) {
             Toast.error('Import failed: ' + (err.message || 'unknown error'));
         }
@@ -460,7 +460,7 @@ const AnalyticsModels = {
         if (!v.model) return;
         try {
             const data = await this._api('GET', `/models/${v.model.id}/histogram`);
-            v.histogram = data?.data?.histogram || null;
+            v.histogram = data?.data || null;
         } catch (e) {
             console.error('[Models] loadHistogram error:', e);
             v.histogram = null;
@@ -610,7 +610,7 @@ const AnalyticsModels = {
         if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
         try {
             const data = await this._api('POST', `/models/${m.id}/backfill`, { window });
-            if (data?.data?.model) this.viewer.model = data.data.model;
+            if (data?.data) this.viewer.model = data.data;
             else m.backfill_status = 'running';
             this._renderBackfillBar();
             this._startViewerPoll();
@@ -650,7 +650,7 @@ const AnalyticsModels = {
         let model;
         try {
             const data = await this._api('GET', `/models/${id}`);
-            model = data?.data?.model;
+            model = data?.data;
         } catch (e) { return; /* transient; keep polling */ }
         if (!model) return;
         const prev = this.viewer.model.backfill_status;
@@ -1751,7 +1751,7 @@ ${isBeacon ? `
         try {
             const data = await this._api('POST', '/models/preview', { model_type: e.modelType, definition: def, window: e.previewWindow });
             if (seq !== this._previewSeq) return;
-            e.preview = data?.data?.preview || null;
+            e.preview = data?.data || null;
             this._renderScorePreview();
         } catch (err) {
             if (seq !== this._previewSeq) return;

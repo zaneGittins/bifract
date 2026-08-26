@@ -52,7 +52,14 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	for _, mo := range models {
 		mo.SourceQuery = GenerateSourceQuery(mo.Definition)
 	}
-	h.respondSuccess(w, map[string]interface{}{"models": models, "count": len(models)})
+	api.WriteList(w, models)
+}
+
+// ModelDetail is a model together with the row count of its data table. The
+// model's own fields are inlined, so the payload reads as the model itself.
+type ModelDetail struct {
+	*Model
+	RowCount uint64 `json:"row_count"`
 }
 
 // HandleGet returns a single model by ID.
@@ -63,7 +70,7 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	model.SourceQuery = GenerateSourceQuery(model.Definition)
 	rowCount, _ := h.manager.RowCount(r.Context(), h.manager.readTableName(model))
-	h.respondSuccess(w, map[string]interface{}{"model": model, "row_count": rowCount})
+	h.respondSuccess(w, ModelDetail{Model: model, RowCount: rowCount})
 }
 
 // HandleCreate creates a new model.
@@ -94,7 +101,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
-	h.respondSuccess(w, map[string]interface{}{"model": model})
+	h.respondSuccess(w, model)
 }
 
 // HandleUpdate updates a model's definition. Rebuilds CH objects (data resets forward-only).
@@ -119,7 +126,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update model: %v", err))
 		return
 	}
-	h.respondSuccess(w, map[string]interface{}{"model": updated})
+	h.respondSuccess(w, updated)
 }
 
 // HandleDelete deletes a model and drops its ClickHouse objects.
@@ -197,7 +204,7 @@ func (h *Handler) HandleStartBackfill(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusInternalServerError, "Failed to load model")
 		return
 	}
-	h.respondSuccess(w, map[string]interface{}{"model": updated})
+	h.respondSuccess(w, updated)
 }
 
 // HandleCancelBackfill stops an in-flight backfill. Partial data is kept.
@@ -217,6 +224,14 @@ func (h *Handler) HandleCancelBackfill(w http.ResponseWriter, r *http.Request) {
 type TestExtractionRequest struct {
 	Filter      []FilterCondition `json:"filter"`
 	Extractions []ExtractionStep  `json:"extractions"`
+}
+
+// ExtractionTest is a sample extraction run: the rows it produced and the SQL
+// that produced them.
+type ExtractionTest struct {
+	Results []map[string]interface{} `json:"results"`
+	Count   int                      `json:"count"`
+	SQL     string                   `json:"sql"`
 }
 
 // HandleTestExtraction runs a sample extraction against recent logs and returns matched values.
@@ -242,7 +257,7 @@ func (h *Handler) HandleTestExtraction(w http.ResponseWriter, r *http.Request) {
 	if results == nil {
 		results = []map[string]interface{}{}
 	}
-	h.respondSuccess(w, map[string]interface{}{"results": results, "count": len(results), "sql": sql})
+	h.respondSuccess(w, ExtractionTest{Results: results, Count: len(results), SQL: sql})
 }
 
 // HandleEnableAlert enables the linked alert for a model.
@@ -313,15 +328,7 @@ func (h *Handler) HandleParseQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parsed := ParseSourceQuery(req.Query, req.ModelType)
-	h.respondSuccess(w, map[string]interface{}{
-		"definition": map[string]interface{}{
-			"filter":      parsed.Filter,
-			"extractions": parsed.Extractions,
-		},
-		"candidate_fields": parsed.CandidateFields,
-		"errors":           parsed.Errors,
-		"warnings":         parsed.Warnings,
-	})
+	h.respondSuccess(w, parsed)
 }
 
 // PreviewRequest estimates a model definition over a recent window.
@@ -357,7 +364,7 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Preview failed: %v", err))
 		return
 	}
-	h.respondSuccess(w, map[string]interface{}{"preview": result})
+	h.respondSuccess(w, result)
 }
 
 // HandleGetStats returns aggregate statistics for a model's data table.
@@ -377,7 +384,7 @@ func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusInternalServerError, "Failed to fetch model stats")
 		return
 	}
-	h.respondSuccess(w, map[string]interface{}{"stats": stats})
+	h.respondSuccess(w, stats)
 }
 
 // HandleGetHistogram returns a type-aware score distribution for a model so
@@ -398,7 +405,7 @@ func (h *Handler) HandleGetHistogram(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusInternalServerError, "Failed to fetch model histogram")
 		return
 	}
-	h.respondSuccess(w, map[string]interface{}{"histogram": hist})
+	h.respondSuccess(w, hist)
 }
 
 // HandleExport returns the model definition as a downloadable YAML file.
@@ -461,7 +468,7 @@ func (h *Handler) HandleImport(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to import model: %v", err))
 		return
 	}
-	h.respondSuccess(w, map[string]interface{}{"model": model})
+	h.respondSuccess(w, model)
 }
 
 // ---- Helpers ----

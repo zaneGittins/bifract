@@ -45,6 +45,13 @@ func NewHandler(manager *Manager, ch *storage.ClickHouseClient, onFieldChange fu
 // SetSweeper wires the background measurement the insights payload is read from.
 func (h *Handler) SetSweeper(s *Sweeper) { h.sweeper = s }
 
+// FieldCatalog is the schema field list: the project defaults compiled into the
+// binary, and the fields this install added.
+type FieldCatalog struct {
+	Defaults []SchemaField `json:"defaults"`
+	Custom   []SchemaField `json:"custom"`
+}
+
 // HandleList returns project defaults and user-defined custom fields.
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {
@@ -59,10 +66,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	if custom == nil {
 		custom = []SchemaField{}
 	}
-	h.respondSuccess(w, map[string]interface{}{
-		"defaults": ProjectDefaultFields,
-		"custom":   custom,
-	})
+	h.respondSuccess(w, FieldCatalog{Defaults: ProjectDefaultFields, Custom: custom})
 }
 
 // HandleCatalog returns the known field names (project defaults + user-defined
@@ -91,7 +95,7 @@ func (h *Handler) HandleCatalog(w http.ResponseWriter, r *http.Request) {
 	for _, f := range custom {
 		add(f.FieldName)
 	}
-	h.respondSuccess(w, map[string]interface{}{"fields": names})
+	api.WriteList(w, names)
 }
 
 // HandleCreate adds a custom field, syncs ClickHouse schema, and notifies the parser.
@@ -392,10 +396,7 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 	h.notifyFieldChange(fields)
 	h.reconcileAsync(names)
 
-	h.respondSuccess(w, map[string]interface{}{
-		"message": fmt.Sprintf("Imported %d custom field(s). Schema is updating.", len(fields)),
-		"count":   len(fields),
-	})
+	h.respondSuccess(w, fmt.Sprintf("Imported %d custom field(s). Schema is updating.", len(fields)))
 }
 
 func (h *Handler) notifyFieldChange(custom []SchemaField) {

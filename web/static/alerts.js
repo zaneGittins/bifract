@@ -1210,7 +1210,7 @@ const Alerts = {
     async loadNormalizersForImport() {
         try {
             const data = await HttpUtils.safeFetch('/api/v1/normalizers');
-            const normalizersList = (data.data && data.data.normalizers) || [];
+            const normalizersList = data.data || [];
             const select = document.getElementById('importNormalizerSelect');
             if (!select) return;
 
@@ -1340,7 +1340,7 @@ const Alerts = {
             const response = await fetch(`/api/v1/webhooks/${webhookId}`, { credentials: 'include' });
             const data = await response.json();
             if (!data.success) throw new Error(data.error || 'Failed to load webhook');
-            this.currentWebhook = data.data.webhook;
+            this.currentWebhook = data.data;
             this.renderWebhookInlineForm();
             this.populateWebhookFormFields();
         } catch (error) {
@@ -1589,7 +1589,7 @@ const Alerts = {
                 throw new Error(data.error || 'Failed to get alert');
             }
 
-            const alert = data.data.alert;
+            const alert = data.data;
             const yamlContent = this.alertToYAML(alert);
 
             // Download as file
@@ -1665,7 +1665,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 throw new Error(alertData.error || 'Failed to get alert data');
             }
 
-            const alert = alertData.data.alert;
+            const alert = alertData.data;
 
             // Now send complete update with only enabled field changed
             const updateResponse = await fetch(`/api/v1/alerts/${alertId}`, {
@@ -1811,7 +1811,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 throw new Error(data.error || 'Failed to load alert');
             }
 
-            const alert = data.data.alert;
+            const alert = data.data;
             this.currentAlert = alert;
 
             // Populate form
@@ -1878,7 +1878,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 throw new Error(data.error || 'Failed to load webhooks');
             }
 
-            this.renderWebhooks(data.data.webhooks || []);
+            this.renderWebhooks(data.data || []);
         } catch (error) {
             console.error('Load webhooks error:', error);
             webhooksList.innerHTML = '<div class="error">Failed to load webhooks</div>';
@@ -1899,7 +1899,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 throw new Error(data.error || 'Failed to load webhooks');
             }
 
-            const webhooks = data.data.webhooks || [];
+            const webhooks = data.data || [];
             if (webhooks.length === 0) {
                 container.innerHTML = '<div class="empty-text">No webhooks configured. <a href="#" onclick="Alerts.showInlineWebhookCreate()">Create one</a>?</div>';
                 return;
@@ -2985,7 +2985,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 throw new Error(data.error || 'Failed to load alert');
             }
 
-            const alert = data.data.alert;
+            const alert = data.data;
             this.currentAlert = alert;
 
             // Show feed alert banner if applicable
@@ -3135,10 +3135,10 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const dictActionsData = await dictActionsResp.json();
             const emailActionsData = await emailActionsResp.json();
 
-            const webhooks = (webhooksData.success ? webhooksData.data.webhooks : null) || [];
-            const fractalActions = (actionsData.success ? actionsData.data.fractal_actions : null) || [];
-            const dictActions = (dictActionsData.success ? dictActionsData.data.actions : null) || [];
-            const emailActions = (emailActionsData.success ? emailActionsData.data.email_actions : null) || [];
+            const webhooks = (webhooksData.success ? webhooksData.data : null) || [];
+            const fractalActions = (actionsData.success ? actionsData.data : null) || [];
+            const dictActions = (dictActionsData.success ? dictActionsData.data : null) || [];
+            const emailActions = (emailActionsData.success ? emailActionsData.data : null) || [];
 
             // Populate dropdown with unselected actions
             select.innerHTML = '<option value="">Add action...</option>';
@@ -3728,7 +3728,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 throw new Error(data.error || 'Failed to load fractal actions');
             }
 
-            const fractalActions = data.data.fractal_actions || [];
+            const fractalActions = data.data || [];
             if (fractalActions.length === 0) {
                 container.innerHTML = `
                     <div class="empty-state">
@@ -3785,7 +3785,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             });
             const data = await response.json();
             if (!data.success) throw new Error(data.error || 'Failed to load fractal action');
-            this.currentFractalAction = data.data.fractal_action;
+            this.currentFractalAction = data.data;
             this.renderFractalActionInlineForm();
             // Must await so select options exist before setting value
             await this.loadFractalsForAction();
@@ -4057,7 +4057,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 throw new Error(data.error || 'Failed to load dictionary actions');
             }
 
-            const actions = data.data.actions || [];
+            const actions = data.data || [];
             if (actions.length === 0) {
                 container.innerHTML = `
                     <div class="empty-state">
@@ -4365,16 +4365,16 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const dictData = await dictResp.json();
 
             const actions = [];
-            ((webhooksData.success ? webhooksData.data.webhooks : null) || []).forEach(w => {
+            ((webhooksData.success ? webhooksData.data : null) || []).forEach(w => {
                 actions.push({ ...w, actionType: 'webhook', actionLabel: 'Webhook', detail: w.url });
             });
-            ((emailData.success ? emailData.data.email_actions : null) || []).forEach(e => {
+            ((emailData.success ? emailData.data : null) || []).forEach(e => {
                 actions.push({ ...e, actionType: 'email', actionLabel: 'Email', detail: (e.recipients || []).join(', ') });
             });
-            ((fractalData.success ? fractalData.data.fractal_actions : null) || []).forEach(f => {
+            ((fractalData.success ? fractalData.data : null) || []).forEach(f => {
                 actions.push({ ...f, actionType: 'fractal', actionLabel: 'Fractal', detail: f.description || '' });
             });
-            ((dictData.success ? dictData.data.actions : null) || []).forEach(d => {
+            ((dictData.success ? dictData.data : null) || []).forEach(d => {
                 actions.push({ ...d, actionType: 'dictionary', actionLabel: 'Dictionary', detail: d.dictionary_name || '' });
             });
 
@@ -4566,7 +4566,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const resp = await fetch(`/api/v1/email-actions/${id}`, { credentials: 'include' });
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
-            this.currentEmailAction = data.data.email_action;
+            this.currentEmailAction = data.data;
             this.renderEmailActionInlineForm();
         } catch (e) {
             Toast.show('Failed to load email action: ' + e.message, 'error');

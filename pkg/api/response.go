@@ -63,14 +63,23 @@ func Slice[T any](items []T, limit, offset int) ([]T, Page) {
 	return items[offset:end], page
 }
 
-// PagedResponse is the envelope for a slice of a collection. It exists rather
-// than reusing Response so that data is always present: a page of an empty
-// collection must answer "data": [], not omit the field and leave a client
-// unable to tell an empty page from a missing one.
-type PagedResponse[T any] struct {
-	Success bool `json:"success"`
-	Data    []T  `json:"data"`
-	Page    Page `json:"page"`
+// ListResponse is the envelope for a collection. It exists rather than reusing
+// Response so that data is always present: an empty collection must answer
+// "data": [], not omit the field and leave a client unable to tell an empty
+// list from one the server did not send. Page is set only when the collection
+// is one slice of a larger whole.
+type ListResponse[T any] struct {
+	Success bool  `json:"success"`
+	Data    []T   `json:"data"`
+	Page    *Page `json:"page,omitempty"`
+}
+
+// WriteList answers 200 with a whole collection.
+func WriteList[T any](w http.ResponseWriter, data []T) {
+	if data == nil {
+		data = []T{}
+	}
+	WriteJSON(w, http.StatusOK, ListResponse[T]{Success: true, Data: data})
 }
 
 // WritePage answers 200 with one slice of a collection.
@@ -78,7 +87,7 @@ func WritePage[T any](w http.ResponseWriter, data []T, page Page) {
 	if data == nil {
 		data = []T{}
 	}
-	WriteJSON(w, http.StatusOK, PagedResponse[T]{Success: true, Data: data, Page: page})
+	WriteJSON(w, http.StatusOK, ListResponse[T]{Success: true, Data: data, Page: &page})
 }
 
 // WriteJSON encodes v as the response body. Encoding failures cannot be
@@ -106,6 +115,12 @@ func WriteSuccess[T any](w http.ResponseWriter, data T) {
 // WriteMessage answers 200 with a payload and a human-readable message.
 func WriteMessage[T any](w http.ResponseWriter, message string, data T) {
 	WriteJSON(w, http.StatusOK, Response[T]{Success: true, Message: message, Data: data})
+}
+
+// WriteOK answers 200 with only a message, for operations that have nothing to
+// return but their outcome.
+func WriteOK(w http.ResponseWriter, message string) {
+	WriteJSON(w, http.StatusOK, Response[any]{Success: true, Message: message})
 }
 
 // WriteError answers with an error envelope, classifying the failure from its

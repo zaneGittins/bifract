@@ -28,7 +28,7 @@ const ContextLinks = {
     async loadContextLinks() {
         try {
             const data = await HttpUtils.safeFetch('/api/v1/context-links');
-            this.links = data.data.context_links || [];
+            this.links = data.data || [];
             this.renderContextLinks();
         } catch (err) {
             console.error('[ContextLinks] Failed to load:', err);
@@ -39,7 +39,7 @@ const ContextLinks = {
     async loadEnabledLinks() {
         try {
             const data = await HttpUtils.safeFetch('/api/v1/context-links/enabled');
-            this.enabledLinks = data.data.context_links || [];
+            this.enabledLinks = data.data || [];
         } catch (err) {
             console.error('[ContextLinks] Failed to load enabled links:', err);
             this.enabledLinks = [];

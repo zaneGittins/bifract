@@ -43,7 +43,7 @@ const BQLLang = {
         try {
             const res = await fetch('/api/v1/query/fields', { credentials: 'include' });
             const data = await res.json();
-            const fields = data && data.data && Array.isArray(data.data.fields) ? data.data.fields : [];
+            const fields = Array.isArray(data?.data) ? data.data : [];
             this.schemaFields = fields;
         } catch (e) {
             this.schemaFields = [];

@@ -304,7 +304,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		queries = []SavedQuery{}
 	}
 
-	h.respondSuccess(w, map[string]interface{}{"saved_queries": queries, "count": len(queries)})
+	api.WriteList(w, queries)
 }
 
 // SavedQueryRequest carries a saved query, on create and on update.
@@ -410,7 +410,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		sq.Tags = []string{}
 	}
 
-	h.respondSuccess(w, map[string]interface{}{"saved_query": sq})
+	h.respondSuccess(w, sq)
 }
 
 func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -522,7 +522,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		sq.Tags = []string{}
 	}
 
-	h.respondSuccess(w, map[string]interface{}{"saved_query": sq})
+	h.respondSuccess(w, sq)
 }
 
 func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {

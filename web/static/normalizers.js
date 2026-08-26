@@ -75,7 +75,7 @@ const Normalizers = {
     async loadNormalizers() {
         try {
             const data = await HttpUtils.safeFetch('/api/v1/normalizers');
-            this.normalizers = data.data.normalizers || [];
+            this.normalizers = data.data || [];
             this.renderNormalizers();
         } catch (err) {
             console.error('[Normalizers] Failed to load:', err);
@@ -140,7 +140,7 @@ const Normalizers = {
         if (!cell) return;
         try {
             const data = await HttpUtils.safeFetch(`/api/v1/normalizers/${normalizerId}/tokens`);
-            const tokens = data.data.tokens || [];
+            const tokens = data.data || [];
             if (tokens.length === 0) {
                 cell.textContent = 'No tokens';
                 cell.className = 'normalizer-usage-cell usage-none';
@@ -427,7 +427,7 @@ const Normalizers = {
     async _loadEditorUsage(id) {
         try {
             const data = await HttpUtils.safeFetch(`/api/v1/normalizers/${id}/tokens`);
-            this._setUsageChip(data.data.tokens || []);
+            this._setUsageChip(data.data || []);
         } catch {
             this._setUsageChip(null);
         }
@@ -846,7 +846,7 @@ const Normalizers = {
         let usageMsg = '';
         try {
             const data = await HttpUtils.safeFetch(`/api/v1/normalizers/${id}/tokens`);
-            const tokens = data.data.tokens || [];
+            const tokens = data.data || [];
             if (tokens.length > 0) {
                 const names = tokens.map(t => `${t.token_name} (${t.fractal_name})`).join(', ');
                 usageMsg = `\n\nCurrently used by ${tokens.length} token(s): ${names}`;
@@ -1130,7 +1130,7 @@ const Normalizers = {
         btn.textContent = 'Capturing...';
         try {
             const data = await HttpUtils.safeFetch(`/api/v1/normalizers/samples?fractal_id=${encodeURIComponent(fractalId)}&limit=5`);
-            this.currentSamples = data.data.samples || [];
+            this.currentSamples = data.data || [];
             if (this.currentSamples.length === 0) {
                 note.textContent = 'No JSON logs found in this fractal in the last 7 days.';
                 this._renderSampleBar();

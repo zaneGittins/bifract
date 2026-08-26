@@ -84,3 +84,13 @@ func TestWritePageEmptyKeepsDataArray(t *testing.T) {
 		t.Errorf("body = %q, want %q", rec.Body.String(), want)
 	}
 }
+
+func TestWriteListAlwaysCarriesAnArray(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteList(rec, []string(nil))
+
+	want := `{"success":true,"data":[]}` + "\n"
+	if rec.Body.String() != want {
+		t.Errorf("body = %q, want %q", rec.Body.String(), want)
+	}
+}

@@ -93,7 +93,7 @@ const Dictionaries = {
             const data = await resp.json();
             if (window.FractalContext?.isScopeStale?.(token)) return;
             if (data.success) {
-                this.allDictionaries = data.data.dictionaries || [];
+                this.allDictionaries = data.data || [];
                 this.filterDictionaries(document.getElementById('dictSearchInput')?.value || '');
             }
         } catch (e) {

@@ -83,10 +83,7 @@ func (h *Handler) HandleListTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendSuccess(w, "Ingest tokens retrieved successfully", map[string]interface{}{
-		"ingest_tokens": tokens,
-		"total":         len(tokens),
-	})
+	api.WriteList(w, tokens)
 }
 
 func (h *Handler) HandleCreateToken(w http.ResponseWriter, r *http.Request) {
@@ -165,9 +162,7 @@ func (h *Handler) HandleGetToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendSuccess(w, "Ingest token retrieved successfully", map[string]interface{}{
-		"ingest_token": token,
-	})
+	h.sendSuccess(w, "Ingest token retrieved successfully", token)
 }
 
 func (h *Handler) HandleUpdateToken(w http.ResponseWriter, r *http.Request) {
@@ -208,9 +203,7 @@ func (h *Handler) HandleUpdateToken(w http.ResponseWriter, r *http.Request) {
 		h.cache.InvalidateAll()
 	}
 
-	h.sendSuccess(w, "Ingest token updated successfully", map[string]interface{}{
-		"ingest_token": token,
-	})
+	h.sendSuccess(w, "Ingest token updated successfully", token)
 }
 
 func (h *Handler) HandleDeleteToken(w http.ResponseWriter, r *http.Request) {

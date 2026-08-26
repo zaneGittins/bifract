@@ -44,7 +44,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	if normalizers == nil {
 		normalizers = []Normalizer{}
 	}
-	h.respondSuccess(w, map[string]interface{}{"normalizers": normalizers, "count": len(normalizers)})
+	api.WriteList(w, normalizers)
 }
 
 func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
@@ -180,10 +180,7 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 		trace.Fields = []TracedField{}
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"fields":     trace.Fields,
-		"collisions": trace.Collisions,
-	})
+	h.respondSuccess(w, trace)
 }
 
 // HandleSamples returns recent raw logs from a fractal so the editor can preview
@@ -233,7 +230,7 @@ func (h *Handler) HandleSamples(w http.ResponseWriter, r *http.Request) {
 	if samples == nil {
 		samples = []LogSample{}
 	}
-	h.respondSuccess(w, map[string]interface{}{"samples": samples, "count": len(samples)})
+	api.WriteList(w, samples)
 }
 
 // LogSample is one captured raw log offered as preview input.
@@ -311,7 +308,7 @@ func (h *Handler) HandleTokenUsage(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusInternalServerError, "Failed to load token usage")
 		return
 	}
-	h.respondSuccess(w, map[string]interface{}{"tokens": tokens})
+	api.WriteList(w, tokens)
 }
 
 // HandleDuplicate creates a copy of an existing normalizer with a new name.

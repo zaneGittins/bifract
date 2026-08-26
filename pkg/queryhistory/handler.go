@@ -212,7 +212,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		history = append(history, qh)
 	}
 
-	h.respondSuccess(w, map[string]interface{}{"history": history, "count": len(history)})
+	api.WriteList(w, history)
 }
 
 // RecordRequest carries one executed query to record.

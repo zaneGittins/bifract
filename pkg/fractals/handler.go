@@ -145,9 +145,7 @@ func (h *Handler) HandleCreateFractal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendSuccess(w, "Fractal created successfully", map[string]interface{}{
-		"index": fractal,
-	})
+	h.sendSuccess(w, "Fractal created successfully", fractal)
 }
 
 // HandleGetFractal retrieves a specific index (viewer+)
@@ -214,9 +212,7 @@ func (h *Handler) HandleUpdateFractal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendSuccess(w, "Fractal updated successfully", map[string]interface{}{
-		"index": fractal,
-	})
+	h.sendSuccess(w, "Fractal updated successfully", fractal)
 }
 
 // HandleDeleteFractal deletes an index (admin only)
@@ -241,6 +237,13 @@ func (h *Handler) HandleDeleteFractal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.sendSuccess(w, "Fractal deleted successfully", nil)
+}
+
+// SelectedFractal is the fractal a session just switched to, with the caller's
+// role on it so the UI can gate controls without a second request.
+type SelectedFractal struct {
+	Fractal *Fractal `json:"selected_fractal"`
+	Role    string   `json:"role"`
 }
 
 // HandleSelectFractal sets the selected index for the user's session (viewer+)
@@ -285,10 +288,7 @@ func (h *Handler) HandleSelectFractal(w http.ResponseWriter, r *http.Request) {
 	if user.IsAdmin {
 		roleName = string(rbac.RoleAdmin)
 	}
-	h.sendSuccess(w, "Fractal selected successfully", map[string]interface{}{
-		"selected_fractal": fractal,
-		"role":             roleName,
-	})
+	h.sendSuccess(w, "Fractal selected successfully", SelectedFractal{Fractal: fractal, Role: roleName})
 }
 
 // HandleGetStats retrieves statistics for a specific index
@@ -313,9 +313,7 @@ func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendSuccess(w, "Fractal statistics retrieved successfully", map[string]interface{}{
-		"stats": stats,
-	})
+	h.sendSuccess(w, "Fractal statistics retrieved successfully", stats)
 }
 
 // HandleSetRetention sets the retention period for a fractal (fractal admin+)
@@ -532,7 +530,7 @@ func (h *Handler) HandleListPermissions(w http.ResponseWriter, r *http.Request) 
 	if perms == nil {
 		perms = []storage.FractalPermission{}
 	}
-	h.sendSuccess(w, "Permissions retrieved", perms)
+	api.WriteList(w, perms)
 }
 
 // GrantPermissionRequest grants a role to a user or a group, never both.

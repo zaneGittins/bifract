@@ -106,10 +106,7 @@ func (h *Handler) HandleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendSuccess(w, "API keys retrieved successfully", map[string]interface{}{
-		"api_keys": keys,
-		"total":    len(keys),
-	})
+	api.WriteList(w, keys)
 }
 
 // HandleCreateAPIKey creates a new API key for a fractal (fractal admin+)
@@ -209,9 +206,7 @@ func (h *Handler) HandleGetAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendSuccess(w, "API key retrieved successfully", map[string]interface{}{
-		"api_key": apiKey,
-	})
+	h.sendSuccess(w, "API key retrieved successfully", apiKey)
 }
 
 // HandleUpdateAPIKey updates an existing API key (fractal admin+)
@@ -256,9 +251,7 @@ func (h *Handler) HandleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendSuccess(w, "API key updated successfully", map[string]interface{}{
-		"api_key": apiKey,
-	})
+	h.sendSuccess(w, "API key updated successfully", apiKey)
 }
 
 // HandleDeleteAPIKey deletes an API key (fractal admin+)
@@ -360,10 +353,7 @@ func (h *Handler) HandleListPrismAPIKeys(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.sendSuccess(w, "API keys retrieved successfully", map[string]interface{}{
-		"api_keys": keys,
-		"total":    len(keys),
-	})
+	api.WriteList(w, keys)
 }
 
 // HandleCreatePrismAPIKey creates a new API key for a prism (prism admin+)
@@ -466,9 +456,7 @@ func (h *Handler) HandleGetPrismAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.sendSuccess(w, "API key retrieved successfully", map[string]interface{}{
-		"api_key": apiKey,
-	})
+	h.sendSuccess(w, "API key retrieved successfully", apiKey)
 }
 
 // HandleUpdatePrismAPIKey updates a prism-scoped API key (prism admin+)
@@ -513,9 +501,7 @@ func (h *Handler) HandleUpdatePrismAPIKey(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.sendSuccess(w, "API key updated successfully", map[string]interface{}{
-		"api_key": apiKey,
-	})
+	h.sendSuccess(w, "API key updated successfully", apiKey)
 }
 
 // HandleDeletePrismAPIKey deletes a prism-scoped API key (prism admin+)

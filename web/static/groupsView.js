@@ -743,7 +743,7 @@ const GroupsView = {
             const resp = await fetch(`/api/v1/prisms/${prismId}/permissions`, { credentials: 'include' });
             const data = await resp.json();
             if (data.success) {
-                this.renderPrismPermissions((data.data && data.data.permissions) || [], prismId);
+                this.renderPrismPermissions(data.data || [], prismId);
             } else {
                 container.innerHTML = '<div class="text-muted">Failed to load permissions</div>';
             }

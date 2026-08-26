@@ -43,6 +43,7 @@ type mountedRoute struct {
 	authenticated bool
 	registered    bool
 	hasRequest    bool
+	hasResponse   bool
 }
 
 func (m mountedRoute) key() string { return api.Key(m.method, m.path) }
@@ -56,6 +57,9 @@ func (m mountedRoute) String() string {
 	line := fmt.Sprintf("%s %d %s", m.key(), m.middlewares, access)
 	if m.hasRequest {
 		line += " body"
+	}
+	if m.hasResponse {
+		line += " resp"
 	}
 	return line
 }
@@ -81,6 +85,7 @@ func walkRouter(t *testing.T, mux *chi.Mux, reg *api.Registry) []mountedRoute {
 			authenticated: authenticated,
 			registered:    ok,
 			hasRequest:    described.Request != nil,
+			hasResponse:   described.Response != nil,
 		})
 		return nil
 	})
@@ -103,7 +108,7 @@ func walkRouter(t *testing.T, mux *chi.Mux, reg *api.Registry) []mountedRoute {
 //   - a route appearing or disappearing changes the API contract
 //   - "auth" becoming "public" means a route left the authenticated group
 //   - a changed middleware count means the chain around a route changed
-//   - "body" appearing or vanishing changes the request contract
+//   - "body" or "resp" appearing or vanishing changes the wire contract
 func TestRouteTable(t *testing.T) {
 	mux, registry := buildRouter(testDeps())
 	routes := walkRouter(t, mux, registry)
@@ -206,10 +211,10 @@ func renderRouteTable(routes []string) []byte {
 
 // routeTable is every route the server mounts, in the form:
 //
-//	METHOD /path <middleware count> auth|public [body]
+//	METHOD /path <middleware count> auth|public [body] [resp]
 //
 // "auth" means the route sits behind auth.AuthHandler.AuthMiddleware; "body"
-// means the route declares a typed request body.
+// and "resp" mean the route declares a typed request and response.
 //
 // Regenerate after an intended change, then review every line of the diff:
 //

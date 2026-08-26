@@ -29,7 +29,7 @@ func (h *Handler) HandleListEnabled(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusInternalServerError, "Failed to load context links")
 		return
 	}
-	h.respondSuccess(w, map[string]interface{}{"context_links": links, "count": len(links)})
+	api.WriteList(w, links)
 }
 
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +42,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusInternalServerError, "Failed to load context links")
 		return
 	}
-	h.respondSuccess(w, map[string]interface{}{"context_links": links, "count": len(links)})
+	api.WriteList(w, links)
 }
 
 func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {

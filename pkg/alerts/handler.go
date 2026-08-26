@@ -144,9 +144,7 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"alert": alert,
-	})
+	h.respondSuccess(w, alert)
 }
 
 // HandleGetAlert retrieves a specific alert by ID
@@ -181,9 +179,7 @@ func (h *Handler) HandleGetAlert(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"alert": alert,
-	})
+	h.respondSuccess(w, alert)
 }
 
 // HandleUpdateAlert updates an existing alert (analyst+)
@@ -258,9 +254,7 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"alert": alert,
-	})
+	h.respondSuccess(w, alert)
 }
 
 // HandleDeleteAlert removes an alert (analyst+)
@@ -314,9 +308,7 @@ func (h *Handler) HandleDeleteAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"message": "Alert deleted successfully",
-	})
+	api.WriteOK(w, "Alert deleted successfully")
 }
 
 // ImportYAMLRequest carries an alert definition to import as JSON. The same
@@ -397,10 +389,7 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"alert":   alert,
-		"message": "Alert imported successfully",
-	})
+	api.WriteMessage(w, "Alert imported successfully", alert)
 }
 
 // HandleGetExecutions retrieves execution history for an alert
@@ -514,12 +503,7 @@ func (h *Handler) HandleGetExecutions(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"executions": executions,
-		"count":      len(executions),
-		"limit":      limit,
-		"offset":     offset,
-	})
+	api.WritePage(w, executions, api.Page{Total: len(executions), Limit: limit, Offset: offset})
 }
 
 // ============================
@@ -552,10 +536,7 @@ func (h *Handler) HandleListWebhooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"webhooks": webhooks,
-		"count":    len(webhooks),
-	})
+	api.WriteList(w, webhooks)
 }
 
 // HandleCreateWebhook creates a new webhook action
@@ -602,9 +583,7 @@ func (h *Handler) HandleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"webhook": webhook,
-	})
+	h.respondSuccess(w, webhook)
 }
 
 // HandleGetWebhook retrieves a specific webhook action by ID
@@ -638,9 +617,7 @@ func (h *Handler) HandleGetWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"webhook": webhook,
-	})
+	h.respondSuccess(w, webhook)
 }
 
 // HandleUpdateWebhook updates an existing webhook action
@@ -685,9 +662,7 @@ func (h *Handler) HandleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"webhook": webhook,
-	})
+	h.respondSuccess(w, webhook)
 }
 
 // HandleDeleteWebhook removes a webhook action
@@ -727,9 +702,7 @@ func (h *Handler) HandleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"message": "Webhook deleted successfully",
-	})
+	api.WriteOK(w, "Webhook deleted successfully")
 }
 
 // HandleTestWebhook sends a test payload to a webhook
@@ -768,10 +741,7 @@ func (h *Handler) HandleTestWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"test_result": result,
-		"message":     "Webhook test completed",
-	})
+	api.WriteMessage(w, "Webhook test completed", result)
 }
 
 // ============================
@@ -804,10 +774,7 @@ func (h *Handler) HandleListFractalActions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"fractal_actions": fractalActions,
-		"count":           len(fractalActions),
-	})
+	api.WriteList(w, fractalActions)
 }
 
 // HandleCreateFractalAction creates a new fractal action
@@ -854,9 +821,7 @@ func (h *Handler) HandleCreateFractalAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"fractal_action": fractalAction,
-	})
+	h.respondSuccess(w, fractalAction)
 }
 
 // HandleGetFractalAction retrieves a specific fractal action by ID
@@ -890,9 +855,7 @@ func (h *Handler) HandleGetFractalAction(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"fractal_action": fractalAction,
-	})
+	h.respondSuccess(w, fractalAction)
 }
 
 // HandleUpdateFractalAction updates an existing fractal action
@@ -937,9 +900,7 @@ func (h *Handler) HandleUpdateFractalAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"fractal_action": fractalAction,
-	})
+	h.respondSuccess(w, fractalAction)
 }
 
 // HandleDeleteFractalAction removes a fractal action
@@ -979,9 +940,7 @@ func (h *Handler) HandleDeleteFractalAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"message": "Fractal action deleted successfully",
-	})
+	api.WriteOK(w, "Fractal action deleted successfully")
 }
 
 // ============================
@@ -1363,10 +1322,7 @@ func (h *Handler) HandleListEmailActions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"email_actions": actions,
-		"count":         len(actions),
-	})
+	api.WriteList(w, actions)
 }
 
 func (h *Handler) HandleCreateEmailAction(w http.ResponseWriter, r *http.Request) {
@@ -1400,7 +1356,7 @@ func (h *Handler) HandleCreateEmailAction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{"email_action": action})
+	h.respondSuccess(w, action)
 }
 
 func (h *Handler) HandleGetEmailAction(w http.ResponseWriter, r *http.Request) {
@@ -1425,7 +1381,7 @@ func (h *Handler) HandleGetEmailAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{"email_action": action})
+	h.respondSuccess(w, action)
 }
 
 func (h *Handler) HandleUpdateEmailAction(w http.ResponseWriter, r *http.Request) {
@@ -1464,7 +1420,7 @@ func (h *Handler) HandleUpdateEmailAction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{"email_action": action})
+	h.respondSuccess(w, action)
 }
 
 func (h *Handler) HandleDeleteEmailAction(w http.ResponseWriter, r *http.Request) {
@@ -1495,6 +1451,13 @@ func (h *Handler) HandleDeleteEmailAction(w http.ResponseWriter, r *http.Request
 	}
 
 	h.respondSuccess(w, nil)
+}
+
+// ActionTestResult reports the outcome of exercising an alert action.
+type ActionTestResult struct {
+	Success  bool   `json:"success"`
+	Error    string `json:"error"`
+	Duration string `json:"duration"`
 }
 
 func (h *Handler) HandleTestEmailAction(w http.ResponseWriter, r *http.Request) {
@@ -1530,11 +1493,7 @@ func (h *Handler) HandleTestEmailAction(w http.ResponseWriter, r *http.Request) 
 		{"timestamp": time.Now().Format(time.RFC3339), "message": "Test log entry", "level": "error"},
 	})
 
-	h.respondSuccess(w, map[string]interface{}{
-		"success":  result.Success,
-		"error":    result.Error,
-		"duration": result.Duration.String(),
-	})
+	h.respondSuccess(w, ActionTestResult{Success: result.Success, Error: result.Error, Duration: result.Duration.String()})
 }
 
 // ============================
@@ -1551,7 +1510,7 @@ func (h *Handler) HandleGetSMTPSettings(w http.ResponseWriter, r *http.Request) 
 	raw, err := h.manager.pg.GetSetting(r.Context(), "smtp_config")
 	if err != nil {
 		// Not configured yet
-		h.respondSuccess(w, map[string]interface{}{"smtp_config": nil})
+		h.respondSuccess(w, nil)
 		return
 	}
 
@@ -1566,7 +1525,7 @@ func (h *Handler) HandleGetSMTPSettings(w http.ResponseWriter, r *http.Request) 
 		config.Password = "********"
 	}
 
-	h.respondSuccess(w, map[string]interface{}{"smtp_config": config})
+	h.respondSuccess(w, config)
 }
 
 func (h *Handler) HandleUpdateSMTPSettings(w http.ResponseWriter, r *http.Request) {
