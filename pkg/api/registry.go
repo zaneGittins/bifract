@@ -26,9 +26,12 @@ type Route struct {
 	// Register, which wraps the handler.
 	Access Access
 	// Request and Response are zero values of the wire types, for schema
-	// generation. Unpopulated today.
+	// generation.
 	Request  any
 	Response any
+	// Produces names the media type when the route does not answer JSON: a
+	// stream, or a file the caller downloads.
+	Produces string
 	Handler  http.HandlerFunc
 }
 
@@ -68,6 +71,16 @@ func (reg *Registry) add(prefix string, route Route) {
 	}
 	route.Path = full
 	reg.routes[key] = route
+}
+
+// Routes returns every described route. The OpenAPI generator reads them to
+// render the document.
+func (reg *Registry) Routes() []Route {
+	out := make([]Route, 0, len(reg.routes))
+	for _, route := range reg.routes {
+		out = append(out, route)
+	}
+	return out
 }
 
 // Lookup returns the route registered for a fully qualified method and path.

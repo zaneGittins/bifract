@@ -2,6 +2,7 @@ package main
 
 import (
 	"bifract/pkg/api"
+	"bifract/pkg/api/openapi"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"bifract/pkg/archive"
@@ -1213,4 +1215,28 @@ func validateRecallQuery(query string) error {
 		return err
 	}
 	return nil
+}
+
+// handleOpenAPI serves the API's own description, rendered from the registry the
+// running router was built from. It is generated once: the routes cannot change
+// after startup, and re-rendering ~750KB per request would be pure waste.
+func (d routerDeps) handleOpenAPI(reg *api.Registry) http.HandlerFunc {
+	var (
+		once sync.Once
+		body []byte
+		err  error
+	)
+	return func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() {
+			body, err = json.MarshalIndent(openapi.Generate(reg, Version), "", "  ")
+		})
+		if err != nil {
+			log.Printf("[api] rendering openapi document: %v", err)
+			api.WriteError(w, http.StatusInternalServerError, "Failed to render the API description")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write(body)
+	}
 }

@@ -290,6 +290,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				})
 			})
 
+			r.Register(api.Route{
+				Method:  http.MethodGet,
+				Path:    "/openapi.json",
+				Access:  api.AccessAuthenticated,
+				Summary: "The OpenAPI description of this build's API.",
+				Handler: d.handleOpenAPI(reg),
+			})
+
 			// Version
 			r.Register(api.Route{
 				Method:  http.MethodGet,
@@ -311,6 +319,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/query/stream",
+				Produces: "application/x-ndjson",
 				Access:   api.AccessViewer,
 				Response: query.QueryResponse{},
 				Summary:  "Run a BQL query and stream results as they arrive.",
@@ -1002,18 +1011,20 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler: d.notebookHandler.HandleGetNotebookTags,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/notebooks/{id}/export",
-					Access:  api.AccessViewer,
-					Summary: "Export a notebook as YAML.",
-					Handler: d.notebookHandler.HandleExportNotebook,
+					Method:   http.MethodGet,
+					Path:     "/notebooks/{id}/export",
+					Produces: "text/yaml",
+					Access:   api.AccessViewer,
+					Summary:  "Export a notebook as YAML.",
+					Handler:  d.notebookHandler.HandleExportNotebook,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/notebooks/{id}/events",
-					Access:  api.AccessViewer,
-					Summary: "Stream a notebook's live edits and presence.",
-					Handler: d.notebookHandler.HandleSSE,
+					Method:   http.MethodGet,
+					Path:     "/notebooks/{id}/events",
+					Produces: "text/event-stream",
+					Access:   api.AccessViewer,
+					Summary:  "Stream a notebook's live edits and presence.",
+					Handler:  d.notebookHandler.HandleSSE,
 				})
 			})
 
@@ -1147,11 +1158,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.dashboardHandler.HandleGetPresence,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/dashboards/{id}/export",
-					Access:  api.AccessViewer,
-					Summary: "Export a dashboard as YAML.",
-					Handler: d.dashboardHandler.HandleExportDashboard,
+					Method:   http.MethodGet,
+					Path:     "/dashboards/{id}/export",
+					Produces: "text/yaml",
+					Access:   api.AccessViewer,
+					Summary:  "Export a dashboard as YAML.",
+					Handler:  d.dashboardHandler.HandleExportDashboard,
 				})
 				r.Register(api.Route{
 					Method:   http.MethodPost,
@@ -1162,11 +1174,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.dashboardHandler.HandleImportDashboard,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/dashboards/{id}/events",
-					Access:  api.AccessViewer,
-					Summary: "Stream a dashboard's live edits, results, and presence.",
-					Handler: d.dashboardHandler.HandleSSE,
+					Method:   http.MethodGet,
+					Path:     "/dashboards/{id}/events",
+					Produces: "text/event-stream",
+					Access:   api.AccessViewer,
+					Summary:  "Stream a dashboard's live edits, results, and presence.",
+					Handler:  d.dashboardHandler.HandleSSE,
 				})
 				// Shared Links management (create/revoke require analyst+ on the
 				// dashboard's scope; list is viewer+). The anonymous read route is
@@ -2007,11 +2020,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.dictionaryHandler.HandleImportCSV,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/dictionaries/{id}/export",
-				Access:  api.AccessViewer,
-				Summary: "Download a dictionary's rows as CSV.",
-				Handler: d.dictionaryHandler.HandleExportCSV,
+				Method:   http.MethodGet,
+				Path:     "/dictionaries/{id}/export",
+				Produces: "text/csv",
+				Access:   api.AccessViewer,
+				Summary:  "Download a dictionary's rows as CSV.",
+				Handler:  d.dictionaryHandler.HandleExportCSV,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPost,
@@ -2167,11 +2181,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.modelHandler.HandleGetHistogram,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/models/{id}/export",
-				Access:  api.AccessViewer,
-				Summary: "Export a model definition as YAML.",
-				Handler: d.modelHandler.HandleExport,
+				Method:   http.MethodGet,
+				Path:     "/models/{id}/export",
+				Produces: "text/yaml",
+				Access:   api.AccessViewer,
+				Summary:  "Export a model definition as YAML.",
+				Handler:  d.modelHandler.HandleExport,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPost,
@@ -2401,12 +2416,13 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.chatHandler.HandleClearMessages,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodPost,
-					Path:    "/chat/conversations/{id}/stream",
-					Access:  api.AccessViewer,
-					Request: chat.StreamMessageRequest{},
-					Summary: "Send a message and stream the reply.",
-					Handler: d.chatHandler.HandleStream,
+					Method:   http.MethodPost,
+					Path:     "/chat/conversations/{id}/stream",
+					Produces: "text/event-stream",
+					Access:   api.AccessViewer,
+					Request:  chat.StreamMessageRequest{},
+					Summary:  "Send a message and stream the reply.",
+					Handler:  d.chatHandler.HandleStream,
 				})
 				r.Register(api.Route{
 					Method:   http.MethodPatch,
@@ -2860,11 +2876,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.normalizerHandler.HandleDuplicate,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/normalizers/{id}/export",
-				Access:  api.AccessTenantAdmin,
-				Summary: "Export a normalizer as YAML.",
-				Handler: d.normalizerHandler.HandleExportYAML,
+				Method:   http.MethodGet,
+				Path:     "/normalizers/{id}/export",
+				Produces: "text/yaml",
+				Access:   api.AccessTenantAdmin,
+				Summary:  "Export a normalizer as YAML.",
+				Handler:  d.normalizerHandler.HandleExportYAML,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodGet,
@@ -2911,11 +2928,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.schemaFieldsHandler.HandleReset,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/admin/schema-fields/export",
-				Access:  api.AccessTenantAdmin,
-				Summary: "Export the custom schema fields as YAML.",
-				Handler: d.schemaFieldsHandler.HandleExportYAML,
+				Method:   http.MethodGet,
+				Path:     "/admin/schema-fields/export",
+				Produces: "text/yaml",
+				Access:   api.AccessTenantAdmin,
+				Summary:  "Export the custom schema fields as YAML.",
+				Handler:  d.schemaFieldsHandler.HandleExportYAML,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPost,

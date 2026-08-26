@@ -272,6 +272,7 @@ var routeTable = []string{
 	"GET /api/v1/notifications 9 auth resp viewer",
 	"GET /api/v1/notifications/count 9 auth resp viewer",
 	"POST /api/v1/notifications/read 9 auth authenticated",
+	"GET /api/v1/openapi.json 9 auth authenticated",
 	"GET /api/v1/prisms 9 auth resp viewer",
 	"POST /api/v1/prisms 9 auth body resp tenant_admin",
 	"DELETE /api/v1/prisms/{id} 9 auth resp tenant_admin",
