@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"bifract/pkg/api"
 	"bifract/pkg/fractals"
 	"bifract/pkg/ingest"
 	"bifract/pkg/ingesttokens"
@@ -266,42 +267,12 @@ func runIngestServer() {
 	log.Printf("Ingest ready (workers: %d, queue: %d, rate limit: %d req/s, body limit: %d bytes)",
 		config.IngestWorkers, config.IngestQueueSize, config.IngestRateLimit, config.MaxBodySize)
 
-	// Minimal router: ingest data-plane + health. No session/CORS/CSP/UI middleware.
-	r := chi.NewRouter()
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-
-	r.Route("/api/v1", func(r chi.Router) {
-		// Health (the image HEALTHCHECK GETs /api/v1/health for both tiers).
-		r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"status":"healthy"}`))
-		})
-		// Token-authenticated ingest.
-		r.Group(func(r chi.Router) {
-			r.Use(ingest.RateLimitMiddleware(rateLimiter))
-			r.Post("/ingest", ingestHandler.HandleIngest)
-		})
-		// Internal ingest (private-network only, no token).
-		r.Group(func(r chi.Router) {
-			r.Use(ingest.InternalOnlyMiddleware)
-			r.Use(ingest.RateLimitMiddleware(rateLimiter))
-			r.Post("/internal/ingest/{fractal}", internalIngestHandler.HandleInternalIngest)
-		})
-	})
-
-	// Elasticsearch-compatible bulk API.
-	r.Group(func(r chi.Router) {
-		r.Use(ingest.RateLimitMiddleware(rateLimiter))
-		r.Post("/_bulk", elasticHandler.HandleBulk)
-		r.Put("/_bulk", elasticHandler.HandleBulk)
-	})
-	// OpenTelemetry (OTLP/HTTP) logs.
-	r.Group(func(r chi.Router) {
-		r.Use(ingest.RateLimitMiddleware(rateLimiter))
-		r.Post("/v1/logs", otlpHandler.HandleLogs)
+	r, _ := buildIngestRouter(ingestRouterDeps{
+		rateLimiter:           rateLimiter,
+		ingestHandler:         ingestHandler,
+		internalIngestHandler: internalIngestHandler,
+		elasticHandler:        elasticHandler,
+		otlpHandler:           otlpHandler,
 	})
 
 	// Prometheus metrics (own surface; no alert engine to attach).
@@ -343,4 +314,80 @@ func runIngestServer() {
 		metricsServer.Shutdown()
 	}
 	log.Println("Ingest server stopped gracefully")
+}
+
+// ingestRouterDeps carries what the ingest tier's router mounts. It is
+// deliberately a fraction of routerDeps: this tier serves the data plane only.
+type ingestRouterDeps struct {
+	rateLimiter           *ingest.RateLimiter
+	ingestHandler         *ingest.IngestHandler
+	internalIngestHandler *ingest.InternalIngestHandler
+	elasticHandler        *ingest.ElasticBulkHandler
+	otlpHandler           *ingest.OTLPHandler
+}
+
+// buildIngestRouter mounts the ingest data plane and the health probe. No
+// session, CORS, CSP, or UI middleware: this tier serves no browser.
+func buildIngestRouter(d ingestRouterDeps) (*chi.Mux, *api.Registry) {
+	reg := api.NewRegistry()
+	mux := chi.NewRouter()
+	mux.Use(middleware.Recoverer)
+	mux.Use(middleware.RequestID)
+	mux.Use(middleware.RealIP)
+
+	r := api.NewRouter(mux, reg)
+	r.Route("/api/v1", func(r api.Router) {
+		r.Register(api.Route{
+			Method:  http.MethodGet,
+			Path:    "/health",
+			Summary: "Liveness probe.",
+			Handler: handleHealth,
+		})
+		r.Group(func(r api.Router) {
+			r.Use(ingest.RateLimitMiddleware(d.rateLimiter))
+			r.Register(api.Route{
+				Method:  http.MethodPost,
+				Path:    "/ingest",
+				Summary: "Ingest a batch of logs, routed to the fractal the ingest token is scoped to.",
+				Handler: d.ingestHandler.HandleIngest,
+			})
+		})
+		r.Group(func(r api.Router) {
+			r.Use(ingest.InternalOnlyMiddleware)
+			r.Use(ingest.RateLimitMiddleware(d.rateLimiter))
+			r.Register(api.Route{
+				Method:  http.MethodPost,
+				Path:    "/internal/ingest/{fractal}",
+				Summary: "Ingest logs for a named fractal from inside the private network, without a token.",
+				Handler: d.internalIngestHandler.HandleInternalIngest,
+			})
+		})
+	})
+
+	r.Group(func(r api.Router) {
+		r.Use(ingest.RateLimitMiddleware(d.rateLimiter))
+		r.Register(api.Route{
+			Method:  http.MethodPost,
+			Path:    "/_bulk",
+			Summary: "Ingest logs through the Elasticsearch-compatible bulk API.",
+			Handler: d.elasticHandler.HandleBulk,
+		})
+		r.Register(api.Route{
+			Method:  http.MethodPut,
+			Path:    "/_bulk",
+			Summary: "Ingest logs through the Elasticsearch-compatible bulk API.",
+			Handler: d.elasticHandler.HandleBulk,
+		})
+	})
+	r.Group(func(r api.Router) {
+		r.Use(ingest.RateLimitMiddleware(d.rateLimiter))
+		r.Register(api.Route{
+			Method:  http.MethodPost,
+			Path:    "/v1/logs",
+			Summary: "Ingest logs as an OTLP/HTTP ExportLogsServiceRequest.",
+			Handler: d.otlpHandler.HandleLogs,
+		})
+	})
+
+	return mux, reg
 }
