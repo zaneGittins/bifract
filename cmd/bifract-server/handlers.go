@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"bifract/pkg/archive"
+	"bifract/pkg/parser"
 	"bifract/pkg/query"
 	"bifract/pkg/rbac"
 	"bifract/pkg/settings"
@@ -1154,4 +1155,125 @@ func (d routerDeps) handleCancelRecall(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+}
+
+// addTimeIfValid sets m[key] to t's UTC time if valid, omitting the key
+// entirely when NULL -- shared by the archive/maintain status blocks in the
+// system/archive handler so the omit-on-NULL convention lives in one place.
+func addTimeIfValid(m map[string]interface{}, key string, t sql.NullTime) {
+	if t.Valid {
+		m[key] = t.Time.UTC()
+	}
+}
+
+// maintainStaleAfter bounds how old the maintain CronJob's last attempt can be
+// before the admin UI flags it as overdue (system/archive's "on_schedule").
+// The job runs hourly; ~1.7x that schedule gives slack for a run that's
+// simply taking a while without flagging every normal pass as stale.
+const maintainStaleAfter = 100 * time.Minute
+
+// parseArchiveTime accepts the restore window bounds from the admin UI. It
+// prefers RFC3339 (what the client sends after converting to UTC) but tolerates
+// a few tz-less layouts, interpreted as UTC.
+func parseArchiveTime(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty time")
+	}
+	for _, layout := range []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognized time %q", s)
+}
+
+// retentionConflict describes a fractal whose retention window ends after the
+// requested restore window begins.
+type retentionConflict struct {
+	FractalID     string `json:"fractal_id"`
+	FractalName   string `json:"fractal_name"`
+	RetentionDays int    `json:"retention_days"`
+	// HorizonTS is the oldest event the fractal keeps. Anything restored before
+	// it is deleted by the next retention pass.
+	HorizonTS string `json:"horizon"`
+}
+
+// retentionConflicts returns the fractals for which restoring from `from` would
+// replay data the retention pass then deletes.
+//
+// Retention deletes on EVENT time while a restore window is INGEST time. Logs
+// are ingested at or after the event they describe, so an ingest window starting
+// before the horizon necessarily contains events before it too - the check is
+// exact in that direction. It can still miss backfilled data (old events ingested
+// recently), which is why it gates rather than silently rewrites the request.
+//
+// Fractals with unlimited retention (retention_days NULL) never conflict.
+func retentionConflicts(ctx context.Context, pg *storage.PostgresClient, fractalIDs []string, from time.Time) ([]retentionConflict, error) {
+	rows, err := pg.Query(ctx,
+		`SELECT id::text, name, retention_days FROM fractals WHERE id::text = ANY($1) AND retention_days IS NOT NULL`,
+		fractalIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []retentionConflict
+	for rows.Next() {
+		var c retentionConflict
+		if err := rows.Scan(&c.FractalID, &c.FractalName, &c.RetentionDays); err != nil {
+			return nil, err
+		}
+		horizon := time.Now().UTC().AddDate(0, 0, -c.RetentionDays)
+		if from.Before(horizon) {
+			c.HorizonTS = horizon.Format(time.RFC3339)
+			out = append(out, c)
+		}
+	}
+	return out, rows.Err()
+}
+
+// recallBytesHuman renders a byte count for the recall scan-limit rejection
+// message (binary units, one decimal above KB).
+func recallBytesHuman(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	f := float64(n)
+	units := []string{"KB", "MB", "GB", "TB", "PB"}
+	i := -1
+	for f >= unit && i < len(units)-1 {
+		f /= unit
+		i++
+	}
+	return fmt.Sprintf("%.1f %s", f, units[i])
+}
+
+// validateRecallQuery parses a BQL query and translates it in iceberg source
+// mode against a placeholder table so parse errors and commands unsupported in
+// archive search are rejected at submit time rather than surfacing as a failed
+// job. Only translation validity is checked; no query runs.
+func validateRecallQuery(query string) error {
+	pipeline, err := parser.ParseQuery(query)
+	if err != nil {
+		return fmt.Errorf("invalid query: %w", err)
+	}
+	if _, err := parser.TranslateToSQLWithOrder(pipeline, parser.QueryOptions{
+		StartTime:          time.Now().Add(-time.Hour),
+		EndTime:            time.Now(),
+		MaxRows:            1,
+		SourceMode:         parser.SourceIceberg,
+		UseIngestTimestamp: true,
+		TableName:          "icebergValidate",
+	}); err != nil {
+		return err
+	}
+	return nil
 }
