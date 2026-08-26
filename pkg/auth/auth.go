@@ -537,7 +537,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	// Block login for disabled accounts
 	if !user.Enabled {
 		h.logAuthEvent("login_failed", req.Username, ip, "account disabled")
-		api.WriteError(w, http.StatusBadRequest, "This account has been disabled. Please contact an administrator.")
+		api.WriteError(w, http.StatusForbidden, "This account has been disabled. Please contact an administrator.")
 		return
 	}
 
@@ -688,7 +688,7 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// Check if user is admin
 	user := r.Context().Value("user").(*storage.User)
 	if !user.IsAdmin {
-		api.WriteError(w, http.StatusBadRequest, "Only administrators can register new users")
+		api.WriteError(w, http.StatusForbidden, "Only administrators can register new users")
 		return
 	}
 

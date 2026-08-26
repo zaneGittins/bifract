@@ -241,7 +241,7 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 	fractalRole := rbac.RoleFromContext(r.Context())
 	prismRole := rbac.PrismRoleFromContext(r.Context())
 	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		api.WriteError(w, http.StatusBadRequest, "Insufficient permissions")
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 

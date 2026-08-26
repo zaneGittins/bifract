@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 
+	"bifract/pkg/storage"
+
 	"github.com/go-chi/chi/v5"
 )
 
@@ -20,8 +22,9 @@ type Route struct {
 	// Path is relative to the enclosing mount prefix, e.g. "/comments/{id}".
 	Path    string
 	Summary string
-	// Permission is the capability a caller must hold. Unenforced today.
-	Permission string
+	// Access is what a caller must hold to reach this route. Enforced by
+	// Register, which wraps the handler.
+	Access Access
 	// Request and Response are zero values of the wire types, for schema
 	// generation. Unpopulated today.
 	Request  any
@@ -107,8 +110,27 @@ func (rt Router) With(middlewares ...func(http.Handler) http.Handler) Router {
 	return Router{Router: rt.Router.With(middlewares...), reg: rt.reg, prefix: rt.prefix}
 }
 
-// Register mounts route and records it in the registry.
+// Register mounts route behind its access requirement and records it.
 func (rt Router) Register(route Route) {
 	rt.reg.add(rt.prefix, route)
-	rt.Router.Method(route.Method, route.Path, route.Handler)
+	rt.Router.Method(route.Method, route.Path, guard(route.Access, route.Handler))
+}
+
+// guard refuses a request whose principal does not satisfy access. Handlers
+// still perform their own row-level checks; this is the route-level gate.
+func guard(access Access, h http.HandlerFunc) http.HandlerFunc {
+	if access == "" || access == AccessPublic || access == AccessIngestToken || access == AccessInternal {
+		return h
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !access.Allows(r) {
+			if _, ok := r.Context().Value("user").(*storage.User); !ok {
+				WriteError(w, http.StatusUnauthorized, "Unauthorized")
+				return
+			}
+			WriteError(w, http.StatusForbidden, "Insufficient permissions")
+			return
+		}
+		h(w, r)
+	}
 }

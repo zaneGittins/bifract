@@ -340,6 +340,7 @@ func buildIngestRouter(d ingestRouterDeps) (*chi.Mux, *api.Registry) {
 		r.Register(api.Route{
 			Method:  http.MethodGet,
 			Path:    "/health",
+			Access:  api.AccessPublic,
 			Summary: "Liveness probe.",
 			Handler: handleHealth,
 		})
@@ -348,6 +349,7 @@ func buildIngestRouter(d ingestRouterDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/ingest",
+				Access:  api.AccessIngestToken,
 				Summary: "Ingest a batch of logs, routed to the fractal the ingest token is scoped to.",
 				Handler: d.ingestHandler.HandleIngest,
 			})
@@ -358,6 +360,7 @@ func buildIngestRouter(d ingestRouterDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/internal/ingest/{fractal}",
+				Access:  api.AccessInternal,
 				Summary: "Ingest logs for a named fractal from inside the private network, without a token.",
 				Handler: d.internalIngestHandler.HandleInternalIngest,
 			})
@@ -369,12 +372,14 @@ func buildIngestRouter(d ingestRouterDeps) (*chi.Mux, *api.Registry) {
 		r.Register(api.Route{
 			Method:  http.MethodPost,
 			Path:    "/_bulk",
+			Access:  api.AccessIngestToken,
 			Summary: "Ingest logs through the Elasticsearch-compatible bulk API.",
 			Handler: d.elasticHandler.HandleBulk,
 		})
 		r.Register(api.Route{
 			Method:  http.MethodPut,
 			Path:    "/_bulk",
+			Access:  api.AccessIngestToken,
 			Summary: "Ingest logs through the Elasticsearch-compatible bulk API.",
 			Handler: d.elasticHandler.HandleBulk,
 		})
@@ -384,6 +389,7 @@ func buildIngestRouter(d ingestRouterDeps) (*chi.Mux, *api.Registry) {
 		r.Register(api.Route{
 			Method:  http.MethodPost,
 			Path:    "/v1/logs",
+			Access:  api.AccessIngestToken,
 			Summary: "Ingest logs as an OTLP/HTTP ExportLogsServiceRequest.",
 			Handler: d.otlpHandler.HandleLogs,
 		})

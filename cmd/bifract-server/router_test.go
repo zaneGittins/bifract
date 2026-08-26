@@ -44,6 +44,7 @@ type mountedRoute struct {
 	registered    bool
 	hasRequest    bool
 	hasResponse   bool
+	access        string
 }
 
 func (m mountedRoute) key() string { return api.Key(m.method, m.path) }
@@ -61,7 +62,7 @@ func (m mountedRoute) String() string {
 	if m.hasResponse {
 		line += " resp"
 	}
-	return line
+	return line + " " + m.access
 }
 
 // walkRouter returns every route mounted on mux, ordered by path then method.
@@ -86,6 +87,7 @@ func walkRouter(t *testing.T, mux *chi.Mux, reg *api.Registry) []mountedRoute {
 			registered:    ok,
 			hasRequest:    described.Request != nil,
 			hasResponse:   described.Response != nil,
+			access:        string(described.Access),
 		})
 		return nil
 	})
@@ -109,6 +111,7 @@ func walkRouter(t *testing.T, mux *chi.Mux, reg *api.Registry) []mountedRoute {
 //   - "auth" becoming "public" means a route left the authenticated group
 //   - a changed middleware count means the chain around a route changed
 //   - "body" or "resp" appearing or vanishing changes the wire contract
+//   - a changed access level changes who may reach the route
 func TestRouteTable(t *testing.T) {
 	mux, registry := buildRouter(testDeps())
 	routes := walkRouter(t, mux, registry)
@@ -158,6 +161,23 @@ func TestUnauthenticatedRoutesAreIntentional(t *testing.T) {
 	}
 }
 
+// TestEveryRouteDeclaresAccess is the authorization invariant: a route with no
+// declared access level is not gated at all, which is the failure mode this
+// whole mechanism exists to prevent.
+func TestEveryRouteDeclaresAccess(t *testing.T) {
+	for _, build := range []func() (*chi.Mux, *api.Registry){
+		func() (*chi.Mux, *api.Registry) { return buildRouter(testDeps()) },
+		func() (*chi.Mux, *api.Registry) { return buildIngestRouter(ingestRouterDeps{}) },
+	} {
+		mux, registry := build()
+		for _, route := range walkRouter(t, mux, registry) {
+			if route.access == "" {
+				t.Errorf("%s declares no Access; every route must state who may reach it", route.key())
+			}
+		}
+	}
+}
+
 // TestEveryRouteIsRegistered is the completeness invariant: every route the
 // router serves is described in the api registry. It walks the live router, so
 // no document can satisfy it, and it has no exemptions, so a route added with
@@ -178,12 +198,12 @@ func TestEveryRouteIsRegistered(t *testing.T) {
 // requires a private-network source. The list is short and is the only surface
 // log shippers reach, so it is written out here rather than generated.
 var ingestRouteTable = []string{
-	"POST /_bulk 4 public",
-	"PUT /_bulk 4 public",
-	"GET /api/v1/health 3 public",
-	"POST /api/v1/ingest 4 public",
-	"POST /api/v1/internal/ingest/{fractal} 5 public",
-	"POST /v1/logs 4 public",
+	"POST /_bulk 4 public ingest_token",
+	"PUT /_bulk 4 public ingest_token",
+	"GET /api/v1/health 3 public public",
+	"POST /api/v1/ingest 4 public ingest_token",
+	"POST /api/v1/internal/ingest/{fractal} 5 public internal",
+	"POST /v1/logs 4 public ingest_token",
 }
 
 // TestIngestRouteTable pins the ingest tier's surface and proves its routes are
@@ -211,10 +231,11 @@ func renderRouteTable(routes []string) []byte {
 
 // routeTable is every route the server mounts, in the form:
 //
-//	METHOD /path <middleware count> auth|public [body] [resp]
+//	METHOD /path <middleware count> auth|public [body] [resp] <access>
 //
 // "auth" means the route sits behind auth.AuthHandler.AuthMiddleware; "body"
-// and "resp" mean the route declares a typed request and response.
+// and "resp" mean the route declares a typed request and response; the last
+// field is the access level the route enforces.
 //
 // Regenerate after an intended change, then review every line of the diff:
 //
