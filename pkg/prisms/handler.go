@@ -1,6 +1,7 @@
 package prisms
 
 import (
+	"bifract/pkg/api"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -459,20 +460,9 @@ func getCurrentUser(r *http.Request) *storage.User {
 }
 
 func respondSuccess(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	type resp struct {
-		Success bool        `json:"success"`
-		Data    interface{} `json:"data,omitempty"`
-	}
-	json.NewEncoder(w).Encode(resp{Success: true, Data: data})
+	api.WriteSuccess(w, data)
 }
 
 func respondError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	type resp struct {
-		Success bool   `json:"success"`
-		Error   string `json:"error,omitempty"`
-	}
-	json.NewEncoder(w).Encode(resp{Success: false, Error: msg})
+	api.WriteError(w, status, msg)
 }

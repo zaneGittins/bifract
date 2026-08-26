@@ -1,6 +1,7 @@
 package fractals
 
 import (
+	"bifract/pkg/api"
 	"time"
 )
 
@@ -54,13 +55,9 @@ type FractalStats struct {
 	LastUpdated time.Time  `json:"last_updated"`
 }
 
-// APIResponse represents a standard API response for fractal operations
-type APIResponse struct {
-	Success bool        `json:"success"`
-	Message string      `json:"message,omitempty"`
-	Error   string      `json:"error,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
-}
+// APIResponse is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type APIResponse = api.Response[any]
 
 // FractalListResponse represents the response for listing fractals and prisms.
 type FractalListResponse struct {

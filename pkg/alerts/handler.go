@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"bifract/pkg/api"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,19 +24,9 @@ type Handler struct {
 	rbacResolver   *rbac.Resolver
 }
 
-// APIResponse represents a standard API response
-type APIResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-}
-
-// NewHandler creates a new alert API handler
-func NewHandler(manager *Manager) *Handler {
-	return &Handler{
-		manager: manager,
-	}
-}
+// APIResponse is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type APIResponse = api.Response[any]
 
 // NewHandlerWithFractals creates a new alert API handler with fractal support
 func NewHandlerWithFractals(manager *Manager, fractalManager *fractals.Manager) *Handler {
@@ -55,6 +46,15 @@ func (h *Handler) SetRBACResolver(resolver *rbac.Resolver) {
 // ============================
 
 // HandleListAlerts retrieves all alerts with optional filtering (viewer+)
+// Feed-imported rules are served by /alerts/feed, which pages separately, so
+// this list is only hand-authored alerts and is small in practice. It is bounded
+// anyway so the response can never be unbounded; the ceiling is generous because
+// the alerts screen filters client-side over the whole set.
+const (
+	defaultAlertPageSize = 500
+	maxAlertPageSize     = 2000
+)
+
 func (h *Handler) HandleListAlerts(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRole(w, r, rbac.RoleViewer) {
 		return
@@ -78,10 +78,9 @@ func (h *Handler) HandleListAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.respondSuccess(w, map[string]interface{}{
-		"alerts": alerts,
-		"count":  len(alerts),
-	})
+	limit, offset := api.PageParams(r, defaultAlertPageSize, maxAlertPageSize)
+	window, page := api.Slice(alerts, limit, offset)
+	api.WritePage(w, window, page)
 }
 
 // HandleCreateAlert creates a new alert (analyst+)
@@ -991,22 +990,12 @@ func (h *Handler) HandleDeleteFractalAction(w http.ResponseWriter, r *http.Reque
 
 // respondSuccess sends a successful JSON response
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(APIResponse{
-		Success: true,
-		Data:    data,
-	})
+	api.WriteSuccess(w, data)
 }
 
 // respondError sends an error JSON response
 func (h *Handler) respondError(w http.ResponseWriter, statusCode int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(APIResponse{
-		Success: false,
-		Error:   message,
-	})
+	api.WriteError(w, statusCode, message)
 }
 
 // getCurrentUser extracts the current username from the request context
@@ -1150,12 +1139,6 @@ func (h *Handler) getScope(r *http.Request) (string, string, error) {
 		return "", "", fmt.Errorf("failed to get default fractal: %w", err)
 	}
 	return defaultFractal.ID, "", nil
-}
-
-// getSelectedFractal retrieves the selected fractal for the current user session (fractal-only, for backwards compat).
-func (h *Handler) getSelectedFractal(r *http.Request) (string, error) {
-	fractalID, _, err := h.getScope(r)
-	return fractalID, err
 }
 
 // HandleDuplicateAlert copies a feed alert as a standalone editable alert.

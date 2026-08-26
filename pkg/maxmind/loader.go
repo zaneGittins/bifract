@@ -35,13 +35,6 @@ func NewManager(ch *storage.ClickHouseClient, cfg *Config) *Manager {
 	}
 }
 
-// IsLoaded returns whether GeoIP dictionaries are available.
-func (m *Manager) IsLoaded() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.loaded
-}
-
 // Start launches a daily refresh goroutine.
 func (m *Manager) Start() {
 	go func() {

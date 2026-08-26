@@ -1,6 +1,7 @@
 package savedqueries
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -131,11 +132,9 @@ func parseTime(s string) interface{} {
 	return nil
 }
 
-type APIResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-}
+// APIResponse is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type APIResponse = api.Response[any]
 
 func NewHandler(pg *storage.PostgresClient, fractalManager *fractals.Manager) *Handler {
 	return &Handler{pg: pg, fractalManager: fractalManager}
@@ -676,12 +675,9 @@ func (h *Handler) getCurrentUser(r *http.Request) string {
 }
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(APIResponse{Success: true, Data: data})
+	api.WriteSuccess(w, data)
 }
 
 func (h *Handler) respondError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(APIResponse{Success: false, Error: msg})
+	api.WriteError(w, status, msg)
 }

@@ -274,6 +274,29 @@ const Utils = {
         updateHighlighting();
 
         return wrapper;
+    },
+
+    // Message from a failed API response. The API answers errors as
+    // {success:false, error, code}; a few endpoints outside that contract
+    // (ingest, OIDC) still answer plain text, so fall back to the body.
+    async errorMessage(response, fallback) {
+        const body = await response.text();
+        try {
+            const parsed = JSON.parse(body);
+            if (parsed && typeof parsed.error === 'string' && parsed.error) return parsed.error;
+        } catch (_) { /* not JSON: use the raw body below */ }
+        return body.trim() || fallback || `Request failed (${response.status})`;
+    },
+
+    // Machine-readable classification of a failed response, or '' when the
+    // endpoint predates the error contract.
+    async errorCode(response) {
+        try {
+            const parsed = JSON.parse(await response.text());
+            return (parsed && parsed.code) || '';
+        } catch (_) {
+            return '';
+        }
     }
 };
 

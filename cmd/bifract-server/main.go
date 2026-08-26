@@ -843,6 +843,9 @@ func main() {
 		maxmindManager.Stop()
 	}
 
+	// Stop the background metrics collector
+	performanceHandler.StopCollector()
+
 	// Stop the alert engine
 	alertEngine.Stop()
 	scorerEngine.Stop()

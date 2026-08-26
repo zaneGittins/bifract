@@ -180,7 +180,7 @@ const SettingsView = {
                 body: JSON.stringify({ shard_num: Number(shardNum) })
             });
             if (!res.ok) {
-                const msg = await res.text();
+                const msg = await Utils.errorMessage(res);
                 throw new Error(msg || 'Failed to reset distribution queue');
             }
             if (window.Toast) Toast.success('Distribution Queue Reset', `Shard ${shardNum}'s queue was cleared.`);
@@ -278,7 +278,7 @@ const SettingsView = {
                 credentials: 'include'
             });
             if (!res.ok) {
-                const msg = await res.text();
+                const msg = await Utils.errorMessage(res);
                 throw new Error(msg || 'Failed to clear spool');
             }
             const d = await res.json().catch(() => ({}));
@@ -337,7 +337,7 @@ const SettingsView = {
                 body: JSON.stringify({ enabled })
             });
             if (!res.ok) {
-                const msg = await res.text();
+                const msg = await Utils.errorMessage(res);
                 throw new Error(msg || 'Failed to update archive setting');
             }
             if (window.Toast) {
@@ -400,7 +400,7 @@ const SettingsView = {
                 credentials: 'include'
             });
             if (!res.ok) {
-                const msg = await res.text();
+                const msg = await Utils.errorMessage(res);
                 throw new Error(msg || 'Failed to clear catalog');
             }
             if (window.Toast) {
@@ -448,7 +448,7 @@ const SettingsView = {
                 body: JSON.stringify({ enabled })
             });
             if (!res.ok) {
-                const msg = await res.text();
+                const msg = await Utils.errorMessage(res);
                 throw new Error(msg || 'Failed to update setting');
             }
             if (window.Toast) {
@@ -492,7 +492,7 @@ const SettingsView = {
                 body: JSON.stringify({ enabled })
             });
             if (!res.ok) {
-                const msg = await res.text();
+                const msg = await Utils.errorMessage(res);
                 throw new Error(msg || 'Failed to update setting');
             }
             if (window.Toast) {
@@ -792,7 +792,7 @@ const SettingsView = {
 
     async loadUsers() {
         try {
-            const response = await fetch('/api/v1/users', { credentials: 'include' });
+            const response = await fetch('/api/v1/users?limit=500', { credentials: 'include' });
             const data = await response.json();
 
             if (data.success) {

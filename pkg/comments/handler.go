@@ -1,7 +1,7 @@
 package comments
 
 import (
-	"context"
+	"bifract/pkg/api"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -39,19 +39,9 @@ type UpdateCommentRequest struct {
 	Tags []string `json:"tags,omitempty"`
 }
 
-type Response struct {
-	Success bool        `json:"success"`
-	Message string      `json:"message,omitempty"`
-	Error   string      `json:"error,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
-}
-
-func NewCommentHandler(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *CommentHandler {
-	return &CommentHandler{
-		pg: pg,
-		ch: ch,
-	}
-}
+// Response is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type Response = api.Response[any]
 
 func NewCommentHandlerWithFractals(pg *storage.PostgresClient, ch *storage.ClickHouseClient, fractalManager *fractals.Manager) *CommentHandler {
 	return &CommentHandler{
@@ -68,20 +58,14 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 	fractalRole := rbac.RoleFromContext(r.Context())
 	prismRole := rbac.PrismRoleFromContext(r.Context())
 	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	var req CreateCommentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[HandleCreateComment] JSON decode error: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid request body",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -89,22 +73,14 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 
 	// Validate input
 	if req.LogID == "" || req.Text == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "log_id and text are required",
-		})
+		api.WriteError(w, http.StatusBadRequest, "log_id and text are required")
 		return
 	}
 
 	// Input size limit
 	const maxCommentLength = 5000
 	if len(req.Text) > maxCommentLength {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   fmt.Sprintf("Comment too long (%d chars, max %d)", len(req.Text), maxCommentLength),
-		})
+		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("Comment too long (%d chars, max %d)", len(req.Text), maxCommentLength))
 		return
 	}
 
@@ -112,12 +88,7 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 	if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
 		perms, _ := r.Context().Value("api_key_permissions").(map[string]interface{})
 		if canComment, ok := perms["comment"].(bool); !ok || !canComment {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(Response{
-				Success: false,
-				Error:   "API key does not have comment permission",
-			})
+			api.WriteError(w, http.StatusForbidden, "API key does not have comment permission")
 			return
 		}
 	}
@@ -137,11 +108,7 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		var err error
 		logTimestamp, err = time.Parse(time.RFC3339, req.LogTimestamp)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{
-				Success: false,
-				Error:   "Invalid log_timestamp format (use RFC3339)",
-			})
+			api.WriteError(w, http.StatusBadRequest, "Invalid log_timestamp format (use RFC3339)")
 			return
 		}
 	} else {
@@ -153,11 +120,7 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		lookupFractal := sessionFractalID
 		logEntry, err := h.ch.GetLogByTimestamp(r.Context(), time.Time{}, req.LogID, lookupFractal)
 		if err != nil || logEntry == nil {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{
-				Success: false,
-				Error:   "Could not find log entry; provide log_timestamp or verify log_id",
-			})
+			api.WriteError(w, http.StatusBadRequest, "Could not find log entry; provide log_timestamp or verify log_id")
 			return
 		}
 		switch ts := logEntry["timestamp"].(type) {
@@ -169,20 +132,12 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 				parsed, err = time.Parse(time.RFC3339, ts)
 			}
 			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(Response{
-					Success: false,
-					Error:   "Could not parse timestamp for log entry",
-				})
+				api.WriteError(w, http.StatusBadRequest, "Could not parse timestamp for log entry")
 				return
 			}
 			logTimestamp = parsed
 		default:
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{
-				Success: false,
-				Error:   "Could not resolve timestamp for log entry",
-			})
+			api.WriteError(w, http.StatusBadRequest, "Could not resolve timestamp for log entry")
 			return
 		}
 	}
@@ -194,8 +149,7 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 	fractalID := sessionFractalID
 	prismID := sessionPrismID
 	if fractalID == "" && prismID == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "No fractal or prism context"})
+		api.WriteError(w, http.StatusBadRequest, "No fractal or prism context")
 		return
 	}
 
@@ -204,9 +158,7 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 	// attribute to and is refused rather than left to fail on the constraint.
 	author := auth.AttributionUsername(r.Context())
 	if author == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "This API key has no owning user to attribute the comment to"})
+		api.WriteError(w, http.StatusForbidden, "This API key has no owning user to attribute the comment to")
 		return
 	}
 
@@ -224,16 +176,11 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 
 	newComment, err := h.pg.InsertComment(r.Context(), comment)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to create comment",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create comment")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Comment created successfully",
 		Data:    newComment,
@@ -246,11 +193,7 @@ func (h *CommentHandler) HandleGetComment(w http.ResponseWriter, r *http.Request
 
 	comment, err := h.pg.GetComment(r.Context(), commentID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Comment not found",
-		})
+		api.WriteError(w, http.StatusNotFound, "Comment not found")
 		return
 	}
 
@@ -259,17 +202,11 @@ func (h *CommentHandler) HandleGetComment(w http.ResponseWriter, r *http.Request
 	scopeMatch := (comment.FractalID != "" && comment.FractalID == scopeFractal) ||
 		(comment.PrismID != "" && comment.PrismID == scopePrism)
 	if !scopeMatch {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Comment not found",
-		})
+		api.WriteError(w, http.StatusForbidden, "Comment not found")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Data:    comment,
 	})
@@ -282,58 +219,37 @@ func (h *CommentHandler) HandleUpdateComment(w http.ResponseWriter, r *http.Requ
 
 	var req UpdateCommentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid request body",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	// Validate input
 	if req.Text == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "text is required",
-		})
+		api.WriteError(w, http.StatusBadRequest, "text is required")
 		return
 	}
 
 	const maxCommentLength = 5000
 	if len(req.Text) > maxCommentLength {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   fmt.Sprintf("Comment too long (%d chars, max %d)", len(req.Text), maxCommentLength),
-		})
+		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("Comment too long (%d chars, max %d)", len(req.Text), maxCommentLength))
 		return
 	}
 
 	// Update comment
 	err := h.pg.UpdateComment(r.Context(), commentID, user.Username, req.Text, req.Tags)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to update comment (not found or unauthorized)",
-		})
+		api.WriteError(w, http.StatusNotFound, "Failed to update comment (not found or unauthorized)")
 		return
 	}
 
 	// Fetch updated comment
 	updatedComment, err := h.pg.GetComment(r.Context(), commentID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to fetch updated comment",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch updated comment")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Comment updated successfully",
 		Data:    updatedComment,
@@ -347,16 +263,11 @@ func (h *CommentHandler) HandleDeleteComment(w http.ResponseWriter, r *http.Requ
 
 	err := h.pg.DeleteComment(r.Context(), commentID, user.Username)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to delete comment (not found or unauthorized)",
-		})
+		api.WriteError(w, http.StatusNotFound, "Failed to delete comment (not found or unauthorized)")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Comment deleted successfully",
 	})
@@ -376,11 +287,7 @@ func (h *CommentHandler) HandleGetLogComments(w http.ResponseWriter, r *http.Req
 		comments, err = h.pg.GetCommentsByLogIDAndFractal(r.Context(), logID, scopeFractal)
 	}
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to fetch comments",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch comments")
 		return
 	}
 
@@ -389,8 +296,7 @@ func (h *CommentHandler) HandleGetLogComments(w http.ResponseWriter, r *http.Req
 		comments = []storage.Comment{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Data:    comments,
 	})
@@ -427,11 +333,7 @@ func (h *CommentHandler) HandleGetCommentedLogs(w http.ResponseWriter, r *http.R
 		logs, total, err = h.pg.GetAllCommentedLogsByFractal(r.Context(), scopeFractal, limit, offset)
 	}
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to fetch commented logs",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch commented logs")
 		return
 	}
 
@@ -440,14 +342,7 @@ func (h *CommentHandler) HandleGetCommentedLogs(w http.ResponseWriter, r *http.R
 		logs = []map[string]interface{}{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"data":    logs,
-		"total":   total,
-		"limit":   limit,
-		"offset":  offset,
-	})
+	api.WritePage(w, logs, api.Page{Total: total, Limit: limit, Offset: offset})
 }
 
 // HandleGetFlatComments returns individual comments (not grouped by log) for the current fractal or prism.
@@ -481,8 +376,7 @@ func (h *CommentHandler) HandleGetFlatComments(w http.ResponseWriter, r *http.Re
 	}
 	if err != nil {
 		log.Printf("[Comments] Failed to get flat comments: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to fetch comments"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch comments")
 		return
 	}
 
@@ -490,14 +384,7 @@ func (h *CommentHandler) HandleGetFlatComments(w http.ResponseWriter, r *http.Re
 		comments = []storage.Comment{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"data":    comments,
-		"total":   total,
-		"limit":   limit,
-		"offset":  offset,
-	})
+	api.WritePage(w, comments, api.Page{Total: total, Limit: limit, Offset: offset})
 }
 
 // BulkTagRequest applies or removes one tag across several comments.
@@ -510,37 +397,30 @@ type BulkTagRequest struct {
 func (h *CommentHandler) HandleBulkAddTag(w http.ResponseWriter, r *http.Request) {
 	user, ok := r.Context().Value("user").(*storage.User)
 	if !ok || user == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Authentication required"})
+		api.WriteError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
 	fractalRole := rbac.RoleFromContext(r.Context())
 	prismRole := rbac.PrismRoleFromContext(r.Context())
 	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Analyst access required"})
+		api.WriteError(w, http.StatusForbidden, "Analyst access required")
 		return
 	}
 
 	var req BulkTagRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	req.Tag = strings.TrimSpace(req.Tag)
 	if req.Tag == "" || len(req.Tag) > 100 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Tag must be 1-100 characters"})
+		api.WriteError(w, http.StatusBadRequest, "Tag must be 1-100 characters")
 		return
 	}
 	if len(req.CommentIDs) == 0 || len(req.CommentIDs) > 500 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Must provide 1-500 comment IDs"})
+		api.WriteError(w, http.StatusBadRequest, "Must provide 1-500 comment IDs")
 		return
 	}
 
@@ -548,8 +428,7 @@ func (h *CommentHandler) HandleBulkAddTag(w http.ResponseWriter, r *http.Request
 	count, err := h.pg.BulkAddTagToComments(r.Context(), req.CommentIDs, req.Tag, user.Username, user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk add tag failed: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to add tag"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to add tag")
 		return
 	}
 
@@ -564,37 +443,30 @@ func (h *CommentHandler) HandleBulkAddTag(w http.ResponseWriter, r *http.Request
 func (h *CommentHandler) HandleBulkRemoveTag(w http.ResponseWriter, r *http.Request) {
 	user, ok := r.Context().Value("user").(*storage.User)
 	if !ok || user == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Authentication required"})
+		api.WriteError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
 	fractalRole := rbac.RoleFromContext(r.Context())
 	prismRole := rbac.PrismRoleFromContext(r.Context())
 	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Analyst access required"})
+		api.WriteError(w, http.StatusForbidden, "Analyst access required")
 		return
 	}
 
 	var req BulkTagRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	req.Tag = strings.TrimSpace(req.Tag)
 	if req.Tag == "" || len(req.Tag) > 100 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Tag must be 1-100 characters"})
+		api.WriteError(w, http.StatusBadRequest, "Tag must be 1-100 characters")
 		return
 	}
 	if len(req.CommentIDs) == 0 || len(req.CommentIDs) > 500 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Must provide 1-500 comment IDs"})
+		api.WriteError(w, http.StatusBadRequest, "Must provide 1-500 comment IDs")
 		return
 	}
 
@@ -602,8 +474,7 @@ func (h *CommentHandler) HandleBulkRemoveTag(w http.ResponseWriter, r *http.Requ
 	count, err := h.pg.BulkRemoveTagFromComments(r.Context(), req.CommentIDs, req.Tag, user.Username, user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk remove tag failed: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to remove tag"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to remove tag")
 		return
 	}
 
@@ -624,31 +495,25 @@ type BulkDeleteRequest struct {
 func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http.Request) {
 	user, ok := r.Context().Value("user").(*storage.User)
 	if !ok || user == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Authentication required"})
+		api.WriteError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
 	fractalRole := rbac.RoleFromContext(r.Context())
 	prismRole := rbac.PrismRoleFromContext(r.Context())
 	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Analyst access required"})
+		api.WriteError(w, http.StatusForbidden, "Analyst access required")
 		return
 	}
 
 	var req BulkDeleteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if len(req.CommentIDs) == 0 || len(req.CommentIDs) > 500 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Must provide 1-500 comment IDs"})
+		api.WriteError(w, http.StatusBadRequest, "Must provide 1-500 comment IDs")
 		return
 	}
 
@@ -656,8 +521,7 @@ func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http
 	count, err := h.pg.BulkDeleteComments(r.Context(), req.CommentIDs, user.Username, user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk delete failed: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to delete comments"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to delete comments")
 		return
 	}
 
@@ -680,8 +544,7 @@ func (h *CommentHandler) HandleGetTags(w http.ResponseWriter, r *http.Request) {
 		tags, err = h.pg.GetDistinctTagsByFractal(r.Context(), scopeFractal)
 	}
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to fetch tags"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch tags")
 		return
 	}
 
@@ -689,79 +552,47 @@ func (h *CommentHandler) HandleGetTags(w http.ResponseWriter, r *http.Request) {
 		tags = []string{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Data: tags})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: tags})
 }
 
 // HandleDeleteCommentsByLogID deletes all comments for a specific log_id
 // This is used for cascading deletes when logs are removed (admin only)
 func (h *CommentHandler) HandleDeleteCommentsByLogID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	user, ok := r.Context().Value("user").(*storage.User)
 	if !ok || user == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Authentication required"})
+		api.WriteError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
 	fractalRole := rbac.RoleFromContext(r.Context())
 	prismRole := rbac.PrismRoleFromContext(r.Context())
 	if !rbac.HasAccess(user, fractalRole, rbac.RoleAdmin) && !rbac.HasAccess(user, prismRole, rbac.RoleAdmin) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Admin access required"})
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 
 	logID := chi.URLParam(r, "log_id")
 	if logID == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "log_id parameter is required",
-		})
+		api.WriteError(w, http.StatusBadRequest, "log_id parameter is required")
 		return
 	}
 
 	err := h.pg.DeleteCommentsByLogID(r.Context(), logID)
 	if err != nil {
 		log.Printf("[Comments] Failed to delete comments for log %s: %v", logID, err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to delete comments",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to delete comments")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: fmt.Sprintf("All comments for log_id %s deleted successfully", logID),
 	})
-}
-
-// DeleteCommentsByLogID is a helper method for cascading deletes
-// This can be called directly by other handlers when logs are deleted
-func (h *CommentHandler) DeleteCommentsByLogID(ctx context.Context, logID string) error {
-	return h.pg.DeleteCommentsByLogID(ctx, logID)
-}
-
-// DeleteCommentsByLogIDs is a helper method for batch cascading deletes
-// This can be called directly by other handlers when multiple logs are deleted
-func (h *CommentHandler) DeleteCommentsByLogIDs(ctx context.Context, logIDs []string) error {
-	return h.pg.DeleteCommentsByLogIDs(ctx, logIDs)
-}
-
-// DeleteAllComments is a helper method for clearing all comments
-// This can be called directly by other handlers when all logs are cleared
-func (h *CommentHandler) DeleteAllComments(ctx context.Context) error {
-	return h.pg.DeleteAllComments(ctx)
 }
 
 // getScope returns the fractalID and prismID from context. Exactly one will be non-empty.
@@ -791,34 +622,28 @@ func (h *CommentHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Reque
 
 	var req LogFieldsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if len(req.LogIDs) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: true, Data: []interface{}{}})
+		api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: []interface{}{}})
 		return
 	}
 	if len(req.LogIDs) > 500 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Too many log IDs (max 500)"})
+		api.WriteError(w, http.StatusBadRequest, "Too many log IDs (max 500)")
 		return
 	}
 
 	logs, err := h.ch.GetLogFieldsByIDs(r.Context(), req.LogIDs, selectedFractal)
 	if err != nil {
 		log.Printf("[Comments] Failed to get log fields: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to fetch log fields"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch log fields")
 		return
 	}
 	if logs == nil {
 		logs = []map[string]interface{}{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Data: logs})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: logs})
 }

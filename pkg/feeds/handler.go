@@ -1,6 +1,7 @@
 package feeds
 
 import (
+	"bifract/pkg/api"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -31,17 +32,12 @@ func NewHandler(manager *Manager, alertManager *alerts.Manager, fractalManager *
 	}
 }
 
-type apiResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-}
+// apiResponse is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type apiResponse = api.Response[any]
 
 func (h *Handler) respond(w http.ResponseWriter, status int, data interface{}, errMsg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	resp := apiResponse{Success: errMsg == "", Data: data, Error: errMsg}
-	json.NewEncoder(w).Encode(resp)
+	api.WriteJSON(w, status, api.Response[any]{Success: errMsg == "", Data: data, Error: errMsg})
 }
 
 func (h *Handler) getCurrentUser(r *http.Request) *storage.User {

@@ -182,11 +182,6 @@ type Alert struct {
 	QueryWindowSeconds  *int    `json:"query_window_seconds,omitempty"`
 }
 
-// NewEngine creates a new alert processing engine.
-func NewEngine(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Engine {
-	return NewEngineWithDicts(pg, ch, nil, "")
-}
-
 // SetModelManager wires in the analytics model manager for model_lookup() BQL support.
 func (e *Engine) SetModelManager(m *models.Manager) {
 	e.modelManager = m

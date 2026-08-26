@@ -13,9 +13,6 @@ var sourceCommandNames = map[string]bool{
 	"pgr": true,
 }
 
-// IsSourceCommand reports whether name is a source-generating command.
-func IsSourceCommand(name string) bool { return sourceCommandNames[name] }
-
 // FirstSourceCommand returns the first source command in the pipeline, if any.
 func FirstSourceCommand(pipeline *PipelineNode) (CommandNode, bool) {
 	if pipeline == nil {

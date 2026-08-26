@@ -10,11 +10,11 @@ type APIKey struct {
 	ID          string                 `json:"id" db:"id"`
 	Name        string                 `json:"name" db:"name"`
 	Description string                 `json:"description,omitempty" db:"description"`
-	KeyID       string                 `json:"key_id" db:"key_id"`        // Public identifier (first 8 chars)
+	KeyID       string                 `json:"key_id" db:"key_id"` // Public identifier (first 8 chars)
 	FractalID   string                 `json:"fractal_id,omitempty" db:"fractal_id"`
-	FractalName string                 `json:"fractal_name,omitempty"`    // Populated in responses
+	FractalName string                 `json:"fractal_name,omitempty"` // Populated in responses
 	PrismID     string                 `json:"prism_id,omitempty" db:"prism_id"`
-	PrismName   string                 `json:"prism_name,omitempty"`      // Populated in responses
+	PrismName   string                 `json:"prism_name,omitempty"` // Populated in responses
 	CreatedBy   string                 `json:"created_by" db:"created_by"`
 	ExpiresAt   *time.Time             `json:"expires_at,omitempty" db:"expires_at"`
 	IsActive    bool                   `json:"is_active" db:"is_active"`
@@ -36,9 +36,9 @@ type CreateAPIKeyRequest struct {
 // CreateAPIKeyResponse represents the response after creating an API key
 // The Key field is only returned once during creation
 type CreateAPIKeyResponse struct {
-	Key    string `json:"key"`           // Full key, shown only once
-	KeyID  string `json:"key_id"`        // Public identifier
-	APIKey APIKey `json:"api_key"`       // Full API key object
+	Key    string `json:"key"`     // Full key, shown only once
+	KeyID  string `json:"key_id"`  // Public identifier
+	APIKey APIKey `json:"api_key"` // Full API key object
 }
 
 // UpdateAPIKeyRequest represents a request to update an existing API key
@@ -48,20 +48,6 @@ type UpdateAPIKeyRequest struct {
 	ExpiresAt   *time.Time             `json:"expires_at,omitempty"`
 	IsActive    *bool                  `json:"is_active,omitempty"`
 	Permissions map[string]interface{} `json:"permissions,omitempty"`
-}
-
-// APIKeyListResponse represents a response containing multiple API keys
-type APIKeyListResponse struct {
-	Success bool     `json:"success"`
-	Data    []APIKey `json:"data"`
-	Error   string   `json:"error,omitempty"`
-}
-
-// APIKeyResponse represents a response containing a single API key
-type APIKeyResponse struct {
-	Success bool   `json:"success"`
-	Data    APIKey `json:"data"`
-	Error   string `json:"error,omitempty"`
 }
 
 // ValidatedAPIKey represents an API key that has been validated for authentication.

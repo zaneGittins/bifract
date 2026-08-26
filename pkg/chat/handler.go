@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -37,20 +38,13 @@ func (h *Handler) SetPrismResolver(resolver PrismResolver) {
 	h.prismResolver = resolver
 }
 
-type apiResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-}
+// apiResponse is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type apiResponse = api.Response[any]
 
 // NewHandler creates a new chat handler.
 func NewHandler(manager *Manager, fractalManager *fractals.Manager, rbacResolver RBACResolver) *Handler {
 	return &Handler{manager: manager, fractalManager: fractalManager, rbacResolver: rbacResolver}
-}
-
-// SetRBACResolver sets the RBAC resolver (for deferred initialization).
-func (h *Handler) SetRBACResolver(resolver RBACResolver) {
-	h.rbacResolver = resolver
 }
 
 // verifyConversationOwner loads a conversation and verifies the requesting user
@@ -226,7 +220,6 @@ func (h *Handler) HandleDeleteAllConversations(w http.ResponseWriter, r *http.Re
 	}
 	h.respondSuccess(w, map[string]bool{"deleted": true})
 }
-
 
 // SetConversationLibrariesRequest replaces the libraries attached to a conversation.
 type SetConversationLibrariesRequest struct {
@@ -450,7 +443,7 @@ func (h *Handler) HandleStream(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
 
@@ -485,12 +478,9 @@ func (h *Handler) getUsername(r *http.Request) string {
 }
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(apiResponse{Success: true, Data: data})
+	api.WriteSuccess(w, data)
 }
 
 func (h *Handler) respondError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(apiResponse{Success: false, Error: msg})
+	api.WriteError(w, status, msg)
 }

@@ -1,6 +1,7 @@
 package dashboards
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -264,7 +265,7 @@ func (h *DashboardHandler) HandleCreateSharedLink(w http.ResponseWriter, r *http
 	}
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
@@ -288,12 +289,12 @@ func (h *DashboardHandler) HandleCreateSharedLink(w http.ResponseWriter, r *http
 
 	full, hash, prefix, err := generateShareToken()
 	if err != nil {
-		jsonError(w, "Failed to generate token")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to generate token")
 		return
 	}
 	link, err := h.pg.CreateDashboardSharedLink(r.Context(), id, hash, prefix, label, createdBy, expiresAt)
 	if err != nil {
-		jsonError(w, "Failed to create shared link")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create shared link")
 		return
 	}
 
@@ -308,7 +309,7 @@ func (h *DashboardHandler) HandleListSharedLinks(w http.ResponseWriter, r *http.
 	id := chi.URLParam(r, "id")
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleViewer) {
@@ -316,14 +317,13 @@ func (h *DashboardHandler) HandleListSharedLinks(w http.ResponseWriter, r *http.
 	}
 	links, err := h.pg.ListDashboardSharedLinks(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Failed to list shared links")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to list shared links")
 		return
 	}
 	if links == nil {
 		links = []storage.DashboardSharedLink{}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Data: links})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: links})
 }
 
 // HandleRevokeSharedLink revokes a link (analyst+). Works regardless of the
@@ -333,16 +333,15 @@ func (h *DashboardHandler) HandleRevokeSharedLink(w http.ResponseWriter, r *http
 	linkID := chi.URLParam(r, "link_id")
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
 		return
 	}
 	if err := h.pg.RevokeDashboardSharedLink(r.Context(), id, linkID); err != nil {
-		jsonError(w, "Shared link not found")
+		api.WriteError(w, http.StatusNotFound, "Shared link not found")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Shared link revoked"})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Shared link revoked"})
 }

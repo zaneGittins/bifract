@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -84,12 +85,12 @@ func staticFileHandler() http.HandlerFunc {
 func (d routerDeps) recallAnalystOK(w http.ResponseWriter, r *http.Request, fractalID string) (*storage.User, bool) {
 	u, ok := r.Context().Value("user").(*storage.User)
 	if !ok || u == nil {
-		http.Error(w, "Authentication required", http.StatusUnauthorized)
+		api.WriteError(w, http.StatusUnauthorized, "Authentication required")
 		return nil, false
 	}
 	role, err := d.authHandler.RBACResolver().ResolveFractalRole(r.Context(), u.Username, fractalID)
 	if err != nil || !rbac.HasAccess(u, role, rbac.RoleAnalyst) {
-		http.Error(w, "Analyst access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Analyst access required")
 		return nil, false
 	}
 	return u, true
@@ -166,7 +167,7 @@ func (d routerDeps) handlePressure(w http.ResponseWriter, r *http.Request) {
 
 func (d routerDeps) handleArchiveStatus(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	enabled := false
@@ -320,7 +321,7 @@ type enabledRequest struct {
 
 func (d routerDeps) handleSetArchiveEnabled(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	// Guardrail: archiving can only be enabled when the spool machinery
@@ -328,12 +329,12 @@ func (d routerDeps) handleSetArchiveEnabled(w http.ResponseWriter, r *http.Reque
 	// deployment the spool lives in the ingest tier, so also accept its
 	// published provisioned state.
 	if !d.ingestQueue.SpoolProvisioned() && !d.pg.ReadSpoolStatus(r.Context()).Provisioned {
-		http.Error(w, "Archive not provisioned. Run bifract --upgrade to add the archiver, then retry.", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Archive not provisioned. Run bifract --upgrade to add the archiver, then retry.")
 		return
 	}
 	var body enabledRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 	val := "false"
@@ -341,7 +342,7 @@ func (d routerDeps) handleSetArchiveEnabled(w http.ResponseWriter, r *http.Reque
 		val = "true"
 	}
 	if err := d.pg.SetSetting(r.Context(), "archive_enabled", val); err != nil {
-		http.Error(w, "Failed to save", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to save")
 		return
 	}
 	// Reflect immediately in the running tee (the poller also refreshes).
@@ -353,26 +354,24 @@ func (d routerDeps) handleSetArchiveEnabled(w http.ResponseWriter, r *http.Reque
 func (d routerDeps) handleRunArchiveMaintain(w http.ResponseWriter, r *http.Request) {
 	u, ok := r.Context().Value("user").(*storage.User)
 	if !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	// Same provisioning guard as enabling: until the archive machinery is
 	// provisioned (--upgrade) there is no maintainer to service the request.
 	if !d.ingestQueue.SpoolProvisioned() && !d.pg.ReadSpoolStatus(r.Context()).Provisioned {
-		http.Error(w, "Archive not provisioned. Run bifract --upgrade to add the archiver, then retry.", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Archive not provisioned. Run bifract --upgrade to add the archiver, then retry.")
 		return
 	}
 	// A run-now while archiving is disabled would be claimed and then
 	// skipped (skipped_disabled), a confusing no-op; reject up front so the
 	// button's outcome is predictable.
 	if v, _ := d.pg.GetSetting(r.Context(), archiveEnabledSetting); v != "true" {
-		http.Error(w, "Enable archiving before running maintenance.", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Enable archiving before running maintenance.")
 		return
 	}
-	if _, err := d.pg.Exec(r.Context(),
-		`UPDATE archive_maintain_status SET run_requested_at = NOW(), run_requested_by = $1 WHERE id = 1`,
-		u.Username); err != nil {
-		http.Error(w, "Failed to request maintenance run", http.StatusInternalServerError)
+	if err := archive.RequestMaintainRun(r.Context(), d.pg.DB(), u.Username); err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "Failed to request maintenance run")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -381,13 +380,13 @@ func (d routerDeps) handleRunArchiveMaintain(w http.ResponseWriter, r *http.Requ
 
 func (d routerDeps) handleClearArchiveCatalog(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	// Require archiving disabled so the archiver is not concurrently
 	// recreating tables/namespaces mid-clear (races a clean reset to zero).
 	if v, _ := d.pg.GetSetting(r.Context(), archiveEnabledSetting); v == "true" {
-		http.Error(w, "Disable archiving before clearing the catalog.", http.StatusConflict)
+		api.WriteError(w, http.StatusConflict, "Disable archiving before clearing the catalog.")
 		return
 	}
 	// archiveNamespace matches archive.Namespace (the single namespace every
@@ -397,26 +396,26 @@ func (d routerDeps) handleClearArchiveCatalog(w http.ResponseWriter, r *http.Req
 	const archiveNamespace = "bifract"
 	tx, err := d.pg.Begin(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to clear catalog", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to clear catalog")
 		return
 	}
 	defer tx.Rollback(r.Context())
 	if _, err := tx.Exec(r.Context(), "DELETE FROM iceberg_tables WHERE table_namespace = $1", archiveNamespace); err != nil {
-		http.Error(w, "Failed to clear catalog tables", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to clear catalog tables")
 		return
 	}
 	if _, err := tx.Exec(r.Context(), "DELETE FROM iceberg_namespace_properties WHERE namespace = $1", archiveNamespace); err != nil {
-		http.Error(w, "Failed to clear catalog namespaces", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to clear catalog namespaces")
 		return
 	}
 	// Zero the footprint the admin UI shows; the archiver heartbeat keeps it
 	// at zero until new data is archived.
 	if _, err := tx.Exec(r.Context(), "UPDATE archive_status SET fractal_count = 0, total_bytes = 0, total_records = 0, updated_at = NOW() WHERE id = 1"); err != nil {
-		http.Error(w, "Failed to reset archive status", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to reset archive status")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		http.Error(w, "Failed to commit catalog clear", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to commit catalog clear")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -426,19 +425,19 @@ func (d routerDeps) handleClearArchiveCatalog(w http.ResponseWriter, r *http.Req
 func (d routerDeps) handleClearArchiveSpool(w http.ResponseWriter, r *http.Request) {
 	u, ok := r.Context().Value("user").(*storage.User)
 	if !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	// Require archiving disabled: the reset runs on the ingest (Writer)
 	// side only while the tee is not spooling, so a clear while enabled
 	// would race live writes.
 	if v, _ := d.pg.GetSetting(r.Context(), archiveEnabledSetting); v == "true" {
-		http.Error(w, "Disable archiving before clearing the spool.", http.StatusConflict)
+		api.WriteError(w, http.StatusConflict, "Disable archiving before clearing the spool.")
 		return
 	}
 	gen := spoolClearGeneration(d.pg) + 1
 	if err := d.pg.SetSetting(r.Context(), spool.ClearGenerationSettingKey, strconv.FormatInt(gen, 10)); err != nil {
-		http.Error(w, "Failed to request spool clear", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to request spool clear")
 		return
 	}
 	log.Printf("[Archive] spool clear requested (generation %d) by %s", gen, u.Username)
@@ -451,12 +450,12 @@ func (d routerDeps) handleClearArchiveSpool(w http.ResponseWriter, r *http.Reque
 
 func (d routerDeps) handleDistributionQueueShards(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	stats, err := d.dbIngest.DistributionQueueByShard(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to query distribution queue", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to query distribution queue")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -471,12 +470,12 @@ type resetDistributionQueueRequest struct {
 func (d routerDeps) handleResetDistributionQueue(w http.ResponseWriter, r *http.Request) {
 	u, ok := r.Context().Value("user").(*storage.User)
 	if !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	var body resetDistributionQueueRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 	if err := d.dbIngest.ResetDistributedQueue(r.Context(), body.ShardNum); err != nil {
@@ -484,7 +483,7 @@ func (d routerDeps) handleResetDistributionQueue(w http.ResponseWriter, r *http.
 		// The error itself carries actionable guidance (e.g. "retry
 		// immediately" when the table was dropped but not yet recreated),
 		// which matters more here than a generic message.
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	log.Printf("[Admin] distribution queue reset on shard %d by %s", body.ShardNum, u.Username)
@@ -494,7 +493,7 @@ func (d routerDeps) handleResetDistributionQueue(w http.ResponseWriter, r *http.
 
 func (d routerDeps) handleGetEndpointAnalysis(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	enabled := false
@@ -507,19 +506,19 @@ func (d routerDeps) handleGetEndpointAnalysis(w http.ResponseWriter, r *http.Req
 
 func (d routerDeps) handleSetEndpointAnalysis(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	var body enabledRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 	// Attach/detach the MVs first; only persist the setting if that succeeds,
 	// so the stored flag always matches the actual ClickHouse state.
 	if err := d.db.ReconcileEndpointAnalysisMVs(r.Context(), body.Enabled); err != nil {
 		log.Printf("endpoint-analysis reconcile failed: %v", err)
-		http.Error(w, "Failed to apply change to ClickHouse", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to apply change to ClickHouse")
 		return
 	}
 	val := "false"
@@ -527,7 +526,7 @@ func (d routerDeps) handleSetEndpointAnalysis(w http.ResponseWriter, r *http.Req
 		val = "true"
 	}
 	if err := d.pg.SetSetting(r.Context(), storage.AdvancedEndpointAnalysisSetting, val); err != nil {
-		http.Error(w, "Failed to save", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to save")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -545,12 +544,12 @@ func (d routerDeps) handleGetSharedLinksEnabled(w http.ResponseWriter, r *http.R
 
 func (d routerDeps) handleSetSharedLinksEnabled(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	var body enabledRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 	val := "false"
@@ -558,7 +557,7 @@ func (d routerDeps) handleSetSharedLinksEnabled(w http.ResponseWriter, r *http.R
 		val = "true"
 	}
 	if err := d.pg.SetSetting(r.Context(), storage.SharedLinksEnabledSetting, val); err != nil {
-		http.Error(w, "Failed to save", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to save")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -587,34 +586,34 @@ type createRestoreRequest struct {
 func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) {
 	u, ok := r.Context().Value("user").(*storage.User)
 	if !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	var body createRestoreRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 	if len(body.FractalIDs) == 0 {
-		http.Error(w, "Select at least one fractal", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Select at least one fractal")
 		return
 	}
 	if len(body.FractalIDs) > 200 {
-		http.Error(w, "Too many fractals in one request", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Too many fractals in one request")
 		return
 	}
 	from, err := parseArchiveTime(body.From)
 	if err != nil {
-		http.Error(w, "Invalid 'from' time", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid 'from' time")
 		return
 	}
 	to, err := parseArchiveTime(body.To)
 	if err != nil {
-		http.Error(w, "Invalid 'to' time", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid 'to' time")
 		return
 	}
 	if !to.After(from) {
-		http.Error(w, "'to' must be after 'from'", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "'to' must be after 'from'")
 		return
 	}
 	mode := body.Mode
@@ -622,7 +621,7 @@ func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) 
 		mode = "restore"
 	}
 	if mode != "restore" && mode != "reconcile" {
-		http.Error(w, "mode must be 'restore' or 'reconcile'", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "mode must be 'restore' or 'reconcile'")
 		return
 	}
 
@@ -633,15 +632,15 @@ func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) 
 	// single-source only (the provenance columns hold one source).
 	if body.TargetMode == "new" {
 		if mode != "restore" {
-			http.Error(w, "Restoring into a new fractal is only supported in restore mode", http.StatusBadRequest)
+			api.WriteError(w, http.StatusBadRequest, "Restoring into a new fractal is only supported in restore mode")
 			return
 		}
 		if len(body.FractalIDs) != 1 || body.FractalIDs[0] == "" {
-			http.Error(w, "Restoring into a new fractal requires exactly one source fractal", http.StatusBadRequest)
+			api.WriteError(w, http.StatusBadRequest, "Restoring into a new fractal requires exactly one source fractal")
 			return
 		}
 		if strings.TrimSpace(body.NewFractalName) == "" {
-			http.Error(w, "A name for the new fractal is required", http.StatusBadRequest)
+			api.WriteError(w, http.StatusBadRequest, "A name for the new fractal is required")
 			return
 		}
 		sourceID := body.FractalIDs[0]
@@ -651,7 +650,7 @@ func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			// Name collision and validation surface as a 400; the manager
 			// wraps both, so a bad name does not read as a server error.
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			api.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		batchID := uuid.NewString()
@@ -660,7 +659,7 @@ func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) 
 			`INSERT INTO archive_restore_jobs (batch_id, fractal_id, target_fractal_id, mode, from_ts, to_ts, requested_by)
 						 VALUES ($1, $2, $3, 'restore', $4, $5, $6) RETURNING id`,
 			batchID, sourceID, newFractal.ID, from, to, u.Username).Scan(&id); err != nil {
-			http.Error(w, "Fractal created but failed to enqueue restore job", http.StatusInternalServerError)
+			api.WriteError(w, http.StatusInternalServerError, "Fractal created but failed to enqueue restore job")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -678,7 +677,7 @@ func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) 
 	if !body.AcknowledgeRetention {
 		conflicts, err := retentionConflicts(r.Context(), d.pg, body.FractalIDs, from)
 		if err != nil {
-			http.Error(w, "Failed to check fractal retention", http.StatusInternalServerError)
+			api.WriteError(w, http.StatusInternalServerError, "Failed to check fractal retention")
 			return
 		}
 		if len(conflicts) > 0 {
@@ -706,7 +705,7 @@ func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) 
 						 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 			batchID, fid, mode, from, to, u.Username).Scan(&id)
 		if err != nil {
-			http.Error(w, "Failed to enqueue restore job", http.StatusInternalServerError)
+			api.WriteError(w, http.StatusInternalServerError, "Failed to enqueue restore job")
 			return
 		}
 		ids = append(ids, id)
@@ -719,22 +718,12 @@ func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) 
 
 func (d routerDeps) handleListRestores(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	// Pagination + optional status filter.
 	q := r.URL.Query()
-	page, _ := strconv.Atoi(q.Get("page"))
-	if page < 1 {
-		page = 1
-	}
-	pageSize, _ := strconv.Atoi(q.Get("page_size"))
-	if pageSize < 1 {
-		pageSize = 20
-	}
-	if pageSize > 100 {
-		pageSize = 100
-	}
+	limit, offset := api.PageParams(r, 20, 100)
 	status := q.Get("status")
 	validStatus := map[string]bool{"pending": true, "running": true, "succeeded": true, "failed": true, "canceled": true}
 	where := ""
@@ -745,10 +734,9 @@ func (d routerDeps) handleListRestores(w http.ResponseWriter, r *http.Request) {
 	}
 	var total int
 	if err := d.pg.QueryRow(r.Context(), "SELECT count(*) FROM archive_restore_jobs "+where, args...).Scan(&total); err != nil {
-		http.Error(w, "Failed to load jobs", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to load jobs")
 		return
 	}
-	offset := (page - 1) * pageSize
 	// LEFT JOIN the destination fractal so the UI can show "-> name"
 	// for restore-into-fractal jobs. Columns are qualified because the
 	// join collides on id/created_at.
@@ -760,9 +748,9 @@ func (d routerDeps) handleListRestores(w http.ResponseWriter, r *http.Request) {
 					        j.created_at, j.started_at, j.finished_at
 					 FROM archive_restore_jobs j
 					 LEFT JOIN fractals tf ON tf.id::text = j.target_fractal_id `+where+
-			fmt.Sprintf(" ORDER BY j.created_at DESC LIMIT %d OFFSET %d", pageSize, offset), args...)
+			fmt.Sprintf(" ORDER BY j.created_at DESC LIMIT %d OFFSET %d", limit, offset), args...)
 	if err != nil {
-		http.Error(w, "Failed to load jobs", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to load jobs")
 		return
 	}
 	defer rows.Close()
@@ -808,15 +796,12 @@ func (d routerDeps) handleListRestores(w http.ResponseWriter, r *http.Request) {
 		}
 		jobs = append(jobs, j)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true, "jobs": jobs, "total": total, "page": page, "page_size": pageSize,
-	})
+	api.WritePage(w, jobs, api.Page{Total: total, Limit: limit, Offset: offset})
 }
 
 func (d routerDeps) handleCancelRestore(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	id := chi.URLParam(r, "id")
@@ -824,11 +809,11 @@ func (d routerDeps) handleCancelRestore(w http.ResponseWriter, r *http.Request) 
 		`UPDATE archive_restore_jobs SET status = 'canceled', finished_at = NOW(), updated_at = NOW()
 					 WHERE id = $1 AND status IN ('pending', 'running')`, id)
 	if err != nil {
-		http.Error(w, "Failed to cancel", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to cancel")
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		http.Error(w, "Job has already finished", http.StatusConflict)
+		api.WriteError(w, http.StatusConflict, "Job has already finished")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -837,7 +822,7 @@ func (d routerDeps) handleCancelRestore(w http.ResponseWriter, r *http.Request) 
 
 func (d routerDeps) handleResumeRestore(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
-		http.Error(w, "Admin access required", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 	id := chi.URLParam(r, "id")
@@ -846,11 +831,11 @@ func (d routerDeps) handleResumeRestore(w http.ResponseWriter, r *http.Request) 
 					 SET status = 'pending', error = NULL, finished_at = NULL, started_at = NULL, updated_at = NOW()
 					 WHERE id = $1 AND status IN ('failed', 'canceled')`, id)
 	if err != nil {
-		http.Error(w, "Failed to resume", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to resume")
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		http.Error(w, "Only a failed or canceled job can be resumed", http.StatusConflict)
+		api.WriteError(w, http.StatusConflict, "Only a failed or canceled job can be resumed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -859,7 +844,7 @@ func (d routerDeps) handleResumeRestore(w http.ResponseWriter, r *http.Request) 
 
 func (d routerDeps) handleRecallAvailable(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil {
-		http.Error(w, "Authentication required", http.StatusUnauthorized)
+		api.WriteError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 	enabled := false
@@ -885,28 +870,28 @@ func (d routerDeps) handleRecallEstimate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if d.recallEstimator == nil {
-		http.Error(w, "Archive estimate unavailable", http.StatusServiceUnavailable)
+		api.WriteError(w, http.StatusServiceUnavailable, "Archive estimate unavailable")
 		return
 	}
 	from, err := parseArchiveTime(r.URL.Query().Get("from"))
 	if err != nil {
-		http.Error(w, "Invalid 'from' time", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid 'from' time")
 		return
 	}
 	to, err := parseArchiveTime(r.URL.Query().Get("to"))
 	if err != nil {
-		http.Error(w, "Invalid 'to' time", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid 'to' time")
 		return
 	}
 	if !to.After(from) {
-		http.Error(w, "'to' must be after 'from'", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "'to' must be after 'from'")
 		return
 	}
 	ectx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	est, err := d.recallEstimator.Estimate(ectx, fractalID, from, to)
 	if err != nil {
-		http.Error(w, "Failed to estimate scan", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to estimate scan")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -937,29 +922,29 @@ func (d routerDeps) handleCreateRecall(w http.ResponseWriter, r *http.Request) {
 	}
 	var body createRecallRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 	if strings.TrimSpace(body.Query) == "" {
-		http.Error(w, "Query is required", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Query is required")
 		return
 	}
 	from, err := parseArchiveTime(body.From)
 	if err != nil {
-		http.Error(w, "Invalid 'from' time", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid 'from' time")
 		return
 	}
 	to, err := parseArchiveTime(body.To)
 	if err != nil {
-		http.Error(w, "Invalid 'to' time", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "Invalid 'to' time")
 		return
 	}
 	if !to.After(from) {
-		http.Error(w, "'to' must be after 'from'", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "'to' must be after 'from'")
 		return
 	}
 	if err := validateRecallQuery(body.Query); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// Recall mirrors the query page's search UX: you narrow the range or
@@ -1007,8 +992,8 @@ func (d routerDeps) handleCreateRecall(w http.ResponseWriter, r *http.Request) {
 		est, eerr := d.recallEstimator.Estimate(ectx, fractalID, from, to)
 		ecancel()
 		if eerr == nil && est.Archived && est.Bytes > limit {
-			http.Error(w, fmt.Sprintf("This window holds about %s of archived data, above the %s recall scan limit. Narrow the time range or raise the limit in Settings.",
-				recallBytesHuman(est.Bytes), recallBytesHuman(limit)), http.StatusRequestEntityTooLarge)
+			api.WriteError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("This window holds about %s of archived data, above the %s recall scan limit. Narrow the time range or raise the limit in Settings.",
+				recallBytesHuman(est.Bytes), recallBytesHuman(limit)))
 			return
 		}
 	}
@@ -1016,7 +1001,7 @@ func (d routerDeps) handleCreateRecall(w http.ResponseWriter, r *http.Request) {
 	if err := d.pg.QueryRow(r.Context(),
 		`SELECT count(*) FROM archive_search_jobs WHERE requested_by = $1 AND status IN ('pending','running')`,
 		u.Username).Scan(&inflight); err == nil && inflight >= 3 {
-		http.Error(w, "Too many searches in progress; wait for one to finish", http.StatusTooManyRequests)
+		api.WriteError(w, http.StatusTooManyRequests, "Too many searches in progress; wait for one to finish")
 		return
 	}
 	var id int64
@@ -1024,7 +1009,7 @@ func (d routerDeps) handleCreateRecall(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO archive_search_jobs (fractal_id, query, from_ts, to_ts, max_rows, requested_by)
 					 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 		fractalID, body.Query, from, to, maxRows, u.Username).Scan(&id); err != nil {
-		http.Error(w, "Failed to enqueue search", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to enqueue search")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1046,7 +1031,7 @@ func (d routerDeps) handleListRecalls(w http.ResponseWriter, r *http.Request) {
 					 FROM archive_search_jobs WHERE fractal_id = $1 ORDER BY created_at DESC LIMIT $2`,
 		fractalID, limit)
 	if err != nil {
-		http.Error(w, "Failed to list searches", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to list searches")
 		return
 	}
 	defer rows.Close()
@@ -1110,11 +1095,11 @@ func (d routerDeps) handleGetRecall(w http.ResponseWriter, r *http.Request) {
 		&readRows, &readBytes,
 		&fieldOrder, &results, &errMsg, &created, &started, &finished)
 	if err == sql.ErrNoRows {
-		http.Error(w, "Search not found", http.StatusNotFound)
+		api.WriteError(w, http.StatusNotFound, "Search not found")
 		return
 	}
 	if err != nil {
-		http.Error(w, "Failed to load search", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to load search")
 		return
 	}
 	resp := map[string]interface{}{
@@ -1154,11 +1139,11 @@ func (d routerDeps) handleCancelRecall(w http.ResponseWriter, r *http.Request) {
 		`UPDATE archive_search_jobs SET status = 'canceled', finished_at = NOW(), updated_at = NOW()
 					 WHERE id = $1 AND fractal_id = $2 AND status IN ('pending', 'running')`, id, fractalID)
 	if err != nil {
-		http.Error(w, "Failed to cancel", http.StatusInternalServerError)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to cancel")
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		http.Error(w, "Search already finished", http.StatusConflict)
+		api.WriteError(w, http.StatusConflict, "Search already finished")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

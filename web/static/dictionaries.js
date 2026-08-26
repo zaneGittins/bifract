@@ -374,8 +374,8 @@ const Dictionaries = {
             const resp = await fetch(`/api/v1/dictionaries/${d.id}/data?${params}`, { credentials: 'include' });
             const result = await resp.json();
             if (!result.success) throw new Error(result.error);
-            this.totalRows = result.data.total || 0;
-            this.renderRowTable(d, result.data.rows || []);
+            this.totalRows = result.page?.total || 0;
+            this.renderRowTable(d, result.data || []);
             this.updateRowPagination();
         } catch (e) {
             const wrap = document.getElementById('dictDataTable');

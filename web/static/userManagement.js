@@ -24,7 +24,7 @@ const UserManagement = {
 
     async loadUsers() {
         try {
-            const response = await fetch('/api/v1/users', {
+            const response = await fetch('/api/v1/users?limit=500', {
                 credentials: 'include'
             });
 

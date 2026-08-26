@@ -437,7 +437,7 @@ const Recall = {
                 body: JSON.stringify({ query: query, from: fromISO, to: toISO, max_rows: this.MAX_ROWS }),
             });
             if (!res.ok) {
-                const msg = (await res.text()) || `Request failed (${res.status})`;
+                const msg = await Utils.errorMessage(res);
                 this.setError(msg.trim());
                 this.setRunning(false);
                 return;

@@ -1,6 +1,7 @@
 package schemafields
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -30,11 +31,9 @@ type Handler struct {
 	sweeper *Sweeper
 }
 
-type apiResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-}
+// apiResponse is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type apiResponse = api.Response[any]
 
 // NewHandler creates a handler for the schema fields admin API.
 // onFieldChange is called with the new complete type-hinted field map after
@@ -427,12 +426,9 @@ func (h *Handler) getCurrentUser(r *http.Request) string {
 }
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(apiResponse{Success: true, Data: data})
+	api.WriteSuccess(w, data)
 }
 
 func (h *Handler) respondError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(apiResponse{Success: false, Error: msg})
+	api.WriteError(w, status, msg)
 }

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"bifract/pkg/storage"
 )
@@ -373,9 +372,4 @@ func (m *Manager) Duplicate(ctx context.Context, id string, createdBy string) (*
 		TimestampFields: original.TimestampFields,
 	}
 	return m.Create(ctx, req, createdBy)
-}
-
-// TimeFormat is a helper for JSON serialization of timestamps.
-func TimeFormat(t time.Time) string {
-	return t.Format(time.RFC3339)
 }

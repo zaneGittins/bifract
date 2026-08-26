@@ -292,7 +292,7 @@ const Performance = {
             const res = await fetch('/api/v1/system/archive/maintain/run', { method: 'POST', credentials: 'include' });
             if (!res.ok) {
                 this._maintainRunPending = false;
-                const msg = (await res.text()).trim() || 'Failed to request maintenance run';
+                const msg = await Utils.errorMessage(res, 'Failed to request maintenance run');
                 if (window.Toast) Toast.error('Maintenance', msg);
                 if (btn) { btn.disabled = false; btn.textContent = 'Run now'; }
                 return;
@@ -728,7 +728,7 @@ const Performance = {
                 }
             }
             if (!res.ok) {
-                const t = (await res.text()).trim();
+                const t = await Utils.errorMessage(res);
                 this.setRestoreMsg(t || 'Failed to start restore.', 'error');
                 return;
             }
@@ -856,12 +856,12 @@ const Performance = {
         if (!this.restorePage) this.restorePage = 1;
         if (!this.restorePageSize) this.restorePageSize = 20;
         try {
-            const params = new URLSearchParams({ page: this.restorePage, page_size: this.restorePageSize });
+            const params = new URLSearchParams({ limit: this.restorePageSize, offset: (this.restorePage - 1) * this.restorePageSize });
             if (this.restoreStatusFilter) params.set('status', this.restoreStatusFilter);
             const res = await fetch('/api/v1/system/archive/restore?' + params.toString(), { credentials: 'include' });
             if (!res.ok) return;
             const data = await res.json();
-            this.renderRestoreTable(data.jobs || [], data.total || 0);
+            this.renderRestoreTable(data.data || [], data.page?.total || 0);
             // Keep an open detail drawer live while its job is on the current page.
             if (this._openDetailId != null && this._restoreJobsCache[this._openDetailId]) {
                 this.renderRestoreDetail(this._restoreJobsCache[this._openDetailId]);

@@ -1,6 +1,7 @@
 package apikeys
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,9 +21,9 @@ type PrismResolver interface {
 
 // Handler provides HTTP endpoints for API key management
 type Handler struct {
-	storage        *Storage
-	rbacResolver   *rbac.Resolver
-	prismResolver  PrismResolver
+	storage       *Storage
+	rbacResolver  *rbac.Resolver
+	prismResolver PrismResolver
 }
 
 // NewHandler creates a new API key handler
@@ -587,11 +588,6 @@ func (h *Handler) HandleTogglePrismAPIKey(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// HandleValidateAPIKey validates an API key (internal, not exposed via routes)
-func (h *Handler) HandleValidateAPIKey(ctx context.Context, apiKey string) (*ValidatedAPIKey, error) {
-	return h.storage.ValidateAPIKey(ctx, apiKey)
-}
-
 // ---- Helpers ----
 
 // getCurrentUser extracts the current user from the request context
@@ -611,28 +607,10 @@ func (h *Handler) resolveFractalName(ctx context.Context, fractalID string) (str
 
 // sendSuccess sends a successful JSON response
 func (h *Handler) sendSuccess(w http.ResponseWriter, message string, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	response := map[string]interface{}{
-		"success": true,
-		"message": message,
-	}
-
-	if data != nil {
-		response["data"] = data
-	}
-
-	json.NewEncoder(w).Encode(response)
+	api.WriteMessage(w, message, data)
 }
 
 // sendError sends an error JSON response
 func (h *Handler) sendError(w http.ResponseWriter, statusCode int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": false,
-		"error":   message,
-	})
+	api.WriteError(w, statusCode, message)
 }

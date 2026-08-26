@@ -372,8 +372,8 @@ const AnalyticsModels = {
         });
         try {
             const data = await this._api('GET', `/models/${v.model.id}/data?${params}`);
-            v.rows = data?.data?.rows || [];
-            v.total = data?.data?.total || 0;
+            v.rows = data?.data || [];
+            v.total = data?.page?.total || 0;
             this._renderViewerContent();
         } catch (e) {
             console.error('[Models] loadViewerData error:', e);

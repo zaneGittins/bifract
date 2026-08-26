@@ -1,6 +1,7 @@
 package query
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -348,30 +349,6 @@ func histogramChunks(snapStart time.Time, bucketSec, bucketCount int) []histogra
 	return chunks
 }
 
-func NewQueryHandler(db *storage.ClickHouseClient, maxRows int) *QueryHandler {
-	return &QueryHandler{
-		db:      db,
-		maxRows: maxRows,
-	}
-}
-
-func NewQueryHandlerWithFractals(db *storage.ClickHouseClient, maxRows int, fractalManager *fractals.Manager) *QueryHandler {
-	return &QueryHandler{
-		db:             db,
-		maxRows:        maxRows,
-		fractalManager: fractalManager,
-	}
-}
-
-func NewQueryHandlerWithDictionaries(db *storage.ClickHouseClient, maxRows int, fractalManager *fractals.Manager, dictManager *dictionaries.Manager) *QueryHandler {
-	return &QueryHandler{
-		db:                db,
-		maxRows:           maxRows,
-		fractalManager:    fractalManager,
-		dictionaryManager: dictManager,
-	}
-}
-
 func NewQueryHandlerFull(db *storage.ClickHouseClient, maxRows int, fractalManager *fractals.Manager, dictManager *dictionaries.Manager, prismManager *prisms.Manager) *QueryHandler {
 	return &QueryHandler{
 		db:                db,
@@ -569,7 +546,7 @@ func (p *preparedQuery) buildChunkSQL(c streamChunk, limit int) (string, error) 
 // unchanged.
 func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (prep *preparedQuery) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -1097,7 +1074,7 @@ type ValidateResponse struct {
 // they would at execution time, avoiding false-positive errors.
 func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -2085,7 +2062,7 @@ type LogByTimestampRequest struct {
 // HandleGetLogByTimestamp fetches a specific log by timestamp and optional log_id
 func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -2431,7 +2408,7 @@ func (h *QueryHandler) buildFractalCondition(r *http.Request, selectedFractal st
 // HandleGetRecentLogs returns the 50 most recent logs in the last 24h for a fractal.
 func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -2532,7 +2509,7 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 // HandleGetRecentHistogram returns the 96-bucket quarter-hour event-count histogram for the last 24h.
 func (h *QueryHandler) HandleGetRecentHistogram(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -2818,10 +2795,8 @@ func profF64(v interface{}) float64 {
 }
 
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
 	sanitizeFloats(data)
-	json.NewEncoder(w).Encode(data)
+	api.WriteJSON(w, status, data)
 }
 
 // sanitizeFloats replaces NaN and Inf float values with null-safe alternatives

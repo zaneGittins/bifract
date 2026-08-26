@@ -1,6 +1,7 @@
 package dashboards
 
 import (
+	"bifract/pkg/api"
 	"encoding/json"
 	"time"
 )
@@ -129,10 +130,6 @@ type ExecuteResponse struct {
 	Data      json.RawMessage `json:"data,omitempty"`
 }
 
-// Response is the standard API response envelope
-type Response struct {
-	Success bool        `json:"success"`
-	Message string      `json:"message,omitempty"`
-	Error   string      `json:"error,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
-}
+// Response is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type Response = api.Response[any]

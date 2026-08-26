@@ -51,18 +51,6 @@ func NewStorageBackend(cfg StorageConfig) (StorageBackend, error) {
 	return NewDiskStorage(cfg.DiskBasePath)
 }
 
-// StorageConfigFromEnv builds a StorageConfig from environment variables.
-func StorageConfigFromEnv(diskFallback string) StorageConfig {
-	return StorageConfig{
-		DiskBasePath: diskFallback,
-		S3Endpoint:   os.Getenv("BIFRACT_S3_ENDPOINT"),
-		S3Bucket:     os.Getenv("BIFRACT_S3_BUCKET"),
-		S3AccessKey:  os.Getenv("BIFRACT_S3_ACCESS_KEY"),
-		S3SecretKey:  os.Getenv("BIFRACT_S3_SECRET_KEY"),
-		S3Region:     os.Getenv("BIFRACT_S3_REGION"),
-	}
-}
-
 // DiskStorage implements StorageBackend using the local filesystem.
 type DiskStorage struct {
 	basePath string

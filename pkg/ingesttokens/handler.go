@@ -1,15 +1,16 @@
 package ingesttokens
 
 import (
+	"bifract/pkg/api"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
 	"bifract/pkg/fractals"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
+	"github.com/go-chi/chi/v5"
 )
 
 type Handler struct {
@@ -298,23 +299,9 @@ func (h *Handler) getCurrentUser(r *http.Request) *storage.User {
 }
 
 func (h *Handler) sendSuccess(w http.ResponseWriter, message string, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	response := map[string]interface{}{
-		"success": true,
-		"message": message,
-	}
-	if data != nil {
-		response["data"] = data
-	}
-	json.NewEncoder(w).Encode(response)
+	api.WriteMessage(w, message, data)
 }
 
 func (h *Handler) sendError(w http.ResponseWriter, statusCode int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": false,
-		"error":   message,
-	})
+	api.WriteError(w, statusCode, message)
 }

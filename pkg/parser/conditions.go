@@ -494,31 +494,6 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 	return ""
 }
 
-// negateConditionOperator flips the operator on a ConditionNode to apply NOT.
-// Used by parseConditionsWithPrecedence where negation must be encoded in the
-// operator itself (ConditionNode uses Negate flag for leaf conditions but
-// operator-level negation for flat groups).
-func negateConditionOperator(c *ConditionNode) {
-	switch c.Operator {
-	case "=", "~":
-		c.Operator = "!="
-	case "!=":
-		c.Operator = "="
-	case ">":
-		c.Operator = "<="
-	case "<":
-		c.Operator = ">="
-	case ">=":
-		c.Operator = "<"
-	case "<=":
-		c.Operator = ">"
-	case "=~", "=^", "=$":
-		// No negated operator variant; toggle the Negate flag instead so the
-		// SQL builder wraps the expression in NOT (...).
-		c.Negate = !c.Negate
-	}
-}
-
 // negateHavingCondition flips the operator on a HavingCondition to apply NOT.
 // For compound nodes, toggles the Negate flag.
 // For regex/string conditions (IsRegex=true), "=" and "~" become "!=" (which

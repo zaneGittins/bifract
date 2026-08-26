@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"bifract/pkg/api"
 	"bufio"
 	"bytes"
 	"context"
@@ -376,7 +377,5 @@ func (h *IngestHandler) parseKVLine(line string, fields map[string]string) {
 }
 
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	api.WriteJSON(w, status, data)
 }

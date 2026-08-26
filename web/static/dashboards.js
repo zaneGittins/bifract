@@ -185,7 +185,7 @@ const Dashboards = {
 
             if (!data.success) throw new Error(data.error || 'Failed to load dashboards');
 
-            this.totalDashboards = data.total || 0;
+            this.totalDashboards = data.page?.total || 0;
             this.renderDashboardTable(data.data || []);
             this.updatePagination();
         } catch (err) {

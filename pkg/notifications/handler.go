@@ -1,8 +1,8 @@
 package notifications
 
 import (
+	"bifract/pkg/api"
 	"database/sql"
-	"encoding/json"
 	"log"
 	"net/http"
 	"time"
@@ -19,11 +19,9 @@ func NewHandler(pg *storage.PostgresClient) *Handler {
 	return &Handler{db: pg.DB()}
 }
 
-type apiResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-}
+// apiResponse is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type apiResponse = api.Response[any]
 
 type notificationItem struct {
 	ID               string    `json:"id"`
@@ -138,13 +136,9 @@ func (h *Handler) HandleMarkRead(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(apiResponse{Success: true, Data: data})
+	api.WriteSuccess(w, data)
 }
 
 func (h *Handler) respondError(w http.ResponseWriter, statusCode int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(apiResponse{Success: false, Error: message})
+	api.WriteError(w, statusCode, message)
 }

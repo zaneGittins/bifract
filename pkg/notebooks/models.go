@@ -7,12 +7,12 @@ import (
 
 // Notebook represents a notebook document with metadata
 type Notebook struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 
 	// Time range settings
-	TimeRangeType  string     `json:"time_range_type"`  // '1h', '24h', '7d', '30d', 'custom'
+	TimeRangeType  string     `json:"time_range_type"`            // '1h', '24h', '7d', '30d', 'custom'
 	TimeRangeStart *time.Time `json:"time_range_start,omitempty"` // For custom ranges
 	TimeRangeEnd   *time.Time `json:"time_range_end,omitempty"`   // For custom ranges
 
@@ -39,8 +39,8 @@ type Notebook struct {
 
 // NotebookSection represents a section within a notebook
 type NotebookSection struct {
-	ID          string `json:"id"`
-	NotebookID  string `json:"notebook_id"`
+	ID         string `json:"id"`
+	NotebookID string `json:"notebook_id"`
 
 	// Section metadata
 	SectionType     string  `json:"section_type"` // 'markdown', 'query', 'ai_summary', 'comment_context', or 'ai_attack_chain'
@@ -65,8 +65,8 @@ type NotebookSection struct {
 
 // NotebookPresence represents a user's presence in a notebook
 type NotebookPresence struct {
-	NotebookID string `json:"notebook_id"`
-	Username   string `json:"username"`
+	NotebookID string    `json:"notebook_id"`
+	Username   string    `json:"username"`
 	LastSeenAt time.Time `json:"last_seen_at"`
 
 	// User metadata for display
@@ -77,31 +77,31 @@ type NotebookPresence struct {
 
 // CreateNotebookRequest represents the request to create a new notebook
 type CreateNotebookRequest struct {
-	Name               string     `json:"name"`
-	Description        string     `json:"description"`
-	TimeRangeType      string     `json:"time_range_type"`
-	TimeRangeStart     *time.Time `json:"time_range_start,omitempty"`
-	TimeRangeEnd       *time.Time `json:"time_range_end,omitempty"`
-	MaxResultsPerSection int      `json:"max_results_per_section"`
+	Name                 string     `json:"name"`
+	Description          string     `json:"description"`
+	TimeRangeType        string     `json:"time_range_type"`
+	TimeRangeStart       *time.Time `json:"time_range_start,omitempty"`
+	TimeRangeEnd         *time.Time `json:"time_range_end,omitempty"`
+	MaxResultsPerSection int        `json:"max_results_per_section"`
 }
 
 // UpdateNotebookRequest represents the request to update notebook metadata
 type UpdateNotebookRequest struct {
-	Name               *string    `json:"name,omitempty"`
-	Description        *string    `json:"description,omitempty"`
-	TimeRangeType      *string    `json:"time_range_type,omitempty"`
-	TimeRangeStart     *time.Time `json:"time_range_start,omitempty"`
-	TimeRangeEnd       *time.Time `json:"time_range_end,omitempty"`
-	MaxResultsPerSection *int     `json:"max_results_per_section,omitempty"`
+	Name                 *string    `json:"name,omitempty"`
+	Description          *string    `json:"description,omitempty"`
+	TimeRangeType        *string    `json:"time_range_type,omitempty"`
+	TimeRangeStart       *time.Time `json:"time_range_start,omitempty"`
+	TimeRangeEnd         *time.Time `json:"time_range_end,omitempty"`
+	MaxResultsPerSection *int       `json:"max_results_per_section,omitempty"`
 }
 
 // CreateSectionRequest represents the request to create a new section
 type CreateSectionRequest struct {
-	SectionType string    `json:"section_type"` // 'markdown', 'query', 'ai_summary', 'comment_context', or 'ai_attack_chain'
-	Title       *string   `json:"title,omitempty"`
-	Content     string    `json:"content"`
-	OrderIndex  int       `json:"order_index"`
-	Tags        []string  `json:"tags,omitempty"`
+	SectionType string   `json:"section_type"` // 'markdown', 'query', 'ai_summary', 'comment_context', or 'ai_attack_chain'
+	Title       *string  `json:"title,omitempty"`
+	Content     string   `json:"content"`
+	OrderIndex  int      `json:"order_index"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 // UpdateSectionRequest represents the request to update a section
@@ -142,12 +142,4 @@ type UpdateVariablesRequest struct {
 type GenerateFromCommentsRequest struct {
 	Tag         string `json:"tag"`
 	AttackChain bool   `json:"attack_chain"`
-}
-
-// Standard API response structure
-type APIResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-	Message string      `json:"message,omitempty"`
 }

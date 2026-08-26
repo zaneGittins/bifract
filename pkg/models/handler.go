@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bifract/pkg/api"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -169,12 +170,7 @@ func (h *Handler) HandleGetData(w http.ResponseWriter, r *http.Request) {
 	if rows == nil {
 		rows = []map[string]interface{}{}
 	}
-	h.respondSuccess(w, map[string]interface{}{
-		"rows":   rows,
-		"total":  total,
-		"limit":  limit,
-		"offset": offset,
-	})
+	api.WritePage(w, rows, api.Page{Total: int(total), Limit: limit, Offset: offset})
 }
 
 // HandleStartBackfill kicks off a one-time historical backfill for a model over
@@ -503,15 +499,6 @@ func (h *Handler) getFractalID(r *http.Request) (string, error) {
 	return defaultFractal.ID, nil
 }
 
-func (h *Handler) getCurrentUser(r *http.Request) string {
-	if user := r.Context().Value("user"); user != nil {
-		if userObj, ok := user.(*storage.User); ok {
-			return userObj.Username
-		}
-	}
-	return ""
-}
-
 func (h *Handler) requireAnalyst(w http.ResponseWriter, r *http.Request) bool {
 	user, _ := r.Context().Value("user").(*storage.User)
 	fractalRole := rbac.RoleFromContext(r.Context())
@@ -524,12 +511,9 @@ func (h *Handler) requireAnalyst(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "data": data})
+	api.WriteSuccess(w, data)
 }
 
 func (h *Handler) respondError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": msg})
+	api.WriteError(w, status, msg)
 }

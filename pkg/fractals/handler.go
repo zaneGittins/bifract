@@ -1,6 +1,7 @@
 package fractals
 
 import (
+	"bifract/pkg/api"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -457,17 +458,6 @@ func (h *Handler) getCurrentUser(r *http.Request) *storage.User {
 	return nil
 }
 
-// getSelectedFractalFromSession gets the selected index from the user's session
-func (h *Handler) getSelectedFractalFromSession(r *http.Request) (string, error) {
-	// This will be implemented when we add session support
-	// For now, return the default index
-	defaultFractal, err := h.manager.GetDefaultFractal(r.Context())
-	if err != nil {
-		return "", err
-	}
-	return defaultFractal.ID, nil
-}
-
 // setSelectedFractalInSession stores the selected index in the user's session
 func (h *Handler) setSelectedFractalInSession(w http.ResponseWriter, r *http.Request, fractalID string) error {
 	// Check authentication type - only session-based requests can update fractal selection
@@ -491,23 +481,12 @@ func (h *Handler) setSelectedFractalInSession(w http.ResponseWriter, r *http.Req
 
 // sendSuccess sends a successful JSON response
 func (h *Handler) sendSuccess(w http.ResponseWriter, message string, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(APIResponse{
-		Success: true,
-		Message: message,
-		Data:    data,
-	})
+	api.WriteMessage(w, message, data)
 }
 
 // sendError sends an error JSON response
 func (h *Handler) sendError(w http.ResponseWriter, statusCode int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(APIResponse{
-		Success: false,
-		Error:   message,
-	})
+	api.WriteError(w, statusCode, message)
 }
 
 // resolveFractalRole resolves the calling user's role on a specific fractal.

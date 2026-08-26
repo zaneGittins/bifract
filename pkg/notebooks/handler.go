@@ -1,6 +1,7 @@
 package notebooks
 
 import (
+	"bifract/pkg/api"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -57,11 +58,11 @@ func (h *NotebookHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		http.Error(w, "Notebook not found", http.StatusNotFound)
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
-		http.Error(w, "Insufficient permissions", http.StatusForbidden)
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
@@ -106,9 +107,7 @@ func (h *NotebookHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 }
 
 func forbidden(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+	api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 }
 
 // requireRoleOnFractal checks the user has the required role on a specific fractal.
@@ -151,12 +150,9 @@ func (h *NotebookHandler) requireRoleOnPrism(r *http.Request, prismID string, re
 	return rbac.HasAccess(user, h.rbacResolver.ResolvePrismRoleWithAdmin(r.Context(), user, prismID), required)
 }
 
-type Response struct {
-	Success bool        `json:"success"`
-	Message string      `json:"message,omitempty"`
-	Error   string      `json:"error,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
-}
+// Response is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type Response = api.Response[any]
 
 func NewNotebookHandler(pg *storage.PostgresClient, ch *storage.ClickHouseClient, fractalManager *fractals.Manager, litellmURL, litellmKey string) *NotebookHandler {
 	return &NotebookHandler{
@@ -178,11 +174,7 @@ func (h *NotebookHandler) HandleListNotebooks(w http.ResponseWriter, r *http.Req
 	selectedFractal, err := h.getSelectedFractal(r)
 	if err != nil {
 		log.Printf("[Notebooks] Failed to get selected fractal: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to determine fractal context",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to determine fractal context")
 		return
 	}
 
@@ -230,11 +222,7 @@ func (h *NotebookHandler) HandleListNotebooks(w http.ResponseWriter, r *http.Req
 		notebooks, total, err = h.pg.GetNotebooksByFractal(r.Context(), selectedFractal, limit, offset)
 	}
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to fetch notebooks",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch notebooks")
 		return
 	}
 
@@ -247,14 +235,7 @@ func (h *NotebookHandler) HandleListNotebooks(w http.ResponseWriter, r *http.Req
 		notebooks = []storage.Notebook{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":   true,
-		"data":      notebooks,
-		"total":     total,
-		"limit":     limit,
-		"offset":    offset,
-	})
+	api.WritePage(w, notebooks, api.Page{Total: total, Limit: limit, Offset: offset})
 }
 
 // HandleCreateNotebook creates a new notebook (analyst+)
@@ -264,38 +245,24 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 	fractalRole := rbac.RoleFromContext(r.Context())
 	prismRole := rbac.PrismRoleFromContext(r.Context())
 	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	var req CreateNotebookRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid request body",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	// Validate input
 	if req.Name == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "name is required",
-		})
+		api.WriteError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 
 	if req.TimeRangeType == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "time_range_type is required",
-		})
+		api.WriteError(w, http.StatusBadRequest, "time_range_type is required")
 		return
 	}
 
@@ -310,8 +277,7 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 	}
 
 	if !isValidTimeRange {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
+		api.WriteJSON(w, http.StatusOK, Response{
 			Success: false,
 			Error:   "time_range_type must be one of: 1h, 24h, 7d, 30d, custom",
 		})
@@ -321,11 +287,7 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 	// For custom time range, validate start and end times
 	if req.TimeRangeType == "custom" {
 		if req.TimeRangeStart == nil || req.TimeRangeEnd == nil {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{
-				Success: false,
-				Error:   "time_range_start and time_range_end are required for custom time range",
-			})
+			api.WriteError(w, http.StatusBadRequest, "time_range_start and time_range_end are required for custom time range")
 			return
 		}
 	}
@@ -339,11 +301,7 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 	selectedFractal, err := h.getSelectedFractal(r)
 	if err != nil {
 		log.Printf("[Notebooks] Failed to get selected fractal: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to determine fractal context",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to determine fractal context")
 		return
 	}
 
@@ -365,16 +323,11 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 
 	newNotebook, err := h.pg.InsertNotebook(r.Context(), notebook)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to create notebook",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create notebook")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Notebook created successfully",
 		Data:    newNotebook,
@@ -387,30 +340,20 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 
 	notebook, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Notebook not found",
-		})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 
 	// Verify user has access to the notebook's fractal
 	if (notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleViewer)) || (notebook.PrismID != "" && !h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleViewer)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	// Get sections for the notebook
 	sections, err := h.pg.GetNotebookSections(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to fetch notebook sections",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch notebook sections")
 		return
 	}
 
@@ -453,8 +396,7 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Data:    notebookResponse,
 	})
@@ -467,24 +409,17 @@ func (h *NotebookHandler) HandleUpdateNotebook(w http.ResponseWriter, r *http.Re
 	// Verify fractal access
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	var req UpdateNotebookRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid request body",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -492,23 +427,14 @@ func (h *NotebookHandler) HandleUpdateNotebook(w http.ResponseWriter, r *http.Re
 	err = h.pg.UpdateNotebook(r.Context(), notebookID, req.Name, req.Description, req.TimeRangeType, req.TimeRangeStart, req.TimeRangeEnd, req.MaxResultsPerSection)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found or unauthorized") {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{
-				Success: false,
-				Error:   "Notebook not found or unauthorized",
-			})
+			api.WriteError(w, http.StatusNotFound, "Notebook not found or unauthorized")
 		} else {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{
-				Success: false,
-				Error:   "Failed to update notebook",
-			})
+			api.WriteError(w, http.StatusInternalServerError, "Failed to update notebook")
 		}
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Notebook updated successfully",
 	})
@@ -521,37 +447,25 @@ func (h *NotebookHandler) HandleDeleteNotebook(w http.ResponseWriter, r *http.Re
 	// Verify fractal access
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	err = h.pg.DeleteNotebook(r.Context(), notebookID)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found or unauthorized") {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{
-				Success: false,
-				Error:   "Notebook not found or unauthorized",
-			})
+			api.WriteError(w, http.StatusNotFound, "Notebook not found or unauthorized")
 		} else {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{
-				Success: false,
-				Error:   "Failed to delete notebook",
-			})
+			api.WriteError(w, http.StatusInternalServerError, "Failed to delete notebook")
 		}
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Notebook deleted successfully",
 	})
@@ -564,49 +478,36 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 	// Verify fractal access
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	var req CreateSectionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid request body",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	// Validate input
 	if req.SectionType != "markdown" && req.SectionType != "query" && req.SectionType != "ai_summary" && req.SectionType != "ai_attack_chain" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "section_type must be 'markdown', 'query', 'ai_summary', or 'ai_attack_chain'",
-		})
+		api.WriteError(w, http.StatusBadRequest, "section_type must be 'markdown', 'query', 'ai_summary', or 'ai_attack_chain'")
 		return
 	}
 
 	if req.SectionType == "ai_summary" || req.SectionType == "ai_attack_chain" {
 		if !h.aiEnabled() {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{Success: false, Error: "AI is not configured"})
+			api.WriteError(w, http.StatusServiceUnavailable, "AI is not configured")
 			return
 		}
 		sections, err := h.pg.GetNotebookSections(r.Context(), notebookID)
 		if err == nil {
 			for _, s := range sections {
 				if s.SectionType == req.SectionType {
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(Response{Success: false, Error: "Only one section of this AI type is allowed per notebook"})
+					api.WriteError(w, http.StatusConflict, "Only one section of this AI type is allowed per notebook")
 					return
 				}
 			}
@@ -617,11 +518,7 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 	}
 
 	if req.Content == "" && req.SectionType != "ai_summary" && req.SectionType != "ai_attack_chain" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "content is required",
-		})
+		api.WriteError(w, http.StatusBadRequest, "content is required")
 		return
 	}
 
@@ -637,16 +534,11 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 
 	newSection, err := h.pg.InsertNotebookSection(r.Context(), section)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to create section",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create section")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Section created successfully",
 		Data:    newSection,
@@ -663,24 +555,17 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 	// Verify fractal access via parent notebook
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	var req UpdateSectionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid request body",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -696,16 +581,11 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 	}
 	err = h.pg.UpdateNotebookSection(r.Context(), sectionID, req.Title, req.Content, renderedContent, chartConfigJSON, req.Tags)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to update section",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update section")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Section updated successfully",
 	})
@@ -736,35 +616,26 @@ func (h *NotebookHandler) HandleDeleteSection(w http.ResponseWriter, r *http.Req
 	// Fetch section to get parent notebook, then check fractal access
 	section, err := h.pg.GetNotebookSection(r.Context(), sectionID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Section not found"})
+		api.WriteError(w, http.StatusNotFound, "Section not found")
 		return
 	}
 	nb, err := h.pg.GetNotebook(r.Context(), section.NotebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	err = h.pg.DeleteNotebookSection(r.Context(), sectionID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to delete section",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to delete section")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Section deleted successfully",
 	})
@@ -788,49 +659,31 @@ func (h *NotebookHandler) HandleExecuteQuerySection(w http.ResponseWriter, r *ht
 	// Get the notebook to access time range settings
 	notebook, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Notebook not found",
-		})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 
 	if (notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleAnalyst)) || (notebook.PrismID != "" && !h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleAnalyst)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	// Get the specific section
 	section, err := h.pg.GetNotebookSection(r.Context(), sectionID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Section not found",
-		})
+		api.WriteError(w, http.StatusNotFound, "Section not found")
 		return
 	}
 
 	// Verify this section belongs to the notebook
 	if section.NotebookID != notebookID || section.NotebookID != notebook.ID {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Section does not belong to notebook",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Section does not belong to notebook")
 		return
 	}
 
 	// Verify this is a query section
 	if section.SectionType != "query" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Section is not a query section",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Section is not a query section")
 		return
 	}
 
@@ -852,17 +705,12 @@ func (h *NotebookHandler) HandleExecuteQuerySection(w http.ResponseWriter, r *ht
 	resultsJSON, _ := json.Marshal(queryResults)
 	err = h.pg.UpdateSectionQueryResults(r.Context(), sectionID, string(resultsJSON), section.ChartType, section.ChartConfig)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to update section results",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update section results")
 		return
 	}
 
 	// Return the query results
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Query executed (placeholder implementation)",
 		Data:    queryResults,
@@ -875,50 +723,34 @@ func (h *NotebookHandler) HandleReorderSections(w http.ResponseWriter, r *http.R
 
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	var req ReorderSectionsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid request body",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	// Validate input
 	if len(req.SectionOrder) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "section_order is required",
-		})
+		api.WriteError(w, http.StatusBadRequest, "section_order is required")
 		return
 	}
 
 	// Reorder sections
 	err = h.pg.ReorderNotebookSections(r.Context(), notebookID, req.SectionOrder)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to reorder sections",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to reorder sections")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Sections reordered successfully",
 	})
@@ -941,31 +773,23 @@ func (h *NotebookHandler) HandleUpdateSectionResults(w http.ResponseWriter, r *h
 
 	section, err := h.pg.GetNotebookSection(r.Context(), sectionID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Section not found"})
+		api.WriteError(w, http.StatusNotFound, "Section not found")
 		return
 	}
 	nb, err := h.pg.GetNotebook(r.Context(), section.NotebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	var req UpdateSectionResultsRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid request body",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -980,16 +804,11 @@ func (h *NotebookHandler) HandleUpdateSectionResults(w http.ResponseWriter, r *h
 	// Update section results
 	err = h.pg.UpdateSectionResults(r.Context(), sectionID, lastExecutedAt, req.LastResults)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to update section results",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update section results")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Section results updated successfully",
 	})
@@ -1007,9 +826,7 @@ func (h *NotebookHandler) HandleUpdateSectionResults(w http.ResponseWriter, r *h
 // HandleUpdatePresence updates user presence for a notebook
 func (h *NotebookHandler) HandleUpdatePresence(w http.ResponseWriter, r *http.Request) {
 	if auth.IsAPIKey(r.Context()) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "presence is per-user and not available for API key authentication"})
+		api.WriteError(w, http.StatusForbidden, "presence is per-user and not available for API key authentication")
 		return
 	}
 	user := r.Context().Value("user").(*storage.User)
@@ -1017,29 +834,21 @@ func (h *NotebookHandler) HandleUpdatePresence(w http.ResponseWriter, r *http.Re
 
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	err = h.pg.UpdateNotebookPresence(r.Context(), notebookID, user.Username)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to update presence",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update presence")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 	})
 }
@@ -1050,24 +859,17 @@ func (h *NotebookHandler) HandleGetPresence(w http.ResponseWriter, r *http.Reque
 
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	presence, err := h.pg.GetNotebookPresence(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to fetch presence",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch presence")
 		return
 	}
 
@@ -1084,36 +886,10 @@ func (h *NotebookHandler) HandleGetPresence(w http.ResponseWriter, r *http.Reque
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Data:    responsePresence,
 	})
-}
-
-// calculateTimeRange determines the start and end times based on notebook settings
-func (h *NotebookHandler) calculateTimeRange(notebook *storage.Notebook) (time.Time, time.Time) {
-	now := time.Now()
-
-	switch notebook.TimeRangeType {
-	case "1h":
-		return now.Add(-1 * time.Hour), now
-	case "24h":
-		return now.Add(-24 * time.Hour), now
-	case "7d":
-		return now.Add(-7 * 24 * time.Hour), now
-	case "30d":
-		return now.Add(-30 * 24 * time.Hour), now
-	case "custom":
-		if notebook.TimeRangeStart != nil && notebook.TimeRangeEnd != nil {
-			return *notebook.TimeRangeStart, *notebook.TimeRangeEnd
-		}
-		// Fallback to 24h if custom range is invalid
-		return now.Add(-24 * time.Hour), now
-	default:
-		// Default to 24h if invalid range type
-		return now.Add(-24 * time.Hour), now
-	}
 }
 
 // getSelectedFractal retrieves the selected fractal for the current user session
@@ -1144,21 +920,17 @@ func (h *NotebookHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.R
 
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	var req UpdateVariablesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -1167,13 +939,11 @@ func (h *NotebookHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.R
 	}
 
 	if err = h.pg.UpdateNotebookVariables(r.Context(), notebookID, req.Variables); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to update variables"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update variables")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Variables updated"})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Variables updated"})
 }
 
 // HandleAIStatus returns whether AI summary generation is available.
@@ -1192,38 +962,31 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 	if !h.aiEnabled() {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "AI is not configured"})
+		api.WriteError(w, http.StatusServiceUnavailable, "AI is not configured")
 		return
 	}
 
 	section, err := h.pg.GetNotebookSection(r.Context(), sectionID)
 	if err != nil || section.NotebookID != notebookID {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Section not found"})
+		api.WriteError(w, http.StatusNotFound, "Section not found")
 		return
 	}
 	if section.SectionType != "ai_summary" && section.SectionType != "ai_attack_chain" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Section is not an AI Summary section"})
+		api.WriteError(w, http.StatusBadRequest, "Section is not an AI Summary section")
 		return
 	}
 
 	sections, err := h.pg.GetNotebookSections(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to load sections"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to load sections")
 		return
 	}
 
@@ -1265,8 +1028,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 	}
 
 	if len(cellTexts) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "No sections to summarize"})
+		api.WriteError(w, http.StatusBadRequest, "No sections to summarize")
 		return
 	}
 
@@ -1276,20 +1038,17 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 		result, err := h.callLiteLLMWithTools(r.Context(), notebookContent, sectionMap)
 		if err != nil {
 			log.Printf("[Notebooks] AI attack chain generation failed: %v", err)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to generate attack chain summary"})
+			api.WriteError(w, http.StatusInternalServerError, "Failed to generate attack chain summary")
 			return
 		}
 
 		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, section.Title, &result, nil, nil, nil)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to save attack chain summary"})
+			api.WriteError(w, http.StatusInternalServerError, "Failed to save attack chain summary")
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
+		api.WriteJSON(w, http.StatusOK, Response{
 			Success: true,
 			Message: "Attack chain summary generated",
 			Data:    map[string]string{"summary": result},
@@ -1298,20 +1057,17 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 		summary, err := h.callLiteLLM(r.Context(), notebookContent)
 		if err != nil {
 			log.Printf("[Notebooks] AI summary generation failed: %v", err)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to generate summary"})
+			api.WriteError(w, http.StatusInternalServerError, "Failed to generate summary")
 			return
 		}
 
 		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, section.Title, &summary, nil, nil, nil)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to save summary"})
+			api.WriteError(w, http.StatusInternalServerError, "Failed to save summary")
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
+		api.WriteJSON(w, http.StatusOK, Response{
 			Success: true,
 			Message: "Summary generated",
 			Data:    map[string]string{"summary": summary},
@@ -1580,21 +1336,17 @@ func (h *NotebookHandler) HandleGetNotebookTags(w http.ResponseWriter, r *http.R
 
 	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	tags, err := h.pg.GetNotebookSectionTags(r.Context(), notebookID)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to retrieve tags"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to retrieve tags")
 		return
 	}
 
@@ -1607,15 +1359,12 @@ func (h *NotebookHandler) HandleExportNotebook(w http.ResponseWriter, r *http.Re
 	notebookID := chi.URLParam(r, "id")
 	notebook, err := h.pg.GetNotebook(r.Context(), notebookID)
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook not found"})
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
 
 	if (notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleViewer)) || (notebook.PrismID != "" && !h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleViewer)) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
@@ -1665,8 +1414,7 @@ func (h *NotebookHandler) HandleExportNotebook(w http.ResponseWriter, r *http.Re
 
 	out, err := yaml.Marshal(export)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to export"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to export")
 		return
 	}
 
@@ -1681,37 +1429,31 @@ func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Re
 	fractalRole := rbac.RoleFromContext(r.Context())
 	prismRole := rbac.PrismRoleFromContext(r.Context())
 	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	selectedFractal, _ := h.getSelectedFractal(r)
 	selectedPrism, _ := r.Context().Value("selected_prism").(string)
 	if selectedFractal == "" && selectedPrism == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "No fractal or prism selected"})
+		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to read request"})
+		api.WriteError(w, http.StatusBadRequest, "Failed to read request")
 		return
 	}
 
 	var imported notebookYAML
 	if err := yaml.Unmarshal(body, &imported); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid YAML format"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid YAML format")
 		return
 	}
 
 	if imported.Name == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Notebook name is required"})
+		api.WriteError(w, http.StatusBadRequest, "Notebook name is required")
 		return
 	}
 
@@ -1745,7 +1487,7 @@ func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		log.Printf("[Notebooks] Failed to create notebook from import: %v", err)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to create notebook"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create notebook")
 		return
 	}
 
@@ -1791,8 +1533,7 @@ func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Data: map[string]interface{}{"notebook": created}})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: map[string]interface{}{"notebook": created}})
 }
 
 // HandleGenerateFromComments generates a notebook from all comments with a given tag.
@@ -1802,31 +1543,26 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 	fractalRole := rbac.RoleFromContext(r.Context())
 	prismRole := rbac.PrismRoleFromContext(r.Context())
 	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 		return
 	}
 
 	var req GenerateFromCommentsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	req.Tag = strings.TrimSpace(req.Tag)
 	if req.Tag == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "tag is required"})
+		api.WriteError(w, http.StatusBadRequest, "tag is required")
 		return
 	}
 
 	selectedFractal, _ := h.getSelectedFractal(r)
 	selectedPrism, _ := r.Context().Value("selected_prism").(string)
 	if selectedFractal == "" && selectedPrism == "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "No fractal or prism selected"})
+		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
 		return
 	}
 
@@ -1841,15 +1577,12 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 	comments, err := h.pg.GetCommentsByTagAndFractal(r.Context(), commentFractal, req.Tag)
 	if err != nil {
 		log.Printf("[Notebooks] Failed to get comments by tag: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to fetch comments"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch comments")
 		return
 	}
 
 	if len(comments) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: fmt.Sprintf("No comments found with tag: %s", req.Tag)})
+		api.WriteJSON(w, http.StatusNotFound, Response{Success: false, Error: fmt.Sprintf("No comments found with tag: %s", req.Tag)})
 		return
 	}
 
@@ -1859,8 +1592,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 	existing, err := h.pg.GetNotebookByNameAndFractal(r.Context(), notebookName, selectedFractal)
 	if err != nil {
 		log.Printf("[Notebooks] Failed to check existing notebook: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to check for existing notebook"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to check for existing notebook")
 		return
 	}
 	if existing != nil {
@@ -1885,8 +1617,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 	newNotebook, err := h.pg.InsertNotebook(r.Context(), notebook)
 	if err != nil {
 		log.Printf("[Notebooks] Failed to create notebook: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to create notebook"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create notebook")
 		return
 	}
 
@@ -2011,10 +1742,10 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 				}
 
 				resultData := map[string]interface{}{
-					"results":      rows,
-					"count":        len(rows),
-					"execution_ms": 0,
-					"chart_type":   "table",
+					"results":       rows,
+					"count":         len(rows),
+					"execution_ms":  0,
+					"chart_type":    "table",
 					"is_aggregated": false,
 				}
 				resultsJSON, err := json.Marshal(resultData)
@@ -2091,8 +1822,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		}()
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Notebook generated successfully",
 		Data: map[string]interface{}{

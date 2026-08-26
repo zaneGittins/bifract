@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -506,7 +507,7 @@ func clientIP(r *http.Request) string {
 // HandleLogin handles user login
 func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -514,21 +515,13 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if h.loginLimiter.check(ip) {
 		h.logAuthEvent("login_failed", "", ip, "rate limited")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Too many failed login attempts. Please try again later.",
-		})
+		api.WriteError(w, http.StatusTooManyRequests, "Too many failed login attempts. Please try again later.")
 		return
 	}
 
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid request body",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -537,39 +530,27 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.loginLimiter.recordFailure(ip)
 		h.logAuthEvent("login_failed", req.Username, ip, "invalid username or password")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid username or password",
-		})
+		api.WriteError(w, http.StatusUnauthorized, "Invalid username or password")
 		return
 	}
 
 	// Block login for disabled accounts
 	if !user.Enabled {
 		h.logAuthEvent("login_failed", req.Username, ip, "account disabled")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "This account has been disabled. Please contact an administrator.",
-		})
+		api.WriteError(w, http.StatusBadRequest, "This account has been disabled. Please contact an administrator.")
 		return
 	}
 
 	// Block password login for OIDC-provisioned users
 	if user.AuthProvider == "oidc" {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "This account uses SSO. Please sign in with SSO.",
-		})
+		api.WriteError(w, http.StatusBadRequest, "This account uses SSO. Please sign in with SSO.")
 		return
 	}
 
 	// Check if user has a pending invite (password not yet set)
 	if user.PasswordHash == "!invite" {
 		h.logAuthEvent("login_failed", req.Username, ip, "pending invite")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Account setup pending. Please use your invite link to set a password.",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Account setup pending. Please use your invite link to set a password.")
 		return
 	}
 
@@ -577,10 +558,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if err := verifyPassword(user.PasswordHash, req.Password); err != nil {
 		h.loginLimiter.recordFailure(ip)
 		h.logAuthEvent("login_failed", req.Username, ip, "invalid username or password")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid username or password",
-		})
+		api.WriteError(w, http.StatusUnauthorized, "Invalid username or password")
 		return
 	}
 
@@ -596,10 +574,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	// Create session
 	sessionID, err := h.createSession(user.Username)
 	if err != nil {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to create session",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
 
@@ -635,7 +610,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 // HandleLogout handles user logout
 func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -655,8 +630,7 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 	})
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Logout successful",
 	})
@@ -696,8 +670,7 @@ func (h *AuthHandler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) 
 		userData["force_password_change"] = true
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		User:    userData,
 	})
@@ -708,34 +681,25 @@ func (h *AuthHandler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) 
 // The admin receives the invite URL to share with the new user.
 func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	// Check if user is admin
 	user := r.Context().Value("user").(*storage.User)
 	if !user.IsAdmin {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Only administrators can register new users",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Only administrators can register new users")
 		return
 	}
 
 	var req RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Invalid request body",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if req.Username == "" {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Username is required",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Username is required")
 		return
 	}
 
@@ -746,10 +710,7 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// Generate invite token
 	plainToken, tokenHash, err := generateInviteToken()
 	if err != nil {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to generate invite token",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to generate invite token")
 		return
 	}
 
@@ -761,15 +722,11 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	expiresAt := time.Now().Add(inviteExpiry)
 	if err := h.pg.CreateUserWithInvite(r.Context(), newUser, tokenHash, expiresAt); err != nil {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to create user",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create user")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "User created successfully",
 		Data: map[string]interface{}{
@@ -784,21 +741,18 @@ func (h *AuthHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) HandleValidateInvite(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	if token == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Token is required"})
+		api.WriteError(w, http.StatusBadRequest, "Token is required")
 		return
 	}
 
 	tokenHash := hashInviteToken(token)
 	user, err := h.pg.GetUserByInviteToken(r.Context(), tokenHash)
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid or expired invite link"})
+		api.WriteError(w, http.StatusNotFound, "Invalid or expired invite link")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Data: map[string]interface{}{
 			"username":     user.Username,
@@ -810,26 +764,23 @@ func (h *AuthHandler) HandleValidateInvite(w http.ResponseWriter, r *http.Reques
 // HandleAcceptInvite lets a new user set their password via an invite token (public, no auth).
 func (h *AuthHandler) HandleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	var req AcceptInviteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if req.Token == "" || req.Password == "" {
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Token and password are required"})
+		api.WriteError(w, http.StatusBadRequest, "Token and password are required")
 		return
 	}
 
 	if len(req.Password) < minPasswordLength {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   fmt.Sprintf("Password must be at least %d characters", minPasswordLength),
-		})
+		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("Password must be at least %d characters", minPasswordLength))
 		return
 	}
 
@@ -837,23 +788,22 @@ func (h *AuthHandler) HandleAcceptInvite(w http.ResponseWriter, r *http.Request)
 
 	// Verify the token is valid before hashing the password
 	if _, err := h.pg.GetUserByInviteToken(r.Context(), tokenHash); err != nil {
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid or expired invite link"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid or expired invite link")
 		return
 	}
 
 	passwordHash, err := hashPassword(req.Password)
 	if err != nil {
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to set password"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to set password")
 		return
 	}
 
 	if err := h.pg.AcceptInvite(r.Context(), tokenHash, passwordHash); err != nil {
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to set password"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to set password")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Password set successfully. You can now sign in.",
 	})
@@ -862,42 +812,40 @@ func (h *AuthHandler) HandleAcceptInvite(w http.ResponseWriter, r *http.Request)
 // HandleResetInvite regenerates the invite token for a pending user (admin only).
 func (h *AuthHandler) HandleResetInvite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	user := r.Context().Value("user").(*storage.User)
 	if !user.IsAdmin {
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Only administrators can reset invites"})
+		api.WriteError(w, http.StatusForbidden, "Only administrators can reset invites")
 		return
 	}
 
 	var req ResetInviteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if req.Username == "" {
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Username is required"})
+		api.WriteError(w, http.StatusBadRequest, "Username is required")
 		return
 	}
 
 	plainToken, tokenHash, err := generateInviteToken()
 	if err != nil {
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to generate invite token"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to generate invite token")
 		return
 	}
 
 	expiresAt := time.Now().Add(inviteExpiry)
 	if err := h.pg.RegenerateInvite(r.Context(), req.Username, tokenHash, expiresAt); err != nil {
-		json.NewEncoder(w).Encode(Response{Success: false, Error: err.Error()})
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Invite regenerated successfully",
 		Data: map[string]interface{}{
@@ -944,29 +892,25 @@ func (h *AuthHandler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Req
 
 	var req UpdatePreferencesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if req.DisplayTimezone != nil {
 		tz := strings.TrimSpace(*req.DisplayTimezone)
 		if !validDisplayTimezone(tz) {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(Response{Success: false, Error: "Unknown timezone"})
+			api.WriteError(w, http.StatusBadRequest, "Unknown timezone")
 			return
 		}
 		if err := h.pg.SetUserDisplayTimezone(r.Context(), user.Username, tz); err != nil {
 			log.Printf("Failed to save display timezone for %s: %v", user.Username, err)
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to save preferences"})
+			api.WriteError(w, http.StatusInternalServerError, "Failed to save preferences")
 			return
 		}
 		user.DisplayTimezone = tz
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true})
 }
 
 // ChangePasswordRequest carries a self-service password change.
@@ -978,7 +922,7 @@ type ChangePasswordRequest struct {
 // HandleChangePassword lets an authenticated user change their own password.
 func (h *AuthHandler) HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -986,33 +930,23 @@ func (h *AuthHandler) HandleChangePassword(w http.ResponseWriter, r *http.Reques
 
 	// Block OIDC users
 	if user.AuthProvider == "oidc" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Password changes are not available for SSO accounts",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Password changes are not available for SSO accounts")
 		return
 	}
 
 	var req ChangePasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if req.CurrentPassword == "" || req.NewPassword == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Current password and new password are required"})
+		api.WriteError(w, http.StatusBadRequest, "Current password and new password are required")
 		return
 	}
 
 	if len(req.NewPassword) < minPasswordLength {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   fmt.Sprintf("New password must be at least %d characters", minPasswordLength),
-		})
+		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("New password must be at least %d characters", minPasswordLength))
 		return
 	}
 
@@ -1020,21 +954,20 @@ func (h *AuthHandler) HandleChangePassword(w http.ResponseWriter, r *http.Reques
 	if err := verifyPassword(user.PasswordHash, req.CurrentPassword); err != nil {
 		ip := clientIP(r)
 		h.logAuthEvent("password_change_failed", user.Username, ip, "invalid current password")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Current password is incorrect"})
+		api.WriteError(w, http.StatusUnauthorized, "Current password is incorrect")
 		return
 	}
 
 	// Hash and store new password
 	newHash, err := hashPassword(req.NewPassword)
 	if err != nil {
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to update password"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update password")
 		return
 	}
 
 	if err := h.pg.UpdatePasswordHash(r.Context(), user.Username, newHash); err != nil {
 		log.Printf("[Auth] Failed to update password for %s: %v", user.Username, err)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to update password"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update password")
 		return
 	}
 
@@ -1063,8 +996,7 @@ func (h *AuthHandler) HandleChangePassword(w http.ResponseWriter, r *http.Reques
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Password changed successfully",
 	})
@@ -1079,55 +1011,50 @@ type AdminResetPasswordRequest struct {
 // by putting them back into the invite flow with a new invite token.
 func (h *AuthHandler) HandleAdminResetPassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	admin := r.Context().Value("user").(*storage.User)
 	if !admin.IsAdmin {
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Only administrators can reset passwords"})
+		api.WriteError(w, http.StatusForbidden, "Only administrators can reset passwords")
 		return
 	}
 
 	var req AdminResetPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if req.Username == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Username is required"})
+		api.WriteError(w, http.StatusBadRequest, "Username is required")
 		return
 	}
 
 	// Verify target user exists and is not an OIDC user
 	targetUser, err := h.pg.GetUser(r.Context(), req.Username)
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "User not found"})
+		api.WriteError(w, http.StatusNotFound, "User not found")
 		return
 	}
 
 	if targetUser.AuthProvider == "oidc" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Cannot reset password for SSO users"})
+		api.WriteError(w, http.StatusBadRequest, "Cannot reset password for SSO users")
 		return
 	}
 
 	// Generate new invite token
 	plainToken, tokenHash, err := generateInviteToken()
 	if err != nil {
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to generate invite token"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to generate invite token")
 		return
 	}
 
 	expiresAt := time.Now().Add(inviteExpiry)
 	if err := h.pg.ResetUserToInvite(r.Context(), req.Username, tokenHash, expiresAt); err != nil {
 		log.Printf("[Auth] Failed to reset password for %s: %v", req.Username, err)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to reset password"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to reset password")
 		return
 	}
 
@@ -1137,8 +1064,7 @@ func (h *AuthHandler) HandleAdminResetPassword(w http.ResponseWriter, r *http.Re
 	ip := clientIP(r)
 	h.logAuthEvent("password_reset", req.Username, ip, fmt.Sprintf("reset by admin %s", admin.Username))
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "Password reset successfully. Share the invite link with the user.",
 		Data: map[string]interface{}{
@@ -1213,8 +1139,7 @@ func (h *AuthHandler) canAccessScope(ctx context.Context, user *storage.User, fr
 func writeScopeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set(ScopeInvalidHeader, "1")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(Response{Success: false, Error: msg})
+	api.WriteError(w, status, msg)
 }
 
 // AuthMiddleware validates session or API key and loads user into context
@@ -1230,12 +1155,7 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 					// effect on the next request even with an active session.
 					// Logout stays reachable so the client can clear its cookie.
 					if !user.Enabled && r.URL.Path != "/api/v1/auth/logout" {
-						w.Header().Set("Content-Type", "application/json")
-						w.WriteHeader(http.StatusForbidden)
-						json.NewEncoder(w).Encode(Response{
-							Success: false,
-							Error:   "Your account has been disabled.",
-						})
+						api.WriteError(w, http.StatusForbidden, "Your account has been disabled.")
 						return
 					}
 
@@ -1287,12 +1207,7 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 						r.URL.Path != "/api/v1/auth/change-password" &&
 						r.URL.Path != "/api/v1/auth/user" &&
 						r.URL.Path != "/api/v1/auth/logout" {
-						w.Header().Set("Content-Type", "application/json")
-						w.WriteHeader(http.StatusForbidden)
-						json.NewEncoder(w).Encode(Response{
-							Success: false,
-							Error:   "Password change required",
-						})
+						api.WriteError(w, http.StatusForbidden, "Password change required")
 						return
 					}
 
@@ -1353,7 +1268,7 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Both session and API key authentication failed
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		api.WriteError(w, http.StatusUnauthorized, "Unauthorized")
 	})
 }
 
@@ -1397,25 +1312,22 @@ func RequireAPIKeyPermission(permission string) func(http.Handler) http.Handler 
 }
 
 // HandleListUsers lists all users (admin only)
+const (
+	defaultUserPageSize = 100
+	maxUserPageSize     = 500
+)
+
 func (h *AuthHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 	// Check if user is admin
 	user := r.Context().Value("user").(*storage.User)
 	if !user.IsAdmin {
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Only administrators can list users",
-		})
+		api.WriteError(w, http.StatusForbidden, "Only administrators can list users")
 		return
 	}
 
 	users, err := h.pg.ListUsers(r.Context())
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to list users",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to list users")
 		return
 	}
 
@@ -1439,64 +1351,48 @@ func (h *AuthHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
-		Success: true,
-		Data:    userList,
-	})
+	limit, offset := api.PageParams(r, defaultUserPageSize, maxUserPageSize)
+	window, page := api.Slice(userList, limit, offset)
+	api.WritePage(w, window, page)
 }
 
 // HandleDeleteUser deletes a user (admin only)
 func (h *AuthHandler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	// Check if user is admin
 	user := r.Context().Value("user").(*storage.User)
 	if !user.IsAdmin {
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Only administrators can delete users",
-		})
+		api.WriteError(w, http.StatusForbidden, "Only administrators can delete users")
 		return
 	}
 
 	// Get username from URL path
 	username := r.URL.Query().Get("username")
 	if username == "" {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Username is required",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Username is required")
 		return
 	}
 
 	// Prevent self-deletion
 	if username == user.Username {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Cannot delete your own account",
-		})
+		api.WriteError(w, http.StatusBadRequest, "Cannot delete your own account")
 		return
 	}
 
 	err := h.pg.DeleteUser(r.Context(), username)
 	if err != nil {
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Failed to delete user",
-		})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to delete user")
 		return
 	}
 
 	// Invalidate all active sessions for the deleted user
 	h.invalidateUserSessions(username)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{
+	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Message: "User deleted successfully",
 	})
@@ -1512,55 +1408,44 @@ type UpdateUserRequest struct {
 func (h *AuthHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(*storage.User)
 	if !user.IsAdmin {
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{
-			Success: false,
-			Error:   "Only administrators can edit users",
-		})
+		api.WriteError(w, http.StatusForbidden, "Only administrators can edit users")
 		return
 	}
 
 	rawUsername := chi.URLParam(r, "username")
 	if rawUsername == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Username is required"})
+		api.WriteError(w, http.StatusBadRequest, "Username is required")
 		return
 	}
 	username, err := url.PathUnescape(rawUsername)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid username"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid username")
 		return
 	}
 
 	var req UpdateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if req.Role != "" && req.Role != "admin" && req.Role != "user" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Role must be 'admin' or 'user'"})
+		api.WriteError(w, http.StatusBadRequest, "Role must be 'admin' or 'user'")
 		return
 	}
 
 	// Prevent removing your own admin role
 	if username == user.Username && req.Role == "user" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Cannot remove your own admin role"})
+		api.WriteError(w, http.StatusBadRequest, "Cannot remove your own admin role")
 		return
 	}
 
 	if err := h.pg.UpdateUser(r.Context(), username, req.DisplayName, req.Role); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to update user"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update user")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "User updated successfully"})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "User updated successfully"})
 }
 
 // SetUserEnabledRequest enables or disables an account.
@@ -1575,41 +1460,35 @@ func (h *AuthHandler) HandleSetUserEnabled(w http.ResponseWriter, r *http.Reques
 
 	user := r.Context().Value("user").(*storage.User)
 	if !user.IsAdmin {
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Only administrators can enable or disable users"})
+		api.WriteError(w, http.StatusForbidden, "Only administrators can enable or disable users")
 		return
 	}
 
 	rawUsername := chi.URLParam(r, "username")
 	if rawUsername == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Username is required"})
+		api.WriteError(w, http.StatusBadRequest, "Username is required")
 		return
 	}
 	username, err := url.PathUnescape(rawUsername)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid username"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid username")
 		return
 	}
 
 	var req SetUserEnabledRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	// Prevent locking yourself out.
 	if username == user.Username && !req.Enabled {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Cannot disable your own account"})
+		api.WriteError(w, http.StatusBadRequest, "Cannot disable your own account")
 		return
 	}
 
 	if err := h.pg.SetUserEnabled(r.Context(), username, req.Enabled); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to update user"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update user")
 		return
 	}
 
@@ -1622,7 +1501,7 @@ func (h *AuthHandler) HandleSetUserEnabled(w http.ResponseWriter, r *http.Reques
 	if !req.Enabled {
 		msg = "User disabled successfully"
 	}
-	json.NewEncoder(w).Encode(Response{Success: true, Message: msg})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: msg})
 }
 
 // ============================
@@ -1732,8 +1611,7 @@ func (h *AuthHandler) validateAPIKey(ctx context.Context, apiKey string) (*Valid
 func (h *AuthHandler) HandleMTLSStatus(w http.ResponseWriter, r *http.Request) {
 	user, ok := r.Context().Value("user").(*storage.User)
 	if !ok || user == nil || !user.IsAdmin {
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Admin access required"})
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 
@@ -1748,8 +1626,7 @@ func (h *AuthHandler) HandleMTLSStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Data: map[string]bool{"mtls_enabled": enabled}})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: map[string]bool{"mtls_enabled": enabled}})
 }
 
 // GenerateClientCertRequest carries the passphrase protecting the PKCS#12 bundle.
@@ -1762,66 +1639,57 @@ type GenerateClientCertRequest struct {
 func (h *AuthHandler) HandleGenerateClientCert(w http.ResponseWriter, r *http.Request) {
 	user, ok := r.Context().Value("user").(*storage.User)
 	if !ok || user == nil || !user.IsAdmin {
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Admin access required"})
+		api.WriteError(w, http.StatusForbidden, "Admin access required")
 		return
 	}
 
 	rawUsername := chi.URLParam(r, "username")
 	if rawUsername == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Username is required"})
+		api.WriteError(w, http.StatusBadRequest, "Username is required")
 		return
 	}
 	username, err := url.PathUnescape(rawUsername)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid username"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid username")
 		return
 	}
 
 	// Verify the target user exists
 	_, err = h.pg.GetUser(r.Context(), username)
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "User not found"})
+		api.WriteError(w, http.StatusNotFound, "User not found")
 		return
 	}
 
 	if h.clientCADir == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "mTLS is not configured"})
+		api.WriteError(w, http.StatusBadRequest, "mTLS is not configured")
 		return
 	}
 
 	caCertPEM, err := os.ReadFile(filepath.Join(h.clientCADir, "ca.pem"))
 	if err != nil {
 		log.Printf("[Auth] Failed to read CA cert: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "mTLS CA not available"})
+		api.WriteError(w, http.StatusInternalServerError, "mTLS CA not available")
 		return
 	}
 	caKeyPEM, err := os.ReadFile(filepath.Join(h.clientCADir, "ca-key.pem"))
 	if err != nil {
 		log.Printf("[Auth] Failed to read CA key: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "mTLS CA not available"})
+		api.WriteError(w, http.StatusInternalServerError, "mTLS CA not available")
 		return
 	}
 
 	// Parse password from request body
 	var req GenerateClientCertRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Password == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Password is required to protect the certificate"})
+		api.WriteError(w, http.StatusBadRequest, "Password is required to protect the certificate")
 		return
 	}
 
 	p12Data, err := setup.GenerateClientCertBytes(caCertPEM, caKeyPEM, username, req.Password)
 	if err != nil {
 		log.Printf("[Auth] Failed to generate client cert for %s: %v", username, err)
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to generate certificate"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to generate certificate")
 		return
 	}
 

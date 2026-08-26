@@ -1,11 +1,12 @@
 package groups
 
 import (
+	"bifract/pkg/api"
 	"encoding/json"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
 	"bifract/pkg/storage"
+	"github.com/go-chi/chi/v5"
 )
 
 type Handler struct {
@@ -16,12 +17,9 @@ func NewHandler(pg *storage.PostgresClient) *Handler {
 	return &Handler{pg: pg}
 }
 
-type apiResponse struct {
-	Success bool        `json:"success"`
-	Message string      `json:"message,omitempty"`
-	Error   string      `json:"error,omitempty"`
-	Data    interface{} `json:"data,omitempty"`
-}
+// apiResponse is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type apiResponse = api.Response[any]
 
 func (h *Handler) getCurrentUser(r *http.Request) *storage.User {
 	if user, ok := r.Context().Value("user").(*storage.User); ok {
@@ -42,9 +40,7 @@ func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) *storage.
 }
 
 func (h *Handler) sendJSON(w http.ResponseWriter, status int, resp apiResponse) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(resp)
+	api.WriteJSON(w, status, resp)
 }
 
 // HandleListGroups lists all groups (tenant admin only).

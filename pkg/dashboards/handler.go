@@ -1,6 +1,7 @@
 package dashboards
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -59,7 +60,7 @@ func (h *DashboardHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
-		http.Error(w, "Dashboard not found", http.StatusNotFound)
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleViewer) {
@@ -68,7 +69,7 @@ func (h *DashboardHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 
 	user, _ := r.Context().Value("user").(*storage.User)
 	if user == nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		api.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
@@ -184,7 +185,7 @@ func (h *DashboardHandler) HandleListDashboards(w http.ResponseWriter, r *http.R
 	selectedFractal, err := h.getSelectedFractal(r)
 	if err != nil {
 		log.Printf("[Dashboards] Failed to get selected fractal: %v", err)
-		jsonError(w, "Failed to determine fractal context")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to determine fractal context")
 		return
 	}
 
@@ -224,21 +225,14 @@ func (h *DashboardHandler) HandleListDashboards(w http.ResponseWriter, r *http.R
 		dashboards, total, err = h.pg.GetDashboardsByFractal(r.Context(), selectedFractal, limit, offset)
 	}
 	if err != nil {
-		jsonError(w, "Failed to fetch dashboards")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch dashboards")
 		return
 	}
 	if dashboards == nil {
 		dashboards = []storage.Dashboard{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"data":    dashboards,
-		"total":   total,
-		"limit":   limit,
-		"offset":  offset,
-	})
+	api.WritePage(w, dashboards, api.Page{Total: total, Limit: limit, Offset: offset})
 }
 
 func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.Request) {
@@ -247,18 +241,18 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 	fractalRole := rbac.RoleFromContext(r.Context())
 	prismRole := rbac.PrismRoleFromContext(r.Context())
 	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		jsonError(w, "Insufficient permissions")
+		api.WriteError(w, http.StatusBadRequest, "Insufficient permissions")
 		return
 	}
 
 	var req CreateDashboardRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body")
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if req.Name == "" {
-		jsonError(w, "name is required")
+		api.WriteError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 	if req.TimeRangeType == "" {
@@ -267,18 +261,18 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 
 	validTimeRanges := map[string]bool{"last1h": true, "last24h": true, "last7d": true, "last30d": true, "all": true, "custom": true}
 	if !validTimeRanges[req.TimeRangeType] {
-		jsonError(w, "time_range_type must be one of: last1h, last24h, last7d, last30d, all, custom")
+		api.WriteError(w, http.StatusBadRequest, "time_range_type must be one of: last1h, last24h, last7d, last30d, all, custom")
 		return
 	}
 	if req.TimeRangeType == "custom" && (req.TimeRangeStart == nil || req.TimeRangeEnd == nil) {
-		jsonError(w, "time_range_start and time_range_end are required for custom time range")
+		api.WriteError(w, http.StatusBadRequest, "time_range_start and time_range_end are required for custom time range")
 		return
 	}
 
 	selectedFractal, err := h.getSelectedFractal(r)
 	if err != nil {
 		log.Printf("[Dashboards] Failed to get selected fractal: %v", err)
-		jsonError(w, "Failed to determine fractal context")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to determine fractal context")
 		return
 	}
 
@@ -298,12 +292,11 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 
 	newDashboard, err := h.pg.InsertDashboard(r.Context(), d)
 	if err != nil {
-		jsonError(w, "Failed to create dashboard")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create dashboard")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Dashboard created successfully", Data: newDashboard})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Dashboard created successfully", Data: newDashboard})
 }
 
 func (h *DashboardHandler) HandleGetDashboard(w http.ResponseWriter, r *http.Request) {
@@ -311,7 +304,7 @@ func (h *DashboardHandler) HandleGetDashboard(w http.ResponseWriter, r *http.Req
 
 	dashboard, err := h.pg.GetDashboard(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 
@@ -322,7 +315,7 @@ func (h *DashboardHandler) HandleGetDashboard(w http.ResponseWriter, r *http.Req
 
 	widgets, err := h.pg.GetDashboardWidgets(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Failed to fetch dashboard widgets")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch dashboard widgets")
 		return
 	}
 	if widgets == nil {
@@ -330,8 +323,7 @@ func (h *DashboardHandler) HandleGetDashboard(w http.ResponseWriter, r *http.Req
 	}
 	dashboard.Widgets = widgets
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Data: dashboard})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: dashboard})
 }
 
 func (h *DashboardHandler) HandleUpdateDashboard(w http.ResponseWriter, r *http.Request) {
@@ -339,7 +331,7 @@ func (h *DashboardHandler) HandleUpdateDashboard(w http.ResponseWriter, r *http.
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
@@ -348,18 +340,17 @@ func (h *DashboardHandler) HandleUpdateDashboard(w http.ResponseWriter, r *http.
 
 	var req UpdateDashboardRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body")
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	err = h.pg.UpdateDashboard(r.Context(), id, req.Name, req.Description, req.TimeRangeType, req.TimeRangeStart, req.TimeRangeEnd)
 	if err != nil {
-		jsonError(w, "Failed to update dashboard")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update dashboard")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Dashboard updated successfully"})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Dashboard updated successfully"})
 }
 
 func (h *DashboardHandler) HandleDeleteDashboard(w http.ResponseWriter, r *http.Request) {
@@ -367,7 +358,7 @@ func (h *DashboardHandler) HandleDeleteDashboard(w http.ResponseWriter, r *http.
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
@@ -376,12 +367,11 @@ func (h *DashboardHandler) HandleDeleteDashboard(w http.ResponseWriter, r *http.
 
 	err = h.pg.DeleteDashboard(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Failed to delete dashboard")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to delete dashboard")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Dashboard deleted successfully"})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Dashboard deleted successfully"})
 }
 
 func (h *DashboardHandler) HandleCreateWidget(w http.ResponseWriter, r *http.Request) {
@@ -389,7 +379,7 @@ func (h *DashboardHandler) HandleCreateWidget(w http.ResponseWriter, r *http.Req
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
@@ -398,7 +388,7 @@ func (h *DashboardHandler) HandleCreateWidget(w http.ResponseWriter, r *http.Req
 
 	var req CreateWidgetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body")
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -425,12 +415,11 @@ func (h *DashboardHandler) HandleCreateWidget(w http.ResponseWriter, r *http.Req
 
 	newWidget, err := h.pg.InsertDashboardWidget(r.Context(), widget)
 	if err != nil {
-		jsonError(w, "Failed to create widget")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create widget")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Widget created successfully", Data: newWidget})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Widget created successfully", Data: newWidget})
 
 	h.broadcastSSE(r, dashboardID, sse.Event{Type: sse.WidgetAdded, Data: newWidget})
 }
@@ -441,7 +430,7 @@ func (h *DashboardHandler) HandleUpdateWidget(w http.ResponseWriter, r *http.Req
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
@@ -450,7 +439,7 @@ func (h *DashboardHandler) HandleUpdateWidget(w http.ResponseWriter, r *http.Req
 
 	var req UpdateWidgetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body")
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -465,12 +454,11 @@ func (h *DashboardHandler) HandleUpdateWidget(w http.ResponseWriter, r *http.Req
 
 	err = h.pg.UpdateDashboardWidget(r.Context(), widgetID, req.Title, req.QueryContent, req.ChartType, chartConfigJSON)
 	if err != nil {
-		jsonError(w, "Failed to update widget")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update widget")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Widget updated successfully"})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Widget updated successfully"})
 
 	// Only broadcast fields that were actually provided. A partial update (e.g.
 	// formatting-only, which sends just chart_config) must not emit null
@@ -501,7 +489,7 @@ func (h *DashboardHandler) HandleUpdateWidgetLayout(w http.ResponseWriter, r *ht
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
@@ -510,18 +498,17 @@ func (h *DashboardHandler) HandleUpdateWidgetLayout(w http.ResponseWriter, r *ht
 
 	var req UpdateWidgetLayoutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body")
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	err = h.pg.UpdateDashboardWidgetLayout(r.Context(), widgetID, req.PosX, req.PosY, req.Width, req.Height)
 	if err != nil {
-		jsonError(w, "Failed to update widget layout")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update widget layout")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Widget layout updated"})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Widget layout updated"})
 
 	h.broadcastSSE(r, dashboardID, sse.Event{
 		Type: sse.WidgetLayoutUpdated,
@@ -541,7 +528,7 @@ func (h *DashboardHandler) HandleDeleteWidget(w http.ResponseWriter, r *http.Req
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
@@ -550,12 +537,11 @@ func (h *DashboardHandler) HandleDeleteWidget(w http.ResponseWriter, r *http.Req
 
 	err = h.pg.DeleteDashboardWidget(r.Context(), widgetID)
 	if err != nil {
-		jsonError(w, "Failed to delete widget")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to delete widget")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Widget deleted successfully"})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Widget deleted successfully"})
 
 	h.broadcastSSE(r, dashboardID, sse.Event{
 		Type: sse.WidgetRemoved,
@@ -581,19 +567,19 @@ func (h *DashboardHandler) getSelectedFractal(r *http.Request) (string, error) {
 
 func (h *DashboardHandler) HandleUpdatePresence(w http.ResponseWriter, r *http.Request) {
 	if auth.IsAPIKey(r.Context()) {
-		jsonError(w, "presence is per-user and not available for API key authentication")
+		api.WriteError(w, http.StatusForbidden, "presence is per-user and not available for API key authentication")
 		return
 	}
 	id := chi.URLParam(r, "id")
 	user, _ := r.Context().Value("user").(*storage.User)
 	if user == nil {
-		jsonError(w, "unauthorized")
+		api.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleViewer) {
@@ -601,11 +587,10 @@ func (h *DashboardHandler) HandleUpdatePresence(w http.ResponseWriter, r *http.R
 	}
 
 	if err := h.pg.UpdateDashboardPresence(r.Context(), id, user.Username); err != nil {
-		jsonError(w, "failed to update presence")
+		api.WriteError(w, http.StatusInternalServerError, "failed to update presence")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Data: map[string]bool{"ok": true}})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: map[string]bool{"ok": true}})
 }
 
 func (h *DashboardHandler) HandleGetPresence(w http.ResponseWriter, r *http.Request) {
@@ -613,7 +598,7 @@ func (h *DashboardHandler) HandleGetPresence(w http.ResponseWriter, r *http.Requ
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleViewer) {
@@ -622,14 +607,13 @@ func (h *DashboardHandler) HandleGetPresence(w http.ResponseWriter, r *http.Requ
 
 	presence, err := h.pg.GetDashboardPresence(r.Context(), id)
 	if err != nil {
-		jsonError(w, "failed to get presence")
+		api.WriteError(w, http.StatusInternalServerError, "failed to get presence")
 		return
 	}
 	if presence == nil {
 		presence = []storage.ResourcePresence{}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Data: presence})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: presence})
 }
 
 func (h *DashboardHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.Request) {
@@ -637,7 +621,7 @@ func (h *DashboardHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
@@ -646,7 +630,7 @@ func (h *DashboardHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.
 
 	var req UpdateVariablesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body")
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -655,12 +639,11 @@ func (h *DashboardHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.
 	}
 
 	if err = h.pg.UpdateDashboardVariables(r.Context(), id, req.Variables); err != nil {
-		jsonError(w, "Failed to update variables")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update variables")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Variables updated"})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Variables updated"})
 }
 
 // HandleUpdateRefreshInterval sets the dashboard's server-side auto-refresh
@@ -670,7 +653,7 @@ func (h *DashboardHandler) HandleUpdateRefreshInterval(w http.ResponseWriter, r 
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
@@ -679,7 +662,7 @@ func (h *DashboardHandler) HandleUpdateRefreshInterval(w http.ResponseWriter, r 
 
 	var req UpdateRefreshIntervalRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body")
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -690,12 +673,11 @@ func (h *DashboardHandler) HandleUpdateRefreshInterval(w http.ResponseWriter, r 
 	}
 
 	if err := h.pg.UpdateDashboardRefreshInterval(r.Context(), id, req.RefreshInterval); err != nil {
-		jsonError(w, "Failed to update refresh interval")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update refresh interval")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Refresh interval updated"})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Refresh interval updated"})
 }
 
 // HandleExecuteWidget runs a single widget server-side, persists the results as
@@ -707,7 +689,7 @@ func (h *DashboardHandler) HandleExecuteWidget(w http.ResponseWriter, r *http.Re
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	// Viewer can execute: this is a read of log data (writing only the canonical
@@ -716,7 +698,7 @@ func (h *DashboardHandler) HandleExecuteWidget(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if h.executor == nil {
-		jsonError(w, "Executor unavailable")
+		api.WriteError(w, http.StatusServiceUnavailable, "Executor unavailable")
 		return
 	}
 
@@ -725,7 +707,7 @@ func (h *DashboardHandler) HandleExecuteWidget(w http.ResponseWriter, r *http.Re
 	var req ExecuteWidgetRequest
 	if r.Body != nil {
 		if derr := json.NewDecoder(r.Body).Decode(&req); derr != nil && derr != io.EOF {
-			jsonError(w, "Invalid request body")
+			api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 			return
 		}
 	}
@@ -759,35 +741,27 @@ func (h *DashboardHandler) HandleExecuteDashboard(w http.ResponseWriter, r *http
 
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), id)
 	if err != nil {
-		jsonError(w, "Dashboard not found")
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleViewer) {
 		return
 	}
 	if h.executor == nil {
-		jsonError(w, "Executor unavailable")
+		api.WriteError(w, http.StatusServiceUnavailable, "Executor unavailable")
 		return
 	}
 
 	if err := h.executor.ExecuteDashboardNow(r.Context(), id, ""); err != nil {
-		jsonError(w, "Failed to execute dashboard")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to execute dashboard")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Message: "Dashboard executed"})
-}
-
-func jsonError(w http.ResponseWriter, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: false, Error: msg})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Dashboard executed"})
 }
 
 func jsonForbidden(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	json.NewEncoder(w).Encode(Response{Success: false, Error: "Insufficient permissions"})
+	api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 }
 
 // YAML export/import types
@@ -822,8 +796,7 @@ func (h *DashboardHandler) HandleExportDashboard(w http.ResponseWriter, r *http.
 	id := chi.URLParam(r, "id")
 	dashboard, err := h.pg.GetDashboard(r.Context(), id)
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Dashboard not found"})
+		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
 		return
 	}
 
@@ -875,8 +848,7 @@ func (h *DashboardHandler) HandleExportDashboard(w http.ResponseWriter, r *http.
 
 	out, err := yaml.Marshal(export)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to export"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to export")
 		return
 	}
 
@@ -898,26 +870,24 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 	selectedFractal, _ := h.getSelectedFractal(r)
 	selectedPrism, _ := r.Context().Value("selected_prism").(string)
 	if selectedFractal == "" && selectedPrism == "" {
-		jsonError(w, "No fractal or prism selected")
+		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
-		jsonError(w, "Failed to read request")
+		api.WriteError(w, http.StatusInternalServerError, "Failed to read request")
 		return
 	}
 
 	var imported dashboardYAML
 	if err := yaml.Unmarshal(body, &imported); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid YAML format"})
+		api.WriteError(w, http.StatusBadRequest, "Invalid YAML format")
 		return
 	}
 
 	if imported.Name == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Dashboard name is required"})
+		api.WriteError(w, http.StatusBadRequest, "Dashboard name is required")
 		return
 	}
 
@@ -947,7 +917,7 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		log.Printf("[Dashboards] Failed to create dashboard from import: %v", err)
-		json.NewEncoder(w).Encode(Response{Success: false, Error: "Failed to create dashboard"})
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create dashboard")
 		return
 	}
 
@@ -984,6 +954,5 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(Response{Success: true, Data: map[string]interface{}{"dashboard": created}})
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: map[string]interface{}{"dashboard": created}})
 }

@@ -5,17 +5,6 @@ import (
 	"unicode"
 )
 
-// NormalizeFieldName takes a dotted field name and returns the normalized version
-// Example: "data.win.eventdata.queryName" -> "query_name"
-func NormalizeFieldName(fieldName string) string {
-	// Split by dots and take the last part
-	parts := strings.Split(fieldName, ".")
-	lastPart := parts[len(parts)-1]
-
-	// Convert to snake_case and lowercase
-	return ToSnakeCase(lastPart)
-}
-
 // isFieldSeparator reports whether r marks a word boundary in a log field name
 // while carrying no meaning of its own: HTTP headers ("Accept-Encoding"),
 // Windows event fields ("Process Name"), rate-style names ("bytes/sec").

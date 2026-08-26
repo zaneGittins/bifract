@@ -1,6 +1,7 @@
 package normalizers
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,11 +24,9 @@ type Handler struct {
 	ch      *storage.ClickHouseClient // sample capture only; nil disables it
 }
 
-type APIResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-}
+// APIResponse is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type APIResponse = api.Response[any]
 
 // NewHandler builds the normalizer API handler. ch may be nil, which disables
 // sample capture but leaves every other endpoint working.
@@ -241,8 +240,8 @@ func (h *Handler) HandleSamples(w http.ResponseWriter, r *http.Request) {
 type LogSample struct {
 	RawLog    string    `json:"raw_log"`
 	Timestamp time.Time `json:"timestamp"`
-	Shape     string    `json:"shape"`       // sorted top-level key signature
-	FieldsNum int       `json:"fields_num"`  // top-level key count
+	Shape     string    `json:"shape"`      // sorted top-level key signature
+	FieldsNum int       `json:"fields_num"` // top-level key count
 }
 
 // collectSamples reads recent raw logs from table and returns up to limit of
@@ -433,14 +432,10 @@ func (h *Handler) getCurrentUser(r *http.Request) string {
 	return ""
 }
 
-
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(APIResponse{Success: true, Data: data})
+	api.WriteSuccess(w, data)
 }
 
 func (h *Handler) respondError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(APIResponse{Success: false, Error: msg})
+	api.WriteError(w, status, msg)
 }

@@ -238,7 +238,7 @@ const Notebooks = {
             }
 
             this.renderNotebooksTable(data.data || []);
-            this.updatePagination(data.total || 0, data.limit || this.pageSize, data.offset || 0);
+            this.updatePagination(data.page?.total || 0, data.page?.limit || this.pageSize, data.page?.offset || 0);
 
         } catch (error) {
             console.error('[Notebooks] Error loading notebooks:', error);

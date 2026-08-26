@@ -100,15 +100,15 @@ type PrismFractalResolver interface {
 }
 
 type Manager struct {
-	pg                  *storage.PostgresClient
-	ch                  *storage.ClickHouseClient
-	fractalManager      *fractals.Manager
-	normalizerManager   *normalizers.Manager
-	instructionManager  *instructions.Manager
+	pg                   *storage.PostgresClient
+	ch                   *storage.ClickHouseClient
+	fractalManager       *fractals.Manager
+	normalizerManager    *normalizers.Manager
+	instructionManager   *instructions.Manager
 	prismFractalResolver PrismFractalResolver
-	litellmURL          string
-	litellmKey          string
-	httpClient          *http.Client
+	litellmURL           string
+	litellmKey           string
+	httpClient           *http.Client
 }
 
 // SetPrismFractalResolver sets the resolver for prism member fractals.
@@ -342,19 +342,6 @@ func (m *Manager) UpdateInstruction(ctx context.Context, id, name, content strin
 func (m *Manager) DeleteInstruction(ctx context.Context, id string) error {
 	_, err := m.pg.Exec(ctx, `DELETE FROM chat_instructions WHERE id = $1`, id)
 	return err
-}
-
-func (m *Manager) GetDefaultInstruction(ctx context.Context, fractalID string) (*Instruction, error) {
-	inst := &Instruction{}
-	err := m.pg.QueryRow(ctx, `
-		SELECT id, fractal_id, name, content, is_default, COALESCE(created_by, ''), created_at, updated_at
-		FROM chat_instructions
-		WHERE fractal_id = $1 AND is_default = true
-	`, fractalID).Scan(&inst.ID, &inst.FractalID, &inst.Name, &inst.Content, &inst.IsDefault, &inst.CreatedBy, &inst.CreatedAt, &inst.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	return inst, err
 }
 
 // ---- Message CRUD ----

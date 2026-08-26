@@ -411,7 +411,9 @@ const Alerts = {
         if (!alertsList) return;
 
         try {
-            const response = await fetch('/api/v1/alerts', {
+            // The screen filters and pages client-side, so fetch the server's
+            // ceiling rather than a page; page.total says if it was truncated.
+            const response = await fetch('/api/v1/alerts?limit=2000', {
                 credentials: 'include'
             });
 
@@ -424,8 +426,8 @@ const Alerts = {
                 throw new Error(data.error || 'Failed to load alerts');
             }
 
-            this.renderAlerts(data.data.alerts || []);
-            this.updateAlertCount(data.data.count || 0);
+            this.renderAlerts(data.data || []);
+            this.updateAlertCount(data.page?.total ?? (data.data || []).length);
         } catch (error) {
             console.error('Failed to load alerts:', error);
             alertsList.innerHTML = '<div class="error">Failed to load alerts: ' + Utils.escapeHtml(error.message) + '</div>';
@@ -3414,7 +3416,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             });
 
             if (!response.ok) {
-                const errorData = await response.text();
+                const errorData = await Utils.errorMessage(response);
                 throw new Error(`HTTP ${response.status}: ${errorData}`);
             }
 

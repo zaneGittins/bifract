@@ -1,6 +1,7 @@
 package query
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -105,7 +106,7 @@ func (h *StatusHandler) HandleHealthCheck(w http.ResponseWriter, r *http.Request
 
 func (h *StatusHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -264,7 +265,7 @@ func (h *StatusHandler) fetchStatus() StatusResponse {
 
 func (h *StatusHandler) HandleClearLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 

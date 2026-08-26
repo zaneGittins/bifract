@@ -651,10 +651,6 @@ func buildWhereClauseCtx(conditions []ConditionNode, registry *FieldRegistry) (s
 	return sql, nil
 }
 
-func translateCondition(cond ConditionNode) (string, error) {
-	return translateConditionCtx(cond, nil)
-}
-
 func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string, error) {
 	// A condition function was compiled to SQL before materialization.
 	if cond.CommandSQL != "" {
@@ -1374,31 +1370,6 @@ func lowerRegexForLowercasedColumn(pattern string) (string, bool) {
 	return b.String(), true
 }
 
-// patternHasAlternation returns true if the regex pattern contains | outside
-// of character classes. Such patterns use OR alternatives, so hasToken
-// pre-filters must not be AND-combined across the alternatives.
-func patternHasAlternation(pattern string) bool {
-	p := pattern
-	if strings.HasPrefix(p, "(?i)") {
-		p = p[4:]
-	}
-	inClass := false
-	for i := 0; i < len(p); i++ {
-		if p[i] == '\\' {
-			i++ // skip escaped char
-			continue
-		}
-		if p[i] == '[' {
-			inClass = true
-		} else if p[i] == ']' {
-			inClass = false
-		} else if p[i] == '|' && !inClass {
-			return true
-		}
-	}
-	return false
-}
-
 func extractFieldName(fieldRef string) string {
 	// Iceberg norm_log access: JSONExtractString(norm_log, 'a.b') -> a.b. The key
 	// was escaped by escapeString (mapFieldRef), so reverse both escapes (\\ and \').
@@ -1947,23 +1918,6 @@ func collectHavingFieldsOrdered(c HavingCondition, seen map[string]bool, out *[]
 		*out = append(*out, c.Field)
 	}
 	return *out
-}
-
-// extractParameter extracts the value of a parameter from a parameter string
-// e.g., extractParameter("field=computer,distinct=true", "field") returns "computer"
-func extractParameter(params string, paramName string) string {
-	paramPrefix := paramName + "="
-	paramPairs := strings.Split(params, ",")
-
-	for _, pair := range paramPairs {
-		pair = strings.TrimSpace(pair)
-		if strings.HasPrefix(pair, paramPrefix) {
-			value := strings.TrimPrefix(pair, paramPrefix)
-			return strings.Trim(value, `"'`) // Remove quotes if present
-		}
-	}
-
-	return ""
 }
 
 // splitTopLevelArgs splits a string by commas at parenthesis depth 0.

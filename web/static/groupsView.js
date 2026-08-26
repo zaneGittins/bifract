@@ -393,7 +393,7 @@ const GroupsView = {
         listEl.innerHTML = '<div class="loading">Loading...</div>';
 
         try {
-            const resp = await fetch('/api/v1/users', { credentials: 'include' });
+            const resp = await fetch('/api/v1/users?limit=500', { credentials: 'include' });
             const data = await resp.json();
             if (!data.success) {
                 listEl.innerHTML = '<div class="text-muted" style="padding:0.75rem;">Failed to load users</div>';
@@ -638,7 +638,7 @@ const GroupsView = {
         const userSelect = document.getElementById('permUserSelect');
         if (userSelect) {
             try {
-                const resp = await fetch('/api/v1/users', { credentials: 'include' });
+                const resp = await fetch('/api/v1/users?limit=500', { credentials: 'include' });
                 const data = await resp.json();
                 userSelect.innerHTML = '<option value="">Select user...</option>';
                 if (data.success) {
@@ -859,7 +859,7 @@ const GroupsView = {
         const userSelect = document.getElementById('prismPermUserSelect');
         if (userSelect) {
             try {
-                const resp = await fetch('/api/v1/users', { credentials: 'include' });
+                const resp = await fetch('/api/v1/users?limit=500', { credentials: 'include' });
                 const data = await resp.json();
                 userSelect.innerHTML = '<option value="">Select user...</option>';
                 if (data.success) {

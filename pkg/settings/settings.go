@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"bifract/pkg/api"
 	"context"
 	"encoding/json"
 	"errors"
@@ -426,7 +427,7 @@ type SettingsResponse struct {
 
 func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -449,7 +450,7 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -502,7 +503,5 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	api.WriteJSON(w, status, data)
 }

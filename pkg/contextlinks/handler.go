@@ -1,23 +1,22 @@
 package contextlinks
 
 import (
+	"bifract/pkg/api"
 	"encoding/json"
 	"log"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
 	"bifract/pkg/storage"
+	"github.com/go-chi/chi/v5"
 )
 
 type Handler struct {
 	manager *Manager
 }
 
-type APIResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-}
+// APIResponse is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type APIResponse = api.Response[any]
 
 func NewHandler(manager *Manager) *Handler {
 	return &Handler{manager: manager}
@@ -151,12 +150,9 @@ func (h *Handler) getCurrentUser(r *http.Request) string {
 }
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(APIResponse{Success: true, Data: data})
+	api.WriteSuccess(w, data)
 }
 
 func (h *Handler) respondError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(APIResponse{Success: false, Error: msg})
+	api.WriteError(w, status, msg)
 }

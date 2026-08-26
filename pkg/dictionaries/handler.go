@@ -1,6 +1,7 @@
 package dictionaries
 
 import (
+	"bifract/pkg/api"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,12 +24,9 @@ type Handler struct {
 	fractalManager *fractals.Manager
 }
 
-// APIResponse is a standard API response envelope.
-type APIResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-}
+// APIResponse is the shared API envelope. The alias keeps the package-local
+// name while there is one type, and one schema, behind it.
+type APIResponse = api.Response[any]
 
 // NewHandler creates a new dictionary handler.
 func NewHandler(manager *Manager, fractalManager *fractals.Manager) *Handler {
@@ -282,12 +280,7 @@ func (h *Handler) HandleGetRows(w http.ResponseWriter, r *http.Request) {
 	if rows == nil {
 		rows = []DictionaryRow{}
 	}
-	h.respondSuccess(w, map[string]interface{}{
-		"rows":   rows,
-		"total":  total,
-		"limit":  limit,
-		"offset": offset,
-	})
+	api.WritePage(w, rows, api.Page{Total: int(total), Limit: limit, Offset: offset})
 }
 
 // UpsertRowsRequest carries the rows to insert or update.
@@ -408,28 +401,6 @@ func (h *Handler) HandleReloadDictionary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	h.respondSuccess(w, map[string]bool{"reloaded": true})
-}
-
-// HandleListDictionaryNames returns a map of dict name -> ClickHouse lookup name for the
-// selected fractal or prism. Used by the query translator to resolve match() calls.
-func (h *Handler) HandleListDictionaryNames(w http.ResponseWriter, r *http.Request) {
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Dictionaries] Failed to get scope: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine fractal context")
-		return
-	}
-
-	mappings, err := h.manager.ListDictionaryMappings(r.Context(), fractalID, prismID)
-	if err != nil {
-		log.Printf("[Dictionaries] Failed to list dictionary names: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to load dictionary names")
-		return
-	}
-	if mappings == nil {
-		mappings = map[string]map[string]string{}
-	}
-	h.respondSuccess(w, mappings)
 }
 
 // ---- Dictionary Actions ----
@@ -623,15 +594,6 @@ func (h *Handler) getScope(r *http.Request) (fractalID, prismID string, err erro
 	return defaultFractal.ID, "", nil
 }
 
-func (h *Handler) getCurrentUser(r *http.Request) string {
-	if user := r.Context().Value("user"); user != nil {
-		if userObj, ok := user.(*storage.User); ok {
-			return userObj.Username
-		}
-	}
-	return ""
-}
-
 // requireAnalyst checks that the current user has at least analyst role on the session fractal or prism.
 func (h *Handler) requireAnalyst(w http.ResponseWriter, r *http.Request) bool {
 	user, _ := r.Context().Value("user").(*storage.User)
@@ -645,12 +607,9 @@ func (h *Handler) requireAnalyst(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(APIResponse{Success: true, Data: data})
+	api.WriteSuccess(w, data)
 }
 
 func (h *Handler) respondError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(APIResponse{Success: false, Error: msg})
+	api.WriteError(w, status, msg)
 }
