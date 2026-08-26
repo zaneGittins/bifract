@@ -217,6 +217,12 @@ func (h *Handler) HandleCancelBackfill(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, map[string]bool{"cancelled": true})
 }
 
+// TestExtractionRequest carries a filter and extraction steps to try against recent logs.
+type TestExtractionRequest struct {
+	Filter      []FilterCondition `json:"filter"`
+	Extractions []ExtractionStep  `json:"extractions"`
+}
+
 // HandleTestExtraction runs a sample extraction against recent logs and returns matched values.
 func (h *Handler) HandleTestExtraction(w http.ResponseWriter, r *http.Request) {
 	fractalID, err := h.getFractalID(r)
@@ -225,10 +231,7 @@ func (h *Handler) HandleTestExtraction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Filter      []FilterCondition `json:"filter"`
-		Extractions []ExtractionStep  `json:"extractions"`
-	}
+	var req TestExtractionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -278,14 +281,17 @@ func (h *Handler) HandleDisableAlert(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, map[string]bool{"disabled": true})
 }
 
+// GenerateQueryRequest carries a model definition to lower into BQL.
+type GenerateQueryRequest struct {
+	Name       string          `json:"name"`
+	ModelType  ModelType       `json:"model_type"`
+	Definition ModelDefinition `json:"definition"`
+}
+
 // HandleGenerateQuery returns the auto-generated BQL query for a model definition.
 // Useful for previewing what the alert query would look like before committing.
 func (h *Handler) HandleGenerateQuery(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name       string          `json:"name"`
-		ModelType  ModelType       `json:"model_type"`
-		Definition ModelDefinition `json:"definition"`
-	}
+	var req GenerateQueryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -294,15 +300,18 @@ func (h *Handler) HandleGenerateQuery(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, map[string]string{"query": query})
 }
 
+// ParseQueryRequest carries BQL to raise into a structured model definition.
+type ParseQueryRequest struct {
+	Query     string    `json:"query"`
+	ModelType ModelType `json:"model_type"`
+}
+
 // HandleParseQuery lowers a BQL source query into the structured filter +
 // extraction half of a model definition, returning candidate fields for shaping
 // and any validation messages. Validation problems are returned in the body
 // (HTTP 200); only a malformed request body is a 400.
 func (h *Handler) HandleParseQuery(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Query     string    `json:"query"`
-		ModelType ModelType `json:"model_type"`
-	}
+	var req ParseQueryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -319,6 +328,13 @@ func (h *Handler) HandleParseQuery(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// PreviewRequest estimates a model definition over a recent window.
+type PreviewRequest struct {
+	ModelType  ModelType       `json:"model_type"`
+	Definition ModelDefinition `json:"definition"`
+	Window     string          `json:"window"`
+}
+
 // HandlePreview estimates a model's output over a recent window BEFORE the model
 // is created, so an author can tune the definition and alert thresholds and see
 // whether it surfaces the right results first. It creates no ClickHouse objects.
@@ -331,11 +347,7 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
 		return
 	}
-	var req struct {
-		ModelType  ModelType       `json:"model_type"`
-		Definition ModelDefinition `json:"definition"`
-		Window     string          `json:"window"`
-	}
+	var req PreviewRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return

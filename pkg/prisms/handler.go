@@ -102,6 +102,12 @@ func (h *Handler) HandleListPrisms(w http.ResponseWriter, r *http.Request) {
 	respondSuccess(w, map[string]interface{}{"prisms": prisms, "count": len(prisms)})
 }
 
+// PrismRequest carries a prism, on create and on update.
+type PrismRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 func (h *Handler) HandleCreatePrism(w http.ResponseWriter, r *http.Request) {
 	user := getCurrentUser(r)
 	if user == nil || !user.IsAdmin {
@@ -109,10 +115,7 @@ func (h *Handler) HandleCreatePrism(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
+	var req PrismRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -159,10 +162,7 @@ func (h *Handler) HandleUpdatePrism(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
+	var req PrismRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -193,15 +193,18 @@ func (h *Handler) HandleDeletePrism(w http.ResponseWriter, r *http.Request) {
 	respondSuccess(w, map[string]bool{"deleted": true})
 }
 
+// AddMemberRequest names the fractal to add to a prism.
+type AddMemberRequest struct {
+	FractalID string `json:"fractal_id"`
+}
+
 func (h *Handler) HandleAddMember(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !h.requirePrismRole(w, r, id, rbac.RoleAdmin) {
 		return
 	}
 
-	var req struct {
-		FractalID string `json:"fractal_id"`
-	}
+	var req AddMemberRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -309,6 +312,13 @@ func (h *Handler) HandleListPrismPermissions(w http.ResponseWriter, r *http.Requ
 	respondSuccess(w, map[string]interface{}{"permissions": perms})
 }
 
+// GrantPermissionRequest grants a role to a user or a group, never both.
+type GrantPermissionRequest struct {
+	Username *string `json:"username"`
+	GroupID  *string `json:"group_id"`
+	Role     string  `json:"role"`
+}
+
 func (h *Handler) HandleGrantPrismPermission(w http.ResponseWriter, r *http.Request) {
 	user := getCurrentUser(r)
 	prismID := chi.URLParam(r, "id")
@@ -316,11 +326,7 @@ func (h *Handler) HandleGrantPrismPermission(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var req struct {
-		Username *string `json:"username"`
-		GroupID  *string `json:"group_id"`
-		Role     string  `json:"role"`
-	}
+	var req GrantPermissionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -361,6 +367,11 @@ func (h *Handler) HandleGrantPrismPermission(w http.ResponseWriter, r *http.Requ
 	respondSuccess(w, perm)
 }
 
+// UpdatePermissionRequest carries the role to set on an existing grant.
+type UpdatePermissionRequest struct {
+	Role string `json:"role"`
+}
+
 func (h *Handler) HandleUpdatePrismPermission(w http.ResponseWriter, r *http.Request) {
 	user := getCurrentUser(r)
 	prismID := chi.URLParam(r, "id")
@@ -381,9 +392,7 @@ func (h *Handler) HandleUpdatePrismPermission(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	var req struct {
-		Role string `json:"role"`
-	}
+	var req UpdatePermissionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request body")
 		return

@@ -313,6 +313,11 @@ func (d routerDeps) handleArchiveStatus(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(resp)
 }
 
+// enabledRequest toggles a boolean instance setting.
+type enabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
 func (d routerDeps) handleSetArchiveEnabled(w http.ResponseWriter, r *http.Request) {
 	if u, ok := r.Context().Value("user").(*storage.User); !ok || u == nil || !u.IsAdmin {
 		http.Error(w, "Admin access required", http.StatusForbidden)
@@ -326,9 +331,7 @@ func (d routerDeps) handleSetArchiveEnabled(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "Archive not provisioned. Run bifract --upgrade to add the archiver, then retry.", http.StatusBadRequest)
 		return
 	}
-	var body struct {
-		Enabled bool `json:"enabled"`
-	}
+	var body enabledRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -460,15 +463,18 @@ func (d routerDeps) handleDistributionQueueShards(w http.ResponseWriter, r *http
 	json.NewEncoder(w).Encode(stats)
 }
 
+// resetDistributionQueueRequest names the shard whose queue to reset.
+type resetDistributionQueueRequest struct {
+	ShardNum uint64 `json:"shard_num"`
+}
+
 func (d routerDeps) handleResetDistributionQueue(w http.ResponseWriter, r *http.Request) {
 	u, ok := r.Context().Value("user").(*storage.User)
 	if !ok || u == nil || !u.IsAdmin {
 		http.Error(w, "Admin access required", http.StatusForbidden)
 		return
 	}
-	var body struct {
-		ShardNum uint64 `json:"shard_num"`
-	}
+	var body resetDistributionQueueRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -504,9 +510,7 @@ func (d routerDeps) handleSetEndpointAnalysis(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Admin access required", http.StatusForbidden)
 		return
 	}
-	var body struct {
-		Enabled bool `json:"enabled"`
-	}
+	var body enabledRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -544,9 +548,7 @@ func (d routerDeps) handleSetSharedLinksEnabled(w http.ResponseWriter, r *http.R
 		http.Error(w, "Admin access required", http.StatusForbidden)
 		return
 	}
-	var body struct {
-		Enabled bool `json:"enabled"`
-	}
+	var body enabledRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -563,29 +565,32 @@ func (d routerDeps) handleSetSharedLinksEnabled(w http.ResponseWriter, r *http.R
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "enabled": body.Enabled})
 }
 
+// createRestoreRequest describes an archive window to replay and where it lands.
+type createRestoreRequest struct {
+	FractalIDs []string `json:"fractal_ids"`
+	From       string   `json:"from"`
+	To         string   `json:"to"`
+	Mode       string   `json:"mode"`
+	// TargetMode selects where restored rows land: "existing" (the
+	// default) restores each source fractal into itself; "new"
+	// creates a dedicated no-retention fractal and restores a single
+	// source into it.
+	TargetMode string `json:"target_mode"`
+	// NewFractalName names the fractal created when TargetMode="new".
+	NewFractalName string `json:"new_fractal_name"`
+	// AcknowledgeRetention confirms the operator has been shown that
+	// the restored window falls outside the fractal's retention and
+	// will be deleted again. See retentionConflicts.
+	AcknowledgeRetention bool `json:"acknowledge_retention"`
+}
+
 func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) {
 	u, ok := r.Context().Value("user").(*storage.User)
 	if !ok || u == nil || !u.IsAdmin {
 		http.Error(w, "Admin access required", http.StatusForbidden)
 		return
 	}
-	var body struct {
-		FractalIDs []string `json:"fractal_ids"`
-		From       string   `json:"from"`
-		To         string   `json:"to"`
-		Mode       string   `json:"mode"`
-		// TargetMode selects where restored rows land: "existing" (the
-		// default) restores each source fractal into itself; "new"
-		// creates a dedicated no-retention fractal and restores a single
-		// source into it.
-		TargetMode string `json:"target_mode"`
-		// NewFractalName names the fractal created when TargetMode="new".
-		NewFractalName string `json:"new_fractal_name"`
-		// AcknowledgeRetention confirms the operator has been shown that
-		// the restored window falls outside the fractal's retention and
-		// will be deleted again. See retentionConflicts.
-		AcknowledgeRetention bool `json:"acknowledge_retention"`
-	}
+	var body createRestoreRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -915,19 +920,22 @@ func (d routerDeps) handleRecallEstimate(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// createRecallRequest describes an archive search to submit.
+type createRecallRequest struct {
+	Query   string `json:"query"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+	MaxRows int    `json:"max_rows"`
+	Fresh   bool   `json:"fresh"` // bypass result reuse, force a new scan
+}
+
 func (d routerDeps) handleCreateRecall(w http.ResponseWriter, r *http.Request) {
 	fractalID := chi.URLParam(r, "fractalID")
 	u, ok := d.recallAnalystOK(w, r, fractalID)
 	if !ok {
 		return
 	}
-	var body struct {
-		Query   string `json:"query"`
-		From    string `json:"from"`
-		To      string `json:"to"`
-		MaxRows int    `json:"max_rows"`
-		Fresh   bool   `json:"fresh"` // bypass result reuse, force a new scan
-	}
+	var body createRecallRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return

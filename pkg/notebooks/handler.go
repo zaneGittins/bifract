@@ -929,6 +929,12 @@ func (h *NotebookHandler) HandleReorderSections(w http.ResponseWriter, r *http.R
 	})
 }
 
+// UpdateSectionResultsRequest replaces a query section cached results.
+type UpdateSectionResultsRequest struct {
+	LastExecutedAt string `json:"last_executed_at"`
+	LastResults    string `json:"last_results"`
+}
+
 // HandleUpdateSectionResults updates query section results
 func (h *NotebookHandler) HandleUpdateSectionResults(w http.ResponseWriter, r *http.Request) {
 	sectionID := chi.URLParam(r, "section_id")
@@ -952,10 +958,7 @@ func (h *NotebookHandler) HandleUpdateSectionResults(w http.ResponseWriter, r *h
 		return
 	}
 
-	var req struct {
-		LastExecutedAt string `json:"last_executed_at"`
-		LastResults    string `json:"last_results"`
-	}
+	var req UpdateSectionResultsRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.Header().Set("Content-Type", "application/json")

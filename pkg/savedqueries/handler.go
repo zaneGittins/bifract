@@ -308,6 +308,21 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, map[string]interface{}{"saved_queries": queries, "count": len(queries)})
 }
 
+// SavedQueryRequest carries a saved query, on create and on update.
+type SavedQueryRequest struct {
+	Name         string          `json:"name"`
+	QueryText    string          `json:"query_text"`
+	Description  string          `json:"description"`
+	Tags         []string        `json:"tags"`
+	Variables    json.RawMessage `json:"variables"`
+	Visibility   string          `json:"visibility"`
+	TimeRange    string          `json:"time_range"`
+	CustomStart  string          `json:"custom_start"`
+	CustomEnd    string          `json:"custom_end"`
+	RelativeN    *int            `json:"relative_n"`
+	RelativeUnit string          `json:"relative_unit"`
+}
+
 func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	username := h.getCurrentUser(r)
 	if username == "" {
@@ -315,19 +330,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Name         string          `json:"name"`
-		QueryText    string          `json:"query_text"`
-		Description  string          `json:"description"`
-		Tags         []string        `json:"tags"`
-		Variables    json.RawMessage `json:"variables"`
-		Visibility   string          `json:"visibility"`
-		TimeRange    string          `json:"time_range"`
-		CustomStart  string          `json:"custom_start"`
-		CustomEnd    string          `json:"custom_end"`
-		RelativeN    *int            `json:"relative_n"`
-		RelativeUnit string          `json:"relative_unit"`
-	}
+	var req SavedQueryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -424,19 +427,7 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Name         string          `json:"name"`
-		QueryText    string          `json:"query_text"`
-		Description  string          `json:"description"`
-		Tags         []string        `json:"tags"`
-		Variables    json.RawMessage `json:"variables"`
-		Visibility   string          `json:"visibility"`
-		TimeRange    string          `json:"time_range"`
-		CustomStart  string          `json:"custom_start"`
-		CustomEnd    string          `json:"custom_end"`
-		RelativeN    *int            `json:"relative_n"`
-		RelativeUnit string          `json:"relative_unit"`
-	}
+	var req SavedQueryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return

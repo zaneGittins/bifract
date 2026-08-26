@@ -57,6 +57,15 @@ func (h *Handler) HandleListDictionaries(w http.ResponseWriter, r *http.Request)
 	h.respondSuccess(w, map[string]interface{}{"dictionaries": dicts, "count": len(dicts)})
 }
 
+// CreateDictionaryRequest defines a new dictionary and its columns.
+type CreateDictionaryRequest struct {
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	KeyColumn   string             `json:"key_column"`
+	Columns     []DictionaryColumn `json:"columns"`
+	IsGlobal    bool               `json:"is_global"`
+}
+
 func (h *Handler) HandleCreateDictionary(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
@@ -68,13 +77,7 @@ func (h *Handler) HandleCreateDictionary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var req struct {
-		Name        string             `json:"name"`
-		Description string             `json:"description"`
-		KeyColumn   string             `json:"key_column"`
-		Columns     []DictionaryColumn `json:"columns"`
-		IsGlobal    bool               `json:"is_global"`
-	}
+	var req CreateDictionaryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -102,6 +105,13 @@ func (h *Handler) HandleGetDictionary(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, dict)
 }
 
+// UpdateDictionaryRequest carries the dictionary metadata that may change; columns are managed separately.
+type UpdateDictionaryRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	IsGlobal    bool   `json:"is_global"`
+}
+
 func (h *Handler) HandleUpdateDictionary(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
@@ -112,11 +122,7 @@ func (h *Handler) HandleUpdateDictionary(w http.ResponseWriter, r *http.Request)
 	}
 	id := existing.ID
 
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		IsGlobal    bool   `json:"is_global"`
-	}
+	var req UpdateDictionaryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -150,6 +156,11 @@ func (h *Handler) HandleDeleteDictionary(w http.ResponseWriter, r *http.Request)
 
 // ---- Columns ----
 
+// AddColumnRequest names a column to add.
+type AddColumnRequest struct {
+	Name string `json:"name"`
+}
+
 func (h *Handler) HandleAddColumn(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
@@ -160,9 +171,7 @@ func (h *Handler) HandleAddColumn(w http.ResponseWriter, r *http.Request) {
 	}
 	id := existing.ID
 
-	var req struct {
-		Name string `json:"name"`
-	}
+	var req AddColumnRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -281,6 +290,11 @@ func (h *Handler) HandleGetRows(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// UpsertRowsRequest carries the rows to insert or update.
+type UpsertRowsRequest struct {
+	Rows []DictionaryRow `json:"rows"`
+}
+
 func (h *Handler) HandleUpsertRows(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
@@ -291,9 +305,7 @@ func (h *Handler) HandleUpsertRows(w http.ResponseWriter, r *http.Request) {
 	}
 	id := existing.ID
 
-	var req struct {
-		Rows []DictionaryRow `json:"rows"`
-	}
+	var req UpsertRowsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -441,17 +453,20 @@ func (h *Handler) HandleListDictionaryActions(w http.ResponseWriter, r *http.Req
 	h.respondSuccess(w, map[string]interface{}{"actions": actions, "count": len(actions)})
 }
 
+// DictionaryActionRequest carries a dictionary action, on create and on update.
+type DictionaryActionRequest struct {
+	Name              string `json:"name"`
+	Description       string `json:"description"`
+	DictionaryName    string `json:"dictionary_name"`
+	MaxLogsPerTrigger int    `json:"max_logs_per_trigger"`
+	Enabled           bool   `json:"enabled"`
+}
+
 func (h *Handler) HandleCreateDictionaryAction(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	var req struct {
-		Name              string `json:"name"`
-		Description       string `json:"description"`
-		DictionaryName    string `json:"dictionary_name"`
-		MaxLogsPerTrigger int    `json:"max_logs_per_trigger"`
-		Enabled           bool   `json:"enabled"`
-	}
+	var req DictionaryActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -507,13 +522,7 @@ func (h *Handler) HandleUpdateDictionaryAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	var req struct {
-		Name              string `json:"name"`
-		Description       string `json:"description"`
-		DictionaryName    string `json:"dictionary_name"`
-		MaxLogsPerTrigger int    `json:"max_logs_per_trigger"`
-		Enabled           bool   `json:"enabled"`
-	}
+	var req DictionaryActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return

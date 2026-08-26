@@ -216,6 +216,19 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, map[string]interface{}{"history": history, "count": len(history)})
 }
 
+// RecordRequest carries one executed query to record.
+type RecordRequest struct {
+	QueryText    string `json:"query_text"`
+	TimeRange    string `json:"time_range"`
+	CustomStart  string `json:"custom_start"`
+	CustomEnd    string `json:"custom_end"`
+	RelativeN    *int64 `json:"relative_n"`
+	RelativeUnit string `json:"relative_unit"`
+	ResultCount  *int64 `json:"result_count"`
+	DurationMs   *int64 `json:"duration_ms"`
+	Status       string `json:"status"`
+}
+
 func (h *Handler) HandleRecord(w http.ResponseWriter, r *http.Request) {
 	if auth.IsAPIKey(r.Context()) {
 		h.respondError(w, http.StatusForbidden, "query history is per-user and not available for API key authentication")
@@ -227,17 +240,7 @@ func (h *Handler) HandleRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		QueryText    string `json:"query_text"`
-		TimeRange    string `json:"time_range"`
-		CustomStart  string `json:"custom_start"`
-		CustomEnd    string `json:"custom_end"`
-		RelativeN    *int64 `json:"relative_n"`
-		RelativeUnit string `json:"relative_unit"`
-		ResultCount  *int64 `json:"result_count"`
-		DurationMs   *int64 `json:"duration_ms"`
-		Status       string `json:"status"`
-	}
+	var req RecordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return

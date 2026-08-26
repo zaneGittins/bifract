@@ -63,6 +63,12 @@ func (h *Handler) HandleListGroups(w http.ResponseWriter, r *http.Request) {
 	h.sendJSON(w, http.StatusOK, apiResponse{Success: true, Data: groups})
 }
 
+// GroupRequest carries a group, on create and on update.
+type GroupRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 // HandleCreateGroup creates a new group (tenant admin only).
 func (h *Handler) HandleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	user := h.requireAdmin(w, r)
@@ -70,10 +76,7 @@ func (h *Handler) HandleCreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
+	var req GroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendJSON(w, http.StatusBadRequest, apiResponse{Error: "Invalid request body"})
 		return
@@ -112,10 +115,7 @@ func (h *Handler) HandleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chi.URLParam(r, "id")
 
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
+	var req GroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendJSON(w, http.StatusBadRequest, apiResponse{Error: "Invalid request body"})
 		return
@@ -163,6 +163,11 @@ func (h *Handler) HandleListMembers(w http.ResponseWriter, r *http.Request) {
 	h.sendJSON(w, http.StatusOK, apiResponse{Success: true, Data: members})
 }
 
+// AddMemberRequest names the user to add to a group.
+type AddMemberRequest struct {
+	Username string `json:"username"`
+}
+
 // HandleAddMember adds a user to a group (tenant admin only).
 func (h *Handler) HandleAddMember(w http.ResponseWriter, r *http.Request) {
 	user := h.requireAdmin(w, r)
@@ -171,9 +176,7 @@ func (h *Handler) HandleAddMember(w http.ResponseWriter, r *http.Request) {
 	}
 	groupID := chi.URLParam(r, "id")
 
-	var req struct {
-		Username string `json:"username"`
-	}
+	var req AddMemberRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendJSON(w, http.StatusBadRequest, apiResponse{Error: "Invalid request body"})
 		return

@@ -500,6 +500,12 @@ func (h *CommentHandler) HandleGetFlatComments(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// BulkTagRequest applies or removes one tag across several comments.
+type BulkTagRequest struct {
+	CommentIDs []string `json:"comment_ids"`
+	Tag        string   `json:"tag"`
+}
+
 // HandleBulkAddTag adds a tag to multiple comments. Requires Analyst+ role.
 func (h *CommentHandler) HandleBulkAddTag(w http.ResponseWriter, r *http.Request) {
 	user, ok := r.Context().Value("user").(*storage.User)
@@ -519,10 +525,7 @@ func (h *CommentHandler) HandleBulkAddTag(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var req struct {
-		CommentIDs []string `json:"comment_ids"`
-		Tag        string   `json:"tag"`
-	}
+	var req BulkTagRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
@@ -576,10 +579,7 @@ func (h *CommentHandler) HandleBulkRemoveTag(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var req struct {
-		CommentIDs []string `json:"comment_ids"`
-		Tag        string   `json:"tag"`
-	}
+	var req BulkTagRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
@@ -614,6 +614,11 @@ func (h *CommentHandler) HandleBulkRemoveTag(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+// BulkDeleteRequest names the comments to delete.
+type BulkDeleteRequest struct {
+	CommentIDs []string `json:"comment_ids"`
+}
+
 // HandleBulkDeleteComments deletes multiple comments by ID. Requires Analyst+ role.
 // Non-admin users can only delete comments they authored.
 func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http.Request) {
@@ -634,9 +639,7 @@ func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http
 		return
 	}
 
-	var req struct {
-		CommentIDs []string `json:"comment_ids"`
-	}
+	var req BulkDeleteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
@@ -777,13 +780,16 @@ func (h *CommentHandler) getScope(r *http.Request) (fractalID, prismID string) {
 	return "", ""
 }
 
+// LogFieldsRequest names the logs whose parsed fields to fetch.
+type LogFieldsRequest struct {
+	LogIDs []string `json:"log_ids"`
+}
+
 // HandleGetLogFields batch-fetches parsed field data for multiple logs.
 func (h *CommentHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request) {
 	selectedFractal, _ := h.getScope(r)
 
-	var req struct {
-		LogIDs []string `json:"log_ids"`
-	}
+	var req LogFieldsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})

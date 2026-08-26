@@ -67,10 +67,10 @@ func (reg *Registry) add(prefix string, route Route) {
 	reg.routes[key] = route
 }
 
-// Describes reports whether a fully qualified route is in the registry.
-func (reg *Registry) Describes(method, path string) bool {
-	_, ok := reg.routes[Key(method, path)]
-	return ok
+// Lookup returns the route registered for a fully qualified method and path.
+func (reg *Registry) Lookup(method, path string) (Route, bool) {
+	route, ok := reg.routes[Key(method, path)]
+	return route, ok
 }
 
 // Router wraps a chi.Router with the registry and the mount prefix its routes

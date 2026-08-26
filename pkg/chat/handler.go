@@ -106,6 +106,12 @@ func (h *Handler) HandleListConversations(w http.ResponseWriter, r *http.Request
 	h.respondSuccess(w, map[string]interface{}{"conversations": convs, "count": len(convs)})
 }
 
+// CreateConversationRequest starts a conversation with optional libraries attached.
+type CreateConversationRequest struct {
+	Title      string   `json:"title"`
+	LibraryIDs []string `json:"library_ids"`
+}
+
 func (h *Handler) HandleCreateConversation(w http.ResponseWriter, r *http.Request) {
 	fractalID, prismID, err := h.getScope(r)
 	if err != nil {
@@ -114,10 +120,7 @@ func (h *Handler) HandleCreateConversation(w http.ResponseWriter, r *http.Reques
 	}
 	username := h.getUsername(r)
 
-	var req struct {
-		Title      string   `json:"title"`
-		LibraryIDs []string `json:"library_ids"`
-	}
+	var req CreateConversationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -132,6 +135,11 @@ func (h *Handler) HandleCreateConversation(w http.ResponseWriter, r *http.Reques
 	h.respondSuccess(w, conv)
 }
 
+// RenameConversationRequest carries a conversation title.
+type RenameConversationRequest struct {
+	Title string `json:"title"`
+}
+
 func (h *Handler) HandleRenameConversation(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
@@ -139,9 +147,7 @@ func (h *Handler) HandleRenameConversation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var req struct {
-		Title string `json:"title"`
-	}
+	var req RenameConversationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Title == "" {
 		h.respondError(w, http.StatusBadRequest, "title is required")
 		return
@@ -222,15 +228,18 @@ func (h *Handler) HandleDeleteAllConversations(w http.ResponseWriter, r *http.Re
 }
 
 
+// SetConversationLibrariesRequest replaces the libraries attached to a conversation.
+type SetConversationLibrariesRequest struct {
+	LibraryIDs []string `json:"library_ids"`
+}
+
 func (h *Handler) HandleSetConversationLibraries(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if h.verifyConversationOwner(w, r, id) == nil {
 		return
 	}
 
-	var req struct {
-		LibraryIDs []string `json:"library_ids"`
-	}
+	var req SetConversationLibrariesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -285,6 +294,13 @@ func (h *Handler) HandleListInstructions(w http.ResponseWriter, r *http.Request)
 	h.respondSuccess(w, map[string]interface{}{"instructions": insts, "count": len(insts)})
 }
 
+// InstructionRequest carries a chat instruction, on create and on update.
+type InstructionRequest struct {
+	Name      string `json:"name"`
+	Content   string `json:"content"`
+	IsDefault bool   `json:"is_default"`
+}
+
 func (h *Handler) HandleCreateInstruction(w http.ResponseWriter, r *http.Request) {
 	fractalID, prismID, err := h.getScope(r)
 	if err != nil {
@@ -297,11 +313,7 @@ func (h *Handler) HandleCreateInstruction(w http.ResponseWriter, r *http.Request
 	}
 	username := auth.AttributionUsername(r.Context())
 
-	var req struct {
-		Name      string `json:"name"`
-		Content   string `json:"content"`
-		IsDefault bool   `json:"is_default"`
-	}
+	var req InstructionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -335,11 +347,7 @@ func (h *Handler) HandleUpdateInstruction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var req struct {
-		Name      string `json:"name"`
-		Content   string `json:"content"`
-		IsDefault bool   `json:"is_default"`
-	}
+	var req InstructionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -381,13 +389,16 @@ func (h *Handler) HandleDeleteInstruction(w http.ResponseWriter, r *http.Request
 	h.respondSuccess(w, map[string]bool{"deleted": true})
 }
 
+// StreamMessageRequest carries a chat message and the time range it asks about.
+type StreamMessageRequest struct {
+	Content   string `json:"content"`
+	TimeRange string `json:"time_range"`
+}
+
 func (h *Handler) HandleStream(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	var req struct {
-		Content   string `json:"content"`
-		TimeRange string `json:"time_range"`
-	}
+	var req StreamMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Content == "" {
 		h.respondError(w, http.StatusBadRequest, "content is required")
 		return

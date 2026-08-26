@@ -931,15 +931,18 @@ func validDisplayTimezone(tz string) bool {
 	return err == nil
 }
 
+// UpdatePreferencesRequest carries the caller display preferences to change.
+type UpdatePreferencesRequest struct {
+	DisplayTimezone *string `json:"display_timezone"`
+}
+
 // HandleUpdatePreferences stores per-user display preferences. Display timezone
 // is the only one today; it changes how the UI renders timestamps and nothing
 // about how they are stored or queried.
 func (h *AuthHandler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(*storage.User)
 
-	var req struct {
-		DisplayTimezone *string `json:"display_timezone"`
-	}
+	var req UpdatePreferencesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
@@ -966,6 +969,12 @@ func (h *AuthHandler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Req
 	json.NewEncoder(w).Encode(Response{Success: true})
 }
 
+// ChangePasswordRequest carries a self-service password change.
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
 // HandleChangePassword lets an authenticated user change their own password.
 func (h *AuthHandler) HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -985,10 +994,7 @@ func (h *AuthHandler) HandleChangePassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var req struct {
-		CurrentPassword string `json:"current_password"`
-		NewPassword     string `json:"new_password"`
-	}
+	var req ChangePasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
@@ -1064,6 +1070,11 @@ func (h *AuthHandler) HandleChangePassword(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// AdminResetPasswordRequest names the user whose password to reset.
+type AdminResetPasswordRequest struct {
+	Username string `json:"username"`
+}
+
 // HandleAdminResetPassword allows an admin to reset a non-SSO user's password
 // by putting them back into the invite flow with a new invite token.
 func (h *AuthHandler) HandleAdminResetPassword(w http.ResponseWriter, r *http.Request) {
@@ -1079,9 +1090,7 @@ func (h *AuthHandler) HandleAdminResetPassword(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	var req struct {
-		Username string `json:"username"`
-	}
+	var req AdminResetPasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
@@ -1493,6 +1502,12 @@ func (h *AuthHandler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// UpdateUserRequest carries the user fields an admin may change.
+type UpdateUserRequest struct {
+	DisplayName string `json:"display_name"`
+	Role        string `json:"role"`
+}
+
 // HandleUpdateUser allows an admin to update a user's display name or role
 func (h *AuthHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(*storage.User)
@@ -1518,10 +1533,7 @@ func (h *AuthHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		DisplayName string `json:"display_name"`
-		Role        string `json:"role"`
-	}
+	var req UpdateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
@@ -1551,6 +1563,11 @@ func (h *AuthHandler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(Response{Success: true, Message: "User updated successfully"})
 }
 
+// SetUserEnabledRequest enables or disables an account.
+type SetUserEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
 // HandleSetUserEnabled allows an admin to enable or disable a user account.
 // Disabling locks the user out of new logins and terminates active sessions.
 func (h *AuthHandler) HandleSetUserEnabled(w http.ResponseWriter, r *http.Request) {
@@ -1576,9 +1593,7 @@ func (h *AuthHandler) HandleSetUserEnabled(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var req struct {
-		Enabled bool `json:"enabled"`
-	}
+	var req SetUserEnabledRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Invalid request body"})
@@ -1737,6 +1752,11 @@ func (h *AuthHandler) HandleMTLSStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(Response{Success: true, Data: map[string]bool{"mtls_enabled": enabled}})
 }
 
+// GenerateClientCertRequest carries the passphrase protecting the PKCS#12 bundle.
+type GenerateClientCertRequest struct {
+	Password string `json:"password"`
+}
+
 // HandleGenerateClientCert generates a PKCS#12 client certificate for a user
 // and streams it as a download. Admin only.
 func (h *AuthHandler) HandleGenerateClientCert(w http.ResponseWriter, r *http.Request) {
@@ -1790,9 +1810,7 @@ func (h *AuthHandler) HandleGenerateClientCert(w http.ResponseWriter, r *http.Re
 	}
 
 	// Parse password from request body
-	var req struct {
-		Password string `json:"password"`
-	}
+	var req GenerateClientCertRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Password == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(Response{Success: false, Error: "Password is required to protect the certificate"})

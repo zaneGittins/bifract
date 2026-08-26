@@ -242,7 +242,7 @@ func (h *DashboardHandler) HandleSharedDashboard(w http.ResponseWriter, r *http.
 
 // ---- authenticated management handlers (analyst+ on the dashboard's scope) ----
 
-type createSharedLinkRequest struct {
+type CreateSharedLinkRequest struct {
 	Label            string `json:"label"`
 	ExpiresInSeconds int64  `json:"expires_in_seconds"` // 0 or absent = never expires
 }
@@ -271,7 +271,7 @@ func (h *DashboardHandler) HandleCreateSharedLink(w http.ResponseWriter, r *http
 		return
 	}
 
-	var req createSharedLinkRequest
+	var req CreateSharedLinkRequest
 	// Tolerate an empty body (all fields optional).
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	label := strings.TrimSpace(req.Label)

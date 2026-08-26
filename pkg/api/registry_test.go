@@ -47,7 +47,7 @@ func TestRegisterRecordsFullyQualifiedPath(t *testing.T) {
 	}
 	for _, key := range want {
 		method, path, _ := strings.Cut(key, " ")
-		if !reg.Describes(method, path) {
+		if _, ok := reg.Lookup(method, path); !ok {
 			t.Errorf("registry is missing %s", key)
 		}
 	}

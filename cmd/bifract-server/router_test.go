@@ -42,6 +42,7 @@ type mountedRoute struct {
 	middlewares   int
 	authenticated bool
 	registered    bool
+	hasRequest    bool
 }
 
 func (m mountedRoute) key() string { return api.Key(m.method, m.path) }
@@ -52,7 +53,11 @@ func (m mountedRoute) String() string {
 	if m.authenticated {
 		access = "auth"
 	}
-	return fmt.Sprintf("%s %d %s", m.key(), m.middlewares, access)
+	line := fmt.Sprintf("%s %d %s", m.key(), m.middlewares, access)
+	if m.hasRequest {
+		line += " body"
+	}
+	return line
 }
 
 // walkRouter returns every route mounted on mux, ordered by path then method.
@@ -68,12 +73,14 @@ func walkRouter(t *testing.T, mux *chi.Mux, reg *api.Registry) []mountedRoute {
 				break
 			}
 		}
+		described, ok := reg.Lookup(method, route)
 		routes = append(routes, mountedRoute{
 			method:        method,
 			path:          route,
 			middlewares:   len(middlewares),
 			authenticated: authenticated,
-			registered:    reg.Describes(method, route),
+			registered:    ok,
+			hasRequest:    described.Request != nil,
 		})
 		return nil
 	})
@@ -96,6 +103,7 @@ func walkRouter(t *testing.T, mux *chi.Mux, reg *api.Registry) []mountedRoute {
 //   - a route appearing or disappearing changes the API contract
 //   - "auth" becoming "public" means a route left the authenticated group
 //   - a changed middleware count means the chain around a route changed
+//   - "body" appearing or vanishing changes the request contract
 func TestRouteTable(t *testing.T) {
 	mux, registry := buildRouter(testDeps())
 	routes := walkRouter(t, mux, registry)
@@ -198,9 +206,10 @@ func renderRouteTable(routes []string) []byte {
 
 // routeTable is every route the server mounts, in the form:
 //
-//	METHOD /path <middleware count> auth|public
+//	METHOD /path <middleware count> auth|public [body]
 //
-// "auth" means the route sits behind auth.AuthHandler.AuthMiddleware.
+// "auth" means the route sits behind auth.AuthHandler.AuthMiddleware; "body"
+// means the route declares a typed request body.
 //
 // Regenerate after an intended change, then review every line of the diff:
 //

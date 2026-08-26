@@ -556,6 +556,13 @@ func (h *Handler) HandleListPermissions(w http.ResponseWriter, r *http.Request) 
 	h.sendSuccess(w, "Permissions retrieved", perms)
 }
 
+// GrantPermissionRequest grants a role to a user or a group, never both.
+type GrantPermissionRequest struct {
+	Username *string `json:"username"`
+	GroupID  *string `json:"group_id"`
+	Role     string  `json:"role"`
+}
+
 // HandleGrantPermission grants a user or group access to a fractal (fractal admin or tenant admin).
 func (h *Handler) HandleGrantPermission(w http.ResponseWriter, r *http.Request) {
 	user := h.getCurrentUser(r)
@@ -567,11 +574,7 @@ func (h *Handler) HandleGrantPermission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var req struct {
-		Username *string `json:"username"`
-		GroupID  *string `json:"group_id"`
-		Role     string  `json:"role"`
-	}
+	var req GrantPermissionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -614,6 +617,11 @@ func (h *Handler) HandleGrantPermission(w http.ResponseWriter, r *http.Request) 
 	h.sendSuccess(w, "Permission granted", perm)
 }
 
+// UpdatePermissionRequest carries the role to set on an existing grant.
+type UpdatePermissionRequest struct {
+	Role string `json:"role"`
+}
+
 // HandleUpdatePermission updates a permission's role (fractal admin or tenant admin).
 func (h *Handler) HandleUpdatePermission(w http.ResponseWriter, r *http.Request) {
 	user := h.getCurrentUser(r)
@@ -638,9 +646,7 @@ func (h *Handler) HandleUpdatePermission(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var req struct {
-		Role string `json:"role"`
-	}
+	var req UpdatePermissionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, http.StatusBadRequest, "Invalid request body")
 		return

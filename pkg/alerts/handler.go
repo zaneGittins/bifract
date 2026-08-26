@@ -320,6 +320,13 @@ func (h *Handler) HandleDeleteAlert(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ImportYAMLRequest carries an alert definition to import as JSON. The same
+// endpoint also accepts a raw YAML body.
+type ImportYAMLRequest struct {
+	YAMLContent  string `json:"yaml_content"`
+	NormalizerID string `json:"normalizer_id"`
+}
+
 // HandleImportYAML imports an alert from YAML content.
 // Accepts either:
 //   - application/json: {"yaml_content": "...", "normalizer_id": "..."} (for Sigma with normalizer)
@@ -347,10 +354,7 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 
 	contentType := r.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "application/json") {
-		var req struct {
-			YAMLContent  string `json:"yaml_content"`
-			NormalizerID string `json:"normalizer_id"`
-		}
+		var req ImportYAMLRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			h.respondError(w, http.StatusBadRequest, "Invalid request body")
 			return
@@ -1190,6 +1194,23 @@ func (h *Handler) HandleDuplicateAlert(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, alert)
 }
 
+// BatchToggleFeedAlertsRequest addresses feed alerts by id or by filter.
+type BatchToggleFeedAlertsRequest struct {
+	AlertIDs []string         `json:"alert_ids"`
+	Enabled  bool             `json:"enabled"`
+	Filter   *FeedAlertFilter `json:"filter"`
+}
+
+// FeedAlertFilter selects feed alerts by the same criteria the list endpoint
+// accepts, so a toggle can address a whole filtered set without naming ids.
+type FeedAlertFilter struct {
+	Search   string `json:"search"`
+	Status   string `json:"status"`
+	FeedID   string `json:"feed_id"`
+	Severity string `json:"severity"`
+	Label    string `json:"label"`
+}
+
 // HandleBatchToggleFeedAlerts enables or disables feed alerts, addressed either
 // by explicit ID or by the same filter the table is showing. The client only
 // holds one page of IDs, so "Enable Filtered" sends the filter and lets Postgres
@@ -1199,17 +1220,7 @@ func (h *Handler) HandleBatchToggleFeedAlerts(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	var req struct {
-		AlertIDs []string `json:"alert_ids"`
-		Enabled  bool     `json:"enabled"`
-		Filter   *struct {
-			Search   string `json:"search"`
-			Status   string `json:"status"`
-			FeedID   string `json:"feed_id"`
-			Severity string `json:"severity"`
-			Label    string `json:"label"`
-		} `json:"filter"`
-	}
+	var req BatchToggleFeedAlertsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -1262,16 +1273,19 @@ func (h *Handler) HandleBatchToggleFeedAlerts(w http.ResponseWriter, r *http.Req
 	h.respondSuccess(w, map[string]int{"toggled": count})
 }
 
+// BatchToggleAlertsRequest enables or disables a set of alerts.
+type BatchToggleAlertsRequest struct {
+	AlertIDs []string `json:"alert_ids"`
+	Enabled  bool     `json:"enabled"`
+}
+
 // HandleBatchToggleAlerts enables or disables a set of non-feed alerts by ID.
 func (h *Handler) HandleBatchToggleAlerts(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRole(w, r, rbac.RoleAnalyst) {
 		return
 	}
 
-	var req struct {
-		AlertIDs []string `json:"alert_ids"`
-		Enabled  bool     `json:"enabled"`
-	}
+	var req BatchToggleAlertsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -1293,6 +1307,11 @@ func (h *Handler) HandleBatchToggleAlerts(w http.ResponseWriter, r *http.Request
 	}
 
 	h.respondSuccess(w, map[string]int{"toggled": count})
+}
+
+// ToggleFeedAlertRequest enables or disables one feed alert.
+type ToggleFeedAlertRequest struct {
+	Enabled bool `json:"enabled"`
 }
 
 // HandleToggleFeedAlert enables or disables a single feed alert.
@@ -1321,9 +1340,7 @@ func (h *Handler) HandleToggleFeedAlert(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	var req struct {
-		Enabled bool `json:"enabled"`
-	}
+	var req ToggleFeedAlertRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return

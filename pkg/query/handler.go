@@ -2075,6 +2075,13 @@ func (h *QueryHandler) getSelectedIndex(r *http.Request) (string, error) {
 	return defaultFractal.ID, nil
 }
 
+// LogByTimestampRequest addresses one log by its timestamp and id.
+type LogByTimestampRequest struct {
+	Timestamp string `json:"timestamp"`
+	LogID     string `json:"log_id,omitempty"`
+	FractalID string `json:"fractal_id,omitempty"`
+}
+
 // HandleGetLogByTimestamp fetches a specific log by timestamp and optional log_id
 func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -2082,11 +2089,7 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	var req struct {
-		Timestamp string `json:"timestamp"`
-		LogID     string `json:"log_id,omitempty"`
-		FractalID string `json:"fractal_id,omitempty"`
-	}
+	var req LogByTimestampRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"success": false,

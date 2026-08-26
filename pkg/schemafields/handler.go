@@ -275,15 +275,18 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, map[string]string{"message": fmt.Sprintf("Field %q removed", name)})
 }
 
+// ResetRequest carries the confirmation phrase guarding a destructive reset.
+type ResetRequest struct {
+	Confirm string `json:"confirm"`
+}
+
 // HandleReset truncates all log data, rebuilds ClickHouse schema from current config,
 // and reloads the parser type-hint map.
 func (h *Handler) HandleReset(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {
 		return
 	}
-	var body struct {
-		Confirm string `json:"confirm"`
-	}
+	var body ResetRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Confirm != "DELETE ALL LOG DATA" {
 		h.respondError(w, http.StatusBadRequest, `confirmation required: {"confirm": "DELETE ALL LOG DATA"}`)
 		return

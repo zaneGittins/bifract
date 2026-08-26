@@ -133,6 +133,14 @@ func (h *Handler) HandleSetDefault(w http.ResponseWriter, r *http.Request) {
 // fields; the editor only needs enough to recognise the value.
 const maxPreviewValueLen = 512
 
+// PreviewRequest runs a normalizer definition against a sample document.
+type PreviewRequest struct {
+	Transforms    []Transform    `json:"transforms"`
+	FieldMappings []FieldMapping `json:"field_mappings"`
+	ValueMappings []ValueMapping `json:"value_mappings"`
+	SampleJSON    string         `json:"sample_json"`
+}
+
 // HandlePreview applies the normalizer config from the request body to sample
 // JSON and returns the resulting fields with provenance. Runs the same pipeline
 // as ingestion (see Normalizer.Trace), so what the editor shows is what the
@@ -141,12 +149,7 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {
 		return
 	}
-	var req struct {
-		Transforms    []Transform    `json:"transforms"`
-		FieldMappings []FieldMapping `json:"field_mappings"`
-		ValueMappings []ValueMapping `json:"value_mappings"`
-		SampleJSON    string         `json:"sample_json"`
-	}
+	var req PreviewRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid JSON")
 		return

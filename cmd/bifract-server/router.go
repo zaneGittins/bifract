@@ -210,6 +210,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 		r.Register(api.Route{
 			Method:  http.MethodPost,
 			Path:    "/auth/login",
+			Request: auth.LoginRequest{},
 			Summary: "Exchange a username and password for a session.",
 			Handler: d.authHandler.HandleLogin,
 		})
@@ -222,6 +223,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 		r.Register(api.Route{
 			Method:  http.MethodPost,
 			Path:    "/auth/invite/accept",
+			Request: auth.AcceptInviteRequest{},
 			Summary: "Set a password and activate an account from an invite token.",
 			Handler: d.authHandler.HandleAcceptInvite,
 		})
@@ -302,6 +304,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/query/validate",
+				Request: query.QueryRequest{},
 				Summary: "Parse and translate a BQL query without running it.",
 				Handler: d.queryHandler.HandleValidate,
 			})
@@ -332,6 +335,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/logs/by-timestamp",
+				Request: query.LogByTimestampRequest{},
 				Summary: "Fetch one log's full detail by timestamp and log id.",
 				Handler: d.queryHandler.HandleGetLogByTimestamp,
 			})
@@ -400,6 +404,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/settings",
+				Request: settings.Settings{},
 				Summary: "Update the instance settings.",
 				Handler: d.settingsHandler.HandleUpdate,
 			})
@@ -414,6 +419,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/system/archive/enabled",
+				Request: enabledRequest{},
 				Summary: "Enable or disable archiving to Iceberg.",
 				Handler: d.handleSetArchiveEnabled,
 			})
@@ -479,6 +485,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/system/distribution-queue/reset",
+				Request: resetDistributionQueueRequest{},
 				Summary: "Reset a shard's distributed insert queue.",
 				Handler: d.handleResetDistributionQueue,
 			})
@@ -494,6 +501,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/system/endpoint-analysis",
+				Request: enabledRequest{},
 				Summary: "Enable or disable advanced endpoint analysis.",
 				Handler: d.handleSetEndpointAnalysis,
 			})
@@ -513,6 +521,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/system/shared-links",
+				Request: enabledRequest{},
 				Summary: "Enable or disable shared dashboard links instance-wide.",
 				Handler: d.handleSetSharedLinksEnabled,
 			})
@@ -522,6 +531,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/system/archive/restore",
+				Request: createRestoreRequest{},
 				Summary: "Start restoring an archived window into a fractal.",
 				Handler: d.handleCreateRestore,
 			})
@@ -584,6 +594,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/recall/{fractalID}",
+				Request: createRecallRequest{},
 				Summary: "Submit a Recall search over the archive.",
 				Handler: d.handleCreateRecall,
 			})
@@ -631,12 +642,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/auth/change-password",
+				Request: auth.ChangePasswordRequest{},
 				Summary: "Change the caller's own password.",
 				Handler: d.authHandler.HandleChangePassword,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPatch,
 				Path:    "/auth/preferences",
+				Request: auth.UpdatePreferencesRequest{},
 				Summary: "Update the caller's display preferences.",
 				Handler: d.authHandler.HandleUpdatePreferences,
 			})
@@ -645,6 +658,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/comments",
+				Request: comments.CreateCommentRequest{},
 				Summary: "Create a comment on a log.",
 				Handler: d.commentHandler.HandleCreateComment,
 			})
@@ -657,18 +671,21 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/comments/bulk-add-tag",
+				Request: comments.BulkTagRequest{},
 				Summary: "Add a tag to several comments at once.",
 				Handler: d.commentHandler.HandleBulkAddTag,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/comments/bulk-remove-tag",
+				Request: comments.BulkTagRequest{},
 				Summary: "Remove a tag from several comments at once.",
 				Handler: d.commentHandler.HandleBulkRemoveTag,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/comments/bulk-delete",
+				Request: comments.BulkDeleteRequest{},
 				Summary: "Delete several comments at once.",
 				Handler: d.commentHandler.HandleBulkDeleteComments,
 			})
@@ -681,6 +698,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/comments/graph/log-fields",
+				Request: comments.LogFieldsRequest{},
 				Summary: "Batch-fetch parsed field data for a set of logs.",
 				Handler: d.commentHandler.HandleGetLogFields,
 			})
@@ -693,6 +711,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/comments/{id}",
+				Request: comments.UpdateCommentRequest{},
 				Summary: "Update one comment.",
 				Handler: d.commentHandler.HandleUpdateComment,
 			})
@@ -733,6 +752,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/notebooks",
+					Request: notebooks.CreateNotebookRequest{},
 					Summary: "Create a notebook.",
 					Handler: d.notebookHandler.HandleCreateNotebook,
 				})
@@ -751,6 +771,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/notebooks/generate-from-comments",
+					Request: notebooks.GenerateFromCommentsRequest{},
 					Summary: "Build a notebook from every comment carrying a tag.",
 					Handler: d.notebookHandler.HandleGenerateFromComments,
 				})
@@ -763,6 +784,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPut,
 					Path:    "/notebooks/{id}",
+					Request: notebooks.UpdateNotebookRequest{},
 					Summary: "Update a notebook's metadata.",
 					Handler: d.notebookHandler.HandleUpdateNotebook,
 				})
@@ -775,12 +797,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/notebooks/{id}/sections",
+					Request: notebooks.CreateSectionRequest{},
 					Summary: "Add a section to a notebook.",
 					Handler: d.notebookHandler.HandleCreateSection,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPut,
 					Path:    "/notebooks/{id}/sections/{section_id}",
+					Request: notebooks.UpdateSectionRequest{},
 					Summary: "Update a notebook section.",
 					Handler: d.notebookHandler.HandleUpdateSection,
 				})
@@ -793,6 +817,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/notebooks/{id}/sections/{section_id}/execute",
+					Request: notebooks.ExecuteQueryRequest{},
 					Summary: "Run a query section and cache its results.",
 					Handler: d.notebookHandler.HandleExecuteQuerySection,
 				})
@@ -805,18 +830,21 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPut,
 					Path:    "/notebooks/{id}/sections/{section_id}/results",
+					Request: notebooks.UpdateSectionResultsRequest{},
 					Summary: "Replace a query section's cached results.",
 					Handler: d.notebookHandler.HandleUpdateSectionResults,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/notebooks/{id}/sections/reorder",
+					Request: notebooks.ReorderSectionsRequest{},
 					Summary: "Reorder a notebook's sections.",
 					Handler: d.notebookHandler.HandleReorderSections,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPut,
 					Path:    "/notebooks/{id}/variables",
+					Request: notebooks.UpdateVariablesRequest{},
 					Summary: "Update a notebook's query variables.",
 					Handler: d.notebookHandler.HandleUpdateVariables,
 				})
@@ -864,6 +892,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/dashboards",
+					Request: dashboards.CreateDashboardRequest{},
 					Summary: "Create a dashboard.",
 					Handler: d.dashboardHandler.HandleCreateDashboard,
 				})
@@ -876,6 +905,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPut,
 					Path:    "/dashboards/{id}",
+					Request: dashboards.UpdateDashboardRequest{},
 					Summary: "Update a dashboard's metadata.",
 					Handler: d.dashboardHandler.HandleUpdateDashboard,
 				})
@@ -888,18 +918,21 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/dashboards/{id}/widgets",
+					Request: dashboards.CreateWidgetRequest{},
 					Summary: "Add a widget to a dashboard.",
 					Handler: d.dashboardHandler.HandleCreateWidget,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPut,
 					Path:    "/dashboards/{id}/widgets/{widget_id}",
+					Request: dashboards.UpdateWidgetRequest{},
 					Summary: "Update a widget.",
 					Handler: d.dashboardHandler.HandleUpdateWidget,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPut,
 					Path:    "/dashboards/{id}/widgets/{widget_id}/layout",
+					Request: dashboards.UpdateWidgetLayoutRequest{},
 					Summary: "Move or resize a widget.",
 					Handler: d.dashboardHandler.HandleUpdateWidgetLayout,
 				})
@@ -912,12 +945,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPut,
 					Path:    "/dashboards/{id}/variables",
+					Request: dashboards.UpdateVariablesRequest{},
 					Summary: "Update a dashboard's query variables.",
 					Handler: d.dashboardHandler.HandleUpdateVariables,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPut,
 					Path:    "/dashboards/{id}/refresh-interval",
+					Request: dashboards.UpdateRefreshIntervalRequest{},
 					Summary: "Set a dashboard's server-side refresh cadence.",
 					Handler: d.dashboardHandler.HandleUpdateRefreshInterval,
 				})
@@ -930,6 +965,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/dashboards/{id}/widgets/{widget_id}/execute",
+					Request: dashboards.ExecuteWidgetRequest{},
 					Summary: "Run one widget and persist its results.",
 					Handler: d.dashboardHandler.HandleExecuteWidget,
 				})
@@ -975,6 +1011,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/dashboards/{id}/shared-links",
+					Request: dashboards.CreateSharedLinkRequest{},
 					Summary: "Mint a shared link for a dashboard.",
 					Handler: d.dashboardHandler.HandleCreateSharedLink,
 				})
@@ -998,6 +1035,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/alerts",
+					Request: alerts.AlertCreateRequest{},
 					Summary: "Create an alert.",
 					Handler: d.alertHandler.HandleCreateAlert,
 				})
@@ -1010,6 +1048,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPut,
 					Path:    "/alerts/{id}",
+					Request: alerts.AlertUpdateRequest{},
 					Summary: "Update an alert.",
 					Handler: d.alertHandler.HandleUpdateAlert,
 				})
@@ -1022,12 +1061,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/alerts/import",
+					Request: alerts.ImportYAMLRequest{},
 					Summary: "Import an alert from YAML or Sigma.",
 					Handler: d.alertHandler.HandleImportYAML,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/alerts/batch-toggle",
+					Request: alerts.BatchToggleAlertsRequest{},
 					Summary: "Enable or disable a set of alerts.",
 					Handler: d.alertHandler.HandleBatchToggleAlerts,
 				})
@@ -1088,6 +1129,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/webhooks",
+				Request: alerts.WebhookCreateRequest{},
 				Summary: "Create a webhook action.",
 				Handler: d.alertHandler.HandleCreateWebhook,
 			})
@@ -1100,6 +1142,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/webhooks/{id}",
+				Request: alerts.WebhookUpdateRequest{},
 				Summary: "Update a webhook action.",
 				Handler: d.alertHandler.HandleUpdateWebhook,
 			})
@@ -1126,6 +1169,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/fractal-actions",
+				Request: alerts.FractalActionCreateRequest{},
 				Summary: "Create a fractal action.",
 				Handler: d.alertHandler.HandleCreateFractalAction,
 			})
@@ -1138,6 +1182,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractal-actions/{id}",
+				Request: alerts.FractalActionUpdateRequest{},
 				Summary: "Update a fractal action.",
 				Handler: d.alertHandler.HandleUpdateFractalAction,
 			})
@@ -1158,6 +1203,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/email-actions",
+				Request: alerts.EmailActionCreateRequest{},
 				Summary: "Create an email action.",
 				Handler: d.alertHandler.HandleCreateEmailAction,
 			})
@@ -1170,6 +1216,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/email-actions/{id}",
+				Request: alerts.EmailActionUpdateRequest{},
 				Summary: "Update an email action.",
 				Handler: d.alertHandler.HandleUpdateEmailAction,
 			})
@@ -1196,6 +1243,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/smtp-settings",
+				Request: alerts.SMTPConfig{},
 				Summary: "Update the SMTP configuration.",
 				Handler: d.alertHandler.HandleUpdateSMTPSettings,
 			})
@@ -1210,6 +1258,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/prisms",
+				Request: prisms.PrismRequest{},
 				Summary: "Create a prism.",
 				Handler: d.prismHandler.HandleCreatePrism,
 			})
@@ -1222,6 +1271,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/prisms/{id}",
+				Request: prisms.PrismRequest{},
 				Summary: "Update a prism.",
 				Handler: d.prismHandler.HandleUpdatePrism,
 			})
@@ -1240,6 +1290,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/prisms/{id}/members",
+				Request: prisms.AddMemberRequest{},
 				Summary: "Add a fractal to a prism.",
 				Handler: d.prismHandler.HandleAddMember,
 			})
@@ -1258,12 +1309,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/prisms/{id}/permissions",
+				Request: prisms.GrantPermissionRequest{},
 				Summary: "Grant a user or group access to a prism.",
 				Handler: d.prismHandler.HandleGrantPrismPermission,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/prisms/{id}/permissions/{permId}",
+				Request: prisms.UpdatePermissionRequest{},
 				Summary: "Change a prism permission's role.",
 				Handler: d.prismHandler.HandleUpdatePrismPermission,
 			})
@@ -1284,6 +1337,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/fractals",
+				Request: fractals.CreateFractalRequest{},
 				Summary: "Create a fractal.",
 				Handler: d.fractalHandler.HandleCreateFractal,
 			})
@@ -1296,6 +1350,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractals/{id}",
+				Request: fractals.UpdateFractalRequest{},
 				Summary: "Update a fractal.",
 				Handler: d.fractalHandler.HandleUpdateFractal,
 			})
@@ -1320,18 +1375,21 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractals/{id}/retention",
+				Request: fractals.UpdateRetentionRequest{},
 				Summary: "Set a fractal's hot-storage retention window.",
 				Handler: d.fractalHandler.HandleSetRetention,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractals/{id}/archive-retention",
+				Request: fractals.UpdateArchiveRetentionRequest{},
 				Summary: "Set a fractal's archive retention window.",
 				Handler: d.fractalHandler.HandleSetArchiveRetention,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractals/{id}/disk-quota",
+				Request: fractals.UpdateDiskQuotaRequest{},
 				Summary: "Set a fractal's disk quota and enforcement action.",
 				Handler: d.fractalHandler.HandleSetDiskQuota,
 			})
@@ -1352,12 +1410,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/fractals/{id}/permissions",
+				Request: fractals.GrantPermissionRequest{},
 				Summary: "Grant a user or group access to a fractal.",
 				Handler: d.fractalHandler.HandleGrantPermission,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractals/{id}/permissions/{permId}",
+				Request: fractals.UpdatePermissionRequest{},
 				Summary: "Change a fractal permission's role.",
 				Handler: d.fractalHandler.HandleUpdatePermission,
 			})
@@ -1378,6 +1438,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/groups",
+				Request: groups.GroupRequest{},
 				Summary: "Create a group.",
 				Handler: d.groupHandler.HandleCreateGroup,
 			})
@@ -1390,6 +1451,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/groups/{id}",
+				Request: groups.GroupRequest{},
 				Summary: "Update a group.",
 				Handler: d.groupHandler.HandleUpdateGroup,
 			})
@@ -1408,6 +1470,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/groups/{id}/members",
+				Request: groups.AddMemberRequest{},
 				Summary: "Add a user to a group.",
 				Handler: d.groupHandler.HandleAddMember,
 			})
@@ -1428,6 +1491,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/fractals/{id}/api-keys",
+				Request: apikeys.CreateAPIKeyRequest{},
 				Summary: "Create an API key scoped to a fractal.",
 				Handler: d.apiKeyHandler.HandleCreateAPIKey,
 			})
@@ -1440,6 +1504,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractals/{id}/api-keys/{keyId}",
+				Request: apikeys.UpdateAPIKeyRequest{},
 				Summary: "Update a fractal API key.",
 				Handler: d.apiKeyHandler.HandleUpdateAPIKey,
 			})
@@ -1466,6 +1531,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/prisms/{id}/api-keys",
+				Request: apikeys.CreateAPIKeyRequest{},
 				Summary: "Create an API key scoped to a prism.",
 				Handler: d.apiKeyHandler.HandleCreatePrismAPIKey,
 			})
@@ -1478,6 +1544,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/prisms/{id}/api-keys/{keyId}",
+				Request: apikeys.UpdateAPIKeyRequest{},
 				Summary: "Update a prism API key.",
 				Handler: d.apiKeyHandler.HandleUpdatePrismAPIKey,
 			})
@@ -1504,6 +1571,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/fractals/{id}/ingest-tokens",
+				Request: ingesttokens.CreateTokenRequest{},
 				Summary: "Create an ingest token for a fractal.",
 				Handler: d.ingestTokenHandler.HandleCreateToken,
 			})
@@ -1516,6 +1584,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/fractals/{id}/ingest-tokens/{tokenId}",
+				Request: ingesttokens.UpdateTokenRequest{},
 				Summary: "Update an ingest token.",
 				Handler: d.ingestTokenHandler.HandleUpdateToken,
 			})
@@ -1542,6 +1611,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/dictionaries",
+				Request: dictionaries.CreateDictionaryRequest{},
 				Summary: "Create a dictionary.",
 				Handler: d.dictionaryHandler.HandleCreateDictionary,
 			})
@@ -1554,6 +1624,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/dictionaries/{id}",
+				Request: dictionaries.UpdateDictionaryRequest{},
 				Summary: "Update a dictionary's definition.",
 				Handler: d.dictionaryHandler.HandleUpdateDictionary,
 			})
@@ -1572,6 +1643,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/dictionaries/{id}/data",
+				Request: dictionaries.UpsertRowsRequest{},
 				Summary: "Insert or update dictionary rows.",
 				Handler: d.dictionaryHandler.HandleUpsertRows,
 			})
@@ -1596,6 +1668,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/dictionaries/{id}/columns",
+				Request: dictionaries.AddColumnRequest{},
 				Summary: "Add a column to a dictionary.",
 				Handler: d.dictionaryHandler.HandleAddColumn,
 			})
@@ -1634,30 +1707,35 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/models",
+				Request: models.CreateRequest{},
 				Summary: "Create a model.",
 				Handler: d.modelHandler.HandleCreate,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/models/test-extraction",
+				Request: models.TestExtractionRequest{},
 				Summary: "Run a model's extraction against recent logs.",
 				Handler: d.modelHandler.HandleTestExtraction,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/models/generate-query",
+				Request: models.GenerateQueryRequest{},
 				Summary: "Generate the BQL a model definition implies.",
 				Handler: d.modelHandler.HandleGenerateQuery,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/models/parse-query",
+				Request: models.ParseQueryRequest{},
 				Summary: "Lower a BQL query into a model's filter and extraction.",
 				Handler: d.modelHandler.HandleParseQuery,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/models/preview",
+				Request: models.PreviewRequest{},
 				Summary: "Estimate a model's output before creating it.",
 				Handler: d.modelHandler.HandlePreview,
 			})
@@ -1676,6 +1754,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/models/{id}",
+				Request: models.UpdateRequest{},
 				Summary: "Update a model.",
 				Handler: d.modelHandler.HandleUpdate,
 			})
@@ -1724,6 +1803,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/models/{id}/backfill",
+				Request: models.BackfillRequest{},
 				Summary: "Start a one-time historical backfill for a model.",
 				Handler: d.modelHandler.HandleStartBackfill,
 			})
@@ -1744,6 +1824,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/dictionary-actions",
+				Request: dictionaries.DictionaryActionRequest{},
 				Summary: "Create a dictionary action.",
 				Handler: d.dictionaryHandler.HandleCreateDictionaryAction,
 			})
@@ -1756,6 +1837,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/dictionary-actions/{id}",
+				Request: dictionaries.DictionaryActionRequest{},
 				Summary: "Update a dictionary action.",
 				Handler: d.dictionaryHandler.HandleUpdateDictionaryAction,
 			})
@@ -1776,12 +1858,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/saved-queries",
+				Request: savedqueries.SavedQueryRequest{},
 				Summary: "Save a query.",
 				Handler: d.savedQueryHandler.HandleCreate,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/saved-queries/{id}",
+				Request: savedqueries.SavedQueryRequest{},
 				Summary: "Update a saved query.",
 				Handler: d.savedQueryHandler.HandleUpdate,
 			})
@@ -1819,6 +1903,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/query-history",
+				Request: queryhistory.RecordRequest{},
 				Summary: "Record a query the caller ran.",
 				Handler: d.queryHistoryHandler.HandleRecord,
 			})
@@ -1849,12 +1934,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/chat/conversations",
+					Request: chat.CreateConversationRequest{},
 					Summary: "Start a chat conversation.",
 					Handler: d.chatHandler.HandleCreateConversation,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPatch,
 					Path:    "/chat/conversations/{id}",
+					Request: chat.RenameConversationRequest{},
 					Summary: "Rename a conversation.",
 					Handler: d.chatHandler.HandleRenameConversation,
 				})
@@ -1879,12 +1966,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodPost,
 					Path:    "/chat/conversations/{id}/stream",
+					Request: chat.StreamMessageRequest{},
 					Summary: "Send a message and stream the reply.",
 					Handler: d.chatHandler.HandleStream,
 				})
 				r.Register(api.Route{
 					Method:  http.MethodPatch,
 					Path:    "/chat/conversations/{id}/libraries",
+					Request: chat.SetConversationLibrariesRequest{},
 					Summary: "Set the instruction libraries attached to a conversation.",
 					Handler: d.chatHandler.HandleSetConversationLibraries,
 				})
@@ -1910,12 +1999,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/chat/instructions",
+				Request: chat.InstructionRequest{},
 				Summary: "Create a chat instruction.",
 				Handler: d.chatHandler.HandleCreateInstruction,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/chat/instructions/{instructionId}",
+				Request: chat.InstructionRequest{},
 				Summary: "Update a chat instruction.",
 				Handler: d.chatHandler.HandleUpdateInstruction,
 			})
@@ -1942,6 +2033,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/context-links",
+				Request: contextlinks.CreateRequest{},
 				Summary: "Create a context link.",
 				Handler: d.contextLinkHandler.HandleCreate,
 			})
@@ -1954,6 +2046,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/context-links/{id}",
+				Request: contextlinks.UpdateRequest{},
 				Summary: "Update a context link.",
 				Handler: d.contextLinkHandler.HandleUpdate,
 			})
@@ -1981,6 +2074,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/instruction-libraries",
+				Request: instructions.CreateLibraryRequest{},
 				Summary: "Create an instruction library.",
 				Handler: d.instructionHandler.HandleCreateLibrary,
 			})
@@ -1993,6 +2087,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/instruction-libraries/{id}",
+				Request: instructions.UpdateLibraryRequest{},
 				Summary: "Update a library.",
 				Handler: d.instructionHandler.HandleUpdateLibrary,
 			})
@@ -2011,6 +2106,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/instruction-libraries/{id}/pages",
+				Request: instructions.CreatePageRequest{},
 				Summary: "Create a page in a library.",
 				Handler: d.instructionHandler.HandleCreatePage,
 			})
@@ -2029,12 +2125,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/instruction-libraries/{id}/pages/{pageId}",
+				Request: instructions.UpdatePageRequest{},
 				Summary: "Update a page.",
 				Handler: d.instructionHandler.HandleUpdatePage,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPatch,
 				Path:    "/instruction-libraries/{id}/pages/{pageId}/move",
+				Request: instructions.MovePageRequest{},
 				Summary: "Move a page to another folder or position.",
 				Handler: d.instructionHandler.HandleMovePage,
 			})
@@ -2047,12 +2145,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/instruction-libraries/{id}/folders",
+				Request: instructions.CreateFolderRequest{},
 				Summary: "Create a folder in a library.",
 				Handler: d.instructionHandler.HandleCreateFolder,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/instruction-libraries/{id}/folders/{folderId}",
+				Request: instructions.UpdateFolderRequest{},
 				Summary: "Rename or reorder a folder.",
 				Handler: d.instructionHandler.HandleUpdateFolder,
 			})
@@ -2084,6 +2184,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/feeds",
+				Request: feeds.CreateRequest{},
 				Summary: "Create a detection feed.",
 				Handler: d.feedHandler.HandleCreateFeed,
 			})
@@ -2096,6 +2197,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/feeds/{id}",
+				Request: feeds.UpdateRequest{},
 				Summary: "Update a feed.",
 				Handler: d.feedHandler.HandleUpdateFeed,
 			})
@@ -2138,6 +2240,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/alerts/feed/batch-toggle",
+				Request: alerts.BatchToggleFeedAlertsRequest{},
 				Summary: "Enable or disable a set of feed alerts.",
 				Handler: d.alertHandler.HandleBatchToggleFeedAlerts,
 			})
@@ -2150,6 +2253,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/alerts/{id}/toggle-feed",
+				Request: alerts.ToggleFeedAlertRequest{},
 				Summary: "Enable or disable one feed alert.",
 				Handler: d.alertHandler.HandleToggleFeedAlert,
 			})
@@ -2164,12 +2268,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/normalizers",
+				Request: normalizers.CreateRequest{},
 				Summary: "Create a normalizer.",
 				Handler: d.normalizerHandler.HandleCreate,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/normalizers/preview",
+				Request: normalizers.PreviewRequest{},
 				Summary: "Run a normalizer against sample input without saving it.",
 				Handler: d.normalizerHandler.HandlePreview,
 			})
@@ -2194,6 +2300,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/normalizers/{id}",
+				Request: normalizers.UpdateRequest{},
 				Summary: "Update a normalizer.",
 				Handler: d.normalizerHandler.HandleUpdate,
 			})
@@ -2238,6 +2345,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/admin/schema-fields",
+				Request: schemafields.CreateRequest{},
 				Summary: "Add a schema field.",
 				Handler: d.schemaFieldsHandler.HandleCreate,
 			})
@@ -2250,6 +2358,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/admin/schema-fields/reset",
+				Request: schemafields.ResetRequest{},
 				Summary: "Rebuild the ClickHouse schema, dropping all log data.",
 				Handler: d.schemaFieldsHandler.HandleReset,
 			})
@@ -2296,18 +2405,21 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/auth/register",
+				Request: auth.RegisterRequest{},
 				Summary: "Create a user and issue an invite token.",
 				Handler: d.authHandler.HandleRegister,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/auth/invite/reset",
+				Request: auth.ResetInviteRequest{},
 				Summary: "Reissue the invite token for a pending user.",
 				Handler: d.authHandler.HandleResetInvite,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/auth/admin-reset-password",
+				Request: auth.AdminResetPasswordRequest{},
 				Summary: "Reset another user's password.",
 				Handler: d.authHandler.HandleAdminResetPassword,
 			})
@@ -2320,12 +2432,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/users/{username}",
+				Request: auth.UpdateUserRequest{},
 				Summary: "Update a user's display name or role.",
 				Handler: d.authHandler.HandleUpdateUser,
 			})
 			r.Register(api.Route{
 				Method:  http.MethodPut,
 				Path:    "/users/{username}/enabled",
+				Request: auth.SetUserEnabledRequest{},
 				Summary: "Enable or disable a user account.",
 				Handler: d.authHandler.HandleSetUserEnabled,
 			})
@@ -2344,6 +2458,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:  http.MethodPost,
 				Path:    "/users/{username}/client-cert",
+				Request: auth.GenerateClientCertRequest{},
 				Summary: "Generate a PKCS#12 client certificate for a user.",
 				Handler: d.authHandler.HandleGenerateClientCert,
 			})
