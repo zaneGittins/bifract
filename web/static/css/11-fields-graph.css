@@ -422,6 +422,14 @@
     opacity: 0.6;
 }
 
+/* An instance-wide grant is the one badge that should stop the eye. */
+.perm-badge.perm-tenant {
+    background: rgba(248, 113, 113, 0.14);
+    color: var(--danger, #f87171);
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    font-weight: 600;
+}
+
 .perm-badge.perm-all {
     background: rgba(156, 106, 222, 0.12);
     color: var(--accent-primary);

@@ -109,6 +109,17 @@ func (h *Handler) HandleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	api.WriteList(w, keys)
 }
 
+// HandleListAllAPIKeys lists every API key in the instance (tenant admin).
+func (h *Handler) HandleListAllAPIKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := h.storage.ListAllAPIKeys(r.Context())
+	if err != nil {
+		log.Printf("[APIKeys] Failed to list all API keys: %v", err)
+		h.sendError(w, http.StatusInternalServerError, "Failed to list API keys")
+		return
+	}
+	api.WriteList(w, keys)
+}
+
 // HandleCreateAPIKey creates a new API key for a fractal (fractal admin+)
 func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	fractalID := chi.URLParam(r, "id")
@@ -140,11 +151,9 @@ func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Permissions != nil {
-		if _, err := ValidatePermissions(req.Permissions); err != nil {
-			h.sendError(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	if err := req.Validate(); err != nil {
+		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	// Resolve fractal name for key format
@@ -237,11 +246,14 @@ func (h *Handler) HandleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Permissions != nil {
-		if _, err := ValidatePermissions(req.Permissions); err != nil {
-			h.sendError(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	current, err := h.storage.GetFractalAPIKey(r.Context(), keyID, fractalID)
+	if err != nil {
+		h.sendError(w, http.StatusNotFound, "API key not found")
+		return
+	}
+	if err := req.Validate(current); err != nil {
+		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	apiKey, err := h.storage.UpdateFractalAPIKey(r.Context(), keyID, fractalID, req)
@@ -398,11 +410,9 @@ func (h *Handler) HandleCreatePrismAPIKey(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if req.Permissions != nil {
-		if _, err := ValidatePermissions(req.Permissions); err != nil {
-			h.sendError(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	if err := req.Validate(); err != nil {
+		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	fullKey, keyID, err := h.storage.GenerateAPIKey(r.Context(), prismName)
@@ -487,11 +497,14 @@ func (h *Handler) HandleUpdatePrismAPIKey(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if req.Permissions != nil {
-		if _, err := ValidatePermissions(req.Permissions); err != nil {
-			h.sendError(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	current, err := h.storage.GetPrismAPIKey(r.Context(), keyID, prismID)
+	if err != nil {
+		h.sendError(w, http.StatusNotFound, "API key not found")
+		return
+	}
+	if err := req.Validate(current); err != nil {
+		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	apiKey, err := h.storage.UpdatePrismAPIKey(r.Context(), keyID, prismID, req)

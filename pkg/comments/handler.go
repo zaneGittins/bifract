@@ -84,15 +84,6 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Enforce API key permissions
-	if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
-		perms, _ := r.Context().Value("api_key_permissions").(map[string]interface{})
-		if canComment, ok := perms["comment"].(bool); !ok || !canComment {
-			api.WriteError(w, http.StatusForbidden, "API key does not have comment permission")
-			return
-		}
-	}
-
 	// Scope is ALWAYS derived from the session - never from the request body.
 	// Accepting request-body scope was a cross-fractal probe vector: an
 	// attacker could set req.FractalID to a fractal they don't own and use

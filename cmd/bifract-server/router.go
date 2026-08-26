@@ -840,9 +840,8 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.commentHandler.HandleGetCommentedLogs,
 			})
 
-			// Notebooks (API keys require "notebook" permission)
+			// Notebooks
 			r.Group(func(r api.Router) {
-				r.Use(auth.RequireAPIKeyPermission("notebook"))
 				r.Register(api.Route{
 					Method:   http.MethodGet,
 					Path:     "/notebooks",
@@ -1018,9 +1017,8 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				})
 			})
 
-			// Dashboards (API keys require "dashboard" permission)
+			// Dashboards
 			r.Group(func(r api.Router) {
-				r.Use(auth.RequireAPIKeyPermission("dashboard"))
 				r.Register(api.Route{
 					Method:   http.MethodGet,
 					Path:     "/dashboards",
@@ -1201,7 +1199,6 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Alert management (API keys require "alert_manage" permission)
 			r.Group(func(r api.Router) {
-				r.Use(auth.RequireAPIKeyPermission("alert_manage"))
 				r.Register(api.Route{
 					Method:   http.MethodGet,
 					Path:     "/alerts",
@@ -1773,6 +1770,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			})
 
 			// API Key management (fractal-scoped)
+			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/api-keys",
+				Access:   api.AccessTenantAdmin,
+				Response: api.ListResponse[apikeys.APIKey]{},
+				Summary:  "List every API key in the instance.",
+				Handler:  d.apiKeyHandler.HandleListAllAPIKeys,
+			})
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/fractals/{id}/api-keys",

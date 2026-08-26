@@ -1172,7 +1172,8 @@ func (a *APIKeyValidatorAdapter) ValidateAPIKey(ctx context.Context, key string)
 		PrismID:     keyData.PrismID,
 		PrismName:   keyData.PrismName,
 		CreatedBy:   keyData.CreatedBy,
-		Permissions: keyData.Permissions,
+		Role:        keyData.Role,
+		TenantAdmin: keyData.TenantAdmin,
 	}, nil
 }
 

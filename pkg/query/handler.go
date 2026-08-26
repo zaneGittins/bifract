@@ -614,18 +614,6 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		return
 	}
 
-	// Enforce API key permissions
-	if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
-		perms, _ := r.Context().Value("api_key_permissions").(map[string]interface{})
-		if canQuery, ok := perms["query"].(bool); !ok || !canQuery {
-			respondJSON(w, http.StatusForbidden, QueryResponse{
-				Success: false,
-				Error:   "API key does not have query permission",
-			})
-			return
-		}
-	}
-
 	// Parse time range
 	startTime, endTime, err := h.parseTimeRange(req.Start, req.End)
 	if err != nil {

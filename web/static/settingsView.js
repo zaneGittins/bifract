@@ -524,6 +524,7 @@ const SettingsView = {
         // Entering the Groups tab always lands on the list; detail is restored separately.
         if (tabName === 'groups' && window.GroupsView) GroupsView.closeDetail();
         if (tabName === 'context' && window.ContextLinks) ContextLinks.show();
+        if (tabName === 'apikeys' && window.APIKeysAdmin) APIKeysAdmin.show();
     },
 
     async show(subPath = '') {

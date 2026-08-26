@@ -98,15 +98,6 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce API key permissions
-	if authType, _ := ctx.Value("auth_type").(string); authType == "api_key" {
-		perms, _ := ctx.Value("api_key_permissions").(map[string]interface{})
-		if canManage, ok := perms["alert_manage"].(bool); !ok || !canManage {
-			h.respondError(w, http.StatusForbidden, "API key does not have alert management permission")
-			return
-		}
-	}
-
 	// Parse request body
 	var req AlertCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -214,15 +205,6 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce API key permissions
-	if authType, _ := ctx.Value("auth_type").(string); authType == "api_key" {
-		perms, _ := ctx.Value("api_key_permissions").(map[string]interface{})
-		if canManage, ok := perms["alert_manage"].(bool); !ok || !canManage {
-			h.respondError(w, http.StatusForbidden, "API key does not have alert management permission")
-			return
-		}
-	}
-
 	// Parse request body
 	var req AlertUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -287,15 +269,6 @@ func (h *Handler) HandleDeleteAlert(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if !h.requireRole(w, r, rbac.RoleAnalyst) {
 		return
-	}
-
-	// Enforce API key permissions
-	if authType, _ := ctx.Value("auth_type").(string); authType == "api_key" {
-		perms, _ := ctx.Value("api_key_permissions").(map[string]interface{})
-		if canManage, ok := perms["alert_manage"].(bool); !ok || !canManage {
-			h.respondError(w, http.StatusForbidden, "API key does not have alert management permission")
-			return
-		}
 	}
 
 	if err := h.manager.DeleteAlert(ctx, alertID); err != nil {

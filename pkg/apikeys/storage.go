@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -52,7 +51,7 @@ func (s *Storage) HashKey(key string) string {
 const selectColumns = `ak.id, ak.name, ak.description, ak.key_id,
 	COALESCE(ak.fractal_id::text, ''), COALESCE(f.name, ''),
 	COALESCE(ak.prism_id::text, ''), COALESCE(p.name, ''),
-	COALESCE(ak.created_by, ''), ak.expires_at, ak.is_active, ak.permissions,
+	COALESCE(ak.created_by, ''), ak.expires_at, ak.is_active, ak.role, ak.tenant_admin,
 	ak.created_at, ak.updated_at, ak.last_used_at, ak.usage_count`
 
 // fromClause is the standard FROM + LEFT JOINs for API key queries.
@@ -60,24 +59,21 @@ const fromClause = `FROM api_keys ak
 	LEFT JOIN fractals f ON ak.fractal_id = f.id
 	LEFT JOIN prisms p ON ak.prism_id = p.id`
 
-// scanAPIKey scans a row into an APIKey struct and parses its permissions JSON.
-func scanAPIKey(scanner interface{ Scan(dest ...interface{}) error }) (*APIKey, error) {
+// scanAPIKey scans a row into an APIKey struct.
+func scanAPIKey(scanner interface {
+	Scan(dest ...interface{}) error
+}) (*APIKey, error) {
 	var key APIKey
-	var permissionsJSON string
 
 	err := scanner.Scan(
 		&key.ID, &key.Name, &key.Description, &key.KeyID,
 		&key.FractalID, &key.FractalName,
 		&key.PrismID, &key.PrismName,
-		&key.CreatedBy, &key.ExpiresAt, &key.IsActive, &permissionsJSON,
+		&key.CreatedBy, &key.ExpiresAt, &key.IsActive, &key.Role, &key.TenantAdmin,
 		&key.CreatedAt, &key.UpdatedAt, &key.LastUsedAt, &key.UsageCount,
 	)
 	if err != nil {
 		return nil, err
-	}
-
-	if err := json.Unmarshal([]byte(permissionsJSON), &key.Permissions); err != nil {
-		return nil, fmt.Errorf("failed to parse permissions: %w", err)
 	}
 
 	return &key, nil
@@ -99,14 +95,8 @@ func (s *Storage) createAPIKey(ctx context.Context, req CreateAPIKeyRequest, use
 	}
 
 	keyHash := s.HashKey(fullKey)
-	permissions, err := ValidatePermissions(req.Permissions)
-	if err != nil {
-		return nil, fmt.Errorf("invalid permissions: %w", err)
-	}
-
-	permissionsJSON, err := json.Marshal(permissions)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal permissions: %w", err)
+	if err := req.Validate(); err != nil {
+		return nil, err
 	}
 
 	var fractalArg, prismArg interface{}
@@ -118,10 +108,10 @@ func (s *Storage) createAPIKey(ctx context.Context, req CreateAPIKeyRequest, use
 	}
 
 	row := s.pg.DB().QueryRowContext(ctx, `
-		INSERT INTO api_keys (name, description, key_id, key_hash, fractal_id, prism_id, created_by, expires_at, permissions)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO api_keys (name, description, key_id, key_hash, fractal_id, prism_id, created_by, expires_at, role, tenant_admin)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id
-	`, req.Name, req.Description, keyID, keyHash, fractalArg, prismArg, username, req.ExpiresAt, string(permissionsJSON))
+	`, req.Name, req.Description, keyID, keyHash, fractalArg, prismArg, username, req.ExpiresAt, req.Role, req.TenantAdmin)
 
 	var id string
 	if err := row.Scan(&id); err != nil {
@@ -166,6 +156,13 @@ func (s *Storage) UpdateLastUsed(ctx context.Context, keyID string) error {
 	return err
 }
 
+// ListAllAPIKeys returns every key in the instance, newest first. Tenant admins
+// use it to see the whole issued surface in one place, including the
+// instance-wide grants that no single fractal page would show.
+func (s *Storage) ListAllAPIKeys(ctx context.Context) ([]APIKey, error) {
+	return s.listAPIKeys(ctx, "TRUE")
+}
+
 // ListAPIKeysByFractal returns all API keys for a specific fractal.
 func (s *Storage) ListAPIKeysByFractal(ctx context.Context, fractalID string) ([]APIKey, error) {
 	return s.listAPIKeys(ctx, "ak.fractal_id = $1", fractalID)
@@ -176,10 +173,10 @@ func (s *Storage) ListAPIKeysByPrism(ctx context.Context, prismID string) ([]API
 	return s.listAPIKeys(ctx, "ak.prism_id = $1", prismID)
 }
 
-func (s *Storage) listAPIKeys(ctx context.Context, where string, scopeID string) ([]APIKey, error) {
+func (s *Storage) listAPIKeys(ctx context.Context, where string, args ...interface{}) ([]APIKey, error) {
 	query := fmt.Sprintf(`SELECT %s %s WHERE %s ORDER BY ak.created_at DESC`, selectColumns, fromClause, where)
 
-	rows, err := s.pg.DB().QueryContext(ctx, query, scopeID)
+	rows, err := s.pg.DB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list API keys: %w", err)
 	}
@@ -281,17 +278,15 @@ func (s *Storage) updateAPIKey(ctx context.Context, keyID, scopeCol, scopeID str
 		argIndex++
 	}
 
-	if req.Permissions != nil {
-		validated, err := ValidatePermissions(req.Permissions)
-		if err != nil {
-			return nil, fmt.Errorf("invalid permissions: %w", err)
-		}
-		permJSON, err := json.Marshal(validated)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal permissions: %w", err)
-		}
-		setParts = append(setParts, fmt.Sprintf("permissions = $%d", argIndex))
-		args = append(args, string(permJSON))
+	if req.Role != nil {
+		setParts = append(setParts, fmt.Sprintf("role = $%d", argIndex))
+		args = append(args, *req.Role)
+		argIndex++
+	}
+
+	if req.TenantAdmin != nil {
+		setParts = append(setParts, fmt.Sprintf("tenant_admin = $%d", argIndex))
+		args = append(args, *req.TenantAdmin)
 		argIndex++
 	}
 

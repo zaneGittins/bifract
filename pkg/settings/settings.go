@@ -40,6 +40,7 @@ const (
 // quickly a newly ingested field appears on the schema tab: the sweep is the only
 // thing that measures field distribution, storage, and column capacity.
 const (
+	defaultAPIKeyRateLimit            = 100 // requests per second per key; 0 = uncapped
 	defaultSchemaSweepIntervalMinutes = 15
 	minSchemaSweepIntervalMinutes     = 5 // floor: each pass samples every fractal
 )
@@ -67,8 +68,11 @@ type Settings struct {
 	// runs. Nothing reads it on the request path; the schema tab renders whatever
 	// the last sweep wrote.
 	SchemaSweepIntervalMinutes int `json:"schema_sweep_interval_minutes"`
-	mu                         sync.RWMutex
-	pg                         *storage.PostgresClient
+	// APIKeyRateLimit caps how fast one API key may call the API, so a runaway
+	// integration cannot crowd out everyone else. Per key, not per IP. 0 = uncapped.
+	APIKeyRateLimit int `json:"api_key_rate_limit"`
+	mu              sync.RWMutex
+	pg              *storage.PostgresClient
 }
 
 // queryLimitsApplier applies changed search resource shares to ClickHouse (CREATE OR
@@ -140,6 +144,7 @@ func Init(pg *storage.PostgresClient) error {
 		RecallCPUPercent:           storage.DefaultRecallCPUPercent,
 		RecallMemoryPercent:        storage.DefaultRecallMemoryPercent,
 		SchemaSweepIntervalMinutes: defaultSchemaSweepIntervalMinutes,
+		APIKeyRateLimit:            defaultAPIKeyRateLimit,
 		pg:                         pg,
 	}
 
@@ -207,6 +212,13 @@ func Init(pg *storage.PostgresClient) error {
 		}
 	}
 
+	// Load api_key_rate_limit (0 = uncapped)
+	if v, err := pg.GetSetting(ctx, "api_key_rate_limit"); err == nil && v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			globalSettings.APIKeyRateLimit = n
+		}
+	}
+
 	// Load query_cpu_percent (0 = uncapped)
 	if v, err := pg.GetSetting(ctx, "query_cpu_percent"); err == nil && v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -261,6 +273,7 @@ func Get() Settings {
 			AlertEvalIntervalSeconds:   60,
 			RecallTimeoutSeconds:       defaultRecallTimeoutSeconds,
 			RecallMaxBytesRead:         0,
+			APIKeyRateLimit:            defaultAPIKeyRateLimit,
 			RecallConcurrency:          defaultRecallConcurrency,
 			QueryCPUPercent:            storage.DefaultQueryCPUPercent,
 			QueryMemoryPercent:         storage.DefaultQueryMemoryPercent,
@@ -272,6 +285,7 @@ func Get() Settings {
 	globalSettings.mu.RLock()
 	defer globalSettings.mu.RUnlock()
 	return Settings{
+		APIKeyRateLimit:            globalSettings.APIKeyRateLimit,
 		TimestampFields:            globalSettings.TimestampFields,
 		AlertTimeoutSeconds:        globalSettings.AlertTimeoutSeconds,
 		QueryTimeoutSeconds:        globalSettings.QueryTimeoutSeconds,
@@ -302,6 +316,9 @@ func Update(s *Settings) error {
 	if s.RecallMaxBytesRead < 0 {
 		return validationErrorf("Recall max bytes read cannot be negative (0 = unlimited)")
 	}
+	if s.APIKeyRateLimit < 0 {
+		return validationErrorf("API key rate limit cannot be negative (0 means uncapped)")
+	}
 	if s.SchemaSweepIntervalMinutes < minSchemaSweepIntervalMinutes {
 		return validationErrorf("Schema measurement interval must be at least %d minutes", minSchemaSweepIntervalMinutes)
 	}
@@ -327,6 +344,7 @@ func Update(s *Settings) error {
 	globalSettings.AlertTimeoutSeconds = s.AlertTimeoutSeconds
 	globalSettings.QueryTimeoutSeconds = s.QueryTimeoutSeconds
 	globalSettings.AlertEvalIntervalSeconds = s.AlertEvalIntervalSeconds
+	globalSettings.APIKeyRateLimit = s.APIKeyRateLimit
 	globalSettings.RecallTimeoutSeconds = s.RecallTimeoutSeconds
 	globalSettings.RecallMaxBytesRead = s.RecallMaxBytesRead
 	globalSettings.RecallConcurrency = s.RecallConcurrency
@@ -370,6 +388,9 @@ func Update(s *Settings) error {
 		return err
 	}
 	if err := globalSettings.pg.SetSetting(ctx, "recall_concurrency", fmt.Sprintf("%d", s.RecallConcurrency)); err != nil {
+		return err
+	}
+	if err := globalSettings.pg.SetSetting(ctx, "api_key_rate_limit", fmt.Sprintf("%d", s.APIKeyRateLimit)); err != nil {
 		return err
 	}
 	if err := globalSettings.pg.SetSetting(ctx, "schema_sweep_interval_minutes", fmt.Sprintf("%d", s.SchemaSweepIntervalMinutes)); err != nil {

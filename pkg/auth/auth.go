@@ -21,7 +21,9 @@ import (
 
 	"bifract/internal/setup"
 	"bifract/pkg/fractals"
+	"bifract/pkg/ingest"
 	"bifract/pkg/rbac"
+	"bifract/pkg/settings"
 	"bifract/pkg/storage"
 
 	"github.com/go-chi/chi/v5"
@@ -216,6 +218,9 @@ type AuthHandler struct {
 	apiKeyValidator APIKeyValidator
 	secureCookies   bool
 	loginLimiter    *loginRateLimiter
+	keyLimiterMu    sync.Mutex
+	keyLimiter      *ingest.RateLimiter
+	keyLimiterRate  int
 	systemFractalID string
 	rbacResolver    *rbac.Resolver
 	clientCADir     string // path to client CA dir for mTLS cert generation
@@ -1209,21 +1214,29 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 				// Try to validate API key, but don't fail if there are database issues
 				keyData, err := h.validateAPIKey(r.Context(), apiKey)
 				if err == nil {
+					if !h.apiKeyAllowed(keyData.KeyID) {
+						w.Header().Set("Retry-After", "1")
+						api.WriteError(w, http.StatusTooManyRequests, "API key rate limit exceeded")
+						return
+					}
 					// Create user context for API key authentication
+					// A key granted tenant administration is a tenant admin, the
+					// same as a person: the instance-wide checks read IsAdmin.
 					user := &storage.User{
 						Username:    fmt.Sprintf("apikey_%s", keyData.KeyID),
 						DisplayName: fmt.Sprintf("API Key: %s", keyData.Name),
-						IsAdmin:     false, // API keys are not admin by default
+						IsAdmin:     keyData.TenantAdmin,
+					}
+					if keyData.TenantAdmin {
+						h.logAuthEvent("apikey_tenant_admin", user.Username, clientIP(r), r.Method+" "+r.URL.Path)
 					}
 
 					ctx := context.WithValue(r.Context(), "user", user)
 					ctx = context.WithValue(ctx, "auth_type", "api_key")
 					ctx = context.WithValue(ctx, "api_key", keyData)
-					ctx = context.WithValue(ctx, "api_key_permissions", keyData.Permissions)
 
-					// Resolve RBAC role from API key permissions and set scope context.
-					// Prism keys set prism context; fractal keys set fractal context.
-					apiKeyRole := resolveAPIKeyRole(keyData.Permissions)
+					// The key's role applies to the scope it was issued for.
+					apiKeyRole := keyData.Role
 					if keyData.PrismID != "" {
 						ctx = context.WithValue(ctx, "selected_prism", keyData.PrismID)
 						ctx = context.WithValue(ctx, "prism_role", apiKeyRole)
@@ -1253,45 +1266,6 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 		// Both session and API key authentication failed
 		api.WriteError(w, http.StatusUnauthorized, "Unauthorized")
 	})
-}
-
-// resolveAPIKeyRole maps API key permissions to the minimum RBAC role
-// that covers the granted capabilities. Individual handlers still enforce
-// fine-grained permission checks on top of this.
-func resolveAPIKeyRole(perms map[string]interface{}) string {
-	if perms == nil {
-		return ""
-	}
-	// Any write permission requires analyst level
-	for _, key := range []string{"alert_manage", "comment", "notebook", "dashboard"} {
-		if v, ok := perms[key].(bool); ok && v {
-			return "analyst"
-		}
-	}
-	// query-only maps to viewer
-	if v, ok := perms["query"].(bool); ok && v {
-		return "viewer"
-	}
-	return ""
-}
-
-// RequireAPIKeyPermission returns middleware that blocks API key requests
-// lacking the specified permission. Session-authenticated requests pass through.
-func RequireAPIKeyPermission(permission string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
-				perms, _ := r.Context().Value("api_key_permissions").(map[string]interface{})
-				if allowed, ok := perms[permission].(bool); !ok || !allowed {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusForbidden)
-					fmt.Fprintf(w, `{"success":false,"error":"API key does not have %s permission"}`, permission)
-					return
-				}
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
 }
 
 // HandleListUsers lists all users (admin only)
@@ -1532,15 +1506,40 @@ func (h *AuthHandler) SetSelectedPrismInSessionFromRequest(r *http.Request, pris
 
 // ValidatedAPIKey represents an API key validated for authentication
 type ValidatedAPIKey struct {
-	ID          string                 `json:"id"`
-	Name        string                 `json:"name"`
-	KeyID       string                 `json:"key_id"`
-	FractalID   string                 `json:"fractal_id,omitempty"`
-	FractalName string                 `json:"fractal_name,omitempty"`
-	PrismID     string                 `json:"prism_id,omitempty"`
-	PrismName   string                 `json:"prism_name,omitempty"`
-	CreatedBy   string                 `json:"created_by"`
-	Permissions map[string]interface{} `json:"permissions"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	KeyID       string `json:"key_id"`
+	FractalID   string `json:"fractal_id,omitempty"`
+	FractalName string `json:"fractal_name,omitempty"`
+	PrismID     string `json:"prism_id,omitempty"`
+	PrismName   string `json:"prism_name,omitempty"`
+	CreatedBy   string `json:"created_by"`
+	// Role is the key's RBAC role on its scope; TenantAdmin grants
+	// instance-wide administration.
+	Role        string `json:"role"`
+	TenantAdmin bool   `json:"tenant_admin"`
+}
+
+// apiKeyLimiter throttles each key separately, so one runaway integration
+// cannot crowd out the rest. The bucket is keyed by key id, never by IP: a key
+// is the thing being limited, and it may be used from many hosts.
+func (h *AuthHandler) apiKeyAllowed(keyID string) bool {
+	limit := settings.Get().APIKeyRateLimit
+	if limit <= 0 {
+		return true
+	}
+
+	h.keyLimiterMu.Lock()
+	// The limit is live-editable from the admin settings page, so rebuild the
+	// buckets when it changes rather than caching the rate it started with.
+	if h.keyLimiter == nil || h.keyLimiterRate != limit {
+		h.keyLimiter = ingest.NewRateLimiter(float64(limit), limit)
+		h.keyLimiterRate = limit
+	}
+	limiter := h.keyLimiter
+	h.keyLimiterMu.Unlock()
+
+	return limiter.Allow(keyID)
 }
 
 // extractAPIKey extracts API key from request headers or query parameters

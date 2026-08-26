@@ -70,59 +70,19 @@ const APIKeys = {
                     if (e.target.checked) expiresAtInput.value = '';
                 }
             }
-
-            // "All Permissions" toggle (inline fractal)
-            if (e.target.id === 'inlinePermAll') {
-                const checked = e.target.checked;
-                ['inlinePermQuery', 'inlinePermComment', 'inlinePermAlertManage', 'inlinePermNotebook', 'inlinePermDashboard'].forEach(id => {
-                    const el = document.getElementById(id);
-                    if (el) el.checked = checked;
-                });
-            }
-
-            // "All Permissions" toggle (inline prism)
-            if (e.target.id === 'prismInlinePermAll') {
-                const checked = e.target.checked;
-                ['prismInlinePermQuery', 'prismInlinePermComment', 'prismInlinePermAlertManage', 'prismInlinePermNotebook', 'prismInlinePermDashboard'].forEach(id => {
-                    const el = document.getElementById(id);
-                    if (el) el.checked = checked;
-                });
-            }
-
-            // Sync "All" toggle when individual permissions change (inline fractal)
-            const inlinePermIds = ['inlinePermQuery', 'inlinePermComment', 'inlinePermAlertManage', 'inlinePermNotebook', 'inlinePermDashboard'];
-            if (inlinePermIds.includes(e.target.id)) {
-                const allToggle = document.getElementById('inlinePermAll');
-                if (allToggle) {
-                    allToggle.checked = inlinePermIds.every(id => document.getElementById(id)?.checked);
-                }
-            }
-
-            // Sync "All" toggle when individual permissions change (inline prism)
-            const prismInlinePermIds = ['prismInlinePermQuery', 'prismInlinePermComment', 'prismInlinePermAlertManage', 'prismInlinePermNotebook', 'prismInlinePermDashboard'];
-            if (prismInlinePermIds.includes(e.target.id)) {
-                const allToggle = document.getElementById('prismInlinePermAll');
-                if (allToggle) {
-                    allToggle.checked = prismInlinePermIds.every(id => document.getElementById(id)?.checked);
-                }
-            }
         });
     },
 
-    renderPermBadges(perms) {
-        if (!perms) return '<span class="perm-badge perm-off">None</span>';
-        const allPerms = [
-            { key: 'query', label: 'Query' },
-            { key: 'comment', label: 'Comments' },
-            { key: 'alert_manage', label: 'Alerts' },
-            { key: 'notebook', label: 'Notes' },
-            { key: 'dashboard', label: 'Dash' }
-        ];
-        const allEnabled = allPerms.every(p => perms[p.key]);
-        if (allEnabled) return '<span class="perm-badge perm-all">All</span>';
-        const enabled = allPerms.filter(p => perms[p.key]);
-        if (enabled.length === 0) return '<span class="perm-badge perm-off">None</span>';
-        return enabled.map(p => `<span class="perm-badge perm-on">${p.label}</span>`).join('');
+    // A key carries the same role a person would hold on the scope, plus an
+    // optional instance-wide grant which is deliberately loud.
+    renderGrantBadges(key) {
+        const role = key.role || '';
+        const out = [];
+        if (key.tenant_admin) out.push('<span class="perm-badge perm-tenant">Tenant admin</span>');
+        out.push(role
+            ? `<span class="perm-badge perm-on">${Utils.escapeHtml(role)}</span>`
+            : '<span class="perm-badge perm-off">No access</span>');
+        return out.join('');
     },
 
     async confirmDeleteAPIKey(keyId) {
@@ -272,7 +232,7 @@ const APIKeys = {
                     <div class="key-name">${Utils.escapeHtml(key.name)}</div>
                     ${key.description ? `<div class="key-description">${Utils.escapeHtml(key.description)}</div>` : ''}
                 </td>
-                <td><div class="perm-badges">${this.renderPermBadges(key.permissions)}</div></td>
+                <td><div class="perm-badges">${this.renderGrantBadges(key)}</div></td>
                 <td><span class="api-key-status status-${statusClass}">${statusText}</span></td>
                 <td class="${isExpired ? 'expired-text' : ''}">${expiresText}</td>
                 <td class="col-actions">
@@ -306,15 +266,8 @@ const APIKeys = {
                 nameInput.value = '';
                 setTimeout(() => nameInput.focus(), 50);
             }
-            // Reset permissions
-            ['inlinePermAll', 'inlinePermAlertManage', 'inlinePermNotebook', 'inlinePermDashboard'].forEach(id => {
-                const el = this._inlineEl(id);
-                if (el) el.checked = false;
-            });
-            ['inlinePermQuery', 'inlinePermComment'].forEach(id => {
-                const el = this._inlineEl(id);
-                if (el) el.checked = true;
-            });
+            const roleSelect = this._inlineEl('inlineApiKeyRole');
+            if (roleSelect) roleSelect.value = 'analyst';
         }
     },
 
@@ -340,13 +293,7 @@ const APIKeys = {
             name,
             description: '',
             expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
-            permissions: {
-                query: this._inlineEl('inlinePermQuery')?.checked ?? true,
-                comment: this._inlineEl('inlinePermComment')?.checked ?? true,
-                alert_manage: this._inlineEl('inlinePermAlertManage')?.checked ?? false,
-                notebook: this._inlineEl('inlinePermNotebook')?.checked ?? false,
-                dashboard: this._inlineEl('inlinePermDashboard')?.checked ?? false
-            }
+            role: this._inlineEl('inlineApiKeyRole')?.value || 'analyst'
         };
 
         const btn = this._inlineEl('submitInlineCreateBtn');

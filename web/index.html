@@ -620,6 +620,7 @@
                 <div class="alerts-sub-tabs" id="settingsSubTabs">
                     <button class="alerts-sub-tab active" data-subtab="users" onclick="SettingsView.switchSubTab('users')">Users</button>
                     <button class="alerts-sub-tab" data-subtab="groups" onclick="SettingsView.switchSubTab('groups')">Groups</button>
+                    <button class="alerts-sub-tab" data-subtab="apikeys" onclick="SettingsView.switchSubTab('apikeys')">API Keys</button>
                     <button class="alerts-sub-tab" data-subtab="context" onclick="SettingsView.switchSubTab('context')">Context Links</button>
                     <button class="alerts-sub-tab" data-subtab="settings" onclick="SettingsView.switchSubTab('settings')">Settings</button>
                 </div>
@@ -997,6 +998,22 @@
                     </div>
                 </div>
                 </div><!-- end settingsSubTabSettings -->
+
+                <!-- API Keys Sub-Tab -->
+                <div id="settingsSubTabApikeys" class="settings-sub-panel" style="display:none;">
+                <div class="settings-card">
+                    <p class="admin-panel-desc">Every API key issued in this instance. A key is authorized like a person: it holds a role on the fractal or prism it was issued for. A key marked <strong>Tenant admin</strong> can additionally administer the whole instance and must carry an expiry.</p>
+                    <div class="admin-toolbar">
+                        <input type="text" id="apiKeysAdminSearch" class="admin-search" placeholder="Search keys..." autocomplete="off">
+                        <label class="inline-perm-toggle" style="margin-left:0.75rem;"><input type="checkbox" id="apiKeysAdminOnlyAdmin"> Tenant admin only</label>
+                        <span class="admin-toolbar-spacer"></span>
+                        <button id="apiKeysAdminRefresh" class="btn-secondary btn-sm">Refresh</button>
+                    </div>
+                    <div id="apiKeysAdminList">
+                        <div class="loading">Loading API keys...</div>
+                    </div>
+                </div>
+                </div><!-- end settingsSubTabApikeys -->
 
                 <!-- Context Links Sub-Tab -->
                 <div id="settingsSubTabContext" class="settings-sub-panel" style="display:none;">
@@ -3819,15 +3836,13 @@ throttleTimeSeconds: 3600"></textarea>
                         </div>
                     </div>
                     <div class="form-group" style="margin-top: 0.75rem;">
-                        <label>Permissions</label>
-                        <div class="inline-perm-toggles">
-                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermAll"> All</label>
-                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermQuery" checked> Query</label>
-                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermComment" checked> Comments</label>
-                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermAlertManage"> Alerts</label>
-                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermNotebook"> Notebooks</label>
-                            <label class="inline-perm-toggle"><input type="checkbox" id="inlinePermDashboard"> Dashboards</label>
-                        </div>
+                        <label for="inlineApiKeyRole">Role</label>
+                        <select id="inlineApiKeyRole" class="form-control">
+                            <option value="viewer">Viewer &mdash; read only</option>
+                            <option value="analyst" selected>Analyst &mdash; read and write</option>
+                            <option value="admin">Admin &mdash; manage this scope</option>
+                        </select>
+                        <p class="admin-panel-desc" style="margin-top:0.35rem;">The key is authorized exactly like a person holding this role on this scope.</p>
                     </div>
                     <div class="form-actions">
                         <button type="button" id="cancelInlineCreateBtn" class="btn-secondary">Cancel</button>
@@ -3861,15 +3876,13 @@ throttleTimeSeconds: 3600"></textarea>
                         </div>
                     </div>
                     <div class="form-group" style="margin-top: 0.75rem;">
-                        <label>Permissions</label>
-                        <div class="inline-perm-toggles">
-                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermAll"> All</label>
-                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermQuery" checked> Query</label>
-                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermComment" checked> Comments</label>
-                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermAlertManage"> Alerts</label>
-                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermNotebook"> Notebooks</label>
-                            <label class="inline-perm-toggle"><input type="checkbox" id="prismInlinePermDashboard"> Dashboards</label>
-                        </div>
+                        <label for="prismInlineApiKeyRole">Role</label>
+                        <select id="prismInlineApiKeyRole" class="form-control">
+                            <option value="viewer">Viewer &mdash; read only</option>
+                            <option value="analyst" selected>Analyst &mdash; read and write</option>
+                            <option value="admin">Admin &mdash; manage this scope</option>
+                        </select>
+                        <p class="admin-panel-desc" style="margin-top:0.35rem;">The key is authorized exactly like a person holding this role on this prism.</p>
                     </div>
                     <div class="form-actions">
                         <button type="button" id="prismCancelInlineCreateBtn" class="btn-secondary">Cancel</button>
@@ -4048,6 +4061,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/fractalManagement.js"></script>
     <script src="/static/fractalManageTab.js"></script>
     <script src="/static/apiKeys.js"></script>
+    <script src="/static/apiKeysAdmin.js"></script>
     <script src="/static/ingestTokens.js"></script>
     <script src="/static/instructionLibraries.js"></script>
     <script src="/static/notifications.js"></script>

@@ -573,7 +573,11 @@ CREATE TABLE IF NOT EXISTS api_keys (
     expires_at TIMESTAMP,                       -- NULL = never expires
     is_active BOOLEAN DEFAULT true,
 
-    -- Permissions (extensible)
+    -- Authorization: the same RBAC role a person holds on this scope, plus an
+    -- explicit instance-wide grant. permissions is the superseded boolean model,
+    -- kept so an older install's data survives the upgrade; nothing reads it.
+    role VARCHAR(20) NOT NULL DEFAULT 'viewer',
+    tenant_admin BOOLEAN NOT NULL DEFAULT false,
     permissions JSONB DEFAULT '{"query": true, "comment": true, "alert_manage": false}',
 
     -- Metadata
@@ -584,6 +588,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 
 -- Performance fractals for API keys
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'viewer';
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS tenant_admin BOOLEAN NOT NULL DEFAULT false;
+
 CREATE INDEX IF NOT EXISTS idx_api_keys_key_id ON api_keys(key_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_api_keys_fractal_id ON api_keys(fractal_id);
