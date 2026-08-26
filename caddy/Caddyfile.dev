@@ -47,3 +47,30 @@
 		reverse_proxy bifract-app:8080
 	}
 }
+
+# Ingest-only port for agents and log shippers. Mirrors the prod Caddyfile so the
+# isolation this port exists for -- ingest paths only, 403 for everything else --
+# is exercised in dev rather than first in production.
+:8443 {
+	header {
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	request_body {
+		max_size 200MiB
+	}
+
+	# Only ingest endpoints are allowed on this port
+	@ingest path /api/v1/ingest* /_bulk /v1/logs
+	handle @ingest {
+		reverse_proxy bifract-ingest:8080 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Block everything else
+	respond 403
+}
