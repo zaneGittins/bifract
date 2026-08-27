@@ -2,6 +2,8 @@
 
 Ingestion endpoints require token authentication and are rate-limited. Logs are accepted into a buffered queue and inserted into ClickHouse asynchronously by a worker pool.
 
+This page covers the payload formats and the backpressure contract. The endpoints themselves are in [All Operations](reference.md).
+
 ## Bifract native format
 
 ```

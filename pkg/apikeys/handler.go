@@ -2,6 +2,7 @@ package apikeys
 
 import (
 	"bifract/pkg/api"
+	"bifract/pkg/auth"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -171,7 +172,7 @@ func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiKey, err := h.storage.CreateFractalAPIKey(r.Context(), req, fractalID, user.Username, fullKey, keyID)
+	apiKey, err := h.storage.CreateFractalAPIKey(r.Context(), req, fractalID, auth.AttributionUsername(r.Context()), fullKey, keyID)
 	if err != nil {
 		log.Printf("[APIKeys] Failed to create API key: %v", err)
 		h.sendError(w, http.StatusInternalServerError, "Failed to create API key")
@@ -422,7 +423,7 @@ func (h *Handler) HandleCreatePrismAPIKey(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	apiKey, err := h.storage.CreatePrismAPIKey(r.Context(), req, prismID, user.Username, fullKey, keyID)
+	apiKey, err := h.storage.CreatePrismAPIKey(r.Context(), req, prismID, auth.AttributionUsername(r.Context()), fullKey, keyID)
 	if err != nil {
 		log.Printf("[APIKeys] Failed to create prism API key: %v", err)
 		h.sendError(w, http.StatusInternalServerError, "Failed to create API key")

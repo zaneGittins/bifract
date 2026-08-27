@@ -176,6 +176,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/ingest",
+				Consumes: "application/json",
 				Access:   api.AccessIngestToken,
 				Response: ingest.IngestResponse{},
 				Summary:  "Ingest a batch of logs, routed to the fractal the ingest token is scoped to.",
@@ -190,6 +191,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/internal/ingest/{fractal}",
+				Consumes: "application/json",
 				Access:   api.AccessInternal,
 				Response: ingest.IngestResponse{},
 				Summary:  "Ingest logs for a named fractal from inside the private network, without a token.",
@@ -222,8 +224,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			Handler: d.authHandler.HandleLogin,
 		})
 		r.Register(api.Route{
-			Method:   http.MethodGet,
-			Path:     "/auth/invite/validate",
+			Method: http.MethodGet,
+			Path:   "/auth/invite/validate",
+			Query: []api.QueryParam{
+				{Name: "token"},
+			},
 			Access:   api.AccessPublic,
 			Response: auth.Response{},
 			Summary:  "Check whether an invite token is still valid.",
@@ -262,8 +267,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.oidcHandler.HandleLogin,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/auth/oidc/callback",
+				Method: http.MethodGet,
+				Path:   "/auth/oidc/callback",
+				Query: []api.QueryParam{
+					{Name: "code"},
+					{Name: "error"},
+					{Name: "error_description"},
+					{Name: "state"},
+				},
 				Access:  api.AccessPublic,
 				Summary: "Complete the OIDC flow and establish a session.",
 				Handler: d.oidcHandler.HandleCallback,
@@ -311,6 +322,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/query",
+				Request:  query.QueryRequest{},
 				Access:   api.AccessViewer,
 				Response: query.QueryResponse{},
 				Summary:  "Run a BQL query and return the full result set.",
@@ -319,6 +331,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/query/stream",
+				Request:  query.QueryRequest{},
 				Produces: "application/x-ndjson",
 				Access:   api.AccessViewer,
 				Response: query.QueryResponse{},
@@ -326,11 +339,13 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.queryHandler.HandleQueryStream,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodPost,
-				Path:    "/query/fieldstats",
-				Access:  api.AccessViewer,
-				Summary: "Compute per-field value distributions across a query's matches.",
-				Handler: d.queryHandler.HandleFieldStats,
+				Method:   http.MethodPost,
+				Path:     "/query/fieldstats",
+				Response: query.FieldStatsResponse{},
+				Request:  query.QueryRequest{},
+				Access:   api.AccessViewer,
+				Summary:  "Compute per-field value distributions across a query's matches.",
+				Handler:  d.queryHandler.HandleFieldStats,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPost,
@@ -380,8 +395,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.queryHandler.HandleGetLogByTimestamp,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/logs/fields",
+				Method: http.MethodGet,
+				Path:   "/logs/fields",
+				Query: []api.QueryParam{
+					{Name: "fractal_id"},
+					{Name: "log_id"},
+					{Name: "shard_num"},
+					{Name: "timestamp"},
+				},
 				Access:   api.AccessViewer,
 				Response: map[string]interface{}{},
 				Summary:  "List the field names present in the fractal's logs.",
@@ -414,8 +435,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.handleTopology,
 			})
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/system/pressure",
+				Method: http.MethodGet,
+				Path:   "/system/pressure",
+				Query: []api.QueryParam{
+					{Name: "range"},
+				},
 				Access:  api.AccessViewer,
 				Summary: "Report ingest queue depth, backpressure, and spool usage.",
 				Handler: d.handlePressure,
@@ -606,8 +630,13 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// List recent restore jobs for the admin UI (newest first).
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/system/archive/restore",
+				Method: http.MethodGet,
+				Path:   "/system/archive/restore",
+				Query: []api.QueryParam{
+					{Name: "limit", Type: "integer"},
+					{Name: "offset", Type: "integer"},
+					{Name: "status"},
+				},
 				Access:   api.AccessTenantAdmin,
 				Response: api.ListResponse[map[string]interface{}]{},
 				Summary:  "List restore jobs.",
@@ -657,8 +686,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			// before a user waits minutes on a window with tens of thousands of
 			// files behind it. Analyst+, same as the search itself.
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/recall/{fractalID}/estimate",
+				Method: http.MethodGet,
+				Path:   "/recall/{fractalID}/estimate",
+				Query: []api.QueryParam{
+					{Name: "from"},
+					{Name: "to"},
+				},
 				Access:  api.AccessAnalyst,
 				Summary: "Estimate what a Recall over a window would scan.",
 				Handler: d.handleRecallEstimate,
@@ -676,8 +709,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// List recent Recall jobs for a fractal (newest first, no results payload).
 			r.Register(api.Route{
-				Method:  http.MethodGet,
-				Path:    "/recall/{fractalID}",
+				Method: http.MethodGet,
+				Path:   "/recall/{fractalID}",
+				Query: []api.QueryParam{
+					{Name: "limit", Type: "integer"},
+				},
 				Access:  api.AccessAnalyst,
 				Summary: "List recent Recall jobs for a fractal.",
 				Handler: d.handleListRecalls,
@@ -751,8 +787,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.commentHandler.HandleCreateComment,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/comments/flat",
+				Method: http.MethodGet,
+				Path:   "/comments/flat",
+				Query: []api.QueryParam{
+					{Name: "limit", Type: "integer"},
+					{Name: "offset", Type: "integer"},
+				},
 				Access:   api.AccessViewer,
 				Response: api.ListResponse[storage.Comment]{},
 				Summary:  "List comments individually rather than grouped by log.",
@@ -841,8 +881,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.commentHandler.HandleDeleteCommentsByLogID,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/logs/commented",
+				Method: http.MethodGet,
+				Path:   "/logs/commented",
+				Query: []api.QueryParam{
+					{Name: "limit", Type: "integer"},
+					{Name: "offset", Type: "integer"},
+				},
 				Access:   api.AccessViewer,
 				Response: api.ListResponse[map[string]interface{}]{},
 				Summary:  "List the logs that carry comments.",
@@ -852,8 +896,13 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			// Notebooks
 			r.Group(func(r api.Router) {
 				r.Register(api.Route{
-					Method:   http.MethodGet,
-					Path:     "/notebooks",
+					Method: http.MethodGet,
+					Path:   "/notebooks",
+					Query: []api.QueryParam{
+						{Name: "limit", Type: "integer"},
+						{Name: "offset", Type: "integer"},
+						{Name: "search"},
+					},
 					Access:   api.AccessViewer,
 					Response: api.ListResponse[storage.Notebook]{},
 					Summary:  "List notebooks in scope.",
@@ -878,6 +927,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:   http.MethodPost,
 					Path:     "/notebooks/import",
+					Consumes: "application/yaml",
 					Access:   api.AccessAnalyst,
 					Response: notebooks.Response{},
 					Summary:  "Import a notebook from YAML.",
@@ -1031,8 +1081,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			// Dashboards
 			r.Group(func(r api.Router) {
 				r.Register(api.Route{
-					Method:   http.MethodGet,
-					Path:     "/dashboards",
+					Method: http.MethodGet,
+					Path:   "/dashboards",
+					Query: []api.QueryParam{
+						{Name: "limit", Type: "integer"},
+						{Name: "offset", Type: "integer"},
+					},
 					Access:   api.AccessViewer,
 					Response: api.ListResponse[storage.Dashboard]{},
 					Summary:  "List dashboards in scope.",
@@ -1168,6 +1222,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:   http.MethodPost,
 					Path:     "/dashboards/import",
+					Consumes: "application/yaml",
 					Access:   api.AccessAnalyst,
 					Response: dashboards.Response{},
 					Summary:  "Import a dashboard from YAML.",
@@ -1213,8 +1268,13 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			// Alert management (API keys require "alert_manage" permission)
 			r.Group(func(r api.Router) {
 				r.Register(api.Route{
-					Method:   http.MethodGet,
-					Path:     "/alerts",
+					Method: http.MethodGet,
+					Path:   "/alerts",
+					Query: []api.QueryParam{
+						{Name: "enabled", Type: "boolean"},
+						{Name: "limit", Type: "integer"},
+						{Name: "offset", Type: "integer"},
+					},
 					Access:   api.AccessViewer,
 					Response: api.ListResponse[*alerts.Alert]{},
 					Summary:  "List alerts in scope.",
@@ -1272,8 +1332,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.alertHandler.HandleBatchToggleAlerts,
 				})
 				r.Register(api.Route{
-					Method:   http.MethodGet,
-					Path:     "/alerts/{id}/executions",
+					Method: http.MethodGet,
+					Path:   "/alerts/{id}/executions",
+					Query: []api.QueryParam{
+						{Name: "limit", Type: "integer"},
+						{Name: "offset", Type: "integer"},
+					},
 					Access:   api.AccessViewer,
 					Response: api.ListResponse[map[string]interface{}]{},
 					Summary:  "List an alert's evaluation history.",
@@ -1299,8 +1363,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.alertHandler.HandleAttackCoverage,
 				})
 				r.Register(api.Route{
-					Method:   http.MethodGet,
-					Path:     "/attack/techniques/{id}/rules",
+					Method: http.MethodGet,
+					Path:   "/attack/techniques/{id}/rules",
+					Query: []api.QueryParam{
+						{Name: "include_sub", Type: "boolean"},
+					},
 					Access:   api.AccessViewer,
 					Response: api.Response[alerts.TechniqueRules]{},
 					Summary:  "List the rules covering one technique.",
@@ -1315,16 +1382,26 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.alertHandler.HandleAttackTechniqueGap,
 				})
 				r.Register(api.Route{
-					Method:   http.MethodGet,
-					Path:     "/attack/gaps",
+					Method: http.MethodGet,
+					Path:   "/attack/gaps",
+					Query: []api.QueryParam{
+						{Name: "limit", Type: "integer"},
+					},
 					Access:   api.AccessViewer,
 					Response: api.Response[alerts.AttackGaps]{},
 					Summary:  "Rank uncovered techniques by what can be covered today.",
 					Handler:  d.alertHandler.HandleAttackGaps,
 				})
 				r.Register(api.Route{
-					Method:  http.MethodGet,
-					Path:    "/attack/layer",
+					Method: http.MethodGet,
+					Path:   "/attack/layer",
+					Query: []api.QueryParam{
+						{Name: "enabled_only", Type: "boolean"},
+						{Name: "feed_id"},
+						{Name: "platform"},
+						{Name: "scope_name"},
+						{Name: "severity"},
+					},
 					Access:  api.AccessViewer,
 					Summary: "Export coverage as an ATT&CK Navigator layer.",
 					Handler: d.alertHandler.HandleAttackLayer,
@@ -1333,8 +1410,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Webhook management
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/webhooks",
+				Method: http.MethodGet,
+				Path:   "/webhooks",
+				Query: []api.QueryParam{
+					{Name: "enabled", Type: "boolean"},
+				},
 				Access:   api.AccessTenantAdmin,
 				Response: api.ListResponse[*alerts.WebhookAction]{},
 				Summary:  "List webhook actions in scope.",
@@ -1384,8 +1464,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Fractal action management
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/fractal-actions",
+				Method: http.MethodGet,
+				Path:   "/fractal-actions",
+				Query: []api.QueryParam{
+					{Name: "enabled", Type: "boolean"},
+				},
 				Access:   api.AccessTenantAdmin,
 				Response: api.ListResponse[alerts.FractalAction]{},
 				Summary:  "List fractal actions in scope.",
@@ -1987,8 +2070,13 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.dictionaryHandler.HandleDeleteDictionary,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/dictionaries/{id}/data",
+				Method: http.MethodGet,
+				Path:   "/dictionaries/{id}/data",
+				Query: []api.QueryParam{
+					{Name: "limit", Type: "integer"},
+					{Name: "offset", Type: "integer"},
+					{Name: "search"},
+				},
 				Access:   api.AccessViewer,
 				Response: api.ListResponse[dictionaries.DictionaryRow]{},
 				Summary:  "Read a dictionary's rows.",
@@ -2014,6 +2102,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/dictionaries/{id}/import",
+				Consumes: "multipart/form-data",
 				Access:   api.AccessAnalyst,
 				Response: api.Response[map[string]int]{},
 				Summary:  "Load dictionary rows from an uploaded CSV.",
@@ -2126,6 +2215,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/models/import",
+				Consumes: "application/yaml",
 				Access:   api.AccessAnalyst,
 				Response: api.Response[*models.Model]{},
 				Summary:  "Create a model from a YAML definition.",
@@ -2157,8 +2247,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.modelHandler.HandleDelete,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/models/{id}/data",
+				Method: http.MethodGet,
+				Path:   "/models/{id}/data",
+				Query: []api.QueryParam{
+					{Name: "limit", Type: "integer"},
+					{Name: "offset", Type: "integer"},
+					{Name: "order", Type: "boolean"},
+					{Name: "search"},
+					{Name: "sort"},
+				},
 				Access:   api.AccessViewer,
 				Response: api.ListResponse[map[string]interface{}]{},
 				Summary:  "Read a model's rows with their scores.",
@@ -2268,8 +2365,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 
 			// Saved Queries
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/saved-queries",
+				Method: http.MethodGet,
+				Path:   "/saved-queries",
+				Query: []api.QueryParam{
+					{Name: "search"},
+					{Name: "tag"},
+				},
 				Access:   api.AccessViewer,
 				Response: api.ListResponse[savedqueries.SavedQuery]{},
 				Summary:  "List saved queries in scope.",
@@ -2327,8 +2428,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			})
 
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/query-history",
+				Method: http.MethodGet,
+				Path:   "/query-history",
+				Query: []api.QueryParam{
+					{Name: "search"},
+				},
 				Access:   api.AccessViewer,
 				Response: api.ListResponse[queryhistory.QueryHistory]{},
 				Summary:  "List the caller's recent queries.",
@@ -2758,8 +2862,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.feedHandler.HandleDisableAllAlerts,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/alerts/feed",
+				Method: http.MethodGet,
+				Path:   "/alerts/feed",
+				Query: []api.QueryParam{
+					{Name: "facets", Type: "boolean"},
+				},
 				Access:   api.AccessViewer,
 				Response: api.Response[*alerts.FeedAlertPage]{},
 				Summary:  "List feed alerts in scope.",
@@ -2819,8 +2926,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.normalizerHandler.HandlePreview,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/normalizers/samples",
+				Method: http.MethodGet,
+				Path:   "/normalizers/samples",
+				Query: []api.QueryParam{
+					{Name: "fractal_id"},
+					{Name: "limit", Type: "integer"},
+				},
 				Access:   api.AccessTenantAdmin,
 				Response: api.ListResponse[normalizers.LogSample]{},
 				Summary:  "Return recent raw logs for the normalizer editor.",
@@ -2829,6 +2940,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/normalizers/import",
+				Consumes: "application/yaml",
 				Access:   api.AccessTenantAdmin,
 				Response: api.Response[*normalizers.Normalizer]{},
 				Summary:  "Import a normalizer from YAML.",
@@ -2938,6 +3050,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/admin/schema-fields/import",
+				Consumes: "application/yaml",
 				Access:   api.AccessTenantAdmin,
 				Response: api.Response[string]{},
 				Summary:  "Import schema fields from YAML.",
@@ -3007,8 +3120,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.authHandler.HandleAdminResetPassword,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/users",
+				Method: http.MethodGet,
+				Path:   "/users",
+				Query: []api.QueryParam{
+					{Name: "limit", Type: "integer"},
+					{Name: "offset", Type: "integer"},
+				},
 				Access:   api.AccessTenantAdmin,
 				Response: api.ListResponse[map[string]interface{}]{},
 				Summary:  "List users.",
@@ -3033,8 +3150,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.authHandler.HandleSetUserEnabled,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodDelete,
-				Path:     "/users",
+				Method: http.MethodDelete,
+				Path:   "/users",
+				Query: []api.QueryParam{
+					{Name: "username"},
+				},
 				Access:   api.AccessTenantAdmin,
 				Response: auth.Response{},
 				Summary:  "Delete a user.",
@@ -3057,8 +3177,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.authHandler.HandleGenerateClientCert,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodDelete,
-				Path:     "/logs",
+				Method: http.MethodDelete,
+				Path:   "/logs",
+				Query: []api.QueryParam{
+					{Name: "fractal_id"},
+				},
 				Access:   api.AccessTenantAdmin,
 				Response: map[string]interface{}{},
 				Summary:  "Delete all log data in the fractal.",
@@ -3075,32 +3198,45 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.performanceHandler.HandleProcesses,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodPost,
-				Path:     "/admin/kill-query",
+				Method: http.MethodPost,
+				Path:   "/admin/kill-query",
+				Query: []api.QueryParam{
+					{Name: "query_id"},
+				},
 				Access:   api.AccessTenantAdmin,
 				Response: map[string]interface{}{},
 				Summary:  "Kill a running ClickHouse query.",
 				Handler:  d.performanceHandler.HandleKillQuery,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/admin/metrics",
+				Method: http.MethodGet,
+				Path:   "/admin/metrics",
+				Query: []api.QueryParam{
+					{Name: "range"},
+				},
 				Access:   api.AccessTenantAdmin,
 				Response: map[string]interface{}{},
 				Summary:  "Return ClickHouse server metrics.",
 				Handler:  d.performanceHandler.HandleMetrics,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/admin/ingest-daily",
+				Method: http.MethodGet,
+				Path:   "/admin/ingest-daily",
+				Query: []api.QueryParam{
+					{Name: "days", Type: "integer"},
+					{Name: "fractal"},
+				},
 				Access:   api.AccessTenantAdmin,
 				Response: map[string]interface{}{},
 				Summary:  "Return per-day ingest volume.",
 				Handler:  d.performanceHandler.HandleIngestDaily,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/admin/alert-stats",
+				Method: http.MethodGet,
+				Path:   "/admin/alert-stats",
+				Query: []api.QueryParam{
+					{Name: "range"},
+				},
 				Access:   api.AccessTenantAdmin,
 				Response: map[string]interface{}{},
 				Summary:  "Return alert engine evaluation statistics.",
@@ -3115,6 +3251,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 		r.Register(api.Route{
 			Method:   http.MethodPost,
 			Path:     "/_bulk",
+			Consumes: "application/x-ndjson",
 			Access:   api.AccessIngestToken,
 			Response: ingest.ElasticBulkResponse{},
 			Summary:  "Ingest logs through the Elasticsearch-compatible bulk API.",
@@ -3123,6 +3260,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 		r.Register(api.Route{
 			Method:   http.MethodPut,
 			Path:     "/_bulk",
+			Consumes: "application/x-ndjson",
 			Access:   api.AccessIngestToken,
 			Response: ingest.ElasticBulkResponse{},
 			Summary:  "Ingest logs through the Elasticsearch-compatible bulk API.",
@@ -3136,6 +3274,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 		r.Register(api.Route{
 			Method:   http.MethodPost,
 			Path:     "/v1/logs",
+			Consumes: "application/json",
 			Access:   api.AccessIngestToken,
 			Response: api.Response[*http.Request]{},
 			Summary:  "Ingest logs as an OTLP/HTTP ExportLogsServiceRequest.",

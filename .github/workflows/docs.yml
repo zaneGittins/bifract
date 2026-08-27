@@ -6,6 +6,7 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "openapi.json"
       - "scripts/install.sh"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -29,10 +30,15 @@ jobs:
         with:
           python-version: "3.x"
 
-      - run: pip install mkdocs-material==9.7.6
+      - run: pip install mkdocs-material==9.7.6 mkdocs-swagger-ui-tag==0.7.4
 
       - name: Stage install script for docs site
         run: cp scripts/install.sh docs/install.sh
+
+      # The API reference renders the description the server generates. It is
+      # checked in and drift-gated by go test, so copying it is enough.
+      - name: Stage API description for docs site
+        run: cp openapi.json docs/openapi.json
 
       - run: mkdocs build --strict
 

@@ -1,74 +1,57 @@
 # Authentication
 
-Most endpoints require authentication via session cookie or API key.
+Bifract accepts three credentials. Which one you use depends on what is calling.
 
-## Session (browser)
+## API key
 
-```
-POST /api/v1/auth/login
-Content-Type: application/json
-
-{"username": "admin", "password": "changeme"}
-```
-
-Sets an `HttpOnly` session cookie valid for 24 hours.
-
-```
-POST /api/v1/auth/logout
-```
-
-## API Key
-
-Include the key in one of two ways:
+A program calls Bifract with an API key, sent as a bearer token:
 
 ```
 Authorization: Bearer bifract_<key>
-X-API-Key: bifract_<key>
 ```
 
-API keys are scoped to a specific fractal (or prism) and have granular permissions. See [API Keys](../administration/ingest-tokens.md) for details.
+`X-API-Key: bifract_<key>` is accepted as an alternative header.
 
-Ingest tokens are a separate credential (`bifract_ingest_` prefix) and are only valid on the ingestion endpoints. See [Ingestion](ingestion.md).
+A key belongs to one fractal or one prism and carries the access its creator granted it, so
+a key made for a reporting job cannot reach another team's data. Create and revoke keys
+under **Admin > API Keys**, or through the API itself; see [All Operations](reference.md)
+for the shape of those requests, and [API Keys](../administration/ingest-tokens.md) for
+what the permissions mean.
 
-**Create API key:**
+## Ingest token
+
+Log shippers use a separate credential with a `bifract_ingest_` prefix. It is accepted only
+on the ingestion endpoints and is scoped to the single fractal its logs land in, so a
+compromised shipper cannot read anything back. See [Sending Logs](ingestion.md).
+
+## Session
+
+The web UI signs in with a username and password and receives an `HttpOnly` cookie valid
+for 24 hours. Sessions exist for the browser: prefer an API key for anything scripted, so
+the credential can be scoped, rotated, and revoked without touching a user account.
+
+## Choosing a scope
+
+A key is already bound to its fractal or prism, so it needs nothing further. A session is
+not, because one browser session moves between fractals. Requests made with a session say
+which scope they mean:
 
 ```
-POST /api/v1/fractals/{id}/api-keys  (fractal admin)
+X-Bifract-Scope: fractal:<fractal-id>
+X-Bifract-Scope: prism:<prism-id>
 ```
+
+The header is authorized on every request, never trusted on its own: asking for a scope you
+cannot reach answers `403`, not the data.
+
+## When authentication fails
+
+Failures answer with the standard error envelope, and the `code` is what a program should
+branch on. The message is for a human and may be reworded.
 
 ```json
-{
-  "name": "CI Pipeline",
-  "description": "Read-only query access",
-  "expires_at": "2026-06-01T00:00:00Z",
-  "permissions": {
-    "query": true,
-    "comment": false,
-    "alert_manage": false,
-    "notebook": false,
-    "dashboard": false
-  }
-}
+{"success": false, "error": "Invalid username or password", "code": "unauthenticated"}
 ```
 
-Omitted permissions default to: `query: true`, `comment: true`, others `false`.
-
-**Update API key permissions:**
-
-```
-PUT /api/v1/fractals/{id}/api-keys/{keyId}  (fractal admin)
-```
-
-```json
-{
-  "permissions": {
-    "query": true,
-    "comment": true,
-    "alert_manage": true,
-    "notebook": true,
-    "dashboard": true
-  }
-}
-```
-
-Only known permission keys with boolean values are accepted. Unknown keys return `400 Bad Request`.
+`unauthenticated` means the credential is missing, malformed, or wrong. `forbidden` means it
+was understood but does not grant what the operation needs.

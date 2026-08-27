@@ -69,6 +69,28 @@ func NewRateLimiter(rate float64, burst int) *RateLimiter {
 	return rl
 }
 
+// SetRate re-rates the limiter in place, including the buckets already handed
+// out. Callers with a live-editable limit must use this rather than building a
+// replacement: each RateLimiter owns a cleanup goroutine that runs for the life
+// of the process, so discarding one leaks it along with its buckets.
+func (rl *RateLimiter) SetRate(rate float64, burst int) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if rl.rate == rate && rl.burst == burst {
+		return
+	}
+	rl.rate, rl.burst = rate, burst
+	for _, tb := range rl.buckets {
+		tb.mu.Lock()
+		tb.rate = rate
+		tb.maxTokens = float64(burst)
+		if tb.tokens > tb.maxTokens {
+			tb.tokens = tb.maxTokens
+		}
+		tb.mu.Unlock()
+	}
+}
+
 // Allow checks if a request from the given IP is allowed.
 func (rl *RateLimiter) Allow(ip string) bool {
 	rl.mu.Lock()

@@ -1530,19 +1530,22 @@ func (h *AuthHandler) apiKeyAllowed(keyID string) bool {
 	}
 
 	h.keyLimiterMu.Lock()
-	// The limit is live-editable from the admin settings page, so rebuild the
-	// buckets when it changes rather than caching the rate it started with.
-	if h.keyLimiter == nil || h.keyLimiterRate != limit {
+	// The limit is live-editable from the admin settings page, so re-rate the
+	// limiter when it changes rather than caching the rate it started with.
+	if h.keyLimiter == nil {
 		h.keyLimiter = ingest.NewRateLimiter(float64(limit), limit)
-		h.keyLimiterRate = limit
+	} else if h.keyLimiterRate != limit {
+		h.keyLimiter.SetRate(float64(limit), limit)
 	}
+	h.keyLimiterRate = limit
 	limiter := h.keyLimiter
 	h.keyLimiterMu.Unlock()
 
 	return limiter.Allow(keyID)
 }
 
-// extractAPIKey extracts API key from request headers or query parameters
+// extractAPIKey reads the API key from request headers only: a key in a query
+// string would end up in access logs, proxies, and browser history.
 func (h *AuthHandler) extractAPIKey(r *http.Request) string {
 	// Check Authorization header: "Bearer bifract_..."
 	if auth := r.Header.Get("Authorization"); auth != "" {

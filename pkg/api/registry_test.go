@@ -31,12 +31,12 @@ func TestRegisterRecordsFullyQualifiedPath(t *testing.T) {
 	r := NewRouter(chi.NewRouter(), reg)
 
 	r.Route("/api/v1", func(r Router) {
-		r.Register(Route{Method: http.MethodGet, Path: "/comments", Handler: noopHandler})
+		r.Register(Route{Method: http.MethodGet, Path: "/comments", Access: AccessPublic, Handler: noopHandler})
 		r.Group(func(r Router) {
-			r.Register(Route{Method: http.MethodPost, Path: "/comments/{id}", Handler: noopHandler})
+			r.Register(Route{Method: http.MethodPost, Path: "/comments/{id}", Access: AccessPublic, Handler: noopHandler})
 		})
 		r.Route("/logs", func(r Router) {
-			r.Register(Route{Method: http.MethodDelete, Path: "/{id}/comments", Handler: noopHandler})
+			r.Register(Route{Method: http.MethodDelete, Path: "/{id}/comments", Access: AccessPublic, Handler: noopHandler})
 		})
 	})
 
@@ -65,6 +65,7 @@ func TestRegisterMountsTheHandler(t *testing.T) {
 		r.Register(Route{
 			Method: http.MethodGet,
 			Path:   "/comments/{id}",
+			Access: AccessPublic,
 			Handler: func(w http.ResponseWriter, req *http.Request) {
 				w.WriteHeader(http.StatusTeapot)
 				w.Write([]byte(chi.URLParam(req, "id")))

@@ -19,6 +19,16 @@ const (
 	TransformDedot       Transform = "dedot"
 )
 
+// EnumValues lists every transform a normalizer step can name.
+func (Transform) EnumValues() []string {
+	return []string{
+		string(TransformFlattenLeaf), string(TransformFlattenFull),
+		string(TransformLowercase), string(TransformUppercase),
+		string(TransformSnakeCase), string(TransformCamelCase),
+		string(TransformPascalCase), string(TransformDedot),
+	}
+}
+
 var ValidTransforms = map[Transform]bool{
 	TransformFlattenLeaf: true,
 	TransformFlattenFull: true,

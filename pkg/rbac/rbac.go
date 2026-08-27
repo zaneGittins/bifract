@@ -16,6 +16,12 @@ const (
 	RoleAdmin   Role = "admin"
 )
 
+// EnumValues lists the roles a grant can name. RoleNone is the absence of a
+// grant rather than a value anyone assigns, so it is not offered.
+func (Role) EnumValues() []string {
+	return []string{string(RoleViewer), string(RoleAnalyst), string(RoleAdmin)}
+}
+
 func roleWeight(r Role) int {
 	switch r {
 	case RoleAdmin:

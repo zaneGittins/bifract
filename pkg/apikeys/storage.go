@@ -111,7 +111,7 @@ func (s *Storage) createAPIKey(ctx context.Context, req CreateAPIKeyRequest, use
 		INSERT INTO api_keys (name, description, key_id, key_hash, fractal_id, prism_id, created_by, expires_at, role, tenant_admin)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id
-	`, req.Name, req.Description, keyID, keyHash, fractalArg, prismArg, username, req.ExpiresAt, req.Role, req.TenantAdmin)
+	`, req.Name, req.Description, keyID, keyHash, fractalArg, prismArg, storage.NullableUser(username), req.ExpiresAt, req.Role, req.TenantAdmin)
 
 	var id string
 	if err := row.Scan(&id); err != nil {

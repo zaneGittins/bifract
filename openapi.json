@@ -5,6 +5,12 @@
     "version": "dev",
     "description": "Every operation Bifract serves. Generated from the running router, so it describes exactly what this build mounts."
   },
+  "servers": [
+    {
+      "url": "/api/v1",
+      "description": "This instance."
+    }
+  ],
   "paths": {
     "/_bulk": {
       "post": {
@@ -14,6 +20,17 @@
         "tags": [
           "_bulk"
         ],
+        "security": [
+          {
+            "ingestToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-ndjson": {}
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -54,6 +71,17 @@
         "tags": [
           "_bulk"
         ],
+        "security": [
+          {
+            "ingestToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-ndjson": {}
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -95,6 +123,23 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "admin"
+        ],
+        "parameters": [
+          {
+            "name": "range",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -141,6 +186,30 @@
         "tags": [
           "admin"
         ],
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "fractal",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -185,6 +254,23 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "admin"
+        ],
+        "parameters": [
+          {
+            "name": "query_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -231,6 +317,23 @@
         "tags": [
           "admin"
         ],
+        "parameters": [
+          {
+            "name": "range",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -276,6 +379,14 @@
         "tags": [
           "admin"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -320,6 +431,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "admin"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -380,6 +499,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "admin"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -453,6 +580,14 @@
         "tags": [
           "admin"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "A YAML document download.",
@@ -499,6 +634,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -574,6 +717,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -639,6 +790,20 @@
         "tags": [
           "admin"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/yaml": {}
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -701,6 +866,14 @@
         "tags": [
           "admin"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -762,6 +935,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "admin"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -827,6 +1008,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "admin"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -913,6 +1102,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -978,6 +1175,37 @@
         "tags": [
           "alerts"
         ],
+        "parameters": [
+          {
+            "name": "enabled",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -1035,6 +1263,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "alerts"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -1107,6 +1343,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "alerts"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -1183,6 +1427,23 @@
         "tags": [
           "alerts"
         ],
+        "parameters": [
+          {
+            "name": "facets",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -1244,6 +1505,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "alerts"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -1319,6 +1588,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "alerts"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -1402,6 +1679,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -1470,6 +1755,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -1552,6 +1845,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -1595,6 +1896,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -1667,6 +1976,28 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -1742,6 +2073,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -1786,6 +2125,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "api-keys"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -1846,6 +2193,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "attack"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -1909,6 +2264,23 @@
         "tags": [
           "attack"
         ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -1971,6 +2343,51 @@
         "tags": [
           "attack"
         ],
+        "parameters": [
+          {
+            "name": "enabled_only",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "feed_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "platform",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope_name",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -2005,6 +2422,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "attack"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -2078,6 +2503,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -2148,6 +2581,21 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "include_sub",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -2212,6 +2660,14 @@
         "tags": [
           "auth"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -2263,6 +2719,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "auth"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -2316,6 +2780,7 @@
         "tags": [
           "auth"
         ],
+        "security": [],
         "requestBody": {
           "required": true,
           "content": {
@@ -2347,6 +2812,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "auth"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -2400,6 +2873,16 @@
         "tags": [
           "auth"
         ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Success.",
@@ -2422,6 +2905,7 @@
         "tags": [
           "auth"
         ],
+        "security": [],
         "requestBody": {
           "required": true,
           "content": {
@@ -2446,6 +2930,14 @@
         "description": "Any authenticated principal.",
         "tags": [
           "auth"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -2489,6 +2981,37 @@
         "tags": [
           "auth"
         ],
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error_description",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Success."
@@ -2504,6 +3027,7 @@
         "tags": [
           "auth"
         ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Success."
@@ -2519,6 +3043,7 @@
         "tags": [
           "auth"
         ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Success."
@@ -2533,6 +3058,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "auth"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -2586,6 +3119,14 @@
         "tags": [
           "auth"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -2638,6 +3179,14 @@
         "tags": [
           "auth"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -2679,6 +3228,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "chat"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -2737,6 +3294,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "chat"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -2807,6 +3372,14 @@
         "description": "Any authenticated principal.",
         "tags": [
           "chat"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -2881,6 +3454,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -2963,6 +3544,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -3038,6 +3627,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -3104,6 +3701,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -3191,6 +3796,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -3257,6 +3870,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -3334,6 +3955,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -3381,6 +4010,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "chat"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -3439,6 +4076,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "chat"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -3522,6 +4167,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -3602,6 +4255,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -3666,6 +4327,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "comments"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -3739,6 +4408,14 @@
         "tags": [
           "comments"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -3783,6 +4460,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "comments"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -3829,6 +4514,14 @@
         "tags": [
           "comments"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -3873,6 +4566,30 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "comments"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -3933,6 +4650,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "comments"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -4006,6 +4731,14 @@
         "tags": [
           "comments"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -4078,6 +4811,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -4146,6 +4887,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -4228,6 +4977,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -4290,6 +5047,14 @@
         "tags": [
           "context-links"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -4347,6 +5112,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "context-links"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -4420,6 +5193,14 @@
         "tags": [
           "context-links"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -4490,6 +5271,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -4558,6 +5347,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -4640,6 +5437,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -4705,6 +5510,30 @@
         "tags": [
           "dashboards"
         ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -4762,6 +5591,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "dashboards"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -4835,6 +5672,20 @@
         "tags": [
           "dashboards"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/yaml": {}
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -4907,6 +5758,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -4975,6 +5834,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -5057,6 +5924,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -5129,6 +6004,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "An open server-sent event stream; the response does not complete.",
@@ -5175,6 +6058,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -5249,6 +6140,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "A YAML document download.",
@@ -5295,6 +6194,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -5367,6 +6274,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -5437,6 +6352,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -5521,6 +6444,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -5591,6 +6522,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -5652,6 +6591,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -5724,6 +6671,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -5806,6 +6761,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -5898,6 +6861,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -5986,6 +6957,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -6066,6 +7045,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -6127,6 +7114,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -6201,6 +7196,14 @@
         "tags": [
           "dictionaries"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -6258,6 +7261,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "dictionaries"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -6341,6 +7352,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -6409,6 +7428,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -6491,6 +7518,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -6564,6 +7599,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -6656,6 +7699,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -6736,6 +7787,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -6814,6 +7873,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -6884,6 +7951,35 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -6952,6 +8048,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -7047,6 +8151,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -7122,6 +8234,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "A CSV file download.",
@@ -7170,6 +8290,20 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {}
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -7245,6 +8379,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -7310,6 +8452,14 @@
         "tags": [
           "dictionary-actions"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -7367,6 +8517,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "dictionary-actions"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -7450,6 +8608,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -7518,6 +8684,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -7600,6 +8774,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -7665,6 +8847,14 @@
         "tags": [
           "email-actions"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -7722,6 +8912,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "email-actions"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -7805,6 +9003,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -7873,6 +9079,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -7955,6 +9169,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -7998,6 +9220,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -8062,6 +9292,14 @@
         "tags": [
           "feeds"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -8124,6 +9362,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "feeds"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -8207,6 +9453,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -8275,6 +9529,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -8357,6 +9619,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -8400,6 +9670,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -8477,6 +9755,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -8520,6 +9806,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -8567,6 +9861,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -8601,6 +9903,23 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "fractal-actions"
+        ],
+        "parameters": [
+          {
+            "name": "enabled",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -8659,6 +9978,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "fractal-actions"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -8742,6 +10069,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -8810,6 +10145,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -8892,6 +10235,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -8926,6 +10277,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "fractals"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -8986,6 +10345,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "fractals"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -9059,6 +10426,14 @@
         "tags": [
           "fractals"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -9102,6 +10477,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -9175,6 +10558,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -9257,6 +10648,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -9300,6 +10699,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -9368,6 +10775,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -9460,6 +10875,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -9536,6 +10959,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -9626,6 +11057,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -9677,6 +11116,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -9754,6 +11201,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -9809,6 +11264,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -9862,6 +11325,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -9930,6 +11401,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -10022,6 +11501,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -10098,6 +11585,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -10188,6 +11683,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -10239,6 +11742,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -10316,6 +11827,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -10382,6 +11901,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -10474,6 +12001,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -10535,6 +12070,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -10578,6 +12121,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -10633,6 +12184,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -10707,6 +12266,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -10769,6 +12336,14 @@
         "tags": [
           "groups"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -10801,6 +12376,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "groups"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -10857,6 +12440,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -10898,6 +12489,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -10953,6 +12552,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -10998,6 +12605,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -11039,6 +12654,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -11104,6 +12727,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -11139,6 +12770,7 @@
         "tags": [
           "health"
         ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Success."
@@ -11153,6 +12785,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "health"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -11189,6 +12829,17 @@
         "tags": [
           "ingest"
         ],
+        "security": [
+          {
+            "ingestToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {}
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -11230,6 +12881,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "instruction-libraries"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -11293,6 +12952,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "instruction-libraries"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -11366,6 +13033,14 @@
         "tags": [
           "instruction-libraries"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -11436,6 +13111,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -11509,6 +13192,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -11591,6 +13282,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -11634,6 +13333,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -11707,6 +13414,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -11799,6 +13514,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -11887,6 +13610,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -11930,6 +13661,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -12003,6 +13742,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -12095,6 +13842,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -12171,6 +13926,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -12261,6 +14024,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -12312,6 +14083,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -12397,6 +14176,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -12450,6 +14237,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -12524,6 +14319,13 @@
             }
           }
         ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {}
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -12565,6 +14367,23 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "logs"
+        ],
+        "parameters": [
+          {
+            "name": "fractal_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -12610,6 +14429,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "logs"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -12665,6 +14492,30 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "logs"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -12729,6 +14580,44 @@
         "tags": [
           "logs"
         ],
+        "parameters": [
+          {
+            "name": "fractal_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "log_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "shard_num",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timestamp",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -12774,6 +14663,14 @@
         "tags": [
           "logs"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -12808,6 +14705,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "logs"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -12852,6 +14757,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -12924,6 +14837,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -12986,6 +14907,14 @@
         "tags": [
           "models"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -13043,6 +14972,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "models"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -13115,6 +15052,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "models"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -13191,6 +15136,20 @@
         "tags": [
           "models"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/yaml": {}
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -13252,6 +15211,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "models"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -13325,6 +15292,14 @@
         "tags": [
           "models"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -13396,6 +15371,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "models"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -13479,6 +15462,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -13547,6 +15538,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -13629,6 +15628,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -13702,6 +15709,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -13786,6 +15801,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -13859,6 +15882,49 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -13932,6 +15998,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -14009,6 +16083,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -14084,6 +16166,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "A YAML document download.",
@@ -14130,6 +16220,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -14207,6 +16305,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -14272,6 +16378,14 @@
         "tags": [
           "normalizers"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -14329,6 +16443,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "normalizers"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -14402,6 +16524,20 @@
         "tags": [
           "normalizers"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/yaml": {}
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -14463,6 +16599,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "normalizers"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -14536,6 +16680,30 @@
         "tags": [
           "normalizers"
         ],
+        "parameters": [
+          {
+            "name": "fractal_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -14606,6 +16774,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -14674,6 +16850,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -14756,6 +16940,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -14831,6 +17023,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -14903,6 +17103,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "A YAML document download.",
@@ -14949,6 +17157,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -15026,6 +17242,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -15086,6 +17310,37 @@
         "tags": [
           "notebooks"
         ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -15143,6 +17398,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "notebooks"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -15216,6 +17479,14 @@
         "tags": [
           "notebooks"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -15250,6 +17521,14 @@
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "notebooks"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -15323,6 +17602,20 @@
         "tags": [
           "notebooks"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/yaml": {}
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -15395,6 +17688,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -15463,6 +17764,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -15545,6 +17854,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -15617,6 +17934,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "An open server-sent event stream; the response does not complete.",
@@ -15665,6 +17990,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "A YAML document download.",
@@ -15711,6 +18044,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -15783,6 +18124,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -15853,6 +18202,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -15935,6 +18292,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -16027,6 +18392,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -16115,6 +18488,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -16193,6 +18574,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -16285,6 +18674,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -16375,6 +18772,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -16447,6 +18852,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -16490,6 +18903,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -16564,6 +18985,14 @@
         "tags": [
           "notifications"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -16625,6 +19054,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "notifications"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -16688,6 +19125,14 @@
         "tags": [
           "notifications"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -16723,6 +19168,14 @@
         "tags": [
           "openapi.json"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -16757,6 +19210,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "prisms"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -16815,6 +19276,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "prisms"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -16898,6 +19367,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -16966,6 +19443,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -17048,6 +19533,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -17123,6 +19616,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -17189,6 +19690,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -17281,6 +19790,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -17357,6 +19874,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -17447,6 +19972,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -17498,6 +20031,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -17573,6 +20114,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -17665,6 +20214,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -17737,6 +20294,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -17803,6 +20368,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -17893,6 +20466,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -17986,6 +20567,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -18061,6 +20650,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -18123,6 +20720,24 @@
         "tags": [
           "query"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/query.QueryRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -18164,6 +20779,23 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "query-history"
+        ],
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -18222,6 +20854,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "query-history"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -18295,6 +20935,14 @@
         "description": "Any authenticated principal.",
         "tags": [
           "query-history"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -18371,6 +21019,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -18436,6 +21092,14 @@
         "tags": [
           "query"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -18496,9 +21160,34 @@
         "tags": [
           "query"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/query.QueryRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
-            "description": "Success."
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/query.FieldStatsResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Not authenticated.",
@@ -18530,6 +21219,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "query"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -18566,6 +21263,24 @@
         "tags": [
           "query"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/query.QueryRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Newline-delimited JSON, streamed as rows arrive.",
@@ -18603,6 +21318,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "query"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -18656,6 +21379,14 @@
         "tags": [
           "recall"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -18699,6 +21430,21 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -18742,6 +21488,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -18797,6 +21551,28 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -18852,6 +21628,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -18905,6 +21689,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -18939,6 +21731,30 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "saved-queries"
+        ],
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -18997,6 +21813,14 @@
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "saved-queries"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -19080,6 +21904,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -19160,6 +21992,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -19235,6 +22075,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -19306,6 +22154,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -19383,6 +22239,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -19448,6 +22312,14 @@
         "tags": [
           "settings"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -19487,6 +22359,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "settings"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -19550,6 +22430,7 @@
             }
           }
         ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Success."
@@ -19564,6 +22445,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "smtp-settings"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -19625,6 +22514,14 @@
         "tags": [
           "smtp-settings"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -19670,6 +22567,14 @@
         "tags": [
           "status"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -19712,6 +22617,14 @@
         "tags": [
           "system"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -19747,6 +22660,14 @@
         "tags": [
           "system"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -19781,6 +22702,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "system"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -19827,6 +22756,14 @@
         "tags": [
           "system"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -19861,6 +22798,37 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "system"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -19923,6 +22891,14 @@
         "tags": [
           "system"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -19978,6 +22954,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -20023,6 +23007,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -20058,6 +23050,14 @@
         "tags": [
           "system"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -20092,6 +23092,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "system"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -20138,6 +23146,14 @@
         "tags": [
           "system"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -20173,6 +23189,14 @@
         "tags": [
           "system"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -20205,6 +23229,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "system"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -20251,6 +23283,23 @@
         "tags": [
           "system"
         ],
+        "parameters": [
+          {
+            "name": "range",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -20286,6 +23335,14 @@
         "tags": [
           "system"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -20318,6 +23375,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "system"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -20364,6 +23429,14 @@
         "tags": [
           "system"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -20398,6 +23471,30 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "users"
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -20460,6 +23557,23 @@
         "tags": [
           "users"
         ],
+        "parameters": [
+          {
+            "name": "username",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -20501,6 +23615,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "users"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -20552,6 +23674,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -20616,6 +23746,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -20671,6 +23809,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -20723,6 +23869,14 @@
         "tags": [
           "version"
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -20757,6 +23911,23 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "webhooks"
+        ],
+        "parameters": [
+          {
+            "name": "enabled",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "responses": {
           "200": {
@@ -20815,6 +23986,14 @@
         "description": "Requires instance-wide administration.",
         "tags": [
           "webhooks"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
         ],
         "requestBody": {
           "required": true,
@@ -20898,6 +24077,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success.",
@@ -20966,6 +24153,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "requestBody": {
@@ -21048,6 +24243,14 @@
             }
           }
         ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success."
@@ -21091,6 +24294,14 @@
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -21155,6 +24366,7 @@
         "tags": [
           "go"
         ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Success."
@@ -21170,6 +24382,17 @@
         "tags": [
           "v1"
         ],
+        "security": [
+          {
+            "ingestToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {}
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -25414,7 +28637,14 @@
             "type": "string"
           },
           "model_type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "rarity",
+              "first_seen",
+              "volume_baseline",
+              "beacon",
+              "long_connection"
+            ]
           },
           "name": {
             "type": "string"
@@ -25506,7 +28736,14 @@
             "$ref": "#/components/schemas/models.ModelDefinition"
           },
           "model_type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "rarity",
+              "first_seen",
+              "volume_baseline",
+              "beacon",
+              "long_connection"
+            ]
           },
           "name": {
             "type": "string"
@@ -25595,7 +28832,14 @@
             "type": "string"
           },
           "model_type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "rarity",
+              "first_seen",
+              "volume_baseline",
+              "beacon",
+              "long_connection"
+            ]
           },
           "name": {
             "type": "string"
@@ -25756,7 +29000,14 @@
             "type": "string"
           },
           "model_type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "rarity",
+              "first_seen",
+              "volume_baseline",
+              "beacon",
+              "long_connection"
+            ]
           },
           "name": {
             "type": "string"
@@ -25843,7 +29094,14 @@
         "type": "object",
         "properties": {
           "model_type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "rarity",
+              "first_seen",
+              "volume_baseline",
+              "beacon",
+              "long_connection"
+            ]
           },
           "query": {
             "type": "string"
@@ -25903,7 +29161,14 @@
             "$ref": "#/components/schemas/models.ModelDefinition"
           },
           "model_type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "rarity",
+              "first_seen",
+              "volume_baseline",
+              "beacon",
+              "long_connection"
+            ]
           },
           "window": {
             "type": "string"
@@ -25931,7 +29196,14 @@
             "type": "string"
           },
           "model_type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "rarity",
+              "first_seen",
+              "volume_baseline",
+              "beacon",
+              "long_connection"
+            ]
           },
           "stats": {
             "type": "object",
@@ -26125,7 +29397,17 @@
           "transforms": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "flatten_leaf",
+                "flatten_full",
+                "lowercase",
+                "uppercase",
+                "snake_case",
+                "camelCase",
+                "PascalCase",
+                "dedot"
+              ]
             }
           },
           "value_mappings": {
@@ -26223,7 +29505,17 @@
           "transforms": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "flatten_leaf",
+                "flatten_full",
+                "lowercase",
+                "uppercase",
+                "snake_case",
+                "camelCase",
+                "PascalCase",
+                "dedot"
+              ]
             }
           },
           "updated_at": {
@@ -26270,7 +29562,17 @@
           "transforms": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "flatten_leaf",
+                "flatten_full",
+                "lowercase",
+                "uppercase",
+                "snake_case",
+                "camelCase",
+                "PascalCase",
+                "dedot"
+              ]
             }
           },
           "value_mappings": {
@@ -26408,7 +29710,17 @@
           "transforms": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "flatten_leaf",
+                "flatten_full",
+                "lowercase",
+                "uppercase",
+                "snake_case",
+                "camelCase",
+                "PascalCase",
+                "dedot"
+              ]
             }
           },
           "value_mappings": {
@@ -27009,6 +30321,62 @@
           "end"
         ]
       },
+      "query.FieldStat": {
+        "type": "object",
+        "properties": {
+          "cardinality": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "present": {
+            "type": "integer"
+          },
+          "top": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/query.fieldStatValue"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "present",
+          "cardinality",
+          "top"
+        ]
+      },
+      "query.FieldStatsResponse": {
+        "type": "object",
+        "properties": {
+          "approximate": {
+            "type": "boolean"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/query.FieldStat"
+            }
+          },
+          "sample_size": {
+            "type": "integer"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "supported": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "sample_size",
+          "approximate",
+          "supported",
+          "fields"
+        ]
+      },
       "query.LogByTimestampRequest": {
         "type": "object",
         "properties": {
@@ -27312,6 +30680,21 @@
           "valid"
         ]
       },
+      "query.fieldStatValue": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ]
+      },
       "queryhistory.QueryHistory": {
         "type": "object",
         "properties": {
@@ -27584,7 +30967,12 @@
             "type": "string"
           },
           "index_type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "none",
+              "bloom_filter",
+              "set"
+            ]
           }
         },
         "required": [
@@ -27788,7 +31176,12 @@
             "type": "string"
           },
           "index_type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "none",
+              "bloom_filter",
+              "set"
+            ]
           },
           "is_default": {
             "type": "boolean"
@@ -28786,6 +32179,24 @@
           "IssuerDomainPolicy",
           "SubjectDomainPolicy"
         ]
+      }
+    },
+    "securitySchemes": {
+      "apiKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An API key, sent as `Authorization: Bearer bifract_...`. This is how a program authenticates."
+      },
+      "ingestToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An ingest token, sent as `Authorization: Bearer bifract_ingest_...`. Scoped to one fractal and accepted only on the ingest endpoints."
+      },
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "bifract_session",
+        "description": "The browser session the web UI uses. Obtained from POST /auth/login."
       }
     }
   }

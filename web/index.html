@@ -25,6 +25,7 @@
     <link rel="stylesheet" href="/static/css/10-notifications-access.css">
     <link rel="stylesheet" href="/static/css/11-fields-graph.css">
     <link rel="stylesheet" href="/static/css/12-admin.css">
+    <link rel="stylesheet" href="/static/css/13-api-explorer.css">
     <link rel="stylesheet" href="/static/apiKeys.css">
     <link rel="stylesheet" href="/static/dictionaries.css">
     <link rel="stylesheet" href="/static/models.css">
@@ -49,6 +50,7 @@
                     <button id="fractalListingTabBtn" class="nav-tab active">Fractals</button>
                     <button id="mainNormalizersTabBtn" class="nav-tab admin-only" style="display: none;">Normalizers</button>
                     <button id="mainSchemaTabBtn" class="nav-tab admin-only" style="display: none;">Schema</button>
+                    <button id="mainApiTabBtn" class="nav-tab admin-only" style="display: none;">API</button>
                     <button id="mainPerformanceTabBtn" class="nav-tab admin-only" style="display: none;">System</button>
                     <button id="mainSettingsTabBtn" class="nav-tab admin-only" style="display: none;">Admin</button>
                 </nav>
@@ -1076,6 +1078,29 @@
             </div>
 
             <!-- Schema Fields Tab Content (Admin Only) -->
+            <div id="mainApiTabContent" style="display: none;">
+                <div id="apiExplorerView" class="admin-only" style="display: none;">
+                    <section class="settings-view-section">
+                        <div class="api-explorer">
+                            <div class="api-explorer-head">
+                                <input type="text" id="apiExplorerSearch" class="admin-search" placeholder="Search operations, paths, tags..." autocomplete="off">
+                                <div class="api-scope" id="apiExplorerScope">
+                                    <select id="apiExplorerScopeSelect" class="admin-search"></select>
+                                </div>
+                            </div>
+                            <div class="api-explorer-body">
+                                <nav class="api-explorer-list" id="apiExplorerList">
+                                    <div class="loading">Loading the API description...</div>
+                                </nav>
+                                <div class="api-explorer-detail" id="apiExplorerDetail">
+                                    <div class="api-explorer-empty">Loading the API description...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
             <div id="mainSchemaTabContent" style="display: none;">
                 <div id="schemaFieldsView" class="admin-only" style="display: none;">
                     <section class="settings-view-section">
@@ -4062,6 +4087,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/fractalManageTab.js"></script>
     <script src="/static/apiKeys.js"></script>
     <script src="/static/apiKeysAdmin.js"></script>
+    <script src="/static/apiExplorer.js"></script>
     <script src="/static/ingestTokens.js"></script>
     <script src="/static/instructionLibraries.js"></script>
     <script src="/static/notifications.js"></script>

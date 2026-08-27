@@ -48,6 +48,15 @@ const (
 	ModelTypeLongConnection ModelType = "long_connection"
 )
 
+// EnumValues lists every model type, so the API description names them instead
+// of saying "string".
+func (ModelType) EnumValues() []string {
+	return []string{
+		string(ModelTypeRarity), string(ModelTypeFirstSeen), string(ModelTypeVolumeBaseline),
+		string(ModelTypeBeacon), string(ModelTypeLongConnection),
+	}
+}
+
 // IsScheduled reports whether the model type is scored by the background scorer
 // engine (network analysis) rather than maintained incrementally by a streaming
 // materialized view. This is the single switch that routes the model lifecycle.

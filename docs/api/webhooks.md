@@ -1,13 +1,11 @@
-# Webhooks
+# Alert Webhooks
 
-```
-GET    /api/v1/webhooks            (admin)
-POST   /api/v1/webhooks            (admin)
-GET    /api/v1/webhooks/{id}       (admin)
-PUT    /api/v1/webhooks/{id}       (admin)
-DELETE /api/v1/webhooks/{id}       (admin)
-POST   /api/v1/webhooks/{id}/test  (admin)
-```
+A webhook forwards a firing alert to a system outside Bifract: a chat channel, a ticket
+queue, a SOAR playbook. You configure one under **Alerts > Actions**, or through the API;
+the operations are in [All Operations](reference.md).
+
+This page covers the two things that description cannot tell you: the fields a webhook
+accepts, and the payload Bifract sends you when an alert fires.
 
 ## Configuration
 

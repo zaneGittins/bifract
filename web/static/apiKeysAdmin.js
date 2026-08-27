@@ -114,7 +114,7 @@ const APIKeysAdmin = {
                 <td><span class="perm-badge ${status.cls}">${status.label}</span></td>
                 <td style="text-align:right;">
                     ${key.is_active
-                        ? `<button class="btn-secondary btn-sm" onclick="APIKeysAdmin.revoke('${key.id}')">Revoke</button>`
+                        ? `<button class="btn-secondary btn-sm" onclick="APIKeysAdmin.revoke('${Utils.escapeHtml(key.id)}')">Revoke</button>`
                         : ''}
                 </td>
             </tr>`;
@@ -128,7 +128,7 @@ const APIKeysAdmin = {
 
         const scope = key.prism_id ? `prisms/${key.prism_id}` : `fractals/${key.fractal_id}`;
         try {
-            const res = await fetch(`/api/v1/${scope}/api-keys/${key.key_id}/toggle`, {
+            const res = await fetch(`/api/v1/${scope}/api-keys/${key.id}/toggle`, {
                 method: 'POST',
                 credentials: 'include',
             });

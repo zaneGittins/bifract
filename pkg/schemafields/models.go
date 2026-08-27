@@ -17,6 +17,11 @@ const (
 	IndexTypeSet         IndexType = "set"
 )
 
+// EnumValues lists the skip-index kinds a schema field can carry.
+func (IndexType) EnumValues() []string {
+	return []string{string(IndexTypeNone), string(IndexTypeBloomFilter), string(IndexTypeSet)}
+}
+
 var validIndexTypes = map[IndexType]bool{
 	IndexTypeNone:        true,
 	IndexTypeBloomFilter: true,

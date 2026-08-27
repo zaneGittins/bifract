@@ -15,8 +15,14 @@ import (
 type Document struct {
 	OpenAPI    string               `json:"openapi"`
 	Info       Info                 `json:"info"`
+	Servers    []Server             `json:"servers,omitempty"`
 	Paths      map[string]*PathItem `json:"paths"`
 	Components Components           `json:"components"`
+}
+
+type Server struct {
+	URL         string `json:"url"`
+	Description string `json:"description,omitempty"`
 }
 
 type Info struct {
@@ -26,7 +32,18 @@ type Info struct {
 }
 
 type Components struct {
-	Schemas map[string]*Schema `json:"schemas,omitempty"`
+	Schemas         map[string]*Schema         `json:"schemas,omitempty"`
+	SecuritySchemes map[string]*SecurityScheme `json:"securitySchemes,omitempty"`
+}
+
+// SecurityScheme names a way to authenticate. Bifract accepts an API key as a
+// bearer token for programmatic callers, and a session cookie for the browser.
+type SecurityScheme struct {
+	Type        string `json:"type"`
+	Scheme      string `json:"scheme,omitempty"`
+	In          string `json:"in,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 type PathItem struct {
@@ -38,13 +55,16 @@ type PathItem struct {
 }
 
 type Operation struct {
-	OperationID string               `json:"operationId"`
-	Summary     string               `json:"summary,omitempty"`
-	Description string               `json:"description,omitempty"`
-	Tags        []string             `json:"tags,omitempty"`
-	Parameters  []*Parameter         `json:"parameters,omitempty"`
-	RequestBody *RequestBody         `json:"requestBody,omitempty"`
-	Responses   map[string]*Response `json:"responses"`
+	OperationID string       `json:"operationId"`
+	Summary     string       `json:"summary,omitempty"`
+	Description string       `json:"description,omitempty"`
+	Tags        []string     `json:"tags,omitempty"`
+	Parameters  []*Parameter `json:"parameters,omitempty"`
+	// Security is always emitted: an empty array means "no authentication
+	// required", which omitempty would erase into "unspecified".
+	Security    []map[string][]string `json:"security"`
+	RequestBody *RequestBody          `json:"requestBody,omitempty"`
+	Responses   map[string]*Response  `json:"responses"`
 }
 
 type Parameter struct {
@@ -98,7 +118,28 @@ func Generate(reg *api.Registry, version string) *Document {
 			Description: "Every operation Bifract serves. Generated from the running " +
 				"router, so it describes exactly what this build mounts.",
 		},
-		Paths: map[string]*PathItem{},
+		Servers: []Server{{URL: "/api/v1", Description: "This instance."}},
+		Paths:   map[string]*PathItem{},
+		Components: Components{
+			SecuritySchemes: map[string]*SecurityScheme{
+				"apiKey": {
+					Type:        "http",
+					Scheme:      "bearer",
+					Description: "An API key, sent as `Authorization: Bearer bifract_...`. This is how a program authenticates.",
+				},
+				"ingestToken": {
+					Type:        "http",
+					Scheme:      "bearer",
+					Description: "An ingest token, sent as `Authorization: Bearer bifract_ingest_...`. Scoped to one fractal and accepted only on the ingest endpoints.",
+				},
+				"session": {
+					Type:        "apiKey",
+					In:          "cookie",
+					Name:        "bifract_session",
+					Description: "The browser session the web UI uses. Obtained from POST /auth/login.",
+				},
+			},
+		},
 	}
 
 	routes := reg.Routes()
@@ -153,6 +194,38 @@ func (g *schemaGen) operation(route api.Route) *Operation {
 			Required: true,
 			Schema:   &Schema{Type: "string"},
 		})
+	}
+
+	// Say which scheme actually applies. An empty list means no authentication
+	// at all, which is different from "not described", and ingest endpoints take
+	// an ingest token rather than an API key or a session.
+	switch route.Access {
+	case api.AccessPublic, api.AccessInternal:
+		op.Security = []map[string][]string{}
+	case api.AccessIngestToken:
+		op.Security = []map[string][]string{{"ingestToken": {}}}
+	default:
+		op.Security = []map[string][]string{{"apiKey": {}}, {"session": {}}}
+	}
+
+	for _, q := range route.Query {
+		typ := q.Type
+		if typ == "" {
+			typ = "string"
+		}
+		op.Parameters = append(op.Parameters, &Parameter{
+			Name:        q.Name,
+			In:          "query",
+			Description: q.Description,
+			Schema:      &Schema{Type: typ},
+		})
+	}
+
+	if route.Request == nil && route.Consumes != "" {
+		op.RequestBody = &RequestBody{
+			Required: true,
+			Content:  map[string]*MediaType{route.Consumes: {}},
+		}
 	}
 
 	if route.Request != nil {

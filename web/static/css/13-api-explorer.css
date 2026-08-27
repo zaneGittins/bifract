@@ -1,0 +1,360 @@
+/* Split from style.css originally as parts 1-12; this part was added later for
+   the API explorer and depends on the tokens defined in 01-base.css. */
+/* ============================
+   API explorer
+   Two panes: operations on the left, the selected one on the right.
+   ============================ */
+
+/* The explorer fills whatever height the viewport leaves. body and .container
+   are already flex columns, so the chain only needs the tab wrappers to pass the
+   height down: subtracting a guessed chrome height leaves a gap above the footer
+   at some window sizes and overflows at others. */
+#mainApiTabContent,
+#apiExplorerView,
+#apiExplorerView > .settings-view-section {
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.api-explorer {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+/* Same grid as the body below, so the search box is exactly the width of the
+   operation list it filters rather than spilling over the detail pane. */
+.api-explorer-head {
+    display: grid;
+    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+    gap: 1.25rem;
+    align-items: center;
+    padding-bottom: 0.75rem;
+}
+
+.api-explorer-head .admin-search {
+    width: 100%;
+}
+
+.api-explorer-body {
+    display: grid;
+    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+    gap: 1.25rem;
+    flex: 1;
+    min-height: 0;
+}
+
+.api-explorer-list {
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    padding: 0.35rem;
+}
+
+.api-explorer-detail {
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    padding: 1.1rem 1.25rem;
+}
+
+.api-explorer-empty {
+    color: var(--text-muted);
+    padding: 1.25rem;
+    font-size: 0.9rem;
+}
+
+.api-tag-head {
+    padding: 0.6rem 0.5rem 0.3rem;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.api-op {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.32rem 0.5rem;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    text-align: left;
+    cursor: pointer;
+}
+
+.api-op:hover {
+    background: var(--bg-hover);
+}
+
+.api-op.active {
+    background: var(--accent-glow, rgba(139, 92, 246, 0.14));
+    color: var(--accent-primary);
+}
+
+.api-op-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Method chips. Colour carries the same meaning everywhere: green reads,
+   purple writes, red removes. */
+.api-method {
+    flex: 0 0 auto;
+    min-width: 44px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-align: center;
+}
+
+.api-method-get { background: rgba(74, 222, 128, 0.14); color: var(--success, #4ade80); }
+.api-method-post { background: rgba(139, 92, 246, 0.16); color: var(--accent-primary); }
+.api-method-put,
+.api-method-patch { background: rgba(251, 191, 36, 0.14); color: var(--warning, #fbbf24); }
+.api-method-delete { background: rgba(248, 113, 113, 0.14); color: var(--error, #f87171); }
+
+.api-detail-head {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.5rem;
+}
+
+.api-detail-path {
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    color: var(--text-primary);
+}
+
+.api-detail-summary {
+    margin: 0 0 0.35rem;
+    color: var(--text-primary);
+}
+
+.api-detail-access {
+    margin: 0 0 1rem;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.api-section {
+    margin-top: 1.25rem;
+}
+
+.api-section h4 {
+    margin: 0 0 0.5rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.api-param {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.4rem;
+}
+
+.api-param span {
+    min-width: 110px;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.api-body,
+.api-result-body {
+    width: 100%;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    padding: 0.6rem 0.7rem;
+}
+
+.api-result-body {
+    max-height: 340px;
+    overflow: auto;
+    margin: 0.5rem 0 0;
+    white-space: pre;
+}
+
+.api-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-top: 1rem;
+}
+
+.api-warn {
+    color: var(--warning, #fbbf24);
+    font-size: 0.8rem;
+}
+
+.api-result-head {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.api-response {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.28rem 0;
+    font-size: 0.85rem;
+}
+
+.api-code {
+    min-width: 38px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-align: center;
+}
+
+.api-code-2xx { background: rgba(74, 222, 128, 0.14); color: var(--success, #4ade80); }
+.api-code-4xx { background: rgba(251, 191, 36, 0.14); color: var(--warning, #fbbf24); }
+.api-code-5xx { background: rgba(248, 113, 113, 0.14); color: var(--error, #f87171); }
+
+.api-media {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    padding: 1px 5px;
+}
+
+/* Request context. The explorer is a global page reached outside any fractal,
+   so it cannot inherit a scope from navigation: it carries its own, and shows
+   exactly what every request will send. */
+.api-scope {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+}
+
+.api-scope select {
+    max-width: 260px;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+}
+
+.api-scope-missing select {
+    border-color: var(--warning, #d19a3d);
+}
+
+/* Landing pane: what an unselected explorer should show. */
+
+.api-copy-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.4rem;
+}
+
+.api-copy-label {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    min-width: 96px;
+}
+
+.api-copy-row code {
+    flex: 1;
+    background: var(--bg-tertiary, var(--bg-primary));
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.3rem 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+
+.api-quick-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.api-quick {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.4rem 0.55rem;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.api-quick:hover {
+    background: var(--bg-hover, var(--bg-tertiary));
+    border-color: var(--accent-color, var(--border-color));
+}
+
+.api-quick-path {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+}
+
+.api-quick-label {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-left: auto;
+}
+
+.api-landing-hint {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-top: 1rem;
+}
+
+.api-param span em {
+    color: var(--text-muted);
+    font-style: normal;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+}
+
+.api-copy-block {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+}
+
+.api-copy-block pre {
+    flex: 1;
+    margin: 0;
+    background: var(--bg-tertiary, var(--bg-primary));
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.5rem 0.6rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    overflow-x: auto;
+}

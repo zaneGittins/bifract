@@ -29,6 +29,12 @@ theme:
     - search.highlight
     - content.code.copy
 
+plugins:
+  - search
+  - swagger-ui-tag:
+      docExpansion: none
+      tryItOutEnabled: false
+
 markdown_extensions:
   - admonition
   - pymdownx.details
@@ -93,13 +99,7 @@ nav:
     - AI Chat: features/ai-chat.md
     - MCP Server: features/mcp-server.md
   - API Reference:
+    - All Operations: api/reference.md
     - Authentication: api/authentication.md
-    - Ingestion: api/ingestion.md
-    - Querying: api/querying.md
-    - Comments: api/comments.md
-    - Fractals: api/fractals.md
-    - Alerts: api/alerts.md
-    - Webhooks: api/webhooks.md
-    - Notebooks: api/notebooks.md
-    - Dashboards: api/dashboards.md
-    - Health & Status: api/health.md
+    - Sending Logs: api/ingestion.md
+    - Alert Webhooks: api/webhooks.md

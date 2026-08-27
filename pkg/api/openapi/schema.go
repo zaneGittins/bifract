@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"bifract/pkg/api"
 )
 
 // Schema is the subset of JSON Schema the generated document uses.
@@ -18,11 +20,14 @@ type Schema struct {
 	Items                *Schema            `json:"items,omitempty"`
 	AdditionalProperties *Schema            `json:"additionalProperties,omitempty"`
 	Nullable             bool               `json:"nullable,omitempty"`
+	Enum                 []string           `json:"enum,omitempty"`
 }
 
 var (
 	timeType    = reflect.TypeOf(time.Time{})
 	rawJSONType = reflect.TypeOf(json.RawMessage{})
+
+	enumeratorType = reflect.TypeOf((*api.Enumerator)(nil)).Elem()
 )
 
 // schemaGen turns Go types into JSON Schema, naming every named struct as a
@@ -71,6 +76,15 @@ func (g *schemaGen) schemaFor(t reflect.Type) *Schema {
 		return &Schema{Type: "string", Format: "date-time"}
 	case rawJSONType:
 		return &Schema{Description: "Arbitrary JSON."}
+	}
+
+	// A type that knows its own values describes them, so a caller does not have
+	// to guess what a field like alert severity accepts.
+	if t.Implements(enumeratorType) {
+		values := reflect.Zero(t).Interface().(api.Enumerator).EnumValues()
+		if len(values) > 0 {
+			return &Schema{Type: "string", Enum: values}
+		}
 	}
 
 	switch t.Kind() {

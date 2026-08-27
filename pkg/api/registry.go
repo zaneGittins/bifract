@@ -32,7 +32,23 @@ type Route struct {
 	// Produces names the media type when the route does not answer JSON: a
 	// stream, or a file the caller downloads.
 	Produces string
-	Handler  http.HandlerFunc
+	// Consumes names the media type when the request body is not a JSON object
+	// this codebase has a type for: raw NDJSON from a log shipper, a YAML
+	// document, an uploaded file.
+	Consumes string
+	// Query lists the query-string parameters the handler reads. Handlers read
+	// them ad hoc, so nothing but this declaration can tell a client they exist.
+	Query   []QueryParam
+	Handler http.HandlerFunc
+}
+
+// QueryParam is one query-string parameter a route accepts.
+type QueryParam struct {
+	Name string
+	// Type is the JSON schema type: "string", "integer" or "boolean". Empty
+	// means string.
+	Type        string
+	Description string
 }
 
 // Registry records described routes keyed by method and fully qualified path.
@@ -132,7 +148,12 @@ func (rt Router) Register(route Route) {
 // guard refuses a request whose principal does not satisfy access. Handlers
 // still perform their own row-level checks; this is the route-level gate.
 func guard(access Access, h http.HandlerFunc) http.HandlerFunc {
-	if access == "" || access == AccessPublic || access == AccessIngestToken || access == AccessInternal {
+	// Only these three are reachable without a session, and each is enforced
+	// elsewhere: by nothing (public), by the ingest token, or by the
+	// private-network middleware. Every other value, including an access level
+	// nobody set, goes through Allows, which denies what it does not recognise.
+	// The default here is deny on purpose: an undeclared route must not be open.
+	if access == AccessPublic || access == AccessIngestToken || access == AccessInternal {
 		return h
 	}
 	return func(w http.ResponseWriter, r *http.Request) {

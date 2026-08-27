@@ -85,7 +85,7 @@ func walkRouter(t *testing.T, mux *chi.Mux, reg *api.Registry) []mountedRoute {
 			middlewares:   len(middlewares),
 			authenticated: authenticated,
 			registered:    ok,
-			hasRequest:    described.Request != nil,
+			hasRequest:    described.Request != nil || described.Consumes != "",
 			hasResponse:   described.Response != nil,
 			access:        string(described.Access),
 		})

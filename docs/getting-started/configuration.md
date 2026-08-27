@@ -26,5 +26,5 @@ A complete reference of all variables with comments is available in [`.env.examp
 | `BIFRACT_IP_ACCESS` | `all` | IP access mode: `restrict-app`, `restrict-all`, `mtls-app`, or `all`. See [Reverse Proxy](../administration/reverse-proxy.md#access-control) |
 | `BIFRACT_ALLOWED_IPS` | _(empty)_ | Comma-separated IPs or CIDR ranges allowed when IP access is restricted |
 | `BIFRACT_METRICS_ENABLED` | `false` | Set `true` to enable the Prometheus metrics endpoint |
-| `BIFRACT_METRICS_ADDR` | `:9090` | Listen address for the metrics server (separate from the main app) |
+| `BIFRACT_METRICS_ADDR` | `:9090` | Listen address for the metrics server. It is a separate listener from the main application port so it can be firewalled independently |
 | `BIFRACT_ARCHIVE_ENABLED` | `false` | Enable the Iceberg archive (durable copy of all logs to object storage). Also toggleable from the admin UI. See [Iceberg Archive](../administration/backup-restore.md#iceberg-archive) for the full `BIFRACT_ARCHIVE_*` reference |

@@ -32,20 +32,20 @@ type fieldStatValue struct {
 	Count uint64 `json:"count"`
 }
 
-// fieldStat is the per-field distribution over the sampled events.
-type fieldStat struct {
+// FieldStat is the per-field distribution over the sampled events.
+type FieldStat struct {
 	Name        string           `json:"name"`
 	Present     uint64           `json:"present"`     // non-null occurrences in the sample
 	Cardinality uint64           `json:"cardinality"` // distinct values in the sample (exact within sample)
 	Top         []fieldStatValue `json:"top"`         // top values by frequency, count-desc
 }
 
-type fieldStatsResponse struct {
+type FieldStatsResponse struct {
 	Success     bool        `json:"success"`
 	SampleSize  uint64      `json:"sample_size"` // rows actually scanned (coverage denominator)
 	Approximate bool        `json:"approximate"` // true when the sample cap was hit (more rows match)
 	Supported   bool        `json:"supported"`   // false for source-command queries (pgr() etc.)
-	Fields      []fieldStat `json:"fields"`
+	Fields      []FieldStat `json:"fields"`
 }
 
 // HandleFieldStats computes server-side field statistics for a BQL query's matched
@@ -70,12 +70,12 @@ func (h *QueryHandler) HandleFieldStats(w http.ResponseWriter, r *http.Request) 
 		SampleSize: sampleSize,
 	})
 	if err != nil {
-		json.NewEncoder(w).Encode(fieldStatsResponse{Success: false, Supported: true})
+		json.NewEncoder(w).Encode(FieldStatsResponse{Success: false, Supported: true})
 		return
 	}
 	if statsSQL == "" {
 		// Source-command composition (pgr() etc.): no norm_log column to aggregate.
-		json.NewEncoder(w).Encode(fieldStatsResponse{Success: true, Supported: false, Fields: []fieldStat{}})
+		json.NewEncoder(w).Encode(FieldStatsResponse{Success: true, Supported: false, Fields: []FieldStat{}})
 		return
 	}
 
@@ -88,11 +88,11 @@ func (h *QueryHandler) HandleFieldStats(w http.ResponseWriter, r *http.Request) 
 
 	rows, err := h.db.QueryLowPriority(ctx, statsSQL)
 	if err != nil {
-		json.NewEncoder(w).Encode(fieldStatsResponse{Success: false, Supported: true})
+		json.NewEncoder(w).Encode(FieldStatsResponse{Success: false, Supported: true})
 		return
 	}
 
-	resp := fieldStatsResponse{Success: true, Supported: true, Fields: make([]fieldStat, 0, len(rows))}
+	resp := FieldStatsResponse{Success: true, Supported: true, Fields: make([]FieldStat, 0, len(rows))}
 	for _, row := range rows {
 		name, _ := row["key"].(string)
 		present := asUint64(row["present"])
@@ -103,7 +103,7 @@ func (h *QueryHandler) HandleFieldStats(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 
-		fs := fieldStat{
+		fs := FieldStat{
 			Name:        name,
 			Present:     present,
 			Cardinality: asUint64(row["cardinality"]),

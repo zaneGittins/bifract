@@ -440,6 +440,7 @@ const App = {
         this._bindTab(document.getElementById('mainSettingsTabBtn'), () => this.showMainViewTab('settings'), 'settings');
         this._bindTab(document.getElementById('mainNormalizersTabBtn'), () => this.showMainViewTab('normalizers'), 'normalizers');
         this._bindTab(document.getElementById('mainSchemaTabBtn'), () => this.showMainViewTab('schema'), 'schema');
+        this._bindTab(document.getElementById('mainApiTabBtn'), () => this.showMainViewTab('api'), 'api');
 
         // Fractal View Tab Buttons
         // Hash is a function so ctrl+click open-in-new-tab captures the live fractal ID.
@@ -915,8 +916,9 @@ const App = {
         const mainSettingsContent = document.getElementById('mainSettingsTabContent');
         const mainNormalizersContent = document.getElementById('mainNormalizersTabContent');
         const mainSchemaContent = document.getElementById('mainSchemaTabContent');
+        const mainApiContent = document.getElementById('mainApiTabContent');
 
-        [fractalListingContent, mainPerformanceContent, mainSettingsContent, mainNormalizersContent, mainSchemaContent].forEach(content => {
+        [fractalListingContent, mainPerformanceContent, mainSettingsContent, mainNormalizersContent, mainSchemaContent, mainApiContent].forEach(content => {
             if (content) content.style.display = 'none';
         });
 
@@ -925,7 +927,8 @@ const App = {
         const performanceView = document.getElementById('performanceView');
         const normalizersView = document.getElementById('normalizersView');
         const schemaFieldsView = document.getElementById('schemaFieldsView');
-        [settingsView, performanceView, normalizersView, schemaFieldsView].forEach(view => {
+        const apiExplorerView = document.getElementById('apiExplorerView');
+        [settingsView, performanceView, normalizersView, schemaFieldsView, apiExplorerView].forEach(view => {
             if (view) view.style.display = 'none';
         });
 
@@ -935,8 +938,9 @@ const App = {
         const mainSettingsTab = document.getElementById('mainSettingsTabBtn');
         const mainNormalizersTab = document.getElementById('mainNormalizersTabBtn');
         const mainSchemaTab = document.getElementById('mainSchemaTabBtn');
+        const mainApiTab = document.getElementById('mainApiTabBtn');
 
-        [fractalListingTab, mainPerformanceTab, mainSettingsTab, mainNormalizersTab, mainSchemaTab].forEach(tabBtn => {
+        [fractalListingTab, mainPerformanceTab, mainSettingsTab, mainNormalizersTab, mainSchemaTab, mainApiTab].forEach(tabBtn => {
             if (tabBtn) tabBtn.classList.remove('active');
         });
 
@@ -972,6 +976,14 @@ const App = {
                 if (schemaFieldsView) schemaFieldsView.style.display = 'block';
                 if (mainSchemaTab) mainSchemaTab.classList.add('active');
                 if (window.SchemaFields) SchemaFields.show();
+                break;
+            case 'api':
+                // flex, not block: the explorer fills the viewport by flexing from
+                // .container rather than subtracting a hardcoded chrome height.
+                if (mainApiContent) mainApiContent.style.display = 'flex';
+                if (apiExplorerView) apiExplorerView.style.display = 'flex';
+                if (mainApiTab) mainApiTab.classList.add('active');
+                if (window.APIExplorer) APIExplorer.show();
                 break;
         }
     },
