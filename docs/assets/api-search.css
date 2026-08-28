@@ -1,0 +1,102 @@
+/* Search box above the API reference. Styled from the theme's own variables so
+   it follows the palette toggle rather than pinning a light or dark look. */
+
+.api-search {
+  margin: 0 0 1.2rem;
+}
+
+.api-search__input {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.72rem;
+  color: var(--md-default-fg-color);
+  background: var(--md-default-bg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+  outline: none;
+  transition: border-color 125ms;
+}
+
+.api-search__input:focus {
+  border-color: var(--md-accent-fg-color);
+}
+
+.api-search__input::placeholder {
+  color: var(--md-default-fg-color--light);
+}
+
+.api-search__results {
+  margin-top: 0.4rem;
+  max-height: 20rem;
+  overflow-y: auto;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+}
+
+.api-search__hit {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.68rem;
+  text-align: left;
+  color: var(--md-default-fg-color);
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  cursor: pointer;
+}
+
+.api-search__hit:last-child {
+  border-bottom: none;
+}
+
+.api-search__hit:hover,
+.api-search__hit:focus {
+  background: var(--md-default-fg-color--lightest);
+}
+
+.api-search__method {
+  flex: none;
+  min-width: 3.4rem;
+  padding: 0.05rem 0.3rem;
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: center;
+  color: var(--md-default-bg-color);
+  border-radius: 0.15rem;
+  background: var(--md-default-fg-color--light);
+}
+
+.api-search__method--get { background: #4a90d9; }
+.api-search__method--post { background: #4f9a6f; }
+.api-search__method--put { background: #c08a3e; }
+.api-search__method--patch { background: #8a7fbf; }
+.api-search__method--delete { background: #c15b5b; }
+
+.api-search__path {
+  flex: none;
+  font-size: 0.66rem;
+  color: var(--md-default-fg-color);
+  background: none;
+  padding: 0;
+}
+
+.api-search__summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--md-default-fg-color--light);
+}
+
+.api-search__empty {
+  margin: 0;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.66rem;
+  color: var(--md-default-fg-color--light);
+}

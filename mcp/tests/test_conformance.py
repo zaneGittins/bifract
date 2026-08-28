@@ -6,6 +6,7 @@ route that is renamed or an enum that gains a value fails here rather than at a
 user's first call.
 """
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -159,3 +160,103 @@ async def test_the_documented_tool_list_matches_the_server():
     phantom = sorted(documented - registered)
     assert not undocumented, "tools the server exposes but the docs never mention: " + ", ".join(undocumented)
     assert not phantom, "tools the docs promise but the server does not expose: " + ", ".join(phantom)
+
+
+def _request_properties(spec):
+    """(method, normalised path) -> the body keys the API declares, or None."""
+    schemas = spec["components"]["schemas"]
+
+    def deref(node):
+        while isinstance(node, dict) and "$ref" in node:
+            node = schemas[node["$ref"].rsplit("/", 1)[-1]]
+        return node
+
+    out = {}
+    for path, ops in spec["paths"].items():
+        if not path.startswith(PREFIX):
+            continue
+        for method, op in ops.items():
+            if method not in ("get", "post", "put", "delete"):
+                continue
+            body = op.get("requestBody")
+            schema = (
+                deref(body.get("content", {}).get("application/json", {}).get("schema", {}))
+                if body
+                else None
+            )
+            out[(method, _placeholders(path[len(PREFIX):]))] = (
+                set((schema.get("properties") or {}).keys()) if schema else None
+            )
+    return out
+
+
+def _sent_body_keys():
+    """Every (method, path, keys) a tool posts, recovered from the source."""
+    found = []
+    for module in Path("bifract_mcp/tools").glob("*.py"):
+        tree = ast.parse(module.read_text())
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            # Bodies are built as a dict literal, sometimes with later key assignments.
+            local: dict[str, set] = {}
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+                    if isinstance(node.value, ast.Dict):
+                        local[node.targets[0].id] = {
+                            k.value for k in node.value.keys
+                            if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                        }
+                elif isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Subscript):
+                    target = node.targets[0]
+                    if isinstance(target.value, ast.Name) and isinstance(target.slice, ast.Constant):
+                        local.setdefault(target.value.id, set()).add(target.slice.value)
+
+            for node in ast.walk(fn):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                    continue
+                if node.func.attr not in ("post", "put") or not isinstance(node.func.value, ast.Name):
+                    continue
+                if node.func.value.id != "http" or not node.args:
+                    continue
+                target = node.args[0]
+                if isinstance(target, ast.Constant):
+                    path = target.value
+                elif isinstance(target, ast.JoinedStr):
+                    path = "".join(
+                        v.value if isinstance(v, ast.Constant) else "{x}" for v in target.values
+                    )
+                else:
+                    continue
+                keys = set()
+                if len(node.args) > 1:
+                    arg = node.args[1]
+                    if isinstance(arg, ast.Dict):
+                        keys = {
+                            k.value for k in arg.keys
+                            if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                        }
+                    elif isinstance(arg, ast.Name):
+                        keys = local.get(arg.id, set())
+                if keys:
+                    found.append((node.func.attr, _placeholders(path), keys, f"{module.name}:{fn.name}"))
+    return found
+
+
+def test_no_tool_sends_a_body_field_the_api_does_not_accept():
+    """An unknown key is dropped silently, so the tool reports success having done nothing.
+
+    This is the other half of endpoint conformance: a tool must not reference a
+    parameter the server does not have, not just a path.
+    """
+    declared = _request_properties(_spec())
+    wrong = []
+    for method, path, keys, where in _sent_body_keys():
+        allowed = declared.get((method, path), "missing")
+        if allowed == "missing":
+            wrong.append(f"{where}: {method.upper()} {path} is not a route")
+        elif allowed is None:
+            wrong.append(f"{where}: {method.upper()} {path} takes no body, but sends {sorted(keys)}")
+        elif unknown := keys - allowed:
+            wrong.append(f"{where}: {method.upper()} {path} sends {sorted(unknown)}, not in the schema")
+    assert not wrong, "request fields the API would ignore:\n  " + "\n  ".join(wrong)

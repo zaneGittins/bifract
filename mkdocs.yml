@@ -41,6 +41,12 @@ plugins:
       extra_css:
         - assets/swagger-reference.css
 
+extra_css:
+  - assets/api-search.css
+
+extra_javascript:
+  - assets/api-search.js
+
 markdown_extensions:
   - admonition
   - pymdownx.details
