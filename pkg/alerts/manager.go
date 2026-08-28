@@ -70,44 +70,44 @@ type YAMLAlert struct {
 
 // AlertCreateRequest represents a request to create a new alert
 type AlertCreateRequest struct {
-	Name                string   `json:"name"`
-	Description         string   `json:"description"`
-	QueryString         string   `json:"query_string"`
-	AlertType           string   `json:"alert_type"`
-	WebhookActionIDs    []string `json:"webhook_action_ids"`
-	FractalActionIDs    []string `json:"fractal_action_ids"`
-	DictionaryActionIDs []string `json:"dictionary_action_ids"`
-	EmailActionIDs      []string `json:"email_action_ids"`
-	Labels              []string `json:"labels"`
-	References          []string `json:"references"`
-	Severity            string   `json:"severity"`
-	Enabled             bool     `json:"enabled"`
-	ThrottleTimeSeconds int      `json:"throttle_time_seconds"`
-	ThrottleField       string   `json:"throttle_field"`
-	WindowDuration      *int     `json:"window_duration,omitempty"`
-	ScheduleCron        *string  `json:"schedule_cron,omitempty"`
-	QueryWindowSeconds  *int     `json:"query_window_seconds,omitempty"`
+	Name                string    `json:"name"`
+	Description         string    `json:"description"`
+	QueryString         string    `json:"query_string"`
+	AlertType           AlertType `json:"alert_type"`
+	WebhookActionIDs    []string  `json:"webhook_action_ids"`
+	FractalActionIDs    []string  `json:"fractal_action_ids"`
+	DictionaryActionIDs []string  `json:"dictionary_action_ids"`
+	EmailActionIDs      []string  `json:"email_action_ids"`
+	Labels              []string  `json:"labels"`
+	References          []string  `json:"references"`
+	Severity            string    `json:"severity"`
+	Enabled             bool      `json:"enabled"`
+	ThrottleTimeSeconds int       `json:"throttle_time_seconds"`
+	ThrottleField       string    `json:"throttle_field"`
+	WindowDuration      *int      `json:"window_duration,omitempty"`
+	ScheduleCron        *string   `json:"schedule_cron,omitempty"`
+	QueryWindowSeconds  *int      `json:"query_window_seconds,omitempty"`
 }
 
 // AlertUpdateRequest represents a request to update an existing alert
 type AlertUpdateRequest struct {
-	Name                string   `json:"name"`
-	Description         string   `json:"description"`
-	QueryString         string   `json:"query_string"`
-	AlertType           string   `json:"alert_type"`
-	WebhookActionIDs    []string `json:"webhook_action_ids"`
-	FractalActionIDs    []string `json:"fractal_action_ids"`
-	DictionaryActionIDs []string `json:"dictionary_action_ids"`
-	EmailActionIDs      []string `json:"email_action_ids"`
-	Labels              []string `json:"labels"`
-	References          []string `json:"references"`
-	Severity            string   `json:"severity"`
-	Enabled             bool     `json:"enabled"`
-	ThrottleTimeSeconds int      `json:"throttle_time_seconds"`
-	ThrottleField       string   `json:"throttle_field"`
-	WindowDuration      *int     `json:"window_duration,omitempty"`
-	ScheduleCron        *string  `json:"schedule_cron,omitempty"`
-	QueryWindowSeconds  *int     `json:"query_window_seconds,omitempty"`
+	Name                string    `json:"name"`
+	Description         string    `json:"description"`
+	QueryString         string    `json:"query_string"`
+	AlertType           AlertType `json:"alert_type"`
+	WebhookActionIDs    []string  `json:"webhook_action_ids"`
+	FractalActionIDs    []string  `json:"fractal_action_ids"`
+	DictionaryActionIDs []string  `json:"dictionary_action_ids"`
+	EmailActionIDs      []string  `json:"email_action_ids"`
+	Labels              []string  `json:"labels"`
+	References          []string  `json:"references"`
+	Severity            string    `json:"severity"`
+	Enabled             bool      `json:"enabled"`
+	ThrottleTimeSeconds int       `json:"throttle_time_seconds"`
+	ThrottleField       string    `json:"throttle_field"`
+	WindowDuration      *int      `json:"window_duration,omitempty"`
+	ScheduleCron        *string   `json:"schedule_cron,omitempty"`
+	QueryWindowSeconds  *int      `json:"query_window_seconds,omitempty"`
 }
 
 // EmailActionCreateRequest represents a request to create a new email action
@@ -231,7 +231,7 @@ func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, create
 			Name:                yamlAlert.Name,
 			Description:         yamlAlert.Description,
 			QueryString:         yamlAlert.QueryString,
-			AlertType:           yamlAlert.AlertType,
+			AlertType:           AlertType(yamlAlert.AlertType),
 			Severity:            yamlAlert.Severity,
 			WebhookActionIDs:    webhookIDs,
 			Labels:              yamlAlert.Labels,
@@ -251,7 +251,7 @@ func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, create
 		Name:                yamlAlert.Name,
 		Description:         yamlAlert.Description,
 		QueryString:         yamlAlert.QueryString,
-		AlertType:           yamlAlert.AlertType,
+		AlertType:           AlertType(yamlAlert.AlertType),
 		Severity:            yamlAlert.Severity,
 		WebhookActionIDs:    webhookIDs,
 		Labels:              yamlAlert.Labels,
@@ -364,6 +364,10 @@ func sigmaDescription(rule *sigma.SigmaRule) string {
 // CreateAlert creates a new alert scoped to either a fractal or a prism (pass one, leave other empty).
 func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, createdBy string, fractalID, prismID string) (*Alert, error) {
 	// Validate query syntax
+	if err := validateAlertType(string(req.AlertType)); err != nil {
+		return nil, err
+	}
+
 	parsedQuery, err := parser.ParseQuery(req.QueryString)
 	if err != nil {
 		return nil, fmt.Errorf("invalid query syntax: %w", err)
@@ -2086,7 +2090,7 @@ func (m *Manager) DuplicateAlert(ctx context.Context, alertID, createdBy string)
 		Name:                newName,
 		Description:         source.Description,
 		QueryString:         source.QueryString,
-		AlertType:           source.AlertType,
+		AlertType:           AlertType(source.AlertType),
 		Labels:              source.Labels,
 		References:          source.References,
 		Enabled:             false,

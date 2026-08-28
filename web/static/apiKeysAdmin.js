@@ -14,6 +14,125 @@ const APIKeysAdmin = {
 
         const refresh = document.getElementById('apiKeysAdminRefresh');
         if (refresh) refresh.addEventListener('click', () => this.load());
+
+        const create = document.getElementById('apiKeysAdminNew');
+        if (create) create.addEventListener('click', () => this.showCreate());
+
+        const submit = document.getElementById('adminApiKeySubmit');
+        if (submit) submit.addEventListener('click', () => this.create());
+
+        // A tenant-admin key must carry an expiry, so the form stops offering
+        // "never" rather than letting the server refuse the request.
+        const tenantAdmin = document.getElementById('adminApiKeyTenantAdmin');
+        if (tenantAdmin) tenantAdmin.addEventListener('change', () => this._syncExpiry());
+
+        const never = document.getElementById('adminApiKeyNeverExpires');
+        if (never) never.addEventListener('change', () => this._syncExpiry());
+    },
+
+    async showCreate() {
+        const modal = document.getElementById('adminCreateAPIKeyModal');
+        if (!modal) return;
+
+        const scope = document.getElementById('adminApiKeyScope');
+        if (scope && !scope.options.length) {
+            try {
+                const res = await fetch('/api/v1/fractals', { credentials: 'include' });
+                const body = await res.json();
+                const data = body.data || {};
+                scope.innerHTML = [
+                    ...(data.fractals || []).map(f =>
+                        `<option value="fractal:${Utils.escapeHtml(f.id)}">fractal &middot; ${Utils.escapeHtml(f.name)}</option>`),
+                    ...(data.prisms || []).map(p =>
+                        `<option value="prism:${Utils.escapeHtml(p.id)}">prism &middot; ${Utils.escapeHtml(p.name)}</option>`),
+                ].join('');
+            } catch (_) {
+                if (window.Toast) Toast.error('Failed to load scopes', 'Could not list fractals');
+                return;
+            }
+        }
+
+        document.getElementById('adminApiKeyName').value = '';
+        document.getElementById('adminApiKeyRole').value = 'analyst';
+        document.getElementById('adminApiKeyTenantAdmin').checked = false;
+        document.getElementById('adminApiKeyNeverExpires').checked = false;
+
+        const expires = document.getElementById('adminApiKeyExpires');
+        const in30Days = new Date(Date.now() + 30 * 86400000);
+        expires.value = new Date(in30Days.getTime() - in30Days.getTimezoneOffset() * 60000)
+            .toISOString().slice(0, 16);
+
+        this._syncExpiry();
+        modal.style.display = 'flex';
+        setTimeout(() => document.getElementById('adminApiKeyName')?.focus(), 50);
+    },
+
+    hideCreate() {
+        const modal = document.getElementById('adminCreateAPIKeyModal');
+        if (modal) modal.style.display = 'none';
+    },
+
+    _syncExpiry() {
+        const tenantAdmin = document.getElementById('adminApiKeyTenantAdmin')?.checked;
+        const never = document.getElementById('adminApiKeyNeverExpires');
+        const expires = document.getElementById('adminApiKeyExpires');
+        if (!never || !expires) return;
+
+        if (tenantAdmin) never.checked = false;
+        never.disabled = !!tenantAdmin;
+        expires.disabled = never.checked;
+    },
+
+    async create() {
+        const name = document.getElementById('adminApiKeyName')?.value?.trim();
+        if (!name) {
+            if (window.Toast) Toast.error('Validation', 'Give the key a name');
+            return;
+        }
+        const scope = document.getElementById('adminApiKeyScope')?.value || '';
+        const [kind, id] = scope.split(':');
+        if (!id) {
+            if (window.Toast) Toast.error('Validation', 'Choose a scope for the key');
+            return;
+        }
+
+        const never = document.getElementById('adminApiKeyNeverExpires')?.checked;
+        const expiresRaw = document.getElementById('adminApiKeyExpires')?.value;
+        const request = {
+            name,
+            description: '',
+            role: document.getElementById('adminApiKeyRole')?.value || 'analyst',
+            tenant_admin: !!document.getElementById('adminApiKeyTenantAdmin')?.checked,
+            expires_at: never || !expiresRaw ? null : new Date(expiresRaw).toISOString(),
+        };
+
+        const path = kind === 'prism' ? `/api/v1/prisms/${id}/api-keys` : `/api/v1/fractals/${id}/api-keys`;
+        const btn = document.getElementById('adminApiKeySubmit');
+        if (btn) btn.disabled = true;
+        try {
+            const res = await fetch(path, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json', 'X-Bifract-Scope': scope },
+                body: JSON.stringify(request),
+            });
+            if (!res.ok) throw new Error(await Utils.errorMessage(res, 'Failed to create the key'));
+            const body = await res.json();
+            this.hideCreate();
+            // The secret is returned exactly once, so hand it straight to the
+            // existing one-time reveal rather than a toast that scrolls away.
+            const key = (body.data || {}).key;
+            if (key && window.APIKeys?.showKeyDialog) {
+                APIKeys.showKeyDialog(key);
+            } else if (window.Toast) {
+                Toast.success('Key created', 'Copy it now: it is not shown again');
+            }
+            await this.load();
+        } catch (err) {
+            if (window.Toast) Toast.error('Failed to create the key', err.message);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
     },
 
     async show() {
@@ -112,12 +231,24 @@ const APIKeysAdmin = {
                 <td>${expires}</td>
                 <td>${lastUsed}</td>
                 <td><span class="perm-badge ${status.cls}">${status.label}</span></td>
-                <td style="text-align:right;">
-                    ${key.is_active
-                        ? `<button class="btn-secondary btn-sm" onclick="APIKeysAdmin.revoke('${Utils.escapeHtml(key.id)}')">Revoke</button>`
-                        : ''}
+                <td class="kebab-cell" onclick="event.stopPropagation()">
+                    <div class="kebab-wrapper">
+                        <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">&vellip;</button>
+                        <div class="kebab-menu">
+                            <button class="kebab-item" onclick="APIKeysAdmin.copyKeyID('${Utils.escapeJs(key.key_id)}')">Copy key ID</button>
+                            ${key.is_active
+                                ? `<button class="kebab-item danger" onclick="APIKeysAdmin.revoke('${Utils.escapeJs(key.id)}')">Revoke</button>`
+                                : ''}
+                        </div>
+                    </div>
                 </td>
             </tr>`;
+    },
+
+    copyKeyID(keyID) {
+        navigator.clipboard?.writeText(keyID)
+            .then(() => window.Toast && Toast.success('Copied', 'Key ID copied'))
+            .catch(() => window.Toast && Toast.error('Copy failed', 'Select and copy manually'));
     },
 
     async revoke(id) {

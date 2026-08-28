@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"bifract/pkg/auth"
@@ -268,6 +269,11 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 		api.WriteError(w, http.StatusBadRequest, "time_range_start and time_range_end are required for custom time range")
 		return
 	}
+	req.Timezone = strings.TrimSpace(req.Timezone)
+	if req.Timezone != "" && !storage.ValidTimezone(req.Timezone) {
+		api.WriteError(w, http.StatusBadRequest, "Unknown timezone")
+		return
+	}
 
 	selectedFractal, err := h.getSelectedFractal(r)
 	if err != nil {
@@ -282,6 +288,7 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 		TimeRangeType:  req.TimeRangeType,
 		TimeRangeStart: req.TimeRangeStart,
 		TimeRangeEnd:   req.TimeRangeEnd,
+		Timezone:       req.Timezone,
 		CreatedBy:      auth.AttributionUsername(r.Context()),
 	}
 	if prismID, ok := r.Context().Value("selected_prism").(string); ok && prismID != "" {
@@ -344,10 +351,35 @@ func (h *DashboardHandler) HandleUpdateDashboard(w http.ResponseWriter, r *http.
 		return
 	}
 
-	err = h.pg.UpdateDashboard(r.Context(), id, req.Name, req.Description, req.TimeRangeType, req.TimeRangeStart, req.TimeRangeEnd)
+	if req.Timezone != nil {
+		tz := strings.TrimSpace(*req.Timezone)
+		if !storage.ValidTimezone(tz) {
+			api.WriteError(w, http.StatusBadRequest, "Unknown timezone")
+			return
+		}
+		req.Timezone = &tz
+	}
+
+	// Read the current zone before the write so the comparison below sees the
+	// old value.
+	var prevTimezone string
+	if prev, perr := h.pg.GetDashboard(r.Context(), id); perr == nil {
+		prevTimezone = prev.Timezone
+	}
+
+	err = h.pg.UpdateDashboard(r.Context(), id, req.Name, req.Description, req.TimeRangeType, req.Timezone, req.TimeRangeStart, req.TimeRangeEnd)
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to update dashboard")
 		return
+	}
+
+	// Cached widget results carry no record of the zone they were bucketed in,
+	// so leaving them would relabel UTC buckets as if they were the new zone's.
+	// Re-run every widget instead of serving a lie until the next refresh.
+	if req.Timezone != nil && *req.Timezone != prevTimezone && h.executor != nil {
+		if rerr := h.executor.ExecuteDashboardNow(r.Context(), id, ""); rerr != nil {
+			log.Printf("[Dashboards] Timezone change refresh failed for %s: %v", id, rerr)
+		}
 	}
 
 	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Dashboard updated successfully"})
@@ -776,6 +808,7 @@ type dashboardYAML struct {
 	Name        string         `yaml:"name"`
 	Description string         `yaml:"description,omitempty"`
 	TimeRange   string         `yaml:"time_range_type,omitempty"`
+	Timezone    string         `yaml:"timezone,omitempty"`
 	Variables   []variableYAML `yaml:"variables,omitempty"`
 	Widgets     []widgetYAML   `yaml:"widgets"`
 }
@@ -815,6 +848,7 @@ func (h *DashboardHandler) HandleExportDashboard(w http.ResponseWriter, r *http.
 		Name:        dashboard.Name,
 		Description: dashboard.Description,
 		TimeRange:   dashboard.TimeRangeType,
+		Timezone:    dashboard.Timezone,
 	}
 
 	// Include variables in export
@@ -900,10 +934,14 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 		varsJSON, _ = json.Marshal(imported.Variables)
 	}
 
+	// An unknown zone in an imported file falls back to UTC rather than failing
+	// the whole import: the bucketing is then wrong in a visible, fixable way
+	// instead of the dashboard not existing.
 	d := storage.Dashboard{
 		Name:          imported.Name,
 		Description:   imported.Description,
 		TimeRangeType: imported.TimeRange,
+		Timezone:      storage.SafeTimezone(imported.Timezone),
 		Variables:     varsJSON,
 		CreatedBy:     auth.AttributionUsername(r.Context()),
 	}

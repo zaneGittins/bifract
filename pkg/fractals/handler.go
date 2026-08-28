@@ -125,16 +125,13 @@ func (h *Handler) HandleListFractals(w http.ResponseWriter, r *http.Request) {
 
 // HandleCreateFractal creates a new index (admin only)
 func (h *Handler) HandleCreateFractal(w http.ResponseWriter, r *http.Request) {
-	// Check if user is admin
-	user := h.getCurrentUser(r)
-
 	var req CreateFractalRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	fractal, err := h.manager.CreateFractal(r.Context(), req, user.Username)
+	fractal, err := h.manager.CreateFractal(r.Context(), req, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Fractals] Failed to create fractal: %v", err)
 		h.sendError(w, http.StatusBadRequest, "Failed to create fractal")
@@ -165,14 +162,23 @@ func (h *Handler) HandleGetFractal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := map[string]interface{}{"index": fractal}
+	detail := FractalDetail{Fractal: fractal}
 	// Restore provenance, when this fractal was created as a restore target, so
 	// the UI can show it was restored from another fractal's archive.
 	if prov, ok, perr := h.manager.GetFractalProvenance(r.Context(), fractalID); perr == nil && ok {
-		data["restore_provenance"] = prov
+		detail.RestoreProvenance = prov
 	}
 
-	h.sendSuccess(w, "Fractal retrieved successfully", data)
+	h.sendSuccess(w, "Fractal retrieved successfully", detail)
+}
+
+// FractalDetail is a fractal with the provenance of the restore that created it,
+// where it was created that way. The fractal's own fields are inlined so this
+// reads as the fractal itself, the same shape the list answers, rather than
+// nesting it under a key.
+type FractalDetail struct {
+	*Fractal
+	RestoreProvenance *RestoreProvenance `json:"restore_provenance,omitempty"`
 }
 
 // HandleUpdateFractal updates an existing index (fractal admin+)

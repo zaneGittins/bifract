@@ -29,8 +29,7 @@ def stub(handler):
 
 async def call(name, args=None):
     result = await mcp.call_tool(name, args or {})
-    content = result[0] if isinstance(result, tuple) else result
-    return "\n".join(getattr(c, "text", str(c)) for c in content)
+    return "\n".join(getattr(c, "text", str(c)) for c in result.content)
 
 
 async def test_every_tool_has_a_description():
@@ -38,7 +37,7 @@ async def test_every_tool_has_a_description():
     assert len(tools) >= 30
     for tool in tools:
         assert tool.description, f"{tool.name} has no description"
-        assert tool.inputSchema["type"] == "object"
+        assert tool.input_schema["type"] == "object"
 
 
 async def test_api_errors_are_returned_as_text_not_raised():
@@ -135,7 +134,7 @@ async def test_provenance_graph_builds_the_pgr_source_command():
 
     stub(capture)
     await call(
-        "provenance_graph",
+        "get_provenance_graph",
         {
             "guid": "{abc-123}",
             "depth": 99,
@@ -166,14 +165,14 @@ async def test_provenance_graph_builds_the_pgr_source_command():
 )
 async def test_provenance_graph_rejects_bad_arguments(args, expected):
     stub(lambda request: httpx.Response(200, json={"success": True, "results": []}))
-    result = await call("provenance_graph", args)
+    result = await call("get_provenance_graph", args)
     assert result.startswith("Error:")
     assert expected in result
 
 
 async def test_provenance_graph_explains_an_empty_result():
     stub(lambda request: httpx.Response(200, json={"success": True, "count": 0, "results": []}))
-    payload = json.loads(await call("provenance_graph", {"guid": "{missing}"}))
+    payload = json.loads(await call("get_provenance_graph", {"guid": "{missing}"}))
     assert payload["processes"] == 0
     assert "hint" in payload
 
@@ -210,7 +209,7 @@ async def test_provenance_graph_renders_the_tree():
             200, json={"success": True, "count": 2, "execution_ms": 12, "results": rows}
         )
     )
-    payload = json.loads(await call("provenance_graph", {"guid": "A"}))
+    payload = json.loads(await call("get_provenance_graph", {"guid": "A"}))
 
     assert payload["processes"] == 1
     assert "powershell.exe" in payload["process_tree"]

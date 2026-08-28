@@ -609,6 +609,22 @@ window.BifractCharts = {
         return { display };
     },
 
+    // Axis title naming the zone the buckets were grouped in. Bucket boundaries
+    // are calendar-aligned server-side, so their labels already read in that
+    // zone and must not be shifted again here. Named only when it differs from
+    // the viewer's own clock; a result cached before the setting existed
+    // records no zone and was grouped in UTC.
+    _bucketZoneTitle(cfg, cv) {
+        const zone = (cfg && cfg.bucketTimezone) || 'UTC';
+        const viewer = window.TZ ? TZ.zone() : 'UTC';
+        if (zone === viewer) return undefined;
+        return {
+            display: true, text: zone,
+            color: cv('--chart-text-secondary'),
+            font: { family: 'Inter', size: 10 }
+        };
+    },
+
     renderTimeChart(canvas, opts) {
         const data = opts.data;
         if (!data || data.length === 0) return null;
@@ -734,16 +750,7 @@ window.BifractCharts = {
                     } : undefined,
                     x: {
                         ticks: xTicks,
-                        // Time buckets are grouped server-side in UTC, so the
-                        // axis says so whenever that differs from what the rest
-                        // of the UI is showing. Relabelling these into the
-                        // display zone would name calendar days and hours whose
-                        // counts they do not hold.
-                        title: (window.TZ && !TZ.isUTC()) ? {
-                            display: true, text: 'UTC',
-                            color: cv('--chart-text-secondary'),
-                            font: { family: 'Inter', size: 10 }
-                        } : undefined
+                        title: this._bucketZoneTitle(cfg, cv)
                     }
                 }),
                 layout: { padding: 10 }

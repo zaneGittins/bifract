@@ -19,9 +19,22 @@ import (
 // the dashboard named in the request path.
 var errWidgetMismatch = errors.New("widget does not belong to dashboard")
 
+// scopeOf builds the execution scope for one of a dashboard's widgets. Time
+// buckets snap to the dashboard's zone, not any viewer's: one widget result is
+// cached and served to everyone, including share links with no user at all.
+func scopeOf(d *storage.Dashboard, start, end time.Time) query.ExecuteScope {
+	return query.ExecuteScope{
+		FractalID: d.FractalID,
+		PrismID:   d.PrismID,
+		Start:     start,
+		End:       end,
+		Timezone:  d.Timezone,
+	}
+}
+
 // QueryRunner executes a BQL string server-side. *query.QueryHandler satisfies it.
 type QueryRunner interface {
-	ExecuteBQL(ctx context.Context, queryStr, fractalID, prismID string, start, end time.Time) (*query.ExecuteResult, error)
+	ExecuteBQL(ctx context.Context, queryStr string, scope query.ExecuteScope) (*query.ExecuteResult, error)
 }
 
 // HealthChecker reports whether the backend is healthy enough to take on
@@ -315,7 +328,7 @@ func (e *Executor) executeWidget(ctx context.Context, d *storage.Dashboard, w *s
 	start, end := computeTimeRange(d)
 	queryStr := bqlvars.Substitute(w.QueryContent, d.Variables)
 
-	res, err := e.runner.ExecuteBQL(ctx, queryStr, d.FractalID, d.PrismID, start, end)
+	res, err := e.runner.ExecuteBQL(ctx, queryStr, scopeOf(d, start, end))
 	if err != nil {
 		return nil, "", err
 	}
@@ -390,7 +403,7 @@ func (e *Executor) executeWidgetPreview(ctx context.Context, d *storage.Dashboar
 	}
 	queryStr := bqlvars.SubstituteMap(w.QueryContent, values)
 
-	res, err := e.runner.ExecuteBQL(ctx, queryStr, d.FractalID, d.PrismID, start, end)
+	res, err := e.runner.ExecuteBQL(ctx, queryStr, scopeOf(d, start, end))
 	if err != nil {
 		return nil, "", err
 	}

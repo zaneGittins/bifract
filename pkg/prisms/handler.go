@@ -122,7 +122,7 @@ func (h *Handler) HandleCreatePrism(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prism, err := h.manager.CreatePrism(r.Context(), req.Name, req.Description, user.Username)
+	prism, err := h.manager.CreatePrism(r.Context(), req.Name, req.Description, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Prisms] Failed to create prism: %v", err)
 		respondError(w, http.StatusInternalServerError, "Failed to create prism")

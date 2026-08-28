@@ -7,6 +7,7 @@ import (
 	"sort"
 	"testing"
 
+	"bifract/pkg/alerts"
 	"bifract/pkg/api"
 	"bifract/pkg/models"
 	"bifract/pkg/normalizers"
@@ -21,6 +22,7 @@ var enumTypes = []struct {
 	values api.Enumerator
 	source string
 }{
+	{"alerts.AlertType", alerts.AlertType(""), "pkg/alerts/alerttype.go"},
 	{"models.ModelType", models.ModelType(""), "pkg/models/models.go"},
 	{"rbac.Role", rbac.Role(""), "pkg/rbac/rbac.go"},
 	{"normalizers.Transform", normalizers.Transform(""), "pkg/normalizers/models.go"},

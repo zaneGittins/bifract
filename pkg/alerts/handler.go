@@ -3,6 +3,7 @@ package alerts
 import (
 	"bifract/pkg/api"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -124,7 +125,8 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 
 	alert, err := h.manager.CreateAlert(ctx, req, h.attributionUser(r), fractalID, prismID)
 	if err != nil {
-		if strings.Contains(err.Error(), "invalid query syntax") || strings.Contains(err.Error(), "cannot use aggregate") {
+		if errors.Is(err, ErrInvalidAlert) ||
+			strings.Contains(err.Error(), "invalid query syntax") || strings.Contains(err.Error(), "cannot use aggregate") {
 			h.respondError(w, http.StatusBadRequest, err.Error())
 		} else if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "already exists") {
 			h.respondError(w, http.StatusConflict, "Alert name already exists")

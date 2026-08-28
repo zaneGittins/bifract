@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"bifract/pkg/mfa"
 	"bifract/pkg/storage"
 )
 
@@ -71,8 +72,13 @@ type Settings struct {
 	// APIKeyRateLimit caps how fast one API key may call the API, so a runaway
 	// integration cannot crowd out everyone else. Per key, not per IP. 0 = uncapped.
 	APIKeyRateLimit int `json:"api_key_rate_limit"`
-	mu              sync.RWMutex
-	pg              *storage.PostgresClient
+	// RequireMFA makes every local account enroll a TOTP authenticator before it
+	// can use the app. SSO accounts are exempt because the identity provider owns
+	// their second factor, and API keys are unaffected: they are not interactive
+	// logins and carry their own scoping and revocation.
+	RequireMFA bool `json:"require_mfa"`
+	mu         sync.RWMutex
+	pg         *storage.PostgresClient
 }
 
 // queryLimitsApplier applies changed search resource shares to ClickHouse (CREATE OR
@@ -212,6 +218,11 @@ func Init(pg *storage.PostgresClient) error {
 		}
 	}
 
+	// Load require_mfa
+	if v, err := pg.GetSetting(ctx, "require_mfa"); err == nil && v != "" {
+		globalSettings.RequireMFA = v == "true"
+	}
+
 	// Load api_key_rate_limit (0 = uncapped)
 	if v, err := pg.GetSetting(ctx, "api_key_rate_limit"); err == nil && v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
@@ -286,6 +297,7 @@ func Get() Settings {
 	defer globalSettings.mu.RUnlock()
 	return Settings{
 		APIKeyRateLimit:            globalSettings.APIKeyRateLimit,
+		RequireMFA:                 globalSettings.RequireMFA,
 		TimestampFields:            globalSettings.TimestampFields,
 		AlertTimeoutSeconds:        globalSettings.AlertTimeoutSeconds,
 		QueryTimeoutSeconds:        globalSettings.QueryTimeoutSeconds,
@@ -319,6 +331,12 @@ func Update(s *Settings) error {
 	if s.APIKeyRateLimit < 0 {
 		return validationErrorf("API key rate limit cannot be negative (0 means uncapped)")
 	}
+	// Without a pepper there is no key to encrypt TOTP secrets with, and storing
+	// them in the clear would make the second factor worthless against anyone who
+	// can read the database.
+	if s.RequireMFA && !mfa.KeyAvailable() {
+		return validationErrorf("Two-factor authentication needs BIFRACT_PASSWORD_PEPPER set so enrollment secrets can be encrypted at rest")
+	}
 	if s.SchemaSweepIntervalMinutes < minSchemaSweepIntervalMinutes {
 		return validationErrorf("Schema measurement interval must be at least %d minutes", minSchemaSweepIntervalMinutes)
 	}
@@ -345,6 +363,7 @@ func Update(s *Settings) error {
 	globalSettings.QueryTimeoutSeconds = s.QueryTimeoutSeconds
 	globalSettings.AlertEvalIntervalSeconds = s.AlertEvalIntervalSeconds
 	globalSettings.APIKeyRateLimit = s.APIKeyRateLimit
+	globalSettings.RequireMFA = s.RequireMFA
 	globalSettings.RecallTimeoutSeconds = s.RecallTimeoutSeconds
 	globalSettings.RecallMaxBytesRead = s.RecallMaxBytesRead
 	globalSettings.RecallConcurrency = s.RecallConcurrency
@@ -391,6 +410,9 @@ func Update(s *Settings) error {
 		return err
 	}
 	if err := globalSettings.pg.SetSetting(ctx, "api_key_rate_limit", fmt.Sprintf("%d", s.APIKeyRateLimit)); err != nil {
+		return err
+	}
+	if err := globalSettings.pg.SetSetting(ctx, "require_mfa", fmt.Sprintf("%t", s.RequireMFA)); err != nil {
 		return err
 	}
 	if err := globalSettings.pg.SetSetting(ctx, "schema_sweep_interval_minutes", fmt.Sprintf("%d", s.SchemaSweepIntervalMinutes)); err != nil {

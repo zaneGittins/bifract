@@ -95,6 +95,7 @@ A deployment fronted by Caddy with mTLS needs the client certificate generated u
 | Tool | Description |
 |------|-------------|
 | `get_context` | Which instance, fractal, and role this session is bound to |
+| `list_fractals` | The fractals and prisms this credential can reach |
 | `get_fields` | The field names available to queries, optionally filtered |
 | `get_bql_reference` | The full BQL syntax reference |
 
@@ -107,20 +108,22 @@ A deployment fronted by Caddy with mTLS needs the client certificate generated u
 | `get_field_stats` | Per-field coverage, cardinality, and top values for a query's matches |
 | `get_recent_logs` | Fetch recent logs to see the real event shape and data freshness |
 
+Hot storage only. To search past the fractal's retention window, see [Recall](#recall).
+
 ### Provenance
 
 | Tool | Description |
 |------|-------------|
 | `find_processes` | Locate process-creation events and their `process_guid` |
-| `provenance_graph` | Expand a GUID into a scored process tree with its notable activity |
+| `get_provenance_graph` | Expand a GUID into a scored process tree with its notable activity |
 
-`provenance_graph` runs [`pgr()`](provenance-graph.md) and returns a rendered tree, the highest-anomaly file, network, and DNS actions, and any cross-tree reconnections, rather than a raw edge list. It needs endpoint behavioral analytics enabled and endpoint/EDR data normalized to `bifract_category` `process_creation`.
+`get_provenance_graph` runs [`pgr()`](provenance-graph.md) and returns a rendered tree, the highest-anomaly file, network, and DNS actions, and any cross-tree reconnections, rather than a raw edge list. It needs endpoint behavioral analytics enabled and endpoint/EDR data normalized to `bifract_category` `process_creation`.
 
 A typical sequence:
 
 ```
 find_processes(image="rundll32", start="2026-07-26T00:00:00Z")
-provenance_graph(guid="{390eae98-...}", threshold=0.3, start="2026-07-26T00:00:00Z")
+get_provenance_graph(guid="{390eae98-...}", threshold=0.3, start="2026-07-26T00:00:00Z")
 add_comment(log_id="...", text="...", tags=["IR-Rundll32"])
 ```
 
@@ -149,6 +152,36 @@ add_comment(log_id="...", text="...", tags=["IR-Rundll32"])
 | `update_alert` | Modify an existing alert |
 | `delete_alert` | Remove an alert |
 | `get_alert_executions` | View when an alert fired and what it matched |
+
+### Dictionaries
+
+Watchlists and lookup tables detections join against, rather than hard-coding values in a query.
+
+| Tool | Description |
+|------|-------------|
+| `list_dictionaries` | The dictionaries in the fractal, with their key column and row count |
+| `get_dictionary` | One dictionary's columns and key definition |
+| `search_dictionary` | Read rows, optionally filtered, to check an indicator against a watchlist |
+| `add_dictionary_rows` | Insert or update rows, changing what live detections match on |
+
+### ATT&CK Coverage
+
+| Tool | Description |
+|------|-------------|
+| `get_attack_coverage` | Which techniques the configured detections cover, optionally by tactic |
+| `get_attack_gaps` | Uncovered techniques, ranked by what could be covered with today's telemetry |
+
+Coverage is derived from the `attack.*` labels on the alerts that exist, so it reports what is configured rather than what has fired.
+
+### Recall
+
+[Recall](recall.md) searches the object-storage archive, for hunts that reach further back than hot retention. A search is submitted as a job and polled, because an archive scan can take minutes.
+
+| Tool | Description |
+|------|-------------|
+| `search_archive` | Submit a BQL search over the archive for an explicit time window |
+| `get_archive_search` | Poll a Recall job and read its rows once it succeeds |
+| `cancel_archive_search` | Stop a pending or running Recall job |
 
 ### Collaboration
 

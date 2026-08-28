@@ -26,6 +26,21 @@ type ExecuteResult struct {
 	IsAggregated bool                     `json:"is_aggregated"`
 }
 
+// ExecuteScope is where and when a server-side BQL execution runs. It is a
+// struct rather than a positional argument list because the fields are four
+// strings and times in a row, where a transposed pair is silent rather than a
+// compile error.
+type ExecuteScope struct {
+	FractalID string
+	PrismID   string
+	Start     time.Time
+	End       time.Time
+	// Timezone is the IANA zone calendar-aligned time buckets snap to. Empty
+	// means UTC. It belongs to the artifact that owns the query, never to the
+	// person reading it: these results are cached and shared.
+	Timezone string
+}
+
 // ExecuteBQL runs a BQL query server-side without an HTTP request, scoped to a
 // single fractal or prism over the given time window. It mirrors the core of
 // prepareQuery + HandleQuery (parse -> enrich -> translate -> execute) minus
@@ -37,11 +52,13 @@ type ExecuteResult struct {
 // under the search workload, so background refreshes never starve interactive
 // searches or ingestion.
 //
-// Pass either fractalID (direct scope) or prismID (prism scope), not both.
-func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, prismID string, start, end time.Time) (*ExecuteResult, error) {
+// Pass either FractalID (direct scope) or PrismID (prism scope), not both.
+func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope ExecuteScope) (*ExecuteResult, error) {
 	if strings.TrimSpace(queryStr) == "" {
 		return nil, fmt.Errorf("query is empty")
 	}
+	fractalID, prismID := scope.FractalID, scope.PrismID
+	start, end := scope.Start, scope.End
 
 	// Dashboard widgets and shared-link wallboards are user-facing query work, so they
 	// share the search workload's budget rather than getting an unbounded one of their
@@ -166,6 +183,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr, fractalID, pris
 		ProcFreqTable:         h.procFreqTableName(),
 		ProcEdgesTable:        h.procEdgesTableName(),
 		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
+		DisplayTimezone:       scope.Timezone,
 	}
 
 	// Source commands (e.g. pgr()) generate the pipeline's source. Resolve into a subquery

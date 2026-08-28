@@ -750,9 +750,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.authHandler.HandleLogout,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodGet,
-				Path:     "/auth/user",
-				Access:   api.AccessViewer,
+				Method: http.MethodGet,
+				Path:   "/auth/user",
+				// Any principal may describe itself. A viewer requirement denies
+				// this to a user who holds no fractal grant yet, which leaves the
+				// UI unable to render its own no-access state.
+				Access:   api.AccessAuthenticated,
 				Response: auth.Response{},
 				Summary:  "Describe the authenticated caller and its current scope.",
 				Handler:  d.authHandler.HandleCurrentUser,
@@ -765,6 +768,60 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Response: auth.Response{},
 				Summary:  "Change the caller's own password.",
 				Handler:  d.authHandler.HandleChangePassword,
+			})
+			// Second factor, all self-service. Verify is reachable by a
+			// session that has passed the password but nothing else.
+			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/auth/mfa/status",
+				Access:   api.AccessAuthenticated,
+				Response: auth.Response{},
+				Summary:  "Report the caller's two-factor enrollment state.",
+				Handler:  d.authHandler.HandleMFAStatus,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/auth/mfa/enroll",
+				Access:   api.AccessAuthenticated,
+				Response: auth.Response{},
+				Summary:  "Start two-factor enrollment and return the secret to scan.",
+				Handler:  d.authHandler.HandleMFAEnroll,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/auth/mfa/confirm",
+				Access:   api.AccessAuthenticated,
+				Request:  auth.MFACodeRequest{},
+				Response: auth.Response{},
+				Summary:  "Complete two-factor enrollment and issue recovery codes.",
+				Handler:  d.authHandler.HandleMFAConfirm,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/auth/mfa/verify",
+				Access:   api.AccessAuthenticated,
+				Request:  auth.MFACodeRequest{},
+				Response: auth.Response{},
+				Summary:  "Finish a sign in that is waiting on a verification code.",
+				Handler:  d.authHandler.HandleMFAVerify,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/auth/mfa/disable",
+				Access:   api.AccessAuthenticated,
+				Request:  auth.MFADisableRequest{},
+				Response: auth.Response{},
+				Summary:  "Remove the caller's authenticator.",
+				Handler:  d.authHandler.HandleMFADisable,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/auth/mfa/recovery-codes",
+				Access:   api.AccessAuthenticated,
+				Request:  auth.MFAPasswordRequest{},
+				Response: auth.Response{},
+				Summary:  "Replace the caller's recovery codes.",
+				Handler:  d.authHandler.HandleMFARecoveryCodes,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPatch,
@@ -1701,8 +1758,8 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/fractals/{id}",
+				Response: api.Response[fractals.FractalDetail]{},
 				Access:   api.AccessTenantAdmin,
-				Response: api.Response[map[string]interface{}]{},
 				Summary:  "Read one fractal.",
 				Handler:  d.fractalHandler.HandleGetFractal,
 			})
@@ -3120,6 +3177,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.authHandler.HandleAdminResetPassword,
 			})
 			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/auth/admin-reset-mfa",
+				Access:   api.AccessTenantAdmin,
+				Request:  auth.AdminResetMFARequest{},
+				Response: auth.Response{},
+				Summary:  "Clear another user's two-factor enrollment.",
+				Handler:  d.authHandler.HandleAdminResetMFA,
+			})
+			r.Register(api.Route{
 				Method: http.MethodGet,
 				Path:   "/users",
 				Query: []api.QueryParam{
@@ -3297,7 +3363,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 		Path:    "/*",
 		Access:  api.AccessPublic,
 		Summary: "Serve the web UI.",
-		Handler: staticFileHandler(),
+		Handler: newStaticAssets("./web", Version).ServeHTTP,
 	})
 
 	return mux, reg

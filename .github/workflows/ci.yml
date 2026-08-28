@@ -25,6 +25,19 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # Caddyfile syntax has no other guard: TestK8sManifestsAreValidYAML parses the
+      # ConfigMap as YAML, so the Caddyfile inside it is an opaque string, and a bad
+      # directive stops Caddy from starting. Pulled from the image compose deploys so
+      # the check tracks the Caddy version actually run. TestCaddyfilesAdapt skips
+      # without this.
+      - name: Install Caddy
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          docker run --rm --entrypoint cat caddy:2-alpine /usr/bin/caddy > "$HOME/.local/bin/caddy"
+          chmod +x "$HOME/.local/bin/caddy"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/caddy" version
+
       - name: Test
         run: go test ./... -count=1
 
@@ -52,3 +65,32 @@ jobs:
 
       - name: Vulnerability check
         run: govulncheck ./...
+
+  # The MCP server is Python, so `go test ./...` never touched it. It went
+  # unnoticed that its `mcp>=1.0.0` floor resolved to 2.0, which moved the
+  # server class and left the package unable to import at all. Its conformance
+  # tests also read the committed openapi.json, so a route renamed in Go fails
+  # here rather than at a user's first tool call.
+  mcp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --extra dev --locked
+
+      - name: Import the server
+        run: uv run python -c "from bifract_mcp.server import main"
+
+      - name: Test
+        run: uv run pytest tests/ -q

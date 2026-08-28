@@ -846,6 +846,10 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		ProcFreqTable:         h.procFreqTableName(),
 		ProcEdgesTable:        h.procEdgesTableName(),
 		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
+		// An ad-hoc query has one viewer and no cache to share, so its time
+		// buckets snap to that person's zone. An API key resolves to empty
+		// here, which is UTC.
+		DisplayTimezone: storage.DisplayTimezone(r.Context()),
 	}
 
 	// Source commands (e.g. pgr()) generate the pipeline's source rather than filtering the
@@ -1208,6 +1212,10 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		ProcFreqTable:         h.procFreqTableName(),
 		ProcEdgesTable:        h.procEdgesTableName(),
 		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
+		// An ad-hoc query has one viewer and no cache to share, so its time
+		// buckets snap to that person's zone. An API key resolves to empty
+		// here, which is UTC.
+		DisplayTimezone: storage.DisplayTimezone(r.Context()),
 	}
 	if _, err := parser.TranslateToSQLWithOrder(pipeline, opts); err != nil {
 		respondJSON(w, http.StatusOK, ValidateResponse{

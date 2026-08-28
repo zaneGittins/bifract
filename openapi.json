@@ -2652,6 +2652,66 @@
         }
       }
     },
+    "/api/v1/auth/admin-reset-mfa": {
+      "post": {
+        "operationId": "post_api_v1_auth_admin_reset_mfa",
+        "summary": "Clear another user's two-factor enrollment.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "auth"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/auth.AdminResetMFARequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/auth.Response"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/admin-reset-password": {
       "post": {
         "operationId": "post_api_v1_auth_admin_reset_password",
@@ -2973,6 +3033,346 @@
         }
       }
     },
+    "/api/v1/auth/mfa/confirm": {
+      "post": {
+        "operationId": "post_api_v1_auth_mfa_confirm",
+        "summary": "Complete two-factor enrollment and issue recovery codes.",
+        "description": "Any authenticated principal.",
+        "tags": [
+          "auth"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/auth.MFACodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/auth.Response"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/disable": {
+      "post": {
+        "operationId": "post_api_v1_auth_mfa_disable",
+        "summary": "Remove the caller's authenticator.",
+        "description": "Any authenticated principal.",
+        "tags": [
+          "auth"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/auth.MFADisableRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/auth.Response"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/enroll": {
+      "post": {
+        "operationId": "post_api_v1_auth_mfa_enroll",
+        "summary": "Start two-factor enrollment and return the secret to scan.",
+        "description": "Any authenticated principal.",
+        "tags": [
+          "auth"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/auth.Response"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/recovery-codes": {
+      "post": {
+        "operationId": "post_api_v1_auth_mfa_recovery_codes",
+        "summary": "Replace the caller's recovery codes.",
+        "description": "Any authenticated principal.",
+        "tags": [
+          "auth"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/auth.MFAPasswordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/auth.Response"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/status": {
+      "get": {
+        "operationId": "get_api_v1_auth_mfa_status",
+        "summary": "Report the caller's two-factor enrollment state.",
+        "description": "Any authenticated principal.",
+        "tags": [
+          "auth"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/auth.Response"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/verify": {
+      "post": {
+        "operationId": "post_api_v1_auth_mfa_verify",
+        "summary": "Finish a sign in that is waiting on a verification code.",
+        "description": "Any authenticated principal.",
+        "tags": [
+          "auth"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/auth.MFACodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/auth.Response"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/oidc/callback": {
       "get": {
         "operationId": "get_api_v1_auth_oidc_callback",
@@ -3175,7 +3575,7 @@
       "get": {
         "operationId": "get_api_v1_auth_user",
         "summary": "Describe the authenticated caller and its current scope.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "auth"
         ],
@@ -10499,10 +10899,7 @@
                       "type": "string"
                     },
                     "data": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "description": "Any JSON value."
-                      }
+                      "$ref": "#/components/schemas/fractals.FractalDetail"
                     },
                     "error": {
                       "type": "string"
@@ -24625,7 +25022,12 @@
         "type": "object",
         "properties": {
           "alert_type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "event",
+              "scheduled",
+              "compound"
+            ]
           },
           "description": {
             "type": "string"
@@ -24715,7 +25117,12 @@
         "type": "object",
         "properties": {
           "alert_type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "event",
+              "scheduled",
+              "compound"
+            ]
           },
           "description": {
             "type": "string"
@@ -26158,6 +26565,17 @@
           "password"
         ]
       },
+      "auth.AdminResetMFARequest": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username"
+        ]
+      },
       "auth.AdminResetPasswordRequest": {
         "type": "object",
         "properties": {
@@ -26207,6 +26625,45 @@
         },
         "required": [
           "username",
+          "password"
+        ]
+      },
+      "auth.MFACodeRequest": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "recovery_code": {
+            "type": "string"
+          }
+        }
+      },
+      "auth.MFADisableRequest": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "recovery_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "password"
+        ]
+      },
+      "auth.MFAPasswordRequest": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
           "password"
         ]
       },
@@ -26817,6 +27274,9 @@
           },
           "time_range_type": {
             "type": "string"
+          },
+          "timezone": {
+            "type": "string"
           }
         },
         "required": [
@@ -26911,6 +27371,9 @@
             "format": "date-time"
           },
           "time_range_type": {
+            "type": "string"
+          },
+          "timezone": {
             "type": "string"
           }
         }
@@ -27521,6 +27984,84 @@
           "size_bytes"
         ]
       },
+      "fractals.FractalDetail": {
+        "type": "object",
+        "properties": {
+          "archive_retention_days": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "disk_quota_action": {
+            "type": "string"
+          },
+          "disk_quota_bytes": {
+            "type": "integer"
+          },
+          "earliest_log": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "is_system": {
+            "type": "boolean"
+          },
+          "latest_log": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "log_count": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "restore_provenance": {
+            "$ref": "#/components/schemas/fractals.RestoreProvenance"
+          },
+          "retention_days": {
+            "type": "integer"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user_role": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_default",
+          "is_system",
+          "created_by",
+          "created_at",
+          "updated_at",
+          "retention_days",
+          "archive_retention_days",
+          "disk_quota_bytes",
+          "disk_quota_action",
+          "log_count",
+          "size_bytes"
+        ]
+      },
       "fractals.FractalListResponse": {
         "type": "object",
         "properties": {
@@ -27596,6 +28137,29 @@
           "username",
           "group_id",
           "role"
+        ]
+      },
+      "fractals.RestoreProvenance": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source_fractal_id": {
+            "type": "string"
+          },
+          "source_fractal_name": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "source_fractal_id",
+          "source_fractal_name"
         ]
       },
       "fractals.SelectedFractal": {
@@ -31256,6 +31820,9 @@
           "recall_timeout_seconds": {
             "type": "integer"
           },
+          "require_mfa": {
+            "type": "boolean"
+          },
           "schema_sweep_interval_minutes": {
             "type": "integer"
           },
@@ -31279,7 +31846,8 @@
           "recall_cpu_percent",
           "recall_memory_percent",
           "schema_sweep_interval_minutes",
-          "api_key_rate_limit"
+          "api_key_rate_limit",
+          "require_mfa"
         ]
       },
       "settings.SettingsResponse": {
@@ -31454,6 +32022,9 @@
           "time_range_type": {
             "type": "string"
           },
+          "timezone": {
+            "type": "string"
+          },
           "updated_at": {
             "type": "string",
             "format": "date-time"
@@ -31475,6 +32046,7 @@
           "time_range_type",
           "refresh_interval",
           "variables",
+          "timezone",
           "created_by",
           "author_display_name",
           "author_gravatar_color",

@@ -112,6 +112,7 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		GeoIPEnabled:          ctx.Opts.GeoIPEnabled,
 		TableName:             ctx.Opts.TableName,
 		UseIngestTimestamp:    ctx.Opts.UseIngestTimestamp,
+		DisplayTimezone:       ctx.Opts.DisplayTimezone,
 	}
 
 	subResult, err := TranslateToSQLWithOrder(subPipeline, subOpts)

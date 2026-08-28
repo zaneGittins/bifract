@@ -28,7 +28,7 @@ func (m *Manager) CreatePrism(ctx context.Context, name, description, createdBy 
 		INSERT INTO prisms (name, description, created_by)
 		VALUES ($1, $2, $3)
 		RETURNING id, name, description, COALESCE(created_by, ''), created_at, updated_at
-	`, name, description, createdBy).Scan(
+	`, name, description, storage.NullableUser(createdBy)).Scan(
 		&p.ID, &p.Name, &p.Description, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {

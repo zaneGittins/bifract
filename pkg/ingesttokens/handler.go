@@ -121,7 +121,7 @@ func (h *Handler) HandleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, fullToken, err := h.storage.CreateToken(r.Context(), req, fractalID, user.Username)
+	token, fullToken, err := h.storage.CreateToken(r.Context(), req, fractalID, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[IngestTokens] Failed to create token: %v", err)
 		h.sendError(w, http.StatusInternalServerError, "Failed to create ingest token")

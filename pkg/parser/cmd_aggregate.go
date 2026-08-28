@@ -674,7 +674,7 @@ func (h *bucketHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
 
 	n, unit := parseBucketSpan(span)
-	bucketExpr := getBucketExpression(n, unit)
+	bucketExpr := getBucketExpression(n, unit, bucketTimezone(ctx))
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS time_bucket", bucketExpr)})
 
 	if strings.Contains(function, "count()") {

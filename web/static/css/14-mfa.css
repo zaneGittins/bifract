@@ -1,0 +1,126 @@
+/* Two-factor authentication: the self-service modal and the admin badges. */
+
+.mfa-loading,
+.mfa-note {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    line-height: 1.55;
+    margin-bottom: 1rem;
+}
+
+.mfa-note code {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.76rem;
+    color: var(--text-primary);
+}
+
+.mfa-warn {
+    color: var(--accent-warning, #d4a054);
+}
+
+.mfa-blocked {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.55;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-left: 2px solid var(--accent-warning, #d4a054);
+    border-radius: 4px;
+    padding: 0.65rem 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.mfa-blocked code {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.74rem;
+}
+
+.mfa-state-on {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--accent-success, #6bcf7f);
+    font-size: 0.82rem;
+    margin-bottom: 0.85rem;
+}
+
+.mfa-state-on svg {
+    flex-shrink: 0;
+}
+
+/* The plate stays light in every theme: a scanner needs the contrast. */
+.mfa-qr {
+    display: flex;
+    justify-content: center;
+    padding: 0.75rem;
+    background: #fff;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    margin-bottom: 0.85rem;
+}
+
+.mfa-qr svg {
+    width: 172px;
+    height: 172px;
+    display: block;
+}
+
+.mfa-secret {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.74rem;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.5rem 0.6rem;
+    word-break: break-all;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s ease;
+}
+
+.mfa-secret:hover {
+    border-color: var(--accent-primary);
+}
+
+.mfa-hint {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    text-align: center;
+    margin: 0.4rem 0 1rem;
+}
+
+.mfa-codes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4rem;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0.85rem;
+    margin-bottom: 1rem;
+}
+
+.mfa-codes span {
+    text-align: center;
+    letter-spacing: 0.04em;
+}
+
+/* Admin user table: a quiet marker rather than another coloured pill. */
+.user-mfa-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-left: 0.4rem;
+    color: var(--text-muted);
+    vertical-align: middle;
+}
+
+.user-mfa-badge svg {
+    width: 12px;
+    height: 12px;
+}

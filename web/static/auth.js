@@ -151,7 +151,11 @@ const Auth = {
             if (response.ok) {
                 const data = await response.json();
                 if (data.success) {
-                    if (data.user && data.user.force_password_change) {
+                    // Any unfinished authentication step is completed on the
+                    // login page, which owns those flows.
+                    if (data.user && (data.user.force_password_change ||
+                                      data.user.mfa_required ||
+                                      data.user.mfa_enrollment_required)) {
                         window.location.href = '/login.html';
                         return;
                     }
@@ -213,6 +217,10 @@ const Auth = {
                         <button class="user-menu-item" onclick="Auth.showChangePassword()">
                             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                             <span>Change Password</span>
+                        </button>
+                        <button class="user-menu-item" onclick="Auth.toggleMenu(); MFA.open();">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
+                            <span>Two-Factor Authentication</span>
                         </button>
                         <div class="user-menu-divider"></div>
                         <button class="user-menu-item logout-item" onclick="Auth.logout()">

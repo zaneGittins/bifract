@@ -33,18 +33,30 @@
 		# High-volume ingest endpoints go to the dedicated ingest tier (skip logging).
 		handle @ingest {
 			log_skip
-			reverse_proxy bifract-ingest:8080
+			reverse_proxy bifract-ingest:8080 {
+				# Must stay under the upstream's 60s IdleTimeout, or the pool hands out sockets it has already closed (502).
+				transport http {
+					keepalive 30s
+				}
+			}
 		}
 
 		# SSE endpoints need immediate flushing
 		handle @sse {
 			reverse_proxy bifract-app:8080 {
 				flush_interval -1
+				transport http {
+					keepalive 30s
+				}
 			}
 		}
 
 		# Everything else -> app tier
-		reverse_proxy bifract-app:8080
+		reverse_proxy bifract-app:8080 {
+			transport http {
+				keepalive 30s
+			}
+		}
 	}
 }
 
@@ -68,6 +80,9 @@
 			header_up X-Real-IP {remote_host}
 			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto {scheme}
+			transport http {
+				keepalive 30s
+			}
 		}
 	}
 

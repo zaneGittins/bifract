@@ -1,7 +1,7 @@
 """Tools for dashboards. API keys need the dashboard permission."""
 
 from .. import http
-from ..app import as_json, tool
+from ..app import as_json, summarize, tool
 
 SUMMARY_FIELDS = (
     "id",
@@ -25,12 +25,11 @@ async def list_dashboards() -> str:
     Returns:
         Dashboard IDs, names, descriptions, and time ranges.
     """
-    response = await http.get("/dashboards")
-    dashboards = response.get("data", response)
+    dashboards = await http.get("/dashboards")
     if not isinstance(dashboards, list):
-        return as_json(response)
+        return as_json(dashboards)
 
-    summaries = [{k: d.get(k) for k in SUMMARY_FIELDS if k in d} for d in dashboards]
+    summaries = summarize(dashboards, SUMMARY_FIELDS)
     return as_json({"count": len(summaries), "dashboards": summaries})
 
 

@@ -4,35 +4,67 @@ import functools
 import json
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from .http import BifractError
 
 INSTRUCTIONS = """\
-You are connected to a Bifract log management and detection platform. The API key
-determines which fractal (tenant) you can see; every tool is scoped to it.
+You are connected to Bifract, a log management and detection platform. The API key
+fixes which fractal (an isolated container of logs, alerts, comments and watchlists)
+you can see, and the role that governs what you may change.
 
-Orientation, in order:
-  1. get_context     - which fractal, what role, server version.
-  2. get_fields      - the field names available in queries.
-  3. get_bql_reference - BQL functions and operators.
+Start here:
+  get_context        which fractal, what role, which server.
+  get_fields         the field names this fractal's logs actually carry.
+  get_bql_reference  BQL's commands and operators.
 
-Then query with query_logs. Field values live under `fields`, but BQL refers to them
-by bare name (host=web-01, not fields.host). Use validate_bql on a complex pipeline
-before running it; it costs nothing and catches syntax errors in one round trip.
+Querying. query_logs runs BQL against hot storage. Field values live under `fields`
+but BQL names them bare: host=web-01, not fields.host. Run validate_bql on anything
+non-trivial first; it costs one round trip and catches syntax errors before a scan.
+Volume reaches billions of rows, so filter and bound the time range before widening.
+Times are RFC3339 and default to the last 24 hours.
 
-For endpoint/EDR data, find_processes locates a process_guid and provenance_graph
-expands it into a scored process tree. Record findings with add_comment (tag related
-comments IR-<Name>) or collect them in a notebook.
+Investigating. find_processes locates a process_guid, and get_provenance_graph
+expands it into a scored process tree for endpoint data. search_dictionary checks an
+indicator against the watchlists already in place. When a hunt reaches past hot
+retention, search_archive runs the same BQL over the archive; it is minutes-slow and
+returns a job to poll, so reach for it only once query_logs cannot answer.
 
-Time ranges are RFC3339 and default to the last 24 hours server-side. Log volume can
-reach billions of rows, so filter and bound the range before widening a search."""
+Detections. list_alerts shows what is already watched and is the best guide to this
+fractal's real query patterns. get_attack_coverage and get_attack_gaps say which
+ATT&CK techniques are covered and which are worth covering next. Validate a query
+before creating an alert on it.
 
-mcp = FastMCP("bifract", instructions=INSTRUCTIONS)
+Recording. Findings belong in the product, not only in your reply: add_comment
+against the logs that evidence them (tag related comments IR-<Name>), or collect the
+narrative in a notebook. This is a collaborative platform and other analysts read
+what you leave behind.
+
+Writes are real. Creating an alert, or adding rows to a dictionary, changes what a
+live system detects. Confirm scope with get_context before changing anything, and
+prefer reading the current state before overwriting it."""
+
+mcp = MCPServer("bifract", instructions=INSTRUCTIONS)
 
 
 def as_json(payload: Any) -> str:
     return json.dumps(payload, indent=2, default=str)
+
+
+def summarize(rows: Any, fields: tuple[str, ...]) -> list[dict]:
+    """Reduce API rows to the fields worth spending the model's context on.
+
+    A dashboard or model row carries timestamps, internal ids and full definitions
+    that a list view never needs. Empty values are dropped; a zero is kept, since a
+    row count of 0 is an answer.
+    """
+    if not isinstance(rows, list):
+        return []
+    return [
+        {k: r.get(k) for k in fields if r.get(k) not in (None, "")}
+        for r in rows
+        if isinstance(r, dict)
+    ]
 
 
 def tool(fn):

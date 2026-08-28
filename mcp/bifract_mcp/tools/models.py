@@ -1,7 +1,7 @@
 """Tools for behavioral models: rolling baselines maintained as logs arrive."""
 
 from .. import http
-from ..app import as_json, tool
+from ..app import as_json, summarize, tool
 
 SUMMARY_FIELDS = (
     "id",
@@ -30,10 +30,9 @@ async def list_models() -> str:
         Each model's ID, name, type, status, and the BQL source query that feeds it.
     """
     response = await http.get("/models")
-    data = response.get("data", response)
-    models = data.get("models", []) if isinstance(data, dict) else []
+    models = response.get("models", []) if isinstance(response, dict) else []
 
-    summaries = [{k: m.get(k) for k in SUMMARY_FIELDS if m.get(k) not in (None, "")} for m in models]
+    summaries = summarize(models, SUMMARY_FIELDS)
     if not summaries:
         return as_json(
             {

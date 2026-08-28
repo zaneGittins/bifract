@@ -156,7 +156,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest, fractalID, pris
 	err = m.pg.QueryRow(ctx, query,
 		req.Name, req.Description, req.RepoURL, branch, req.Path, encToken,
 		normalizerID, req.SyncSchedule, req.MinLevel, req.MinStatus, req.Enabled,
-		fractalIDPtr, prismIDPtr, createdBy,
+		fractalIDPtr, prismIDPtr, storage.NullableUser(createdBy),
 	).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
@@ -281,7 +281,9 @@ func (m *Manager) validateRequest(name, repoURL, schedule string) error {
 }
 
 // scanFeed scans a feed row from a Rows result.
-func (m *Manager) scanFeed(rows interface{ Scan(dest ...interface{}) error }) (*Feed, error) {
+func (m *Manager) scanFeed(rows interface {
+	Scan(dest ...interface{}) error
+}) (*Feed, error) {
 	var f Feed
 	var encToken string
 	var normalizerID sql.NullString
@@ -317,6 +319,8 @@ func (m *Manager) scanFeed(rows interface{ Scan(dest ...interface{}) error }) (*
 }
 
 // scanFeedRow scans a single feed row from QueryRow.
-func (m *Manager) scanFeedRow(row interface{ Scan(dest ...interface{}) error }) (*Feed, error) {
+func (m *Manager) scanFeedRow(row interface {
+	Scan(dest ...interface{}) error
+}) (*Feed, error) {
 	return m.scanFeed(row)
 }

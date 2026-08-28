@@ -106,7 +106,7 @@ async def get_fields(filter: str = "") -> str:
         The field names, filtered if a filter was given.
     """
     response = await http.get("/query/fields")
-    fields = (response.get("data") or {}).get("fields", [])
+    fields = response.get("fields", []) if isinstance(response, dict) else []
     if needle := filter.strip().lower():
         fields = [f for f in fields if needle in f.lower()]
     return as_json({"count": len(fields), "fields": fields})

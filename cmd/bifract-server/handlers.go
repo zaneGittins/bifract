@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
@@ -30,56 +29,6 @@ import (
 // HTTP handlers that have no home package yet. They were closures inside
 // buildRouter; extracting them keeps the route table readable and is a step
 // toward moving each one into the package that owns its data.
-
-// noDirFS wraps an http.FileSystem and refuses to open directories. This makes
-// http.FileServer return 404 for a directory path rather than rendering an
-// index listing that enumerates the contents of ./web.
-type noDirFS struct{ fs http.FileSystem }
-
-func (n noDirFS) Open(name string) (http.File, error) {
-	f, err := n.fs.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	st, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	if st.IsDir() {
-		f.Close()
-		return nil, fs.ErrNotExist
-	}
-	return f, nil
-}
-
-// staticFileHandler serves the web UI. noDirFS suppresses directory index
-// listings, so a request for a directory 404s instead of enumerating ./web.
-func staticFileHandler() http.HandlerFunc {
-	fileServer := http.FileServer(noDirFS{http.Dir("./web")})
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Revalidate on every load. Without this the browser heuristically
-		// reuses cached assets without asking, which after a deploy leaves a
-		// stale mix (e.g. new dashboards.js calling into an old utils.js). The
-		// file server still answers If-Modified-Since with 304, so an unchanged
-		// asset costs only a small conditional round-trip, not a re-download.
-		w.Header().Set("Cache-Control", "no-cache")
-
-		if r.URL.Path == "/" {
-			http.ServeFile(w, r, "./web/index.html")
-			return
-		}
-		// Pretty path for shared wallboards: /shared/<token> serves the standalone
-		// public render page (the token is read client-side and sent to the
-		// anonymous API). The page is a static file, so no auth is involved here.
-		if strings.HasPrefix(r.URL.Path, "/shared/") {
-			http.ServeFile(w, r, "./web/shared.html")
-			return
-		}
-		fileServer.ServeHTTP(w, r)
-	}
-}
 
 // recallAnalystOK resolves the caller and requires analyst access to the
 // fractal. Recall reads cold storage, which is a normal-user read scoped by

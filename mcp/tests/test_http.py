@@ -27,9 +27,45 @@ def stub(handler):
     return client
 
 
-async def test_successful_json_is_returned():
+async def test_the_envelope_is_unwrapped_to_its_payload():
+    """A tool should see what it asked for, not the transport that carried it."""
     stub(lambda request: httpx.Response(200, json={"success": True, "data": [1, 2]}))
-    assert await http.get("/alerts") == {"success": True, "data": [1, 2]}
+    assert await http.get("/alerts") == [1, 2]
+
+
+async def test_a_payload_under_its_own_key_survives_unwrapping():
+    """Older endpoints answer {"success": true, "fields": [...]} with no data key."""
+    stub(lambda request: httpx.Response(200, json={"success": True, "fields": ["host"]}))
+    assert await http.get("/query/fields") == {"fields": ["host"]}
+
+
+async def test_an_unenveloped_body_is_passed_through():
+    stub(lambda request: httpx.Response(200, json={"version": "1.2.3"}))
+    assert await http.get("/version") == {"version": "1.2.3"}
+
+
+async def test_a_truncated_page_tells_the_model_how_to_continue():
+    """A model handed 50 of 300 rows silently would reason from a partial set."""
+    stub(
+        lambda request: httpx.Response(
+            200,
+            json={"success": True, "data": [1, 2], "page": {"total": 9, "limit": 2, "offset": 0}},
+        )
+    )
+    result = await http.get("/alerts")
+    assert result["items"] == [1, 2]
+    assert result["more"] is True
+    assert result["next_offset"] == 2
+
+
+async def test_a_complete_page_is_returned_as_a_plain_list():
+    stub(
+        lambda request: httpx.Response(
+            200,
+            json={"success": True, "data": [1, 2], "page": {"total": 2, "limit": 50, "offset": 0}},
+        )
+    )
+    assert await http.get("/alerts") == [1, 2]
 
 
 async def test_handled_failure_body_becomes_an_error():

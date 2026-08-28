@@ -65,7 +65,10 @@ def _error_detail(resp: httpx.Response) -> str:
     except ValueError:
         return text[:MAX_ERROR_BODY]
     if isinstance(payload, dict):
-        for key in ("error", "message", "detail"):
+        detail = _failure(payload)
+        if detail:
+            return detail[:MAX_ERROR_BODY]
+        for key in ("message", "detail"):
             value = payload.get(key)
             if isinstance(value, str) and value:
                 return value[:MAX_ERROR_BODY]
@@ -113,6 +116,8 @@ async def request(
         raise BifractError(
             f"Forbidden: {_error_detail(resp)}. The API key's permissions do not cover this."
         )
+    if resp.status_code == 404:
+        raise BifractError(f"{method} {path}: not found. Check the id, and that it exists in this fractal.")
     if resp.status_code >= 400:
         raise BifractError(f"{method} {path} failed ({resp.status_code}): {_error_detail(resp)}")
 
@@ -125,11 +130,51 @@ async def request(
             f"{method} {path} returned a non-JSON response: {resp.text[:MAX_ERROR_BODY]}"
         ) from None
 
-    # A handled failure comes back 200 with {"success": false}, so status alone is
-    # not enough to tell a write that landed from one that was rejected.
+    # Belt and braces: failures answer 4xx now, but an endpoint that has not been
+    # migrated could still report one in the body.
     if isinstance(payload, dict) and payload.get("success") is False:
-        raise BifractError(payload.get("error") or f"{method} {path} was rejected by the server")
-    return payload
+        raise BifractError(_failure(payload) or f"{method} {path} was rejected by the server")
+    return unwrap(payload)
+
+
+def unwrap(payload: Any) -> Any:
+    """Return the payload the model cares about rather than the transport.
+
+    Bifract answers {"success": true, "data": ...}. Repeating that wrapper in
+    every tool result spends the model's context teaching it nothing. Endpoints
+    that answer their own shape, such as a query result, are passed through
+    untouched.
+
+    A paged answer keeps its page counts, because a model shown 100 of 4,000
+    alerts and told nothing will reason as though it saw all of them.
+    """
+    if not isinstance(payload, dict) or "success" not in payload:
+        return payload
+
+    if "data" not in payload:
+        rest = {k: v for k, v in payload.items() if k != "success"}
+        return rest or {}
+
+    data = payload["data"]
+    page = payload.get("page")
+    if isinstance(page, dict) and isinstance(data, list):
+        total, limit, offset = page.get("total", 0), page.get("limit", 0), page.get("offset", 0)
+        if total > offset + len(data):
+            return {
+                "items": data,
+                "showing": f"{offset + 1}-{offset + len(data)} of {total}",
+                "more": True,
+                "next_offset": offset + len(data),
+                "note": "This is one page. Ask for the next with offset, or narrow the request.",
+            }
+    return data
+
+
+def _failure(payload: dict) -> str:
+    """The message a failure envelope carries, with its machine-readable code."""
+    message = payload.get("error") or payload.get("message") or ""
+    code = payload.get("code")
+    return f"{message} [{code}]" if code and message else message
 
 
 async def get(path: str, params: dict | None = None, **kwargs) -> Any:

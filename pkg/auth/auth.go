@@ -194,6 +194,9 @@ func verifyPassword(storedHash, password string) error {
 const (
 	sessionCookieName = "bifract_session"
 	sessionDuration   = 24 * time.Hour
+	// mfaPendingDuration bounds how long a password-only session may sit
+	// waiting for a code.
+	mfaPendingDuration = 5 * time.Minute
 )
 
 type Session struct {
@@ -202,6 +205,9 @@ type Session struct {
 	ExpiresAt       time.Time
 	SelectedFractal string // fractal UUID selected for this session (empty when prism is selected)
 	SelectedPrism   string // prism UUID selected for this session (empty when fractal is selected)
+	// MFAPending marks a session that passed the password but not the second
+	// factor. It authorizes nothing until a code is verified.
+	MFAPending bool
 }
 
 // APIKeyValidator interface for validating API keys (to avoid circular dependency)
@@ -218,6 +224,9 @@ type AuthHandler struct {
 	apiKeyValidator APIKeyValidator
 	secureCookies   bool
 	loginLimiter    *loginRateLimiter
+	// mfaLimiter is keyed by username, not IP: an attacker who already has the
+	// password is otherwise free to walk the six digit space from new addresses.
+	mfaLimiter      *loginRateLimiter
 	keyLimiterMu    sync.Mutex
 	keyLimiter      *ingest.RateLimiter
 	keyLimiterRate  int
@@ -263,6 +272,7 @@ func NewAuthHandlerWithAPIKeys(pg *storage.PostgresClient, ch *storage.ClickHous
 		apiKeyValidator: apiKeyValidator,
 		secureCookies:   os.Getenv("BIFRACT_SECURE_COOKIES") == "true",
 		loginLimiter:    newLoginRateLimiter(),
+		mfaLimiter:      newLoginRateLimiter(),
 		rbacResolver:    rbac.NewResolver(pg),
 		clientCADir:     os.Getenv("BIFRACT_CLIENT_CA_DIR"),
 	}
@@ -396,6 +406,13 @@ func (h *AuthHandler) generateSessionID() (string, error) {
 }
 
 func (h *AuthHandler) createSession(username string) (string, error) {
+	return h.createSessionWithMFA(username, false)
+}
+
+// createSessionWithMFA builds a session, optionally in the half-authenticated
+// state that only the MFA endpoints accept. A pending session gets a short
+// expiry so an abandoned login does not leave a usable ticket lying around.
+func (h *AuthHandler) createSessionWithMFA(username string, mfaPending bool) (string, error) {
 	sessionID, err := h.generateSessionID()
 	if err != nil {
 		return "", err
@@ -427,11 +444,17 @@ func (h *AuthHandler) createSession(username string) (string, error) {
 		}
 	}
 
+	expiry := sessionDuration
+	if mfaPending {
+		expiry = mfaPendingDuration
+	}
+
 	session := &Session{
 		Username:        username,
 		CreatedAt:       time.Now(),
-		ExpiresAt:       time.Now().Add(sessionDuration),
+		ExpiresAt:       time.Now().Add(expiry),
 		SelectedFractal: selectedFractal,
+		MFAPending:      mfaPending,
 	}
 
 	h.store.Set(sessionID, session)
@@ -472,8 +495,14 @@ func (h *AuthHandler) SessionUser(r *http.Request) *storage.User {
 	if !exists {
 		return nil
 	}
+	if session.MFAPending {
+		return nil
+	}
 	user, err := h.pg.GetUser(r.Context(), session.Username)
 	if err != nil || user == nil || !user.Enabled || user.ForcePasswordChange {
+		return nil
+	}
+	if mfaEnrollmentRequired(user) {
 		return nil
 	}
 	return user
@@ -567,20 +596,29 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Successful login - clear rate limit state
+	// Password accepted. A user with an authenticator is not logged in yet: the
+	// session stays half-authenticated until a code is verified.
 	h.loginLimiter.reset(ip)
-	h.logAuthEvent("login_success", user.Username, ip, "")
+	mfaPending := user.TOTPEnrolled
 
-	// Update last login
-	if err := h.pg.UpdateLastLogin(r.Context(), user.Username); err != nil {
-		log.Printf("Failed to update last login for %s: %v", user.Username, err)
+	if mfaPending {
+		h.logAuthEvent("mfa_challenge", user.Username, ip, "")
+	} else {
+		h.logAuthEvent("login_success", user.Username, ip, "")
+		if err := h.pg.UpdateLastLogin(r.Context(), user.Username); err != nil {
+			log.Printf("Failed to update last login for %s: %v", user.Username, err)
+		}
 	}
 
-	// Create session
-	sessionID, err := h.createSession(user.Username)
+	sessionID, err := h.createSessionWithMFA(user.Username, mfaPending)
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to create session")
 		return
+	}
+
+	cookieMaxAge := int(sessionDuration.Seconds())
+	if mfaPending {
+		cookieMaxAge = int(mfaPendingDuration.Seconds())
 	}
 
 	// Set session cookie
@@ -591,7 +629,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   h.secureCookies,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(sessionDuration.Seconds()),
+		MaxAge:   cookieMaxAge,
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -605,6 +643,12 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			"gravatar_initial": user.GravatarInitial,
 			"is_admin":         user.IsAdmin,
 		},
+	}
+	if mfaPending {
+		resp.Message = "Enter your verification code"
+		resp.User.(map[string]interface{})["mfa_required"] = true
+	} else if mfaEnrollmentRequired(user) {
+		resp.User.(map[string]interface{})["mfa_enrollment_required"] = true
 	}
 	if user.ForcePasswordChange {
 		resp.User.(map[string]interface{})["force_password_change"] = true
@@ -669,10 +713,15 @@ func (h *AuthHandler) HandleCurrentUser(w http.ResponseWriter, r *http.Request) 
 		"prism_role":       prismRole,
 		"selected_fractal": selectedFractal,
 		"selected_prism":   selectedPrism,
-		"display_timezone": displayTimezone(user.DisplayTimezone),
+		"display_timezone": storage.SafeTimezone(user.DisplayTimezone),
 	}
 	if user.ForcePasswordChange {
 		userData["force_password_change"] = true
+	}
+	if pending, _ := r.Context().Value("mfa_pending").(bool); pending {
+		userData["mfa_required"] = true
+	} else if mfaEnrollmentRequired(user) {
+		userData["mfa_enrollment_required"] = true
 	}
 
 	api.WriteJSON(w, http.StatusOK, Response{
@@ -848,29 +897,6 @@ func (h *AuthHandler) HandleResetInvite(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// displayTimezone falls back to UTC for a user row written before the column
-// existed, or one whose stored zone was dropped from the IANA database.
-func displayTimezone(tz string) string {
-	if tz == "" {
-		return "UTC"
-	}
-	if _, err := time.LoadLocation(tz); err != nil {
-		return "UTC"
-	}
-	return tz
-}
-
-// validDisplayTimezone accepts an IANA zone name resolvable by the embedded
-// tzdata. "Local" is rejected: it means the server's zone, which is not a
-// meaningful answer for a browser asking how to render a timestamp.
-func validDisplayTimezone(tz string) bool {
-	if tz == "" || len(tz) > 64 || tz == "Local" {
-		return false
-	}
-	_, err := time.LoadLocation(tz)
-	return err == nil
-}
-
 // UpdatePreferencesRequest carries the caller display preferences to change.
 type UpdatePreferencesRequest struct {
 	DisplayTimezone *string `json:"display_timezone"`
@@ -890,7 +916,7 @@ func (h *AuthHandler) HandleUpdatePreferences(w http.ResponseWriter, r *http.Req
 
 	if req.DisplayTimezone != nil {
 		tz := strings.TrimSpace(*req.DisplayTimezone)
-		if !validDisplayTimezone(tz) {
+		if !storage.ValidTimezone(tz) {
 			api.WriteError(w, http.StatusBadRequest, "Unknown timezone")
 			return
 		}
@@ -1149,6 +1175,18 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 
 					ctx := context.WithValue(r.Context(), "user", user)
 					ctx = context.WithValue(ctx, "auth_type", "session")
+					ctx = context.WithValue(ctx, storage.AttributionUserKey, user.Username)
+					ctx = context.WithValue(ctx, "mfa_pending", session.MFAPending)
+
+					// A session that has passed the password but not the second
+					// factor authorizes nothing beyond finishing that step. The
+					// check is here, ahead of any scope or role resolution, so a
+					// half-authenticated session cannot reach the rest of the API
+					// through any route.
+					if session.MFAPending && !mfaVerifyPaths[r.URL.Path] {
+						api.WriteError(w, http.StatusForbidden, "Two-factor verification required")
+						return
+					}
 
 					// Per-request scope. The session scope is the default, but a
 					// request may override it with the X-Bifract-Scope header so
@@ -1199,6 +1237,17 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 						return
 					}
 
+					// Same shape for a deployment that requires an authenticator:
+					// a user who has not enrolled reaches only the enrollment
+					// endpoints. A pending password change takes precedence and
+					// has already narrowed the path set above; gating again here
+					// would leave that user unable to reach the change endpoint
+					// and stuck with no way forward.
+					if !user.ForcePasswordChange && mfaEnrollmentRequired(user) && !mfaEnrollPaths[r.URL.Path] {
+						api.WriteError(w, http.StatusForbidden, "Two-factor enrollment required")
+						return
+					}
+
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}
@@ -1233,6 +1282,7 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 
 					ctx := context.WithValue(r.Context(), "user", user)
 					ctx = context.WithValue(ctx, "auth_type", "api_key")
+					ctx = context.WithValue(ctx, storage.AttributionUserKey, keyData.CreatedBy)
 					ctx = context.WithValue(ctx, "api_key", keyData)
 
 					// The key's role applies to the scope it was issued for.
@@ -1298,6 +1348,8 @@ func (h *AuthHandler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 			"last_login":       u.LastLogin,
 			"invite_pending":   u.InvitePending,
 			"enabled":          u.Enabled,
+			"auth_provider":    u.AuthProvider,
+			"totp_enrolled":    u.TOTPEnrolled,
 		}
 	}
 

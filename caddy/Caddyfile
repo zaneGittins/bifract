@@ -55,6 +55,10 @@
 				header_up X-Real-IP {remote_host}
 				header_up X-Forwarded-For {remote_host}
 				header_up X-Forwarded-Proto {scheme}
+				# Must stay under the upstream's 60s IdleTimeout, or the pool hands out sockets it has already closed (502).
+				transport http {
+					keepalive 30s
+				}
 			}
 		}
 
@@ -65,6 +69,9 @@
 				header_up X-Real-IP {remote_host}
 				header_up X-Forwarded-For {remote_host}
 				header_up X-Forwarded-Proto {scheme}
+				transport http {
+					keepalive 30s
+				}
 			}
 		}
 
@@ -73,6 +80,9 @@
 			header_up X-Real-IP {remote_host}
 			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto {scheme}
+			transport http {
+				keepalive 30s
+			}
 		}
 	}
 }
@@ -95,6 +105,9 @@
 			header_up X-Real-IP {remote_host}
 			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto {scheme}
+			transport http {
+				keepalive 30s
+			}
 		}
 	}
 

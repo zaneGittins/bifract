@@ -16,6 +16,7 @@ var bodylessRoutes = []string{
 	"POST /api/v1/admin/schema-fields/refresh",
 	"POST /api/v1/alerts/{id}/duplicate",
 	"POST /api/v1/auth/logout",
+	"POST /api/v1/auth/mfa/enroll",
 	"POST /api/v1/dashboards/{id}/execute",
 	"POST /api/v1/dashboards/{id}/presence",
 	"POST /api/v1/dictionaries/{id}/columns/{name}/key",

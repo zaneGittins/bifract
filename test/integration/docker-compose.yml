@@ -1,0 +1,136 @@
+# The stack the API suite needs: somewhere to store configuration, somewhere to
+# store logs, and the server itself. Caddy, LiteLLM and the archivers are part of
+# a deployment but nothing in test/integration/ touches them, so they are left
+# out to keep a CI run small.
+#
+# It binds the same host ports as the development stack, so stop that first:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml down
+#   docker compose -f test/integration/docker-compose.yml up -d --wait
+#   BIFRACT_API_KEY=... go test -tags integration ./test/integration/ -v
+
+name: bifract-apitest
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: bifract
+      POSTGRES_USER: bifract
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bifract}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bifract"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bifract-network
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.6.2.81-alpine
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    environment:
+      CLICKHOUSE_DB: logs
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-bifract}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "default", "--password", "${CLICKHOUSE_PASSWORD:-bifract}", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bifract-network
+    restart: unless-stopped
+
+  bifract:
+    image: bifract-dev
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    # mem_limit gives automemlimit a real cgroup ceiling to derive GOMEMLIMIT from,
+    # so the GC tightens as the process approaches the limit instead of the container
+    # being OOM-killed at it. CPU is deliberately left uncapped: automaxprocs would
+    # shrink GOMAXPROCS to match and slow query serving.
+    mem_limit: ${BIFRACT_MEM_LIMIT:-4g}
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_DB: logs
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-bifract}
+      # Least-privilege ingest identities (app provisions them at startup so the ingest
+      # tier gets INSERT-only CH access + a curated PG role; cannot read logs or auth data).
+      BIFRACT_INGEST_CLICKHOUSE_PASSWORD: ${BIFRACT_INGEST_CLICKHOUSE_PASSWORD:-bifractingestdev}
+      BIFRACT_INGEST_POSTGRES_PASSWORD: ${BIFRACT_INGEST_POSTGRES_PASSWORD:-bifractingestdev}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: bifract
+      POSTGRES_USER: bifract
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bifract}
+      BIFRACT_PORT: 8080
+      BIFRACT_MAX_QUERY_ROWS: 250
+      BIFRACT_SECURE_COOKIES: ${BIFRACT_SECURE_COOKIES:-false}
+      BIFRACT_CORS_ORIGINS: ${BIFRACT_CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
+      BIFRACT_PASSWORD_PEPPER: ${BIFRACT_PASSWORD_PEPPER:-}
+      LITELLM_URL: http://litellm:8000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-bifract-internal-key}
+      BIFRACT_BACKUP_ENCRYPTION_KEY: ${BIFRACT_BACKUP_ENCRYPTION_KEY:-}
+      BIFRACT_S3_ENDPOINT: ${BIFRACT_S3_ENDPOINT:-}
+      BIFRACT_S3_BUCKET: ${BIFRACT_S3_BUCKET:-}
+      BIFRACT_S3_ACCESS_KEY: ${BIFRACT_S3_ACCESS_KEY:-}
+      BIFRACT_S3_SECRET_KEY: ${BIFRACT_S3_SECRET_KEY:-}
+      BIFRACT_S3_REGION: ${BIFRACT_S3_REGION:-}
+      # Archive: the spool + tee live in the bifract-ingest tier (the primary log
+      # producer); the app tier is not a spool writer. Enable state is read from
+      # Postgres; provisioned/usage come from the ingest tier's published status.
+      # The object-store settings are live config here, not display hints: the app
+      # tier hosts the recall + restore job queues, which resolve Iceberg metadata
+      # and hand the scan to ClickHouse. Skipped entirely on the disk backend.
+      BIFRACT_ARCHIVE_ENABLED: ${BIFRACT_ARCHIVE_ENABLED:-false}
+      BIFRACT_ARCHIVE_BACKEND: ${BIFRACT_ARCHIVE_BACKEND:-disk}
+      BIFRACT_ARCHIVE_DISK_PATH: /var/lib/bifract/archive
+      BIFRACT_ARCHIVE_PREFIX: ${BIFRACT_ARCHIVE_PREFIX:-}
+      BIFRACT_ARCHIVE_S3_ENDPOINT: ${BIFRACT_ARCHIVE_S3_ENDPOINT:-}
+      BIFRACT_ARCHIVE_S3_BUCKET: ${BIFRACT_ARCHIVE_S3_BUCKET:-}
+      BIFRACT_ARCHIVE_S3_REGION: ${BIFRACT_ARCHIVE_S3_REGION:-us-east-1}
+      BIFRACT_ARCHIVE_S3_ACCESS_KEY: ${BIFRACT_ARCHIVE_S3_ACCESS_KEY:-}
+      BIFRACT_ARCHIVE_S3_SECRET_KEY: ${BIFRACT_ARCHIVE_S3_SECRET_KEY:-}
+      BIFRACT_ARCHIVE_AZURE_ACCOUNT: ${BIFRACT_ARCHIVE_AZURE_ACCOUNT:-}
+      BIFRACT_ARCHIVE_AZURE_KEY: ${BIFRACT_ARCHIVE_AZURE_KEY:-}
+      BIFRACT_ARCHIVE_AZURE_CONTAINER: ${BIFRACT_ARCHIVE_AZURE_CONTAINER:-}
+      BIFRACT_ARCHIVE_AZURE_ENDPOINT: ${BIFRACT_ARCHIVE_AZURE_ENDPOINT:-}
+      BIFRACT_ARCHIVE_JOB_CONCURRENCY: ${BIFRACT_ARCHIVE_JOB_CONCURRENCY:-2}
+      BIFRACT_RECALL_TIMEOUT: ${BIFRACT_RECALL_TIMEOUT:-5m}
+      MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
+      MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
+      MAXMIND_EDITION_IDS: ${MAXMIND_EDITION_IDS:-GeoLite2-City-CSV,GeoLite2-ASN-CSV}
+    volumes:
+      - bifract-maxmind:/data/maxmind
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - bifract-network
+
+  # Ingest data-plane tier. Same image as bifract, run in ingest mode
+  # (`/bifract-server ingest`, matching the archiver's command-arg dispatch).
+  # Scales independently of the app/UI tier -- down to 0 to pause ingest during
+  # ClickHouse merge recovery while the app keeps serving. Caddy routes the external
+  # ingest paths here; the app tier keeps its own queue only for internal/audit
+  # writes. This tier is the primary archive-spool producer.
+
+volumes:
+  postgres-data:
+  clickhouse-data:
+  bifract-maxmind:
+
+networks:
+  bifract-network:
+    driver: bridge

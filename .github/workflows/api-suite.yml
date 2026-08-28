@@ -1,0 +1,82 @@
+name: API Suite
+
+# The suite talks to a running server, so it costs a stack to run: Postgres,
+# ClickHouse and the app, about five minutes. It runs when something that can
+# change API behaviour changes, rather than on every push, and never nightly:
+# the images are pinned, so a nightly run would re-prove the same commit.
+on:
+  pull_request:
+    paths:
+      - "pkg/**"
+      - "cmd/bifract-server/**"
+      - "db/**"
+      - "test/integration/**"
+      - "go.mod"
+      - "go.sum"
+      - "docker-compose.yml"
+      - ".github/workflows/api-suite.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  api-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build the server image
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml build bifract
+
+      - name: Start Postgres, ClickHouse and the server
+        run: docker compose -f test/integration/docker-compose.yml up -d --wait
+
+      - name: Mint a tenant-admin key
+        id: key
+        run: |
+          set -euo pipefail
+          BASE=http://localhost:8080
+          for _ in $(seq 1 60); do
+            if curl -sf "$BASE/api/v1/health" >/dev/null; then break; fi
+            sleep 2
+          done
+          # A fresh install ships a known admin password and requires it to be
+          # changed before anything else is reachable, so clear that first.
+          COOKIES=$(mktemp)
+          curl -sf -c "$COOKIES" -X POST -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"bifract"}' \
+            "$BASE/api/v1/auth/login" >/dev/null
+          curl -sf -b "$COOKIES" -c "$COOKIES" -X POST -H 'Content-Type: application/json' \
+            -d '{"current_password":"bifract","new_password":"bifract-api-suite-ci"}' \
+            "$BASE/api/v1/auth/change-password" >/dev/null
+          FRACTAL=$(curl -sf -b "$COOKIES" "$BASE/api/v1/fractals" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["fractals"][0]["id"])')
+          EXPIRES=$(python3 -c "import datetime;print((datetime.datetime.now(datetime.UTC)+datetime.timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+          KEY=$(curl -sf -b "$COOKIES" -X POST -H 'Content-Type: application/json' \
+            -H "X-Bifract-Scope: fractal:$FRACTAL" \
+            -d "{\"name\":\"api-suite\",\"role\":\"admin\",\"tenant_admin\":true,\"expires_at\":\"$EXPIRES\"}" \
+            "$BASE/api/v1/fractals/$FRACTAL/api-keys" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["key"])')
+          echo "::add-mask::$KEY"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "fractal=$FRACTAL" >> "$GITHUB_OUTPUT"
+
+      - name: Run the suite
+        env:
+          BIFRACT_API_URL: http://localhost:8080
+          BIFRACT_API_KEY: ${{ steps.key.outputs.key }}
+          BIFRACT_FRACTAL_ID: ${{ steps.key.outputs.fractal }}
+        run: go test -tags integration ./test/integration/ -v -count=1 -timeout 15m
+
+      - name: Server logs on failure
+        if: failure()
+        run: docker compose -f test/integration/docker-compose.yml logs --tail 200

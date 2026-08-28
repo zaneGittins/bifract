@@ -176,11 +176,37 @@ func (r *Resolver) ResolveRole(ctx context.Context, user *storage.User, fractalI
 	if fractalID == "" {
 		return RoleNone
 	}
+	if role := apiKeyRole(ctx, fractalID); role != RoleNone {
+		return role
+	}
 	role, err := r.ResolveFractalRole(ctx, user.Username, fractalID)
 	if err != nil {
 		return RoleNone
 	}
 	return role
+}
+
+// apiKeyRole returns the role an API key carries for fractalID, or RoleNone.
+//
+// An API key authenticates as a synthetic apikey_<id> principal that owns no row
+// in fractal_permissions, so resolving it by username always denies. The key's
+// real grant is put in the request context by the auth middleware when the key is
+// validated. It is trusted only for the one fractal the key is bound to, so a key
+// cannot carry its role into a fractal it was never issued for.
+func apiKeyRole(ctx context.Context, fractalID string) Role {
+	scoped, _ := ctx.Value("selected_fractal").(string)
+	if scoped == "" || scoped != fractalID {
+		return RoleNone
+	}
+	if authType, _ := ctx.Value("auth_type").(string); authType != "api_key" {
+		return RoleNone
+	}
+	role, _ := ctx.Value("fractal_role").(string)
+	switch Role(role) {
+	case RoleViewer, RoleAnalyst, RoleAdmin:
+		return Role(role)
+	}
+	return RoleNone
 }
 
 // PrismAccess pairs a prism ID with the user's effective role.

@@ -41,13 +41,14 @@ func (p *pgSessionStore) Get(sessionID string) (*Session, bool) {
 	err := p.db.QueryRowContext(ctx,
 		`SELECT s.username, s.created_at, s.expires_at,
 		        CASE WHEN f.id IS NULL THEN NULL ELSE s.selected_fractal END,
-		        CASE WHEN p.id IS NULL THEN NULL ELSE s.selected_prism END
+		        CASE WHEN p.id IS NULL THEN NULL ELSE s.selected_prism END,
+		        COALESCE(s.mfa_pending, FALSE)
 		 FROM sessions s
 		 LEFT JOIN fractals f ON f.id::text = s.selected_fractal
 		 LEFT JOIN prisms   p ON p.id::text = s.selected_prism
 		 WHERE s.session_id = $1 AND s.expires_at > NOW()`,
 		sessionID,
-	).Scan(&s.Username, &s.CreatedAt, &s.ExpiresAt, &fractal, &prism)
+	).Scan(&s.Username, &s.CreatedAt, &s.ExpiresAt, &fractal, &prism, &s.MFAPending)
 	if err != nil {
 		return nil, false
 	}
@@ -69,14 +70,15 @@ func (p *pgSessionStore) Set(sessionID string, session *Session) {
 	}
 
 	p.db.ExecContext(ctx,
-		`INSERT INTO sessions (session_id, username, created_at, expires_at, selected_fractal, selected_prism)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		`INSERT INTO sessions (session_id, username, created_at, expires_at, selected_fractal, selected_prism, mfa_pending)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (session_id) DO UPDATE SET
 		   username = EXCLUDED.username,
 		   expires_at = EXCLUDED.expires_at,
 		   selected_fractal = EXCLUDED.selected_fractal,
-		   selected_prism = EXCLUDED.selected_prism`,
-		sessionID, session.Username, session.CreatedAt, session.ExpiresAt, fractal, prism,
+		   selected_prism = EXCLUDED.selected_prism,
+		   mfa_pending = EXCLUDED.mfa_pending`,
+		sessionID, session.Username, session.CreatedAt, session.ExpiresAt, fractal, prism, session.MFAPending,
 	)
 }
 

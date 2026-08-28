@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -1656,29 +1657,63 @@ func parseBucketSpan(span string) (int, string) {
 
 // getBucketExpression returns a ClickHouse expression for time bucketing.
 // Uses toStartOfInterval for arbitrary intervals, or built-in functions for common ones.
-func getBucketExpression(n int, unit string) string {
+//
+// tz is the IANA zone the bucket boundaries snap to. Empty (and "UTC") emit no
+// zone argument, leaving the default install's SQL byte-identical. A qualified
+// bucket comes back typed DateTime('<tz>'), which the row scanner renders as
+// that zone's wall clock, so the label arrives already correct.
+func getBucketExpression(n int, unit string, tz string) string {
+	zone := ""
+	if tz != "" && tz != "UTC" {
+		zone = fmt.Sprintf(", '%s'", escapeString(tz))
+	}
 	// For common 1-unit spans use the simpler built-in functions
 	if n == 1 {
 		switch unit {
 		case "MINUTE":
-			return "toStartOfMinute(timestamp)"
+			return fmt.Sprintf("toStartOfMinute(timestamp%s)", zone)
 		case "HOUR":
-			return "toStartOfHour(timestamp)"
+			return fmt.Sprintf("toStartOfHour(timestamp%s)", zone)
 		case "DAY":
-			return "toStartOfDay(timestamp)"
+			return fmt.Sprintf("toStartOfDay(timestamp%s)", zone)
 		case "WEEK":
-			return "toStartOfWeek(timestamp)"
+			if zone == "" {
+				return "toStartOfWeek(timestamp)"
+			}
+			// toStartOfWeek takes mode before timezone; 0 is its own default.
+			return fmt.Sprintf("toStartOfWeek(timestamp, 0%s)", zone)
 		}
 	}
 	// For 5 minutes ClickHouse has a built-in
 	if n == 5 && unit == "MINUTE" {
-		return "toStartOfFiveMinutes(timestamp)"
+		return fmt.Sprintf("toStartOfFiveMinutes(timestamp%s)", zone)
 	}
 	if n == 15 && unit == "MINUTE" {
-		return "toStartOfFifteenMinutes(timestamp)"
+		return fmt.Sprintf("toStartOfFifteenMinutes(timestamp%s)", zone)
 	}
 	// For arbitrary intervals use toStartOfInterval
-	return fmt.Sprintf("toStartOfInterval(timestamp, INTERVAL %d %s)", n, unit)
+	return fmt.Sprintf("toStartOfInterval(timestamp, INTERVAL %d %s%s)", n, unit, zone)
+}
+
+// bucketTimezone reports the zone getBucketExpression should snap to, and
+// records it on the plan so the client can label an axis whose zone differs
+// from the viewer's own.
+//
+// A zone the embedded tzdata cannot resolve falls back to UTC rather than
+// letting ClickHouse fail the whole query. Zones are validated where they are
+// written, so reaching this means the tzdata moved underneath a stored value.
+// The recorded zone is the one actually used, never the one asked for.
+func bucketTimezone(ctx *CommandContext) string {
+	tz := ctx.Opts.DisplayTimezone
+	if tz == "" {
+		tz = "UTC"
+	} else if tz != "UTC" {
+		if _, err := time.LoadLocation(tz); err != nil {
+			tz = "UTC"
+		}
+	}
+	ctx.Plan.ChartConfig["bucketTimezone"] = tz
+	return tz
 }
 
 // spanToSeconds converts a duration string (e.g., "5m", "1h", "30s") to seconds.

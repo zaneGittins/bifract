@@ -1949,7 +1949,7 @@ const Dashboards = {
         modal.innerHTML = `
             <div class="modal-content" style="width:380px;max-width:95vw;">
                 <div class="modal-header">
-                    <h3>Time Range</h3>
+                    <h3>Time Settings</h3>
                     <button class="modal-close" onclick="document.getElementById('dashTimeRangeModal').remove()">&#x2715;</button>
                 </div>
                 <div class="modal-body">
@@ -1963,6 +1963,11 @@ const Dashboards = {
                             <option value="last30d" ${this.currentDashboard.time_range_type === 'last30d' ? 'selected' : ''}>Last 30 Days</option>
                             <option value="all" ${this.currentDashboard.time_range_type === 'all' ? 'selected' : ''}>All Time</option>
                         </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Bucket Timezone</label>
+                        <select id="dtrZone" class="form-input">${this.zoneOptionsHTML()}</select>
+                        <div class="form-hint">Where day, hour and week boundaries fall for bucket() and timechart. It belongs to the dashboard so every viewer reads the same buckets. Individual timestamps still follow each viewer's own zone.</div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -2001,23 +2006,86 @@ const Dashboards = {
         }
     },
 
+    // Zone options for the dashboard bucket-timezone select. UTC and the
+    // viewer's own zone lead because they are the two anyone reaches for; a
+    // zone set from another device stays selectable even if this engine does
+    // not enumerate it.
+    zoneOptionsHTML() {
+        const current = this.currentDashboard?.timezone || 'UTC';
+        const opt = (z) => `<option value="${Utils.escapeAttr(z)}"${z === current ? ' selected' : ''}>${Utils.escapeHtml(z)}</option>`;
+        const browser = window.TZ ? TZ.browserZone() : 'UTC';
+        const lead = ['UTC'];
+        if (browser !== 'UTC') lead.push(browser);
+        if (!lead.includes(current)) lead.push(current);
+        const all = (window.TZ ? TZ.zoneList() : ['UTC']).filter(z => !lead.includes(z));
+        return `<optgroup label="Common">${lead.map(opt).join('')}</optgroup>` +
+               `<optgroup label="All">${all.map(opt).join('')}</optgroup>`;
+    },
+
     async saveTimeRange() {
         if (!this.currentDashboard) return;
         const val = document.getElementById('dtrSelect')?.value;
-        if (!val || val === 'custom') return;
+        const zone = document.getElementById('dtrZone')?.value;
+
+        const body = {};
+        // "custom" is the disabled placeholder for a brushed range, so seeing it
+        // selected means the range was not touched.
+        if (val && val !== 'custom' && val !== this.currentDashboard.time_range_type) {
+            body.time_range_type = val;
+        }
+        if (zone && zone !== (this.currentDashboard.timezone || 'UTC')) {
+            body.timezone = zone;
+        }
+        if (!Object.keys(body).length) {
+            document.getElementById('dashTimeRangeModal')?.remove();
+            return;
+        }
 
         try {
-            await fetch(`/api/v1/dashboards/${this.currentDashboard.id}`, {
+            const resp = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this.sseHeaders(),
                 credentials: 'include',
-                body: JSON.stringify({ time_range_type: val })
+                body: JSON.stringify(body)
             });
-            this.currentDashboard.time_range_type = val;
+            const data = await resp.json();
+            if (!data.success) throw new Error(data.error || 'Failed to save');
+
+            if (body.time_range_type) this.currentDashboard.time_range_type = body.time_range_type;
+            if (body.timezone) this.currentDashboard.timezone = body.timezone;
             document.getElementById('dashTimeRangeModal')?.remove();
-            this.autoExecuteAllWidgets();
+
+            if (body.time_range_type) {
+                this.autoExecuteAllWidgets();
+            } else {
+                // A zone change re-ran every widget server-side before this
+                // response returned, so the fresh results are already cached.
+                // Reload them instead of paying for the same queries twice.
+                await this.reloadCachedResults();
+            }
         } catch (err) {
-            console.error('[Dashboards] Failed to save time range:', err);
+            console.error('[Dashboards] Failed to save time settings:', err);
+            this.showError(err.message || 'Failed to save time settings');
+        }
+    },
+
+    // Re-read the server-persisted widget results and repaint from them.
+    async reloadCachedResults() {
+        if (!this.currentDashboard) return;
+        try {
+            const resp = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}`, { credentials: 'include' });
+            const data = await resp.json();
+            if (!data.success || !data.data.widgets) return;
+            const byId = new Map(data.data.widgets.map(w => [w.id, w]));
+            this.currentDashboard.widgets.forEach(w => {
+                const fresh = byId.get(w.id);
+                if (!fresh) return;
+                w.last_results = fresh.last_results;
+                w.last_executed_at = fresh.last_executed_at;
+            });
+            this.paintCachedWidgets();
+        } catch (err) {
+            console.error('[Dashboards] Failed to reload cached results:', err);
         }
     },
 

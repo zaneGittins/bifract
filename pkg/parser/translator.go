@@ -58,6 +58,12 @@ type QueryOptions struct {
 	// ProvenanceOrderBy) whose subquery rows are already meaningfully pre-ordered -- timestamp
 	// ordering would discard that and, combined with a LIMIT, truncate the wrong rows.
 	SourceOrderBy []string
+	// DisplayTimezone is the IANA zone that calendar-aligned time buckets
+	// (bucket(), timechart) snap to. Empty means UTC, which is what an alert,
+	// an API-key request and any headless path get: those have no viewer, so
+	// their boundaries must not move. Owned by the running user for an ad-hoc
+	// query and by the dashboard for a dashboard widget.
+	DisplayTimezone string
 }
 
 // sourceColumnSelects renders a subquery source's flat columns as a default SELECT list.

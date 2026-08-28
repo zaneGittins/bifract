@@ -26,6 +26,7 @@
     <link rel="stylesheet" href="/static/css/11-fields-graph.css">
     <link rel="stylesheet" href="/static/css/12-admin.css">
     <link rel="stylesheet" href="/static/css/13-api-explorer.css">
+    <link rel="stylesheet" href="/static/css/14-mfa.css">
     <link rel="stylesheet" href="/static/apiKeys.css">
     <link rel="stylesheet" href="/static/dictionaries.css">
     <link rel="stylesheet" href="/static/models.css">
@@ -694,6 +695,7 @@
                     <nav class="sp-rail" id="settingsSectionRail" aria-label="Settings sections">
                         <button class="sp-rail-item active" data-section="spSectionQuery">Query &amp; Alerting</button>
                         <button class="sp-rail-item" data-section="spSectionArchive">Archive</button>
+                        <button class="sp-rail-item" data-section="spSectionSecurity">Security</button>
                         <button class="sp-rail-item" data-section="spSectionFeatures">Features</button>
                         <button class="sp-rail-item sp-rail-danger" data-section="spSectionDanger">Danger Zone</button>
                     </nav>
@@ -910,6 +912,29 @@
                             </div>
                         </section>
 
+                        <!-- Security -->
+                        <section class="sp-section" id="spSectionSecurity">
+                            <header class="sp-section-head">
+                                <h3>Security</h3>
+                                <p>How people prove who they are before they reach your logs.</p>
+                            </header>
+                            <div class="sp-card">
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="requireMFAToggle" class="sp-row-label">Require two-factor authentication</label>
+                                        <p class="sp-row-meta sp-row-cost">Users are required to enroll on their next sign in. SSO accounts are exempt. <span id="requireMFAHint" class="setting-inline-hint"></span></p>
+                                        <p class="sp-row-blocked" id="requireMFABlocked" style="display:none;"></p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <label class="toggle-switch">
+                                            <input type="checkbox" id="requireMFAToggle">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
                         <!-- Features -->
                         <section class="sp-section" id="spSectionFeatures">
                             <header class="sp-section-head">
@@ -1004,11 +1029,11 @@
                 <!-- API Keys Sub-Tab -->
                 <div id="settingsSubTabApikeys" class="settings-sub-panel" style="display:none;">
                 <div class="settings-card">
-                    <p class="admin-panel-desc">Every API key issued in this instance. A key is authorized like a person: it holds a role on the fractal or prism it was issued for. A key marked <strong>Tenant admin</strong> can additionally administer the whole instance and must carry an expiry.</p>
                     <div class="admin-toolbar">
                         <input type="text" id="apiKeysAdminSearch" class="admin-search" placeholder="Search keys..." autocomplete="off">
                         <label class="inline-perm-toggle" style="margin-left:0.75rem;"><input type="checkbox" id="apiKeysAdminOnlyAdmin"> Tenant admin only</label>
                         <span class="admin-toolbar-spacer"></span>
+                        <button id="apiKeysAdminNew" class="btn-primary btn-sm">New key</button>
                         <button id="apiKeysAdminRefresh" class="btn-secondary btn-sm">Refresh</button>
                     </div>
                     <div id="apiKeysAdminList">
@@ -3839,6 +3864,53 @@ throttleTimeSeconds: 3600"></textarea>
     </div>
 
     <!-- Create Fractal API Key Modal -->
+    <!-- Create API Key (instance administration). The admin page is not inside a
+         fractal, so this form picks the scope and can grant the instance-wide
+         role the per-fractal form cannot. -->
+    <div id="adminCreateAPIKeyModal" class="modal" onclick="if(event.target===this)APIKeysAdmin.hideCreate()">
+        <div class="modal-content" style="max-width:560px;">
+            <div class="modal-header">
+                <h2>New API Key</h2>
+                <button class="close-btn" onclick="APIKeysAdmin.hideCreate()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="adminCreateAPIKeyForm" class="access-grant-form" onsubmit="return false;">
+                    <div class="form-group">
+                        <label for="adminApiKeyName">Name *</label>
+                        <input type="text" id="adminApiKeyName" required placeholder="What will use this key">
+                    </div>
+                    <div class="form-group">
+                        <label for="adminApiKeyScope">Scope *</label>
+                        <select id="adminApiKeyScope" class="form-control"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="adminApiKeyRole">Role</label>
+                        <select id="adminApiKeyRole" class="form-control">
+                            <option value="viewer">Viewer &mdash; read only</option>
+                            <option value="analyst" selected>Analyst &mdash; read and write</option>
+                            <option value="admin">Admin &mdash; manage this scope</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="inline-perm-toggle"><input type="checkbox" id="adminApiKeyTenantAdmin"> Tenant admin</label>
+                        <p class="admin-panel-desc" style="margin-top:0.35rem;">Administers the whole instance, not just this scope. Requires an expiry.</p>
+                    </div>
+                    <div class="form-group">
+                        <label for="adminApiKeyExpires">Expires</label>
+                        <input type="datetime-local" id="adminApiKeyExpires" class="form-control">
+                        <div class="checkbox-group" style="margin-top: 0.375rem;">
+                            <label><input type="checkbox" id="adminApiKeyNeverExpires"> Never expires</label>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn-secondary" onclick="APIKeysAdmin.hideCreate()">Cancel</button>
+                        <button type="button" id="adminApiKeySubmit" class="btn-primary">Create</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <div id="inlineCreateAPIKeyModal" class="modal" onclick="if(event.target===this)APIKeys.hideCreateKeyModal()">
         <div class="modal-content" style="max-width:560px;">
             <div class="modal-header">
@@ -4054,6 +4126,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/settings.js"></script>
     <!-- Auth and Comments must load before logDetail -->
     <script src="/static/auth.js"></script>
+    <script src="/static/mfa.js"></script>
     <script src="/static/comments.js"></script>
     <script src="/static/commentedLogs.js"></script>
     <script src="/static/realTimeComments.js"></script>

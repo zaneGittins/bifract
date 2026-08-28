@@ -53,8 +53,6 @@ type GroupRequest struct {
 
 // HandleCreateGroup creates a new group (tenant admin only).
 func (h *Handler) HandleCreateGroup(w http.ResponseWriter, r *http.Request) {
-	user := h.getCurrentUser(r)
-
 	var req GroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendJSON(w, http.StatusBadRequest, apiResponse{Error: "Invalid request body"})
@@ -65,7 +63,7 @@ func (h *Handler) HandleCreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	group, err := h.pg.CreateGroup(r.Context(), req.Name, req.Description, user.Username)
+	group, err := h.pg.CreateGroup(r.Context(), req.Name, req.Description, storage.AttributionUser(r.Context()))
 	if err != nil {
 		h.sendJSON(w, http.StatusBadRequest, apiResponse{Error: "Failed to create group"})
 		return

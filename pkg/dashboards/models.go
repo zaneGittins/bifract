@@ -60,6 +60,7 @@ type CreateDashboardRequest struct {
 	TimeRangeType  string     `json:"time_range_type"`
 	TimeRangeStart *time.Time `json:"time_range_start,omitempty"`
 	TimeRangeEnd   *time.Time `json:"time_range_end,omitempty"`
+	Timezone       string     `json:"timezone,omitempty"`
 }
 
 // UpdateDashboardRequest is the request body for updating a dashboard
@@ -69,6 +70,7 @@ type UpdateDashboardRequest struct {
 	TimeRangeType  *string    `json:"time_range_type,omitempty"`
 	TimeRangeStart *time.Time `json:"time_range_start,omitempty"`
 	TimeRangeEnd   *time.Time `json:"time_range_end,omitempty"`
+	Timezone       *string    `json:"timezone,omitempty"`
 }
 
 // CreateWidgetRequest is the request body for adding a widget

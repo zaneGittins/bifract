@@ -108,8 +108,6 @@ func (h *Handler) HandleGetFeed(w http.ResponseWriter, r *http.Request) {
 
 // HandleCreateFeed creates a new feed (admin only).
 func (h *Handler) HandleCreateFeed(w http.ResponseWriter, r *http.Request) {
-	user := h.getCurrentUser(r)
-
 	fractalID, prismID := h.getScope(r)
 	if fractalID == "" && prismID == "" {
 		h.respond(w, http.StatusBadRequest, nil, "no fractal or prism selected")
@@ -122,7 +120,7 @@ func (h *Handler) HandleCreateFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	feed, err := h.manager.Create(r.Context(), req, fractalID, prismID, user.Username)
+	feed, err := h.manager.Create(r.Context(), req, fractalID, prismID, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Feeds] Failed to create feed: %v", err)
 		h.respond(w, http.StatusBadRequest, nil, "Failed to create feed")

@@ -253,6 +253,98 @@
             flex-shrink: 0;
         }
 
+        /* The QR keeps a light plate in every theme: a scanner needs the contrast. */
+        .mfa-qr {
+            display: flex;
+            justify-content: center;
+            padding: 0.75rem;
+            background: #fff;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 1rem;
+        }
+
+        .mfa-qr svg {
+            width: 168px;
+            height: 168px;
+            display: block;
+        }
+
+        .mfa-secret {
+            font-family: var(--font-mono, monospace);
+            font-size: 0.72rem;
+            letter-spacing: 0.06em;
+            color: var(--text-secondary);
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 0.5rem 0.6rem;
+            word-break: break-all;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.15s ease;
+        }
+
+        .mfa-secret:hover {
+            border-color: var(--accent-primary);
+        }
+
+        .mfa-hint {
+            color: var(--text-muted);
+            font-size: 0.72rem;
+            text-align: center;
+            margin-top: 0.4rem;
+        }
+
+        .mfa-code-input {
+            text-align: center;
+            font-family: var(--font-mono, monospace);
+            font-size: 1.1rem;
+            letter-spacing: 0.35em;
+            text-indent: 0.35em;
+        }
+
+        .mfa-link {
+            display: block;
+            width: 100%;
+            margin-top: 0.9rem;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-family: var(--font-main);
+            font-size: 0.75rem;
+            cursor: pointer;
+            text-align: center;
+        }
+
+        .mfa-link:hover {
+            color: var(--accent-primary);
+        }
+
+        .mfa-codes {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.4rem;
+            font-family: var(--font-mono, monospace);
+            font-size: 0.78rem;
+            color: var(--text-primary);
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 0.85rem;
+            margin-bottom: 1rem;
+        }
+
+        .mfa-codes span {
+            text-align: center;
+            letter-spacing: 0.04em;
+        }
+
+        .mfa-codes span.used {
+            color: var(--text-muted);
+            text-decoration: line-through;
+        }
+
         @media (max-width: 480px) {
             .login-wrapper {
                 padding: 1rem;
@@ -372,6 +464,106 @@
             </form>
         </div>
 
+        <!-- Two-Factor Verification (shown when login returns mfa_required) -->
+        <div class="login-card" id="mfaVerifyCard" style="display: none;">
+            <div class="login-header">
+                <img src="/static/logo.png" alt="Bifract" class="login-logo">
+                <h1 class="login-title">bifract</h1>
+                <p class="login-subtitle">Two-factor verification</p>
+            </div>
+
+            <form id="mfaVerifyForm">
+                <div id="mfaVerifyError" class="error-message"></div>
+
+                <div class="form-group" id="mfaCodeGroup">
+                    <label for="mfaCode">Verification Code</label>
+                    <input
+                        type="text"
+                        id="mfaCode"
+                        class="form-input mfa-code-input"
+                        placeholder="000000"
+                        inputmode="numeric"
+                        autocomplete="one-time-code"
+                        maxlength="6"
+                    >
+                    <p class="mfa-hint">Open your authenticator app and enter the current code.</p>
+                </div>
+
+                <div class="form-group" id="mfaRecoveryGroup" style="display: none;">
+                    <label for="mfaRecoveryCode">Recovery Code</label>
+                    <input
+                        type="text"
+                        id="mfaRecoveryCode"
+                        class="form-input"
+                        placeholder="abcd-efgh-ijkl"
+                        autocomplete="off"
+                    >
+                    <p class="mfa-hint">Each recovery code works once.</p>
+                </div>
+
+                <button type="submit" class="login-button" id="mfaVerifyBtn">
+                    <span id="mfaVerifyBtnText">Verify</span>
+                </button>
+                <button type="button" class="mfa-link" id="mfaToggleRecovery">Use a recovery code instead</button>
+            </form>
+        </div>
+
+        <!-- Two-Factor Enrollment (shown when the deployment requires it) -->
+        <div class="login-card" id="mfaEnrollCard" style="display: none;">
+            <div class="login-header">
+                <img src="/static/logo.png" alt="Bifract" class="login-logo">
+                <h1 class="login-title">bifract</h1>
+                <p class="login-subtitle">Set up two-factor authentication</p>
+            </div>
+
+            <div id="mfaEnrollStep">
+                <p style="color: var(--text-secondary); font-size: 0.82rem; margin-bottom: 1rem; line-height: 1.5;">
+                    Your administrator requires an authenticator app. Scan this code with Google Authenticator, 1Password, Authy, or any TOTP app.
+                </p>
+
+                <div class="mfa-qr" id="mfaQR"></div>
+
+                <div class="form-group">
+                    <div class="mfa-secret" id="mfaSecret" title="Click to copy"></div>
+                    <p class="mfa-hint">Can't scan? Click the key to copy it and enter it by hand.</p>
+                </div>
+
+                <form id="mfaEnrollForm">
+                    <div id="mfaEnrollError" class="error-message"></div>
+
+                    <div class="form-group">
+                        <label for="mfaEnrollCode">Verification Code</label>
+                        <input
+                            type="text"
+                            id="mfaEnrollCode"
+                            class="form-input mfa-code-input"
+                            placeholder="000000"
+                            inputmode="numeric"
+                            autocomplete="one-time-code"
+                            maxlength="6"
+                        >
+                    </div>
+
+                    <button type="submit" class="login-button" id="mfaEnrollBtn">
+                        <span id="mfaEnrollBtnText">Confirm and Continue</span>
+                    </button>
+                </form>
+            </div>
+
+            <div id="mfaRecoveryStep" style="display: none;">
+                <p style="color: var(--text-secondary); font-size: 0.82rem; margin-bottom: 1rem; line-height: 1.5;">
+                    Save these recovery codes somewhere safe. They are the only way back in if you lose your device, each one works once, and they are not shown again.
+                </p>
+
+                <div class="mfa-codes" id="mfaRecoveryCodes"></div>
+
+                <button type="button" class="login-button" id="mfaRecoveryDoneBtn">
+                    <span>I have saved these codes</span>
+                </button>
+                <button type="button" class="mfa-link" id="mfaCopyCodes">Copy all codes</button>
+            </div>
+        </div>
+
         <!-- Invite Setup Card (hidden by default, shown when ?invite= param present) -->
         <div class="login-card" id="inviteCard" style="display: none;">
             <div class="login-header">
@@ -483,6 +675,9 @@
         // Login page authentication
         const LoginPage = {
             inviteToken: null,
+            currentPassword: null,
+            recoveryCodes: [],
+            useRecoveryCode: false,
 
             async init() {
                 const params = new URLSearchParams(window.location.search);
@@ -523,22 +718,7 @@
                 }
 
                 try {
-                    const response = await fetch('/api/v1/auth/user', {
-                        credentials: 'include'
-                    });
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data.success && data.user) {
-                            if (data.user.force_password_change) {
-                                // User is authenticated but must change password first.
-                                // We need the current password from the form, so just show the login form.
-                                this.setupLoginForm();
-                                return;
-                            }
-                            window.location.href = consumePendingLink();
-                            return;
-                        }
-                    }
+                    if (await this.routeAfterAuth(null)) return;
                 } catch (error) {
                     console.error('Error checking auth status:', error);
                 }
@@ -547,8 +727,7 @@
 
             async initInviteFlow(token) {
                 this.inviteToken = token;
-                document.getElementById('loginCard').style.display = 'none';
-                document.getElementById('inviteCard').style.display = 'block';
+                this.showCard('inviteCard');
 
                 try {
                     const response = await fetch('/api/v1/auth/invite/validate?token=' + encodeURIComponent(token));
@@ -657,11 +836,7 @@
                         const data = await response.json();
 
                         if (data.success) {
-                            if (data.user && data.user.force_password_change) {
-                                this.showForceChangeFlow(password);
-                            } else {
-                                window.location.href = consumePendingLink();
-                            }
+                            await this.routeAfterAuth(password, data.user);
                         } else {
                             this.showError(data.error || 'Login failed');
                         }
@@ -675,9 +850,232 @@
                 });
             },
 
+            // Every post-authentication gate lands here, so the order of the
+            // steps lives in one place instead of being duplicated at each
+            // point that can complete one of them. Returns false when the caller
+            // should fall back to showing the login form.
+            async routeAfterAuth(password, userFromLogin) {
+                if (password) this.currentPassword = password;
+
+                let user = userFromLogin;
+                if (!user) {
+                    const response = await fetch('/api/v1/auth/user', { credentials: 'include' });
+                    if (!response.ok) return false;
+                    const data = await response.json();
+                    if (!data.success || !data.user) return false;
+                    user = data.user;
+                }
+
+                if (user.mfa_required) {
+                    this.showMFAVerify();
+                    return true;
+                }
+                if (user.force_password_change) {
+                    // The change endpoint needs the current password, which only
+                    // exists in memory right after a sign in.
+                    if (!this.currentPassword) return false;
+                    this.showForceChangeFlow(this.currentPassword);
+                    return true;
+                }
+                if (user.mfa_enrollment_required) {
+                    await this.showMFAEnroll();
+                    return true;
+                }
+
+                window.location.href = consumePendingLink();
+                return true;
+            },
+
+            showCard(id) {
+                document.querySelectorAll('.login-card').forEach(card => {
+                    card.style.display = card.id === id ? 'block' : 'none';
+                });
+            },
+
+            showMFAVerify() {
+                this.showCard('mfaVerifyCard');
+                this.setupMFAVerifyForm();
+                document.getElementById('mfaCode').focus();
+            },
+
+            setupMFAVerifyForm() {
+                if (this.mfaVerifyReady) return;
+                this.mfaVerifyReady = true;
+
+                const form = document.getElementById('mfaVerifyForm');
+                const btn = document.getElementById('mfaVerifyBtn');
+                const btnText = document.getElementById('mfaVerifyBtnText');
+                const toggle = document.getElementById('mfaToggleRecovery');
+
+                toggle.addEventListener('click', () => {
+                    this.useRecoveryCode = !this.useRecoveryCode;
+                    document.getElementById('mfaCodeGroup').style.display = this.useRecoveryCode ? 'none' : 'block';
+                    document.getElementById('mfaRecoveryGroup').style.display = this.useRecoveryCode ? 'block' : 'none';
+                    toggle.textContent = this.useRecoveryCode ? 'Use your authenticator instead' : 'Use a recovery code instead';
+                    document.getElementById(this.useRecoveryCode ? 'mfaRecoveryCode' : 'mfaCode').focus();
+                });
+
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+
+                    const body = this.useRecoveryCode
+                        ? { recovery_code: document.getElementById('mfaRecoveryCode').value.trim() }
+                        : { code: document.getElementById('mfaCode').value.trim() };
+
+                    if (!body.code && !body.recovery_code) {
+                        this.showMFAVerifyError('Enter a code to continue');
+                        return;
+                    }
+
+                    btn.disabled = true;
+                    btnText.innerHTML = '<span class="loading-spinner"></span>Verifying...';
+                    this.hideMFAVerifyError();
+
+                    try {
+                        const response = await fetch('/api/v1/auth/mfa/verify', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify(body)
+                        });
+                        const data = await response.json();
+
+                        if (data.success) {
+                            await this.routeAfterAuth(this.currentPassword);
+                        } else {
+                            this.showMFAVerifyError(data.error || 'Verification failed');
+                        }
+                    } catch (error) {
+                        console.error('MFA verify error:', error);
+                        this.showMFAVerifyError('Network error. Please try again.');
+                    } finally {
+                        btn.disabled = false;
+                        btnText.textContent = 'Verify';
+                    }
+                });
+            },
+
+            async showMFAEnroll() {
+                this.showCard('mfaEnrollCard');
+                this.setupMFAEnrollForm();
+
+                try {
+                    const response = await fetch('/api/v1/auth/mfa/enroll', {
+                        method: 'POST',
+                        credentials: 'include'
+                    });
+                    const data = await response.json();
+
+                    if (!data.success) {
+                        this.showMFAEnrollError(data.error || 'Could not start enrollment');
+                        document.getElementById('mfaEnrollBtn').disabled = true;
+                        return;
+                    }
+
+                    const qr = document.getElementById('mfaQR');
+                    if (data.data.qr_svg) {
+                        // Our own generated markup: the payload is encoded as
+                        // modules, never as text in the document.
+                        qr.innerHTML = data.data.qr_svg;
+                    } else {
+                        qr.style.display = 'none';
+                    }
+                    document.getElementById('mfaSecret').textContent = data.data.secret;
+                    document.getElementById('mfaEnrollCode').focus();
+                } catch (error) {
+                    console.error('MFA enroll error:', error);
+                    this.showMFAEnrollError('Network error. Please try again.');
+                }
+            },
+
+            setupMFAEnrollForm() {
+                if (this.mfaEnrollReady) return;
+                this.mfaEnrollReady = true;
+
+                const form = document.getElementById('mfaEnrollForm');
+                const btn = document.getElementById('mfaEnrollBtn');
+                const btnText = document.getElementById('mfaEnrollBtnText');
+
+                document.getElementById('mfaSecret').addEventListener('click', (e) => {
+                    navigator.clipboard?.writeText(e.target.textContent.trim());
+                });
+
+                document.getElementById('mfaCopyCodes').addEventListener('click', () => {
+                    navigator.clipboard?.writeText(this.recoveryCodes.join('\n'));
+                });
+
+                document.getElementById('mfaRecoveryDoneBtn').addEventListener('click', () => {
+                    this.routeAfterAuth(this.currentPassword);
+                });
+
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+
+                    const code = document.getElementById('mfaEnrollCode').value.trim();
+                    if (!code) {
+                        this.showMFAEnrollError('Enter the code from your authenticator');
+                        return;
+                    }
+
+                    btn.disabled = true;
+                    btnText.innerHTML = '<span class="loading-spinner"></span>Confirming...';
+                    this.hideMFAEnrollError();
+
+                    try {
+                        const response = await fetch('/api/v1/auth/mfa/confirm', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            credentials: 'include',
+                            body: JSON.stringify({ code })
+                        });
+                        const data = await response.json();
+
+                        if (data.success) {
+                            this.recoveryCodes = (data.data && data.data.recovery_codes) || [];
+                            const list = document.getElementById('mfaRecoveryCodes');
+                            list.innerHTML = '';
+                            this.recoveryCodes.forEach(c => {
+                                const span = document.createElement('span');
+                                span.textContent = c;
+                                list.appendChild(span);
+                            });
+                            document.getElementById('mfaEnrollStep').style.display = 'none';
+                            document.getElementById('mfaRecoveryStep').style.display = 'block';
+                        } else {
+                            this.showMFAEnrollError(data.error || 'Could not confirm the code');
+                        }
+                    } catch (error) {
+                        console.error('MFA confirm error:', error);
+                        this.showMFAEnrollError('Network error. Please try again.');
+                    } finally {
+                        btn.disabled = false;
+                        btnText.textContent = 'Confirm and Continue';
+                    }
+                });
+            },
+
+            showMFAVerifyError(message) {
+                const el = document.getElementById('mfaVerifyError');
+                el.textContent = message;
+                el.style.display = 'block';
+            },
+
+            hideMFAVerifyError() {
+                document.getElementById('mfaVerifyError').style.display = 'none';
+            },
+
+            showMFAEnrollError(message) {
+                const el = document.getElementById('mfaEnrollError');
+                el.textContent = message;
+                el.style.display = 'block';
+            },
+
+            hideMFAEnrollError() {
+                document.getElementById('mfaEnrollError').style.display = 'none';
+            },
+
             showForceChangeFlow(currentPassword) {
-                document.getElementById('loginCard').style.display = 'none';
-                document.getElementById('forceChangeCard').style.display = 'block';
+                this.showCard('forceChangeCard');
                 document.getElementById('forceChangeCurrentPassword').value = currentPassword;
                 document.getElementById('forceChangeNewPassword').focus();
                 this.setupForceChangeForm();
@@ -728,12 +1126,10 @@
                             btn.style.display = 'none';
 
                             const successDiv = document.getElementById('forceChangeSuccess');
-                            successDiv.textContent = 'Password updated. Redirecting...';
+                            successDiv.textContent = 'Password updated. Continuing...';
                             successDiv.style.display = 'block';
 
-                            setTimeout(() => {
-                                window.location.href = consumePendingLink();
-                            }, 1500);
+                            setTimeout(() => this.routeAfterAuth(newPassword), 1200);
                         } else {
                             this.showForceChangeError(data.error || 'Failed to change password');
                         }

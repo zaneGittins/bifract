@@ -75,6 +75,10 @@ const SettingsView = {
         if (endpointAnalysisToggle) {
             endpointAnalysisToggle.addEventListener('change', () => this.saveEndpointAnalysis());
         }
+        const requireMFAToggle = document.getElementById('requireMFAToggle');
+        if (requireMFAToggle) {
+            requireMFAToggle.addEventListener('change', () => this.saveRequireMFA());
+        }
         const sharedLinksToggle = document.getElementById('sharedLinksEnabledToggle');
         if (sharedLinksToggle) {
             sharedLinksToggle.addEventListener('change', () => this.saveSharedLinksEnabled());
@@ -477,6 +481,48 @@ const SettingsView = {
         }
     },
 
+    // Turning the requirement on locks out everyone who has not enrolled until
+    // they do, so the count of affected people is shown before it takes effect.
+    async saveRequireMFA() {
+        const toggle = document.getElementById('requireMFAToggle');
+        if (!toggle) return;
+
+        if (toggle.checked) {
+            const unenrolled = (this._users || []).filter(u =>
+                !u.totp_enrolled && u.auth_provider !== 'oidc' && u.enabled !== false && !u.invite_pending);
+            const summary = unenrolled.length === 1
+                ? '1 user will be asked to set up an authenticator at their next sign in.'
+                : `${unenrolled.length} users will be asked to set up an authenticator at their next sign in.`;
+            if (!confirm(`Require two-factor authentication?\n\n${summary}\nThey cannot use Bifract until they enroll.`)) {
+                toggle.checked = false;
+                return;
+            }
+        }
+
+        await this.saveSettings(toggle);
+        await this.loadSettings();
+    },
+
+    // Without a pepper there is no key to encrypt enrollment secrets with, so
+    // the server refuses the setting. Say so up front instead of on save.
+    async loadMFAAvailability() {
+        const toggle = document.getElementById('requireMFAToggle');
+        const blocked = document.getElementById('requireMFABlocked');
+        if (!toggle || !blocked) return;
+        try {
+            const response = await fetch('/api/v1/auth/mfa/status', { credentials: 'include' });
+            const data = await response.json();
+            const available = data.success && data.data && data.data.available;
+            toggle.disabled = !available;
+            blocked.style.display = available ? 'none' : '';
+            if (!available) {
+                blocked.textContent = 'Unavailable: this deployment has no BIFRACT_PASSWORD_PEPPER set, so enrollment secrets could not be encrypted at rest.';
+            }
+        } catch (error) {
+            console.error('[Settings] MFA availability error:', error);
+        }
+    },
+
     async saveSharedLinksEnabled() {
         const toggle = document.getElementById('sharedLinksEnabledToggle');
         const hint = document.getElementById('sharedLinksHint');
@@ -577,6 +623,7 @@ const SettingsView = {
             this.loadEndpointAnalysisToggle(),
             this.loadSharedLinksToggle(),
             this.loadMTLSStatus(),
+            this.loadMFAAvailability(),
             this.loadUsers(),
         ]);
 
@@ -694,6 +741,10 @@ const SettingsView = {
                 if (recallMemorySelect) {
                     recallMemorySelect.value = String(data.settings.recall_memory_percent ?? 25);
                 }
+                const requireMFAToggle = document.getElementById('requireMFAToggle');
+                if (requireMFAToggle) {
+                    requireMFAToggle.checked = data.settings.require_mfa === true;
+                }
             }
         } catch (error) {
             console.error('Failed to load settings:', error);
@@ -731,7 +782,8 @@ const SettingsView = {
                     recall_concurrency: parseInt(document.getElementById('recallConcurrencySettings')?.value || '5', 10),
                     recall_cpu_percent: parseInt(document.getElementById('recallCPUPercentSettings')?.value || '25', 10),
                     recall_memory_percent: parseInt(document.getElementById('recallMemoryPercentSettings')?.value || '25', 10),
-                    schema_sweep_interval_minutes: parseInt(document.getElementById('schemaSweepIntervalSettings')?.value || '15', 10)
+                    schema_sweep_interval_minutes: parseInt(document.getElementById('schemaSweepIntervalSettings')?.value || '15', 10),
+                    require_mfa: document.getElementById('requireMFAToggle')?.checked === true
                 })
             });
 
@@ -866,7 +918,10 @@ const SettingsView = {
                     </div>
                 </div>
             </td>`;
-            html += `<td><span class="role-badge role-${user.role}">${user.role === 'admin' ? 'Tenant Admin' : 'User'}</span></td>`;
+            const mfaBadge = user.totp_enrolled
+                ? `<span class="user-mfa-badge" title="Two-factor authentication enabled"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg></span>`
+                : '';
+            html += `<td><span class="role-badge role-${user.role}">${user.role === 'admin' ? 'Tenant Admin' : 'User'}</span>${mfaBadge}</td>`;
 
             const isDisabled = user.enabled === false;
 
@@ -892,6 +947,9 @@ const SettingsView = {
                 items.push(isDisabled
                     ? `<button class="kebab-item" onclick="SettingsView.setUserEnabled('${u}', true)">Enable</button>`
                     : `<button class="kebab-item" onclick="SettingsView.setUserEnabled('${u}', false)">Disable</button>`);
+            }
+            if (isAdmin && user.totp_enrolled) {
+                items.push(`<button class="kebab-item" onclick="SettingsView.resetMFA('${u}')">Reset Two-Factor</button>`);
             }
             if (!isSelf && isAdmin) {
                 items.push(`<button class="kebab-item danger" onclick="SettingsView.deleteUser('${u}')">Delete</button>`);
@@ -967,6 +1025,34 @@ const SettingsView = {
         } catch (error) {
             console.error('Error updating user:', error);
             errorDiv.textContent = 'Network error. Please try again.';
+        }
+    },
+
+    // The way back in for someone who has lost both their device and their
+    // recovery codes. They enroll again at their next sign in.
+    async resetMFA(username) {
+        if (!confirm(`Reset two-factor authentication for @${username}?\n\nThey will be signed out and asked to set up an authenticator again at their next sign in.`)) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/v1/auth/admin-reset-mfa', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ username })
+            });
+
+            const data = await response.json();
+            if (data.success) {
+                if (window.Toast) Toast.success('Two-Factor Reset', data.message);
+                await this.loadUsers();
+            } else {
+                if (window.Toast) Toast.error('Error', data.error || 'Failed to reset two-factor authentication');
+            }
+        } catch (error) {
+            console.error('Error resetting MFA:', error);
+            if (window.Toast) Toast.error('Error', 'Network error');
         }
     },
 

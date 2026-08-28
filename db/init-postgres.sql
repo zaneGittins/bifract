@@ -15,7 +15,10 @@ CREATE TABLE IF NOT EXISTS users (
     oidc_subject VARCHAR(255),
     force_password_change BOOLEAN NOT NULL DEFAULT FALSE,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    display_timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'
+    display_timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
+    totp_secret TEXT,
+    totp_enrolled_at TIMESTAMP,
+    totp_last_counter BIGINT NOT NULL DEFAULT 0
 );
 
 -- Ensure OIDC columns exist (handles case where table was created by container init without them)
@@ -98,6 +101,26 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_token_hash VARCHAR(255);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_expires_at TIMESTAMP;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS force_password_change BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
+
+-- TOTP enrollment. The secret is encrypted with a key derived from the server
+-- pepper, so a database dump alone is not a second factor bypass. totp_last_counter
+-- is the highest time step already spent, which is what stops a code being
+-- replayed inside its own window.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enrolled_at TIMESTAMP;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_counter BIGINT NOT NULL DEFAULT 0;
+
+-- Single-use recovery codes, the way back in when a user loses their
+-- authenticator. High entropy, so SHA-256 is sufficient and matches how invite
+-- tokens are stored.
+CREATE TABLE IF NOT EXISTS user_recovery_codes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    code_hash VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    used_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_user_recovery_codes_username ON user_recovery_codes(username);
 
 -- Insert default admin user
 -- Generated with: bcrypt.GenerateFromPassword([]byte("bifract"), 10)
@@ -693,6 +716,7 @@ CREATE TABLE IF NOT EXISTS dashboards (
     refresh_interval INTEGER NOT NULL DEFAULT 0,
     fractal_id UUID NOT NULL REFERENCES fractals(id) ON DELETE CASCADE,
     variables JSONB DEFAULT '[]',
+    timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -700,6 +724,9 @@ CREATE TABLE IF NOT EXISTS dashboards (
 ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS variables JSONB DEFAULT '[]';
 -- Server-side auto-refresh cadence (seconds): 0 = off/manual, -1 = auto (derived from time range).
 ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS refresh_interval INTEGER NOT NULL DEFAULT 0;
+-- IANA zone that time buckets snap to. Belongs to the dashboard, not the
+-- viewer: widget results are one cached blob shared by everyone who opens it.
+ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC';
 
 CREATE TABLE IF NOT EXISTS dashboard_widgets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1425,8 +1452,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMP NOT NULL,
     selected_fractal VARCHAR(36),
-    selected_prism VARCHAR(36)
+    selected_prism VARCHAR(36),
+    mfa_pending BOOLEAN NOT NULL DEFAULT FALSE
 );
+-- A session that has passed the password but not the second factor. It exists
+-- so the pending state survives a restart and is shared across replicas, and it
+-- authorizes nothing until the code is verified.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_pending BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions(username);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 

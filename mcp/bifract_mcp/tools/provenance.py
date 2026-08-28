@@ -32,7 +32,7 @@ async def find_processes(
     """
     Find process-creation events and return their process GUIDs.
 
-    This is the step before provenance_graph, which needs a GUID to seed on. All
+    This is the step before get_provenance_graph, which needs a GUID to seed on. All
     filters are optional and combine with AND; the text ones are case-insensitive
     substring matches.
 
@@ -85,7 +85,7 @@ async def find_processes(
 
 
 @tool
-async def provenance_graph(
+async def get_provenance_graph(
     guid: str,
     depth: int = 10,
     direction: str = "both",

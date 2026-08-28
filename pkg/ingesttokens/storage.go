@@ -96,7 +96,7 @@ func (s *Storage) CreateToken(ctx context.Context, req CreateTokenRequest, fract
 			timestamp_fields, is_active, is_default,
 			COALESCE(created_by, ''), created_at, updated_at, last_used_at, usage_count, log_count
 	`, req.Name, req.Description, prefix, tokenHash, fullToken, fractalID,
-		parserType, normalizerID, string(tsFieldsJSON), username,
+		parserType, normalizerID, string(tsFieldsJSON), storage.NullableUser(username),
 	).Scan(
 		&token.ID, &token.Name, &token.Description, &token.TokenPrefix, &token.TokenValue, &token.FractalID,
 		&token.ParserType, &normID, &normName,

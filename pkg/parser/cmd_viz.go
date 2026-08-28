@@ -275,7 +275,7 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 
 	n, unit := parseBucketSpan(span)
-	bucketExpr := getBucketExpression(n, unit)
+	bucketExpr := getBucketExpression(n, unit, bucketTimezone(ctx))
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: bucketExpr, Alias: "time_bucket"})
 
 	if strings.Contains(function, "count()") {

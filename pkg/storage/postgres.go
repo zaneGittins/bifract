@@ -32,6 +32,12 @@ type User struct {
 	ForcePasswordChange bool       `json:"force_password_change,omitempty"`
 	Enabled             bool       `json:"enabled"`
 	DisplayTimezone     string     `json:"display_timezone"`
+	// TOTPSecret is the encrypted secret; never serialized. TOTPEnrolled is
+	// true only once a user has proved they can generate a code, so a started
+	// but abandoned enrollment never locks anyone out.
+	TOTPSecret      string `json:"-"`
+	TOTPEnrolled    bool   `json:"totp_enrolled"`
+	TOTPLastCounter int64  `json:"-"`
 }
 
 type Comment struct {
@@ -128,7 +134,8 @@ func (c *PostgresClient) GetUser(ctx context.Context, username string) (*User, e
 		SELECT username, password_hash, display_name, gravatar_color, gravatar_initial,
 		       created_at, last_login, is_admin, COALESCE(auth_provider, 'local'),
 		       COALESCE(force_password_change, FALSE), COALESCE(enabled, TRUE),
-		       COALESCE(display_timezone, 'UTC')
+		       COALESCE(display_timezone, 'UTC'), COALESCE(totp_secret, ''),
+		       (totp_enrolled_at IS NOT NULL), COALESCE(totp_last_counter, 0)
 		FROM users
 		WHERE username = $1
 	`, username).Scan(
@@ -144,6 +151,9 @@ func (c *PostgresClient) GetUser(ctx context.Context, username string) (*User, e
 		&user.ForcePasswordChange,
 		&user.Enabled,
 		&user.DisplayTimezone,
+		&user.TOTPSecret,
+		&user.TOTPEnrolled,
+		&user.TOTPLastCounter,
 	)
 
 	if err == sql.ErrNoRows {
@@ -192,7 +202,8 @@ func (c *PostgresClient) ListUsers(ctx context.Context) ([]User, error) {
 		SELECT username, display_name, gravatar_color, gravatar_initial,
 		       created_at, last_login, is_admin,
 		       (invite_token_hash IS NOT NULL) AS invite_pending,
-		       COALESCE(auth_provider, 'local'), COALESCE(enabled, TRUE)
+		       COALESCE(auth_provider, 'local'), COALESCE(enabled, TRUE),
+		       (totp_enrolled_at IS NOT NULL) AS totp_enrolled
 		FROM users
 		ORDER BY created_at DESC
 	`)
@@ -216,6 +227,7 @@ func (c *PostgresClient) ListUsers(ctx context.Context) ([]User, error) {
 			&user.InvitePending,
 			&user.AuthProvider,
 			&user.Enabled,
+			&user.TOTPEnrolled,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user: %w", err)
@@ -2346,6 +2358,7 @@ type Dashboard struct {
 	FractalID             string            `json:"fractal_id,omitempty"`
 	PrismID               string            `json:"prism_id,omitempty"`
 	Variables             json.RawMessage   `json:"variables"`
+	Timezone              string            `json:"timezone"`
 	CreatedBy             string            `json:"created_by"`
 	AuthorDisplayName     string            `json:"author_display_name"`
 	AuthorGravatarColor   string            `json:"author_gravatar_color"`
@@ -2393,12 +2406,12 @@ func (c *PostgresClient) InsertDashboard(ctx context.Context, d Dashboard) (*Das
 	var nd Dashboard
 	var scanFractalID, scanPrismID sql.NullString
 	err := c.db.QueryRowContext(ctx, `
-		INSERT INTO dashboards (name, description, time_range_type, time_range_start, time_range_end, fractal_id, prism_id, variables, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
-		RETURNING id, name, description, time_range_type, time_range_start, time_range_end, fractal_id, prism_id, COALESCE(variables, '[]'), COALESCE(created_by, ''), created_at, updated_at
-	`, d.Name, d.Description, d.TimeRangeType, d.TimeRangeStart, d.TimeRangeEnd, fractalIDPtr, prismIDPtr, string(varsJSON), NullableUser(d.CreatedBy)).Scan(
+		INSERT INTO dashboards (name, description, time_range_type, time_range_start, time_range_end, fractal_id, prism_id, variables, timezone, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+		RETURNING id, name, description, time_range_type, time_range_start, time_range_end, fractal_id, prism_id, COALESCE(variables, '[]'), COALESCE(timezone, 'UTC'), COALESCE(created_by, ''), created_at, updated_at
+	`, d.Name, d.Description, d.TimeRangeType, d.TimeRangeStart, d.TimeRangeEnd, fractalIDPtr, prismIDPtr, string(varsJSON), dashboardTimezone(d.Timezone), NullableUser(d.CreatedBy)).Scan(
 		&nd.ID, &nd.Name, &nd.Description, &nd.TimeRangeType, &nd.TimeRangeStart, &nd.TimeRangeEnd,
-		&scanFractalID, &scanPrismID, &nd.Variables, &nd.CreatedBy, &nd.CreatedAt, &nd.UpdatedAt,
+		&scanFractalID, &scanPrismID, &nd.Variables, &nd.Timezone, &nd.CreatedBy, &nd.CreatedAt, &nd.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert dashboard: %w", err)
@@ -2421,7 +2434,7 @@ func (c *PostgresClient) GetDashboard(ctx context.Context, id string) (*Dashboar
 	err := c.db.QueryRowContext(ctx, `
 		SELECT d.id, d.name, d.description, d.time_range_type, d.time_range_start, d.time_range_end,
 		       COALESCE(d.refresh_interval, 0),
-		       d.fractal_id, d.prism_id, COALESCE(d.variables, '[]'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
+		       d.fractal_id, d.prism_id, COALESCE(d.variables, '[]'), COALESCE(d.timezone, 'UTC'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
 		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM dashboards d
 		LEFT JOIN users u ON d.created_by = u.username
@@ -2429,7 +2442,7 @@ func (c *PostgresClient) GetDashboard(ctx context.Context, id string) (*Dashboar
 	`, id).Scan(
 		&d.ID, &d.Name, &d.Description, &d.TimeRangeType, &d.TimeRangeStart, &d.TimeRangeEnd,
 		&d.RefreshInterval,
-		&scanFractalID, &scanPrismID, &d.Variables, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
+		&scanFractalID, &scanPrismID, &d.Variables, &d.Timezone, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
 		&d.AuthorDisplayName, &d.AuthorGravatarColor, &d.AuthorGravatarInitial,
 	)
 	if err != nil {
@@ -2452,7 +2465,7 @@ func (c *PostgresClient) GetDashboardsByFractal(ctx context.Context, fractalID s
 
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT d.id, d.name, d.description, d.time_range_type, d.time_range_start, d.time_range_end,
-		       d.fractal_id, COALESCE(d.variables, '[]'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
+		       d.fractal_id, COALESCE(d.variables, '[]'), COALESCE(d.timezone, 'UTC'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
 		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM dashboards d
 		LEFT JOIN users u ON d.created_by = u.username
@@ -2470,7 +2483,7 @@ func (c *PostgresClient) GetDashboardsByFractal(ctx context.Context, fractalID s
 		var d Dashboard
 		err := rows.Scan(
 			&d.ID, &d.Name, &d.Description, &d.TimeRangeType, &d.TimeRangeStart, &d.TimeRangeEnd,
-			&d.FractalID, &d.Variables, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
+			&d.FractalID, &d.Variables, &d.Timezone, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
 			&d.AuthorDisplayName, &d.AuthorGravatarColor, &d.AuthorGravatarInitial,
 		)
 		if err != nil {
@@ -2491,7 +2504,7 @@ func (c *PostgresClient) GetDashboardsByPrism(ctx context.Context, prismID strin
 
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT d.id, d.name, d.description, d.time_range_type, d.time_range_start, d.time_range_end,
-		       d.prism_id, COALESCE(d.variables, '[]'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
+		       d.prism_id, COALESCE(d.variables, '[]'), COALESCE(d.timezone, 'UTC'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
 		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM dashboards d
 		LEFT JOIN users u ON d.created_by = u.username
@@ -2509,7 +2522,7 @@ func (c *PostgresClient) GetDashboardsByPrism(ctx context.Context, prismID strin
 		var d Dashboard
 		err := rows.Scan(
 			&d.ID, &d.Name, &d.Description, &d.TimeRangeType, &d.TimeRangeStart, &d.TimeRangeEnd,
-			&d.PrismID, &d.Variables, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
+			&d.PrismID, &d.Variables, &d.Timezone, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
 			&d.AuthorDisplayName, &d.AuthorGravatarColor, &d.AuthorGravatarInitial,
 		)
 		if err != nil {
@@ -2520,16 +2533,27 @@ func (c *PostgresClient) GetDashboardsByPrism(ctx context.Context, prismID strin
 	return dashboards, total, nil
 }
 
-func (c *PostgresClient) UpdateDashboard(ctx context.Context, id string, name, description, timeRangeType *string, timeRangeStart, timeRangeEnd *time.Time) error {
+// dashboardTimezone normalizes a stored dashboard zone. Empty means the caller
+// did not express a preference, which is UTC. Validation of the name itself
+// belongs to the handler, which can report a bad one to the user.
+func dashboardTimezone(tz string) string {
+	if tz == "" {
+		return "UTC"
+	}
+	return tz
+}
+
+func (c *PostgresClient) UpdateDashboard(ctx context.Context, id string, name, description, timeRangeType, timezone *string, timeRangeStart, timeRangeEnd *time.Time) error {
 	_, err := c.db.ExecContext(ctx, `
 		UPDATE dashboards SET
 			name = COALESCE($1, name),
 			description = COALESCE($2, description),
 			time_range_type = COALESCE($3, time_range_type),
 			time_range_start = COALESCE($4, time_range_start),
-			time_range_end = COALESCE($5, time_range_end)
-		WHERE id = $6
-	`, name, description, timeRangeType, timeRangeStart, timeRangeEnd, id)
+			time_range_end = COALESCE($5, time_range_end),
+			timezone = COALESCE($6, timezone)
+		WHERE id = $7
+	`, name, description, timeRangeType, timeRangeStart, timeRangeEnd, timezone, id)
 	if err != nil {
 		return fmt.Errorf("failed to update dashboard: %w", err)
 	}
@@ -2722,7 +2746,7 @@ func (c *PostgresClient) CreateGroup(ctx context.Context, name, description, cre
 		INSERT INTO groups (name, description, created_by)
 		VALUES ($1, $2, $3)
 		RETURNING id, name, description, COALESCE(created_by, ''), created_at, updated_at
-	`, name, description, createdBy).Scan(
+	`, name, description, NullableUser(createdBy)).Scan(
 		&g.ID, &g.Name, &g.Description, &g.CreatedBy, &g.CreatedAt, &g.UpdatedAt,
 	)
 	if err != nil {

@@ -33,7 +33,7 @@ func (s *Storage) CreateFractal(ctx context.Context, req CreateFractalRequest, c
 		          retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
 	`
 
-	err := s.pg.QueryRow(ctx, query, req.Name, req.Description, createdBy).Scan(
+	err := s.pg.QueryRow(ctx, query, req.Name, req.Description, storage.NullableUser(createdBy)).Scan(
 		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
 		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
 		&fractal.RetentionDays,
