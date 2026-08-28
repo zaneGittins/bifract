@@ -9,6 +9,17 @@ on:
       - "openapi.json"
       - "scripts/install.sh"
       - ".github/workflows/docs.yml"
+  # Build on the PR too, so a bad dependency pin or a broken link fails review
+  # rather than the deploy after merge. Only the build runs; deploy is gated below.
+  # Keep these paths in step with the push filter above.
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "openapi.json"
+      - "scripts/install.sh"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -30,7 +41,7 @@ jobs:
         with:
           python-version: "3.x"
 
-      - run: pip install mkdocs-material==9.7.6 mkdocs-swagger-ui-tag==0.7.4
+      - run: pip install mkdocs-material==9.7.6 mkdocs-swagger-ui-tag==0.8.1
 
       - name: Stage install script for docs site
         run: cp scripts/install.sh docs/install.sh
@@ -48,6 +59,7 @@ jobs:
 
   deploy:
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       pages: write

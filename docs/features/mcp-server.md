@@ -175,7 +175,7 @@ Coverage is derived from the `attack.*` labels on the alerts that exist, so it r
 
 ### Recall
 
-[Recall](recall.md) searches the object-storage archive, for hunts that reach further back than hot retention. A search is submitted as a job and polled, because an archive scan can take minutes.
+[Recall](../administration/backup-restore.md) searches the object-storage archive, for hunts that reach further back than hot retention. A search is submitted as a job and polled, because an archive scan can take minutes.
 
 | Tool | Description |
 |------|-------------|
