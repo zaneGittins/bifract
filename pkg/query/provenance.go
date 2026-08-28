@@ -117,7 +117,16 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		}
 	}
 
-	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, p.Diffuse, totalHosts, opts)
+	// The scoring SQL's inner per-partition leaf cap reads opts.MaxRows, but pgr() carries its own
+	// row budget (p.Limit / defaultPgrLimit) precisely because the deployment MaxQueryRows can be
+	// far lower than a tree needs. Scope the override to the scoring builds so the deployment cap
+	// still governs everything else.
+	scoreOpts := opts
+	if p.Limit > 0 {
+		scoreOpts.MaxRows = p.Limit
+	}
+
+	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, p.Diffuse, totalHosts, scoreOpts)
 	if err != nil {
 		return "", fmt.Errorf("pgr: build scoring query: %w", err)
 	}
@@ -147,7 +156,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 			return "", ctx.Err()
 		}
 		log.Printf("[pgr] diffusion score query failed, falling back to per-edge scoring: %v", qErr)
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, opts)
+		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, scoreOpts)
 		if ferr != nil {
 			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
 		}
@@ -165,7 +174,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		// Diffusion (propagation) is lost for this one query, but pgr returns the full graph with
 		// per-edge anomaly instead of failing -- and flat/pgraph stay in parity (both use this SQL).
 		log.Printf("[pgr] diffusion payload too large to inline (%d edges); falling back to per-edge scoring for this query", len(survivors))
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, opts)
+		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, scoreOpts)
 		if ferr != nil {
 			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
 		}

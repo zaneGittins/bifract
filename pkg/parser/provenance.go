@@ -55,8 +55,9 @@ const (
 	// it is on at most this fraction of all hosts. So a widespread-but-rare C2 (e.g. 9 of 200
 	// hosts) still bridges -- many hosts hitting the same rare IP is a STRONGER signal, not a
 	// reason to drop it -- while true ubiquitous infrastructure (CDNs, resolvers on most hosts)
-	// is still pruned. Consistent with the score's global-rarity term (1 - hosts/total).
-	reconnectHostFraction = "0.5"
+	// is still pruned. Kept tight because the bridge budget is small: admitting artifacts on a
+	// large share of the fleet crowds out real shared-IOC bridges.
+	reconnectHostFraction = "0.05"
 	// reconnectImagePrevalenceMax / reconnectImageFraction: the net/dns rarity gate ALSO prunes by
 	// how many DISTINCT PROCESS IMAGES touch an artifact. Host-prevalence alone is useless on a
 	// single-host (or few-host) dataset -- every artifact is on 1 host and passes -- so benign but
@@ -80,12 +81,12 @@ const (
 )
 
 // Diffusion (NoDoze network-diffusion adaptation) caps. When diffuse is on, the FINAL anomaly
-// threshold is applied by the viz over the PROPAGATED score (a leaf under an anomalous chain is
-// promoted), so the scoring SQL cannot pre-filter leaves by the user threshold -- a promotable
-// leaf must survive to the client. Instead it keeps leaves above a low floor, capped per process,
-// so the payload stays bounded regardless of tree size (no unbounded scan -- the threshold filter
-// was always post-scan, so this changes rows returned, not granules read). See the frontend
-// _pgApplyDiffusion for the propagation itself.
+// threshold is applied over the PROPAGATED score (a leaf under an anomalous chain is promoted),
+// so the scoring SQL cannot pre-filter leaves by the user threshold -- a promotable leaf must
+// survive. Instead it keeps leaves above a low floor, capped per process, so the payload stays
+// bounded regardless of tree size (no unbounded scan -- the threshold filter was always
+// post-scan, so this changes rows returned, not granules read). See diffuseProvenanceRows in
+// pkg/query/provenance.go for the propagation itself.
 const (
 	// diffuseLeafFloor: leaves below this RAW anomaly are dropped in SQL -- they can never be
 	// promoted enough to matter and returning them all would flood the payload. Promotable
@@ -514,8 +515,12 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	// has no baseline (ft.tot=0) we fall back to global rarity alone rather than forcing 1.0,
 	// so a brand-new-but-benign process touching common targets is not all-max noise.
 	// Spawn keeps the pure source-relative score (structure is never pruned; only coloured).
+	// Empty fkey_src scores 0: ghost roots (no parent_image) can never match a proc_freq row,
+	// whose MVs all require parent_image != '', so ft.tot=0 there is a failed join rather than a
+	// measurement. With no source there is nothing for the child to be unusual FOR.
 	gr := fmt.Sprintf("if(coalesce(gf.hostct, 0) >= %[1]d, 0, if(%[2]d = 0, 0, 1 - coalesce(gf.hostct, 0) / %[2]d))", procFreqHostsCap, totalHosts)
-	anomExpr := fmt.Sprintf("multiIf(e.event_type = 'spawn', if(coalesce(ft.tot, 0) = 0, 1.0, round(1 - coalesce(fe.cnt, 0) / ft.tot, 4)), "+
+	anomExpr := fmt.Sprintf("multiIf(e.fkey_src = '', 0.0, "+
+		"e.event_type = 'spawn', if(coalesce(ft.tot, 0) = 0, 1.0, round(1 - coalesce(fe.cnt, 0) / ft.tot, 4)), "+
 		"coalesce(ft.tot, 0) = 0, round(%[1]s, 4), "+
 		"round(greatest(1 - coalesce(fe.cnt, 0) / ft.tot, %[1]s), 4)) AS anomaly_score ", gr)
 
@@ -529,12 +534,12 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	// pm = per-process command line + user, read query-only from the process_creation logs of
 	// the tree's guids (the same bounded keyhole: guid IN + time window + category). Command
 	// lines can be enormous, so truncate to 300 chars in SQL -- never pull the full string.
-	b.WriteString(fmt.Sprintf("pm AS (SELECT fields.process_guid::String AS guid, any(substring(if(fields.commandline::String != '', fields.commandline::String, fields.command_line::String), 1, 300)) AS command_line, any(fields.user::String) AS proc_user FROM %[1]s WHERE %[2]s%[3]s AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'process_creation' GROUP BY guid) ",
+	b.WriteString(fmt.Sprintf("pm AS (SELECT fields.process_guid::String AS guid, any(substring(fields.commandline::String, 1, 300)) AS command_line, any(fields.user::String) AS proc_user FROM %[1]s WHERE %[2]s%[3]s AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'process_creation' GROUP BY guid) ",
 		logs, timeWin, frac(), inList))
 	// Leaf gating differs by mode. Non-diffuse: filter leaves by the user threshold in SQL and
-	// keep the top MaxRows non-spawn edges globally. Diffuse: the FINAL threshold is applied by
-	// the viz over the PROPAGATED score, so a promotable leaf must survive -- SQL keeps leaves
-	// above a low floor, capped PER PROCESS (bounded payload), and the client re-thresholds.
+	// keep the top MaxRows non-spawn edges globally. Diffuse: the FINAL threshold is applied over
+	// the PROPAGATED score, so a promotable leaf must survive -- SQL keeps leaves above a low
+	// floor, capped PER PROCESS (bounded payload), and diffuseProvenanceRows re-thresholds.
 	// Either way ALL spawn edges are kept so process structure can never be truncated away.
 	leafFloor := strconv.FormatFloat(threshold, 'f', -1, 64)
 	partitionBy := "(event_type = 'spawn')"

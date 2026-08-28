@@ -263,3 +263,23 @@ func TestInternalDomainExpr(t *testing.T) {
 		}
 	}
 }
+
+// A ghost root (proc_lineage row with no parent_image) yields fkey_src='', which can never match
+// a proc_freq row because every proc_freq_* MV requires parent_image != ''. Without the guard it
+// falls through to the ft.tot=0 branch and scores 1.0, painting the root of most trees max-red.
+func TestScoringSQLGhostRootScoresZero(t *testing.T) {
+	opts := reconOpts()
+	opts.MaxRows = 100
+	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, 10, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, "multiIf(e.fkey_src = '', 0.0,") {
+		t.Error("empty fkey_src must short-circuit to 0 before any ft.tot branch")
+	}
+	guard := strings.Index(sql, "e.fkey_src = ''")
+	spawn := strings.Index(sql, "e.event_type = 'spawn', if(coalesce(ft.tot, 0) = 0, 1.0")
+	if guard < 0 || spawn < 0 || guard > spawn {
+		t.Errorf("guard must precede the spawn ft.tot=0 branch (guard=%d spawn=%d)", guard, spawn)
+	}
+}
