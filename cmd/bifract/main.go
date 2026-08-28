@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
 
 	"bifract/internal/ingestcli"
+	"bifract/internal/mcpserver"
 	"bifract/internal/ruletest"
 	"bifract/internal/setup"
 )
@@ -16,6 +18,7 @@ func init() {
 	ingestcli.Version = setup.Version
 	ingestcli.Commit = setup.Commit
 	ingestcli.BuildDate = setup.BuildDate
+	mcpserver.Version = setup.Version
 }
 
 func main() {
@@ -41,6 +44,18 @@ func main() {
 	for i, arg := range args {
 		if arg == "--ingest" {
 			if err := ingestcli.RunIngest(args[i+1:]); err != nil {
+				fmt.Fprintf(os.Stderr, "\n%s %v\n", ingestcli.ErrorStyle.Render("Error:"), err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
+	// --mcp is handled separately: all args after it belong to the MCP server, which
+	// then owns stdio for the life of the process and must not share it.
+	for i, arg := range args {
+		if arg == "--mcp" {
+			if err := mcpserver.Run(context.Background(), args[i+1:]); err != nil {
 				fmt.Fprintf(os.Stderr, "\n%s %v\n", ingestcli.ErrorStyle.Render("Error:"), err)
 				os.Exit(1)
 			}
@@ -369,6 +384,7 @@ func printUsage() {
 	fmt.Println("  --reset-logs-k8s   DESTRUCTIVE: same, against a Kubernetes deployment")
 	fmt.Println("  --ingest           Bulk log ingestion (see --ingest --help)")
 	fmt.Println("  --test             Test detection rules against sample logs (see --test --help)")
+	fmt.Println("  --mcp              Serve Bifract to an MCP client over stdio (see --mcp --help)")
 	fmt.Println()
 	fmt.Println("Options:")
 	fmt.Println("  --dir PATH         Installation directory (default: /opt/bifract)")

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -22,6 +23,10 @@ type Storage struct {
 func NewStorage(pg *storage.PostgresClient) *Storage {
 	return &Storage{pg: pg}
 }
+
+// TenantKeyPrefix names an instance-wide key, which belongs to no fractal and
+// so has no scope name to carry.
+const TenantKeyPrefix = "admin"
 
 // GenerateAPIKey creates a new API key with format: bifract_<scope_name>_<random>
 func (s *Storage) GenerateAPIKey(ctx context.Context, scopeName string) (string, string, error) {
@@ -59,6 +64,28 @@ const fromClause = `FROM api_keys ak
 	LEFT JOIN fractals f ON ak.fractal_id = f.id
 	LEFT JOIN prisms p ON ak.prism_id = p.id`
 
+// scopeFilter confines a key operation to the scope that owns the key. An empty
+// column is the instance-wide scope: a tenant admin key holds neither a fractal
+// nor a prism.
+type scopeFilter struct {
+	column string
+	id     string
+}
+
+func fractalScope(id string) scopeFilter { return scopeFilter{column: "fractal_id", id: id} }
+func prismScope(id string) scopeFilter   { return scopeFilter{column: "prism_id", id: id} }
+
+var tenantScope = scopeFilter{}
+
+// where renders the predicate for this scope, using alias ("ak." or "") and the
+// next free placeholder index.
+func (f scopeFilter) where(alias string, next int) (string, []interface{}) {
+	if f.column == "" {
+		return fmt.Sprintf("%[1]sfractal_id IS NULL AND %[1]sprism_id IS NULL AND %[1]stenant_admin", alias), nil
+	}
+	return fmt.Sprintf("%s%s = $%d", alias, f.column, next), []interface{}{f.id}
+}
+
 // scanAPIKey scans a row into an APIKey struct.
 func scanAPIKey(scanner interface {
 	Scan(dest ...interface{}) error
@@ -89,9 +116,21 @@ func (s *Storage) CreatePrismAPIKey(ctx context.Context, req CreateAPIKeyRequest
 	return s.createAPIKey(ctx, req, username, fullKey, keyID, "", prismID)
 }
 
+// CreateTenantAPIKey stores a new instance-wide key. It is bound to no fractal
+// or prism, so its authorization comes only from the tenant admin grant.
+func (s *Storage) CreateTenantAPIKey(ctx context.Context, req CreateAPIKeyRequest, username, fullKey, keyID string) (*APIKey, error) {
+	if !req.TenantAdmin {
+		return nil, fmt.Errorf("an unscoped key must be a tenant admin key")
+	}
+	return s.createAPIKey(ctx, req, username, fullKey, keyID, "", "")
+}
+
 func (s *Storage) createAPIKey(ctx context.Context, req CreateAPIKeyRequest, username, fullKey, keyID, fractalID, prismID string) (*APIKey, error) {
-	if (fractalID == "") == (prismID == "") {
-		return nil, fmt.Errorf("exactly one of fractalID or prismID must be provided")
+	if fractalID != "" && prismID != "" {
+		return nil, fmt.Errorf("a key is scoped to a fractal or a prism, not both")
+	}
+	if (fractalID == "" && prismID == "") != req.TenantAdmin {
+		return nil, fmt.Errorf("a tenant admin key holds no scope, and a scoped key is not a tenant admin")
 	}
 
 	keyHash := s.HashKey(fullKey)
@@ -216,18 +255,24 @@ func (s *Storage) getAPIKeyByID(ctx context.Context, id string) (*APIKey, error)
 
 // GetFractalAPIKey retrieves a specific API key scoped to a fractal.
 func (s *Storage) GetFractalAPIKey(ctx context.Context, keyID, fractalID string) (*APIKey, error) {
-	return s.getAPIKeyScoped(ctx, keyID, "ak.fractal_id", fractalID)
+	return s.getAPIKeyScoped(ctx, keyID, fractalScope(fractalID))
 }
 
 // GetPrismAPIKey retrieves a specific API key scoped to a prism.
 func (s *Storage) GetPrismAPIKey(ctx context.Context, keyID, prismID string) (*APIKey, error) {
-	return s.getAPIKeyScoped(ctx, keyID, "ak.prism_id", prismID)
+	return s.getAPIKeyScoped(ctx, keyID, prismScope(prismID))
 }
 
-func (s *Storage) getAPIKeyScoped(ctx context.Context, keyID, scopeCol, scopeID string) (*APIKey, error) {
+// GetTenantAPIKey retrieves a specific instance-wide API key.
+func (s *Storage) GetTenantAPIKey(ctx context.Context, keyID string) (*APIKey, error) {
+	return s.getAPIKeyScoped(ctx, keyID, tenantScope)
+}
+
+func (s *Storage) getAPIKeyScoped(ctx context.Context, keyID string, scope scopeFilter) (*APIKey, error) {
+	where, args := scope.where("ak.", 2)
 	row := s.pg.DB().QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT %s %s WHERE ak.id = $1 AND %s = $2
-	`, selectColumns, fromClause, scopeCol), keyID, scopeID)
+		SELECT %s %s WHERE ak.id = $1 AND %s
+	`, selectColumns, fromClause, where), append([]interface{}{keyID}, args...)...)
 
 	key, err := scanAPIKey(row)
 	if err == sql.ErrNoRows {
@@ -241,15 +286,20 @@ func (s *Storage) getAPIKeyScoped(ctx context.Context, keyID, scopeCol, scopeID 
 
 // UpdateFractalAPIKey updates a fractal-scoped API key.
 func (s *Storage) UpdateFractalAPIKey(ctx context.Context, keyID, fractalID string, req UpdateAPIKeyRequest) (*APIKey, error) {
-	return s.updateAPIKey(ctx, keyID, "fractal_id", fractalID, req)
+	return s.updateAPIKey(ctx, keyID, fractalScope(fractalID), req)
 }
 
 // UpdatePrismAPIKey updates a prism-scoped API key.
 func (s *Storage) UpdatePrismAPIKey(ctx context.Context, keyID, prismID string, req UpdateAPIKeyRequest) (*APIKey, error) {
-	return s.updateAPIKey(ctx, keyID, "prism_id", prismID, req)
+	return s.updateAPIKey(ctx, keyID, prismScope(prismID), req)
 }
 
-func (s *Storage) updateAPIKey(ctx context.Context, keyID, scopeCol, scopeID string, req UpdateAPIKeyRequest) (*APIKey, error) {
+// UpdateTenantAPIKey updates an instance-wide API key.
+func (s *Storage) UpdateTenantAPIKey(ctx context.Context, keyID string, req UpdateAPIKeyRequest) (*APIKey, error) {
+	return s.updateAPIKey(ctx, keyID, tenantScope, req)
+}
+
+func (s *Storage) updateAPIKey(ctx context.Context, keyID string, scope scopeFilter, req UpdateAPIKeyRequest) (*APIKey, error) {
 	setParts := []string{}
 	args := []interface{}{}
 	argIndex := 1
@@ -296,17 +346,22 @@ func (s *Storage) updateAPIKey(ctx context.Context, keyID, scopeCol, scopeID str
 
 	setParts = append(setParts, "updated_at = NOW()")
 
-	args = append(args, keyID, scopeID)
+	args = append(args, keyID)
+	where, scopeArgs := scope.where("", argIndex+1)
+	args = append(args, scopeArgs...)
 
 	query := fmt.Sprintf(`
 		UPDATE api_keys
 		SET %s
-		WHERE id = $%d AND %s = $%d
-	`, strings.Join(setParts, ", "), argIndex, scopeCol, argIndex+1)
+		WHERE id = $%d AND %s
+	`, strings.Join(setParts, ", "), argIndex, where)
 
-	_, err := s.pg.DB().ExecContext(ctx, query, args...)
+	result, err := s.pg.DB().ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update API key: %w", err)
+	}
+	if err := matched(result); err != nil {
+		return nil, err
 	}
 
 	return s.getAPIKeyByID(ctx, keyID)
@@ -314,55 +369,78 @@ func (s *Storage) updateAPIKey(ctx context.Context, keyID, scopeCol, scopeID str
 
 // DeleteFractalAPIKey removes a fractal-scoped API key.
 func (s *Storage) DeleteFractalAPIKey(ctx context.Context, keyID, fractalID string) error {
-	return s.deleteAPIKey(ctx, keyID, "fractal_id", fractalID)
+	return s.deleteAPIKey(ctx, keyID, fractalScope(fractalID))
 }
 
 // DeletePrismAPIKey removes a prism-scoped API key.
 func (s *Storage) DeletePrismAPIKey(ctx context.Context, keyID, prismID string) error {
-	return s.deleteAPIKey(ctx, keyID, "prism_id", prismID)
+	return s.deleteAPIKey(ctx, keyID, prismScope(prismID))
 }
 
-func (s *Storage) deleteAPIKey(ctx context.Context, keyID, scopeCol, scopeID string) error {
+// DeleteTenantAPIKey removes an instance-wide API key.
+func (s *Storage) DeleteTenantAPIKey(ctx context.Context, keyID string) error {
+	return s.deleteAPIKey(ctx, keyID, tenantScope)
+}
+
+func (s *Storage) deleteAPIKey(ctx context.Context, keyID string, scope scopeFilter) error {
+	where, args := scope.where("", 2)
 	result, err := s.pg.DB().ExecContext(ctx, fmt.Sprintf(`
 		DELETE FROM api_keys
-		WHERE id = $1 AND %s = $2
-	`, scopeCol), keyID, scopeID)
+		WHERE id = $1 AND %s
+	`, where), append([]interface{}{keyID}, args...)...)
 
 	if err != nil {
 		return fmt.Errorf("failed to delete API key: %w", err)
 	}
 
-	rowsAffected, err := result.RowsAffected()
+	return matched(result)
+}
+
+// ErrKeyNotFound is returned when a key does not exist in the scope the caller
+// addressed it through.
+var ErrKeyNotFound = errors.New("API key not found")
+
+// matched reports whether a scoped write hit a row. A miss means the key does
+// not exist in that scope, which must not read back as success.
+func matched(result sql.Result) error {
+	rows, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
-
-	if rowsAffected == 0 {
-		return fmt.Errorf("API key not found")
+	if rows == 0 {
+		return ErrKeyNotFound
 	}
-
 	return nil
 }
 
 // ToggleFractalAPIKey toggles the active status of a fractal-scoped API key.
 func (s *Storage) ToggleFractalAPIKey(ctx context.Context, keyID, fractalID string) (*APIKey, error) {
-	return s.toggleAPIKey(ctx, keyID, "fractal_id", fractalID)
+	return s.toggleAPIKey(ctx, keyID, fractalScope(fractalID))
 }
 
 // TogglePrismAPIKey toggles the active status of a prism-scoped API key.
 func (s *Storage) TogglePrismAPIKey(ctx context.Context, keyID, prismID string) (*APIKey, error) {
-	return s.toggleAPIKey(ctx, keyID, "prism_id", prismID)
+	return s.toggleAPIKey(ctx, keyID, prismScope(prismID))
 }
 
-func (s *Storage) toggleAPIKey(ctx context.Context, keyID, scopeCol, scopeID string) (*APIKey, error) {
-	_, err := s.pg.DB().ExecContext(ctx, fmt.Sprintf(`
+// ToggleTenantAPIKey toggles the active status of an instance-wide API key.
+func (s *Storage) ToggleTenantAPIKey(ctx context.Context, keyID string) (*APIKey, error) {
+	return s.toggleAPIKey(ctx, keyID, tenantScope)
+}
+
+func (s *Storage) toggleAPIKey(ctx context.Context, keyID string, scope scopeFilter) (*APIKey, error) {
+	where, args := scope.where("", 2)
+	result, err := s.pg.DB().ExecContext(ctx, fmt.Sprintf(`
 		UPDATE api_keys
 		SET is_active = NOT is_active, updated_at = NOW()
-		WHERE id = $1 AND %s = $2
-	`, scopeCol), keyID, scopeID)
+		WHERE id = $1 AND %s
+	`, where), append([]interface{}{keyID}, args...)...)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to toggle API key: %w", err)
+	}
+	if err := matched(result); err != nil {
+		return nil, err
 	}
 
 	return s.getAPIKeyByID(ctx, keyID)

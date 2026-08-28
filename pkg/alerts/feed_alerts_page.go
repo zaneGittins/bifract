@@ -87,7 +87,7 @@ var feedAlertSortColumns = map[string]string{
 	"last_triggered": "COALESCE(a.last_triggered, to_timestamp(0))",
 }
 
-var sigmaLevels = []string{"critical", "high", "medium", "low", "informational"}
+var sigmaLevels = Severity("").EnumValues()
 
 // argBuilder appends bind parameters and hands back their placeholders.
 type argBuilder struct {

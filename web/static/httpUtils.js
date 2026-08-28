@@ -28,6 +28,12 @@ const HttpUtils = {
         }
     },
 
+    // The API answers a collection as {success, data: [...]}, not under a
+    // wrapper key. Reaching for one yields undefined, not an error.
+    list(payload) {
+        return Array.isArray(payload?.data) ? payload.data : [];
+    },
+
     // Safe fetch with automatic JSON parsing and error handling
     async safeFetch(url, options = {}) {
         try {

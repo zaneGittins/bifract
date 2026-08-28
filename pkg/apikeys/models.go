@@ -66,8 +66,9 @@ type ValidatedAPIKey struct {
 // ValidRoles are the roles a key may hold on its scope.
 var ValidRoles = map[string]bool{"": true, "viewer": true, "analyst": true, "admin": true}
 
-// Validate rejects a grant that cannot be honoured: an unknown role, or an
-// instance-wide key with no expiry.
+// Validate rejects a grant that cannot be honoured: an unknown role, an
+// instance-wide key with no expiry, or the two kinds of grant combined. A
+// tenant admin key is instance-wide and holds no scope role at all.
 func (r CreateAPIKeyRequest) Validate() error {
 	if !ValidRoles[r.Role] {
 		return fmt.Errorf("role must be viewer, analyst or admin")
@@ -75,24 +76,34 @@ func (r CreateAPIKeyRequest) Validate() error {
 	if r.TenantAdmin && r.ExpiresAt == nil {
 		return fmt.Errorf("a tenant admin key must have an expiry")
 	}
+	if r.TenantAdmin && r.Role != "" {
+		return fmt.Errorf("a tenant admin key is instance-wide and cannot also hold a scope role")
+	}
 	return nil
 }
 
-// Validate rejects an update that cannot be honoured.
+// Validate rejects an update that cannot be honoured. A key never changes kind:
+// an instance-wide grant cannot be scoped after the fact, and a scoped key
+// cannot be promoted, because either would leave the key without the scope its
+// authorization is read from.
 func (r UpdateAPIKeyRequest) Validate(current *APIKey) error {
 	if r.Role != nil && !ValidRoles[*r.Role] {
 		return fmt.Errorf("role must be viewer, analyst or admin")
 	}
-	tenant := current.TenantAdmin
-	if r.TenantAdmin != nil {
-		tenant = *r.TenantAdmin
+	if r.TenantAdmin != nil && *r.TenantAdmin != current.TenantAdmin {
+		return fmt.Errorf("a key cannot change between instance-wide and scoped; issue a new key")
 	}
 	expires := current.ExpiresAt
 	if r.ExpiresAt != nil {
 		expires = r.ExpiresAt
 	}
-	if tenant && expires == nil {
-		return fmt.Errorf("a tenant admin key must have an expiry")
+	if current.TenantAdmin {
+		if expires == nil {
+			return fmt.Errorf("a tenant admin key must have an expiry")
+		}
+		if r.Role != nil && *r.Role != "" {
+			return fmt.Errorf("a tenant admin key is instance-wide and cannot also hold a scope role")
+		}
 	}
 	return nil
 }

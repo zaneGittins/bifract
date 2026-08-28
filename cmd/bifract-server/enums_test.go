@@ -23,6 +23,7 @@ var enumTypes = []struct {
 	source string
 }{
 	{"alerts.AlertType", alerts.AlertType(""), "pkg/alerts/alerttype.go"},
+	{"alerts.Severity", alerts.Severity(""), "pkg/alerts/severity.go"},
 	{"models.ModelType", models.ModelType(""), "pkg/models/models.go"},
 	{"rbac.Role", rbac.Role(""), "pkg/rbac/rbac.go"},
 	{"normalizers.Transform", normalizers.Transform(""), "pkg/normalizers/models.go"},

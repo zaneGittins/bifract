@@ -345,7 +345,15 @@ func (h *Handler) attackRows(w http.ResponseWriter, r *http.Request) ([]attack.R
 	return rows, matrix, true
 }
 
-var validSeverities = map[string]bool{"critical": true, "high": true, "medium": true, "low": true, "info": true}
+// validSeverities is the enum, not a second list: it previously accepted "info",
+// which nothing writes, and rejected "informational", which everything else uses.
+var validSeverities = func() map[string]bool {
+	set := map[string]bool{}
+	for _, s := range Severity("").EnumValues() {
+		set[s] = true
+	}
+	return set
+}()
 
 func attackFilter(matrix *attack.Matrix, r *http.Request) (attack.Filter, error) {
 	q := r.URL.Query()

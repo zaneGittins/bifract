@@ -2,29 +2,16 @@
 
 Connect [Claude Code](https://claude.com/claude-code) or any [Model Context Protocol](https://modelcontextprotocol.io/) client to your Bifract instance. Query logs with BQL, manage detection alerts, annotate logs with comments, and more from your local terminal.
 
-The MCP server is a lightweight Python wrapper around the Bifract HTTP API. It runs locally and authenticates with a Bifract API key.
+The MCP server is a mode of the `bifract` CLI, so there is nothing extra to install. It
+runs on your own machine and reaches your instance over the same HTTP API the web UI
+uses, authenticating with a Bifract API key: a tool can never do more than that key is
+allowed to do.
 
 ## Prerequisites
 
-- Python 3.10+
 - A running Bifract instance
+- The `bifract` CLI (the same binary used to install and manage a deployment)
 - A Bifract [API key](../administration/ingest-tokens.md) with at least `query` permission
-
-## Install
-
-The MCP server lives in the `mcp/` directory at the project root.
-
-```bash
-cd mcp
-pip install -e .
-```
-
-Or with [uv](https://docs.astral.sh/uv/):
-
-```bash
-cd mcp
-uv pip install -e .
-```
 
 ## Configure Claude Code
 
@@ -34,7 +21,8 @@ Create a `.mcp.json` file in the directory where you use Claude Code:
 {
   "mcpServers": {
     "bifract": {
-      "command": "bifract-mcp",
+      "command": "bifract",
+      "args": ["--mcp"],
       "env": {
         "BIFRACT_URL": "https://your-bifract-instance.example.com",
         "BIFRACT_API_KEY": "bifract_your_api_key_here"
@@ -44,35 +32,45 @@ Create a `.mcp.json` file in the directory where you use Claude Code:
 }
 ```
 
-If you installed in a virtualenv, use the full path to the binary:
-
-```json
-{
-  "mcpServers": {
-    "bifract": {
-      "command": "/path/to/venv/bin/bifract-mcp",
-      "env": {
-        "BIFRACT_URL": "https://your-bifract-instance.example.com",
-        "BIFRACT_API_KEY": "bifract_your_api_key_here"
-      }
-    }
-  }
-}
-```
+Use the full path to the binary if `bifract` is not on the PATH the client launches with.
+`bifract --mcp --help` prints the settings it reads.
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `BIFRACT_URL` | Yes | Base URL of your Bifract instance |
-| `BIFRACT_API_KEY` | Yes | API key starting with `bifract_`. Determines which fractal is queried. |
+| `BIFRACT_API_KEY` | Yes | API key. Determines the scope and the role. |
+| `BIFRACT_FRACTAL_ID` | No | The fractal to act in. Only an instance-wide key needs it; see below. |
+| `BIFRACT_PRISM_ID` | No | A prism to act in instead, for reading across fractals |
 | `BIFRACT_CA_CERT` | No | Path to a CA bundle, for an instance behind a private or self-signed CA |
 | `BIFRACT_CLIENT_CERT` | No | Client certificate for mTLS (a combined PEM, or the cert half of a pair) |
 | `BIFRACT_CLIENT_KEY` | No | Client private key, when `BIFRACT_CLIENT_CERT` holds only the certificate |
 | `BIFRACT_VERIFY_SSL` | No | Set to `false` to skip certificate verification. Prefer `BIFRACT_CA_CERT`. |
 | `BIFRACT_TIMEOUT` | No | Request timeout in seconds (default 60) |
 
-The API key is scoped to a single fractal. All queries, alerts, and comments are automatically scoped to that fractal with no additional configuration.
+`bifract --mcp --help` prints this list without leaving the terminal.
+
+### Choosing the scope
+
+A key issued for one fractal or prism (`bifract_<name>_...`) carries its scope already.
+Every query, alert and comment lands there with nothing else to configure, and
+`get_context` reports which one.
+
+An instance-wide key (`bifract_admin_...`) belongs to no fractal, so it names the one it
+means on each request. Give the session a fractal to act in:
+
+```json
+"env": {
+  "BIFRACT_URL": "https://bifract.example.com",
+  "BIFRACT_API_KEY": "bifract_admin_...",
+  "BIFRACT_FRACTAL_ID": "588f9ff8-4fe9-484a-9ca8-2ee77260e0b8"
+}
+```
+
+Without it, tools that name a fractal in the request say so rather than guessing. Prefer a
+fractal-scoped key where one will do: it cannot reach past the fractal it was issued for,
+whichever way the session is configured.
 
 ### Connecting through mTLS
 
@@ -229,13 +227,16 @@ Once configured, ask Claude Code things like:
 
 ## Creating an API Key
 
-
 1. Log in to your Bifract instance
 2. Navigate to the fractal you want to query
 3. Go to **Manage > Access > API Keys**
 4. Create a new key with at least `query` permission
 5. For alert management, also enable `alert_manage`
-6. Copy the generated key (starts with `bifract_`)
+6. Copy the generated key. It is shown once.
+
+The key is named for the scope it was issued for, so `bifract_default_...` belongs to the
+fractal called `default`. An instance-wide key is `bifract_admin_...` and belongs to none;
+see [Choosing the scope](#choosing-the-scope).
 
 ## How It Compares to AI Chat
 

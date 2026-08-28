@@ -1736,11 +1736,17 @@ ALTER TABLE alert_executions ADD CONSTRAINT alert_executions_scope_check CHECK (
     (fractal_id IS NULL AND prism_id IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_alert_executions_prism_id ON alert_executions(prism_id) WHERE prism_id IS NOT NULL;
+-- An instance-wide key is not a scoped key: it carries no fractal, no prism and
+-- no scope role. Existing rows are normalized before the constraint is installed.
 ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_scope_check;
+UPDATE api_keys SET fractal_id = NULL, prism_id = NULL, role = '' WHERE tenant_admin;
 ALTER TABLE api_keys ADD CONSTRAINT api_keys_scope_check CHECK (
-    (fractal_id IS NOT NULL AND prism_id IS NULL) OR
-    (fractal_id IS NULL AND prism_id IS NOT NULL)
+    (tenant_admin AND fractal_id IS NULL AND prism_id IS NULL AND role = '') OR
+    (NOT tenant_admin AND ((fractal_id IS NOT NULL) <> (prism_id IS NOT NULL)))
 );
+ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_tenant_admin_expires;
+ALTER TABLE api_keys ADD CONSTRAINT api_keys_tenant_admin_expires
+    CHECK (NOT tenant_admin OR expires_at IS NOT NULL);
 
 -- ============================
 -- Fractal/Prism Scoping for Action Tables

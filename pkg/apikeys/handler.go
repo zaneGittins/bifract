@@ -5,6 +5,7 @@ import (
 	"bifract/pkg/auth"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -154,6 +155,12 @@ func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 
 	if err := req.Validate(); err != nil {
 		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// The instance-wide grant belongs to no scope, so it is never issued here.
+	if req.TenantAdmin {
+		h.sendError(w, http.StatusBadRequest, "A tenant admin key is instance-wide: create it at /api/v1/api-keys")
 		return
 	}
 
@@ -321,6 +328,10 @@ func (h *Handler) HandleToggleAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apiKey, err := h.storage.ToggleFractalAPIKey(r.Context(), keyID, fractalID)
+	if errors.Is(err, ErrKeyNotFound) {
+		h.sendError(w, http.StatusNotFound, "API key not found")
+		return
+	}
 	if err != nil {
 		log.Printf("[APIKeys] Failed to toggle API key %s: %v", keyID, err)
 		h.sendError(w, http.StatusBadRequest, "Failed to toggle API key")
@@ -413,6 +424,12 @@ func (h *Handler) HandleCreatePrismAPIKey(w http.ResponseWriter, r *http.Request
 
 	if err := req.Validate(); err != nil {
 		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// The instance-wide grant belongs to no scope, so it is never issued here.
+	if req.TenantAdmin {
+		h.sendError(w, http.StatusBadRequest, "A tenant admin key is instance-wide: create it at /api/v1/api-keys")
 		return
 	}
 
@@ -572,8 +589,158 @@ func (h *Handler) HandleTogglePrismAPIKey(w http.ResponseWriter, r *http.Request
 	}
 
 	apiKey, err := h.storage.TogglePrismAPIKey(r.Context(), keyID, prismID)
+	if errors.Is(err, ErrKeyNotFound) {
+		h.sendError(w, http.StatusNotFound, "API key not found")
+		return
+	}
 	if err != nil {
 		log.Printf("[APIKeys] Failed to toggle prism API key %s: %v", keyID, err)
+		h.sendError(w, http.StatusBadRequest, "Failed to toggle API key")
+		return
+	}
+
+	action := "deactivated"
+	if apiKey.IsActive {
+		action = "activated"
+	}
+
+	h.sendSuccess(w, fmt.Sprintf("API key %s successfully", action), map[string]interface{}{
+		"api_key": apiKey,
+	})
+}
+
+// ---- Instance-wide handlers ----
+//
+// An instance-wide key holds no fractal and no prism, so it is managed here
+// rather than under a scope. The routes are tenant-admin only, which the router
+// enforces before the handler runs.
+
+// HandleCreateTenantAPIKey issues an instance-wide API key.
+func (h *Handler) HandleCreateTenantAPIKey(w http.ResponseWriter, r *http.Request) {
+	var req CreateAPIKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.sendError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.Name == "" {
+		h.sendError(w, http.StatusBadRequest, "API key name is required")
+		return
+	}
+
+	// The grant is what this route issues, so it is set here rather than trusted
+	// from the body; a scope role would contradict it.
+	req.TenantAdmin = true
+	req.Role = ""
+	if err := req.Validate(); err != nil {
+		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	fullKey, keyID, err := h.storage.GenerateAPIKey(r.Context(), TenantKeyPrefix)
+	if err != nil {
+		log.Printf("[APIKeys] Failed to generate instance-wide API key: %v", err)
+		h.sendError(w, http.StatusInternalServerError, "Failed to generate API key")
+		return
+	}
+
+	apiKey, err := h.storage.CreateTenantAPIKey(r.Context(), req, auth.AttributionUsername(r.Context()), fullKey, keyID)
+	if err != nil {
+		log.Printf("[APIKeys] Failed to create instance-wide API key: %v", err)
+		h.sendError(w, http.StatusInternalServerError, "Failed to create API key")
+		return
+	}
+
+	h.sendSuccess(w, "API key created successfully", CreateAPIKeyResponse{
+		Key:    fullKey,
+		KeyID:  keyID,
+		APIKey: *apiKey,
+	})
+}
+
+// HandleGetTenantAPIKey reads one instance-wide API key.
+func (h *Handler) HandleGetTenantAPIKey(w http.ResponseWriter, r *http.Request) {
+	keyID := chi.URLParam(r, "keyId")
+	if keyID == "" {
+		h.sendError(w, http.StatusBadRequest, "Key ID is required")
+		return
+	}
+
+	apiKey, err := h.storage.GetTenantAPIKey(r.Context(), keyID)
+	if err != nil {
+		h.sendError(w, http.StatusNotFound, "API key not found")
+		return
+	}
+
+	h.sendSuccess(w, "API key retrieved successfully", apiKey)
+}
+
+// HandleUpdateTenantAPIKey updates an instance-wide API key.
+func (h *Handler) HandleUpdateTenantAPIKey(w http.ResponseWriter, r *http.Request) {
+	keyID := chi.URLParam(r, "keyId")
+	if keyID == "" {
+		h.sendError(w, http.StatusBadRequest, "Key ID is required")
+		return
+	}
+
+	var req UpdateAPIKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.sendError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	current, err := h.storage.GetTenantAPIKey(r.Context(), keyID)
+	if err != nil {
+		h.sendError(w, http.StatusNotFound, "API key not found")
+		return
+	}
+	if err := req.Validate(current); err != nil {
+		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	apiKey, err := h.storage.UpdateTenantAPIKey(r.Context(), keyID, req)
+	if err != nil {
+		log.Printf("[APIKeys] Failed to update instance-wide API key %s: %v", keyID, err)
+		h.sendError(w, http.StatusInternalServerError, "Failed to update API key")
+		return
+	}
+
+	h.sendSuccess(w, "API key updated successfully", apiKey)
+}
+
+// HandleDeleteTenantAPIKey removes an instance-wide API key.
+func (h *Handler) HandleDeleteTenantAPIKey(w http.ResponseWriter, r *http.Request) {
+	keyID := chi.URLParam(r, "keyId")
+	if keyID == "" {
+		h.sendError(w, http.StatusBadRequest, "Key ID is required")
+		return
+	}
+
+	if err := h.storage.DeleteTenantAPIKey(r.Context(), keyID); err != nil {
+		log.Printf("[APIKeys] Failed to delete instance-wide API key %s: %v", keyID, err)
+		h.sendError(w, http.StatusNotFound, "API key not found")
+		return
+	}
+
+	h.sendSuccess(w, "API key deleted successfully", nil)
+}
+
+// HandleToggleTenantAPIKey activates or deactivates an instance-wide API key.
+func (h *Handler) HandleToggleTenantAPIKey(w http.ResponseWriter, r *http.Request) {
+	keyID := chi.URLParam(r, "keyId")
+	if keyID == "" {
+		h.sendError(w, http.StatusBadRequest, "Key ID is required")
+		return
+	}
+
+	apiKey, err := h.storage.ToggleTenantAPIKey(r.Context(), keyID)
+	if errors.Is(err, ErrKeyNotFound) {
+		h.sendError(w, http.StatusNotFound, "API key not found")
+		return
+	}
+	if err != nil {
+		log.Printf("[APIKeys] Failed to toggle instance-wide API key %s: %v", keyID, err)
 		h.sendError(w, http.StatusBadRequest, "Failed to toggle API key")
 		return
 	}

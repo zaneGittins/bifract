@@ -1932,6 +1932,47 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.apiKeyHandler.HandleListAllAPIKeys,
 			})
 			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/api-keys",
+				Access:   api.AccessTenantAdmin,
+				Request:  apikeys.CreateAPIKeyRequest{},
+				Response: api.Response[apikeys.CreateAPIKeyResponse]{},
+				Summary:  "Create an instance-wide API key, scoped to no fractal or prism.",
+				Handler:  d.apiKeyHandler.HandleCreateTenantAPIKey,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/api-keys/{keyId}",
+				Access:   api.AccessTenantAdmin,
+				Response: api.Response[*apikeys.APIKey]{},
+				Summary:  "Read one instance-wide API key.",
+				Handler:  d.apiKeyHandler.HandleGetTenantAPIKey,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPut,
+				Path:     "/api-keys/{keyId}",
+				Access:   api.AccessTenantAdmin,
+				Request:  apikeys.UpdateAPIKeyRequest{},
+				Response: api.Response[*apikeys.APIKey]{},
+				Summary:  "Update an instance-wide API key.",
+				Handler:  d.apiKeyHandler.HandleUpdateTenantAPIKey,
+			})
+			r.Register(api.Route{
+				Method:  http.MethodDelete,
+				Path:    "/api-keys/{keyId}",
+				Access:  api.AccessTenantAdmin,
+				Summary: "Delete an instance-wide API key.",
+				Handler: d.apiKeyHandler.HandleDeleteTenantAPIKey,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/api-keys/{keyId}/toggle",
+				Access:   api.AccessTenantAdmin,
+				Response: api.Response[map[string]interface{}]{},
+				Summary:  "Activate or deactivate an instance-wide API key.",
+				Handler:  d.apiKeyHandler.HandleToggleTenantAPIKey,
+			})
+			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/fractals/{id}/api-keys",
 				Access:   api.AccessTenantAdmin,

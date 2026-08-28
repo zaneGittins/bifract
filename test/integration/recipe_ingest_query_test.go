@@ -64,9 +64,9 @@ func TestIngestAndQuery(t *testing.T) {
 		{"message": "second line", "level": "error", "suite_marker": marker},
 	}, nil)
 
-	// 4. Read them back. An API key is bound to the fractal it was issued for,
+	// 4. Read them back. A scoped key is bound to the fractal it was issued for,
 	//    so a key acting across fractals names the one it means in the request
-	//    rather than the X-Bifract-Scope header, which is a session mechanism.
+	//    body.
 	//
 	//    Ingestion is asynchronous and batched, so this is eventual: a query
 	//    issued straight after the write legitimately returns nothing.

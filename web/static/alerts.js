@@ -1995,7 +1995,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
 
             const data = await response.json();
             if (data.success) {
-                const result = data.data.test_result;
+                const result = data.data;
                 if (result.success) {
                     Toast.show('Webhook test successful', 'success');
                 } else {
@@ -4638,7 +4638,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
         try {
             const resp = await fetch('/api/v1/smtp-settings', { credentials: 'include' });
             const data = await resp.json();
-            const host = data.data?.smtp_config?.host;
+            const host = data.data?.host;
             if (!host) {
                 hint.innerHTML = `
                     <span>SMTP isn't configured, so emails won't be delivered.</span>
@@ -4701,7 +4701,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
         try {
             const resp = await fetch('/api/v1/smtp-settings', { credentials: 'include' });
             const data = await resp.json();
-            const config = data.data?.smtp_config || {};
+            const config = data.data || {};
 
             container.innerHTML = `
                 <div class="actions-create-panel">

@@ -201,7 +201,7 @@ const APIKeys = {
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
             if (data.success) {
-                this.currentKeys = data.data?.api_keys || [];
+                this.currentKeys = HttpUtils.list(data);
                 this.renderInlineAPIKeys();
             }
         } catch (error) {

@@ -597,7 +597,7 @@ const AlertFeeds = {
     async viewFeedAlert(alertId) {
         try {
             const data = await HttpUtils.safeFetch(`/api/v1/alerts/${alertId}`);
-            const alert = data.data?.alert;
+            const alert = data.data;
             if (alert) this.showDetailsPanel(alert);
         } catch (err) {
             console.error('[AlertFeeds] Failed to load alert:', err);
@@ -865,7 +865,7 @@ const AlertFeeds = {
         let normalizers = [];
         try {
             const data = await HttpUtils.safeFetch('/api/v1/normalizers');
-            normalizers = data.data?.normalizers || [];
+            normalizers = HttpUtils.list(data);
         } catch (e) { /* ignore */ }
 
         const isEdit = !!feed;

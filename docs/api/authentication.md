@@ -12,11 +12,13 @@ Authorization: Bearer bifract_<key>
 
 `X-API-Key: bifract_<key>` is accepted as an alternative header.
 
-A key belongs to one fractal or one prism and carries the access its creator granted it, so
-a key made for a reporting job cannot reach another team's data. Create and revoke keys
-under **Admin > API Keys**, or through the API itself; see [All Operations](reference.md)
-for the shape of those requests, and [API Keys](../administration/ingest-tokens.md) for
-what the permissions mean.
+A key belongs to one fractal or one prism and carries the role its creator granted it, so
+a key made for a reporting job cannot reach another team's data. An instance-wide key is
+the exception: it administers the whole instance, belongs to no scope, carries the
+`bifract_admin_` prefix, and always expires. Create and revoke keys under
+**Admin > API Keys**, or through the API itself; see [All Operations](reference.md) for
+the shape of those requests, and [API Keys](../administration/ingest-tokens.md) for what
+the roles mean.
 
 ## Ingest token
 
@@ -32,9 +34,9 @@ the credential can be scoped, rotated, and revoked without touching a user accou
 
 ## Choosing a scope
 
-A key is already bound to its fractal or prism, so it needs nothing further. A session is
-not, because one browser session moves between fractals. Requests made with a session say
-which scope they mean:
+A scoped key is already bound to its fractal or prism, so it needs nothing further. A
+session is not, because one browser session moves between fractals, and neither is an
+instance-wide key. Requests made with either say which scope they mean:
 
 ```
 X-Bifract-Scope: fractal:<fractal-id>

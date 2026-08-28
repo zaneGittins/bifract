@@ -80,7 +80,7 @@ type AlertCreateRequest struct {
 	EmailActionIDs      []string  `json:"email_action_ids"`
 	Labels              []string  `json:"labels"`
 	References          []string  `json:"references"`
-	Severity            string    `json:"severity"`
+	Severity            Severity  `json:"severity"`
 	Enabled             bool      `json:"enabled"`
 	ThrottleTimeSeconds int       `json:"throttle_time_seconds"`
 	ThrottleField       string    `json:"throttle_field"`
@@ -101,7 +101,7 @@ type AlertUpdateRequest struct {
 	EmailActionIDs      []string  `json:"email_action_ids"`
 	Labels              []string  `json:"labels"`
 	References          []string  `json:"references"`
-	Severity            string    `json:"severity"`
+	Severity            Severity  `json:"severity"`
 	Enabled             bool      `json:"enabled"`
 	ThrottleTimeSeconds int       `json:"throttle_time_seconds"`
 	ThrottleField       string    `json:"throttle_field"`
@@ -232,7 +232,7 @@ func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, create
 			Description:         yamlAlert.Description,
 			QueryString:         yamlAlert.QueryString,
 			AlertType:           AlertType(yamlAlert.AlertType),
-			Severity:            yamlAlert.Severity,
+			Severity:            Severity(yamlAlert.Severity),
 			WebhookActionIDs:    webhookIDs,
 			Labels:              yamlAlert.Labels,
 			References:          yamlAlert.References,
@@ -252,7 +252,7 @@ func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, create
 		Description:         yamlAlert.Description,
 		QueryString:         yamlAlert.QueryString,
 		AlertType:           AlertType(yamlAlert.AlertType),
-		Severity:            yamlAlert.Severity,
+		Severity:            Severity(yamlAlert.Severity),
 		WebhookActionIDs:    webhookIDs,
 		Labels:              yamlAlert.Labels,
 		References:          yamlAlert.References,
@@ -305,7 +305,7 @@ func (m *Manager) importSigmaRule(ctx context.Context, yamlContent string, creat
 			Description: description,
 			QueryString: queryString,
 			AlertType:   "event",
-			Severity:    sigmaSeverity(rule.Level),
+			Severity:    SeverityFromLevel(rule.Level),
 			Labels:      labels,
 			References:  rule.References,
 			Enabled:     false,
@@ -318,30 +318,13 @@ func (m *Manager) importSigmaRule(ctx context.Context, yamlContent string, creat
 		Description: description,
 		QueryString: queryString,
 		AlertType:   "event",
-		Severity:    sigmaSeverity(rule.Level),
+		Severity:    SeverityFromLevel(rule.Level),
 		Labels:      labels,
 		References:  rule.References,
 		Enabled:     false, // Disabled by default for review
 	}
 
 	return m.CreateAlert(ctx, createReq, createdBy, fractalID, prismID)
-}
-
-func sigmaSeverity(level string) string {
-	switch strings.ToLower(level) {
-	case "critical":
-		return "critical"
-	case "high":
-		return "high"
-	case "medium":
-		return "medium"
-	case "low":
-		return "low"
-	case "informational":
-		return "info"
-	default:
-		return "medium"
-	}
 }
 
 func sigmaDescription(rule *sigma.SigmaRule) string {
@@ -1822,7 +1805,7 @@ func (m *Manager) DeleteFractalAction(ctx context.Context, fractalActionID strin
 // ============================
 
 // CreateFeedAlert creates an alert that belongs to a feed.
-func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryString, alertType, severity string,
+func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryString, alertType string, severity Severity,
 	labels, references []string, feedID, rulePath, ruleHash, fractalID, prismID, createdBy string) (*Alert, error) {
 
 	parsedQuery, err := parser.ParseQuery(queryString)
@@ -1874,7 +1857,7 @@ func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryS
 // current scope - so if an alert's scope somehow drifted from its feed, the
 // next sync puts it back where it belongs. fractalID and prismID must come
 // from the parent feed and exactly one must be set.
-func (m *Manager) UpdateFeedAlert(ctx context.Context, alertID, name, description, queryString, alertType, severity string,
+func (m *Manager) UpdateFeedAlert(ctx context.Context, alertID, name, description, queryString, alertType string, severity Severity,
 	labels, references []string, ruleHash, updatedBy, fractalID, prismID string) error {
 
 	if (fractalID == "") == (prismID == "") {

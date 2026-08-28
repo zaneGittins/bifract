@@ -26,7 +26,7 @@ func (m *Manager) CreateLinkedAlert(ctx context.Context, spec models.LinkedAlert
 		Description: spec.Description,
 		QueryString: spec.QueryString,
 		AlertType:   "event",
-		Severity:    spec.Severity,
+		Severity:    Severity(spec.Severity),
 		Enabled:     spec.Enabled,
 	}
 	alert, err := m.CreateAlert(ctx, req, spec.CreatedBy, spec.FractalID, spec.PrismID)

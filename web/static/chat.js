@@ -136,7 +136,7 @@ const Chat = {
             const res = await HttpUtils.safeFetch('/api/v1/chat/conversations', {
                 credentials: 'include',
             });
-            this.conversations = res.data?.conversations || [];
+            this.conversations = HttpUtils.list(res);
             this.renderConversationList();
 
             // Reselect current conversation if still valid
@@ -283,7 +283,7 @@ const Chat = {
             const res = await HttpUtils.safeFetch(`/api/v1/chat/conversations/${conversationId}/messages`, {
                 credentials: 'include',
             });
-            const messages = res.data?.messages || [];
+            const messages = HttpUtils.list(res);
             messages.forEach(msg => this.renderMessage(msg));
             this.scrollToBottom();
         } catch (err) {

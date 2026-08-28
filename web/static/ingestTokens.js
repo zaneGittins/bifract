@@ -114,10 +114,7 @@ const IngestTokens = {
     async loadNormalizersList() {
         try {
             const resp = await fetch('/api/v1/normalizers', { credentials: 'include' });
-            const data = await resp.json();
-            if (data.success && data.data?.normalizers) {
-                this.availableNormalizers = data.data;
-            }
+            this.availableNormalizers = HttpUtils.list(await resp.json());
         } catch (err) {
             console.error('[IngestTokens] Failed to load normalizers:', err);
         }

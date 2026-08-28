@@ -35,24 +35,6 @@ var statusOrder = map[string]int{
 	"stable":       5,
 }
 
-// meetsMinLevel returns true if the rule's level meets the feed's minimum threshold.
-func mapLevelToSeverity(level string) string {
-	switch strings.ToLower(level) {
-	case "critical":
-		return "critical"
-	case "high":
-		return "high"
-	case "medium":
-		return "medium"
-	case "low":
-		return "low"
-	case "informational":
-		return "info"
-	default:
-		return "medium"
-	}
-}
-
 // Rules without a level (e.g. Bifract native rules) always pass.
 func meetsMinLevel(ruleLevel, minLevel string) bool {
 	if minLevel == "" {
@@ -427,7 +409,7 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 		}
 
 		if existErr == nil && existing != nil {
-			err = s.alertManager.UpdateFeedAlert(ctx, existing.ID, name, description, queryString, alertType, mapLevelToSeverity(level), labels, references, hash, feed.CreatedBy, feed.FractalID, feed.PrismID)
+			err = s.alertManager.UpdateFeedAlert(ctx, existing.ID, name, description, queryString, alertType, alerts.SeverityFromLevel(level), labels, references, hash, feed.CreatedBy, feed.FractalID, feed.PrismID)
 			if err != nil {
 				recordErr("%s: update error: %v", filePath, err)
 				entry.SkipReason = SkipCreateError
@@ -437,7 +419,7 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 				result.Updated++
 			}
 		} else {
-			_, err = s.alertManager.CreateFeedAlert(ctx, name, description, queryString, alertType, mapLevelToSeverity(level),
+			_, err = s.alertManager.CreateFeedAlert(ctx, name, description, queryString, alertType, alerts.SeverityFromLevel(level),
 				labels, references, feed.ID, filePath, hash, feed.FractalID, feed.PrismID, feed.CreatedBy)
 			if err != nil {
 				recordErr("%s: create error: %v", filePath, err)

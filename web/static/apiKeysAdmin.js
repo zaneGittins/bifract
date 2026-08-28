@@ -21,13 +21,14 @@ const APIKeysAdmin = {
         const submit = document.getElementById('adminApiKeySubmit');
         if (submit) submit.addEventListener('click', () => this.create());
 
-        // A tenant-admin key must carry an expiry, so the form stops offering
-        // "never" rather than letting the server refuse the request.
+        // The two kinds of key are exclusive: an instance-wide grant has no
+        // scope and no role, and must carry an expiry. The form follows that
+        // rather than letting the server refuse the request.
         const tenantAdmin = document.getElementById('adminApiKeyTenantAdmin');
-        if (tenantAdmin) tenantAdmin.addEventListener('change', () => this._syncExpiry());
+        if (tenantAdmin) tenantAdmin.addEventListener('change', () => this._syncForm());
 
         const never = document.getElementById('adminApiKeyNeverExpires');
-        if (never) never.addEventListener('change', () => this._syncExpiry());
+        if (never) never.addEventListener('change', () => this._syncForm());
     },
 
     async showCreate() {
@@ -62,7 +63,7 @@ const APIKeysAdmin = {
         expires.value = new Date(in30Days.getTime() - in30Days.getTimezoneOffset() * 60000)
             .toISOString().slice(0, 16);
 
-        this._syncExpiry();
+        this._syncForm();
         modal.style.display = 'flex';
         setTimeout(() => document.getElementById('adminApiKeyName')?.focus(), 50);
     },
@@ -72,14 +73,19 @@ const APIKeysAdmin = {
         if (modal) modal.style.display = 'none';
     },
 
-    _syncExpiry() {
-        const tenantAdmin = document.getElementById('adminApiKeyTenantAdmin')?.checked;
+    _syncForm() {
+        const tenantAdmin = !!document.getElementById('adminApiKeyTenantAdmin')?.checked;
+        const scopeGroup = document.getElementById('adminApiKeyScopeGroup');
+        const roleGroup = document.getElementById('adminApiKeyRoleGroup');
+        if (scopeGroup) scopeGroup.style.display = tenantAdmin ? 'none' : '';
+        if (roleGroup) roleGroup.style.display = tenantAdmin ? 'none' : '';
+
         const never = document.getElementById('adminApiKeyNeverExpires');
         const expires = document.getElementById('adminApiKeyExpires');
         if (!never || !expires) return;
 
         if (tenantAdmin) never.checked = false;
-        never.disabled = !!tenantAdmin;
+        never.disabled = tenantAdmin;
         expires.disabled = never.checked;
     },
 
@@ -89,31 +95,48 @@ const APIKeysAdmin = {
             if (window.Toast) Toast.error('Validation', 'Give the key a name');
             return;
         }
-        const scope = document.getElementById('adminApiKeyScope')?.value || '';
+
+        const tenantAdmin = !!document.getElementById('adminApiKeyTenantAdmin')?.checked;
+        const scope = tenantAdmin ? '' : (document.getElementById('adminApiKeyScope')?.value || '');
         const [kind, id] = scope.split(':');
-        if (!id) {
+        if (!tenantAdmin && !id) {
             if (window.Toast) Toast.error('Validation', 'Choose a scope for the key');
             return;
         }
 
-        const never = document.getElementById('adminApiKeyNeverExpires')?.checked;
+        const never = !tenantAdmin && document.getElementById('adminApiKeyNeverExpires')?.checked;
         const expiresRaw = document.getElementById('adminApiKeyExpires')?.value;
-        const request = {
-            name,
-            description: '',
-            role: document.getElementById('adminApiKeyRole')?.value || 'analyst',
-            tenant_admin: !!document.getElementById('adminApiKeyTenantAdmin')?.checked,
-            expires_at: never || !expiresRaw ? null : new Date(expiresRaw).toISOString(),
-        };
+        const expiresAt = never || !expiresRaw ? null : new Date(expiresRaw).toISOString();
+        if (tenantAdmin && !expiresAt) {
+            if (window.Toast) Toast.error('Validation', 'A tenant admin key must have an expiry');
+            return;
+        }
 
-        const path = kind === 'prism' ? `/api/v1/prisms/${id}/api-keys` : `/api/v1/fractals/${id}/api-keys`;
+        // An instance-wide key belongs to no scope, so it is issued on its own
+        // route and carries neither a scope nor a role.
+        const request = tenantAdmin
+            ? { name, description: '', expires_at: expiresAt }
+            : {
+                name,
+                description: '',
+                role: document.getElementById('adminApiKeyRole')?.value || 'analyst',
+                expires_at: expiresAt,
+            };
+
+        let path = '/api/v1/api-keys';
+        const headers = { 'Content-Type': 'application/json' };
+        if (!tenantAdmin) {
+            path = kind === 'prism' ? `/api/v1/prisms/${id}/api-keys` : `/api/v1/fractals/${id}/api-keys`;
+            headers['X-Bifract-Scope'] = scope;
+        }
+
         const btn = document.getElementById('adminApiKeySubmit');
         if (btn) btn.disabled = true;
         try {
             const res = await fetch(path, {
                 method: 'POST',
                 credentials: 'include',
-                headers: { 'Content-Type': 'application/json', 'X-Bifract-Scope': scope },
+                headers,
                 body: JSON.stringify(request),
             });
             if (!res.ok) throw new Error(await Utils.errorMessage(res, 'Failed to create the key'));
@@ -179,7 +202,8 @@ const APIKeysAdmin = {
 
     scopeOf(key) {
         if (key.prism_id) return `Prism: ${Utils.escapeHtml(key.prism_name || key.prism_id)}`;
-        return `Fractal: ${Utils.escapeHtml(key.fractal_name || key.fractal_id)}`;
+        if (key.fractal_id) return `Fractal: ${Utils.escapeHtml(key.fractal_name || key.fractal_id)}`;
+        return '<span class="text-muted">Instance-wide</span>';
     },
 
     render() {
@@ -209,10 +233,13 @@ const APIKeysAdmin = {
     renderRow(key) {
         const status = this.statusOf(key);
         const grants = [];
-        if (key.tenant_admin) grants.push('<span class="perm-badge perm-tenant">Tenant admin</span>');
-        grants.push(key.role
-            ? `<span class="perm-badge perm-on">${Utils.escapeHtml(key.role)}</span>`
-            : '<span class="perm-badge perm-off">No access</span>');
+        if (key.tenant_admin) {
+            grants.push('<span class="perm-badge perm-tenant">Tenant admin</span>');
+        } else {
+            grants.push(key.role
+                ? `<span class="perm-badge perm-on">${Utils.escapeHtml(key.role)}</span>`
+                : '<span class="perm-badge perm-off">No access</span>');
+        }
 
         const expires = key.expires_at
             ? Utils.formatTimestamp(key.expires_at)
@@ -257,9 +284,11 @@ const APIKeysAdmin = {
         const what = key.tenant_admin ? 'instance-wide admin key' : 'API key';
         if (!confirm(`Revoke the ${what} "${key.name}"?\n\nAnything using it stops working immediately.`)) return;
 
-        const scope = key.prism_id ? `prisms/${key.prism_id}` : `fractals/${key.fractal_id}`;
+        const path = key.prism_id ? `/api/v1/prisms/${key.prism_id}/api-keys`
+            : key.fractal_id ? `/api/v1/fractals/${key.fractal_id}/api-keys`
+            : '/api/v1/api-keys';
         try {
-            const res = await fetch(`/api/v1/${scope}/api-keys/${key.id}/toggle`, {
+            const res = await fetch(`${path}/${key.id}/toggle`, {
                 method: 'POST',
                 credentials: 'include',
             });

@@ -1285,14 +1285,29 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 					ctx = context.WithValue(ctx, storage.AttributionUserKey, keyData.CreatedBy)
 					ctx = context.WithValue(ctx, "api_key", keyData)
 
-					// The key's role applies to the scope it was issued for.
-					apiKeyRole := keyData.Role
-					if keyData.PrismID != "" {
+					// The key's role applies to the scope it was issued for. An
+					// instance-wide key was issued for none, so it names the
+					// fractal or prism it wants per request with the scope
+					// header, and is admin on whichever it names.
+					switch {
+					case keyData.TenantAdmin:
+						if hdr := r.Header.Get(ScopeHeader); hdr != "" && !scopeHeaderExempt(r.URL.Path) {
+							hdrFractal, hdrPrism, err := parseScopeHeader(hdr)
+							if err != nil {
+								writeScopeError(w, http.StatusBadRequest, "Malformed scope header")
+								return
+							}
+							ctx = context.WithValue(ctx, "selected_fractal", hdrFractal)
+							ctx = context.WithValue(ctx, "selected_prism", hdrPrism)
+						}
+						ctx = context.WithValue(ctx, "fractal_role", "admin")
+						ctx = context.WithValue(ctx, "prism_role", "admin")
+					case keyData.PrismID != "":
 						ctx = context.WithValue(ctx, "selected_prism", keyData.PrismID)
-						ctx = context.WithValue(ctx, "prism_role", apiKeyRole)
-					} else {
+						ctx = context.WithValue(ctx, "prism_role", keyData.Role)
+					default:
 						ctx = context.WithValue(ctx, "selected_fractal", keyData.FractalID)
-						ctx = context.WithValue(ctx, "fractal_role", apiKeyRole)
+						ctx = context.WithValue(ctx, "fractal_role", keyData.Role)
 					}
 
 					// Update usage stats (async) - but only if validation succeeds

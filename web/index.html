@@ -3880,20 +3880,20 @@ throttleTimeSeconds: 3600"></textarea>
                         <input type="text" id="adminApiKeyName" required placeholder="What will use this key">
                     </div>
                     <div class="form-group">
+                        <label class="inline-perm-toggle"><input type="checkbox" id="adminApiKeyTenantAdmin"> Tenant admin</label>
+                        <p class="admin-panel-desc" style="margin-top:0.35rem;">Administers the whole instance. It holds no fractal, prism or role of its own, and requires an expiry.</p>
+                    </div>
+                    <div class="form-group" id="adminApiKeyScopeGroup">
                         <label for="adminApiKeyScope">Scope *</label>
                         <select id="adminApiKeyScope" class="form-control"></select>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" id="adminApiKeyRoleGroup">
                         <label for="adminApiKeyRole">Role</label>
                         <select id="adminApiKeyRole" class="form-control">
-                            <option value="viewer">Viewer &mdash; read only</option>
-                            <option value="analyst" selected>Analyst &mdash; read and write</option>
-                            <option value="admin">Admin &mdash; manage this scope</option>
+                            <option value="viewer">Viewer (read only)</option>
+                            <option value="analyst" selected>Analyst (read and write)</option>
+                            <option value="admin">Admin (manage this scope)</option>
                         </select>
-                    </div>
-                    <div class="form-group">
-                        <label class="inline-perm-toggle"><input type="checkbox" id="adminApiKeyTenantAdmin"> Tenant admin</label>
-                        <p class="admin-panel-desc" style="margin-top:0.35rem;">Administers the whole instance, not just this scope. Requires an expiry.</p>
                     </div>
                     <div class="form-group">
                         <label for="adminApiKeyExpires">Expires</label>
