@@ -33,15 +33,16 @@ plugins:
   - search
   - swagger-ui-tag:
       docExpansion: none
+      # The reference documents the contract; it does not call anyone's instance.
+      # tryItOutEnabled alone only stops try-it-out being pre-activated, so the
+      # Execute button stayed and could fire a DELETE at the docs domain.
       tryItOutEnabled: false
+      supportedSubmitMethods: []
+      extra_css:
+        - assets/swagger-reference.css
 
 markdown_extensions:
   - admonition
-  # Lets the cookbook include the test files verbatim, so a published example
-  # is the code CI ran rather than a copy that can drift from it.
-  - pymdownx.snippets:
-      base_path: ["."]
-      check_paths: true
   - pymdownx.details
   - pymdownx.superfences:
       custom_fences:
@@ -105,7 +106,6 @@ nav:
     - MCP Server: features/mcp-server.md
   - API Reference:
     - All Operations: api/reference.md
-    - Guides: api/guides.md
     - Authentication: api/authentication.md
     - Sending Logs: api/ingestion.md
     - Alert Webhooks: api/webhooks.md

@@ -1,0 +1,9 @@
+/* The published reference is documentation, not a console.
+   Swagger UI's scheme container holds the server selector and the Authorize
+   button, both of which are wrong here: the spec's server is the relative
+   /api/v1 of whichever instance serves it, which on this site resolves to the
+   docs domain, and Authorize invites pasting a live API key into a page that
+   has no use for it. Requests are made from the API tab inside Bifract. */
+.swagger-ui .scheme-container {
+  display: none;
+}
